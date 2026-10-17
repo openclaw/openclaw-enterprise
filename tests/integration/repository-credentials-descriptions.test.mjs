@@ -282,6 +282,7 @@ test("repository metadata preserves supplementary Unicode through the character 
 test("repository metadata replaces controls and invisible or bidi characters", async (t) => {
   // Finding 1628: controls (Cc), format characters (Cf: bidi, zero-width, invisible operators,
   // tags) and line and paragraph separators are replaced; their neighbours and private use stay.
+  // Joiners inside words and emoji, and standard subdivision flags, stay: see the next test.
   const hidden = [
     0x00, 0x09, 0x1f, 0x7f, 0x80, 0x85, 0x9f, 0xad, 0x061c, 0x200b, 0x200e, 0x200f, 0x2028, 0x2029,
     0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060, 0x2061, 0x2064, 0x2066, 0x2067, 0x2068, 0x2069,
@@ -335,7 +336,8 @@ test("repository metadata keeps joiners in words and emoji and subdivision flags
     "\u0915\u094d\u200d\u0937", // Hindi conjunct: virama, then joiner
     "\u0d9a\u200d\u0dca\u0dc2", // Sinhala touching letters: joiner, then virama
     scotland,
-    "\u{1f3f4}\u{e0063}\u{e006e}\u{e0031}\u{e0031}\u{e007f}", // subdivision code with digits
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}", // England
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}", // Wales
   ].join(" ");
   const replaced = [
     ["\u200dlead", " lead"],
@@ -344,6 +346,7 @@ test("repository metadata keeps joiners in words and emoji and subdivision flags
     ["trail\u200d end", "trail  end"],
     ["tags\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", "tags      "],
     ["\u{1f3f4}\u{e0067}\u{e0062}\u{e007f}", "\u{1f3f4}   "], // no subdivision code
+    ["\u{1f3f4}\u{e0063}\u{e006e}\u{e0031}\u{e0031}\u{e007f}", "\u{1f3f4}      "], // not standard
     [
       "\u{1f3f4}\u{e0067}\u{e0062}\u{e0061}\u{e0062}\u{e0063}\u{e0064}\u{e0065}\u{e007f}",
       "\u{1f3f4}        ",

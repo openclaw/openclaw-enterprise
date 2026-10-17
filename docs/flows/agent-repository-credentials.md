@@ -107,7 +107,7 @@ fetches descriptions with repository-scoped, metadata-only tokens, sharing the
 provider queue and cleanup lifecycle. It bounds descriptions by Unicode code point; the Unix
 client and OCC apply the same 512-character limit. Controls and invisible or bidi characters
 become spaces, and the picker escapes any that arrive. Joiners inside words and emoji, and
-subdivision flags, stay. Missing metadata never blocks selection.
+the England, Scotland and Wales flags, stay. Missing metadata never blocks selection.
 
 The form saves Configuration first and preserves it after known Agent rejections.
 Retries reuse it; repository retries require successful reload and nonempty
@@ -360,7 +360,7 @@ Ready Pods and commands do not prove live writes.
 
 ## Changelog
 
-- 2026-10-17 06:00: Keep joiners in words and emoji and subdivision flags in repository descriptions. (lows-1017h - 49397a014)
+- 2026-10-17 06:00: Keep joiners in words and emoji and the three subdivision flags in repository descriptions. (lows-1017h - 49397a014)
 
 - 2026-10-17 05:00: Replace invisible and bidi characters in repository descriptions; escape them in the picker. (lows-1017g - 3a02bef00)
 

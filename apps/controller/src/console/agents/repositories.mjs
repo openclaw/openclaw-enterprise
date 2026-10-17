@@ -15,11 +15,11 @@ const DESCRIPTION_REFRESH_DELAY = 2_000;
 const DESCRIPTION_REFRESH_MAX_DELAY = 30_000;
 const DESCRIPTION_REFRESH_TIMEOUT = 30 * 60_000;
 // A description shows like a log line (visibleText escapes invisible and bidi characters), except
-// for the joiners and subdivision flags the credential service keeps (group 1), so emoji and
-// Persian or Indic words display intact. Keep in step with hiddenCharacter in
+// for the joiners and the England, Scotland and Wales flags the credential service keeps (group 1),
+// so emoji and Persian or Indic words display intact. Keep in step with hiddenCharacter in
 // apps/controller/src/drivers/repo/github/credentials/descriptions.ts.
 const DESCRIPTION_CHARACTER =
-  /((?<=[\p{L}\p{M}\p{S}])[\u200c\u200d](?=[\p{L}\p{M}\p{S}])|\u{1f3f4}[\u{e0061}-\u{e007a}]{2}[\u{e0030}-\u{e0039}\u{e0061}-\u{e007a}]{1,4}\u{e007f})|[^]/gu;
+  /((?<=[\p{L}\p{M}\p{S}])[\u200c\u200d](?=[\p{L}\p{M}\p{S}])|\u{1f3f4}\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073})\u{e007f})|[^]/gu;
 
 function descriptionText(value) {
   return String(value).replace(

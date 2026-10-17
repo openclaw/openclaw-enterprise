@@ -897,7 +897,8 @@ test("Repository descriptions show hidden and direction-changing characters as e
     "\u0915\u094d\u200d\u0937", // Hindi conjunct: virama, then joiner
     "\u0d9a\u200d\u0dca\u0dc2", // Sinhala touching letters: joiner, then virama
     "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", // Scotland
-    "\u{1f3f4}\u{e0063}\u{e006e}\u{e0031}\u{e0031}\u{e007f}", // subdivision code with digits
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}", // England
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}", // Wales
   ].join(" ");
   // Tag characters spelling `text`, raw and as the picker escapes them.
   const tags = (text) => [
@@ -917,6 +918,10 @@ test("Repository descriptions show hidden and direction-changing characters as e
       `long:\u{1f3f4}${tags("gbabcde")[1]}${cancelShown}`,
     ],
     [`open:\u{1f3f4}${scotland}`, `open:\u{1f3f4}${scotlandShown}`],
+    [
+      `other:\u{1f3f4}${tags("cn11")[0]}${cancel}`,
+      `other:\u{1f3f4}${tags("cn11")[1]}${cancelShown}`,
+    ],
     [
       `region:\u{1f3f4}${tags("GBsct")[0]}${cancel}`,
       `region:\u{1f3f4}${tags("GBsct")[1]}${cancelShown}`,

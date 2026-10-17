@@ -35,11 +35,12 @@ const responseLimit = 64 * 1024;
 // CVE-2021-42574): bidi controls, zero-width characters, invisible operators and tag characters.
 // Two kinds stay (group 1), because emoji and some scripts need them: a zero-width non-joiner or
 // joiner (U+200C, U+200D) between two letters, marks or symbols (Persian, Indic conjuncts, family
-// emoji), and a subdivision flag (black flag, a region and subdivision code in tag letters, cancel
-// tag). Runs of joiners and other tag text still become spaces. The picker keeps the same ones:
+// emoji), and the England, Scotland and Wales flags, the only standard emoji tag sequences. Runs
+// of joiners and other tag text still become spaces. A kept joiner can still hide a bit between
+// two letters, but it cannot reorder text. The picker keeps the same ones:
 // apps/controller/src/console/agents/repositories.mjs:descriptionText.
 const hiddenCharacter =
-  /((?<=[\p{L}\p{M}\p{S}])[\u200c\u200d](?=[\p{L}\p{M}\p{S}])|\u{1f3f4}[\u{e0061}-\u{e007a}]{2}[\u{e0030}-\u{e0039}\u{e0061}-\u{e007a}]{1,4}\u{e007f})|[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+  /((?<=[\p{L}\p{M}\p{S}])[\u200c\u200d](?=[\p{L}\p{M}\p{S}])|\u{1f3f4}\u{e0067}\u{e0062}(?:\u{e0065}\u{e006e}\u{e0067}|\u{e0073}\u{e0063}\u{e0074}|\u{e0077}\u{e006c}\u{e0073})\u{e007f})|[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
 
 function visibleDescription(text: string): string {
   return text.replace(hiddenCharacter, (character, kept?: string) => kept ?? " ").trim();

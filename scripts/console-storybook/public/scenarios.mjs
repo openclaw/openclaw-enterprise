@@ -2056,7 +2056,7 @@ export const scenarios = {
       },
     ],
     description:
-      "Bidi controls, zero-width and other invisible characters in a description show as escapes, so text cannot display reversed or hidden. Joiners inside words and emoji, and subdivision flags, display intact. Other scripts display as written.",
+      "Bidi controls, zero-width and other invisible characters in a description show as escapes, so text cannot display reversed or hidden. Joiners inside words and emoji, and the England, Scotland and Wales flags, display intact. Other scripts display as written.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
