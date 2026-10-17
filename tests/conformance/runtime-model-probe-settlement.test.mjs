@@ -619,8 +619,11 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
         "openai-organization": HOSTILE_KEY,
         ...(breakOff && { "content-length": String(answerBody.length + 100) }),
       });
-      if (breakOff) response.write(answerBody, () => response.socket.destroy());
-      else response.end(answerBody);
+      if (breakOff) {
+        response.write(answerBody, () => response.socket.destroy());
+      } else {
+        response.end(answerBody);
+      }
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
