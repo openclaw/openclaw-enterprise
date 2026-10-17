@@ -1,16 +1,15 @@
 ---
 created: 2026-09-21
-updated: 2026-10-15
-last_updated_session: authoring-run/23d60562-6525-4593-ad0c-29ce57483c38
+updated: 2026-10-16
+last_updated_session: authoring-run/0bac9d5a-6aa7-4151-87e0-54e6a380e79c
 ---
 
 # Agent Presets flow
 
 ## Overview
 
-The Console renders a Namespace Preset and saves an independent Configuration
-and Agent through existing APIs. This flow stops at the draft; deployment follows
-[revision admission](configuration-driver/persistence-and-revisions.md).
+Namespace Presets seed Agent drafts; [revision admission](configuration-driver/persistence-and-revisions.md)
+owns deployment.
 
 ## Entry Points
 
@@ -70,8 +69,8 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 
 `apps/controller/src/composition/installation-presets.ts:loadInstallationPresets`
 
-The loader validates the opt-in boolean and file list, reads bundled JSON, and
-resolves explicit paths beside the startup YAML. It validates names/templates and rejects missing,
+The loader validates options and bundled JSON; explicit paths resolve beside
+startup YAML. It validates names/templates and rejects missing,
 malformed, invalid, or duplicate-name files; a file named like a bundled default
 replaces it, and API composition warns `presets.bundled-default-shadowed`. API and worker share the startup
 snapshot and source path (files are not watched), but only the API applies
@@ -149,13 +148,13 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists readable Preset summaries, requiring Namespace read, then reads the selection
-once. **Start with default Preset** reads the listed `default-codex` resource.
-Variable-free templates apply immediately; customized variables keep the chooser
-and its shortcut origin. Missing defaults or failed reads do not open a hardcoded
-starter; other readable Presets remain selectable. **Start without Preset** opens
-the form without a Preset read, not as a fallback for a denied selection. Normal
-creation authorization applies.
+lists readable summaries with Namespace read, then reads the selection
+once. Quick-start prefers `default-codex`, otherwise the first readable Preset in
+case-insensitive locale order, with exact name order breaking ties. Custom
+starters appear by name. Variable-free templates apply immediately; variables
+retain the chooser and shortcut origin. Empty or failed lists and reads cannot
+apply hidden templates. **Start without Preset** opens the form without a Preset
+read; it does not replace a denied selection. Creation authorization applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -286,9 +285,17 @@ or an immutable admitted revision.
 
 ## Changelog
 
+- 2026-10-16 13:00: Integrate upstream Console changes while retaining readable starter selection. (authoring-run/0bac9d5a-6aa7-4151-87e0-54e6a380e79c - ba98603943c22e5fb4e40b03b07b95ade9b29db8)
+
 - 2026-10-15 18:50: Allow search-only Slack Secret selection during Agent creation. (authoring-run/23d60562-6525-4593-ad0c-29ce57483c38 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 
+- 2026-10-15 13:26: Name the selected custom starter and retain upstream Preset summaries. (authoring-run/4863651f-24de-427e-ac6f-152c65948af3 - 775a7cff0890d646ed433df45b9233ea58b553e6)
+
 - 2026-10-14: The Preset list returns summaries. (fix-1323-lists)
+
+- 2026-10-12 15:28: Integrate upstream b195e54e9 while retaining the custom profile and readable starter contracts. (authoring-run/df6d4023-3aec-45e7-aa7d-8eca68711247 - 85561c4fc4666805b187d0a554c872938eb9b048)
+
+- 2026-10-12 14:04: Document readable starter selection and exact-name ties. (authoring-run/41b6a9fe-f98e-419b-904b-6f24815b6dd2 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-10 07:02: Integrate main without changing the model-selection repair; retain both flow histories. (authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838 - 500ca364793d117e7996ef568ac144df877e5b8b)
 

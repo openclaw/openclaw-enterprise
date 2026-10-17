@@ -113,15 +113,17 @@ Compare **New version queued**, **Deployment waiting for runtime**, and
 **Deployment retry after dependency failure**; switch versions and check
 **Since**.
 
+**Custom Preset quick-start** names the starter; check variables and draft discard.
+**Preset name tie-break** checks uppercase selection. Compare **No Presets**,
+**Loading default Preset**, and **Default Preset access denied**.
+
 **First deployment creates credentials** accepts **Deploy new version** without
 a separate credential action. Its initial state is not a Stop request; OCC
 generation is simulated.
 
-Choose a Preset, fill its variables, review seeded workspace files, and create
-a Codex-harness Agent: the Console submits inline Configuration and Secret
-references, then follows simulated provisioning. Another flow uses the default
-Preset with OpenAI Codex, a new or existing model Secret, and a model, editing
-IDENTITY.md and clearing USER.md first.
+Create a Codex-harness Agent from a Preset, reviewing variables and workspace
+files before simulated provisioning. The default-Preset flow covers model Secret
+selection, IDENTITY.md edits and clearing USER.md.
 OpenClaw and unsupported-runtime stories keep the draft workflow: provision
 credentials and deploy from Agent detail.
 
@@ -149,7 +151,7 @@ selects it. A custom ID outside the list requires a new selection. After a provi
 change through Configuration JSON, the list must match and drop the old
 provider's model.
 
-The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
+The fixture supplies a Namespace, Preset, and model Secret. Namespace
 provisioning, Preset CRUD, and service-account issuance have no dedicated console
 pages. One Secret picker selects or creates new version model Secrets and Slack
 tokens (Credentials tab and Channels drawer). See

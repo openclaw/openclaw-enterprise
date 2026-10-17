@@ -1009,6 +1009,33 @@ export const scenarios = {
     path: create,
     description: "Choose a Preset or start with standard defaults.",
   },
+  createCustomPresetStarter: {
+    group: "Pages/Create Agent",
+    name: "Custom Preset quick-start",
+    path: create,
+    customPresetsOnly: true,
+    description:
+      "Without a readable default-codex, quick-start uses the first readable Preset by name and retains its variable chooser.",
+    steps: [
+      "Select Start with Research assistant and confirm Research assistant is selected.",
+      "Enter an Agent name, keep the prefilled model, and select Use Preset.",
+      "Inspect the editable Agent draft. Leave and return to confirm this shortcut draft is discarded.",
+    ],
+    gap: "Simulated UI proof; exact Preset authorization and draft creation have separate browser integration coverage.",
+  },
+  createPresetNameTie: {
+    group: "Pages/Create Agent",
+    name: "Preset name tie-break",
+    path: create,
+    customPresetsOnly: true,
+    presetNameTie: true,
+    description: "Case-insensitive name ties use exact names, independently of API response order.",
+    steps: [
+      "Select Start with Research assistant and confirm Research assistant is chosen ahead of research assistant.",
+      "Enter an Agent name, select Use Preset and inspect the editable draft.",
+    ],
+    gap: "Simulated UI proof; actor-readable filtering and actual Agent creation are covered by the Console browser suite.",
+  },
   createForm: {
     group: "Pages/Create Agent",
     name: "OpenAI with Codex harness",

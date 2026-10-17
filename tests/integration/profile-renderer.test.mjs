@@ -135,6 +135,7 @@ function render(
   input,
   directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`)),
   root = repository,
+  profileFile,
   dnsServer,
 ) {
   const inputPath = join(directory, "input.json");
@@ -155,6 +156,7 @@ function render(
         "scripts/render-installation-profile.mjs",
         "--profile",
         profile,
+        ...(profileFile === undefined ? [] : ["--profile-file", profileFile]),
         "--input",
         inputPath,
         "--out-dir",
@@ -357,7 +359,113 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
     /channels:\n\s+proxyUrl: http:\/\/openclaw-enterprise-slack-proxy\.openclaw-system\.svc:3128/,
   );
   assert.match(codex.preflight.prerequisites.join("\n"), /Slack consumers remain inactive/);
-  assert.match(codex.preflight.warnings.join("\n"), /existing codex_pat token/);
+  assert.match(codex.preflight.prerequisites.join("\n"), /Hosted plugin discovery.*PAT/);
+  assert.match(codex.preflight.prerequisites.join("\n"), /runtime credentials.*Agent/);
+});
+
+test("an explicit profile selects the startup PluginDriver and its credential diagnostics", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "oce-profile-selection-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const profileFile = join(directory, "selected-profile.json");
+  for (const [name, pluginId, configuration] of [
+    ["openclaw", "occ-plugin", undefined],
+    ["codex", "codex-plugin", undefined],
+    ["codex", "codex-plugin", { catalogSource: "openai-curated" }],
+    ["openclaw", "codex-plugin", { catalogSource: "hosted" }],
+    ["openclaw", "codex-plugin", { catalogSource: "openai-curated" }],
+  ]) {
+    const profile = JSON.parse(
+      readFileSync(join(repository, `deploy/profiles/${name}.json`), "utf8"),
+    );
+    profile.installation.drivers.plugin.id = pluginId;
+    if (configuration === undefined) {
+      delete profile.installation.drivers.plugin.configuration;
+    } else {
+      profile.installation.drivers.plugin.configuration = configuration;
+    }
+    writeFileSync(profileFile, JSON.stringify(profile));
+
+    // Profile families select runtime settings; the selected PluginDriver independently
+    // determines catalog credentials, including an OpenClaw family with hosted Codex discovery.
+    const output = render(
+      name,
+      name === "codex" ? codexInput() : baseInput(),
+      directory,
+      repository,
+      profileFile,
+    );
+    const runtime = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: join(directory, "installation.yaml") },
+    });
+    assert.equal(runtime.installation.drivers.plugin.id, pluginId);
+    assert.deepEqual(runtime.installation.drivers.plugin.configuration, configuration ?? {});
+    const diagnostics = [...output.preflight.prerequisites, ...output.preflight.warnings].join(
+      "\n",
+    );
+    if (name === "codex") {
+      assert.match(diagnostics, /runtime credentials.*Agent/);
+      assert.match(diagnostics, /seccomp profile installed/);
+    } else {
+      assert.doesNotMatch(diagnostics, /runtime credentials.*Agent|seccomp profile installed/);
+    }
+    if (pluginId === "codex-plugin" && configuration?.catalogSource !== "openai-curated") {
+      assert.match(diagnostics, /Hosted plugin discovery.*PAT/);
+    } else {
+      assert.doesNotMatch(diagnostics, /Hosted plugin discovery|codex_pat/);
+    }
+  }
+});
+
+test("an invalid explicit profile revokes prior outputs without falling back to the bundled profile", (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "oce-profile-selection-invalid-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const profileFile = join(directory, "selected-profile.json");
+  for (const [contents, expected] of [
+    [undefined, /unavailable or invalid JSON/],
+    ["{", /unavailable or invalid JSON/],
+    [JSON.stringify({ name: "openclaw" }), /must declare matching name/],
+    [JSON.stringify({ name: "codex" }), /profile.installation must be an object/],
+    [JSON.stringify([]), /must declare matching name/],
+    [
+      JSON.stringify({
+        ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
+        installation: {
+          drivers: { plugin: { id: "codex-plugin", configuration: [] } },
+        },
+      }),
+      /profile.installation.drivers.plugin.configuration must be an object/,
+    ],
+    [
+      JSON.stringify({
+        ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
+        installation: { drivers: { plugin: { id: "uninstalled-plugin" } } },
+      }),
+      /must select occ-plugin or codex-plugin/,
+    ],
+    [
+      JSON.stringify({
+        ...JSON.parse(readFileSync(join(repository, "deploy/profiles/codex.json"), "utf8")),
+        installation: {
+          drivers: { plugin: { id: "codex-plugin" } },
+          presets: { includeDefaults: false },
+        },
+      }),
+      /profile.installation.presets is not supported/,
+    ],
+  ]) {
+    render("codex", codexInput(), directory);
+    if (contents !== undefined) {
+      writeFileSync(profileFile, contents);
+    }
+    const error = renderError(() =>
+      render("codex", codexInput(), directory, repository, profileFile),
+    );
+    assert.match(error.profileRendererOutput, expected);
+    for (const name of ["values.yaml", "installation.yaml", "preflight.json"]) {
+      assert.equal(existsSync(join(directory, name)), false);
+    }
+  }
 });
 
 // Tenant runtimes may burst to four cores; 100m requests keep the scheduling
@@ -563,7 +671,7 @@ test(
       input.repository = repositoryConfiguration(["140.82.112.0/20", "192.30.252.0/22"]);
       const directory = mkdtempSync(join(tmpdir(), `oce-profile-egress-${profile}-`));
       t.after(() => rmSync(directory, { recursive: true, force: true }));
-      const output = render(profile, input, directory, repository, dns.server);
+      const output = render(profile, input, directory, repository, undefined, dns.server);
       const manifests = helmTemplate(output);
       assert.match(manifests, /repository-credentials/);
       assert.match(manifests, /cidr: "140\.82\.112\.0\/20"/);
@@ -591,6 +699,7 @@ test(
       codexInput({ codex: { modelDiscoveryCidrs: [] } }),
       dns.directory,
       repository,
+      undefined,
       dns.server,
     );
     assert.deepEqual(loadYaml(external.values).api.modelDiscoveryCidrs, []);
@@ -605,6 +714,7 @@ test(
       codexInput({ codex: { modelDiscoveryCidrs: undefined } }),
       dns.directory,
       repository,
+      undefined,
       dns.server,
     );
     const cidrs = ["192.0.2.40/32", "198.51.100.20/32"];
@@ -643,7 +753,7 @@ test("hosted discovery DNS failures revoke stale deployment artifacts", async (t
   const dns = await startDnsFixture(t, { "auth.openai.com": ["192.0.2.40"] });
   // Explicit policy input stays usable with an unavailable hosted DNS name.
   assert.equal(
-    render("codex", codexInput(), dns.directory, repository, dns.server).preflight.ok,
+    render("codex", codexInput(), dns.directory, repository, undefined, dns.server).preflight.ok,
     true,
   );
   const error = renderError(() =>
@@ -652,6 +762,7 @@ test("hosted discovery DNS failures revoke stale deployment artifacts", async (t
       codexInput({ codex: { modelDiscoveryCidrs: undefined } }),
       dns.directory,
       repository,
+      undefined,
       dns.server,
     ),
   );
@@ -698,25 +809,47 @@ test(
 );
 
 test(
-  "profile preset files reach startup YAML and roll both controllers",
+  "profile preset selection reaches startup and rolls both controllers",
   { skip: helmSkip },
-  () => {
+  async (t) => {
     const original = render("codex", codexInput());
-    const changed = render(
-      "codex",
-      codexInput({ presets: { files: ["/app/deploy/presets/swe-preset.json"] } }),
-    );
-    assert.match(
-      changed.installation,
-      /presets:\n {2}includeDefaults: true\n {2}files:\n {4}- \/app\/deploy\/presets\/swe-preset.json/,
-    );
+    t.after(() => rmSync(original.directory, { recursive: true, force: true }));
+    const originalRuntime = await loadInstallationConfiguration({
+      mode: "production",
+      environment: { OCC_CONFIG_PATH: join(original.directory, "installation.yaml") },
+    });
+    assert.deepEqual(originalRuntime.defaultPresets.map((preset) => preset.name).sort(), [
+      "Standard Codex",
+      "Standard OpenClaw",
+      "default-codex",
+    ]);
     const originalManifests = helmTemplate(original);
-    const changedManifests = helmTemplate(changed);
-    for (const component of ["api", "worker"]) {
-      assert.notEqual(
-        deploymentChecksum(originalManifests, component),
-        deploymentChecksum(changedManifests, component),
-      );
+    const customPresetPath = fileURLToPath(
+      new URL("../../deploy/presets/swe-preset.json", import.meta.url),
+    );
+    for (const [presets, expectedNames] of [
+      [
+        { files: [customPresetPath] },
+        ["SWE Agent", "Standard Codex", "Standard OpenClaw", "default-codex"],
+      ],
+      [{ includeDefaults: false, files: [customPresetPath] }, ["SWE Agent"]],
+      [{ includeDefaults: false }, []],
+    ]) {
+      // The renderer's choice must control the catalog loaded by both controller processes.
+      const changed = render("codex", codexInput({ presets }));
+      t.after(() => rmSync(changed.directory, { recursive: true, force: true }));
+      const runtime = await loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: join(changed.directory, "installation.yaml") },
+      });
+      assert.deepEqual(runtime.defaultPresets.map((preset) => preset.name).sort(), expectedNames);
+      const changedManifests = helmTemplate(changed);
+      for (const component of ["api", "worker"]) {
+        assert.notEqual(
+          deploymentChecksum(originalManifests, component),
+          deploymentChecksum(changedManifests, component),
+        );
+      }
     }
   },
 );
@@ -1289,6 +1422,7 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     input: codexInput,
     cases: [
       ["presets.files", ["presets/custom.json", [""], [42]], /presets\.files/],
+      ["presets.includeDefaults", ["false", null, 0], /presets\.includeDefaults must be a boolean/],
       ["presets.unknown", [true], /presets\.unknown/],
     ],
   },
@@ -1492,7 +1626,11 @@ test("preflight rejects inputs that Helm would reject", () => {
     "https://console.oce.example.internal#",
     "https://console.oce.example.internal/#",
     " https://console.oce.example.internal? ",
-    "https://admin@console.oce.example.internal",
+    syntheticCredentialUrl({
+      username: "admin",
+      password: "",
+      host: "console.oce.example.internal",
+    }),
     "ftp://console.oce.example.internal",
     "console.oce.example.internal",
     // Stricter than the API, like the chart: URL parsing repairs these into an origin.
@@ -2738,7 +2876,12 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ],
     ["https://@models.example.com/v1", "must not contain user info or an @ before the host."],
     [
-      "https://user:pass@models.example.com/v1",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "pass",
+        host: "models.example.com",
+        pathname: "/v1",
+      }),
       "must not contain user info or an @ before the host.",
     ],
     ["http://models.example.com/v1", general],

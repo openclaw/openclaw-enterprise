@@ -583,12 +583,19 @@ export function installFixture(scenario, evidence) {
   }
   const presets = [
     preset,
-    {
-      ...structuredClone(defaultCodexPreset),
-      id: "pre_default_codex",
-      namespaceId,
-    },
+    ...(scenario.customPresetsOnly
+      ? []
+      : [{ ...structuredClone(defaultCodexPreset), id: "pre_default_codex", namespaceId }]),
   ];
+  if (scenario.presetNameTie) {
+    // Lowercase arrives first; the real Console must break the locale tie by exact name.
+    preset.name = "research assistant";
+    presets.push({
+      ...structuredClone(preset),
+      id: "pre_00000000-0000-4000-8000-000000000011",
+      name: "Research assistant",
+    });
+  }
   if (scenario.swePreset) {
     for (const [name, definition] of [
       ["standard-codex", standardCodexPreset],

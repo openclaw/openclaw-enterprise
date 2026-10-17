@@ -81,6 +81,29 @@ live gateway. Four optional Configuration cases also require
 Broad `pnpm test`, `pnpm test:integration`, and `pnpm test:postgres` include
 revision-worker tests and therefore require prepared ownership.
 
+## Preset preservation across controller upgrades
+
+Run `tests/integration/postgres-preset-upgrade.test.mjs` with an empty, migrated
+application-role `OCC_TEST_DATABASE_URL` or `postgres-platform` CI.
+Authenticated HTTP saves edited/custom Presets and Configuration. Restarts with
+stock inputs and disabled seeding must preserve IDs, values and generations;
+new Namespaces receive no stock Presets when seeding is disabled.
+
+CI proves current-version restarts. Cross-revision proof requires a prepared
+before checkout and a disposable database migrated by that revision. Set `OCC_TEST_PRESET_BEFORE_ROOT` to its absolute path and
+`OCC_TEST_PRESET_MIGRATION_DATABASE_URL` to that database's separate migrator-role
+URL. Run from the candidate:
+
+```sh
+node --test tests/integration/postgres-preset-upgrade.test.mjs
+```
+
+The test stops the before controller, migrates, and starts the candidate twice.
+Scope credentials to this invocation; remove its owned database/server. Missing application
+configuration skips; missing cross-revision migrator fails.
+Compute/Secret Drivers are fixtures: this proves saved-state preservation,
+not images, Kubernetes or model execution.
+
 ## GitHub human sign-in
 
 With a fresh migrated `OCC_TEST_DATABASE_URL` and the

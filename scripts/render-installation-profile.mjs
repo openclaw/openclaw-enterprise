@@ -108,7 +108,7 @@ function fail(message) {
 
 function usage() {
   return `Usage: node scripts/render-installation-profile.mjs --profile openclaw|codex \\
-  --input <site-inputs.json> --out-dir <rendered-directory>
+  [--profile-file <trusted-profile.json>] --input <site-inputs.json> --out-dir <rendered-directory>
 
 The renderer writes values.yaml, installation.yaml, and preflight.json. Missing
 or invalid required inputs write preflight.json and exit nonzero.
@@ -128,6 +128,8 @@ function parseArgs(argv) {
     };
     if (arg === "--profile") {
       parsed.profile = next();
+    } else if (arg === "--profile-file") {
+      parsed.profileFile = next();
     } else if (arg === "--input") {
       parsed.input = next();
     } else if (arg === "--out-dir") {
@@ -175,22 +177,51 @@ async function readJson(path, label) {
   }
 }
 
-async function readProfile(name) {
+async function readProfile(name, profileFile) {
   const diagnostics = { errors: [] };
   const profile = record(
-    await readJson(resolve(profilesDir, `${name}.json`), `profile ${name}`),
+    await readJson(
+      profileFile === undefined ? resolve(profilesDir, `${name}.json`) : resolve(profileFile),
+      `profile ${name}`,
+    ),
     `profile ${name}`,
     diagnostics,
   );
-  if (diagnostics.errors.length > 0) {
-    fail(diagnostics.errors.join("\n"));
-  }
   if (profile.name !== name) {
     fail(`profile ${name} must declare matching name.`);
   }
-  if (profile.name === "default") {
-    fail("default is not an installation profile.");
+  closed(
+    profile,
+    `profile ${name}`,
+    ["name", "description", "recommendedPreset", "agentHarness", "pluginSelection", "installation"],
+    diagnostics,
+  );
+  for (const key of ["description", "recommendedPreset", "agentHarness", "pluginSelection"]) {
+    asString(profile, [`profile ${name}`, key], diagnostics);
   }
+  const installation = record(profile.installation, "profile.installation", diagnostics);
+  closed(installation, "profile.installation", ["drivers"], diagnostics);
+  const drivers = record(installation.drivers, "profile.installation.drivers", diagnostics);
+  closed(drivers, "profile.installation.drivers", ["plugin"], diagnostics);
+  const plugin = record(drivers.plugin, "profile.installation.drivers.plugin", diagnostics);
+  closed(plugin, "profile.installation.drivers.plugin", ["id", "configuration"], diagnostics);
+  if (plugin.id !== "occ-plugin" && plugin.id !== "codex-plugin") {
+    diagnostics.errors.push(
+      "profile.installation.drivers.plugin.id must select occ-plugin or codex-plugin.",
+    );
+  }
+  if (diagnostics.errors.length > 0) {
+    fail(diagnostics.errors.join("\n"));
+  }
+  if (plugin.configuration === undefined) {
+    plugin.configuration = {};
+  } else {
+    record(plugin.configuration, "profile.installation.drivers.plugin.configuration", diagnostics);
+  }
+  if (diagnostics.errors.length > 0) {
+    fail(diagnostics.errors.join("\n"));
+  }
+
   return profile;
 }
 
@@ -1120,7 +1151,7 @@ function buildInput(rawInput, diagnostics) {
     diagnostics,
   );
   const presets = section(input, "presets", diagnostics, false);
-  closed(presets, "presets", ["files"], diagnostics);
+  closed(presets, "presets", ["includeDefaults", "files"], diagnostics);
   closed(
     controlPlane,
     "controlPlane",
@@ -1785,7 +1816,7 @@ function buildRendered(profile, parsed, diagnostics) {
     ...(observabilityUrl === undefined ? {} : { observability: { url: observabilityUrl } }),
     backend: [],
     presets: {
-      includeDefaults: true,
+      includeDefaults: asBoolean(presets, ["presets", "includeDefaults"], diagnostics, true),
       ...(presets.files === undefined
         ? {}
         : { files: stringArray(presets, ["presets", "files"], diagnostics, { nonempty: false }) }),
@@ -2152,16 +2183,20 @@ function buildRendered(profile, parsed, diagnostics) {
       );
     }
   }
+  if (
+    profile.installation.drivers.plugin.id === "codex-plugin" &&
+    (profile.installation.drivers.plugin.configuration?.catalogSource ?? "hosted") === "hosted"
+  ) {
+    diagnostics.prerequisites.push(
+      "Hosted plugin discovery requires a PAT supplied later through a Namespace Secret or the Console; the renderer does not create or verify that credential.",
+    );
+  }
   if (profile.name === "codex") {
     diagnostics.prerequisites.push(
       "Configured Codex seccomp profile installed and verified on every node selected by runtime.nodeSelector.",
-      "Hosted discovery and codex_pat runtime tokens stored later as Namespace Secrets or entered in the Console; the renderer does not create or verify those credentials.",
+      "Codex runtime credentials configured per Agent; the renderer does not create or verify model credentials.",
     );
-    if (Object.keys(managedServiceAccounts).length === 0) {
-      diagnostics.warnings.push(
-        "Managed ChatGPT service-account issuance is not configured; Codex Agents must use an existing codex_pat token until backend provisioning is supplied and verified.",
-      );
-    } else {
+    if (Object.keys(managedServiceAccounts).length > 0) {
       diagnostics.prerequisites.push(
         "ChatGPT service-account app connections configured outside OCE before Agents select a managed ServiceAccount as their codex_pat source.",
       );
@@ -2276,7 +2311,7 @@ const output = {
 await Promise.all(Object.values(output).map((path) => rm(path, { force: true })));
 const diagnostics = { errors: [], warnings: [], prerequisites: [], nextSteps: [] };
 const [profile, rawInput] = await Promise.all([
-  readProfile(args.profile),
+  readProfile(args.profile, args.profileFile),
   readJson(resolve(args.input), "input"),
 ]);
 const parsed = buildInput(rawInput, diagnostics);

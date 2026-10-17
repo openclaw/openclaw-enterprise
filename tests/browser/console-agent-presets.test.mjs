@@ -2942,31 +2942,104 @@ test("denied Preset reads do not automatically start an Agent form", async (t) =
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
 
-test("The console requires a readable installed default for quick-start and still allows other Presets", async (t) => {
-  const fixture = await createConsoleAppFixture(t, {
-    defaultPresets: [],
-    filesystemConfiguration: true,
-  });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("No installed starter", { ready: true });
-  const alternative = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
-    body: { name: "Custom starter", template: { agent: { name: "Custom Agent" } } },
-  });
-  assert.equal(alternative.status, 201);
-  const { page } = await newPage(t, fixture);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page
-    .getByText("Choose a Preset. default-codex is not available to you in this Namespace.", {
+test("The console quick-start prefers the readable installed default, then the first readable Preset by name", async (t) => {
+  for (const installedDefault of ["readable", "absent", "denied"]) {
+    const fixture = await createConsoleAppFixture(t, {
+      defaultPresets: installedDefault === "absent" ? [] : [defaultCodexPreset],
+      filesystemConfiguration: true,
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Readable starters", { ready: true });
+    // Creation order differs from display order, and an installed default is not first by name.
+    for (const [name, agentName] of [
+      ["Zulu starter", "Zulu Agent"],
+      ["First tied starter", "Lowercase Alpha Agent"],
+      ["Second tied starter", "Alpha Agent"],
+    ]) {
+      const created = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+        body: { name, template: { agent: { name: agentName } } },
+      });
+      assert.equal(created.status, 201);
+    }
+    // OCC lists by generated ID, so use real updates to guarantee lowercase-first delivery.
+    // The shortcut must choose the uppercase name even when both names collate equally.
+    const seeded = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
+    const tied = seeded.data.filter((preset) => preset.name.endsWith("tied starter"));
+    assert.equal(tied.length, 2);
+    for (const [index, preset] of tied.entries()) {
+      const renamed = await fixture.request(
+        "PATCH",
+        `/namespaces/${namespace.id}/presets/${preset.id}`,
+        {
+          body: {
+            name: index === 0 ? "alpha starter" : "Alpha starter",
+            template: { agent: { name: index === 0 ? "Lowercase Alpha Agent" : "Alpha Agent" } },
+          },
+        },
+      );
+      assert.equal(renamed.status, 200);
+    }
+    if (installedDefault === "denied") {
+      const presets = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
+      const starter = presets.data.find((preset) => preset.name === "default-codex");
+      // Exact-resource denial filters the stock default before the Console chooses a starter.
+      fixture.policy.restrictions.push({
+        id: "deny-unreadable-default",
+        namespaceId: namespace.id,
+        resourceKind: "preset",
+        resourceId: starter.id,
+        action: "read",
+        effect: "deny",
+      });
+    }
+    const { page } = await newPage(t, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    const starterName = installedDefault === "readable" ? "the default Preset" : "Alpha starter";
+    await page
+      .getByText(`Choose a Preset or start with ${starterName}.`, { exact: true })
+      .waitFor();
+    const shortcut = page.getByRole("button", {
+      name:
+        installedDefault === "readable" ? "Start with default Preset" : "Start with Alpha starter",
       exact: true,
-    })
-    .waitFor();
-  assert.equal(
-    await page.getByRole("button", { name: "Start with default Preset" }).isDisabled(),
-    true,
-  );
-  await page.getByLabel("Preset template", { exact: true }).selectOption(alternative.data.id);
-  await page.getByRole("button", { name: "Use Preset" }).click();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Custom Agent");
+    });
+    assert.equal(await shortcut.isEnabled(), true);
+    await shortcut.click();
+    assert.equal(
+      await page.getByLabel("Agent name", { exact: true }).inputValue(),
+      installedDefault === "readable" ? "" : "Alpha Agent",
+    );
+    const listed = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
+    const expected = listed.data.find(
+      (preset) =>
+        preset.name === (installedDefault === "readable" ? "default-codex" : "Alpha starter"),
+    );
+    assert.deepEqual(
+      requests
+        .filter(
+          (request) =>
+            request.method === "GET" &&
+            request.path.startsWith(`/namespaces/${namespace.id}/presets/`),
+        )
+        .map((request) => request.path),
+      [`/namespaces/${namespace.id}/presets/${expected.id}`],
+    );
+    if (installedDefault === "absent") {
+      // The custom-only shortcut must reach the regular Agent creation API, not just open a form.
+      await routeInstallationWithoutProvisioning(page, fixture);
+      await enterManualModel(page, "synthetic-custom-preset-key", "gpt-4.1");
+      const saved = page.waitForResponse(
+        (response) =>
+          response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+          response.request().method() === "POST",
+      );
+      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+      assert.equal((await saved).status(), 201);
+      const agents = await fixture.request("GET", `/namespaces/${namespace.id}/agents`);
+      assert.equal(agents.data[0].name, "Alpha Agent");
+    }
+  }
 });
 
 test("Preset with a managed PAT account creates a draft without a Secret grant", async (t) => {
