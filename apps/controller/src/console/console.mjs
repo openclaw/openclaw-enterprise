@@ -1049,7 +1049,8 @@ async function loadPage({
   // On a navigation, focus that was in the held page waits on its heading until the destination
   // takes it: the Agent's heading for an Agent page loading behind it (the new version an
   // admitted deployment opens, say; finding 1626), or the Agent's link on a return to the Agents
-  // list (finding 1636). A refocus recheck leaves focus alone.
+  // list (finding 1636). A refocus recheck restores the reader's place only if we reuse the view.
+  const focusedBeforeRecheck = resumingView ? document.activeElement : null;
   let shell =
     knownPrivateState && !openingAgent
       ? holdShownView(current, { busyCue: !resumingView, keepFocus: !resumingView })
@@ -1493,6 +1494,9 @@ async function loadPage({
     if (unchanged) {
       stopLoadingTimer();
       forgetRetainedView(taken);
+      // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
+      // replacing the shell briefly leaves it on the body again.
+      const focusToRestore = document.activeElement === document.body ? focusedBeforeRecheck : null;
       shell = mountRetainedView(current, retainedView);
       // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
       if (!resumingView) {
@@ -1508,6 +1512,14 @@ async function loadPage({
       navigateAgentTab = retainedState.tabNavigation;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
+      if (
+        focusToRestore &&
+        shell.view.contains(focusToRestore) &&
+        document.hasFocus() &&
+        document.activeElement === document.body
+      ) {
+        focusToRestore.focus({ preventScroll: true });
+      }
       return;
     }
     // The destination rebuilds: a retained view that did not match is stale from here on.

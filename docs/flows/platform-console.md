@@ -308,8 +308,9 @@ opened from the list focuses its heading when the title renders. Tabs and
 focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events. Agent detail
 rechecks access in place, preserving controls, input, and saves; failures clear it.
-Other pages revalidate before reuse, a shown 403 or 404 included; forms defer refocus. Draft save baselines and
-Namespace scopes stay separate.
+Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
+Returning to the tab restores focus after the unchanged view is admitted, if the control is still
+present and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
 
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state. `pagehide` clears
@@ -374,9 +375,9 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-17 10:36: Restore the reader’s focus when a tab recheck reuses the same view.
 - 2026-10-17 08:32: Show the rechecked Agents list before refreshing visible deployment cells. (fix-1644 - c29af02c98)
 - 2026-10-16 22:40: Hold loading 300 ms; open recovery links in view; reread status on a log refusal. (ui-jank-code-12)
 - 2026-10-16 18:30: Forget denials at logout, clear refused logs or Pod status, and show the page Back checked. (lows-1016o / log-refusal-followup - 1fb2170)
-- 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

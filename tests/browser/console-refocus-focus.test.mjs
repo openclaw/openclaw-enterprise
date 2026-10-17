@@ -19,9 +19,9 @@ const heldView = '.content [aria-live="polite"][inert]';
 const refocus = (page) => page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
 
 // A navigation that holds the shown page keeps focus on its heading (findings 1626, 1636), but a
-// refocus recheck does not: switching back to the tab must not send the reader to the heading
-// (#2712 review). The held page stays inert until the session check answers.
-test("a refocus recheck of the Agents list does not move focus to its heading", async (t) => {
+// refocus recheck does not: the list stays inert while we check access, then the reader can
+// continue from the same link. Moving to the navigation during the check is a new focus choice.
+test("refocusing the Agents list restores its focused link unless the reader moved on", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Refocus focus", { ready: true });
@@ -30,21 +30,28 @@ test("a refocus recheck of the Agents list does not move focus to its heading", 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const link = page.locator(settledView).getByRole("link", { name: "Refocus Agent" });
   await link.waitFor();
-  // The rows' deployment reads finish first, so the held check is the session's.
-  await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
-  await link.focus();
-  // The recheck can only move focus that is still in the list.
-  assert.equal(await link.evaluate((node) => node === globalThis.document.activeElement), true);
   const onHeading = () =>
     page.evaluate(
       () => globalThis.document.activeElement === globalThis.document.querySelector(".content h1"),
     );
-  const read = await holdRequests(t, page, "**/api/auth/session", { once: true });
-  await refocus(page);
-  await read.requested;
-  await page.locator(heldView).waitFor();
-  assert.equal(await onHeading(), false, "the held list leaves focus off its heading");
-  read.release();
-  await page.locator(settledView).waitFor();
-  assert.equal(await onHeading(), false, "the remounted list leaves focus off its heading");
+  const isFocused = (control) =>
+    control.evaluate((node) => node === globalThis.document.activeElement);
+  const navigation = page.getByRole("link", { name: "Namespaces", exact: true });
+  for (const expectedFocus of [link, navigation]) {
+    // Let the row reads finish so the held check is the session's, not a deployment's.
+    await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
+    await link.focus();
+    assert.equal(await isFocused(link), true);
+    const read = await holdRequests(t, page, "**/api/auth/session", { once: true });
+    await refocus(page);
+    await read.requested;
+    await page.locator(heldView).waitFor();
+    assert.equal(await onHeading(), false, "the held list leaves focus off its heading");
+    if (expectedFocus === navigation) {
+      await navigation.focus();
+    }
+    read.release();
+    await link.waitFor();
+    assert.equal(await isFocused(expectedFocus), true, "keep the reader's place after the check");
+  }
 });
