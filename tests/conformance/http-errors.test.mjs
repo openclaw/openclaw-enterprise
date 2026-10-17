@@ -1003,14 +1003,14 @@ const UNNAMED_503_CASES = [
 ];
 
 test("Create Agent and Deploy show the API's reason only for a named 503 refusal", () => {
-  const names = cases.map(([name]) => name);
-  for (const name of UNNAMED_503_CASES) {
-    assert.ok(names.includes(name), `missing case: ${name}`);
-  }
   const refusals = cases.filter(
     ([, , expected]) =>
       expected.status === 503 && PROVISIONING_REFUSAL_CODES.includes(expected.code),
   );
+  const refusalNames = refusals.map(([name]) => name);
+  for (const name of UNNAMED_503_CASES) {
+    assert.ok(refusalNames.includes(name), `no 503 refusal-code case: ${name}`);
+  }
   assert.ok(refusals.length > UNNAMED_503_CASES.length);
   for (const [name, error] of refusals) {
     const failure = requestFailure(error);

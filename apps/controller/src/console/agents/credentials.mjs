@@ -331,8 +331,8 @@ export function createChannelSecretsPanel({
     if (state.unsavedSecrets) {
       // A member who cannot read a saved Secret cannot pick it again: the picker offers the
       // unreadable binding only while the draft still holds it (finding 1649). A page reload
-      // drops unsaved choices for every reader.
-      return "Save the channel Secret choices before deploying, or reload the page to discard them.";
+      // drops unsaved choices for every reader, with the page's other unsaved edits.
+      return "Save the channel Secret choices before deploying, or reload the page to discard unsaved changes.";
     }
     return "Ready to deploy.";
   }

@@ -1051,7 +1051,7 @@ const SAVED_STATE_CONFLICT =
   "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.";
 // Deploy would deliver the saved bindings, not the refused choices shown (finding 1640).
 const UNSAVED_SECRETS_GATE =
-  "Save the channel Secret choices before deploying, or reload the page to discard them.";
+  "Save the channel Secret choices before deploying, or reload the page to discard unsaved changes.";
 const reservedSaveCases = [
   {
     name: "Channels",
@@ -1203,7 +1203,15 @@ test("the unsaved channel Secret gate names a way out for a member who cannot re
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
   const botPicker = page.getByLabel("Slack bot token", { exact: true });
+  // With the list loaded, the unreadable saved binding is offered only as "Bound Secret".
   assert.equal(await botPicker.inputValue(), "Bound Secret");
+  await botPicker.fill("");
+  await page.getByRole("option", { name: secretOptionLabel(secondBot), exact: true }).waitFor();
+  await page.getByRole("option", { name: "Bound Secret", exact: true }).waitFor();
+  assert.equal(
+    await page.getByRole("option", { name: secretOptionLabel(bot), exact: true }).count(),
+    0,
+  );
   await selectSecret(page, "Slack bot token", secondBot);
   await page.getByText(UNSAVED_SECRETS_GATE, { exact: true }).waitFor();
   assert.equal(await deploy.isDisabled(), true);
@@ -1211,6 +1219,10 @@ test("the unsaved channel Secret gate names a way out for a member who cannot re
   await botPicker.fill("");
   await page.getByRole("option", { name: secretOptionLabel(secondBot), exact: true }).waitFor();
   assert.equal(await page.getByRole("option", { name: /Bound Secret/ }).count(), 0);
+  assert.equal(
+    await page.getByRole("option", { name: secretOptionLabel(bot), exact: true }).count(),
+    0,
+  );
   await page.reload();
   await page.getByRole("heading", { name: "Unreadable Saved Secret" }).waitFor();
   await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
