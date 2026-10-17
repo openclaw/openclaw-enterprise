@@ -3,12 +3,14 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { once } from "node:events";
+import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
+import { createNativeGatewayPeopleAccess } from "../../apps/controller/src/gateway/people-client.ts";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -21,7 +23,7 @@ import {
   OpenClawController,
   ResourceConflictError,
 } from "../../packages/occ/src/index.ts";
-import { signInToControllerApp } from "../helpers/auth-session.mjs";
+import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 
@@ -55,7 +57,7 @@ function nativeAdminHarnessConfiguration(nativeOrigin) {
         trustedProxy: {
           userHeader: "x-occ-identity",
           allowUsers: ["occ-workspace-files"],
-          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+          deviceAutoApprove: { enabled: true, scopes: ["operator.read", "operator.write"] },
         },
         identityScopes: { "occ-workspace-files": ["operator.admin"] },
       },
@@ -92,7 +94,7 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
   };
 }
 
-async function startNativeHttpsUpstream(t) {
+async function startNativeHttpsUpstream(t, { profiles } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "openclaw-native-admin-upstream-"));
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const keyPath = join(directory, "tls.key");
@@ -121,6 +123,8 @@ async function startNativeHttpsUpstream(t) {
   assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
 
   const requests = [];
+  const gateway = { connections: 0, lists: 0 };
+  const connectionClosures = [];
   const cert = await readFile(certPath, "utf8");
   const server = createServer({ key: await readFile(keyPath), cert }, async (request, response) => {
     const chunks = [];
@@ -133,6 +137,11 @@ async function startNativeHttpsUpstream(t) {
       headers: { ...request.headers },
       body: Buffer.concat(chunks).toString("utf8"),
     });
+    if (profiles && request.url?.includes("/api/users/")) {
+      response.writeHead(200, { "content-type": "image/png" });
+      response.end(Buffer.from([137, 80, 78, 71]));
+      return;
+    }
     if (request.url?.includes("/upstream-unavailable")) {
       // OpenClaw's answer when a Gravatar fallback cannot be fetched.
       response.writeHead(502, { "content-type": "application/json" });
@@ -169,6 +178,70 @@ async function startNativeHttpsUpstream(t) {
     });
     response.end("native admin upstream\n");
   });
+  if (profiles) {
+    const controllerRequire = createRequire(
+      new URL("../../apps/controller/package.json", import.meta.url),
+    );
+    const socketRequire = createRequire(controllerRequire.resolve("@kubernetes/client-node"));
+    const { WebSocketServer } = socketRequire("ws");
+    const sockets = new WebSocketServer({ server });
+    t.after(() => sockets.close());
+    sockets.on("connection", (socket) => {
+      gateway.connections++;
+      connectionClosures.push(once(socket, "close"));
+      socket.send(
+        JSON.stringify({
+          type: "event",
+          event: "connect.challenge",
+          payload: { nonce: "people-fixture", ts: Date.now() },
+        }),
+      );
+      socket.on("message", async (raw) => {
+        const request = JSON.parse(raw.toString());
+        assert.ok(["connect", "users.list"].includes(request.method));
+        let listed;
+        if (request.method === "users.list") {
+          gateway.lists++;
+          try {
+            listed = typeof profiles === "function" ? await profiles() : profiles;
+          } catch {
+            socket.send(
+              JSON.stringify({
+                type: "res",
+                id: request.id,
+                ok: false,
+                error: { code: "UNAVAILABLE", message: "Profile read failed." },
+              }),
+            );
+            return;
+          }
+        }
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: request.id,
+            ok: true,
+            payload:
+              request.method === "users.list"
+                ? { profiles: listed }
+                : {
+                    type: "hello-ok",
+                    protocol: 4,
+                    server: { version: "fixture", connId: "people-fixture" },
+                    features: { methods: ["users.list"], events: [] },
+                    snapshot: {},
+                    auth: { role: "operator", scopes: ["operator.admin"] },
+                    policy: {
+                      maxPayload: 1048576,
+                      maxBufferedBytes: 1048576,
+                      tickIntervalMs: 30000,
+                    },
+                  },
+          }),
+        );
+      });
+    });
+  }
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   t.after(
@@ -180,7 +253,7 @@ async function startNativeHttpsUpstream(t) {
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
-  return { port: address.port, requests, cert };
+  return { port: address.port, requests, cert, gateway, connectionClosures };
 }
 
 async function createNativeAdminFixture(t, options = {}) {
@@ -1276,3 +1349,300 @@ for (const changedField of [undefined, "id", "implementation"]) {
     assert.deepEqual(persisted, revision, "selection changes must not rewrite the active revision");
   });
 }
+
+test("Gateway people report an unconfigured adapter without exposing it to unauthorized callers", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["gateway-reader"] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unconfigured Gateway people", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/gateway/people`;
+  const denied = await fixture.signIn(fixture.provisionedAccounts[0].credentials);
+  assert.equal((await fixture.request("GET", path, { session: denied })).status, 403);
+  const result = await fixture.request("GET", path);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data, { people: null });
+  assert.equal(result.headers.get("cache-control"), "no-store");
+  assert.equal((await fixture.request("GET", path + "/profile-alice/avatar")).status, 501);
+});
+
+test("Gateway people HTTP reads require exact Agent administration and omit adapter internals", async (t) => {
+  // The adapter is injected here to isolate HTTP authorization and serialization.
+  // Installed Gateway profile/role behavior is covered by the real-runtime proof.
+  let calls = 0;
+  const fixture = await createConsoleAppFixture(t, {
+    provisionedPeople: ["gateway-reader"],
+    gatewayPeopleAccess: {
+      async list() {
+        calls++;
+        return [
+          {
+            id: "profile-alice",
+            displayName: "Alice Team",
+            role: "member",
+            hasAvatar: false,
+            privateIdentity: "must-not-leak",
+          },
+        ];
+      },
+      async avatar() {
+        calls++;
+        return undefined;
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Gateway people", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/gateway/people`;
+  const denied = await fixture.signIn(fixture.provisionedAccounts[0].credentials);
+  assert.equal((await fixture.request("GET", path, { session: denied })).status, 403);
+  assert.equal(
+    (await fixture.request("GET", path + "/profile-alice/avatar", { session: denied })).status,
+    403,
+  );
+  assert.equal(calls, 0, "unauthorized callers must not contact the Gateway");
+  const people = await fixture.request("GET", path);
+  assert.equal(people.status, 200, JSON.stringify(people.body));
+  assert.deepEqual(people.data.people, [
+    { id: "profile-alice", displayName: "Alice Team", role: "member", hasAvatar: false },
+  ]);
+  assert.equal(people.headers.get("cache-control"), "no-store");
+  assert.equal((await fixture.request("GET", path + "/profile-alice/avatar")).status, 404);
+});
+
+test("Gateway avatars exclude service profiles and merged aliases before image fetch", async (t) => {
+  // Exercise the production adapter over TLS and WebSocket. The peer supplies
+  // profiles, while the adapter must decide which avatars OCC may expose.
+  const upstream = await startNativeHttpsUpstream(t, {
+    profiles: [
+      { id: "gateway-owner", hasAvatar: true },
+      { id: "workspace-profile", emails: ["occ-workspace-files"], hasAvatar: true },
+      { id: "merged-profile", mergedInto: "profile-alice", hasAvatar: true },
+      { id: "profile-alice", displayName: "Alice", hasAvatar: true },
+    ],
+  });
+  const originalCAs = getCACertificates("default");
+  setDefaultCACertificates([...originalCAs, upstream.cert]);
+  t.after(() => setDefaultCACertificates(originalCAs));
+  const access = createNativeGatewayPeopleAccess(async () => ({
+    url: `wss://localhost:${upstream.port}/`,
+    apiKey: nativeGatewayApiKey,
+  }));
+  const fixture = await createConsoleAppFixture(t, { gatewayPeopleAccess: access });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Filtered avatars", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const headers = authenticatedHeaders(await fixture.signIn());
+  const avatarUrl = (profileId) =>
+    `/namespaces/${namespace.id}/agents/${agent.id}/gateway/people/${profileId}/avatar`;
+  for (const profileId of [
+    "gateway-owner",
+    "workspace-profile",
+    "merged-profile",
+    "unknown-profile",
+  ]) {
+    const result = await fixture.rawRequest("GET", avatarUrl(profileId), { headers });
+    assert.equal(result.response.status, 404, profileId);
+  }
+  assert.equal(upstream.requests.length, 0, "excluded profiles never reach the avatar endpoint");
+  const avatar = await fixture.rawRequest("GET", avatarUrl("profile-alice"), { headers });
+  assert.equal(avatar.response.status, 200);
+  assert.equal(avatar.response.headers.get("content-type"), "image/png");
+  assert.equal(avatar.text.slice(1), "PNG");
+  assert.equal(upstream.requests.length, 1);
+  assert.equal(upstream.requests[0].url, "/api/users/profile-alice/avatar");
+});
+
+test("concurrent roster and avatar reads share a pending Gateway list but never a completed result", async (t) => {
+  const admitted = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  let profiles = ["alice", "bob", "carol"].map((name) => ({
+    id: `profile-${name}`,
+    displayName: name,
+    hasAvatar: true,
+  }));
+  let fail = false;
+  const upstream = await startNativeHttpsUpstream(t, {
+    profiles: async () => {
+      await release.promise;
+      if (fail) {
+        throw new Error("Read refused");
+      }
+      return profiles;
+    },
+  });
+  const originalCAs = getCACertificates("default");
+  setDefaultCACertificates([...originalCAs, upstream.cert]);
+  t.after(() => setDefaultCACertificates(originalCAs));
+  let resolutions = 0;
+  const access = createNativeGatewayPeopleAccess(async () => {
+    if (++resolutions === 4) {
+      admitted.resolve();
+    }
+    return { url: `wss://localhost:${upstream.port}/`, apiKey: nativeGatewayApiKey };
+  });
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: access,
+    provisionedPeople: ["roster-denied"],
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Concurrent avatars", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const headers = authenticatedHeaders(await fixture.signIn());
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/gateway/people`;
+  const deniedSession = await fixture.signIn(fixture.provisionedAccounts[0].credentials);
+  // Hold the wire response until all four real HTTP requests reach the adapter.
+  const reads = [path, ...profiles.map(({ id }) => `${path}/${id}/avatar`)].map((url) =>
+    fixture.rawRequest("GET", url, { headers }),
+  );
+  await admitted.promise;
+  // A pending result does not admit another human: authorization still precedes
+  // the adapter, for both the roster and avatar operations.
+  for (const url of [path, `${path}/profile-alice/avatar`]) {
+    assert.equal((await fixture.request("GET", url, { session: deniedSession })).status, 403);
+  }
+  assert.equal(resolutions, 4);
+  release.resolve();
+  const results = await Promise.all(reads);
+  assert.deepEqual(
+    results.map(({ response }) => response.status),
+    [200, 200, 200, 200],
+  );
+  assert.deepEqual(upstream.gateway, { connections: 1, lists: 1 });
+  assert.equal(upstream.requests.length, 3);
+  // A completed read cannot keep a profile eligible after its native merge.
+  profiles = profiles.map((profile) => ({ ...profile, mergedInto: "other-profile" }));
+  const denied = await fixture.rawRequest("GET", `${path}/profile-alice/avatar`, { headers });
+  assert.equal(denied.response.status, 404);
+  assert.equal(upstream.gateway.lists, 2);
+  assert.equal(upstream.requests.length, 3);
+  // A failed read is also evicted, allowing the next authorized read to recover.
+  fail = true;
+  const unavailable = await fixture.rawRequest("GET", path, { headers });
+  assert.equal(unavailable.response.status, 503);
+  fail = false;
+  profiles = [{ id: "profile-alice", displayName: "Alice", hasAvatar: true }];
+  const recovered = await fixture.rawRequest("GET", path, { headers });
+  assert.equal(recovered.response.status, 200);
+  assert.equal(JSON.parse(recovered.text).data.people[0].displayName, "Alice");
+  assert.equal(upstream.gateway.lists, 4);
+});
+
+test("shared Gateway list readers cancel independently and isolate revisions and rotated credentials", async (t) => {
+  const started = Array.from({ length: 6 }, () => Promise.withResolvers());
+  const gates = Array.from({ length: 6 }, () => Promise.withResolvers());
+  const profiles = [{ id: "profile-alice", displayName: "Alice", hasAvatar: true }];
+  t.after(() => gates.forEach((gate) => gate.resolve(profiles)));
+  let lists = 0;
+  const upstream = await startNativeHttpsUpstream(t, {
+    profiles: async () => {
+      const index = lists++;
+      started[index].resolve();
+      return gates[index].promise;
+    },
+  });
+  const originalCAs = getCACertificates("default");
+  setDefaultCACertificates([...originalCAs, upstream.cert]);
+  t.after(() => setDefaultCACertificates(originalCAs));
+  const joined = Promise.withResolvers();
+  const deadlineJoined = Promise.withResolvers();
+  let resolutions = 0;
+  let apiKey = nativeGatewayApiKey;
+  const access = createNativeGatewayPeopleAccess(async () => {
+    if (++resolutions === 2) {
+      joined.resolve();
+    }
+    if (resolutions === 5) {
+      deadlineJoined.resolve();
+    }
+    return { url: `wss://localhost:${upstream.port}/`, apiKey };
+  });
+  const fixture = await createConsoleAppFixture(t, { gatewayPeopleAccess: access });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("List cancellation", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const request = (controller, revision = active.revision) => ({
+    revision,
+    signal: controller.signal,
+    deadline: new Date(Date.now() + 5000),
+  });
+  // Cancel the original caller after another authorized reader has joined it.
+  const first = new AbortController();
+  const firstRead = access.list(request(first));
+  const firstDenied = assert.rejects(firstRead, { name: "AbortError" });
+  await started[0].promise;
+  const secondRead = access.list(request(new AbortController()));
+  await joined.promise;
+  first.abort();
+  await firstDenied;
+  gates[0].resolve(profiles);
+  assert.deepEqual(
+    await secondRead,
+    profiles.map((profile) => ({ ...profile, role: null })),
+  );
+  assert.equal(upstream.gateway.lists, 1);
+  // With no remaining reader, abort the wire operation and discard its entry.
+  const only = new AbortController();
+  const abandoned = access.list(request(only));
+  const abandonedDenied = assert.rejects(abandoned, { name: "AbortError" });
+  await started[1].promise;
+  only.abort();
+  await abandonedDenied;
+  await upstream.connectionClosures[1];
+  // A shorter HTTP-style deadline also expires only its own reader.
+  const shortRead = access.list({
+    ...request(new AbortController()),
+    deadline: new Date(Date.now() + 1500),
+  });
+  const expired = assert.rejects(shortRead, { name: "TimeoutError" });
+  await started[2].promise;
+  const longerRead = access.list(request(new AbortController()));
+  await deadlineJoined.promise;
+  await expired;
+  gates[2].resolve(profiles);
+  assert.equal((await longerRead)[0].id, "profile-alice");
+  // Same revision, rotated credential: never join the old transport's read.
+  const oldCredential = access.list(request(new AbortController()));
+  await started[3].promise;
+  apiKey = `${nativeGatewayApiKey}-rotated`;
+  const newCredential = access.list(request(new AbortController()));
+  await started[4].promise;
+  // A new active revision likewise has an independent read, even at the same URL.
+  const next = await fixture.seedActiveAgentRevision(namespace.id, agent.id, active.revision.id);
+  const nextRevision = access.list(request(new AbortController(), next.revision));
+  await started[5].promise;
+  gates[3].resolve(profiles);
+  gates[4].resolve([{ ...profiles[0], displayName: "Rotated credential" }]);
+  gates[5].resolve([{ ...profiles[0], displayName: "Next revision" }]);
+  const results = await Promise.all([oldCredential, newCredential, nextRevision]);
+  assert.deepEqual(
+    results.map((people) => people[0].displayName),
+    ["Alice", "Rotated credential", "Next revision"],
+  );
+  assert.equal(upstream.gateway.lists, 6);
+});

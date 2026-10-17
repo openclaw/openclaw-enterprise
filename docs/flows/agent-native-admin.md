@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
 updated: 2026-10-15
-last_updated_session: authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d
+last_updated_session: authoring-run/4a439216-a1ba-4628-b96e-660a9db92d59
 ---
 
 # Agent Native Admin UI Flow
@@ -70,12 +70,12 @@ graph TD
 `scripts/first-agent.mjs:nativeConfiguration`
 `scripts/first-agent.mjs:ensureManagedConfiguration`
 
-The option requires launcher-owned Compose/OpenShell browser state. Because OCC
-assigns the Agent ID, the helper saves disabled Configuration generation 1,
-creates the Agent, derives its origin, and patches generation 2 before
-deployment. Generation 2 enables `controlUi`, pins its origins, and grants the
-`occ-workspace-files` trusted-proxy identity `operator.admin` with device
-auto-approval. An existing helper-owned name cannot change this selection.
+`--control-ui` requires launcher-owned Compose/OpenShell browser state. The helper
+creates the Agent with disabled Configuration generation 1, then patches generation
+2 with its derived origin, `controlUi`,
+`occ-workspace-files` admin grants and device auto-approval before deployment.
+Identity grants supply admin independently of device scopes. Helper-owned names
+cannot change this selection.
 
 ### 1. Console renders native admin availability
 
@@ -103,7 +103,7 @@ The warning text tells operators that native admin access can change gateway sta
 
 `ResourceConflictError` for an authorized stopped Agent without an active revision becomes only `status: "stopped"`, including new Agents and completed stops. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing. The console offers deployment checks and refresh for the active revision, independently of the viewed snapshot. Denials remain `403` with the human IAM audit.
 
-With an active revision, OCC derives its native target. Non-running Agents return `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, admin scopes/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
+With an active revision, OCC derives its native target. Non-running Agents return `stopped` with host/origin; a newer exclusive replacement returns `unavailable`. Unsupported trusted-proxy auth, machine admin grants/device auto-approval, `controlUi.enabled`, exact `allowedOrigins`, or host-header/device-auth settings return `unsupported` with the target.
 
 Then the selected Compute Driver's `id` and `implementation` must match `revision.compute`. Selection changes do not migrate revisions. A mismatch raises status `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport. Matching ownership proceeds to endpoint validation; a missing or unclean private `wss:` endpoint returns `unsupported`. Only `available` carries `gatewayBase`, which `nativeAdminAvailabilityData` omits from browser responses.
 
@@ -217,6 +217,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 21:41: Allowed narrow device enrollment with machine admin grants. (authoring-run/4a439216-a1ba-4628-b96e-660a9db92d59 - e03429ce3d889b0ac07fedad801aacacc3498a6a)
 
 - 2026-10-15 21:30: Present the authorized launch and its access boundaries in the Agent overview. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
 - 2026-10-15 20:27: Redirect copied chat navigation to the canonical console. (authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3 - b899534fae0070fab31489d54a8763bb81e4842e)

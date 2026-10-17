@@ -148,8 +148,8 @@ for (const c of configurationSaves) {
 
 // Every field a tab's Save would write is disabled or inert: an edit no Save can keep would
 // only block leaving the tab or Deploy (finding 1539).
-const editableFields = (page, scope = ".agent-card") =>
-  page.locator(scope).evaluateAll((cards) =>
+const editableFields = (editor) =>
+  editor.evaluateAll((cards) =>
     cards
       .flatMap((card) => [...card.querySelectorAll("input, select, textarea")])
       .filter(
@@ -194,7 +194,14 @@ test("a member without Agent update sees the Agent-side saves and fields disable
     await page.getByRole("status").filter({ hasText: AGENT_UPDATE_DENIED }).waitFor();
     // The note is the proof where Save is also disabled for an unedited form.
     assert.equal(await button.isDisabled(), true, `${save} is disabled`);
-    assert.deepEqual(await editableFields(page, scope), [], `no ${tab} field takes an edit`);
+    const editor = scope
+      ? page.locator(scope)
+      : page.locator(".agent-card").filter({ has: button });
+    assert.equal(await editor.count(), 1);
+    assert.deepEqual(await editableFields(editor), [], `no ${tab} field takes an edit`);
+    // Roster administration is separate from Agent updates; this reader has neither.
+    assert.equal(await page.locator(".gateway-people").isVisible(), false);
+    assert.equal(await page.locator(".gateway-people-list li").count(), 0);
     if (field) {
       // The saved settings stay in view.
       assert.equal(await page.getByLabel(field, { exact: true }).isVisible(), true);
@@ -231,6 +238,12 @@ test("a member without Agent update cannot edit repository access", async (t) =>
   assert.equal(saved.status, 200);
   const member = await createReader(fixture, namespace);
   const { page } = await newPage(t, fixture, { browser });
+  const patches = [];
+  page.on("request", (request) => {
+    if (request.method() === "PATCH") {
+      patches.push(request.url());
+    }
+  });
   await login(
     page,
     fixture,
@@ -246,11 +259,16 @@ test("a member without Agent update cannot edit repository access", async (t) =>
     true,
   );
   assert.equal(await page.locator("#repository-default-git-read").isDisabled(), true);
-  assert.deepEqual(await editableFields(page), []);
+  const editor = page.locator(".agent-card").filter({
+    has: page.getByRole("button", { name: "Save repository access", exact: true }),
+  });
+  assert.equal(await editor.count(), 1);
+  assert.deepEqual(await editableFields(editor), []);
   // Cancel stays available; nothing is left to block leaving the tab.
   assert.equal(await page.getByRole("button", { name: "Cancel", exact: true }).isEnabled(), true);
   await page.getByRole("button", { name: "Plugins", exact: true }).click();
   await page.getByRole("button", { name: "Save plugin selections", exact: true }).waitFor();
+  assert.deepEqual(patches, []);
 });
 
 // The permission answer was read once per page, so a grant applied only after a full page

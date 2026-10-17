@@ -90,8 +90,6 @@ export function nativeAdminConfigurationSupported(
     Array.isArray(scopes) &&
     scopes.includes("operator.admin") &&
     approval?.enabled === true &&
-    Array.isArray(approval.scopes) &&
-    approval.scopes.includes("operator.admin") &&
     ui?.enabled === true &&
     Array.isArray(ui.allowedOrigins) &&
     ui.allowedOrigins.includes(origin) &&

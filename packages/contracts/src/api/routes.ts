@@ -97,6 +97,7 @@ import {
   ServiceAccountListResponse,
   ServiceAccountForceDeletionResponse,
   ServiceAccountResponse,
+  AgentGatewayPeopleResponse,
   WorkspaceFileResponse,
   WorkspaceFileUpdateResponse,
 } from "./resources.ts";
@@ -1502,6 +1503,57 @@ export const occApiRoutes = [
       querystring: EmptyQuery,
       params: AgentParams,
       response: { 202: AgentResponse, ...mutationErrors },
+    },
+  },
+  {
+    operationId: "getAgentGatewayPeople",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/gateway/people",
+    action: "openclaw.agents.gateway.people.read",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "List human profiles known to one active Agent Gateway",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: AgentParams,
+      response: { 200: AgentGatewayPeopleResponse, ...readErrors, 409: ErrorResponseRef },
+    },
+  },
+  {
+    operationId: "getAgentGatewayPersonAvatar",
+    method: "GET",
+    path: "/namespaces/:namespaceId/agents/:agentId/gateway/people/:profileId/avatar",
+    action: "openclaw.agents.gateway.people.avatar.read",
+    iamAction: "administer",
+    resourceKind: "agent",
+    authorizationTarget: "agent",
+    summary: "Read a profile avatar from one active Agent Gateway",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: Type.Object(
+        {
+          ...AgentParams.properties,
+          profileId: Type.String({ minLength: 1, maxLength: 200, pattern: "^[A-Za-z0-9-]+$" }),
+        },
+        { additionalProperties: false },
+      ),
+      response: {
+        200: {
+          description: "Profile avatar",
+          content: Object.fromEntries(
+            ["image/png", "image/jpeg", "image/webp", "image/gif"].map((mime) => [
+              mime,
+              { schema: Type.String({ format: "binary" }) },
+            ]),
+          ),
+        },
+        ...readErrors,
+        409: ErrorResponseRef,
+        501: ErrorResponseRef,
+      },
     },
   },
   {

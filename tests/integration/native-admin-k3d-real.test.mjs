@@ -834,6 +834,14 @@ test(
     assert.equal(status.url, expectedTarget.origin + "/");
     assert.equal(status.activeRevisionId, topology.revision.id);
 
+    // This uses the installed OCC route and native users.list RPC, not a profile adapter fixture.
+    // Shared native-admin sessions must not appear as additional human teammates.
+    const people = await topology.adminRequest("GET", agentPath(topology, "/gateway/people"));
+    assert.equal(people.status, 200, JSON.stringify(people.error));
+    assert.ok(Array.isArray(people.data.people));
+    assert.ok(people.data.people.every((person) => person.id !== "gateway-owner"));
+    assert.ok(people.data.people.every((person) => !Object.hasOwn(person, "emails")));
+
     const route = await resource(
       "httproute",
       topology.gatewayServiceName,

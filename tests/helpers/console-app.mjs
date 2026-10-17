@@ -325,6 +325,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     metrics: options.metrics,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     workspaceFilesAccess: options.workspaceFilesAccess,
+    gatewayPeopleAccess: options.gatewayPeopleAccess,
     auth,
     iamDriver,
     auditSink,

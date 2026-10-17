@@ -1286,6 +1286,11 @@ export function installFixture(scenario, evidence) {
           }
           return response(saved, 202);
         }
+        if (suffix === "/gateway/people" && method === "GET") {
+          return response({
+            people: Object.hasOwn(scenario, "gatewayPeople") ? scenario.gatewayPeople : [],
+          });
+        }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",

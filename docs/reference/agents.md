@@ -1,8 +1,7 @@
 # Agents
 
 An Agent is a named AI workload in a [Namespace](namespaces.md), with its own
-identity, revision history, and deployed gateway. Its permissions do not grant
-access to another Namespace's resources.
+identity, revisions and gateway. Its permissions do not cross Namespace boundaries.
 
 Use a [Preset](presets.md) to copy launch settings into an Agent draft.
 
@@ -52,6 +51,8 @@ without defaults, keep readable metadata and siblings, and add
 affected `field`. Authorization and strict mutation/runtime validation are unchanged;
 query failures still fail requests. See the
 [Console warning](../guides/console/agent-details.md#unreadable-saved-settings).
+
+[Gateway people](agents/gateway-people.md).
 
 ## Deployment status
 
@@ -115,17 +116,13 @@ state and proves no model response. On OpenShell the `agent` check is always
 
 ## Backend association
 
-An Agent can reference one Installation-configured [experimental Backend](backends.md)
-through `backendId`, a nullable reference returned on Agent and AgentRevision
-responses. Create/PATCH omission, `null`, and ID validation follow the
-[association rules](backends.md#agent-association-and-immutable-deployment);
-no default is inferred.
-
-The reference is independent of native model names and Harness selection.
-OpenAI or Anthropic API keys and directly supplied service account tokens need
-no Backend. An OCE-issued ChatGPT account token requires the matching Backend and
-account at deployment request and again before startup.
-Creating an Agent does not create a provider account or issue credentials.
+Nullable `backendId` selects one Installation-configured [experimental Backend](backends.md)
+and appears in Agent/AgentRevision responses. No default is inferred;
+[association rules](backends.md#agent-association-and-immutable-deployment) define
+create/PATCH omission, `null` and ID validation independently of model/Harness selection.
+API keys and supplied service account tokens need no Backend. OCE-issued ChatGPT
+tokens require the matching Backend/account at deployment and startup.
+Agent creation neither creates provider accounts nor issues credentials.
 
 ## Harness authentication
 
@@ -173,13 +170,12 @@ For dedicated Codex with a Credential Gateway, use
 [credential sources](credential-sources.md#bind-a-source-to-an-agent) for grants.
 It must also be listed in `credentialSources`.
 
-For SSH embedded OpenClaw, use `{ "method": "runtime" }`. The operator supplies
-credentials in the protected host environment file; OCC neither reads nor
-delivers them and performs no authentication or model probe, so readiness does
-not prove model access. The snapshot records only the method, so host credential
-changes can affect existing revisions. Agent and Configuration authorization,
-topology checks, and process readiness remain required; no credential-source
-permission is needed. Kubernetes and Docker reject this method. See
+SSH embedded OpenClaw accepts `{ "method": "runtime" }`: operators supply a protected
+host environment file. OCC neither reads/delivers credentials nor probes authentication/models;
+readiness proves no model access. Snapshots record only the method, so host changes
+affect existing revisions. Agent/Configuration authorization, topology and process
+readiness checks remain; no credential-source permission is needed. Kubernetes
+and Docker reject this method. See
 [SSH credentials](drivers/ssh-compute.md#credentials-and-supported-boundaries).
 
 API-key and imported PAT bindings require the actor's exact Secret `operate`. That includes
@@ -196,17 +192,13 @@ responses omit credential values and private backend/account metadata. See
 
 ## Plugin selections
 
-An Agent can own an optional `plugins` map keyed by qualified curated catalog ID,
-such as `google-calendar@openai-curated-remote`. Omission at creation enables no
-plugins. PATCH omission preserves the saved plugin map, `{}` clears every desired
-plugin, and a nonempty map replaces the entire desired plugin set.
-
-Create/update validates only structural shape. Catalog membership, native
-identity resolution, and approval-policy support are checked when deployment
-starts the revision; unsupported selections fail that startup without partially
-mutating the Agent. AgentRevision snapshots retain the requested plugin IDs and
-policy. See [Agent plugins](agent-plugins.md) for field semantics
-and the selected-only runtime contract.
+Optional `plugins` maps qualified curated catalog IDs, such as
+`google-calendar@openai-curated-remote`. Create omission enables none; PATCH
+omission preserves selections, `{}` clears them, and nonempty maps replace them.
+Create/update validates structure. Startup checks catalog membership, native
+identity and approval-policy support; unsupported selections fail without partial
+Agent mutation. Revisions retain requested IDs/policy.
+See [Agent plugins](agent-plugins.md) for fields and the selected-only runtime contract.
 
 ## Workspace files
 
@@ -312,18 +304,15 @@ and redeploy does not erase all gateway-local state
 
 ## Namespace ownership
 
-An Agent belongs to the Namespace in its creation URL; request bodies cannot
-select a different Namespace or Installation. Names are unique within each
-Namespace, and cross-Namespace access requires separate scoped permissions.
-A failed or deleting Namespace rejects new Agents.
+The creation URL owns the Agent's Namespace; bodies cannot select another
+Namespace/Installation. Names are Namespace-unique; cross-Namespace access needs
+separate scoped permissions. Failed/deleting Namespaces reject creation.
 
 ## Identity and deployment
 
-Each Agent has one stable service principal and runs embedded OpenClaw or
-dedicated Codex. A deployment request takes no body: it snapshots the saved
-draft, and a worker starts it asynchronously. See
-[Agent identity and deployment](agents/deployment.md) for permissions,
-snapshot fields, and activation guarantees.
+Each Agent has one stable service principal. Bodyless deployment snapshots its
+saved draft; a worker starts it asynchronously. See [deployment](agents/deployment.md)
+for topologies, permissions, snapshot fields and activation guarantees.
 
 An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then

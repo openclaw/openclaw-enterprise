@@ -193,7 +193,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 | Scenario   | Runs on PRs | Presets         | Checks                                                            |
 | ---------- | ----------- | --------------- | ----------------------------------------------------------------- |
-| `model-ui` | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                      |
+| `model-ui` | Yes (Codex) | OpenClaw, Codex | Real model turn, native browser response and Gateway people read. |
 | `git-full` | No          | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials. |
 | `git-read` | No          | Codex           | Reject read-only push and dispose credentials.                    |
 | `calendar` | Yes (Codex) | Codex           | Successful Calendar read, approvals and tool restrictions.        |
