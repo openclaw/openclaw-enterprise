@@ -202,9 +202,9 @@ editor's access or recovery controls.
 
 ### Choose and switch revision Secrets
 
-In **Components / Credentials / Slack tokens stored**, inspect references, cancel
-creation, then switch app tokens; the bot binding stays. The API-key switch offers
-another model Secret.
+In **Slack token switch**, Deploy stays disabled until you save the change or
+reselect the saved Secret. **Secret choices after a conflict** shows the same
+recovery when the save is refused.
 
 **Secret list denied** retains IDs. **Slack grant denied** requires recovery.
 In **Issued service accounts unavailable**, switch authentication methods:

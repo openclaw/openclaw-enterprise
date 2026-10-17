@@ -21,6 +21,10 @@ export const CredentialsSaveProvisioningReserved = {
   ...story("credentialsSaveProvisioningReserved"),
   name: "Secret choices after a refused save",
 };
+export const CredentialsSaveConflict = {
+  ...story("credentialsSaveConflict"),
+  name: "Secret choices after a conflict",
+};
 export const CredentialsSecretListDenied = {
   ...story("credentialsSecretListDenied"),
   name: "Secret list denied",

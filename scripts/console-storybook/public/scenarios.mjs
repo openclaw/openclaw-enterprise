@@ -1635,7 +1635,19 @@ export const scenarios = {
     name: "Initial deployment waits on a full Pod quota",
     path: create,
     actions: readyForm,
-    rules: [{ pathIncludes: "/deployments/", hold: true, once: true }],
+    // Each rule skips the first read so the quota message appears before the interruption.
+    rules: [
+      { pathIncludes: "/deployments/", skip: 1, hold: true, once: true },
+      {
+        pathIncludes: "/deployments/",
+        skip: 1,
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "A required platform dependency is unavailable.",
+        once: true,
+      },
+      { pathIncludes: "/deployments/", skip: 1, status: 404, code: "NOT_FOUND" },
+    ],
     provisionedDeploymentStatus: "running",
     provisionedDeploymentAttempt: {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
@@ -1643,10 +1655,10 @@ export const scenarios = {
         "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
     },
     description:
-      "The first deployment detail request stalls. Provisioning keeps polling, and the next detail response explains that the Namespace Pod quota is full.",
+      "The first deployment read explains the full Pod quota. A stalled read and a temporary outage preserve that detail; a later not-found response clears it while provisioning continues.",
     steps: [
-      "Click Create Agent. The provisioning line stays visible through the stalled detail request, then names the full Pod quota.",
-      "Open the Agent's version; confirm the deployment record shows the same reason.",
+      "Click Create Agent. Watch the Pod quota message stay in place while the next read stalls and another gets a 503.",
+      "After the deployment read returns 404, the line changes to “Provisioning Agent…”. This does not say the quota cleared or the job stopped.",
     ],
   },
   createDeploymentFailed: {
@@ -4619,7 +4631,11 @@ export const scenarios = {
     slack: true,
     actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
-      "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
+      "A different app Secret is selected but not saved. Deploy would use the saved Secret, not the one shown in the picker.",
+    steps: [
+      "Deploy new version is disabled. Choose the saved Slack app token again; Deploy becomes available without a save.",
+      "Choose the Slack backup token, then Save channel Secrets. Deploy becomes available when the save succeeds; do not deploy.",
+    ],
   },
   credentialsSaveProvisioningReserved: {
     group: "Components/Credentials",
@@ -4632,7 +4648,26 @@ export const scenarios = {
       "Provisioning has reserved the Configuration. The app token selection is an unsaved choice, not a new binding.",
     steps: [
       "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
-      "The app token you chose stays selected. The Console does not retry or offer Reload draft.",
+      "The unsaved choice stays selected and Deploy stays disabled. Choose the saved Slack app token again to make Deploy available; no retry or reload is needed.",
+    ],
+  },
+  credentialsSaveConflict: {
+    group: "Components/Credentials",
+    name: "Secret choices after a conflict",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [
+      {
+        ...reservedConfigurationWrite,
+        message: "The requested platform resource already exists.",
+      },
+    ],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "A save meets a generic conflict. The Console explains that the Secret choices conflict with saved state, without claiming a duplicate or a stale generation.",
+    steps: [
+      "Press Save channel Secrets. The backup token stays selected, Deploy stays disabled, and no second save is sent. The message does not say the Secret already exists or offer Reload draft.",
+      "Choose the saved Slack app token again. Deploy becomes available; no deployment or second save is needed.",
     ],
   },
   credentialsSlackCarried: {
