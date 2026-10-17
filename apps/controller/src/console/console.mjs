@@ -618,11 +618,17 @@ function showStillChecking() {
 // the shown page's own: the navigation and header change together with the body, never around
 // it (finding 1515). Its selector names the destination's Namespace, but a Namespace recovery
 // block appears only if the shown page had one (finding 1527). Returns null when no page is shown.
-function holdShownView(current, { busyCue = true } = {}) {
+// keepFocus: focus in the shown page, which falls to the body once the page goes inert, or on
+// its heading (which the console focused, say for a load this one replaces) moves to the held
+// heading instead (finding 1626).
+function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
   const view = app.querySelector('.content [aria-live="polite"]');
   if (!view) {
     return null;
   }
+  const focused = document.activeElement;
+  const focusHeld =
+    keepFocus && (view.contains(focused) || focused === app.querySelector(".content h1"));
   const title = app.querySelector(".content h1")?.textContent;
   const scope = app.querySelector(".content .scope")?.textContent;
   const diagnostics = app.querySelector(".runtime-debug");
@@ -648,6 +654,9 @@ function holdShownView(current, { busyCue = true } = {}) {
     shell.diagnostics = diagnostics;
   }
   window.scrollTo({ top: scrollY, left: 0 });
+  if (focusHeld) {
+    app.querySelector(".content h1").focus({ preventScroll: true });
+  }
   return shell;
 }
 
@@ -1037,9 +1046,19 @@ async function loadPage({
   let retained = retainedView !== null;
   // An Agent link opens its destination immediately. Other visits keep the shown page inert
   // until a retained view revalidates or admission and the destination's first read settle.
+  // While an Agent page loads behind the held page (the new version an admitted deployment opens,
+  // say), focus that was in the held page waits on its heading until the Agent's heading takes it
+  // (finding 1626).
   let shell =
-    knownPrivateState && !openingAgent ? holdShownView(current, { busyCue: !resumingView }) : null;
+    knownPrivateState && !openingAgent
+      ? holdShownView(current, { busyCue: !resumingView, keepFocus: Boolean(current.agentId) })
+      : null;
   let held = shell !== null;
+  // The stand-in's heading while it holds focus for the Agent page loading behind it.
+  let heldHeading =
+    held && document.activeElement === app.querySelector(".content h1")
+      ? document.activeElement
+      : null;
   let agentReturnHref = null;
   let pendingAgentHeading = null;
   let focusAgentResult = false;
@@ -1136,8 +1155,15 @@ async function loadPage({
             }
             held = false;
             loadingShownAt = performance.now();
+            // The loading page's heading takes focus from the held one it replaces.
+            const headingFocused = heldHeading !== null && document.activeElement === heldHeading;
+            const keepHeadingFocus = () => {
+              heldHeading = headingFocused ? app.querySelector(".content h1") : null;
+              heldHeading?.focus({ preventScroll: true });
+            };
             if (!accessResolved) {
               shell = pendingNamespaceShell = renderPendingNamespaceShell(current.feature);
+              keepHeadingFocus();
               return;
             }
             // An Agent page rendering hidden behind the startup status keeps rendering behind
@@ -1156,6 +1182,7 @@ async function loadPage({
               shell.view.after(behind);
               shell = { ...shell, view: behind, diagnostics: null };
             }
+            keepHeadingFocus();
           }, loadingDelay);
   const stopLoadingTimer = () => {
     clearTimeout(loadingTimer);
@@ -1752,6 +1779,7 @@ async function loadPage({
           // the Agent's heading, focused once under its name.
           const focusHeading =
             document.activeElement === pendingAgentHeading ||
+            (heldHeading !== null && document.activeElement === heldHeading) ||
             shownNow.view.contains(document.activeElement);
           shell = renderShell(current.feature, false);
           shell.view.replaceWith(detailView);
