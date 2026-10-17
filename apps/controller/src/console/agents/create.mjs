@@ -204,9 +204,8 @@ async function cancelledAgentState(request, namespaceId, agentId) {
 
 // First-deployment waits that someone must act on (finding 1617): the deployment's own fixed
 // sentence replaces the bare provisioning line. The deployment read needs read access to the
-// Agent; a reader without it, or any other wait, keeps the bare line. A read that names no wait
-// answers null; a read that was cancelled or failed answers undefined, since it says nothing
-// about the wait (finding 1637).
+// Agent. Clear the reason if the deployment is no longer readable or names a different wait;
+// keep it through a cancelled read or temporary outage (finding 1637).
 const NAMED_DEPLOYMENT_WAITS = new Set(["NAMESPACE_POD_QUOTA_EXCEEDED"]);
 // An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
@@ -233,8 +232,8 @@ async function namedDeploymentWait(request, namespaceId, job, signal) {
       attempt.message
       ? attempt.message
       : null;
-  } catch {
-    return undefined;
+  } catch (error) {
+    return [401, 403, 404].includes(error.status) ? null : undefined;
   }
 }
 

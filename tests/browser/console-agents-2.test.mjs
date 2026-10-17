@@ -725,15 +725,13 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
   ]);
 });
 
-// Finding 1617: a first deployment that waits on a full Namespace Pod quota names the quota
-// instead of the bare provisioning line, for a reader of the Agent. Other waits, and a reader
-// whose deployment read is refused, keep the bare line. A read cut off at the next poll, or one
-// that fails, says nothing about the wait, so the named line stays (finding 1637).
+// Show the Pod quota reason while the deployment reports it. If the reason changes or the
+// reader loses access, show generic progress again. A cancelled poll or a temporary outage
+// does not establish either change (findings 1617, 1637).
 test("Dedicated Agent creation names a full Namespace Pod quota while it waits", async (t) => {
   const quotaFull =
     "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
-  for (const mode of ["readable", "refused", "interrupted"]) {
-    const deploymentReadable = mode !== "refused";
+  for (const mode of ["readable", "refused", "interrupted", "access lost"]) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace(`Pod quota ${mode}`, {
@@ -824,6 +822,8 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
             }),
           });
         }
+        const deploymentReadable =
+          mode !== "refused" && (mode !== "access lost" || deploymentReads.length === 1);
         return route.fulfill(
           deploymentReadable
             ? {
@@ -907,7 +907,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
           quotaFull,
           "Provisioning failed.",
         ],
-      }[mode],
+      }[mode === "access lost" ? "readable" : mode],
       `deployment reads: ${mode}`,
     );
   }
