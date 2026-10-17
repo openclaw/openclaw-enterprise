@@ -356,7 +356,7 @@ test("saving and reloading the authentication source update the Agent page in pl
 
 // Refresh sharing, the Configuration editor's Cancel and the Create Agent shortcuts replaced or
 // disabled the control the reader used, dropping keyboard focus to the document (finding 1446).
-test("Refresh sharing, editor Cancel and the Create Agent shortcuts keep keyboard focus", async (t) => {
+test("Refresh sharing, the Configuration editor and the Create Agent shortcuts keep keyboard focus", async (t) => {
   const preset = JSON.parse(
     await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
   );
@@ -376,7 +376,19 @@ test("Refresh sharing, editor Cancel and the Create Agent shortcuts keep keyboar
   await page.waitForFunction(() => globalThis.document.activeElement?.tagName !== "BODY");
   assert.equal(await focusedText(page), "Refresh sharing");
 
-  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  // Edit Configuration opens the editor in place of the pressed button; the editor takes
+  // focus instead of the document, without scrolling the page to fit it (finding 1620).
+  const edit = page.getByRole("button", { name: "Edit Configuration" });
+  await edit.evaluate((node) => node.scrollIntoView({ block: "end" }));
+  const editScroll = await page.evaluate(() => globalThis.scrollY);
+  await edit.focus();
+  await page.keyboard.press("Enter");
+  await page.getByLabel("Configuration JSON").waitFor();
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "configuration-json",
+  );
+  assert.equal(await page.evaluate(() => globalThis.scrollY), editScroll);
   await page.getByRole("button", { name: "Cancel", exact: true }).focus();
   await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Edit Configuration" }).waitFor();

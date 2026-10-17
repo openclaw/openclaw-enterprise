@@ -9,6 +9,7 @@ import {
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -21,7 +22,11 @@ import {
   waitForCondition,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
-import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+import {
+  createRepositoryLaunchFixture,
+  focusedDescription,
+  focusedText,
+} from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 test("Agent deployment requires a reload after repository access changes", async (t) => {
@@ -165,6 +170,109 @@ test("Agent deployment reports preflight errors and requires reload for changed 
     .first()
     .waitFor();
   assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
+});
+
+// Deploy new version disabled the pressed button, dropping keyboard focus to the document, and
+// flashed "Checking Configuration…" then "Requesting deployment…" for a frame each (finding 1619).
+// One delayed status now covers the request and holds focus until the outcome is known.
+test("Deploy new version keeps keyboard focus and shows one delayed status", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment focus");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Deployment focus",
+    nativeValues("deployment-focus"),
+    { harnessAuth: { method: "runtime" } },
+  );
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
+  );
+  const deploy = page.getByRole("button", { name: "Deploy new version" });
+  const status = page.locator(".agent-draft-actions p[role=status]");
+  await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+  const focusedRole = () =>
+    page.evaluate(() => globalThis.document.activeElement?.getAttribute("role") ?? null);
+  const pressDeploy = async () => {
+    await deploy.focus();
+    await page.keyboard.press("Enter");
+  };
+
+  // A failed read re-enables Deploy: focus returns to it, described by the failure.
+  const unavailable = "Service unavailable. The read could not be completed. Try again.";
+  const failedRead = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    once: true,
+    fulfill: {
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Read unavailable" },
+      }),
+    },
+  });
+  await pressDeploy();
+  await failedRead.requested;
+  assert.equal(await focusedRole(), "status");
+  failedRead.release();
+  await page.getByText(unavailable).waitFor();
+  assert.equal(await focusedText(page), "Deploy new version");
+  assert.equal(await focusedDescription(page), unavailable);
+
+  // A reader who moved on while the read ran keeps their place.
+  const movedOn = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    once: true,
+    fulfill: {
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Read unavailable" },
+      }),
+    },
+  });
+  await pressDeploy();
+  await movedOn.requested;
+  await page.evaluate(() => globalThis.document.activeElement?.blur());
+  movedOn.release();
+  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.tagName), "BODY");
+
+  // A stale draft keeps Deploy disabled, so the refusal itself takes focus.
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("changed"));
+  await pressDeploy();
+  const stale = "Configuration or authentication changed. Reload this draft before deploying.";
+  await page.getByText(stale, { exact: true }).waitFor();
+  assert.equal(await deploy.isDisabled(), true);
+  assert.equal(await focusedRole(), "status");
+  assert.equal(await focusedText(page), stale);
+
+  // An admitted deployment shows one status while its request runs, and the status keeps
+  // focus until the new version opens.
+  await page.reload();
+  await page.getByText(/generation 2/).waitFor();
+  await page.evaluate(() => {
+    const shown = [];
+    const node = globalThis.document.querySelector(".agent-draft-actions p[role=status]");
+    new globalThis.MutationObserver(() => {
+      if (node.textContent && node.textContent !== shown.at(-1)) {
+        shown.push(node.textContent);
+      }
+    }).observe(node, { childList: true, characterData: true, subtree: true });
+    globalThis.deployStatusTexts = shown;
+  });
+  const admitted = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+    method: "POST",
+  });
+  await pressDeploy();
+  await admitted.requested;
+  assert.equal(await focusedRole(), "status");
+  assert.equal(await focusedText(page), "Deploying…");
+  // The text sits in the 250 ms delayed-status span, so a quick request never shows it.
+  assert.equal(await status.locator(".delayed-status").textContent(), "Deploying…");
+  admitted.release();
+  await page.waitForURL(/revision=rev_/);
+  assert.deepEqual(await page.evaluate(() => globalThis.deployStatusTexts), ["Deploying…"]);
 });
 
 for (const [field, change] of [

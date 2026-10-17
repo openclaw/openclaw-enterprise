@@ -2840,6 +2840,7 @@ export const scenarios = {
     description:
       "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
     steps: [
+      "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
       "Change a draft setting, then choose Save Configuration.",
       "Look for “Configuration saved.” Focus returns to Edit Configuration, with that confirmation as its description.",
       "Open the editor again and choose Cancel. Focus returns to Edit Configuration without saving.",
@@ -3715,7 +3716,23 @@ export const scenarios = {
       },
     ],
     actions: [click("Deploy new version")],
-    description: "A rejected deployment reports failure and re-enables the action.",
+    description:
+      "A rejected deployment reports failure and re-enables the action. Focus returns to Deploy new version, described by the failure.",
+  },
+  deployInProgress: {
+    group: "Pages/Agent detail",
+    name: "Deployment in progress",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        hold: true,
+      },
+    ],
+    actions: [click("Deploy new version")],
+    description:
+      "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus until the new version opens.",
   },
   deployRefusedSetting: {
     group: "Pages/Agent detail",

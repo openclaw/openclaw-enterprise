@@ -2338,7 +2338,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         deployInFlight = true;
         content.toggleAttribute("inert", true);
         updateNavigationControls();
-        deployStatus.textContent = "Checking Configuration…";
+        // One status for the whole request, shown only if it outlasts 250 ms; it takes focus
+        // from the disabled button so a keyboard reader is not dropped to the page (finding 1619).
+        deployStatus.replaceChildren(
+          element("span", { className: "delayed-status" }, "Deploying…"),
+        );
+        focusSaveOutcome(draftActions, [], deployStatus);
         let submitted = false;
         try {
           const freshAgent = await request(path);
@@ -2399,7 +2404,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             return;
           }
           submitted = true;
-          deployStatus.textContent = "Requesting deployment…";
           const revision = await request(`${path}/deploy`, { method: "POST" });
           if (context.isCurrent()) {
             deployInFlight = false;
@@ -2430,6 +2434,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               deployPending = false;
             }
             updateDeployControls();
+            // A refused or failed request stays on this draft: focus returns to Deploy, or to
+            // the message when Deploy stays disabled.
+            if (document.activeElement === deployStatus) {
+              focusSaveOutcome(
+                draftActions,
+                [deploy],
+                deployFeedback.textContent ? deployFeedback : deployStatus,
+              );
+            }
           }
         }
       },
@@ -3558,10 +3571,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
     // The carried-edits note stays until the reader edits again.
     let feedbackLocked = Boolean(carriedNote);
-    const edit = button("Edit Configuration", () => {
+    // Entering the editor replaces the pressed button; focus moves to the editor (finding 1620).
+    function startEditing() {
       editing = true;
       render();
-    });
+      editor.focus({ preventScroll: true });
+    }
+    const edit = button("Edit Configuration", startEditing);
     const password = values.gateway?.auth?.password;
     const usesGeneratedGatewayPassword =
       password?.source === "env" &&
@@ -3590,8 +3606,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         null,
         2,
       );
-      editing = true;
-      render();
+      startEditing();
     });
     const save = button("Save Configuration", () => void saveConfiguration(), {
       className: "primary",
