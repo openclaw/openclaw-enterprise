@@ -818,7 +818,9 @@ select:not([multiple])[size="1"] {
 .overview-primary:hover {
   background: var(--text);
 }
-.deployment-recovery:not([hidden]) + .native-admin-access .overview-primary {
+/* One primary action: a failed version's recovery outranks native administration, wherever the
+   recovery card sits. */
+:has(> .deployment-recovery:not([hidden])) > .native-admin-access .overview-primary {
   color: var(--text-strong);
   background: var(--surface);
   border-color: var(--input-border);

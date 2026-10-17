@@ -1288,17 +1288,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     recoveryActions,
   );
   let recoveryTarget;
+  const overviewStatus = element(
+    "div",
+    { className: "agent-overview-status" },
+    currentSummary,
+    statusLine,
+    deploymentStatus,
+  );
   view.replaceChildren(
     header,
     recovery,
     nativeAdmin.section,
-    element(
-      "div",
-      { className: "agent-overview-status" },
-      currentSummary,
-      statusLine,
-      deploymentStatus,
-    ),
+    overviewStatus,
     // Sharing policy reads need Installation administration and a denial is audited, so
     // skip the panel when the session probe already showed that access is missing.
     ...(context.installationAdmin === false ? [] : [renderAgentAccess(context, agent)]),
@@ -1812,13 +1813,24 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // waits for the caller's permission answer, which decides its draft link, so it never
     // shows a draft link the answer then withdraws (finding 1478). That read starts first, so
     // it has usually settled by now.
-    setHidden(
-      recovery,
+    const hideRecovery =
       latestDeploymentStatus !== "failed" ||
-        currentHidden ||
-        currentUnknown ||
-        !callerPermissionsSettled,
-    );
+      currentHidden ||
+      currentUnknown ||
+      !callerPermissionsSettled;
+    // A page shown before its failure lands (a deploy the reader is watching, say) cannot wait
+    // for it as a load does (finding 1489): above the overview, the card pushed what the reader
+    // was watching down (finding 1655). It lands below the deployment activity it explains
+    // instead, and moves only the cards under it.
+    if (
+      recovery.hidden &&
+      !hideRecovery &&
+      !view.classList.contains("agent-detail-pending") &&
+      overviewStatus.nextElementSibling !== recovery
+    ) {
+      overviewStatus.after(recovery);
+    }
+    setHidden(recovery, hideRecovery);
     if (!recovery.hidden) {
       const version = `v${latest.revision}`;
       const code = latestDeploymentErrorCode;

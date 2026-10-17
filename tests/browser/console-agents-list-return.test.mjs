@@ -363,9 +363,7 @@ function recordPaintedReading(reading) {
     return false;
   };
   const sample = () => {
-    const table = document.querySelector(
-      '.content [aria-live="polite"]:not([inert]) .agent-table',
-    );
+    const table = document.querySelector('.content [aria-live="polite"]:not([inert]) .agent-table');
     if (table) {
       const cells = [...table.querySelectorAll(".agent-deployment")].filter(
         (cell) => cell.textContent === reading,
@@ -415,11 +413,9 @@ for (const visit of ["a first visit", "a return"]) {
     }
     await rows.revisions.requested;
     // A read still pending after 250 ms says so, in every row.
-    await page.waitForFunction(
-      () => globalThis.__readingFrames.at(-1)?.painted === 3,
-      null,
-      { timeout: 5_000 },
-    );
+    await page.waitForFunction(() => globalThis.__readingFrames.at(-1)?.painted === 3, null, {
+      timeout: 5_000,
+    });
     const frames = await page.evaluate(() => globalThis.__readingFrames.slice());
     // The first frame that shows the table: every row is being read, and none paints its text.
     assert.deepEqual(frames[0], { reading: 3, painted: 0 }, JSON.stringify(frames));

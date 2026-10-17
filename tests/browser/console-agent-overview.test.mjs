@@ -1065,6 +1065,84 @@ for (const viewport of [
   });
 }
 
+// Watching a deploy that failed, the "Deployment needs attention" card (about 200 px) appeared
+// above the overview when the failure landed, with no input, and pushed Selected version,
+// Deployment details and Share Agent down: CLS 0.13-0.15 at 1440 and 390 wide (finding 1655).
+// The page-load fix (finding 1489) waits for the outcome, which a watch cannot. A card that
+// appears once the page shows now lands below the deployment activity the reader is watching.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  const size = `${viewport.width}x${viewport.height}`;
+  test(`a watched deploy that fails shows its recovery without moving the overview at ${size}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace(`Failing deploy ${size}`, { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Failing Deploy", nativeValues("v1"));
+    await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const pending = await fixture.deployAgent(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    await trackSettledFetches(page);
+    const recordUrl = deploymentUrl(fixture, namespace, agent, pending);
+    let record = deploymentRecord(namespace, agent, pending, "running");
+    await page.route(recordUrl, (route) => route.fulfill(record));
+    await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, pending.id, "configuration"),
+    );
+    await page.getByText("Recorded status: running").waitFor();
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+    await page.getByRole("heading", { name: "Share Agent" }).waitFor();
+    await waitForIdleFetches(page);
+    await page.evaluate(() => globalThis.document.fonts.ready);
+    await nextFrames(page);
+    // Polls run only when the test advances the clock.
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.pauseAt(new Date(now + 1000));
+    const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+    assert.equal(await recovery.isVisible(), false);
+    const tops = () =>
+      page.evaluate(() =>
+        Object.fromEntries(
+          [".agent-current-summary", ".deployment-status"].map((selector) => [
+            selector,
+            Math.round(
+              globalThis.document.querySelector(selector).getBoundingClientRect().top +
+                globalThis.scrollY,
+            ),
+          ]),
+        ),
+      );
+    const before = await tops();
+
+    // The deploy fails its startup model check; the next poll reads it.
+    record = deploymentRecord(
+      namespace,
+      agent,
+      pending,
+      "failed",
+      persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+    );
+    const read = page.waitForResponse(recordUrl);
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    await read;
+    await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+    await waitForIdleFetches(page);
+    assert.deepEqual(await tops(), before, "the overview stays in place");
+    // The card follows the deployment's activity, and its first action is the page's one primary.
+    assert.equal(
+      await recovery.evaluate(
+        (card) => card.previousElementSibling?.classList.contains("agent-overview-status") === true,
+      ),
+      true,
+    );
+    assert.equal(await page.locator(".overview-primary:visible").count(), 1);
+  });
+}
+
 // The patch behind those quiet polls keeps what is unchanged, rewrites only changed text, drops
 // children a shorter render no longer has, and replaces a node whose role (or role node kind)
 // changes, since a live region or alert announces reliably only when it is inserted.

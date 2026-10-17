@@ -147,8 +147,8 @@ reads, password input, and mutations prevent reuse; read-only catalog and diagno
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
 list, not each row’s deployment read. On reuse, `agents/list.mjs:renderAgentList`
-sets visible deployment cells to **Reading deployment…** before paint, then shows
-each fresh result or refusal. Back from a deployment focuses its loading text,
+sets visible deployment cells to **Reading deployment…**, hidden for 250 ms, before paint, then shows
+each fresh result or refusal. Back from a deployment focuses that cell,
 not a link to the old revision. Leaving during these reads makes the next return rebuild the list.
 
 A changed user or session key clears retained views and drafts before further
@@ -374,9 +374,9 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-17 10:50: Delay row loading text 250 ms; keep focus through sidebar navigation and list refocus. (lows-1017m)
 - 2026-10-17 08:32: Show the rechecked Agents list before refreshing visible deployment cells. (fix-1644 - c29af02c98)
 - 2026-10-16 22:40: Hold loading 300 ms; open recovery links in view; reread status on a log refusal. (ui-jank-code-12)
 - 2026-10-16 18:30: Forget denials at logout, clear refused logs or Pod status, and show the page Back checked. (lows-1016o / log-refusal-followup - 1fb2170)
-- 2026-10-16 16:40: Open a Logs URL at its output; reuse a member's Agent view on Back; keep the startup status to 400 ms. (ui-jank-code-11)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
