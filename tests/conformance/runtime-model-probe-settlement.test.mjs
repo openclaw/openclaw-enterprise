@@ -432,6 +432,8 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
     ['{"error":{"message":"No API key provided."}}', 5],
     ['{"error":{"code":"insufficient_permissions","message":"x"}}', 6],
     ['{"error":{"message":"Missing scopes: api.responses.write"}}', 6],
+    ['{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}', 4],
+    ['{"error":{"type":"authentication_error","message":"x-api-key header is required"}}', 5],
     ['{"error":{"code":"other","message":"Unauthorized"}}', 3],
     ["not json", 3],
     ['{"error":"string"}', 3],

@@ -2074,9 +2074,10 @@ function probeOpenClawAuthenticationFailure() {
 // request. The request goes to the
 // path of the configured API: a key may be scoped to one endpoint, and OpenAI
 // answers 401 for a missing scope. A 401 is classified from the provider's error
-// code and two fixed phrases into a closed vocabulary (the body itself is never
-// kept): "missing_api_key" means the request arrived without a credential, which
-// under a Sandbox provider points at the credential proxy rather than the key.
+// code and a few fixed OpenAI and Anthropic phrases into a closed vocabulary (the
+// body itself is never kept): "missing_api_key" means the request arrived without
+// a credential, which under a Sandbox provider points at the credential proxy
+// rather than the key.
 const UPFRONT_ENDPOINTS = {
   openai: ["https://api.openai.com/v1", { "openai-responses": "/responses", "openai-completions": "/chat/completions" }, (key) => ({ authorization: "Bearer " + key })],
   anthropic: ["https://api.anthropic.com", { "anthropic-messages": "/v1/messages" }, (key) => !key.startsWith("sk-ant-oat") && { "x-api-key": key, "anthropic-version": "2023-06-01" }],
@@ -2096,7 +2097,7 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
   stage("preflight");
   // Exit 3-6 is a 401 (3: unclassified); anything else proves nothing.
   const status = require("node:child_process").spawnSync(process.execPath, ["-e",
-    'fetch(process.env.U,{method:"POST",headers:JSON.parse(process.env.H),body:"{}",signal:AbortSignal.timeout(8000)}).then(async(r)=>{if(r.status!==401)process.exit(0);let e;try{e=(await r.json())?.error}catch{}const c=e?.code,m=typeof e?.message==="string"?e.message:"";process.exit(c==="invalid_api_key"?4:/didn.t provide an api key|no api key provided/i.test(m)?5:c==="insufficient_permissions"||/insufficient permissions|missing scopes/i.test(m)?6:3)},()=>process.exit(0))',
+    'fetch(process.env.U,{method:"POST",headers:JSON.parse(process.env.H),body:"{}",signal:AbortSignal.timeout(8000)}).then(async(r)=>{if(r.status!==401)process.exit(0);let e;try{e=(await r.json())?.error}catch{}const c=e?.code,m=typeof e?.message==="string"?e.message:"";process.exit(c==="invalid_api_key"||/invalid x-api-key/i.test(m)?4:/didn.t provide an api key|no api key provided|x-api-key header is required/i.test(m)?5:c==="insufficient_permissions"||/insufficient permissions|missing scopes/i.test(m)?6:3)},()=>process.exit(0))',
   ], {
     env: { U: base + path, H: JSON.stringify({ ...headers, "content-type": "application/json" }), NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS, SSL_CERT_FILE: process.env.SSL_CERT_FILE },
     stdio: "ignore", timeout: 10000, killSignal: "SIGKILL",

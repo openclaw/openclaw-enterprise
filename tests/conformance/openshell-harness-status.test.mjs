@@ -916,7 +916,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
 // A provider-owned dedicated OpenClaw worker (finding 1642) holds a failed model
 // check the same way: it never connects its node, so without this nothing reports
 // the hold and the revision waits for its deadline as WORKSPACE_NODE_PENDING.
-function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3 }) {
+function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, probeStatus }) {
   const directory = mkdtempSync(join(tmpdir(), "native-held-failure-"));
   const servers = [];
   const diagnostics = [];
@@ -989,11 +989,33 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3 }) {
         return {
           execFile() {},
           // The upfront credential check: exit 3-6 is a 401 (3 unclassified, 4
-          // invalid_api_key, 5 missing_api_key, 6 insufficient_permissions).
+          // invalid_api_key, 5 missing_api_key, 6 insufficient_permissions). The
+          // full probe, when reached, reports `probeStatus` for the model.
           spawnSync(command, args) {
-            assert.equal(command, process.execPath);
-            assert.equal(args[0], "-e");
-            return { status: upfrontStatus };
+            if (args[0] === "-e") {
+              assert.equal(command, process.execPath);
+              return { status: upfrontStatus };
+            }
+            assert.equal(command, "node");
+            assert.equal(args[0], "/app/openclaw.mjs");
+            return {
+              status: 0,
+              stdout: JSON.stringify({
+                auth: {
+                  probes: {
+                    results: [
+                      {
+                        provider: "openai",
+                        model: "openai/gpt-5",
+                        source: "env",
+                        status: probeStatus,
+                        error: { message: "provider-detail for key fixture-model-key" },
+                      },
+                    ],
+                  },
+                },
+              }),
+            };
           },
           spawn() {
             connectStarts++;
@@ -1070,6 +1092,38 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
       });
     });
   }
+});
+
+test("a provider-owned native OpenClaw worker serves a full-probe failure with its closed-vocabulary cause only", () => {
+  const { servers, diagnostics, events, connectStarts } = runNativeWorkerEntrypoint({
+    env: nativeProviderEnv,
+    upfrontStatus: 0,
+    probeStatus: "rate_limit",
+  });
+  assert.equal(connectStarts, 0);
+  const probe = events.find((event) => event.event === "openclaw.model_probe");
+  assert.equal(probe.code, "MODEL_PROBE_FAILED");
+  assert.deepEqual(probe.cause, { kind: "PROBE_STATUS", detail: "rate_limit" });
+  assert.equal(probe.providerStatus, undefined);
+  for (const line of diagnostics) {
+    assert.doesNotMatch(line, /fixture-model-key|provider-detail/);
+  }
+  const [{ handler }] = servers.filter((server) => server.listening !== undefined);
+  const answer = call(handler, { authorization: `Bearer ${TOKEN}` });
+  assert.equal(answer.status, 200);
+  const { checkedAt, ...failure } = answer.body.runtimeFailure;
+  assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+  assert.deepEqual(failure, {
+    component: "agent",
+    check: "model-probe",
+    code: "MODEL_PROBE_FAILED",
+    cause: { kind: "PROBE_STATUS", detail: "rate_limit" },
+  });
+  assert.doesNotMatch(JSON.stringify(answer.body), /fixture-model-key|provider-detail/);
+  assert.deepEqual(call(handler, { url: "/", authorization: `Bearer ${TOKEN}` }).body, {
+    error: "runtime_failure_held",
+    code: "MODEL_PROBE_FAILED",
+  });
 });
 
 test("a native OpenClaw worker without an exposed port, or with a Compute status port, keeps its held failure private", () => {

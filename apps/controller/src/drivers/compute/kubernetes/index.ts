@@ -6609,7 +6609,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       throw new Error("The exact AgentRevision workspace node is not enrolled.");
     }
     const activatedHarnessAuth =
-      sandboxDriver?.implementation === "openshell" && revision.harness.id === "codex"
+      sandboxDriver?.implementation === "openshell" &&
+      (revision.harness.id === "codex" || revision.harness.id === "openclaw")
         ? {
             ...harnessAuth,
             environment: [

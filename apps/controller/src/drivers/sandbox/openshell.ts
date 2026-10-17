@@ -2689,7 +2689,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             "OpenShell returned a different Sandbox name than requested.",
           );
         }
-        if (codex) {
+        if (exposed) {
           validateHarnessServiceUrl(created.serviceUrls[""]);
         } else if (Object.keys(created.serviceUrls).length !== 0) {
           throw new OpenShellSandboxConfigurationFailure(
@@ -2724,24 +2724,19 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     if (exposed) {
+      // The spec match above already proves the live Sandbox was created with this
+      // exposure, so a missing service is an anomaly, not an older Sandbox.
       const service = await client.getService(workspace, sandbox.resourceName, "", context.signal);
-      // A native worker's Sandbox created before Compute asked for the exposure is
-      // adopted without one; its held startup failure stays unobservable.
       if (
-        (service === undefined && codex) ||
-        (service !== undefined &&
-          (service.targetPort !== harnessPort(context.requirements) ||
-            !["SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH", 2].includes(
-              service.authorizationMode,
-            )))
+        service === undefined ||
+        service.targetPort !== harnessPort(context.requirements) ||
+        !["SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH", 2].includes(service.authorizationMode)
       ) {
         throw new OpenShellSandboxConfigurationFailure(
           `OpenShell Sandbox ${sandbox.resourceName} exists without its exact bearer-passthrough Harness service; remove the stale Sandbox before retrying.`,
         );
       }
-      if (service !== undefined) {
-        validateHarnessServiceUrl(service.url);
-      }
+      validateHarnessServiceUrl(service.url);
     }
     await this.initializeWorkspace(context, sandbox, client);
     return Object.freeze(sandbox);
@@ -2846,14 +2841,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Codex Harness. A Harness holding a startup failure (for example a failed model probe) serves
    * that failure on the exposed port in place of Codex, or in place of the dedicated OpenClaw
    * worker's node; a serving Codex app-server completes the authenticated WebSocket handshake.
-   * Anything else, including OpenShell's own `502` while nothing listens and a native worker's
-   * Sandbox created before the exposure existed, is still starting.
+   * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
     const { client, service } = await this.exactHarnessService(context, "observe a Harness");
-    if (service === undefined) {
-      return Object.freeze({ state: "starting" });
-    }
     // Handshake first, so a serving app-server never receives a plain request. A
     // Harness wrapper holding a startup failure answers the upgrade 503 with the held
     // code and serves the failure itself on the status path.
@@ -2875,16 +2866,15 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   }
 
   /**
-   * The exact bearer-passthrough exposure of the revision's Harness. Codex always has one; a
-   * dedicated OpenClaw worker has one only when Compute asked for it, so an absent service is
-   * returned for that worker and refused for Codex.
+   * The exact bearer-passthrough exposure of the revision's Harness: Codex always has one, a
+   * dedicated OpenClaw worker has one because Compute asked for it. Anything else fails closed.
    */
   private async exactHarnessService(
     context: SandboxHarnessContext,
     operation: string,
   ): Promise<{
     readonly client: OpenShellGatewayClient;
-    readonly service: Awaited<ReturnType<OpenShellGatewayClient["getService"]>>;
+    readonly service: NonNullable<Awaited<ReturnType<OpenShellGatewayClient["getService"]>>>;
   }> {
     this.requireOperatorWorkspaceMode(operation);
     const codex = context.revision.harness.id === "codex";
@@ -2910,9 +2900,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       "",
       context.signal,
     );
-    if (service === undefined && !codex) {
-      return { client, service };
-    }
     if (
       service === undefined ||
       service.targetPort !== harnessPort(context.requirements) ||
