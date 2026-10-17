@@ -886,7 +886,7 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
             ? section.querySelector('[role="alert"]')
             : section.lastElementChild.firstElementChild;
           focusSaveOutcome(section, [runButton], outcome);
-          outcomeId = runButton.getAttribute("aria-describedby") ? outcome.id || null : null;
+          outcomeId = runButton.getAttribute("aria-describedby") ? outcome.id : null;
         }
       }
     }

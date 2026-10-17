@@ -285,6 +285,9 @@ test("Agent detail separates the current version, viewed version, and latest dep
   }
   await unavailableAlert.waitFor();
   assert.equal(await focused(refreshRecord), true);
+  // That run started by dropping the earlier result's description, and nothing described the
+  // button again.
+  assert.equal(await runDiagnostics.getAttribute("aria-describedby"), null);
   await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
   await activity.getByText("Recorded status: queued").waitFor();
   assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);
