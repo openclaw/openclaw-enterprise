@@ -2026,6 +2026,28 @@ export const scenarios = {
     description:
       "Repository choices are usable while descriptions load. Descriptions appear without changing selections or moving focus.",
   },
+  createRepositoriesHiddenCharacters: {
+    group: "Pages/Create Agent",
+    name: "Repository descriptions with hidden characters",
+    path: create,
+    actions: repositoryForm,
+    repositoryOptions: [
+      {
+        repositoryRef: "application",
+        displayName: "example/application",
+        description: "Release notes \u202etxt.exe, zero\u200bwidth and \u2066isolate\u2069 end",
+        allowedProfiles: ["git-read", "git-write", "git-full"],
+      },
+      {
+        repositoryRef: "handbook",
+        displayName: "example/handbook",
+        description: "Guías del equipo · Ελληνικά · Русский · עברית",
+        allowedProfiles: ["git-read"],
+      },
+    ],
+    description:
+      "Bidi controls, zero-width and other invisible characters in a description show as escapes, so text cannot display reversed or hidden. Other scripts display as written.",
+  },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
     name: "Contributor access and write limits",

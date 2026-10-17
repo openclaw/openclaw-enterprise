@@ -228,7 +228,7 @@ export const repositoryBackendFixture = Object.freeze({
 export async function createRepositoryLaunchFixture(
   t,
   buildRepositories,
-  { reloadablePolicy = false } = {},
+  { reloadablePolicy = false, controlSocket } = {},
 ) {
   const fixture = await createConsoleAppFixture(t, {
     defaultPresets: [defaultCodexPreset],
@@ -237,7 +237,7 @@ export async function createRepositoryLaunchFixture(
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Repository launch", { ready: true });
-  let currentPolicy = repositoryPolicyDriver(buildRepositories(namespace.id));
+  let currentPolicy = repositoryPolicyDriver(buildRepositories(namespace.id), controlSocket);
   // Simulate replacing mounted policy between requests while keeping all projection and resolution
   // decisions in the actual GitHub Driver. This does not prove production configuration reload.
   const repoDriver = reloadablePolicy
@@ -260,12 +260,15 @@ export async function createRepositoryLaunchFixture(
     namespace,
     replacePolicy(repositories) {
       assert.equal(reloadablePolicy, true);
-      currentPolicy = repositoryPolicyDriver(repositories);
+      currentPolicy = repositoryPolicyDriver(repositories, controlSocket);
     },
   };
 }
 
-function repositoryPolicyDriver(repositories) {
+function repositoryPolicyDriver(
+  repositories,
+  controlSocket = "/unused/console/repository-control.sock",
+) {
   const backend = repositoryBackendFixture;
   const registry = validateGitHubRepositoryRegistry(
     {
@@ -282,9 +285,7 @@ function repositoryPolicyDriver(repositories) {
   return new GitHubRepoDriver(
     {
       id: backend.id,
-      client: new UnixRepositoryCredentialControlClient({
-        controlSocket: "/unused/console/repository-control.sock",
-      }),
+      client: new UnixRepositoryCredentialControlClient({ controlSocket }),
       drivers: backend.drivers,
     },
     registry,

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { join } from "node:path";
 import test from "node:test";
 import {
   CodexPluginDriver,
@@ -8,6 +10,7 @@ import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   apiRequests,
   login,
@@ -873,6 +876,84 @@ test("Repository descriptions arrive without interrupting a selection", async (t
   assert.deepEqual((await response.json()).data.repositoryBindings, [
     { repositoryRef: "application", profile: "git-full" },
   ]);
+});
+
+test("Repository descriptions show hidden and direction-changing characters as escapes", async (t) => {
+  // Finding 1628: the credential service replaces these characters, but the picker must not
+  // trust every description source. An independent control-socket peer sends them raw
+  // through the actual Unix client, GitHub Driver and OCC validation.
+  const description =
+    "Release notes ‮txt.exe, zero​width, ⁦isolate⁩, C1\u0085 end; " +
+    "日本語 עברית العربية Café 😀👍🏽";
+  const shown =
+    "Release notes \\u202etxt.exe, zero\\u200bwidth, \\u2066isolate\\u2069, C1\\u0085 end; " +
+    "日本語 עברית العربية Café 😀👍🏽";
+  const directory = await socketDirectory(t, "repository-description-escapes-");
+  const controlSocket = join(directory, "control.sock");
+  const held = [];
+  let lookups = 0;
+  const server = createServer((request, response) => {
+    lookups += 1;
+    const answer = () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          providerInstanceId: "console-repository-provider",
+          appId: "123",
+          githubInstallationId: "456",
+          descriptions: [{ repositoryRef: "application", repositoryId: "2000", description }],
+          pending: false,
+        }),
+      );
+    };
+    request.resume();
+    // The first lookup feeds the in-place refresh; later ones wait so a rebuilt row shows
+    // what it renders itself.
+    request.once("end", () => (lookups === 1 ? answer() : held.push(answer)));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(controlSocket, resolve);
+  });
+  t.after(() => {
+    held.splice(0).forEach((release) => release());
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const { fixture, namespace } = await createRepositoryLaunchFixture(
+    t,
+    (namespaceId) => [
+      {
+        repositoryRef: "application",
+        repositoryId: "2000",
+        repository: "example/application",
+        namespaces: [{ namespaceId, profiles: ["git-read"] }],
+      },
+      // Search appears with more than five choices.
+      ...["documentation", "examples", "infrastructure", "libraries", "tools"].map(
+        (name, index) => ({
+          repositoryRef: name,
+          repositoryId: String(2001 + index),
+          repository: `example/${name}`,
+          namespaces: [{ namespaceId, profiles: ["git-read"] }],
+        }),
+      ),
+    ],
+    { controlSocket },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const text = page
+    .locator(".repository-result-row")
+    .filter({ hasText: "example/application" })
+    .locator(".repository-description");
+  // The description arrives after the rows render and is written into the existing row.
+  await page.getByText(shown, { exact: true }).waitFor();
+  assert.equal(await text.textContent(), shown);
+  // Searching rebuilds the row from the stored description while its next lookup is held.
+  await page.getByLabel("Find a repository").fill("application");
+  await waitForCondition(() => lookups === 2, "the rebuilt row did not request descriptions");
+  assert.equal(await text.textContent(), shown);
 });
 
 test("Repository choices distinguish names, references, and restricted access", async (t) => {

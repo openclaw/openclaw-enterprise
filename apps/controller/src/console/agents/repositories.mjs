@@ -1,5 +1,6 @@
-import { element, button } from "../dom.mjs";
+import { element, button, setText } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
+import { visibleText } from "./logs-view.mjs";
 import {
   repositoryProfiles,
   repositoryProfile,
@@ -486,7 +487,11 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           { className: "repository-identity" },
           element("strong", {}, entry.displayName),
           typeof entry.description === "string" && entry.description.trim()
-            ? element("span", { className: "repository-description" }, entry.description)
+            ? element(
+                "span",
+                { className: "repository-description" },
+                visibleText(entry.description),
+              )
             : null,
           showReference || readOnly
             ? element(
@@ -877,9 +882,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           description = element("span", { className: "repository-description" });
           identity.querySelector("strong").after(description);
         }
-        if (description.textContent !== entry.description) {
-          description.textContent = entry.description;
-        }
+        setText(description, visibleText(entry.description));
       } else {
         description?.remove();
       }

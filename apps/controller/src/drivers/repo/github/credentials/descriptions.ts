@@ -29,6 +29,11 @@ const maxQueued = 20;
 const startsPerMinute = 15;
 const maxRequested = 20;
 const responseLimit = 64 * 1024;
+// A repository owner writes the description, and the Create Agent picker shows it. Besides C0
+// and DEL, C1 controls and the characters that change how text displays without being seen
+// (Trojan Source, CVE-2021-42574) become spaces: bidi controls, zero-width characters and the
+// line and paragraph separators, the set pushed ref names refuse (client-contracts.ts).
+const hiddenCharacter = /[\u0080-\u009f\u061c\u200b-\u200f\u2028-\u202e\u2060\u2066-\u2069\ufeff]/u;
 
 /** Descriptions are optional display data; all token ownership remains in the credential service. */
 export function createGitHubRepositoryDescriptions(options: DescriptionOptions) {
@@ -162,7 +167,9 @@ export function createGitHubRepositoryDescriptions(options: DescriptionOptions) 
         if (typeof record.description === "string") {
           const description = Array.from(record.description, (character) => {
             const code = character.charCodeAt(0);
-            return code <= 0x1f || code === 0x7f ? " " : character;
+            return code <= 0x1f || code === 0x7f || hiddenCharacter.test(character)
+              ? " "
+              : character;
           })
             .join("")
             .trim();

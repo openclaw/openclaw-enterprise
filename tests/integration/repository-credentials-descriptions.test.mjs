@@ -279,6 +279,46 @@ test("repository metadata preserves supplementary Unicode through the character 
   assert.equal(result.descriptions[1].description, "😀".repeat(512));
 });
 
+test("repository metadata replaces controls and invisible or bidi characters", async (t) => {
+  // Finding 1628: every code point the filter replaces, between letters, and the code points
+  // just outside each replaced range, which stay.
+  const hidden = [
+    0x00, 0x09, 0x1f, 0x7f, 0x80, 0x85, 0x9f, 0x061c, 0x200b, 0x200c, 0x200d, 0x200e, 0x200f,
+    0x2028, 0x2029, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060, 0x2066, 0x2067, 0x2068, 0x2069,
+    0xfeff,
+  ];
+  const kept = [0xa0, 0x061b, 0x200a, 0x2010, 0x2027, 0x202f, 0x205f, 0x2070, 0xfefc];
+  const spell = (codes) => codes.map((code) => `x${String.fromCodePoint(code)}`).join("") + "x";
+  // Letters, combining marks, CJK, right-to-left scripts and emoji with modifiers stay intact.
+  const unicode = "Café 日本語 עברית العربية 😀👍🏽❤️";
+  const fixture = await startRegistryCredentialServiceFixture(t, {
+    autoOpen: false,
+    gateway: { listen: "127.0.0.1:0" },
+    repositories: [
+      {
+        repositoryRef: "repo-a",
+        repository: "fixture/hidden",
+        repositoryId: "75",
+        description: `‮${spell(hidden)}⁩`,
+      },
+      {
+        repositoryRef: "repo-b",
+        repository: "fixture/kept",
+        repositoryId: "76",
+        description: `${spell(kept)} ${unicode}`,
+      },
+    ],
+  });
+  const result = await settled(fixture.config.gateway.controlSocket, {
+    namespaceId: fixture.namespaceId,
+    repositoryRefs: ["repo-a", "repo-b"],
+  });
+  assert.deepEqual(
+    result.descriptions.map((entry) => entry.description),
+    ["x ".repeat(hidden.length) + "x", `${spell(kept)} ${unicode}`],
+  );
+});
+
 test("missing and temporarily unavailable descriptions do not block selection", async (t) => {
   const fixture = await startRegistryCredentialServiceFixture(t, {
     autoOpen: false,
