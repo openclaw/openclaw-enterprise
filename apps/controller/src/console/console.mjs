@@ -1098,6 +1098,7 @@ async function loadPage({
       history.back();
     }
   };
+  const openingAgentTitle = "Agent details";
   const showOpeningPanel = () => {
     shell = renderShell(current.feature, true);
     shell.view.replaceChildren(
@@ -1110,7 +1111,7 @@ async function loadPage({
     );
     shell.view.setAttribute("aria-busy", "false");
     pendingAgentHeading = app.querySelector(".content h1");
-    pendingAgentHeading.textContent = "Agent details";
+    pendingAgentHeading.textContent = openingAgentTitle;
     pendingAgentHeading.focus();
   };
   if (openingAgent && !startup) {
@@ -1939,6 +1940,7 @@ async function loadPage({
                 ? "Backend discovery unavailable"
                 : "Request unavailable";
     if (openingAgent && ![400, 403, 404].includes(error.status)) {
+      app.querySelector(".content h1").textContent = openingAgentTitle;
       panel(
         shell.view,
         "Could not load agent details",
