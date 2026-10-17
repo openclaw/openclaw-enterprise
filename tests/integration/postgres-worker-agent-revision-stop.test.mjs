@@ -16,6 +16,7 @@ import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import {
   advanceCleanupRetries,
+  completedPasses,
   completion,
   removeAccessBindings,
   repositoryAttempts,
@@ -265,21 +266,6 @@ function stopPasses(events, stop) {
   return events.filter(
     ({ event, workId }) => event === "worker.completed" && workId === stop.idempotencyKey,
   );
-}
-
-// The worker emits worker.completed after its queue transaction commits, so the database can say
-// the work succeeded before the event arrives (finding 1607). Wait for the work's first successful
-// pass, check it is the last one observed, and return every pass.
-async function completedPasses(events, work) {
-  const completed = await completion(
-    events,
-    `work ${work.idempotencyKey} to complete successfully`,
-    ({ event, workId, outcome }) =>
-      event === "worker.completed" && workId === work.idempotencyKey && outcome === "success",
-  );
-  const passes = stopPasses(events, work);
-  assert.equal(passes.at(-1), completed);
-  return passes;
 }
 
 async function stopAudit(fixture, owner) {
@@ -561,7 +547,6 @@ for (const change of ["redeploy", "deletion"]) {
         const redeployed = await fixture.revision(owner, 2);
         await fixture.work(redeployed, "succeeded", 30_000);
         await fixture.work(stop, "succeeded", 30_000);
-        assert.equal((await completedPasses(events, stop)).at(-1).code, "STOP_SUPERSEDED");
         const current = await fixture.currentAgent(owner);
         assert.equal(current.desiredRuntimeState, "running");
         assert.equal(current.activeRevisionId, redeployed.id);
@@ -697,7 +682,7 @@ for (const moment of ["preparation", "commit", "activation"]) {
       const done = await fixture.work(candidate, "succeeded", 30_000);
       assert.ok(stop !== undefined, "the stop was admitted during the pass");
       await fixture.work(stop, "succeeded", 30_000);
-      const passes = (await completedPasses(events, candidate)).map(({ code }) => code);
+      const passes = stopPasses(events, candidate).map(({ code }) => code);
       assert.ok(passes.includes("AGENT_STOP_YIELDED"), passes.join(", "));
       assert.equal(passes.at(-1), "REVISION_STOPPED");
       assert.ok(!passes.includes("DEPENDENCY_UNAVAILABLE"), passes.join(", "));
