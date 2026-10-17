@@ -862,6 +862,94 @@ test(
   },
 );
 
+// Finding 1694: OpenShell also answers UNAUTHENTICATED while the controller's token file or
+// the gateway's signing keys are between refreshes. That refusal keeps its reason but retries
+// within the attempt budget, as an outage does, and a persistent one fails with the code only
+// once the budget is spent.
+test(
+  "a withdrawal refused as unauthenticated retries before it settles or fails with the code",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const { owner, candidate: active } = await fixture.admitInitialRevision(
+      "withdraw-unauthenticated",
+      { agent: { auth: "credential_source" } },
+    );
+    const { gateway, compute } = gatewayOutage(fixture);
+    const events = [];
+    let refusals = 1;
+    await fixture.start(
+      {
+        ...compute,
+        async withdrawCredentialSource(revision, source, signal) {
+          if (refusals > 0) {
+            refusals -= 1;
+            throw new SandboxGatewayUnauthorizedError(
+              "OpenShell refused the controller gateway identity in Workspace oce-test, so the credential of Sandbox sb-test cannot be confirmed withdrawn.",
+              { transient: true },
+            );
+          }
+          return compute.withdrawCredentialSource(revision, source, signal);
+        },
+      },
+      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway, emit: (event) => events.push(event) },
+    );
+    gateway.down = false;
+    await fixture.work(active, "succeeded");
+    const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+    const read = () => fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    const [first] = await withdrawalAttempts(fixture, active);
+    // The first attempt is refused and retried with its reason; the second revokes.
+    const settled = await fixture.work(first, "succeeded");
+    assert.equal(settled.attempt_count, 2);
+    assert.equal(gateway.withdrawn.length, 1);
+    const revoked = await read();
+    assert.equal(revoked.state, "revoked");
+    assert.equal(revoked.lastReason, "CREDENTIALS_WITHDRAWN");
+    const completed = events.filter(
+      ({ event, code }) => event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED",
+    );
+    assert.deepEqual(
+      completed.map(({ outcome, hint }) => [outcome, hint]),
+      [["retry", undefined]],
+    );
+
+    // A refusal that outlasts the budget fails with the code, logged with the operator guidance,
+    // and nothing is recorded revoked.
+    const other = await fixture.admitInitialRevision("withdraw-unauthenticated-persistent", {
+      agent: { auth: "credential_source" },
+    });
+    refusals = Number.POSITIVE_INFINITY;
+    await fixture.work(other.candidate, "succeeded");
+    const otherRequest = withdrawalRequest(fixture, other.owner, other.owner.harnessAuth.sourceId);
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, otherRequest);
+    const [persistent] = await withdrawalAttempts(fixture, other.candidate);
+    const failed = await fixture.work(persistent, "failed_permanent");
+    assert.equal(failed.attempt_count, 2);
+    assert.equal(
+      (await fixture.workResult(persistent)).rows[0].reason_code,
+      "SANDBOX_GATEWAY_UNAUTHORIZED",
+    );
+    const pending = await fixture.controller.readAgentCredentialWithdrawal(
+      fixture.actor.id,
+      otherRequest,
+    );
+    assert.equal(pending.state, "pending");
+    assert.equal(pending.lastReason, "SANDBOX_GATEWAY_UNAUTHORIZED");
+    const terminal = events.filter(
+      ({ event, code, hint }) =>
+        event === "worker.completed" && code === "SANDBOX_GATEWAY_UNAUTHORIZED" && hint !== undefined,
+    );
+    assert.equal(terminal.length, 1);
+    assert.match(terminal[0].hint, /Restore the controller gateway identity's Workspace role/);
+    assert.deepEqual(await withdrawalAudit(fixture, "outcome", "reason_code"), [
+      { outcome: "success", reason_code: "CREDENTIALS_WITHDRAWN" },
+      { outcome: "failure", reason_code: "SANDBOX_GATEWAY_UNAUTHORIZED" },
+    ]);
+  },
+);
+
 test(
   "a terminally failing credential withdrawal takes the Namespace and Agent before its withdrawal rows",
   requiresPostgres,

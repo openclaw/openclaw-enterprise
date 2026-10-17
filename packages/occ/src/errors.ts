@@ -867,14 +867,21 @@ export class SandboxRevisionUnsupportedError extends Error {
  * out of band presents the same way, since the gateway drops the identity's membership with it.
  * An operator restores the identity's Workspace role (or the Workspace, through a deploy) and
  * runs the operation again. The message stays in the controller.
+ *
+ * `transient` is true when the gateway could not authenticate the identity at all
+ * (UNAUTHENTICATED): an expired or not-yet-valid token file and a signing key the gateway has
+ * not refreshed yet mend themselves, so the worker retries within its attempt budget before it
+ * fails with `code` (finding 1694). A role the identity lacks (PERMISSION_DENIED) fails at once.
  */
 export class SandboxGatewayUnauthorizedError extends Error {
   readonly code: "SANDBOX_GATEWAY_UNAUTHORIZED";
+  readonly transient: boolean;
 
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: ErrorOptions & { readonly transient?: boolean }) {
     super(message, options);
     this.name = "SandboxGatewayUnauthorizedError";
     this.code = "SANDBOX_GATEWAY_UNAUTHORIZED";
+    this.transient = options?.transient === true;
   }
 }
 

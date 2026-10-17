@@ -281,6 +281,7 @@ export {
   restrictionsRemovedWithAgent,
 } from "./iam-policy-cleanup.ts";
 export type { RemovedAccessBinding } from "./iam-policy-cleanup.ts";
+export { operationRefusalHint } from "./state/controller-work.ts";
 export {
   ActivationFailedError,
   ComputePreparationFailedError,
