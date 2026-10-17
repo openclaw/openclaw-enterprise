@@ -11,11 +11,15 @@
     "tests/browser/console-agent-channels.test.mjs",
     "tests/browser/console-agents-2.test.mjs",
     "tests/browser/console-agent-state.test.mjs",
+    "tests/browser/console-agent-saves.test.mjs",
     "tests/browser/console-runtime-credentials.test.mjs",
     "tests/browser/console-codex-oauth.test.mjs",
-    "tests/browser/console-agent-saves.test.mjs",
+    "tests/browser/console-agent-save-refusals.test.mjs",
     "tests/browser/console-repository-dedicated.test.mjs",
-    "tests/browser/console-create-agent-provisioning-400.test.mjs"
+    "tests/browser/console-create-agent-provisioning-400.test.mjs",
+    "tests/browser/console-agent-deploy-focus.test.mjs",
+    "tests/browser/console-agents-list-return.test.mjs",
+    "tests/browser/console-refocus-focus.test.mjs"
   ],
   "files": [
     {
@@ -53,6 +57,18 @@
     },
     {
       "path": "tests/browser/console-agent-saves.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-save-refusals.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-deploy-focus.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agents-list-return.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-refocus-focus.test.mjs"
     }
   ]
 }

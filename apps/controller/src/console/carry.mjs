@@ -48,21 +48,53 @@ export function carryValue(base, mine, current) {
 
 // A JSON document merges key by key: keys the reader did not change keep the reread value, and
 // a value both browsers changed differently keeps the reader's, listed with the saved value.
-// Arrays are single values: merging their items could reorder or duplicate entries.
+// Arrays are single values: merging their items could reorder or duplicate entries. `mixed`
+// names each object below the top level where the reader changed some keys and the other
+// browser others, since such keys may belong together (`auth.mode` and `auth.token`): the
+// merge keeps both, and the reader is asked to review the object (finding 1524).
 export function carryDocument(base, mine, current, path = "") {
   if (sameValue(mine, base)) {
-    return { value: current, conflicts: [] };
+    return { value: current, conflicts: [], mixed: [] };
   }
   if (sameValue(current, base) || sameValue(current, mine)) {
-    return { value: mine, conflicts: [] };
+    return { value: mine, conflicts: [], mixed: [] };
   }
   if (!isRecord(base) || !isRecord(mine) || !isRecord(current)) {
-    return { value: mine, conflicts: [{ path: path || "/", saved: current }] };
+    return { value: mine, conflicts: [{ path: path || "/", saved: current }], mixed: [] };
   }
   const entries = [];
   const conflicts = [];
+  const mixed = [];
   const keys = new Set([...Object.keys(current), ...Object.keys(mine), ...Object.keys(base)]);
   const own = (record, key) => (Object.hasOwn(record, key) ? record[key] : undefined);
+  // Keys each browser changed that the other side does not already hold.
+  const changedBy = (side, other) =>
+    [...keys].filter(
+      (key) =>
+        !sameValue(own(side, key), own(base, key)) && !sameValue(own(side, key), own(other, key)),
+    );
+  const mineKeys = changedBy(mine, current);
+  const theirKeys = changedBy(current, mine);
+  // An object whose changed keys all hold objects only groups them (`channels.slack` and
+  // `channels.discord`); the recursion names any of those that mix.
+  const grouping = [...mineKeys, ...theirKeys].every((key) =>
+    [base, mine, current].every((side) => own(side, key) === undefined || isRecord(own(side, key))),
+  );
+  // A key that holds an object on every side is the recursion's to name, so it does not mix
+  // with a plain sibling: `gateway.auth.mode` against `gateway.port` names nothing (finding 1541).
+  // An object one browser added still counts as plain, since an added `auth.token` reference
+  // beside a changed `auth.mode` is the pair finding 1524 must name.
+  const plain = (key) =>
+    [base, mine, current].some((side) => {
+      const value = own(side, key);
+      // A Secret reference is a setting, even though its JSON value is an object.
+      return !isRecord(value) || (value.source === "env" && typeof value.id === "string");
+    });
+  const minePlain = mineKeys.filter(plain);
+  const theirPlain = theirKeys.filter(plain);
+  if (path && !grouping && minePlain.length && theirPlain.some((key) => !minePlain.includes(key))) {
+    mixed.push(path);
+  }
   for (const key of keys) {
     const merged = carryDocument(
       own(base, key),
@@ -74,7 +106,8 @@ export function carryDocument(base, mine, current, path = "") {
       entries.push([key, merged.value]);
     }
     conflicts.push(...merged.conflicts);
+    mixed.push(...merged.mixed);
   }
   // fromEntries defines own keys, so a "__proto__" key in the document stays a key.
-  return { value: Object.fromEntries(entries), conflicts };
+  return { value: Object.fromEntries(entries), conflicts, mixed };
 }

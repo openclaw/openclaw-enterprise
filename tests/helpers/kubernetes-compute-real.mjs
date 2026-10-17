@@ -479,6 +479,19 @@ export async function assertReadyGateway(namespaceName, agentId, namespaceId, sn
       ? undefined
       : {
           ...snapshot.configuration,
+          ...(snapshot.harness.id === "codex" && snapshot.harness.mode === "dedicated"
+            ? {
+                // The paired Harness owns the real filesystem; the Gateway
+                // keeps a writable local key for native chat preparation.
+                agents: {
+                  ...snapshot.configuration.agents,
+                  defaults: {
+                    ...snapshot.configuration.agents?.defaults,
+                    workspace: "/home/node/workspace",
+                  },
+                },
+              }
+            : {}),
           gateway: {
             ...snapshot.configuration.gateway,
             // Compute renders the all-interfaces listener for an omitted or auto bind.

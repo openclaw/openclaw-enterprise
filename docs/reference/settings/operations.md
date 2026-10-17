@@ -62,7 +62,7 @@ An exit-0 `migration.checked` record reports a reviewed history shape:
 `preOAuth`, `preCredentialWithdrawals`, `preBrokerReceiptFence`,
 `preModelProbeFailureCause`, `preProvisioningConfigurationRelease`, `preAdministratorCredentialSourceGrants`,
 `preCodexPatSources`, `preAgentCredentialSources`,
-`preCredentialWithdrawalRequester`, `preRuntimeRoles`, or `completed`.
+`preCredentialWithdrawalRequester`, `preCanonicalHarnessAuth`, `preRuntimeRoles`, or `completed`.
 `prePresetsMain` means
 the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
@@ -93,9 +93,10 @@ has 46 through `0046_model_probe_failure_cause`;
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
 through `0050_agent_credential_sources`; `preComputeRevisionAdmission` has 54
 through `0054_credential_source_pat`; `preHeldAuthenticationSession` has 55 through
-`0055_compute_revision_admission`; `preRuntimeRoles` has 56 through
-`0056_held_authentication_session`. `completed` has all 57 receipts through
-`0057_agent_runtime_roles`.
+`0055_compute_revision_admission`; `preCanonicalHarnessAuth` has 56 through
+`0056_held_authentication_session`; `preRuntimeRoles` has 57 through
+`0057_canonical_harness_auth`. `completed` has all 58 receipts through
+`0058_agent_runtime_roles`.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's `CREATE` and
@@ -274,12 +275,10 @@ impose a Namespace-wide Agent limit.
 
 ## Local Compose and PostgreSQL configuration
 
-The root Compose development stack starts PostgreSQL 18.6, migrations,
-bootstrap, API, and worker. `occ dev up` starts the supported development
-profile; the checkout-local `scripts/dev-up` entry point uses the same path.
-Startup validates Compose configuration, waits for services, copies
-the bootstrap service-key response to a private file, and proves authenticated
-access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
+The Compose development stack starts PostgreSQL 18.6, migrations, bootstrap,
+API and worker. `occ dev up` and checkout-local `scripts/dev-up` start this profile.
+Startup validates configuration, waits for services, copies the bootstrap
+service-key response to a private file and proves authenticated access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
 Compute. Kubernetes Compute can use a Compose control plane or the
 [Kubernetes-only profile](../../guides/deploy/local-kubernetes-development.md).
 The helper prefers a usable Docker Engine and otherwise selects Podman directly,

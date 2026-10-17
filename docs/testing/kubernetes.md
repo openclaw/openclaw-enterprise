@@ -47,17 +47,21 @@ OCC_TEST_KUBERNETES_IMAGE=oce-fixture:local \
 OCC_TEST_DATABASE_URL=postgresql://occ_app:occ-app-local@127.0.0.1:55432/openclaw_k8s_local \
   node --test --test-concurrency=1 tests/integration/kubernetes-compute-real.test.mjs \
     tests/integration/kubernetes-compute-provisioning-real.test.mjs \
-    tests/integration/kubernetes-compute-driver-real.test.mjs \
-    tests/integration/kubernetes-oauth-bootstrap-real.test.mjs
+    tests/integration/kubernetes-compute-driver-real.test.mjs
 ```
 
-All fixture cases must pass without skips. Missing all cluster selectors skips
-these tests; partial selectors fail. A missing database skips database cases.
-The files share a database, so run them one at a time. The suite checks API,
-worker, driver, RBAC, storage, workload lifecycle, OAuth bootstrap and enforced
-network isolation. OAuth provider responses and credentials are synthetic; it
-does not prove live OAuth or model execution. Local storage checks do not prove
-cloud volume detach or node fencing.
+All fixture cases must pass without skips. Missing all cluster selectors skips;
+partial selectors fail. A missing database skips database cases. Run files
+sequentially: they share a database. The suite checks API, worker, Driver, RBAC,
+storage, lifecycle and network isolation, not live OAuth/models, cloud volume
+detach or node fencing.
+
+External OAuth credentials use OpenShell rather than Kubernetes bootstrap Jobs or a
+native OAuth store. The [OpenShell OAuth proof](openshell-oauth.md) exercises real
+Gateway refresh and operator-mTLS access-token reads with a controlled issuer.
+The credentialed [OpenShell runtime lane](openshell.md) covers provider delivery,
+Codex exposure, model execution, and withdrawal. Neither lane runs in ordinary
+credential-free CI; a green fixture result does not prove live OAuth refresh.
 
 When finished, delete only the cluster you created:
 
@@ -279,13 +283,12 @@ routing policies, PostgreSQL or worker execution. Selecting only one image fails
 
 ### Native Gateway sharing
 
-Run the `gateway-routing` lane as shown above; it selects
-`tests/integration/native-admin-k3d-real.test.mjs`. Its sharing case checks
-human cookies, exact Agent grants, denied sibling/Configuration access, Console launch,
-model turns, and selective WebSocket revocation within 30 seconds while another person continues.
-The native-browser case assigns a role before deployment, changes it while stopped, and
-verifies access after redeployment. It does not
-qualify account enrollment, per-chat authority, Git, or OpenShell.
+`gateway-routing` selects `tests/integration/native-admin-k3d-real.test.mjs`.
+It checks cookies, exact grants, sibling/Configuration denials, Console launch,
+model turns and WebSocket revocation within 30 seconds. Another person
+continues. Role assignment before deployment, changes while stopped and
+redeployment are covered; account enrollment, per-chat authority, Git and
+OpenShell are not.
 
 ## Production TUI tests
 

@@ -188,6 +188,9 @@ function classifyReceipts(receipts, manifest) {
         return "preHeldAuthenticationSession";
       }
       if (receipts.length === 56) {
+        return "preCanonicalHarnessAuth";
+      }
+      if (receipts.length === 57) {
         return "preRuntimeRoles";
       }
       return "providerCompleted";
@@ -298,6 +301,9 @@ function classifyReceipts(receipts, manifest) {
     return "preHeldAuthenticationSession";
   }
   if (receipts.length === 56) {
+    return "preCanonicalHarnessAuth";
+  }
+  if (receipts.length === 57) {
     return "preRuntimeRoles";
   }
   refuse("an incomplete or unsupported development history is installed");

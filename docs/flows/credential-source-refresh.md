@@ -1,7 +1,7 @@
 ---
 created: "2026-10-08"
-updated: "2026-10-14"
-last_updated_session: fix-1366
+updated: 2026-10-14
+last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
 # Credential source refresh Flow
@@ -54,7 +54,8 @@ graph TD
 
 `packages/occ/src/index.ts:createCredentialSource`
 
-The API validates the request against the gateway catalog. A type whose
+The API validates the request against the gateway catalog. Device-authorized
+types defer the first mint to the completion path below. A type whose
 `rotation` is `refresh` resolves the selected Credential Refresh Driver inside
 the first transaction, so a missing selection fails before any gateway call.
 The API reads the Secret values, commits the record as `registering`, and calls
@@ -116,6 +117,51 @@ terminal: OCC removes the refresh material and provider, deletes the record, and
 returns `503` with the Driver's failure code. Otherwise the second transaction
 marks the source `ready` with its audit event.
 
+### Device authorization and configuration
+
+`packages/occ/src/index.ts:startAgentDeviceAuthorization`,
+`pollAgentDeviceAuthorization`, `withPluginDiscoveryCredential`
+
+A type declaring `deviceAuthorization.harnessId` registers an empty provider and
+defers the first mint. OCC selects the paired Refresh Driver's start/poll hooks,
+storing only its opaque handle plus actor, source, Gateway ID, and Refresh ID in
+the login-session Secret. Compare-and-swap permits one poll; OCC rechecks scope
+and both Driver selections before accepting completion. An uncertain exchange
+closes the handle without removing the source or replaying its grant.
+
+`apps/controller/src/drivers/credential-refresh/codex-device-authorization.ts:startCodexDeviceAuthorization`
+starts the issuer request from the API Pods. The start, poll, and token-exchange
+requests use fixed `auth.openai.com` endpoints and refuse redirects, so login
+material is never forwarded to a redirect target. It preserves the existing
+`DeviceAuthorizationStartError` distinction: connection failure or timeout is
+`unreachable`; HTTP rejection, malformed replies, and `AbortError` are
+`unavailable`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
+`auth.openai.com` and API Pod egress only for `unreachable`. The
+`device_authorization.start_failed` warning keeps the Refresh boundary and bounded
+failure class, never provider messages, response bodies, or nested causes.
+
+`apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
+performs the Codex exchange, configures OpenShell with refresh material, and
+stores trusted account metadata. Before acquiring a code, its issuer polling
+returns pending on HTTP `429`, `5xx`, or a fetch connection failure; OCC retains
+the handle and its polling interval. An aborted initial poll, including OCC's
+internal timeout, closes the session and requires a fresh login; it is not
+retried as pending. Failures from code acquisition onward likewise close the
+session without replay. OpenShell owns
+future refresh and successor persistence. Polling uses existing state after handoff; unfinished refresh stays
+pending, while a persistent uncertain marker needs operator inspection.
+Ready confirms a usable token. Later revisions attach the existing provider
+without reseeding credentials; account metadata changes require a new login and
+revision.
+
+For plugin configuration, the Gateway reads ownership/account metadata using its
+ordinary Backend identity, then calls `GetProviderCredentials` through the
+separate operator-TLS channel. OpenShell may refresh to satisfy its five-minute
+remaining-lifetime requirement. Only access credentials enter the callback; it
+rechecks the caller's authority and saved-Agent binding/grant before provider I/O.
+Closing or expiring the login session does not disable source-based discovery.
+Cancellation or a failed recheck cannot undo gateway refresh already started.
+
 ### 3. Background refresh
 
 `apps/controller/src/drivers/credential-refresh/openshell.ts:refreshStatus`
@@ -125,7 +171,7 @@ The Sandbox proxy substitutes the current token for the stable placeholder on
 each request, so a running Harness needs no restart. OCC makes no call.
 `GET` on the source adds `refreshStatus` to the gateway status; OpenShell's
 `refreshed` state reports `ready`, its error states report `failed` with a
-recovery action, and missing refresh state reports `failed`. OCC finds the
+recovery action, and missing established refresh state reports `failed`. OCC finds the
 type through `refreshDriverForSource`, which tolerates a type the catalog no
 longer offers: that source keeps its gateway status without `refresh`.
 
@@ -159,8 +205,14 @@ whose outcome is unknown records neither event.
 `packages/occ/src/index.ts:deleteCredentialSource`
 
 After the usual reference check and `deleting` mark, OCC calls `removeRefresh`,
-which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
-`removeSource`. A failure leaves the record `deleting` for retry.
+then the gateway's `removeSource`. Before `DeleteProviderRefresh`,
+`apps/controller/src/drivers/credential-refresh/openshell.ts:ownedProvider`
+checks the exact source Namespace and paired Gateway ID, then the current
+provider's manager/source labels and profile identity. A missing provider is
+already clean; a foreign provider or failed lookup refuses cleanup. The deletion
+RPC retains `allow_missing`. Explicit rotation uses the same guard but refuses absence. The check protects against
+out-of-band provider drift; lookup and mutation are not atomic. A failure leaves
+the record `deleting` for retry.
 
 ## Debugging and Verification
 
@@ -168,7 +220,8 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
   `recoveryAction` explain the last mint without exposing a token.
 - `oauth_token_endpoint_unavailable` means the OpenShell gateway Pod could not
   reach `token_url`; check its NetworkPolicy and trust of the issuer's CA.
-- `reauthorize` follows a revoked refresh token; supply new material with `PATCH`.
+- `reauthorize` requires new authorization: replace Secret-backed material with
+  `PATCH`; for device-authorized sources, sign in again and rebind the Agent.
 - `tests/integration/sandbox-driver-openshell-k3d-real.test.mjs` proves minting,
   background re-minting, forced rotation, reauthorization, a failed update, and deletion against
   a real Keycloak. `tests/conformance/credential-source-occ.test.mjs` covers OCC
@@ -187,8 +240,21 @@ which sends `DeleteProviderRefresh` with `allow_missing`, and then the gateway's
 
 ## Changelog
 
+- 2026-10-14 23:26: Restore issuer redirect refusal in all three moved device-login requests. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 6f0b9180125f80d9e490d77656d4919c574d5004)
+
 - 2026-10-14 21:40: Refuse the three-label `<port>.<protocol>.<service>` short form of the gateway's Services. (fix-1366 - bc85338f2)
+
+- 2026-10-14 01:13: Check current provider ownership before refresh mutation and retain fresh-login recovery after a poll timeout. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - c5fb4880ebf2df2aedae12f99adb1992a930ba1b)
+
+- 2026-10-13 19:42: Restore issuer-connectivity diagnostics at the Refresh-owned device-login boundary. (authoring-run/0754f915-95b1-457f-b261-5b1474f1dfe1 - 70431971c6b1e9157634d36a9d911480ad6d833f)
+
+- 2026-10-13 09:37: Reconcile current admission and lifecycle behavior with external OAuth custody in the accompanying merge. (authoring-run/fd902939-ed58-4508-8d33-95a863d966af - e8d39978d801e7a5a8ac7242f32035f426da94e1)
+
 - 2026-10-09 23:30: Update refuses a recorded refresh token; update and rotation hold only the source lock and audit failures. (fix-848-978-979)
+
+- 2026-10-09 13:29: Keep retryable issuer polling pending before code acquisition while preserving the no-replay exchange boundary. (authoring-run/b15140a3-8d21-494c-b7c5-0c2dd362b30f - 69a0a6aaa5b3ba3aecd05d8780024e8d173f3a24)
+
+- 2026-10-09 17:37: Trace Refresh-owned device authorization in the accompanying merge. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 1c2fbd2bc2953430e3ddaf68882176c6943ea7b2)
 
 - 2026-10-08 16:19: Registration sends the gateway no refresh secrets; a failed update keeps the new material. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - f79f896b3)
 - 2026-10-08 11:46: Reading a source no longer needs its type in the current catalog. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - 3ce93bfda)

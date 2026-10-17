@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -62,5 +62,56 @@ test("development wrappers resolve relative paths without changing CDPATH", asyn
         assert.equal(await readFile(observed, "utf8"), cdpath);
       }
     }
+  }
+});
+
+test("k3d and CI tool setup resolve the checkout without CDPATH", async (t) => {
+  // Each wrapper exits on a path that needs no cluster, container engine or download:
+  // k3d prints help, and setup-tools rejects an unknown profile after entering the checkout.
+  const directory = await mkdtemp(join(tmpdir(), "openclaw tool entry-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const checkout = join(directory, "checkout");
+  const search = join(directory, "shell search");
+  await mkdir(join(checkout, "scripts", "ci"), { recursive: true });
+  await mkdir(join(search, "scripts", "ci"), { recursive: true });
+  for (const script of ["k3d", "ci/setup-tools.sh"]) {
+    await copyFile(join(repository, "scripts", script), join(checkout, "scripts", script));
+  }
+  const expected = await realpath(checkout);
+  // Help and an unknown profile look the same from either directory, so record where each
+  // wrapper ended up: this startup file, and nothing inherited, records it on exit.
+  const exitDirectory = join(directory, "exit-directory");
+  const startup = join(directory, "record-exit-directory.sh");
+  await writeFile(startup, `trap 'pwd -P > "$TEST_WRAPPER_CWD"' EXIT\n`);
+  for (const cdpath of ["", ".:", search]) {
+    // setup-tools checks the Node on PATH before its profile, so put this Node first.
+    const env = {
+      ...process.env,
+      BASH_ENV: startup,
+      CDPATH: cdpath,
+      PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH}`,
+      RUNNER_TEMP: join(directory, "runner"),
+      TEST_WRAPPER_CWD: exitDirectory,
+    };
+    delete env.ENV;
+    delete env.SHELLOPTS;
+    delete env.GITHUB_ENV;
+    const run = async (args) => {
+      await rm(exitDirectory, { force: true });
+      const result = spawnSync("/bin/bash", args, { cwd: checkout, encoding: "utf8", env });
+      const context = `CDPATH=${cdpath}: ${result.stderr || result.error?.message}`;
+      assert.equal(
+        await readFile(exitDirectory, "utf8"),
+        `${expected}\n`,
+        `CDPATH=${cdpath}: ${args[0]} left the checkout`,
+      );
+      return { ...result, context };
+    };
+    const k3d = await run(["scripts/k3d", "help"]);
+    assert.equal(k3d.status, 0, k3d.context);
+    assert.match(k3d.stdout, /^usage: \.\/scripts\/k3d/);
+    const setup = await run(["scripts/ci/setup-tools.sh", "unknown-profile"]);
+    assert.equal(setup.status, 64, setup.context);
+    assert.equal(setup.stderr, "Unknown setup profile: unknown-profile\n");
   }
 });

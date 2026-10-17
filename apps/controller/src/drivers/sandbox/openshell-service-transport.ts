@@ -19,6 +19,21 @@ interface ServiceTransportOptions {
   readonly requestTimeoutMs: number;
 }
 
+/** The gateway listener, or the service behind it, did not answer one bounded request. */
+export class OpenShellServiceTransportError extends DependencyUnavailableError {
+  readonly reason: "timeout" | "unreachable";
+
+  constructor(reason: "timeout" | "unreachable") {
+    super(
+      reason === "timeout"
+        ? "OpenShell service request timed out."
+        : "OpenShell service is unreachable.",
+    );
+    this.name = "OpenShellServiceTransportError";
+    this.reason = reason;
+  }
+}
+
 const MAX_SERVICE_RESPONSE_BYTES = 16 * 1024;
 const WEBSOCKET_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
@@ -141,11 +156,11 @@ function send(
     };
     const timer = setTimeout(() => {
       request.destroy();
-      finish(() => reject(new DependencyUnavailableError("OpenShell service request timed out.")));
+      finish(() => reject(new OpenShellServiceTransportError("timeout")));
     }, options.requestTimeoutMs);
     signal.addEventListener("abort", abort, { once: true });
     request.on("error", () =>
-      finish(() => reject(new DependencyUnavailableError("OpenShell service is unreachable."))),
+      finish(() => reject(new OpenShellServiceTransportError("unreachable"))),
     );
     handle(
       request,

@@ -735,6 +735,30 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
       cause: "The model provider check reported a failure (error-event)",
     },
+    // Finding 1600: a Codex check retried once ends its detail -attempt2. The advice
+    // follows the token without the suffix, and the text says the retry also failed.
+    ...[
+      [
+        "rate_limit-attempt2",
+        "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version. The check was retried once and failed again.",
+      ],
+      [
+        "turn-failed-attempt2",
+        "The model provider check reported a failure (turn-failed). The check was retried once and failed again.",
+      ],
+    ].map(([detail, cause]) => ({
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: {
+          component: "agent",
+          check: "model-probe",
+          checkedAt: "2026-10-03T08:00:00.000Z",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail },
+        },
+      }),
+      nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
+      cause,
+    })),
     {
       error: persistedDeploymentError("RUNTIME_MODEL_PROBE_TIMEOUT"),
       nextStep:
@@ -1124,7 +1148,11 @@ test("Agent detail does not move shown sections when Deployment activity first s
   await page.addInitScript(recordLayoutShifts);
   // A full load, so no recent input excuses a shift.
   await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
-  await page.getByRole("link", { name: "← Agents", exact: true }).waitFor();
+  // The Agent page renders hidden behind the startup status until its overview reveals
+  // (finding 1537).
+  await page
+    .getByRole("link", { name: "← Agents", exact: true, includeHidden: true })
+    .waitFor({ state: "attached" });
   // The version's own reads finish while Deployment activity's first read is still held.
   await page
     .locator(".agent-version-heading", { hasText: "Version v1" })

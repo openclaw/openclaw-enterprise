@@ -44,6 +44,9 @@
   --radius-sm: 6px;
   --radius: 10px;
   --radius-lg: 14px;
+  /* Keep the scrollbar's space whether or not the page scrolls, so the header and content do not
+     move sideways between short and long pages with classic scrollbars (finding 1520). */
+  scrollbar-gutter: stable;
 }
 * {
   box-sizing: border-box;
@@ -151,8 +154,10 @@ p {
   padding: calc(14vh + 28px) 28px;
   color: var(--muted);
   text-align: center;
-  /* A load that settles within the loading delay never flashes its status (finding 1444). */
-  animation: loading-delay 250ms;
+  /* A load that settles within the loading delay never flashes its status (finding 1444). Full
+     loads took up to 274 ms, past the 250 ms other statuses wait, so the boot status waits
+     400 ms (finding 1519). Visibility, not opacity: it appears whole, never half-faded. */
+  animation: loading-delay 400ms;
 }
 /* A page held on screen, inert, while a navigation's reads run. Past 300 ms it dims and shows
    a progress cursor, so a slow return does not look stuck; opacity and cursor only, so nothing
@@ -184,6 +189,17 @@ p {
   from,
   to {
     visibility: hidden;
+  }
+}
+/* The same delay for the text of a node that can take focus: transparent, not hidden, so a
+   screen reader still reads it (finding 1656). */
+.delayed-text {
+  animation: loading-delay-text 250ms;
+}
+@keyframes loading-delay-text {
+  from,
+  to {
+    opacity: 0;
   }
 }
 .auth {
@@ -813,7 +829,11 @@ select:not([multiple])[size="1"] {
 .overview-primary:hover {
   background: var(--text);
 }
-.deployment-recovery:not([hidden]) + .native-admin-access .overview-primary {
+/* One primary action: a failed version's recovery outranks native administration, wherever the
+   recovery card sits. */
+[aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
+  > .native-admin-access
+  .overview-primary {
   color: var(--text-strong);
   background: var(--surface);
   border-color: var(--input-border);
@@ -941,6 +961,13 @@ select:not([multiple])[size="1"] {
 }
 .deployment-outcome {
   font-weight: 600;
+}
+/* A pending deploy's attempt rows keep their space as results arrive (finding 1598). At phone
+   width a reason code or date takes two lines, so each row holds two from the start. */
+@media (max-width: 520px) {
+  .deployment-pending-progress dd {
+    min-height: 2lh;
+  }
 }
 .deployment-warnings {
   padding: 12px 16px;
@@ -2694,8 +2721,15 @@ summary:focus-visible {
   outline-offset: 3px;
 }
 .log-line {
+  /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned. */
+  --log-level-column: minmax(max-content, 6.5em);
+  /* Fit a whole en-US timestamp with its UTC offset on one line (finding 1681): 33 characters of
+     the 11px time, as in "12/31/2026, 12:59:59 PM GMT+10:30". ch is the row's 12px character. */
+  --log-time-column: calc(33ch * 11 / 12);
   display: grid;
-  grid-template-columns: 170px 48px minmax(72px, 112px) minmax(0, 1fr);
+  grid-template-columns:
+    var(--log-time-column) var(--log-level-column) minmax(72px, 112px)
+    minmax(0, 1fr);
   align-items: baseline;
   gap: 12px;
 }
@@ -2804,8 +2838,22 @@ summary:focus-visible {
 }
 @media (max-width: 1100px) {
   .log-line {
-    grid-template-columns: 150px 44px minmax(60px, 88px) minmax(0, 1fr);
+    grid-template-columns:
+      var(--log-time-column) var(--log-level-column) minmax(60px, 88px)
+      minmax(0, 1fr);
     gap: 10px;
+  }
+}
+/* Below 1000 px a whole timestamp would leave the message column under about 200 px, so the
+   message moves below the time, level and origin, as it does on phones (finding 1681). */
+@media (max-width: 1000px) {
+  .log-line {
+    grid-template-columns: minmax(var(--log-time-column), 1fr) max-content minmax(60px, 112px);
+    gap: 4px 10px;
+  }
+  .log-content {
+    grid-column: 1 / -1;
+    margin-top: 2px;
   }
 }
 @media (max-width: 760px) {
@@ -2817,7 +2865,7 @@ summary:focus-visible {
     margin-left: 0;
   }
   .log-line {
-    grid-template-columns: minmax(0, 1fr) 48px minmax(60px, 112px);
+    grid-template-columns: minmax(0, 1fr) max-content minmax(60px, 112px);
     gap: 4px 10px;
   }
   .log-content {
@@ -2857,7 +2905,7 @@ summary:focus-visible {
     padding-left: 28px;
   }
   .log-line {
-    grid-template-columns: minmax(0, 1fr) 48px;
+    grid-template-columns: minmax(0, 1fr) max-content;
   }
   .log-origin {
     grid-column: 1 / -1;

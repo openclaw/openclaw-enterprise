@@ -1,10 +1,10 @@
 diff --git a/src/config/zod-schema.gateway-auth.test.ts b/src/config/zod-schema.gateway-auth.test.ts
-index d4d4f9f..5655925 100644
+index 63a9fb5..74f5c24 100644
 --- a/src/config/zod-schema.gateway-auth.test.ts
 +++ b/src/config/zod-schema.gateway-auth.test.ts
-@@ -276,3 +276,53 @@ describe("gateway operator role config", () => {
-     }
-   });
+@@ -343,3 +343,53 @@ it.each([
+ it("rejects a relative worktreeRoot", () => {
+   expect(OpenClawSchema.safeParse({ worktreeRoot: "worktrees" }).success).toBe(false);
  });
 +
 +describe("verified proxy role identity scope config", () => {
@@ -16,7 +16,7 @@ index d4d4f9f..5655925 100644
 +    managedIdentityPrefixes: ["team:"],
 +    managedIdentities: ["gateway-workspace"],
 +  };
-+  test.each([
++  it.each([
 +    { name: "prefix and exact identities", scope: {}, success: true },
 +    { name: "prefix identities only", scope: { managedIdentities: undefined }, success: true },
 +    { name: "exact identities only", scope: { managedIdentityPrefixes: undefined }, success: true },
@@ -126,18 +126,18 @@ index ccb8a1f..55cbb95 100644
      if (!ingress) {
        return;
 diff --git a/src/gateway/http-auth-user-profile.ts b/src/gateway/http-auth-user-profile.ts
-index 730cc9d..47aa5c4 100644
+index 2cfa322..f558bdc 100644
 --- a/src/gateway/http-auth-user-profile.ts
 +++ b/src/gateway/http-auth-user-profile.ts
-@@ -30,6 +30,7 @@ import {
- } from "./operator-role-policy.js";
+@@ -30,6 +30,7 @@ import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.ty
+ import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
  import { resolveBrowserOriginPolicy } from "./origin-check.js";
  import type { GatewayClient } from "./server-methods/shared-types.js";
 +import { prepareVerifiedProxyRoleProfile, resolveVerifiedProxyRole } from "./trusted-proxy-role.js";
  import { formatForLog } from "./ws-log.js";
  
  const profileLog = createSubsystemLogger("gateway/user-profiles");
-@@ -132,6 +133,14 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
+@@ -152,6 +153,14 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
    assertCurrent();
    const options = { assertCurrent };
    const authenticatedUserId = normalizeOptionalString(params.authResult.user);
@@ -152,7 +152,7 @@ index 730cc9d..47aa5c4 100644
    const rolesConfigured = Boolean(params.cfg.gateway?.roles);
    const accessPoliciesConfigured = hasGatewayOperatorAccessPolicies(params.cfg);
    if (!authenticatedUserId) {
-@@ -173,11 +182,21 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
+@@ -193,11 +202,21 @@ export async function resolveAuthenticatedHttpUserProfile(params: {
            )
          : await ensureCanonicalUserProfileForEmail(authenticatedUserId, options);
      const profileId = "profileId" in profile ? profile.profileId : profile.id;
@@ -175,7 +175,7 @@ index 730cc9d..47aa5c4 100644
      );
    } catch (error) {
      assertCurrent();
-@@ -195,13 +214,14 @@ async function prepareHttpProfile(
+@@ -215,13 +234,14 @@ async function prepareHttpProfile(
    updatedAt: number,
    assertCurrent: () => void,
    cfg?: OpenClawConfig,
@@ -523,7 +523,7 @@ index c2c3a0c..7a19cb5 100644
 +  });
 +});
 diff --git a/src/gateway/server.plugin-http-role-scopes.test.ts b/src/gateway/server.plugin-http-role-scopes.test.ts
-index 43f67f1..e457ab3 100644
+index 2b3340a..0ecd87d 100644
 --- a/src/gateway/server.plugin-http-role-scopes.test.ts
 +++ b/src/gateway/server.plugin-http-role-scopes.test.ts
 @@ -1,17 +1,19 @@

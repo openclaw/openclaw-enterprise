@@ -81,22 +81,22 @@ eligibility, not a promised start; null while claimed. Terminal `progress`
 is null. Results describe recorded checks, not runtime health.
 
 Nullable `cleanup` reports retirement’s `status` and queued `nextAttemptAt`.
-Deployment failure remains terminal. Bootstrap errors retain bounded
+Deployment failure remains terminal. Terminal preparation errors retain bounded
 `error.data.preparation` (identities, reasons, scheduling, exits, timestamps),
-excluding raw output and credentials; see [bootstrap limits](drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job).
+excluding raw output and credentials.
 
 Errors have fixed codes, messages, and allowlisted `error.data`.
-`CONVERGENCE_DEADLINE_EXCEEDED` data includes positive `timeoutMs` and optional
-`runtimeFailure` (`component`, `check`, `checkedAt`, `code`) captured by Compute
-from that revision; missing evidence leaves the cause unspecified. Held runtime
-failures end deployment early: `RUNTIME_AUTHENTICATION_FAILED` (rejected
-credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
-`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, or
-`RUNTIME_STARTUP_FAILED`; fix and redeploy. A dedicated gateway that refuses its
+`CONVERGENCE_DEADLINE_EXCEEDED` data includes `timeoutMs` and optional
+`runtimeFailure` (`component`, `check`, `checkedAt`, `code`) from that revision
+(unknown values read `UNRECOGNIZED`); missing evidence leaves the cause
+unspecified. Held failures end deployment early:
+`RUNTIME_AUTHENTICATION_FAILED` (rejected credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
+`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
+or `WORKSPACE_SETUP_REFUSED`; fix and redeploy. A dedicated gateway that refuses its
 own CLI fails with
 [`AGENT_GATEWAY_UNAUTHORIZED`](agents/deployment.md#pending-deployment-progress). `RUNTIME_MODEL_PROBE_FAILED` adds
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
-with a closed code and admitted `pluginId`.
+with a closed code and `pluginId`.
 
 Polling reads only persisted state. Terminal results survive runtime deletion
 and controller restart; later deployments cannot rewrite them.
@@ -151,7 +151,8 @@ For a service account token, use `"method": "codex_pat"` with its Secret `source
 This requires dedicated Codex.
 
 Personal [Codex OAuth device login](../guides/deploy/credential-lifecycle.md#use-a-personal-codex-login)
-is **Experimental**. Bind the returned `source` with `"method": "oauth"`.
+is **Experimental**. Bind the returned credential source with
+`{ "method": "credential_source", "sourceId": "cs_…" }`.
 
 For an already issued ChatGPT account credential, use
 `{ "method": "codex_pat", "source": { "kind": "service_account", "namespaceId": "ns_123e4567-e89b-42d3-a456-426614174000", "id": "sa_123e4567-e89b-42d3-a456-426614174000" } }`.
@@ -181,9 +182,9 @@ topology checks, and process readiness remain required; no credential-source
 permission is needed. Kubernetes and Docker reject this method. See
 [SSH credentials](drivers/ssh-compute.md#credentials-and-supported-boundaries).
 
-API-key, OAuth, and service account token bindings require the actor's exact Secret `operate`. That includes
+API-key and imported PAT bindings require the actor's exact Secret `operate`. That includes
 the Secret the Agent already uses: every draft update checks it, including one that replaces it. Deployment also
-requires the Agent service principal's exact Secret `operate`. ChatGPT binding
+requires the Agent service principal's exact Secret `operate`. Managed PAT binding
 requires the actor's exact account `read`, including the current account on every draft update. There is no implied account grant for the Agent
 principal. Each consumer of a shared source is authorized independently.
 
@@ -218,7 +219,10 @@ partial map of the four filenames below to strings. Replace the example Configur
 {
   "name": "Support assistant",
   "configurationId": "cfg_12345678-1234-4123-8123-123456789abc",
-  "initialWorkspaceFiles": { "AGENTS.md": "Answer support questions.\n", "USER.md": "" }
+  "initialWorkspaceFiles": {
+    "AGENTS.md": "Answer support questions.\n",
+    "USER.md": ""
+  }
 }
 ```
 
@@ -235,7 +239,7 @@ removed after activation or Agent deletion. Pending inputs have no read/update
 API; correction requires deleting and recreating the Agent.
 
 The optional `workspaceDefaultsId` is a SHA-256 defaults identity. Console sends
-all four rendered `2026.9.8` defaults with this identity. A stale identity rejects
+all four rendered `2026.9.9` defaults with this identity. A stale identity rejects
 creation with `409 RESOURCE_CONFLICT`; runtime mismatch blocks initial setup.
 See the [workspace guide](../guides/topics/workspace-files.md) and
 [setup flow](../flows/workspace-files.md) for recovery and runtime requirements.
@@ -376,11 +380,7 @@ deployed Agent still owns its gateway and stable service principal.
 
 The public API has no revision mutation/deletion or explicit rollback endpoint.
 Controller API authentication for Agent service principals remains unavailable.
-The optional
-[OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires bundled
-Kubernetes Compute and dedicated Codex; other combinations are rejected.
-Stock OpenShell lacks some required workload credentials; check its
-compatibility limits first.
+The [OpenShell SandboxDriver](drivers/openshell-sandbox.md) requires Kubernetes Compute with dedicated Codex or worker-capable native OpenClaw. Its Credential Gateway mediates model sources; direct Secret delivery remains unsupported. Check its compatibility limits.
 
 ## Failure semantics
 

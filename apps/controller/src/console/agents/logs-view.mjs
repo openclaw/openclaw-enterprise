@@ -146,6 +146,25 @@ const INFERRED_JOIN_LABEL = "Gateway lines: inferred (time window)";
 const INFERRED_JOIN_TITLE =
   "OpenShell does not record which Agent turn made this request. Gateway or Harness lines near this time may be related; clocks on different nodes can differ.";
 
+// During a fall-back the same local time occurs twice. Show its UTC offset on every line.
+const logTimeFormat = new Intl.DateTimeFormat(undefined, {
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "numeric",
+  minute: "numeric",
+  second: "numeric",
+  timeZoneName: "shortOffset",
+});
+
+function formatLogTime(time) {
+  if (!time) {
+    return "—";
+  }
+  const date = new Date(time);
+  return Number.isNaN(date.getTime()) ? date.toString() : logTimeFormat.format(date);
+}
+
 export function recordRow(record) {
   if (record.type === "gap") {
     return element(
@@ -180,7 +199,7 @@ export function recordRow(record) {
   const summary = element(
     "span",
     { className: "log-line" },
-    element("span", { className: "log-time" }, record.time ? displayDate(record.time) : "—"),
+    element("span", { className: "log-time" }, formatLogTime(record.time)),
     element("span", { className: `log-level log-level-${record.level}` }, record.level),
     element(
       "span",

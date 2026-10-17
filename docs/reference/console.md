@@ -1,9 +1,9 @@
 # Platform console
 
-Open `/console/` on your OCC address to manage Agents and supported Slack settings,
-workspace files, and credentials. Authorized operators can also open an Agent's
-[native admin UI](#open-the-native-admin-ui). The console has no rollback, live
-runtime health, or browser chat through OCE.
+Open `/console/` on OCC to manage Agents, supported Slack settings, workspace
+files and credentials, or open an authorized Agent's
+[native admin UI](#open-the-native-admin-ui). Rollback, live runtime health and
+browser chat through OCE are unavailable.
 
 See [Create and deploy Agents](console/create-and-deploy.md) or
 [Understand Agent detail](../guides/console/agent-details.md). Operator setup and
@@ -19,7 +19,7 @@ Installation, see the
 [quickstart](../guides/quickstart.md#open-the-platform-console) or
 [deployment guide](../guides/deploy.md#open-the-platform-console).
 
-The console uses the [email/password session contract](authentication.md) with
+The console uses [email/password sessions](authentication.md) with
 same-origin cookies. It does not store tokens or accept service keys. A
 missing or expired session clears private content and asks you to sign in again.
 See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
@@ -48,9 +48,11 @@ destination heading; **Open navigation** opens the mobile drawer.
 
 Opening an Agent shows its details page immediately. While it loads, **Back to
 Agents** returns to your place. A slow return to a retained page says **Still
-checking…** after one second. Refresh rebuilds; refocusing preserves edits, Slack
-searches, and the Namespace selector. A retained page is revalidated before reuse; matching read outcomes reactivate it, while changed outcomes rebuild it. Views belong to one account, session, route,
-and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
+checking…** after one second. Refresh rebuilds; refocusing an unchanged page preserves edits,
+Slack searches, focus, and the Namespace selector; at phone width, focus in the open drawer moves to
+**Open navigation**. A retained page revalidates completed read outcomes; matching
+outcomes restore it, while changed outcomes rebuild it. Views belong to one
+account, session, route, and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
 The header's **Namespace** selector switches readable scopes on desktop and
 mobile; the Namespaces page omits it. **OpenClaw Enterprise** at the bottom offers
@@ -62,7 +64,7 @@ ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
 updates the URL in place.
 
 During session and Namespace checks, the selector is disabled and hides its choices.
-Once the list is known, it names the destination's Namespace. On returns,
+Once the list is known, it names the destination's Namespace. On returns to the same page,
 later page reads do not block it. Without a readable Namespace, Agents and Namespaces explain how to
 get access; global pages remain available.
 

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { join } from "node:path";
 import test from "node:test";
 import {
   CodexPluginDriver,
@@ -8,6 +10,7 @@ import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   apiRequests,
   login,
@@ -563,7 +566,10 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   });
   await save.click();
   await page
-    .getByText("Access denied. You do not have permission for this operation.", { exact: true })
+    .getByText(
+      "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.",
+      { exact: true },
+    )
     .waitFor();
   assert.equal(await save.isEnabled(), true);
   assert.equal(await cancel.isEnabled(), true);
@@ -870,6 +876,130 @@ test("Repository descriptions arrive without interrupting a selection", async (t
   assert.deepEqual((await response.json()).data.repositoryBindings, [
     { repositoryRef: "application", profile: "git-full" },
   ]);
+});
+
+test("Repository descriptions show hidden and direction-changing characters as escapes", async (t) => {
+  // Finding 1628: the credential service replaces these characters, but the picker must not
+  // trust every description source. An independent control-socket peer sends them raw
+  // through the actual Unix client, GitHub Driver and OCC validation.
+  const hiddenDescription =
+    "Release notes \u202etxt.exe, zero\u200bwidth, \u2066isolate\u2069, C1\u0085 end; " +
+    "日本語 עברית العربية Café 😀👍🏽";
+  const hiddenShown =
+    "Release notes \\u202etxt.exe, zero\\u200bwidth, \\u2066isolate\\u2069, C1\\u0085 end; " +
+    "日本語 עברית العربية Café 😀👍🏽";
+  // Finding 1633: joiners in words and emoji, and subdivision flags, display as written. Other
+  // joiners and tag text show as escapes.
+  const joined = [
+    "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}", // family: man, woman, girl
+    "\u{1f3f3}\ufe0f\u200d\u{1f308}", // rainbow flag: variation selector, then joiner
+    "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", // Persian with a non-joiner
+    "\u0915\u094d\u200d\u0937", // Hindi conjunct: virama, then joiner
+    "\u0d9a\u200d\u0dca\u0dc2", // Sinhala touching letters: joiner, then virama
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", // Scotland
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}", // England
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}", // Wales
+  ].join(" ");
+  // Tag characters spelling `text`, raw and as the picker escapes them.
+  const tags = (text) => [
+    Array.from(text, (letter) => String.fromCodePoint(0xe0000 + letter.charCodeAt(0))).join(""),
+    Array.from(text, (letter) => `\\U000e00${letter.charCodeAt(0).toString(16)}`).join(""),
+  ];
+  const [scotland, scotlandShown] = tags("gbsct");
+  const [cancel, cancelShown] = tags("\x7f");
+  const escaped = [
+    ["lead:\u200dx", "lead:\\u200dx"],
+    ["double:a\u200d\u200cb", "double:a\\u200d\\u200cb"],
+    ["trail:a\u200d.", "trail:a\\u200d."],
+    [`tags:x${scotland}${cancel}`, `tags:x${scotlandShown}${cancelShown}`],
+    [`short:\u{1f3f4}${tags("gb")[0]}${cancel}`, `short:\u{1f3f4}${tags("gb")[1]}${cancelShown}`],
+    [
+      `long:\u{1f3f4}${tags("gbabcde")[0]}${cancel}`,
+      `long:\u{1f3f4}${tags("gbabcde")[1]}${cancelShown}`,
+    ],
+    [`open:\u{1f3f4}${scotland}`, `open:\u{1f3f4}${scotlandShown}`],
+    [
+      `other:\u{1f3f4}${tags("cn11")[0]}${cancel}`,
+      `other:\u{1f3f4}${tags("cn11")[1]}${cancelShown}`,
+    ],
+    [
+      `region:\u{1f3f4}${tags("GBsct")[0]}${cancel}`,
+      `region:\u{1f3f4}${tags("GBsct")[1]}${cancelShown}`,
+    ],
+    [
+      `code:\u{1f3f4}${tags("gbSCT")[0]}${cancel}`,
+      `code:\u{1f3f4}${tags("gbSCT")[1]}${cancelShown}`,
+    ],
+  ];
+  const description = `${hiddenDescription} ${joined} ${escaped.map(([raw]) => raw).join(" ")}`;
+  const shown = `${hiddenShown} ${joined} ${escaped.map(([, text]) => text).join(" ")}`;
+  const directory = await socketDirectory(t, "repository-description-escapes-");
+  const controlSocket = join(directory, "control.sock");
+  const held = [];
+  let lookups = 0;
+  const server = createServer((request, response) => {
+    lookups += 1;
+    const answer = () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          providerInstanceId: "console-repository-provider",
+          appId: "123",
+          githubInstallationId: "456",
+          descriptions: [{ repositoryRef: "application", repositoryId: "2000", description }],
+          pending: false,
+        }),
+      );
+    };
+    request.resume();
+    // The first lookup feeds the in-place refresh; later ones wait so a rebuilt row shows
+    // what it renders itself.
+    request.once("end", () => (lookups === 1 ? answer() : held.push(answer)));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(controlSocket, resolve);
+  });
+  t.after(() => {
+    held.splice(0).forEach((release) => release());
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const { fixture, namespace } = await createRepositoryLaunchFixture(
+    t,
+    (namespaceId) => [
+      {
+        repositoryRef: "application",
+        repositoryId: "2000",
+        repository: "example/application",
+        namespaces: [{ namespaceId, profiles: ["git-read"] }],
+      },
+      // Search appears with more than five choices.
+      ...["documentation", "examples", "infrastructure", "libraries", "tools"].map(
+        (name, index) => ({
+          repositoryRef: name,
+          repositoryId: String(2001 + index),
+          repository: `example/${name}`,
+          namespaces: [{ namespaceId, profiles: ["git-read"] }],
+        }),
+      ),
+    ],
+    { controlSocket },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const text = page
+    .locator(".repository-result-row")
+    .filter({ hasText: "example/application" })
+    .locator(".repository-description");
+  // The description arrives after the rows render and is written into the existing row.
+  await page.getByText(shown, { exact: true }).waitFor();
+  assert.equal(await text.textContent(), shown);
+  // Searching rebuilds the row from the stored description while its next lookup is held.
+  // Assert before the GitHub Driver's 2 s lookup timeout ends the hold and drops the text.
+  await page.getByLabel("Find a repository").fill("application");
+  await waitForCondition(() => lookups === 2, "the rebuilt row did not request descriptions");
+  assert.equal(await text.textContent(), shown);
 });
 
 test("Repository choices distinguish names, references, and restricted access", async (t) => {
