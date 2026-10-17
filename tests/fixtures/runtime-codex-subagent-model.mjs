@@ -144,10 +144,6 @@ try {
           mode: "run",
           context: "isolated",
           runTimeoutSeconds: 30,
-          // A completion handoff runs a requester turn on the requester's own model
-          // (the parent route) about 1.5 s after this child fails, at the same remote
-          // root. It would race the next case for the first native thread/start.
-          expectsCompletionMessage: false,
         },
       }),
     });
@@ -156,8 +152,18 @@ try {
     assert.equal(result.ok, true, JSON.stringify(result));
     const receipt = result.result.details;
     assert.equal(receipt.status, "accepted", JSON.stringify(result));
-    const native = await waitFor("native child thread/start", () =>
-      requests.slice(offset).find(({ method }) => method === "thread/start"),
+    // Every Agent maps to the same remote root, so cwd cannot tell this child from
+    // other native turns on the parent route. Its subagent prompt names its session.
+    const childMarker = `- Your session: ${receipt.childSessionKey}.`;
+    const native = await waitFor(`native thread/start for ${receipt.childSessionKey}`, () =>
+      requests
+        .slice(offset)
+        .find(
+          ({ method, params }) =>
+            method === "thread/start" &&
+            typeof params.developerInstructions === "string" &&
+            params.developerInstructions.includes(childMarker),
+        ),
     );
     assert.equal(native.params.cwd, scenario.cwd, "Native execution uses the Harness workspace.");
     assert.deepEqual(
@@ -169,8 +175,7 @@ try {
           .map(({ params }) => params.model),
       )}`,
     );
-    // Every Agent maps to the same remote root. Settle this run, including its
-    // configured fallbacks, before the next case observes native requests.
+    // Settle this run, including its configured fallbacks, before the next case.
     const completed = await callGatewayFromCli(
       "agent.wait",
       {
