@@ -405,7 +405,10 @@ for (const [scenario, heldRead, heldMs, movedOn] of [
     } else {
       assert.match(trail[0], /^P#\d+: Deploying…$/, trail.join(" | "));
       assert.ok(!trail.includes("BODY"), trail.join(" | "));
-      assert.ok(trail.every((entry) => !entry.endsWith(" detached")), trail.join(" | "));
+      assert.ok(
+        trail.every((entry) => !entry.endsWith(" detached")),
+        trail.join(" | "),
+      );
     }
   });
 }
