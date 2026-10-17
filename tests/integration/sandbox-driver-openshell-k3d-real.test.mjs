@@ -1891,6 +1891,19 @@ function createIntegrationSandboxDriverFactory(
                 context,
               ).harnessStatus(context);
             },
+            // Compute drops a native worker's exposure once its node has enrolled (finding 1657).
+            async withdrawHarnessExposure(context) {
+              const endpoint = await endpointForNamespace(context, {
+                sandboxServiceAccountName: agentSandboxServiceAccount(context),
+                exact: context.requirements.workloadIdentity !== undefined,
+              });
+              await delegate(
+                context.requirements,
+                context.namespace.name,
+                endpoint,
+                context,
+              ).withdrawHarnessExposure(context);
+            },
             // Compute admits the workspace-node connection only from the revision's
             // supervisor Pod, which the real Driver labels from the gateway's Sandbox record.
             async workspaceNodePeerLabels(context) {

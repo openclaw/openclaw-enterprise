@@ -1165,20 +1165,29 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
     driver.provisionHarness({ ...context, revision, requirements: exposed }),
     /exists without its exact bearer-passthrough Harness service/,
   );
+  // A Sandbox created again after enrollment (the stale one was removed) carries the
+  // exposure its immutable request names and loses it in the same pass.
+  storedSandbox = undefined;
+  exposedService = service;
+  await driver.provisionHarness(enrolled);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1].serviceExposures, requests[0].serviceExposures);
+  assert.equal(deletions.length, 3);
+  assert.equal(exposedService, undefined);
   // The enrolling pass withdraws it directly, once; a Codex Harness keeps its transport.
   exposedService = service;
   await driver.withdrawHarnessExposure(enrolled);
-  assert.equal(deletions.length, 3);
+  assert.equal(deletions.length, 4);
   assert.equal(exposedService, undefined);
   await driver.withdrawHarnessExposure(enrolled);
-  assert.equal(deletions.length, 3);
+  assert.equal(deletions.length, 4);
   exposedService = service;
   deletion = async () => {
     throw new Error("OpenShell DeleteService did not confirm deletion.");
   };
   await assert.rejects(driver.withdrawHarnessExposure(enrolled), /did not confirm deletion/);
   assert.notEqual(exposedService, undefined);
-  assert.equal(deletions.length, 4);
+  assert.equal(deletions.length, 5);
   await assert.rejects(
     driver.withdrawHarnessExposure({
       ...enrolled,
@@ -1198,7 +1207,7 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
     }),
     /another Sandbox Driver/,
   );
-  assert.equal(deletions.length, 4);
+  assert.equal(deletions.length, 5);
   // Nothing is observed through a withdrawn exposure, and nothing is asked of the gateway.
   const getService = gatewayClient.getService;
   gatewayClient.getService = async () => assert.fail("an enrolled worker is not observed");

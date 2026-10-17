@@ -2694,6 +2694,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         }
         if (exposed) {
           validateHarnessServiceUrl(created.serviceUrls[""]);
+          if (!codex && context.workspaceNodeEnrolled === true) {
+            // A Sandbox created again after the node enrolled (the stale one was removed)
+            // gets the exposure its immutable request carries and loses it at once: nothing
+            // of Compute's listens there any more (finding 1657).
+            await this.withdrawNativeExposure(
+              client,
+              workspace,
+              sandbox.resourceName,
+              context.signal,
+            );
+          }
         } else if (Object.keys(created.serviceUrls).length !== 0) {
           throw new OpenShellSandboxConfigurationFailure(
             "OpenShell exposed an unexpected service for the native OpenClaw Harness.",
@@ -2922,11 +2933,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     } catch (error) {
       // A gateway that does not answer, over gRPC or its service listener, is no evidence
       // about the Harness: the read waits for convergence without spending the revision's
-      // attempt budget (finding 1658). Refusals and invalid answers keep their classes.
-      if (
-        error instanceof DependencyUnavailableError &&
-        !(error instanceof TransientDependencyError)
-      ) {
+      // attempt budget (finding 1658). Refusals and invalid answers keep their classes, and
+      // so does the client's own transient class (OpenShellAdmissionLimitError), which is
+      // not a DependencyUnavailableError.
+      if (error instanceof DependencyUnavailableError) {
         throw new TransientDependencyError(
           "sandbox_gateway",
           error instanceof OpenShellServiceTransportError ? error.reason : "unavailable",

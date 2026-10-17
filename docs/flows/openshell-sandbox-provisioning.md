@@ -223,12 +223,12 @@ private runtime-home `tmp` child.
 
 `prepareNativeWorkspace` uses a restricted revision-owned Deployment to privatize
 writable PVC subpaths, preserving retained entries. Verification checks mode and
-process ownership before UID-fenced foreground deletion and writer termination.
+process ownership before UID-fenced foreground deletion and writer Pod termination.
 Preparation requires `userNamespaces: false` and the pinned Gateway's default
 identity. It adds no model credential, ServiceAccount token, capability or direct
 Pod creation.
 
-Initial document delivery stays separate from native subpath preparation.
+Initial document delivery remains separate from native subpath preparation.
 After Sandbox readiness, `initializeWorkspace` checks the private setup Secret's
 Namespace, Agent and setup identity, then sends the shared initializer and JSON
 stdin through authenticated `ExecSandbox`. A workspace `flock` serializes attempts;
@@ -236,7 +236,7 @@ the Harness waits for its completion marker. See [workspace initialization](work
 
 Credential attachments require OCC `oce-cs-` names without static-provider duplicates.
 Model profiles bind access to the selected Codex/Node executable. Production
-qualification is outstanding.
+qualification remains outstanding.
 
 ### 4. Call the versioned gateway contract
 
@@ -254,9 +254,8 @@ bearer-passthrough `APP_SERVER_PORT` exposure (Codex transport, native held
 failure); only Codex returns a URL. The Driver reads before creating and adopts an existing
 or `ALREADY_EXISTS` Sandbox only with exact Workspace, labels, annotations and spec,
 neither stopped nor deleting. Workspace `sandbox:write` permits replacement and
-defines the trust boundary. Native exposure ends at enrollment:
-`withdrawHarnessExposure` and `workspaceNodeEnrolled` adoption delete it fail
-closed.
+defines the trust boundary. Native exposure ends at enrollment;
+`withdrawHarnessExposure` and `workspaceNodeEnrolled` adoption delete it.
 
 The Backend reuses clients, retrying setup. Cancellation is
 checked after setup/credential preparation, so stalled initialization/file reads

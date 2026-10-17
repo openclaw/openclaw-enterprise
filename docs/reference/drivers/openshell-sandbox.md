@@ -267,8 +267,8 @@ For dedicated Codex, `CreateSandbox` includes one unnamed exposure for Compute's
 literal `APP_SERVER_PORT`. The revision UUID is the first `request_id`; bounded
 [request ID retries](../../flows/openshell-sandbox-provisioning.md#4-call-the-versioned-gateway-contract)
 handle unresolved refusals when no Sandbox exists. Reconciliation adopts only an
-exact Sandbox. The client retains a normalized control URL and the
-original advertised workload URL, which the Harness endpoint capability returns
+exact Sandbox and, before enrollment, exposure. The client keeps a normalized control URL and the
+original advertised workload URL, which `harnessEndpoint` returns
 as a WebSocket origin.
 
 Compute supplies only `APP_TOKEN_SHA`, never the raw token; bearer passthrough
@@ -283,7 +283,7 @@ retain the Kubernetes transport.
 A native worker's node opens the Gateway connection itself. Its exposure serves
 only Compute's held-failure read before enrollment; OpenShell routes it
 unauthenticated, so once the node enrolls the Driver deletes it
-(`DeleteService`, fail closed) and adopts the Sandbox without one.
+(`DeleteService`, fail closed); adoption or recreation then has none.
 
 ## Kubernetes and admission requirements
 

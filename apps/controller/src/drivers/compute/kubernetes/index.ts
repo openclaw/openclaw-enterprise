@@ -6133,6 +6133,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // The provider-owned Harness's own view of its startup, read through the
         // provider with the Agent transport token. `failed` carries a held startup
         // failure (a failed model probe), validated like a Compute-owned status port.
+        // A provider that does not answer is no evidence about the Harness, and no reason
+        // to spend the attempt budget: like a Kubernetes API that is converging, it is
+        // rechecked until the deployment deadline (finding 1658). A Driver's own transient
+        // class is not a DependencyUnavailableError and passes through; refusals and invalid
+        // data keep their classes.
+        const transientProviderFailure = (error: unknown, message: string): unknown =>
+          error instanceof DependencyUnavailableError
+            ? new TransientDependencyError("sandbox_gateway", "unavailable", message, {
+                cause: error,
+              })
+            : error;
         const observeProviderHarness = async (): Promise<SandboxHarnessStatus> =>
           this.prepareRevisionStage("sandbox_provision", async () => {
             const transportToken = await this.prepareRevisionStage("harness_auth", () =>
@@ -6141,24 +6152,34 @@ export class KubernetesComputeDriver implements ComputeDriver {
             try {
               return await sandboxDriver.harnessStatus!({ ...harnessContext, transportToken });
             } catch (error) {
-              // A provider that does not answer is no evidence about the Harness. Like a
-              // Kubernetes API that is converging, it is rechecked until the deployment
-              // deadline without spending the attempt budget (finding 1658). A Driver may
-              // classify the failure itself; refusals and invalid data keep their classes.
-              if (
-                error instanceof DependencyUnavailableError &&
-                !(error instanceof TransientDependencyError)
-              ) {
-                throw new TransientDependencyError(
-                  "sandbox_gateway",
-                  "unavailable",
-                  "The Sandbox provider did not answer the Harness status read.",
-                  { cause: error },
-                );
-              }
-              throw error;
+              throw transientProviderFailure(
+                error,
+                "The Sandbox provider did not answer the Harness status read.",
+              );
             }
           });
+        // The node has enrolled: the worker is past its checks, and from now on agent-run
+        // code may bind the worker's transport port, so the exposure Compute's read used
+        // must go before the revision is ready (finding 1657). A withdrawal that fails
+        // keeps the revision unready; the provider completes it on the next adoption.
+        const withdrawProviderExposure = async (): Promise<void> => {
+          if (nativeRuntime === undefined || sandboxDriver.withdrawHarnessExposure === undefined) {
+            return;
+          }
+          await this.prepareRevisionStage("sandbox_provision", async () => {
+            try {
+              await sandboxDriver.withdrawHarnessExposure!({
+                ...harnessContext,
+                workspaceNodeEnrolled: true,
+              });
+            } catch (error) {
+              throw transientProviderFailure(
+                error,
+                "The Sandbox provider did not answer the Harness exposure withdrawal.",
+              );
+            }
+          });
+        };
         const heldProviderHarnessFailure = (
           harness: SandboxHarnessStatus,
         ): ComputeReadiness | undefined => {
@@ -6173,20 +6194,22 @@ export class KubernetesComputeDriver implements ComputeDriver {
           return { ...result, runtimeFailure };
         };
         if (!(await this.workspaceNodeReady(revision, namespace))) {
-          if (
-            nativeRuntime !== undefined &&
-            sandboxDriver.harnessStatus !== undefined &&
-            !nodeEnrolled
-          ) {
-            // A dedicated OpenClaw worker holding a failed model check never connects
-            // its node, and nothing else reports the hold: read it through the
-            // provider and fail the revision with its code instead of waiting for
-            // the deadline (finding 1642). A worker that is still starting, or one
-            // that has started its node, serves nothing there; once the node has
-            // enrolled, the exposure the read used is withdrawn.
-            const held = heldProviderHarnessFailure(await observeProviderHarness());
-            if (held !== undefined) {
-              return held;
+          if (nativeRuntime !== undefined && !nodeEnrolled) {
+            // The readiness check may have recorded the device of a node that enrolled but
+            // is not connected yet: the exposure goes now, not on the next pass.
+            if ((await this.workspaceNodeDeviceId(revision, namespace)) !== undefined) {
+              await withdrawProviderExposure();
+            } else if (sandboxDriver.harnessStatus !== undefined) {
+              // A dedicated OpenClaw worker holding a failed model check never connects
+              // its node, and nothing else reports the hold: read it through the
+              // provider and fail the revision with its code instead of waiting for
+              // the deadline (finding 1642). A worker that is still starting, or one
+              // that has started its node, serves nothing there; once the node has
+              // enrolled, the exposure the read used is withdrawn.
+              const held = heldProviderHarnessFailure(await observeProviderHarness());
+              if (held !== undefined) {
+                return held;
+              }
             }
           }
           // The provider's Harness Pod and the Gateway are ready, so only the node's
@@ -6201,21 +6224,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
             ? incomplete("WORKSPACE_NODE_PENDING")
             : incomplete();
         }
-        if (
-          nativeRuntime !== undefined &&
-          !nodeEnrolled &&
-          sandboxDriver.withdrawHarnessExposure !== undefined
-        ) {
-          // The node enrolled this pass: the worker is past its checks, and from now on
-          // agent-run code may bind the worker's transport port, so the exposure Compute's
-          // read used must go before the revision is ready (finding 1657). A withdrawal that
-          // fails keeps the revision unready; the provider completes it on the next adoption.
-          await this.prepareRevisionStage("sandbox_provision", () =>
-            sandboxDriver.withdrawHarnessExposure!({
-              ...harnessContext,
-              workspaceNodeEnrolled: true,
-            }),
-          );
+        if (!nodeEnrolled) {
+          // The node enrolled this pass.
+          await withdrawProviderExposure();
         }
         if (credentialContext !== undefined) {
           const statuses = await this.requireCredentialGateway().attachmentStatus({
@@ -10585,7 +10596,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
 
   /**
    * Whether the revision's workspace node has ever enrolled: its node Secret records the device.
-   * Without node enrollment there is no enrollment window, as `workspaceNodeReady` holds.
+   * Without node enrollment there is no enrollment window to observe a provider-owned Harness
+   * in, as `workspaceNodeReady` holds, so a native exposure is withdrawn on the first pass.
    */
   private async workspaceNodeEnrolled(
     revision: AgentRevision,
@@ -10598,13 +10610,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ) {
       return true;
     }
-    const secret = await this.getOwned(
-      "Secret",
-      this.workspaceNodeName(revision),
-      namespace,
-      this.workspaceNodeOwnership(revision),
-    );
-    return Buffer.from(secret?.data?.deviceId ?? "", "base64").toString("utf8") !== "";
+    return (await this.workspaceNodeDeviceId(revision, namespace)) !== undefined;
   }
 
   private async workspaceNodeReady(
