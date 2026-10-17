@@ -967,6 +967,7 @@ export class ControllerWorker {
   // Keyed by revision ID; undefined until the start-time listing has run.
   private harnessExposureWithdrawals: Map<string, PendingHarnessExposureWithdrawal> | undefined;
   private harnessExposureListingFailures = 0;
+  private claimedLastPass = false;
   private readonly repoDriver: RepoDriver | undefined;
   private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDriver: PluginDriver | undefined;
@@ -1227,8 +1228,14 @@ export class ControllerWorker {
       try {
         const recovery = await this.queue.recoverStale();
         await this.scheduleRecoveredCredentialWithdrawals(recovery.failed);
-        await this.withdrawPendingHarnessExposure();
+        // A sweep step asks the Sandbox gateway, up to its deadline: it runs on passes that
+        // follow an empty claim, so queued work is not delayed by a gateway that does not
+        // answer.
+        if (!this.claimedLastPass) {
+          await this.withdrawPendingHarnessExposure();
+        }
         const claim = await this.queue.claim();
+        this.claimedLastPass = claim !== undefined;
         if (claim !== undefined) {
           this.workOrigins.set(claim, performance.now() - claim.ageMs);
           claimed = claim;
@@ -3090,6 +3097,8 @@ export class ControllerWorker {
         readonly revisions: readonly Readonly<AgentRevision>[];
       }[] = [];
       for (const namespace of await view.namespaces.listNamespaces()) {
+        // A Namespace fails only from `provisioning` (no Agent ran in it), and `deleting`
+        // releases the provider Workspace with every Sandbox in it.
         if (namespace.status !== "ready") {
           continue;
         }

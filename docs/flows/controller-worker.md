@@ -118,13 +118,13 @@ defines who can retry; a takeover becomes the work's actor, audited as
 `apps/controller/src/worker.ts:ControllerWorker.run`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.claim`
 
-Each loop calls `recoverStale()`, one bounded native-exposure sweep step
-(`withdrawHarnessExposure` for one listed active-at-start or failed revision,
-five logged attempts), then `claim()`. The
+Each loop calls `recoverStale()`, on idle passes one bounded native-exposure
+sweep step (`withdrawHarnessExposure` for one listed active-at-start or failed
+revision, five logged attempts), then `claim()`. The
 [PostgreSQL queue](../../packages/occ/src/state/postgres-work-queue.ts) selects
-eligible queued work with `FOR UPDATE SKIP LOCKED`, assigning a claim token,
-lease deadline and attempt increment. Another live claim on the Agent, or the
-Namespace for Namespace work, prevents concurrent ownership.
+eligible work with `FOR UPDATE SKIP LOCKED`, assigning claim token, lease
+deadline and attempt increment. Another live claim on the Agent (or Namespace,
+for Namespace work) prevents concurrent ownership.
 
 An empty queue waits, bounded. After work or idle, `health()` queries work,
 calls `onHealthy`, emits `worker.health`; readiness needs both. Serialized

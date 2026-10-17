@@ -1473,7 +1473,9 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   /**
    * Resolves only once OpenShell reports the Sandbox gone: COMPLETED, ALREADY_ABSENT or
    * NOT_FOUND from DeleteSandbox, or, after ACCEPTED (or no outcome), GetSandbox no longer
-   * finding the targeted Sandbox. One deadline bounds the call and that wait (a GetSandbox in
+   * finding the targeted Sandbox. NOT_FOUND is also OpenShell's answer for a Sandbox this
+   * identity may not see, so a lost Workspace role reads as "gone" here (finding 1676; the
+   * Harness exposure path confirms it through GetWorkspace instead). One deadline bounds the call and that wait (a GetSandbox in
    * flight can overrun it by one request timeout); past it the deletion is reported as an
    * unavailable dependency, so the caller retries the idempotent delete instead of treating
    * the Sandbox as removed.

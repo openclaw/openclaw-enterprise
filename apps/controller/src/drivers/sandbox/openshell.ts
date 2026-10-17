@@ -2801,30 +2801,38 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     sandbox: string,
     signal: AbortSignal,
   ): Promise<void> {
+    // A refusal from any of the three calls is the same lost or expired identity: the
+    // deployment fails with that code instead of spending its attempts on a generic failure.
+    const refused = async <T>(call: () => Promise<T>): Promise<T> => {
+      try {
+        return await call();
+      } catch (error) {
+        const record = asRecord(error);
+        // grpc-js ServiceError: a numeric status code and a string details field.
+        const code = typeof record?.details === "string" ? record.code : undefined;
+        if (code === GRPC_PERMISSION_DENIED || code === GRPC_UNAUTHENTICATED) {
+          throw new SandboxGatewayUnauthorizedError(
+            `OpenShell refused the controller gateway identity in Workspace ${workspace}, so the Harness exposure of Sandbox ${sandbox} cannot be confirmed withdrawn.`,
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+    };
     // Read first: after the first withdrawal every reconcile pass passes here, and a
     // DeleteService per pass would be a gateway mutation per pass for nothing.
-    if ((await client.getService(workspace, sandbox, "", signal)) !== undefined) {
-      await client.deleteService(workspace, sandbox, "", signal);
+    if ((await refused(() => client.getService(workspace, sandbox, "", signal))) !== undefined) {
+      await refused(() => client.deleteService(workspace, sandbox, "", signal));
       return;
     }
     // NOT_FOUND is also what OpenShell answers for a Sandbox this identity may not see (no
     // existence oracle), and an identity that lost its Workspace role would otherwise read
     // every pass as "already withdrawn" while the exposure stays (finding 1670). GetWorkspace
     // keeps PERMISSION_DENIED, so a Workspace this identity can still read is the proof that
-    // the Sandbox, or its exposure, is gone; anything else fails closed.
-    let visible;
-    try {
-      visible = await client.getWorkspace(workspace, signal);
-    } catch (error) {
-      const code = asRecord(error)?.code;
-      if (code === GRPC_PERMISSION_DENIED || code === GRPC_UNAUTHENTICATED) {
-        throw new SandboxGatewayUnauthorizedError(
-          `OpenShell refused the controller gateway identity in Workspace ${workspace}, so the Harness exposure of Sandbox ${sandbox} cannot be confirmed withdrawn.`,
-          { cause: error },
-        );
-      }
-      throw error;
-    }
+    // the Sandbox, or its exposure, is gone; anything else fails closed. A role restored
+    // between the two reads would confirm a live exposure; that needs a flap within one round
+    // trip, and the next worker start's sweep reads the service again.
+    const visible = await refused(() => client.getWorkspace(workspace, signal));
     if (visible === undefined) {
       throw new OpenShellSandboxConfigurationFailure(
         `OpenShell reports no Workspace ${workspace}, so the Harness exposure of Sandbox ${sandbox} cannot be confirmed withdrawn.`,

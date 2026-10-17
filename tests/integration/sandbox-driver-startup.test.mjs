@@ -1262,6 +1262,42 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
   );
   assert.equal(deletions.length, 5);
   gatewayClient.getWorkspace = getWorkspace;
+  // The same lost or expired identity answers on the first read (an expired token fails every
+  // call as UNAUTHENTICATED) or on the delete itself: those fail with the code too, instead of
+  // spending attempts as a generic failure, and nothing is confirmed.
+  const serviceRead = gatewayClient.getService;
+  gatewayClient.getService = async () => {
+    throw Object.assign(new Error("16 UNAUTHENTICATED: token expired"), {
+      code: 16,
+      details: "token expired",
+    });
+  };
+  for (const withdraw of [
+    () => driver.withdrawHarnessExposure(enrolled),
+    () => driver.provisionHarness(enrolled),
+  ]) {
+    await assert.rejects(withdraw(), (error) => {
+      assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
+      assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+      return true;
+    });
+  }
+  gatewayClient.getService = serviceRead;
+  exposedService = service;
+  const serviceDelete = gatewayClient.deleteService;
+  gatewayClient.deleteService = async () => {
+    throw Object.assign(new Error("7 PERMISSION_DENIED: workspace"), {
+      code: 7,
+      details: "workspace",
+    });
+  };
+  await assert.rejects(
+    driver.withdrawHarnessExposure(enrolled),
+    (error) => error instanceof SandboxGatewayUnauthorizedError,
+  );
+  gatewayClient.deleteService = serviceDelete;
+  exposedService = undefined;
+  assert.equal(deletions.length, 5);
   // Nothing is observed through a withdrawn exposure, and nothing is asked of the gateway.
   const getService = gatewayClient.getService;
   gatewayClient.getService = async () => assert.fail("an enrolled worker is not observed");

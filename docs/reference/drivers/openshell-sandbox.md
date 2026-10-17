@@ -121,21 +121,20 @@ approved mounts, and `/sandbox/.openclaw-runtime` are writable. An explicit `fil
 required mounts, runtime root, and `/tmp`.
 
 The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
-OpenShell ignores them: its Kubernetes driver runs every Sandbox process as the
-workload identity, default `10001:10001`.
+OpenShell ignores them: every Sandbox process runs as the workload identity,
+default `10001:10001`.
 
-Do not add a policy for the model endpoint. The credential source's provider
+Do not add a policy for the model endpoint: the credential source's provider
 profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
-the same host conflicts with it.
+that host conflicts.
 
 Each v0.1.4 network policy needs a unique name and a nonempty executable
 path. `workspace-node-enrollment` is reserved. Optional
 values are `tls: skip|terminate`, `enforcement: enforce|audit`, and
-`access: read_only|read_write|full`. The Driver rejects the old `passthrough`
-spelling; use `skip` for uninspected TLS relay.
-`gatewayConfigured` is the only ServiceAccount mode for `v0.1.4`; the
-gateway's configured sandbox ServiceAccount applies to every Sandbox it creates
-and does not satisfy the per-Agent production requirement below.
+`access: read_only|read_write|full`; `skip` replaces the rejected `passthrough`
+spelling. `gatewayConfigured` is the only ServiceAccount mode for `v0.1.4`; the
+gateway's configured sandbox ServiceAccount applies to every Sandbox and does
+not satisfy the per-Agent production requirement below.
 
 Optional readiness observes a Service and Pods in the OCC namespace; a paired
 Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
@@ -147,8 +146,8 @@ accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
 mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator` and a namespace selector
 matching `operatorNamespaceLabels`. In this mode the OpenShell Workspace name
 must equal its pre-provisioned Kubernetes namespace, so OCC uses a stable
-`oce-` name with a 15-character digest to stay within OpenShell v0.1.4's
-19-character Workspace limit.
+`oce-` name with a 15-character digest within OpenShell v0.1.4's 19-character
+Workspace limit.
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
 installs one Gateway with workspace resources disabled: in `oce-system` for the
@@ -165,17 +164,16 @@ disposable development cluster; never qualify this topology for production.
 
 `gateway.operatorWorkspaceResources` accepts the namespace-scoped
 ServiceAccount, Role, RoleBinding, and NetworkPolicy objects rendered from the
-workspace chart. The Driver injects the current Compute-owned namespace and OCC
-ownership metadata before server-side apply. Configure this field only for
-`operator` mode; managed mode never applies it. Do not include Secrets or
-cluster-scoped objects.
+workspace chart. The Driver injects the Compute-owned namespace and OCC
+ownership metadata before server-side apply. Only `operator` mode applies it;
+never include Secrets or cluster-scoped objects.
 
 `gateway.networkPolicyResources` accepts namespace-scoped Kubernetes objects
 for provider networking, applied during `ensureNamespace`. Secrets are rejected;
 OpenShell credentials must not appear in startup YAML.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
-workspace mount. It may not mount the PVC root, may not use `..`, and must mount
+workspace mount. It may not mount the PVC root or use `..`, and must mount
 under `/sandbox/`. For native OpenClaw, the permission preparer creates that subpath
 before Sandbox creation. After supervisor readiness, Sandbox initializes
 [private workspace inputs](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution)
@@ -284,11 +282,10 @@ A native worker's node opens the Gateway connection itself. Its exposure serves
 only Compute's held-failure read before enrollment; OpenShell routes it
 unauthenticated, so once the node enrolls the Driver deletes it
 (`DeleteService`, fail closed); adoption or recreation then has none. A missing
-service counts as withdrawn only while `GetWorkspace` still answers: OpenShell
-hides an unauthorized Sandbox as missing, and a refused identity fails the
-revision with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker sweeps revisions
-already active at an upgrade, and candidates that failed for good, through
-Compute's `withdrawHarnessExposure` at start.
+service counts as withdrawn only while `GetWorkspace` answers (OpenShell hides
+unauthorized Sandboxes as missing); a refusal fails the revision with
+`SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's start sweep covers revisions that
+get no pass.
 
 ## Kubernetes and admission requirements
 
@@ -396,17 +393,16 @@ Common errors include:
   Deployment status reports `SANDBOX_HARNESS_UNSUPPORTED`.
 - `OpenShell refused <method>: ... limit of 1000 durable request admissions ...`
   reports `SANDBOX_ADMISSION_LIMIT_REACHED`. Completed records expire after 24
-  hours; unsuccessful records remain unresolved and have no reset API. Inspect
-  the Gateway database before redeploying. Other `RESOURCE_EXHAUSTED` errors use
-  ordinary dependency retries.
+  hours; unsuccessful ones have no reset API: inspect the Gateway database
+  before redeploying. Other `RESOURCE_EXHAUSTED` errors retry as usual.
 - `OpenShell dedicated Codex requires one literal APP_TOKEN_SHA verifier.`
-  The deployment is malformed or attempted to pass the raw app-server token.
+  The deployment is malformed or passed the raw app-server token.
 - `OpenShell dedicated Codex does not yet support selected plugins or repository credentials.`
   Deploy a plugin-free revision without repository bindings.
 - A Sandbox that starts but never serves the Codex app-server can report
   `Provider environment is unavailable or changed during preparation`. Confirm
-  `/sandbox/.openclaw-runtime/home/.codex` is writable and that no PVC mount is
-  nested below `/sandbox/.openclaw-runtime`. A Landlock write grant does not
+  `/sandbox/.openclaw-runtime/home/.codex` is writable and no PVC mount is
+  nested below `/sandbox/.openclaw-runtime`; a Landlock write grant does not
   override Unix ownership on the image layer.
 
 ## Related documentation
