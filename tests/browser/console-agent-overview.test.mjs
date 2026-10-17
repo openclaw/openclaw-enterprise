@@ -37,7 +37,9 @@ const nextFrames = (page) =>
   page.evaluate(
     () =>
       new Promise((resolve) => {
-        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve)));
+        globalThis.requestAnimationFrame(() =>
+          globalThis.requestAnimationFrame(() => setTimeout(resolve)),
+        );
       }),
   );
 
