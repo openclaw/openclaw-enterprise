@@ -2478,6 +2478,9 @@ summary:focus-visible {
   color: var(--muted);
 }
 .log-viewer {
+  /* Log rows size to this card, not the window: above 1100 px the card sits beside the
+     version list in a pane narrower than at 1001-1100 px (finding 1713). */
+  container: log-viewer / inline-size;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -2817,7 +2820,7 @@ summary:focus-visible {
   color: var(--muted);
   text-decoration: line-through;
 }
-@media (max-width: 1100px) {
+@container log-viewer (width < 762px) {
   .log-line {
     grid-template-columns:
       var(--log-time-column) var(--log-level-column) minmax(60px, 88px)
@@ -2825,9 +2828,10 @@ summary:focus-visible {
     gap: 10px;
   }
 }
-/* Below 1000 px a whole timestamp would leave the message column under about 200 px, so the
-   message moves below the time, level and origin, as it does on phones (finding 1681). */
-@media (max-width: 1000px) {
+/* In a card narrower than 662 px a whole timestamp would leave the message column under 200 px
+   (48 px row padding, 218 px time, 78 px level, 88 px origin and 30 px of gaps), so the message
+   moves below the time, level and origin, as it does on phones (findings 1681, 1713). */
+@container log-viewer (width < 662px) {
   .log-line {
     grid-template-columns: minmax(var(--log-time-column), 1fr) max-content minmax(60px, 112px);
     gap: 4px 10px;

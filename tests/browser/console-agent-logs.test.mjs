@@ -410,7 +410,7 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
       .locator(".log-row", { hasText: "longest timestamp" })
       .locator(".log-time");
     assert.match(await time.innerText(), shown);
-    for (const width of [1440, 1100, 1001, 1000, 761]) {
+    for (const width of [1440, 1300, 1200, 1101, 1100, 1001, 1000, 761]) {
       await page.setViewportSize({ width, height: 900 });
       const lines = await time.evaluate((cell) => {
         const range = cell.ownerDocument.createRange();
@@ -419,6 +419,29 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
       });
       assert.equal(lines, 1, `one ${locale} ${timezoneId} timestamp line at ${width}px`);
     }
+  }
+});
+
+// Above 1100 px the Logs card sits beside the version list, narrower than at 1001-1100 px.
+// Breakpoints on the window squeezed the message column to 0 px at 1101 px, one character per
+// line (finding 1713); the rows now follow the card's width. The test above keeps timestamps whole.
+test("the log message column stays readable beside the version list", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [
+    { time: "2026-12-31T02:29:59Z", raw: "failed to resolve remote control preferences" },
+  ];
+  const { page } = await newPage(t, fixture, {
+    context: { locale: "en-US", timezoneId: "Australia/Adelaide" },
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  await log.getByText("failed to resolve remote control preferences").waitFor();
+  for (const width of [390, 1000, 1101, 1200, 1300, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const message = await log
+      .locator(".log-content")
+      .evaluate((cell) => cell.getBoundingClientRect().width);
+    assert.ok(message >= 200, `message column ${message}px wide at ${width}px`);
   }
 });
 
