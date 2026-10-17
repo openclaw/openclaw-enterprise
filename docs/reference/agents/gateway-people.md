@@ -14,6 +14,9 @@ The roster omits merged aliases, `gateway-owner`, and profiles whose native
 login alias rather than a display name; the native list has no machine-kind flag.
 Avatar reads require membership in that filtered roster; excluded or unknown
 profile IDs return `404` without fetching an image.
+Concurrent reads may share an unfinished roster lookup for the same revision,
+endpoint and credential. Completed results are not cached; every HTTP request
+still requires exact Agent authorization and retains its own deadline/cancellation.
 It exposes no linked identity aliases, emails or GitHub metadata. It lists profiles
 already known to OpenClaw, not current connections or identity-provider grants;
 profiles can remain after access is removed. This creates no OCC accounts, grants

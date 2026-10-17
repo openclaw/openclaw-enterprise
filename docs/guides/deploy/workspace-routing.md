@@ -14,22 +14,19 @@ before deploying. Console starters omit Driver-owned authentication.
 
 ## Runtime prerequisite for separate storage
 
-The current dedicated Codex implementation requires private routing, native node enrollment, and
-Gateway and Harness images containing the matching OpenClaw workspace changes.
+Dedicated Codex requires private routing, native node enrollment and matching
+OpenClaw workspace changes in Gateway/Harness images, including plugin attachments.
 [Storage integration #76](https://github.com/openclaw/openclaw-enterprise/issues/76)
-tracks the current runtime PRs and remaining limits. The Codex plugin must include
-the matching attachment changes. Compute rejects dedicated runtime revisions
-without routing or an enrollment client before provisioning workloads.
+tracks runtime PRs and limits. Compute refuses missing routing/enrollment clients
+before provisioning workloads.
 
 These prerequisites describe the [Kubernetes Codex implementation](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
 They do not establish support for a dedicated OpenClaw remote worker. Embedded
 Harnesses also support direct access.
 
-Build the matching Gateway and Harness images from the repository's pinned
-runtime sources; see the [runtime image procedure](../../../deploy/runtime/README.md).
-Updating the controller alone does not update installed images. Verify native
-node enrollment, workspace access, and a real model turn with your selected
-images before accepting the deployment.
+Build Gateway/Harness images from [pinned runtime sources](../../../deploy/runtime/README.md);
+controller updates do not update installed images. Verify enrollment, workspace
+access and a real model turn before accepting deployment.
 
 ## Agent workspace files
 
@@ -40,16 +37,14 @@ See [routing ownership, credentials and TLS](../../reference/gateway-routing.md)
 
 ### Requirements
 
-You need Kubernetes with enforced NetworkPolicies,
-[Envoy Gateway](https://gateway.envoyproxy.io/docs/tasks/quickstart/)
-(tested with v1.6.7), Gateway API CRDs, and [cert-manager](https://cert-manager.io/docs/installation/).
-Install and operate those controllers separately from this chart and provide
-an existing Envoy GatewayClass. By default, the chart creates a namespaced
-SelfSigned Issuer, a root CA Certificate, and a CA Issuer; cert-manager generates
-the CA and Envoy's listener certificate. It also creates the shared Gateway,
-ClusterIP EnvoyProxy, and API-key SecurityPolicy. No public listener is created.
-The operator installing the chart needs permission for these infrastructure
-resources; the OCC API does not.
+Provide Kubernetes enforcing NetworkPolicies,
+[Envoy Gateway](https://gateway.envoyproxy.io/docs/tasks/quickstart/) (tested v1.6.7),
+Gateway API CRDs, [cert-manager](https://cert-manager.io/docs/installation/) and an
+Envoy GatewayClass. Operate these controllers separately. The chart defaults create
+a namespaced SelfSigned Issuer, root CA Certificate, CA Issuer, shared Gateway,
+ClusterIP EnvoyProxy and API-key SecurityPolicy; cert-manager generates certificates.
+There is no public listener. Chart operators need infrastructure permissions;
+the OCC API does not.
 
 The chart gives Envoy a stable Service name and derives its `.svc` hostname.
 Normal Linux Pod DNS search resolves that name without a separate DNS record
@@ -165,11 +160,11 @@ Keep the existing network settings alongside this field. Replace the placeholder
 with CIDRs verified for your cluster; there is no production default. Restart
 the API and worker after changing their startup configuration.
 
-Kubernetes Compute renders native trusted-proxy authentication, its fixed
-`x-occ-identity: occ-workspace-files` identity with `operator.admin`, proxy trust,
-and real-IP fallback. Agent Configurations and Presets can omit those fields.
-Unsupported authentication fields or conflicting tenant trust settings fail
-deployment. Matching explicit settings are accepted. See the [gateway authentication contract](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
+Compute renders trusted-proxy authentication, machine
+`x-occ-identity: occ-workspace-files`/`operator.admin`, proxy trust and real-IP
+fallback. Configurations/Presets may omit these fields; matching values are accepted.
+Unsupported authentication or conflicting tenant trust settings fail deployment.
+See the [authentication contract](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
 
 For optional operator loopback access, set `gateway.auth.password` to the
 environment SecretRef
@@ -316,15 +311,12 @@ report `Ready`, and the security policy and Agent HTTPRoute to report
 `Accepted`. Check that a missing or invalid service key and a spoofed identity
 header cannot reach native administration.
 
-Verify the [OCC workspace-file API](../../reference/agents.md#workspace-files)
-and Console with an existing file. Save a harmless temporary change, discard a
-separate unsaved editor change, and reload to confirm the saved contents. Use
-a fresh native session to check that the Agent reads the saved change. Restore
-the exact original contents and compare their hash. The public API cannot
-delete a workspace file, so do not create a missing file for this check unless
-you have a separate way to restore its absence. Read after an uncertain write
-before deciding whether to retry. After cutover, verify the existing PVC
-identities, sessions, and any configured channels.
+Verify [workspace API](../../reference/agents.md#workspace-files)/Console access
+with an existing file: save a harmless change, discard another unsaved edit and
+reload. Confirm the Agent reads the saved change in a fresh native session.
+Restore original contents and compare hashes. The API cannot delete files:
+create none unless you can restore their absence. After uncertain writes, read
+before retrying. Verify existing PVC identities, sessions and channels after cutover.
 
 ### Rotate the service key and certificates
 

@@ -1,7 +1,7 @@
 ---
 created: "2026-10-16"
 updated: "2026-10-17"
-last_updated_session: authoring-run/c469521f-2427-4a7f-bdcd-211e9384938d
+last_updated_session: authoring-run/95258c7f-1e9d-4612-a08b-e1e2ba0e49a9
 ---
 
 # Gateway people flow
@@ -64,6 +64,13 @@ validate raster image types, bound the body to 2 MiB, and follow no redirects.
 The public avatar operation repeats exact Agent authorization. Missing images
 return `404`; roster and avatar responses use `no-store`.
 
+Concurrent roster/avatar reads share only a pending `users.list` operation for
+the same revision, endpoint and machine credential. Each caller resolves its
+target and retains its own cancellation/deadline; the last departing reader
+cancels the shared transport. The wire read has a separate five-second bound.
+Completion or failure removes the entry, so later requests reread profile
+exclusions rather than reuse a completed result. Authorization precedes sharing.
+
 ### 3. Render and refresh
 
 `apps/controller/src/console/agents/people.mjs:renderGatewayPeople`
@@ -109,6 +116,8 @@ without turning normal unavailability into a failed Console read.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 10:21: Share pending roster reads while retaining caller cancellation and fresh exclusions. (authoring-run/95258c7f-1e9d-4612-a08b-e1e2ba0e49a9 - 74022a945d0ec1a895c98966b88af11b13b64893)
 
 - 2026-10-17 09:50: Clarify machine alias filtering; verify roster search independently of Agent updates. (authoring-run/c469521f-2427-4a7f-bdcd-211e9384938d - 2990608dd47c1129acbab295c4bf90f711e14d43)
 

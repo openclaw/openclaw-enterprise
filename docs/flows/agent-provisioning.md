@@ -1,16 +1,18 @@
 ---
 created: "2026-09-23"
 updated: "2026-10-17"
-last_updated_session: authoring-run/c469521f-2427-4a7f-bdcd-211e9384938d
+last_updated_session: authoring-run/95258c7f-1e9d-4612-a08b-e1e2ba0e49a9
 ---
 
 # Agent provisioning flow
 
 ## Overview
 
-Console saves Slack and model Secrets, submits inline Configuration and credential references, and retains Preset bindings. OCC queues setup without placeholder resources. The worker creates Configuration and Agent, grants exact Secret or source access, provisions trusted-proxy credentials, and admits the first deployment.
-
-The original provisioning handle follows the first deployment to activation or failure. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own runtime reconciliation; later deployments use separate handles.
+Console saves Slack/model Secrets and submits inline Configuration, credential references
+and retained Preset bindings. OCC queues setup without placeholders. The worker creates
+Configuration/Agent, grants exact credential access and admits the first deployment.
+Its handle follows activation or failure; later deployments use separate handles.
+See [worker reconciliation](controller-worker.md) and [Harness topology](harness-execution-topology.md).
 
 ## Entry Points
 
@@ -58,7 +60,11 @@ Preset restoration and Credentials read native model runtime policy through
 `apps/controller/src/console/agents/harness-auth.mjs:configuredHarnessId`.
 Service Accounts and Codex plugin browsing remain specific to Codex.
 
-The Slack modal immediately saves new tokens through `POST /namespaces/:namespaceId/secrets`, before an Agent exists, then clears entered values. Apply stages references and environment bindings; Cancel discards selections but retains created Secrets. Model discovery uses an API key or service account token without saving it. Create Agent saves it as a Namespace Secret, clears the input, and reuses the reference on retries. Bound Presets retain their credential/provider. A lost Secret-save response requires recovery, not automatic repetition.
+The Slack modal saves tokens through `POST /namespaces/:namespaceId/secrets` before
+Agent creation, then clears inputs. Apply stages references/environment bindings;
+Cancel retains created Secrets. Model discovery uses unsaved credentials; Create Agent
+saves the Namespace Secret, clears inputs and reuses its reference on retries.
+Presets retain their credential/provider. Recover a lost save response before retrying.
 
 A selected Credential Gateway's catalog directs Console to register the model
 Secret before source-backed provisioning. [Console recovery](../reference/console/create-and-deploy.md)
@@ -100,7 +106,7 @@ Source-backed provisioning records the canonical model source and grants only so
 Admission, replay, retry and execution recheck caller authority, source readiness and Gateway
 ownership. Queued or running work prevents source deletion.
 
-Kubernetes `kubernetesGatewayConfigurationDocument` prepares trusted-proxy credentials
+Kubernetes `kubernetesGatewayConfigurationDocument` renders trusted-proxy configuration
 without loopback HTTP. It preserves explicit human identities/scopes alongside
 machine administration, defaulting to machine-only. Provisioning and deploy
 admission reject malformed identity grants and human admission with admin device
@@ -141,15 +147,25 @@ covers remaining limits and verification-only support.
 
 `packages/occ/src/state/postgres-state.ts:provisioning`
 
-Safe failed steps can retry under a fresh claim and authorization check. Completed resources are retained and reused. An unresolved external write keeps its exact target and ownership evidence; lease expiry or a not-found response alone does not justify dispatching it again, except a Configuration create still absent 90 seconds after it began, which is [resent](configuration-driver.md#2-resolve-singleton-state-and-select-drivers). Only a refusal before the Configuration record exists rolls back: it deletes the written Configuration, or marks it for a later attempt.
+Safe failures retry with a fresh claim/authorization, reusing completed resources.
+Unresolved writes retain target/ownership evidence; expiry or not-found alone
+does not permit redispatch. Exception: Configuration creates absent after 90 seconds
+are [resent](configuration-driver.md#2-resolve-singleton-state-and-select-drivers).
+Only pre-record Configuration refusals roll back, deleting the written Configuration
+or marking it for later cleanup.
 
 While initialization owns an Agent, conflicting edits and manual deployment are guarded. Stop/Delete invalidate provisioning, and stale workers cannot hand off a deployment afterward. Ordinary deletion retains its lifecycle and in-flight credential safety. A cancelled provisioning never runs again. Agent deletion settles an effect it left pending one worker lease after cancellation: it removes runtime credentials and records the receipt with its finalizer, deferring without spending attempts. Deploy, Agent update and runtime-credential requests settle it once the cancelled claim's stored lease expires, returning `409` until then. Namespace deletion waits for queued or running work and for any effect without a matching receipt, not for settled effects on terminal work. Namespace Secrets and completed Configurations remain available.
 
-No API deletes a provisioning request. Agent deletion removes the Agent's requests; a request that never created an Agent stays. To clear one that blocks migration `0049`, see [legacy bindings](../reference/settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
+Requests have no delete API; Agent deletion removes its requests. Agent-less requests
+remain; for migration `0049` blockers, see [legacy bindings](../reference/settings/operations.md#clear-legacy-managed-pat-bindings-before-0049).
 
 ## Debugging and Verification
 
-- Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`; failed work reports a safe error. Status checks stored ownership and provisioning grants, while retry also revalidates the accepted plan. See [admission](#2-occ-admits-one-job) for refusal rules. Explicit pre-handoff retry uses the same URL plus `/retry` and an empty body; only the initiating actor can read or retry work. Match request IDs in `agent_provisioning.compute_refused` and `worker.completed`.
+- Poll `data.provisioning.url` or `GET /namespaces/:namespaceId/agents/provision/:workId`
+  for safe progress/errors. Only the initiating actor can read/retry. Status checks
+  ownership/grants; retry also revalidates the plan ([refusals](#2-occ-admits-one-job)).
+  Pre-handoff retry appends `/retry` with an empty body. Match request IDs in
+  `agent_provisioning.compute_refused` and `worker.completed`.
 - Status does not repeat plugin policy, runtime-image support, Compute plan validation or Harness authentication checks; retry can refuse a readable record. Missing accepted Secrets, Credential Sources or ServiceAccounts give `409`; changed selected Driver IDs or Sandbox containment can give `503`. Caller-owned Configuration refusals name the setting without its value; other Compute refusals use fixed public text. A worker refusal fails that attempt with `PROVISIONING_REJECTED` after inspecting earlier unsettled writes; an unobservable write still retries. Kubernetes provisioning requires explicit `dedicated`, because omission defaults to `embedded`. An accepted account without an access token requires the ChatGPT Backend. The original handle independently follows the first deployment outcome.
 - Inspect `worker.completed`, `worker.error` and the `agent_provisioning` work metric. PostgreSQL job state lives in `occ.controller_work` and `occ.agent_provisioning_work`.
 - Use `tests/integration/postgres-agent-provisioning.test.mjs` for persisted admission, deduplication, safe retry, retained outputs and authorization behavior.
@@ -169,6 +185,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 10:22: Remove repeated setup and recovery prose while preserving the provisioning contract. (authoring-run/95258c7f-1e9d-4612-a08b-e1e2ba0e49a9 - 74022a945d0ec1a895c98966b88af11b13b64893)
 
 - 2026-10-17 09:50: Match trimmed device admin scopes and preserve current provisioning behavior. (authoring-run/c469521f-2427-4a7f-bdcd-211e9384938d - 2990608dd47c1129acbab295c4bf90f711e14d43)
 

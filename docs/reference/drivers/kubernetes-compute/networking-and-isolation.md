@@ -268,13 +268,11 @@ Operators install Envoy Gateway/cert-manager and configure
 Keep Agent endpoints, service keys, certificates and file contents out of native
 Configuration and AgentRevision.
 
-`getGatewayEndpoint` derives
-`wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>` without Kubernetes
-API access. During preparation and activation, Compute reconciles an owned
-`HTTPRoute` in the Gateway's physical namespace (control plane for dedicated,
-data plane for embedded), attached to the configured Gateway's
-`https` listener. Both rules match the configured private hostname and target
-the existing same-namespace gateway Service:
+`getGatewayEndpoint` derives `wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>`
+without Kubernetes calls. Preparation/activation reconcile an owned `HTTPRoute`
+in the Gateway's physical namespace (control plane: dedicated; data plane: embedded).
+It attaches to the Gateway's `https` listener; both rules match its private
+hostname and same-namespace Service:
 
 - The exact Agent path rewrites to `/`, preserving workspace-file WSS access.
 - A prefix rule below that Agent path rewrites the prefix to `/` and retains
@@ -293,11 +291,10 @@ The Service and route survive revision cutover; only revision reconciliation
 repairs them ([endpoint and route](../../gateway-routing.md#endpoint-and-route)).
 Missing CRDs or worker permissions fail reconciliation.
 
-Envoy authenticates the OCC service key and the route rewrites identity headers
-([service key and native identity](../../gateway-routing.md#service-key-and-native-identity)).
-Native `allowRealIpFallback` accepts Envoy's direct downstream address when OCC
-and Envoy share a Pod CIDR. That address must be nonloopback; a loopback
-port-forward alone is not a working native attribution path.
+Envoy authenticates the service key and rewrites identity headers
+([native identity](../../gateway-routing.md#service-key-and-native-identity)).
+`allowRealIpFallback` accepts Envoy's nonloopback downstream address when it shares
+OCC's Pod CIDR. Loopback port-forwarding alone cannot supply native attribution.
 
 ## Namespaces and isolation
 
@@ -311,32 +308,28 @@ Only the experimental two-cluster profile creates `oce-gateways-<hash>` in the
 control cluster, with the first 24 hexadecimal characters of `sha256(namespaceId)`.
 That target has the storage-role label and omits the tenant discovery label.
 
-Compute prepares restricted Pod security, quotas, defaults, default-deny and DNS
-policies in each target. Dedicated Gateway and Harness Pods, ServiceAccounts,
-private PVCs and credential mounts remain separate. Gateway password and channel
-credentials never enter the Harness projection; model credentials never enter a
-dedicated Gateway. Namespace workload managers are trusted for both roles:
-namespace-wide Pod/Secret privileges, quotas and deletion affect both.
-Explicit namespace **and** Pod
-selectors allow only the same Agent's selected Harness revision on app-server
-and private plugin-status ports. DNS uses `agent-<hash>.<harness-namespace>.svc`.
-The stable dedicated Harness Service keeps the same network-profile, Namespace,
-Agent, revision, and workload-role labels as the gateway egress and Harness ingress policies
-while a revision is active. A prepared successor does not change that Service
-selector until activation; deactivation moves the Service back to an inactive
-selector. Active Gateway Services include Namespace, Agent, and gateway-role
-labels, satisfying gateway policy selectors without tying the stable route to a
-revision. These Service selectors support the
+Compute prepares restricted Pod security, quotas/defaults and default-deny/DNS
+policies per target. Dedicated Gateway/Harness Pods, ServiceAccounts, private
+PVCs and credential mounts stay separate. Harness projections exclude Gateway
+password/channel credentials; dedicated Gateways exclude model credentials.
+Namespace-wide Pod/Secret privileges, quotas and deletion affect both roles,
+so workload managers are trusted for both.
+Namespace **and** Pod selectors admit only the Agent's selected Harness revision
+on app-server/plugin-status ports. DNS: `agent-<hash>.<harness-namespace>.svc`.
+Active Harness Service labels match policy selectors: network-profile,
+Namespace, Agent, revision and workload-role. Successors change the selector only
+at activation; deactivation restores an inactive selector. Gateway Services use
+Namespace/Agent/gateway-role labels to match policies independently of revision.
+These selectors support the
 [AWS VPC CNI pre-DNAT policy resolution requirement](https://github.com/aws/amazon-network-policy-controller-k8s#networkpolicy-podselector-must-match-the-target-services-selector).
 App-server transport is capability-token `ws://`, not mTLS; cross-cluster
 transport and runtime attestation are not implemented.
 
-Stop and retirement retain durable
-claims. Agent deletion removes its owned claims and credentials by UID, independent
-of the draft execution mode. Namespace deletion removes the managed tenant
-namespace, or only owned resources in an adopted namespace, preserving its ownership metadata. The
-two-cluster profile also deletes its exact-owned Gateway namespace. Both preserve
-OCC infrastructure. Missing or foreign targets fail preparation.
+Stop/retirement retain durable claims. Agent deletion removes owned claims and
+credentials by UID regardless of draft execution mode. Namespace deletion removes
+managed tenant namespaces or only owned resources in adopted targets, preserving
+adopted ownership metadata. Two-cluster deletion also removes the exact-owned
+Gateway namespace. Both preserve OCC infrastructure. Missing/foreign targets fail preparation.
 
 Identity labels under `openclaw.dev/` contain full platform IDs for ownership,
 discovery and network selectors; generated resource names use bounded hashes.
@@ -357,12 +350,10 @@ Prepare the namespace by annotating
 `pod-security.kubernetes.io/audit=restricted`, and
 `pod-security.kubernetes.io/warn=restricted`, and granting the tenant-local
 [worker and API RoleBindings](../../../guides/deploy/production-agents.md#grant-tenant-rolebindings).
-The running worker rechecks
-[administrator authorization and foreign ownership](../../security.md#namespace-admission-and-resource-isolation)
-before binding the tenant identity; no worker pause or restart is required.
-Missing worker permissions keep provisioning pending; missing API permissions
-prevent Configuration access. Docker and external Compute Drivers reject
-existing-namespace selection with `409`.
+The worker rechecks [authorization/ownership](../../security.md#namespace-admission-and-resource-isolation)
+before binding, without pause/restart. Missing worker permissions keep provisioning
+pending; missing API permissions block Configuration access. Docker/external
+Compute reject existing-namespace selection with `409`.
 
 Workload Pods use the restricted
 [Pod and container hardening](../../security.md#pod-and-container-hardening),

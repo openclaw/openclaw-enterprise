@@ -123,6 +123,8 @@ async function startNativeHttpsUpstream(t, { profiles } = {}) {
   assert.equal(generated.status, 0, generated.stderr || generated.error?.message);
 
   const requests = [];
+  const gateway = { connections: 0, lists: 0 };
+  const connectionClosures = [];
   const cert = await readFile(certPath, "utf8");
   const server = createServer({ key: await readFile(keyPath), cert }, async (request, response) => {
     const chunks = [];
@@ -185,6 +187,8 @@ async function startNativeHttpsUpstream(t, { profiles } = {}) {
     const sockets = new WebSocketServer({ server });
     t.after(() => sockets.close());
     sockets.on("connection", (socket) => {
+      gateway.connections++;
+      connectionClosures.push(once(socket, "close"));
       socket.send(
         JSON.stringify({
           type: "event",
@@ -192,9 +196,26 @@ async function startNativeHttpsUpstream(t, { profiles } = {}) {
           payload: { nonce: "people-fixture", ts: Date.now() },
         }),
       );
-      socket.on("message", (raw) => {
+      socket.on("message", async (raw) => {
         const request = JSON.parse(raw.toString());
         assert.ok(["connect", "users.list"].includes(request.method));
+        let listed;
+        if (request.method === "users.list") {
+          gateway.lists++;
+          try {
+            listed = typeof profiles === "function" ? await profiles() : profiles;
+          } catch {
+            socket.send(
+              JSON.stringify({
+                type: "res",
+                id: request.id,
+                ok: false,
+                error: { code: "UNAVAILABLE", message: "Profile read failed." },
+              }),
+            );
+            return;
+          }
+        }
         socket.send(
           JSON.stringify({
             type: "res",
@@ -202,7 +223,7 @@ async function startNativeHttpsUpstream(t, { profiles } = {}) {
             ok: true,
             payload:
               request.method === "users.list"
-                ? { profiles }
+                ? { profiles: listed }
                 : {
                     type: "hello-ok",
                     protocol: 4,
@@ -232,7 +253,7 @@ async function startNativeHttpsUpstream(t, { profiles } = {}) {
   const address = server.address();
   assert.equal(typeof address, "object");
   assert.notEqual(address, null);
-  return { port: address.port, requests, cert };
+  return { port: address.port, requests, cert, gateway, connectionClosures };
 }
 
 async function createNativeAdminFixture(t, options = {}) {
@@ -1444,4 +1465,184 @@ test("Gateway avatars exclude service profiles and merged aliases before image f
   assert.equal(avatar.text.slice(1), "PNG");
   assert.equal(upstream.requests.length, 1);
   assert.equal(upstream.requests[0].url, "/api/users/profile-alice/avatar");
+});
+
+test("concurrent roster and avatar reads share a pending Gateway list but never a completed result", async (t) => {
+  const admitted = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  let profiles = ["alice", "bob", "carol"].map((name) => ({
+    id: `profile-${name}`,
+    displayName: name,
+    hasAvatar: true,
+  }));
+  let fail = false;
+  const upstream = await startNativeHttpsUpstream(t, {
+    profiles: async () => {
+      await release.promise;
+      if (fail) {
+        throw new Error("Read refused");
+      }
+      return profiles;
+    },
+  });
+  const originalCAs = getCACertificates("default");
+  setDefaultCACertificates([...originalCAs, upstream.cert]);
+  t.after(() => setDefaultCACertificates(originalCAs));
+  let resolutions = 0;
+  const access = createNativeGatewayPeopleAccess(async () => {
+    if (++resolutions === 4) {
+      admitted.resolve();
+    }
+    return { url: `wss://localhost:${upstream.port}/`, apiKey: nativeGatewayApiKey };
+  });
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: access,
+    provisionedPeople: ["roster-denied"],
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Concurrent avatars", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const headers = authenticatedHeaders(await fixture.signIn());
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}/gateway/people`;
+  const deniedSession = await fixture.signIn(fixture.provisionedAccounts[0].credentials);
+  // Hold the wire response until all four real HTTP requests reach the adapter.
+  const reads = [path, ...profiles.map(({ id }) => `${path}/${id}/avatar`)].map((url) =>
+    fixture.rawRequest("GET", url, { headers }),
+  );
+  await admitted.promise;
+  // A pending result does not admit another human: authorization still precedes
+  // the adapter, for both the roster and avatar operations.
+  for (const url of [path, `${path}/profile-alice/avatar`]) {
+    assert.equal((await fixture.request("GET", url, { session: deniedSession })).status, 403);
+  }
+  assert.equal(resolutions, 4);
+  release.resolve();
+  const results = await Promise.all(reads);
+  assert.deepEqual(
+    results.map(({ response }) => response.status),
+    [200, 200, 200, 200],
+  );
+  assert.deepEqual(upstream.gateway, { connections: 1, lists: 1 });
+  assert.equal(upstream.requests.length, 3);
+  // A completed read cannot keep a profile eligible after its native merge.
+  profiles = profiles.map((profile) => ({ ...profile, mergedInto: "other-profile" }));
+  const denied = await fixture.rawRequest("GET", `${path}/profile-alice/avatar`, { headers });
+  assert.equal(denied.response.status, 404);
+  assert.equal(upstream.gateway.lists, 2);
+  assert.equal(upstream.requests.length, 3);
+  // A failed read is also evicted, allowing the next authorized read to recover.
+  fail = true;
+  const unavailable = await fixture.rawRequest("GET", path, { headers });
+  assert.equal(unavailable.response.status, 503);
+  fail = false;
+  profiles = [{ id: "profile-alice", displayName: "Alice", hasAvatar: true }];
+  const recovered = await fixture.rawRequest("GET", path, { headers });
+  assert.equal(recovered.response.status, 200);
+  assert.equal(JSON.parse(recovered.text).data.people[0].displayName, "Alice");
+  assert.equal(upstream.gateway.lists, 4);
+});
+
+test("shared Gateway list readers cancel independently and isolate revisions and rotated credentials", async (t) => {
+  const started = Array.from({ length: 6 }, () => Promise.withResolvers());
+  const gates = Array.from({ length: 6 }, () => Promise.withResolvers());
+  const profiles = [{ id: "profile-alice", displayName: "Alice", hasAvatar: true }];
+  t.after(() => gates.forEach((gate) => gate.resolve(profiles)));
+  let lists = 0;
+  const upstream = await startNativeHttpsUpstream(t, {
+    profiles: async () => {
+      const index = lists++;
+      started[index].resolve();
+      return gates[index].promise;
+    },
+  });
+  const originalCAs = getCACertificates("default");
+  setDefaultCACertificates([...originalCAs, upstream.cert]);
+  t.after(() => setDefaultCACertificates(originalCAs));
+  const joined = Promise.withResolvers();
+  const deadlineJoined = Promise.withResolvers();
+  let resolutions = 0;
+  let apiKey = nativeGatewayApiKey;
+  const access = createNativeGatewayPeopleAccess(async () => {
+    if (++resolutions === 2) {
+      joined.resolve();
+    }
+    if (resolutions === 5) {
+      deadlineJoined.resolve();
+    }
+    return { url: `wss://localhost:${upstream.port}/`, apiKey };
+  });
+  const fixture = await createConsoleAppFixture(t, { gatewayPeopleAccess: access });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("List cancellation", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Team",
+    createHarnessConfiguration("openclaw", "gpt-4.1"),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const request = (controller, revision = active.revision) => ({
+    revision,
+    signal: controller.signal,
+    deadline: new Date(Date.now() + 5000),
+  });
+  // Cancel the original caller after another authorized reader has joined it.
+  const first = new AbortController();
+  const firstRead = access.list(request(first));
+  const firstDenied = assert.rejects(firstRead, { name: "AbortError" });
+  await started[0].promise;
+  const secondRead = access.list(request(new AbortController()));
+  await joined.promise;
+  first.abort();
+  await firstDenied;
+  gates[0].resolve(profiles);
+  assert.deepEqual(
+    await secondRead,
+    profiles.map((profile) => ({ ...profile, role: null })),
+  );
+  assert.equal(upstream.gateway.lists, 1);
+  // With no remaining reader, abort the wire operation and discard its entry.
+  const only = new AbortController();
+  const abandoned = access.list(request(only));
+  const abandonedDenied = assert.rejects(abandoned, { name: "AbortError" });
+  await started[1].promise;
+  only.abort();
+  await abandonedDenied;
+  await upstream.connectionClosures[1];
+  // A shorter HTTP-style deadline also expires only its own reader.
+  const shortRead = access.list({
+    ...request(new AbortController()),
+    deadline: new Date(Date.now() + 1500),
+  });
+  const expired = assert.rejects(shortRead, { name: "TimeoutError" });
+  await started[2].promise;
+  const longerRead = access.list(request(new AbortController()));
+  await deadlineJoined.promise;
+  await expired;
+  gates[2].resolve(profiles);
+  assert.equal((await longerRead)[0].id, "profile-alice");
+  // Same revision, rotated credential: never join the old transport's read.
+  const oldCredential = access.list(request(new AbortController()));
+  await started[3].promise;
+  apiKey = `${nativeGatewayApiKey}-rotated`;
+  const newCredential = access.list(request(new AbortController()));
+  await started[4].promise;
+  // A new active revision likewise has an independent read, even at the same URL.
+  const next = await fixture.seedActiveAgentRevision(namespace.id, agent.id, active.revision.id);
+  const nextRevision = access.list(request(new AbortController(), next.revision));
+  await started[5].promise;
+  gates[3].resolve(profiles);
+  gates[4].resolve([{ ...profiles[0], displayName: "Rotated credential" }]);
+  gates[5].resolve([{ ...profiles[0], displayName: "Next revision" }]);
+  const results = await Promise.all([oldCredential, newCredential, nextRevision]);
+  assert.deepEqual(
+    results.map((people) => people[0].displayName),
+    ["Alice", "Rotated credential", "Next revision"],
+  );
+  assert.equal(upstream.gateway.lists, 6);
 });
