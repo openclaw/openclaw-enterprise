@@ -609,16 +609,18 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
   const { env } = upfrontCheck("openai", undefined).calls[0].options;
   let answer = 401;
   let answerBody = "";
+  let breakOff = false;
   const server = createServer((request, response) => {
     request.resume();
     request.on("end", () => {
-      response
-        .writeHead(answer, {
-          "content-type": "application/json",
-          "x-request-id": "req_" + HOSTILE_KEY,
-          "openai-organization": HOSTILE_KEY,
-        })
-        .end(answerBody);
+      response.writeHead(answer, {
+        "content-type": "application/json",
+        "x-request-id": "req_" + HOSTILE_KEY,
+        "openai-organization": HOSTILE_KEY,
+        ...(breakOff && { "content-length": String(answerBody.length + 100) }),
+      });
+      if (breakOff) response.write(answerBody, () => response.socket.destroy());
+      else response.end(answerBody);
     });
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -747,6 +749,16 @@ test("the upfront child names a 401 body's shape and closed-set code and type, n
       assert.ok(!/Hostile|sk-proj|Incorrect|Unauthorized|member|html/i.test(text), text);
     }
   }
+  // A body that breaks off mid-read names no shape: it was neither empty nor parsed.
+  breakOff = true;
+  const broken = await run(`{"error":{"code":"invalid_api_key","message":${quoted}`);
+  breakOff = false;
+  assert.equal(broken.status, 13);
+  assert.deepEqual(JSON.parse(broken.stdout), ["", "", ""]);
+  assert.deepEqual(upfrontCheck("openai", undefined, "fixture-key", broken).rejected, {
+    providerStatus: 401,
+    responseHeaderMarker: "provider-like",
+  });
   // A non-401 answer writes nothing, whatever its body.
   for (const status of [400, 403, 500]) {
     answer = status;
