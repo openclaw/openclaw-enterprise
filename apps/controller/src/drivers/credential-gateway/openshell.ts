@@ -1162,16 +1162,16 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     const unconfirmed = `the credential of Sandbox ${sandbox} cannot be confirmed withdrawn`;
     const refused = gatewayIdentityRefusal(workspace, unconfirmed);
     const read = () => client.getSandbox({ name: sandbox, workspace }, context.signal);
+    const listsProvider = (record: { readonly spec?: { readonly providers?: unknown } }) => {
+      const providers = record.spec?.providers;
+      return Array.isArray(providers) && providers.includes(provider);
+    };
     // Detach is idempotent; a replay after an uncertain detach still returns a receipt.
     const detach = () =>
       refused(() => client.detachSandboxProvider(workspace, sandbox, provider, context.signal));
     const settle = async (receiptId: string | undefined): Promise<CredentialAttachmentStatus> => {
-      const status = await client.getSandboxProviderStatus(
-        workspace,
-        sandbox,
-        provider,
-        context.signal,
-        receiptId,
+      const status = await refused(() =>
+        client.getSandboxProviderStatus(workspace, sandbox, provider, context.signal, receiptId),
       );
       const state = attachmentState(status.state);
       return Object.freeze({
@@ -1196,10 +1196,13 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
         // A missing Sandbox has no placeholders left to resolve, once it is confirmed missing.
         return Object.freeze({ sourceId: context.sourceId, state: "absent" });
       }
+      if (context.recheck === true && !listsProvider(restored)) {
+        return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
+      }
       const detached = await detach();
       if (detached === undefined) {
         throw new OpenShellCredentialGatewayFailure(
-          `OpenShell lists Sandbox ${sandbox} but did not find it on detach, so ${unconfirmed}.`,
+          `OpenShell GetSandbox finds Sandbox ${sandbox} but DetachSandboxProvider did not, so ${unconfirmed}.`,
         );
       }
       return settle(detached.receiptId);
@@ -1211,8 +1214,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
       if (existing === undefined) {
         return absent();
       }
-      const providers = existing.spec?.providers;
-      if (!Array.isArray(providers) || !providers.includes(provider)) {
+      if (!listsProvider(existing)) {
         return Object.freeze({ sourceId: context.sourceId, state: "revoked" });
       }
     }

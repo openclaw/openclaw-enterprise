@@ -1167,8 +1167,9 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   let visibleWorkspace = { name: workspace, labels: {}, phase: "WORKSPACE_PHASE_ACTIVE" };
   let listed;
   let detachAnswer;
-  // Answers for the next detaches, ahead of `detachAnswer`.
+  // Answers for the next detaches and Sandbox reads, ahead of `detachAnswer` and `listed`.
   const detachAnswers = [];
+  const sandboxAnswers = [];
   const calls = [];
   client.getWorkspace = async (name) => {
     calls.push(["getWorkspace", name]);
@@ -1176,7 +1177,8 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   };
   client.getSandbox = async (request) => {
     calls.push(["getSandbox", request.name]);
-    return listed === undefined ? undefined : { name: sandbox, spec: { providers: listed } };
+    const providers = sandboxAnswers.length === 0 ? listed : sandboxAnswers.shift();
+    return providers === undefined ? undefined : { name: sandbox, spec: { providers } };
   };
   client.detachSandboxProvider = async (_workspace, name, detached) => {
     calls.push(["detachSandboxProvider", name, detached]);
@@ -1231,7 +1233,7 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   detachAnswers.push(undefined, undefined);
   await assert.rejects(
     withdraw(false),
-    /lists Sandbox .* did not find it on detach, so the credential .* cannot be confirmed withdrawn/,
+    /GetSandbox finds Sandbox .* but DetachSandboxProvider did not, so the credential .* cannot be confirmed withdrawn/,
   );
   assert.equal(detachAnswers.length, 0);
   const sandboxRead = client.getSandbox;
@@ -1240,6 +1242,14 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   };
   await unauthorized(false);
   client.getSandbox = sandboxRead;
+  // A refusal on the receipt's status read carries the code too.
+  const statusRead = client.getSandboxProviderStatus;
+  client.getSandboxProviderStatus = async () => {
+    throw refusal(7);
+  };
+  detachAnswers.push({ receiptId: "receipt-refused" });
+  await unauthorized(false);
+  client.getSandboxProviderStatus = statusRead;
   listed = undefined;
   for (const code of [7, 16]) {
     client.getWorkspace = async () => {
@@ -1278,6 +1288,22 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
     ["getSandbox", sandbox],
     ["getWorkspace", workspace],
     ["getSandbox", sandbox],
+  ]);
+  // A recheck whose second read finds the Sandbox without the provider is revoked, no detach;
+  // one that lists it is detached again.
+  calls.length = 0;
+  sandboxAnswers.push(undefined, ["operator-static"]);
+  assert.deepEqual(await withdraw(true), { sourceId, state: "revoked" });
+  sandboxAnswers.push(undefined, ["operator-static", provider]);
+  assert.deepEqual(await withdraw(true), { sourceId, state: "revoked" });
+  assert.deepEqual(calls, [
+    ["getSandbox", sandbox],
+    ["getWorkspace", workspace],
+    ["getSandbox", sandbox],
+    ["getSandbox", sandbox],
+    ["getWorkspace", workspace],
+    ["getSandbox", sandbox],
+    ["detachSandboxProvider", sandbox, provider],
   ]);
   client.getWorkspace = async () => {
     throw refusal(16);

@@ -7111,7 +7111,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const existingNamespace = await this.getNamespace(namespace);
     // A missing Namespace proves nothing about the Sandbox (finding 1693): only its ownership
-    // check needs the object; the gateway withdraws and confirms either way.
+    // check needs the object; the gateway withdraws and confirms either way. Without the object
+    // the placement is the derived default, so an adopted Namespace of another name fails closed
+    // in the gateway (no such Workspace) rather than reporting absence.
     if (existingNamespace !== undefined) {
       this.verifyNamespaceOwnership(
         existingNamespace,
@@ -7167,7 +7169,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const existingNamespace = await this.getNamespace(namespace);
     // The Namespace's teardown releases the provider's Workspace with every Sandbox in it, but
     // a Namespace missing before that proves nothing about the exposure (finding 1693): only
-    // its ownership check needs the object; the provider withdraws and confirms either way.
+    // its ownership check needs the object; the provider withdraws and confirms either way, in
+    // the derived default placement (an adopted Namespace of another name then fails closed).
     if (existingNamespace !== undefined) {
       this.verifyNamespaceOwnership(
         existingNamespace,
