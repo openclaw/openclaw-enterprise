@@ -271,6 +271,7 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   );
   assert.ok((await failure.textContent()).length > 0);
   assert.equal(await focusedText(page), await failure.textContent());
+  assert.equal(await status.textContent(), "");
   assert.equal(await deploy.isDisabled(), true);
 
   // An admitted deployment shows one status while its request runs, and the status keeps

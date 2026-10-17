@@ -2424,6 +2424,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           deployFeedback.textContent = deployFailureText(error, submitted);
           if (!submitted || clusterRbac || [400, 403, 404, 409, 429].includes(error.status)) {
             deployPending = false;
+          } else {
+            // The request ended, not necessarily the deployment. Keep Deploy disabled and let
+            // the alert explain the unknown outcome instead of leaving “Deploying…” beside it.
+            deployStatus.textContent = "";
           }
         } finally {
           if (context.isCurrent()) {
