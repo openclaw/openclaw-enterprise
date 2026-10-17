@@ -2313,54 +2313,40 @@ async function prepareProductionInstallation(
   let controllerUrl;
   let placement;
   let gatewayPlacement;
+  // Each step is its own bounded cleanup, so one that never settles (a worker stop) cannot keep
+  // the later ones from running (finding 1711). They run last-registered first: worker, port-
+  // forwards, app, observer pool, workload Namespace, temporary directory.
   context.after(async () => {
-    const cleanupFailures = [];
-    const cleanupStep = async (description, operation) => {
-      try {
-        await operation();
-      } catch (error) {
-        cleanupFailures.push(new Error(`${description}: ${error.message}`, { cause: error }));
-      }
-    };
-
-    await cleanupStep("controller worker", async () => {
-      if (worker !== undefined) {
-        await worker.stop();
-      } else if (workerPool !== undefined) {
-        await workerPool.end();
-      }
-    });
-    await cleanupStep("OpenShell management port-forwards", async () => {
-      await createSandboxDriver.disposeGatewayForwards();
-    });
-    await cleanupStep("production app", async () => {
-      if (productionApp !== undefined) {
-        await productionApp.close();
-      }
-    });
-    await cleanupStep("observer pool", async () => {
-      await observerPool.end();
-    });
-    await cleanupStep("Kubernetes namespace", async () => {
-      if (placement !== undefined) {
-        await kubectl(
-          "delete",
-          "namespace",
-          placement,
-          "--ignore-not-found=true",
-          "--wait=true",
-          "--timeout=120s",
-        );
-      }
-    });
-    await cleanupStep("temporary directory", async () => {
-      await rm(directory, { recursive: true, force: true });
-    });
-    if (cleanupFailures.length > 0) {
-      throw new AggregateError(
-        cleanupFailures,
-        `OpenShell integration cleanup reported ${cleanupFailures.length} failure(s).`,
+    await rm(directory, { recursive: true, force: true });
+  });
+  context.after(async () => {
+    if (placement !== undefined) {
+      await kubectl(
+        "delete",
+        "namespace",
+        placement,
+        "--ignore-not-found=true",
+        "--wait=true",
+        "--timeout=120s",
       );
+    }
+  });
+  context.after(async () => {
+    await observerPool.end();
+  });
+  context.after(async () => {
+    if (productionApp !== undefined) {
+      await productionApp.close();
+    }
+  });
+  context.after(async () => {
+    await createSandboxDriver.disposeGatewayForwards();
+  });
+  context.after(async () => {
+    if (worker !== undefined) {
+      await worker.stop();
+    } else if (workerPool !== undefined) {
+      await workerPool.end();
     }
   });
 

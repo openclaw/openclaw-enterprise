@@ -284,6 +284,63 @@ test(
 );
 
 test(
+  "a node:test file whose worker stop never settles attempts every later cleanup and exits",
+  { timeout: 20_000 },
+  async () => {
+    // The OpenShell proof's cleanups, registered one each as it does (finding 1711), in a real
+    // node:test process. The worker stop never settles and its poll interval keeps the process
+    // alive; the file must still attempt the other five cleanups, name the stalled one and exit.
+    const helper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
+    const script = `
+      import test from "node:test";
+      import { boundedTeardown } from ${JSON.stringify(helper)};
+      const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
+      test("proof", async (testContext) => {
+        const { context } = boundedTeardown(testContext, { stepLimitMs: 200, exitGraceMs: 50 });
+        context.after(() => attempt("temporary directory"));
+        context.after(() => attempt("workload Namespace"));
+        context.after(() => attempt("observer pool"));
+        context.after(() => attempt("production app"));
+        context.after(() => attempt("port-forwards"));
+        const poll = setInterval(() => {}, 50);
+        context.after(() => {
+          attempt("worker stop");
+          return new Promise(() => poll);
+        });
+        throw new Error("replacement timed out");
+      });
+    `;
+    // Run it as its own node:test root, not as a child reporting to this runner.
+    const env = { ...process.env };
+    delete env.NODE_TEST_CONTEXT;
+    const started = Date.now();
+    const exited = await execute(process.execPath, ["--input-type=module", "-e", script], {
+      env,
+      timeout: 15_000,
+    }).then(
+      () => ({ code: 0, stdout: "", stderr: "" }),
+      (error) => error,
+    );
+    assert.ok(Date.now() - started < 10_000, "the file exited soon after its teardown");
+    assert.notEqual(exited.killed, true, "the file exited on its own");
+    assert.equal(exited.code, 1);
+    assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
+      "attempted worker stop",
+      "attempted port-forwards",
+      "attempted production app",
+      "attempted observer pool",
+      "attempted workload Namespace",
+      "attempted temporary directory",
+    ]);
+    assert.match(
+      exited.stderr,
+      /teardown: cleanup registered at \[eval1\]:\d+ failed: did not finish within 200 ms/,
+    );
+    assert.match(exited.stderr, /teardown: exiting in 50 ms; abandoned cleanups: \[eval1\]:\d+/);
+  },
+);
+
+test(
   "a failure diagnostic's kubectl reads stop at its deadline",
   { timeout: 20_000 },
   async (t) => {
