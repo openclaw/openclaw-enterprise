@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
@@ -23,12 +24,17 @@ import {
   enterManualModel,
   nativeSandboxDriver,
   openAdvancedSettings,
+  routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
+
+const defaultCodexPreset = JSON.parse(
+  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+);
 
 // The production Kubernetes Drivers, built without a cluster client. The Compute Driver
 // advertises dedicated provisioning through the real /installation route. Provisioning
@@ -1126,6 +1132,113 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
   }
 });
 
+// Create Agent preselects an OpenClaw execution mode the Installation admits, but only one the
+// form chose itself (#2670): a mode the reader picked, or one fixed by Anthropic credentials,
+// stays as it is and shows its refusal. Each case reads the form before the Installation answers.
+// The Sandbox Driver provisions dedicated OpenClaw, so the Installation admits Dedicated only.
+test("Create Agent switches only a mode it chose itself when the Installation answers", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { sandboxDriver: nativeSandboxDriver() });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Mode defaults", { ready: true });
+  const cases = [
+    {
+      name: "a mode the reader picked is kept",
+      async before(page) {
+        await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+        await page.locator(".launch-runtime:not([open]) > summary").click();
+        await page.getByLabel("Execution mode").selectOption("dedicated");
+        await page.getByLabel("Execution mode").selectOption("embedded");
+      },
+      mode: "embedded",
+      alert:
+        "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details.",
+    },
+    {
+      // Choosing the harness again hands the mode back to the form.
+      name: "a picked mode followed by a harness change is the form's again",
+      async before(page) {
+        await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+        await page.locator(".launch-runtime:not([open]) > summary").click();
+        await page.getByLabel("Execution mode").selectOption("dedicated");
+        await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+        await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+      },
+      mode: "dedicated",
+    },
+    {
+      name: "Anthropic keeps Embedded",
+      async before(page) {
+        await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+        await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+      },
+      mode: "embedded",
+      alert:
+        "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution.",
+    },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (t) => {
+      const { page } = await newPage(t, fixture, { browser });
+      const installation = await holdRequests(t, page, `${fixture.origin}/installation`, {
+        method: "GET",
+      });
+      await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+      await installation.requested;
+      await scenario.before(page);
+      // Before the answer every choice is open and the form keeps Embedded.
+      assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+      installation.release();
+      await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+      assert.equal(await page.getByLabel("Execution mode").inputValue(), scenario.mode);
+      const refusals = page.getByRole("alert").filter({ hasText: /OpenClaw/ });
+      if (scenario.alert === undefined) {
+        assert.equal(await refusals.count(), 0);
+      } else {
+        assert.equal(await refusals.textContent(), scenario.alert);
+        assert.equal(
+          await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+          true,
+        );
+      }
+    });
+  }
+});
+
+// A Preset with operator-managed credentials and no execution mode leaves the mode to the form,
+// but those credentials need Embedded OpenClaw, so an Installation that admits only Dedicated
+// does not switch it: the form names the Preset instead. The Installation answer is routed: an
+// Installation that admits only Dedicated, over the SSH Compute Driver the fixture uses.
+test("Operator-managed Preset credentials without a mode keep Embedded when the Installation refuses it", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Runtime Preset default", {
+    filesystemConfiguration: true,
+  });
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Operator-managed credentials without a mode",
+      template: {
+        agent: { name: "Runtime Agent", harnessAuth: { method: "runtime" } },
+        configuration: { values: nativeValues("runtime-preset-default") },
+      },
+    },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture, { browser });
+  await routeInstallationWithoutProvisioning(page, fixture, {
+    openclaw: { executionModes: ["dedicated"] },
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const alert = page.getByRole("alert").filter({ hasText: /operator-managed credentials/ });
+  await alert.waitFor();
+  assert.equal(
+    await alert.textContent(),
+    "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset.",
+  );
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+});
+
 test("Create Agent shows a provisioning refusal's own reason and keeps catch-all answers generic", async (t) => {
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
@@ -1261,6 +1374,148 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       assert.equal(await page.getByLabel("Agent name").isDisabled(), answer.retry);
     });
   }
+});
+
+// Create Agent shows a full Namespace Pod quota while the first deployment reports it, and shows
+// generic progress again once the reader can no longer read that deployment (finding 1637). A
+// denied read (403) loses access as surely as a missing one (404): the quota line must not stay.
+test("Create Agent drops the Pod quota line when the deployment read is denied", async (t) => {
+  const quotaFull =
+    "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pod quota denied", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  await routeInstallationProvisioning(page, fixture);
+  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
+    }),
+  );
+  const updatedAt = new Date().toISOString();
+  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+  const url = `/namespaces/${namespace.id}/agents/provision/work_quota_denied`;
+  const agentId = "agt_00000000-0000-4000-8000-00000000b637";
+  const revisionId = "rev_00000000-0000-4000-8000-00000000b637";
+  const job = (status, extra = {}) => ({
+    workId: "work_quota_denied",
+    status,
+    phase: "configuration",
+    attemptCount: 1,
+    updatedAt,
+    url,
+    ...extra,
+  });
+  const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
+    }),
+  );
+  // Create Agent reads the handed-off deployment three times before the job fails.
+  const reads = [
+    job("running"),
+    job("running", handedOff),
+    job("running", handedOff),
+    job("running", handedOff),
+    job("failed", {
+      ...handedOff,
+      error: {
+        code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+        message: "Agent provisioning could not complete.",
+      },
+    }),
+  ];
+  let read = 0;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_quota_denied`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
+    }),
+  );
+  // The first deployment read names the quota; every later one is denied.
+  let deploymentReads = 0;
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
+    (route) => {
+      deploymentReads += 1;
+      return route.fulfill(
+        deploymentReads === 1
+          ? {
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                data: {
+                  deploymentId: revisionId,
+                  namespaceId: namespace.id,
+                  agentId,
+                  status: "queued",
+                  error: null,
+                  warnings: [],
+                  progress: {
+                    lastAttempt: {
+                      at: updatedAt,
+                      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+                      message: quotaFull,
+                    },
+                    nextAttemptAt: updatedAt,
+                  },
+                },
+                meta,
+              }),
+            }
+          : {
+              status: 403,
+              contentType: "application/json",
+              body: JSON.stringify({
+                error: {
+                  code: "FORBIDDEN",
+                  message: "The exact platform operation was not authorized.",
+                },
+                meta,
+              }),
+            },
+      );
+    },
+  );
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Pod quota denied");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "model-secret-value");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await page.evaluate(() => {
+    globalThis.provisioningWrites = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
+          const text = [...record.addedNodes].map((node) => node.textContent).join("");
+          if (text.startsWith("Provisioning") || text.startsWith("The Namespace")) {
+            globalThis.provisioningWrites.push(text);
+          }
+        }
+      }
+    }).observe(globalThis.document.body, { childList: true, subtree: true });
+  });
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+  assert.equal(read, reads.length);
+  assert.equal(deploymentReads, 3);
+  assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
+    "Provisioning request accepted.",
+    "Provisioning queued…",
+    "Provisioning Agent…",
+    quotaFull,
+    "Provisioning Agent…",
+    "Provisioning failed.",
+  ]);
 });
 
 test("Agent name counts characters, as the API does, not UTF-16 code units", async (t) => {
