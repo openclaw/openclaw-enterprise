@@ -398,15 +398,11 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
   });
 }
 
-// A value outside the runtime failure vocabulary (packages/contracts/src/runtime-failure.ts) is
-// recorded, and read back, as UNRECOGNIZED rather than as served (findings 1660, 1674).
-function recordedRuntimeFailureEvidence(
-  evidence: Readonly<RuntimeFailureEvidence>,
-): RuntimeFailureEvidence {
-  return Object.freeze(recognizedRuntimeFailureValues(evidence));
-}
-
-/** Validates failure data before it is recorded, and again when it is read back. */
+/**
+ * Validates failure data before it is recorded, and again when it is read back. A runtime
+ * failure value outside the vocabulary in packages/contracts/src/runtime-failure.ts is recorded,
+ * and read back, as UNRECOGNIZED rather than as served (findings 1660, 1674).
+ */
 export function validateFailureData(
   reasonCode: string,
   data: unknown,
@@ -459,7 +455,7 @@ export function validateFailureData(
       timeoutMs,
       ...(evidence === undefined
         ? {}
-        : { runtimeFailure: recordedRuntimeFailureEvidence(evidence) }),
+        : { runtimeFailure: recognizedRuntimeFailureValues(evidence) }),
     });
   }
   if (reasonCode === "RUNTIME_MODEL_PROBE_FAILED") {
@@ -479,7 +475,7 @@ export function validateFailureData(
     if (evidence.code !== "MODEL_PROBE_FAILED") {
       throw new ScopeViolationError("Model probe failure data requires its runtime failure.");
     }
-    return Object.freeze({ runtimeFailure: recordedRuntimeFailureEvidence(evidence) });
+    return Object.freeze({ runtimeFailure: recognizedRuntimeFailureValues(evidence) });
   }
   throw new ScopeViolationError("Controller work failure data is not allowed for this code.");
 }

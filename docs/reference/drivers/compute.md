@@ -153,15 +153,15 @@ without invoking Compute.
 
 After [OCC authorization](../agents.md#current-runtime-diagnostics),
 `diagnoseAgentDeployment(binding)` returns current checks for an exact revision
-using its approved Namespace and Agent. The Driver maps native evidence to generic `component`, `check`, `state`,
-nullable `checkedAt` and optional safe `code` fields. It verifies runtime
-identity, bounds size and time, and omits credentials, provider output and logs.
-OCC rejects mismatched revisions, invalid timestamps, more than 32 checks and
-unsupported states.
+using its approved Namespace and Agent. The Driver maps native evidence to `component`, `check`, `state`,
+nullable `checkedAt` and optional `code` fields. It verifies runtime
+identity, bounds size and time, and omits credentials, provider output, logs.
+OCC rejects mismatched revisions, invalid timestamps, over 32 checks and
+unsupported states; values outside `packages/contracts/src/runtime-failure.ts` read `UNRECOGNIZED`.
 
 The call does not update deployment work, rerun the startup probe, send
 messages, or prove a model response. Missing support returns dependency
-unavailable; Drivers unable to collect safe evidence should omit the method.
+unavailable; Drivers unable to collect safe evidence omit the method.
 
 ### Optional runtime status and logs
 

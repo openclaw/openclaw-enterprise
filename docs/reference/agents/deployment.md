@@ -217,12 +217,12 @@ then repeats the stop without spending attempts.
 
 A `RUNTIME_MODEL_PROBE_FAILED` deployment error's `data.runtimeFailure` names
 the runtime component, check, time and, when classified, a `cause`: a `kind` and
-optional `detail` token from this closed vocabulary. A Codex `detail` ending
+an optional `detail` token from this closed vocabulary. A Codex `detail` ending
 `-attempt2` comes from a check retried once.
 
 | `kind`           | Meaning                                                    | `detail`                                                                                                                                                                         |
 | ---------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` for oversized output; others read `UNRECOGNIZED`                                                 |
+| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` (oversized output); others read `UNRECOGNIZED`                                                   |
 | `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `rate_limit`, `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
 | `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                               |
 | `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                             |
@@ -231,7 +231,7 @@ OpenClaw's `format` covers an unknown model or a request the provider rejected
 as malformed, such as invalid provider settings. A 429 or usage limit is
 `rate_limit`. A rejected credential is
 `RUNTIME_AUTHENTICATION_FAILED` and a timeout `RUNTIME_MODEL_PROBE_TIMEOUT`;
-neither has a cause. Compute drops any cause outside these tokens but keeps the
+neither has a cause. Compute drops any other cause but keeps the
 code, so a cause never carries native output, provider text, or credentials. The
 console shows it as **Cause**, and `occ agent deployment-status` prints it.
 

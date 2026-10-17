@@ -42,7 +42,8 @@ export const WORKSPACE_SETUP_FAILED = "WORKSPACE_SETUP_FAILED";
 
 /**
  * The checks a runtime diagnostics read reports besides a held startup failure: the Gateway's
- * Slack channel checks, and Compute's own check for a runtime status it could not read.
+ * Slack channel checks, and Compute's own check for a runtime status it could not read. OCC's
+ * own Sandbox check is not here: OCC adds it after it masks what Compute returned.
  */
 export const RUNTIME_DIAGNOSTIC_CHECKS: readonly string[] = Object.freeze([
   "configuration",
@@ -90,7 +91,7 @@ export const PROCESS_EXIT_SIGNALS: readonly string[] = Object.freeze([
 
 /**
  * The system error codes a `PROCESS_EXIT` cause may name, as `error-<code>`: the Linux errno
- * names Node reports, plus the few libuv adds.
+ * names and libuv's own error names, as Node reports them.
  */
 export const PROCESS_EXIT_ERROR_CODES: readonly string[] = Object.freeze([
   "E2BIG",
@@ -117,6 +118,7 @@ export const PROCESS_EXIT_ERROR_CODES: readonly string[] = Object.freeze([
   "EFAULT",
   "EFBIG",
   "EFTYPE",
+  "EHOSTDOWN",
   "EHOSTUNREACH",
   "EIDRM",
   "EILSEQ",
@@ -158,6 +160,7 @@ export const PROCESS_EXIT_ERROR_CODES: readonly string[] = Object.freeze([
   "ENOTSUP",
   "ENOTTY",
   "ENXIO",
+  "EOF",
   "EOPNOTSUPP",
   "EOVERFLOW",
   "EPERM",
@@ -166,6 +169,7 @@ export const PROCESS_EXIT_ERROR_CODES: readonly string[] = Object.freeze([
   "EPROTONOSUPPORT",
   "EPROTOTYPE",
   "ERANGE",
+  "EREMOTEIO",
   "EROFS",
   "ESHUTDOWN",
   "ESOCKTNOSUPPORT",

@@ -39,15 +39,13 @@ function validRuntimeDiagnosticCheck(value: RuntimeDiagnosticCheck): RuntimeDiag
   }
   // Compute reads these from the runtime, so a value outside the runtime's vocabulary is
   // returned as UNRECOGNIZED rather than as served (finding 1673).
-  return Object.freeze(
-    recognizedRuntimeDiagnosticValues({
-      component: value.component,
-      check: value.check,
-      state,
-      checkedAt: value.checkedAt,
-      ...(value.code === undefined ? {} : { code: value.code }),
-    }),
-  );
+  return recognizedRuntimeDiagnosticValues({
+    component: value.component,
+    check: value.check,
+    state,
+    checkedAt: value.checkedAt,
+    ...(value.code === undefined ? {} : { code: value.code }),
+  });
 }
 
 export function deploymentDiagnostics(

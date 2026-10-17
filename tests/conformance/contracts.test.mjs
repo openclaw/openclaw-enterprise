@@ -4,6 +4,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { constants as osConstants } from "node:os";
 import test from "node:test";
+import { getSystemErrorMap } from "node:util";
 import vm from "node:vm";
 
 import {
@@ -689,7 +690,12 @@ test("every signal and system error code Node names on Linux is in the PROCESS_E
   for (const signal of Object.keys(osConstants.signals)) {
     assert.ok(PROCESS_EXIT_SIGNALS.includes(signal), signal);
   }
-  for (const code of Object.keys(osConstants.errno)) {
+  // Node names spawn errors by libuv's names, which add a few to errno's. The runtime keeps
+  // only names of this shape.
+  for (const code of [
+    ...Object.keys(osConstants.errno),
+    ...[...getSystemErrorMap().values()].map(([name]) => name),
+  ].filter((name) => /^E[A-Z0-9]{1,15}$/u.test(name))) {
     assert.ok(PROCESS_EXIT_ERROR_CODES.includes(code), code);
   }
 });
