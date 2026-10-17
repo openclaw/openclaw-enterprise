@@ -8,7 +8,7 @@ import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.
 // After an admitted deployment the held draft page's heading keeps focus, and the loading page's
 // heading takes it over only while the held heading still has it (finding 1626). A reader who
 // leaves the held heading before the loading page appears is not pulled back to it.
-test("A reader who leaves the held heading during an admitted deployment is not pulled back", async (t) => {
+test("A reader who leaves the held heading during an admitted deployment is not pulled back while the loading page stands in", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Held heading hand-off");
   const agent = await fixture.createAgent(
     namespace.id,
@@ -69,11 +69,14 @@ test("A reader who leaves the held heading during an admitted deployment is not 
   await page.waitForFunction(() => globalThis.document.activeElement?.tagName === "H1");
   await page.evaluate(() => globalThis.document.activeElement?.blur());
   await page.waitForFunction(() => globalThis.focusFrames.loadingShown);
+  // The loading page stands for a while with nothing taking focus.
   await new Promise((resolve) => setTimeout(resolve, 300));
   agentRead.release();
   await page.waitForURL(/revision=rev_/);
   await page.waitForFunction(
     () =>
+      globalThis.document.activeElement?.tagName === "H1" &&
+      globalThis.document.activeElement.isConnected &&
       !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
       globalThis.document.querySelector(".agent-tabs [aria-current=page]") !== null,
   );

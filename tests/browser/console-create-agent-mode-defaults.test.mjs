@@ -45,7 +45,7 @@ test("Create Agent switches only a mode it chose itself when the Installation an
       async before(page) {
         await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
         await page.locator(".launch-runtime:not([open]) > summary").click();
-        await page.getByLabel("Execution mode").selectOption("embedded");
+        await page.getByLabel("Execution mode").selectOption("dedicated");
         await page.getByLabel("Harness", { exact: true }).selectOption("codex");
         await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
       },
@@ -93,7 +93,8 @@ test("Create Agent switches only a mode it chose itself when the Installation an
 
 // A Preset with operator-managed credentials and no execution mode leaves the mode to the form,
 // but those credentials need Embedded OpenClaw, so an Installation that admits only Dedicated
-// does not switch it: the form names the Preset instead.
+// does not switch it: the form names the Preset instead. The Installation answer is routed: an
+// Installation that admits only Dedicated, over the SSH Compute Driver the fixture uses.
 test("Operator-managed Preset credentials without a mode keep Embedded when the Installation refuses it", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Runtime Preset default", {
     filesystemConfiguration: true,
