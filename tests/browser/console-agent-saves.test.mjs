@@ -1552,6 +1552,64 @@ test("a Configuration save that lands late does not move the cards below the edi
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).isVisible(), true);
 });
 
+// Pressing Save disabled it while it held focus, so focus fell to the body for the whole
+// "Checking Configuration…" wait (finding 1646). The status takes it, as Deploy's does, until
+// Edit Configuration takes it once the save lands.
+test("a keyboard Configuration save keeps focus on its status while the save is checked", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Team", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Field Guide", nativeValues("before"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const page = await openTab(t, fixture, namespace, agent, "configuration");
+  const edit = page.getByRole("button", { name: "Edit Configuration" });
+  await edit.click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("after"), null, 2));
+
+  // The save's reread of the Configuration is held, as on a slow link.
+  const reread = await holdRequests(t, page, `**${configurationPath({ namespace, agent })}`, {
+    once: true,
+    method: "GET",
+  });
+  const save = page.getByRole("button", { name: "Save Configuration" });
+  await save.focus();
+  // Every frame from here until Edit Configuration has focus: the focused node.
+  await page.evaluate(() => {
+    const trail = [];
+    globalThis.focusTrail = trail;
+    globalThis.focusFrames = 0;
+    const sample = () => {
+      globalThis.focusFrames += 1;
+      const node = globalThis.document.activeElement;
+      const entry =
+        !node || node === globalThis.document.body
+          ? "BODY"
+          : `${node.tagName}: ${node.textContent.trim()}`;
+      if (trail.at(-1) !== entry) {
+        trail.push(entry);
+      }
+      if (entry !== "BUTTON: Edit Configuration") {
+        globalThis.requestAnimationFrame(sample);
+      }
+    };
+    sample();
+  });
+  await page.keyboard.press("Enter");
+  await reread.requested;
+  const held = await page.evaluate(() => globalThis.focusFrames);
+  await page.waitForFunction((frames) => globalThis.focusFrames >= frames + 12, held);
+  reread.release();
+  await page.waitForFunction(() => globalThis.focusTrail.at(-1) === "BUTTON: Edit Configuration");
+  const trail = await page.evaluate(() => globalThis.focusTrail);
+  assert.deepEqual(
+    trail,
+    ["BUTTON: Save Configuration", "P: Checking Configuration…", "BUTTON: Edit Configuration"],
+    trail.join(" | "),
+  );
+  await page.getByRole("status").filter({ hasText: "Configuration saved." }).waitFor();
+});
+
 // The reader who moved on keeps focus, so no focused control names "Configuration saved.": the
 // status announces itself instead, by taking its text after it is shown (finding 1641).
 test("a late Configuration save leaves focus on the Agents link when the reader moved there", async (t) => {

@@ -3773,7 +3773,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       pending = true;
       feedback.textContent = "Checking Configuration…";
       feedbackLocked = true;
+      const saveFocused = document.activeElement === save;
       updateState();
+      // Save is disabled while it runs; its status takes focus so a keyboard reader is not
+      // dropped to the page, as Deploy's does (finding 1646).
+      if (saveFocused) {
+        focusSaveOutcome(container, [], feedback);
+      }
       let mutationStarted = false;
       let configurationSaved = false;
       try {
