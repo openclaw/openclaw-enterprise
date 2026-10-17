@@ -3022,13 +3022,13 @@ export class ControllerWorker {
     if (compute.withdrawHarnessExposure === undefined || this.stopping) {
       return;
     }
-    // Listed once per start; a candidate handed over by a terminal failure before that
-    // listing keeps its place in the same map.
-    if (!this.harnessExposureListed) {
-      if (this.harnessExposureListingFailures >= MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS) {
-        return;
-      }
-      let listed: Map<string, PendingHarnessExposureWithdrawal>;
+    // Listed once per start, with bounded retries; candidates handed over by terminal
+    // failures share the map and are withdrawn whether or not the listing succeeded.
+    if (
+      !this.harnessExposureListed &&
+      this.harnessExposureListingFailures < MAX_HARNESS_EXPOSURE_WITHDRAWAL_ATTEMPTS
+    ) {
+      let listed: Map<string, PendingHarnessExposureWithdrawal> | undefined;
       try {
         listed = await this.listHarnessExposureWithdrawals();
       } catch {
@@ -3041,19 +3041,20 @@ export class ControllerWorker {
           code: "WORKER_UNAVAILABLE",
           attempt: this.harnessExposureListingFailures,
         });
-        return;
       }
-      this.harnessExposureListed = true;
-      for (const [revisionId, candidate] of listed) {
-        if (!this.harnessExposureWithdrawals.has(revisionId)) {
-          this.harnessExposureWithdrawals.set(revisionId, candidate);
+      if (listed !== undefined) {
+        this.harnessExposureListed = true;
+        for (const [revisionId, candidate] of listed) {
+          if (!this.harnessExposureWithdrawals.has(revisionId)) {
+            this.harnessExposureWithdrawals.set(revisionId, candidate);
+          }
         }
-      }
-      if (this.harnessExposureWithdrawals.size > 0) {
-        this.emit({
-          event: "worker.harness-exposure-sweep",
-          pending: this.harnessExposureWithdrawals.size,
-        });
+        if (this.harnessExposureWithdrawals.size > 0) {
+          this.emit({
+            event: "worker.harness-exposure-sweep",
+            pending: this.harnessExposureWithdrawals.size,
+          });
+        }
       }
     }
     const now = Date.now();
@@ -3102,8 +3103,8 @@ export class ControllerWorker {
    * A candidate that failed for good keeps its Sandbox for diagnosis, and with it the exposure
    * Compute's status read used, which nothing reads any more and which the Gateway's node
    * binding never closed (finding 1672): the sweep withdraws it from the next pass on, and a
-   * restart lists it again from its failed deployment. An active revision is left alone: its
-   * exposure went with its readiness. The failure is already committed, so a read that fails
+   * restart lists it again from its failed deployment (as a non-active revision). An active
+   * revision is left alone: its exposure went with its readiness. The failure is already committed, so a read that fails
    * here only defers the withdrawal to the next start.
    */
   private async scheduleFailedCandidateExposureWithdrawal(claim: ClaimedWork): Promise<void> {
@@ -4877,7 +4878,11 @@ export class ControllerWorker {
       !activeRevisionChanged &&
       isCandidateDeployment(claim)
     ) {
-      await this.scheduleFailedCandidateExposureWithdrawal(claim);
+      try {
+        await this.scheduleFailedCandidateExposureWithdrawal(claim);
+      } catch {
+        // The failure is committed; the next start lists the candidate from its deployment.
+      }
     }
     if (activated !== undefined) {
       try {

@@ -698,6 +698,8 @@ test("preparation records a device redeemed on an expired setup before renewing 
     );
     assert.equal(data.setupId, "setup-b");
     assert.equal(data.deviceId, redeemed ? deviceId : undefined);
+    // The readiness check credits the revision whose node connects, not an observed setup.
+    assert.equal(data.enrolledRevisionId, undefined);
   }
 });
 
@@ -2461,9 +2463,8 @@ test("an upgraded file-delivered node drops its leftover setup code and tolerate
   }
   assert.equal(ready, true);
   assert.equal(state.setupCalls, 0, "a recorded device needs no new setup");
-  // The code goes first; the connected node then records this revision as enrolled.
+  // One write drops the code and records the connected node's revision as enrolled.
   assert.deepEqual(nodeSecretReplaces, [
-    ["deviceId", "expiresAtMs", "setupId"],
     ["deviceId", "enrolledRevisionId", "expiresAtMs", "setupId"],
   ]);
   assert.equal(objects.get(key("Secret", nodeName)).data.setupCode, undefined);

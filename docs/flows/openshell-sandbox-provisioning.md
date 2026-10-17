@@ -294,17 +294,17 @@ alias. `gatewayConfigurationDocument` keeps Gateway workspace `/home/node/worksp
 the bridge maps it to the Sandbox root without mounting Harness storage.
 `gatewayNativeHookRelayConfiguration` derives private storage from `harnessHome`;
 Compute owns relay URL/auth. Egress admits only the provider peer/port; the direct
-Agent Service stays inactive, Compute omits its Harness route. Preparation
+Agent Service stays inactive and Compute omits its Harness route. Preparation
 preserves a serving predecessor; activation resolves the candidate again. Without
 `harnessEndpoint`, Codex retains Kubernetes transport and `/home/node/workspace`.
 Native OpenClaw enrolls outbound into its admitted workspace.
 
-Compute waits for the provider Harness Pod and this revision's enrolled node (the
-Secret names it); missing enrollment keeps it inactive. The Codex supervisor
+Compute waits for the provider Harness Pod and this revision's enrolled node
+(named in the Secret); missing enrollment keeps it inactive. The Codex supervisor
 rereads the provider setup before every node retry, keeping the latest valid
 value while the projection is unavailable. It relaunches the workspace-node
 process one second after every exit, uncapped, so Gateway rollout does not
-strand the Sandbox. Shutdown stops the retry loop.
+strand the Sandbox. Shutdown stops the loop.
 
 Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`

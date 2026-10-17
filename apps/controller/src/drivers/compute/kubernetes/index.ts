@@ -10401,9 +10401,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         setupId: setup.setupId,
         setupCode: setup.setupCode,
         expiresAtMs: String(setup.expiresAtMs),
-        ...(observed === undefined
-          ? {}
-          : { deviceId: observed.deviceId, [WORKSPACE_NODE_ENROLLED_REVISION_KEY]: revision.id }),
+        // The device observed on an expired setup may have been redeemed by a predecessor's
+        // node; the revision whose node connects is credited by the readiness check.
+        ...(observed === undefined ? {} : { deviceId: observed.deviceId }),
       };
       const clients = await this.clients(namespace.plane);
       if (existing === undefined) {
@@ -10741,20 +10741,37 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       }
     };
     if (deviceId) {
-      if (dropSetupCode && secret.data?.setupCode !== undefined) {
-        await replaceSecret(withoutSetupCode(secret.data));
-        await setupCodeRemoved();
+      const dropping = dropSetupCode && secret.data?.setupCode !== undefined;
+      let connected: boolean;
+      try {
+        connected = await enrollment.isConnected(url, deviceId, this.operationSignal());
+      } catch (error) {
+        // The code goes even when the Gateway does not answer.
+        if (dropping) {
+          await replaceSecret(withoutSetupCode(secret.data ?? {}));
+          await setupCodeRemoved();
+        }
+        throw error;
       }
-      const connected = await enrollment.isConnected(url, deviceId, this.operationSignal());
       // A replacement reconnects as the Agent's device. Record that this revision's node is
       // the one connected, so this revision counts as enrolled from here on (finding 1671).
-      if (connected && read(WORKSPACE_NODE_ENROLLED_REVISION_KEY) !== revision.id) {
+      // The marker names the revision, not its Sandbox: the same revision given a new Sandbox
+      // (a stop and start, a removed stale Sandbox) counts as enrolled from its first pass and
+      // takes the pre-marker path, which fails closed. One write with the dropped code: a
+      // second replace with the same resourceVersion would conflict.
+      const marking = connected && read(WORKSPACE_NODE_ENROLLED_REVISION_KEY) !== revision.id;
+      if (dropping || marking) {
         await replaceSecret({
           ...withoutSetupCode(secret.data ?? {}),
-          [WORKSPACE_NODE_ENROLLED_REVISION_KEY]: Buffer.from(revision.id, "utf8").toString(
-            "base64",
-          ),
+          ...(marking
+            ? {
+                [WORKSPACE_NODE_ENROLLED_REVISION_KEY]: Buffer.from(revision.id, "utf8").toString(
+                  "base64",
+                ),
+              }
+            : {}),
         });
+        await setupCodeRemoved();
       }
       return connected;
     }
