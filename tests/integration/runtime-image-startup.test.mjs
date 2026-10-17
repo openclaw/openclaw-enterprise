@@ -2344,7 +2344,7 @@ test("PROOF 1645 stress custom-provider subagent routing", imageTestOptions, asy
     model: nativeIds[agentId === "alias" ? "parent" : agentId],
     cwd: remoteWorkspaceRoot,
   }));
-  const runOne = async (index) => {
+  const runOne = async (index, iterations) => {
     const { containerName } = await runGatewaySmoke(t, "codex", {
       configuration,
       collectPlugins: false,
@@ -2365,7 +2365,7 @@ test("PROOF 1645 stress custom-provider subagent routing", imageTestOptions, asy
           "-e",
           "OCC_TEST_SUBAGENT_HANDOFF=default",
           "-e",
-          "OCC_TEST_SUBAGENT_ITERATIONS=" + (index === 0 ? 1 : 10),
+          `OCC_TEST_SUBAGENT_ITERATIONS=${iterations}`,
           containerName,
           "node",
           "--input-type=module",
@@ -2400,7 +2400,23 @@ test("PROOF 1645 stress custom-provider subagent routing", imageTestOptions, asy
     }
     return { index, ...result, logs };
   };
-  const results = await Promise.all([0, 1, 2, 3, 4, 5].map(runOne));
+  // Fresh Gateways (one sequence each, like the real test) and warm ones (many sequences).
+  const fresh = async () => {
+    const collected = [];
+    for (let batch = 0; batch < 6; batch += 1) {
+      collected.push(
+        ...(await Promise.all(
+          Array.from({ length: 8 }, (_, slot) => runOne(100 + batch * 8 + slot, 1)),
+        )),
+      );
+    }
+    return collected;
+  };
+  const [freshResults, ...warmResults] = await Promise.all([
+    fresh(),
+    ...Array.from({ length: 6 }, (_, index) => runOne(index, 40)),
+  ]);
+  const results = [...freshResults, ...warmResults];
   const found = results.flatMap(({ index, anomalies = [], logs = [] }) =>
     anomalies.map((anomaly, position) => ({ index, ...anomaly, logs: position === 0 ? logs : [] })),
   );
@@ -2412,12 +2428,20 @@ test("PROOF 1645 stress custom-provider subagent routing", imageTestOptions, asy
         .filter(({ method }) => method === "thread/start" || method === "initialize")
         .slice(-8),
     })),
-    summary: results.map(({ index, error, caseCount, anomalies }) => ({
-      index,
-      error: error?.slice(-600),
-      caseCount,
-      anomalies: anomalies?.map(({ iteration, agentId }) => `${iteration}:${agentId}`),
-    })),
+    totals: {
+      gateways: results.length,
+      cases: results.reduce((sum, { caseCount = 0 }) => sum + caseCount, 0),
+      errors: results.filter(({ error }) => error).length,
+      anomalies: found.length,
+    },
+    summary: results
+      .filter(({ error, anomalies }) => error || anomalies?.length)
+      .map(({ index, error, caseCount, anomalies }) => ({
+        index,
+        error: error?.slice(-600),
+        caseCount,
+        anomalies: anomalies?.map(({ iteration, agentId }) => `${iteration}:${agentId}`),
+      })),
     reference: results.find(({ reference }) => reference)?.reference?.slice(0, 1),
     timelineTail: results.find(({ timelineTail }) => timelineTail)?.timelineTail?.slice(-4),
   };
