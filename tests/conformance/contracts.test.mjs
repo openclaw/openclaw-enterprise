@@ -655,14 +655,14 @@ test("runtime failure evidence outside that vocabulary is recorded as UNRECOGNIZ
   );
 });
 
-test("a PROCESS_EXIT cause outside the contract's statuses, signals and error codes is recorded as UNRECOGNIZED", () => {
+test("a PROCESS_EXIT cause outside the contract's statuses, signals and error codes is recorded without its detail", () => {
   const failure = (detail) => ({
     runtimeFailure: {
       component: "agent",
       check: "model-probe",
       checkedAt: runtimeCheckedAt,
       code: "MODEL_PROBE_FAILED",
-      cause: { kind: "PROCESS_EXIT", detail },
+      cause: detail === undefined ? { kind: "PROCESS_EXIT" } : { kind: "PROCESS_EXIT", detail },
     },
   });
   for (const [served, recorded] of [
@@ -671,14 +671,49 @@ test("a PROCESS_EXIT cause outside the contract's statuses, signals and error co
     ["signal-SIGKILL-attempt2", "signal-SIGKILL-attempt2"],
     ["error-ENOBUFS", "error-ENOBUFS"],
     // Shaped like a token, but text the Sandbox chose.
-    ["exit-256", "UNRECOGNIZED"],
-    ["error-EVILEXAMPLECOM", "UNRECOGNIZED"],
-    ["signal-SIGSEEEXAMPLE-attempt2", "UNRECOGNIZED-attempt2"],
+    ["exit-256", undefined],
+    ["error-EVILEXAMPLECOM", undefined],
+    ["signal-SIGSEEEXAMPLE-attempt2", undefined],
+    // Recorded as UNRECOGNIZED before the detail was omitted; still read back.
+    ["UNRECOGNIZED", "UNRECOGNIZED"],
+    ["UNRECOGNIZED-attempt2", "UNRECOGNIZED-attempt2"],
   ]) {
     // Recorded once, then read back from the stored row.
     const stored = validateFailureData("RUNTIME_MODEL_PROBE_FAILED", failure(served));
     assert.deepEqual(stored, failure(recorded), served);
     assert.deepEqual(validateFailureData("RUNTIME_MODEL_PROBE_FAILED", stored), stored, served);
+  }
+});
+
+test("a PROCESS_EXIT cause recorded today reads under a controller from before the closed vocabulary", () => {
+  // The cause check of a controller before #2763, which a rollback or rolling upgrade runs
+  // against rows this one records: a detail must match it, or the read is refused.
+  const earlierReader =
+    /^(?:exit-[1-9][0-9]{0,2}|signal-SIG[A-Z0-9]{1,10}|error-E[A-Z0-9]{1,15})$/u;
+  const readsEarlier = (cause) =>
+    cause.kind === "PROCESS_EXIT" &&
+    Object.keys(cause).every((key) => key === "kind" || key === "detail") &&
+    (cause.detail === undefined || earlierReader.test(cause.detail.replace(/-attempt2$/u, "")));
+  for (const served of [
+    "exit-1",
+    "signal-SIGKILL-attempt2",
+    "error-ENOBUFS",
+    "exit-256",
+    "exit-999",
+    "error-EVILEXAMPLECOM",
+    "signal-SIGSEEEXAMPLE-attempt2",
+  ]) {
+    const stored = validateFailureData("RUNTIME_MODEL_PROBE_FAILED", {
+      runtimeFailure: {
+        component: "agent",
+        check: "model-probe",
+        checkedAt: runtimeCheckedAt,
+        code: "MODEL_PROBE_FAILED",
+        cause: { kind: "PROCESS_EXIT", detail: served },
+      },
+    });
+    const cause = JSON.parse(JSON.stringify(stored)).runtimeFailure.cause;
+    assert.ok(readsEarlier(cause), `${served} -> ${JSON.stringify(cause)}`);
   }
 });
 
