@@ -320,9 +320,6 @@ export function createChannelSecretsPanel({
     if (state.saveGrantWarning) {
       return "Resolve the saved Secret access grant before deploying.";
     }
-    if (state.unsavedSecrets) {
-      return "Save the channel Secret choices in Credentials before deploying.";
-    }
     const blockReason = channelCredentialBlockReason(state.values);
     if (blockReason !== null) {
       return blockReason;
@@ -330,6 +327,9 @@ export function createChannelSecretsPanel({
     const missing = missingChannelCredentialGroups(state.values, state.configuration);
     if (missing.length) {
       return `Complete these in Credentials before deploying: ${missing.join(", ")}.`;
+    }
+    if (state.unsavedSecrets) {
+      return "Save the channel Secret choices, or choose the saved Secrets again, before deploying.";
     }
     return "Ready to deploy.";
   }

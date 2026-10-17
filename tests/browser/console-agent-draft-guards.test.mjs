@@ -1066,9 +1066,12 @@ for (const changed of ["generation", "identity"]) {
       // Reload draft reapplies the chosen Secret, still unsaved, so Deploy waits for its save
       // (finding 1640).
       await page
-        .getByText("Save the channel Secret choices in Credentials before deploying.", {
-          exact: true,
-        })
+        .getByText(
+          "Save the channel Secret choices, or choose the saved Secrets again, before deploying.",
+          {
+            exact: true,
+          },
+        )
         .waitFor();
       assert.equal(await deploy.isDisabled(), true);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();

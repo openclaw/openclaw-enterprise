@@ -1050,7 +1050,8 @@ const GENERIC_CONFLICT = "The requested platform resource already exists.";
 const SAVED_STATE_CONFLICT =
   "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.";
 // Deploy would deliver the saved bindings, not the refused choices shown (finding 1640).
-const UNSAVED_SECRETS_GATE = "Save the channel Secret choices in Credentials before deploying.";
+const UNSAVED_SECRETS_GATE =
+  "Save the channel Secret choices, or choose the saved Secrets again, before deploying.";
 const reservedSaveCases = [
   {
     name: "Channels",
