@@ -2824,11 +2824,6 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       );
     }
     const { service } = await this.exactHarnessService(context, "resolve a Harness endpoint");
-    if (service === undefined) {
-      throw new OpenShellSandboxConfigurationFailure(
-        "OpenShell did not expose the exact Codex bearer-passthrough service.",
-      );
-    }
     return Object.freeze({
       url: harnessWebSocketUrl(service.advertisedUrl),
       workspaceRoot: this.options.kubernetes.sandboxDataMount.mountPath,
