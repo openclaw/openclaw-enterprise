@@ -949,9 +949,9 @@ for (const [name, error, expected] of cases) {
 }
 
 // Create Agent shows the reason of a 503 from POST /agents/provision only for the codes that
-// request sends before admission, when nothing was stored and no job queued (finding 1635). Every
-// other 503 code, and every code this table does not map, is listed here with where it comes
-// from, so a new one fails this test until someone decides which it is.
+// request sends before its own admission (finding 1635). Every other 503 code, and every code
+// this table does not map (it may answer 503), is listed here with where it comes from, so a new
+// one fails this test until someone decides which it is.
 const NOT_PROVISIONING_REFUSALS = [
   // Discovery and runtime log reads, never a provisioning request.
   "CHANNEL_DIRECTORY_INVALID_RESPONSE",
@@ -974,7 +974,7 @@ const NOT_PROVISIONING_REFUSALS = [
   "UNKNOWN_OUTCOME",
 ];
 
-test("every API 503 code is classified for Create Agent's pre-admission provisioning refusals", () => {
+test("every API error code that may answer 503 is classified for Create Agent's provisioning refusals", () => {
   const statuses = new Map(cases.map(([, , expected]) => [expected.code, expected.status]));
   const unclassified = ERROR_CODES.filter((code) => (statuses.get(code) ?? 503) === 503);
   assert.deepEqual(

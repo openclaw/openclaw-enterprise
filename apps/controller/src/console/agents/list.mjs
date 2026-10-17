@@ -110,10 +110,11 @@ export function message(error, mutation = false) {
       : "Service unavailable. The read could not be completed. Try again.";
 }
 
-// The 503 codes POST /agents/provision sends only before admission, when nothing was stored and
-// no job queued (finding 1635): a named dependency outage, whose transaction rolled back, and
-// channel credential validation, which runs before the transaction (the API throws if it runs
-// inside one). Create Agent shows their reason. A cluster denial of runtime credentials is met
+// The 503 codes POST /agents/provision sends only before its own admission, so that request
+// stored nothing and queued no job (finding 1635); an earlier attempt with the same request ID
+// may have, which is why Retry stays. They are a named dependency outage, whose transaction
+// rolled back, and channel credential validation, which runs before the transaction (the API
+// throws if it runs inside one). Create Agent shows their reason. A cluster denial of runtime credentials is met
 // by the provisioning worker, deploy and the runtime credential routes, not by this request.
 // tests/conformance/http-errors.test.mjs classifies every other API error code.
 export const PROVISIONING_REFUSAL_CODES = Object.freeze([

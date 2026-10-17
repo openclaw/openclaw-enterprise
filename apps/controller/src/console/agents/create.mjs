@@ -146,7 +146,7 @@ const UNNAMED_DEPENDENCY_FAILURES = new Set([
 
 // The server's own sentence for a refused request, unless it is a catch-all answer (finding
 // 1609). Among 5xx answers only a 503 whose code the API sends before admission refuses the
-// request (finding 1635); any other 5xx, a 503 without such a code included, leaves its
+// request (finding 1635); any other 5xx, including a 503 without such a code, leaves its
 // outcome unknown.
 function namedRefusal(error) {
   const message = error.serverMessage;

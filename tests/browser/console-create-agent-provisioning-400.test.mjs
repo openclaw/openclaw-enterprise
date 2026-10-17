@@ -1179,6 +1179,14 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       retry: true,
     },
     {
+      // Only a 503 names a refusal: a gateway's 502 says nothing about the request.
+      name: "named code on a 502",
+      status: 502,
+      error: { code: "DEPENDENCY_UNAVAILABLE", message: "Synthetic named outage." },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
       // Any other 5xx may have committed, so it names no refusal.
       name: "internal error",
       status: 500,
