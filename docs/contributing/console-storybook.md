@@ -271,6 +271,11 @@ v7. Compare queued, failed, activated, and unavailable activity stories.
 In **First version**, resize the preview: each preparation step keeps its row,
 with continuation lines aligned under the text.
 
+In **Deployment outcome unknown**, focus **Deploy new version** and press Enter.
+Focus moves from “Deploying…” to “Outcome unknown.” The progress message clears,
+but Deploy stays disabled: the browser cannot tell whether the Controller accepted
+the request.
+
 **New version failed** and **Failed deployment logs from draft** check
 focused v7 Logs, output or denial, and Back. In **Runtime status and logs for v7**,
 exercise source, instance, debug, fields, Follow, and filters. At 390px, check

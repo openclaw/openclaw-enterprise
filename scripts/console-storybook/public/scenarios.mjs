@@ -3752,6 +3752,18 @@ export const scenarios = {
     description:
       "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus while the request runs.",
   },
+  deployOutcomeUnknown: {
+    group: "Pages/Agent detail",
+    name: "Deployment outcome unknown",
+    path: draft,
+    rules: [{ method: "POST", suffix: "/deploy", delayMs: 1_000, status: 503, once: true }],
+    description:
+      "The browser gets a 503 after submitting a deployment. It cannot tell whether the Controller accepted the request.",
+    steps: [
+      "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
+      "When “Outcome unknown” takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
+    ],
+  },
   deployRefusedSetting: {
     group: "Pages/Agent detail",
     name: "Deployment refused by a Configuration setting",
