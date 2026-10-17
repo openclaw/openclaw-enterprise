@@ -144,6 +144,10 @@ try {
           mode: "run",
           context: "isolated",
           runTimeoutSeconds: 30,
+          // A completion handoff runs a requester turn on the requester's own model
+          // (the parent route) about 1.5 s after this child fails, at the same remote
+          // root. It would race the next case for the first native thread/start.
+          expectsCompletionMessage: false,
         },
       }),
     });
@@ -159,6 +163,11 @@ try {
     assert.deepEqual(
       { modelProvider: native.params.modelProvider, model: native.params.model },
       { modelProvider: "openai-compatible", model: scenario.model },
+      `${scenario.agentId} native thread/start models: ${JSON.stringify(
+        requests
+          .filter(({ method }) => method === "thread/start")
+          .map(({ params }) => params.model),
+      )}`,
     );
     // Every Agent maps to the same remote root. Settle this run, including its
     // configured fallbacks, before the next case observes native requests.
