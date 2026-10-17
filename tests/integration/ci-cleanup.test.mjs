@@ -328,40 +328,62 @@ for (const scenario of [
   });
 }
 
-test("cleanup retains state when a resource command fails", async (t) => {
-  const root = await fixture(t);
-  const clusterName = "openclaw-k8s-failing-cluster-123abc456def";
-  const clusterDirectory = join(root, `${clusterName}-state`);
-  const kubeconfig = join(clusterDirectory, "kubeconfig");
-  await mkdir(clusterDirectory);
-  await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
-  await writeExecutable(join(root, "bin/k3d"), ["#!/bin/sh", "exit 23", ""].join("\n"));
-
-  const statePath = join(root, "state.json");
-  const state = {
+function failedDropState() {
+  const prefix = "openclaw-ci-local-faileddrop1234567890";
+  return {
     version: 1,
     repositoryRoot,
-    prefix: "openclaw-ci-local-abcdef1234567890",
+    prefix,
     resources: [
       {
-        id: "cluster-1",
-        kind: "k3d-cluster",
-        owner: "openclaw-ci-local-abcdef1234567890",
-        name: clusterName,
-        directory: clusterDirectory,
-        kubeconfig,
+        id: "postgres-1",
+        kind: "compose-postgres",
+        owner: prefix,
+        name: "openclaw_ci_pg_failed_drop",
+        composeFile: join(repositoryRoot, "compose.postgres.yaml"),
+        port: 55434,
+      },
+      {
+        id: "database-1",
+        kind: "postgres-database",
+        owner: prefix,
+        name: "openclaw_ci_failed_drop",
+        composeProject: "openclaw_ci_pg_failed_drop",
+        port: 55434,
       },
     ],
   };
+}
+
+test("cleanup continues after a failed database drop and retains only the failed resource", async (t) => {
+  const root = await fixture(t);
+  const containerLog = join(root, "container.log");
+  const docker = join(root, "bin/docker");
+  await writeExecutable(
+    docker,
+    `#!/bin/sh
+printf '%s\\n' "$*" >> ${JSON.stringify(containerLog)}
+case "$*" in
+  *" DROP DATABASE "*) echo "deliberate drop failure" >&2; exit 23 ;;
+esac
+`,
+  );
+  const statePath = join(root, "state.json");
+  const state = failedDropState();
   await writeState(statePath, state);
 
-  const result = runCleanup(statePath, {
-    OPENCLAW_CI_K3D_BIN: join(root, "bin/k3d"),
-  });
+  const result = runCleanup(statePath, { OCC_DOCKER_BIN: docker });
 
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /Cleanup failed/);
-  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /failed: deliberate drop failure/);
+  assert.match(
+    await readFile(containerLog, "utf8"),
+    / DROP DATABASE .*\n.* down --volumes --remove-orphans\n$/,
+  );
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), {
+    ...state,
+    resources: state.resources.filter(({ id }) => id === "database-1"),
+  });
   assert.equal((await stat(statePath)).mode & 0o777, 0o600);
 });
 
@@ -427,9 +449,7 @@ for (const scenario of [
       skip: process.platform === "win32" && "POSIX process groups and executable fixtures",
     },
     async (t) => {
-      const started = Date.now();
       const { root, descendantPidPath } = await commandTreeFixture(t);
-      const containerLog = join(root, "container.log");
       const heartbeat = join(root, "heartbeat");
       const descendantPath = join(root, "descendant.cjs");
       await writeFile(
@@ -453,10 +473,9 @@ for (const scenario of [
       await writeExecutable(
         join(root, "bin/docker"),
         `#!/usr/bin/env node
-      const fs = require("node:fs");
       const { spawn } = require("node:child_process");
-      fs.appendFileSync(${JSON.stringify(containerLog)}, process.argv.slice(2).join(" ") + "\\n");
-      if (!process.argv.includes("psql")) process.exit(0);
+      const fs = require("node:fs");
+      if (!process.argv.includes("psql")) throw new Error("expected database drop");
       process.on("SIGTERM", () => {
         if (["exit-on-term", "close-on-term"].includes(${JSON.stringify(scenario)})) process.exit(0);
       });
@@ -470,33 +489,16 @@ for (const scenario of [
       });
     `,
       );
-      const prefix = "openclaw-ci-local-hungdrop1234567890";
       const statePath = join(root, "state.json");
-      await writeState(statePath, {
-        version: 1,
-        repositoryRoot,
-        prefix,
-        resources: [
-          {
-            id: "postgres-1",
-            kind: "compose-postgres",
-            owner: prefix,
-            name: "openclaw_ci_pg_hung_drop",
-            composeFile: join(repositoryRoot, "compose.postgres.yaml"),
-            port: 55434,
-          },
-          {
-            id: "database-1",
-            kind: "postgres-database",
-            owner: prefix,
-            name: "openclaw_ci_hung_drop",
-            composeProject: "openclaw_ci_pg_hung_drop",
-            port: 55434,
-          },
-        ],
-      });
+      const state = failedDropState();
+      await writeState(statePath, state);
 
-      const result = spawnSync(process.execPath, [cleanupPath, "--state", statePath], {
+      // Apply the short command budget only to the hung drop. A separate test checks
+      // that cleanup continues to Compose down after a deterministic failure.
+      const drop = `import { cleanupResourceIds } from ${JSON.stringify(pathToFileURL(cleanupPath).href)};
+        await cleanupResourceIds(process.argv[1], ["database-1"]);`;
+      const started = Date.now();
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", drop, statePath], {
         cwd: repositoryRoot,
         encoding: "utf8",
         env: {
@@ -514,14 +516,9 @@ for (const scenario of [
       assert.equal(result.status, 1, result.stderr);
       assert.match(
         result.stderr,
-        /Cleanup failed for postgres-database:openclaw_ci_hung_drop:.* psql .* timed out after 500 ms/,
+        /Cleanup failed for postgres-database:openclaw_ci_failed_drop:.* psql .* timed out after 500 ms/,
       );
-      assert.match(await readFile(containerLog, "utf8"), /down --volumes --remove-orphans/);
-      const retained = JSON.parse(await readFile(statePath, "utf8"));
-      assert.deepEqual(
-        retained.resources.map(({ id }) => id),
-        ["database-1"],
-      );
+      assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
       const ticks = await readFile(heartbeat, "utf8");
       await delay(250);
       const laterTicks = await readFile(heartbeat, "utf8");
