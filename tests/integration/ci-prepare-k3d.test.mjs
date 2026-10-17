@@ -68,11 +68,11 @@ describe("CI k3d preparation", { concurrency: true }, () => {
 
   test("fixture preparation names the worker that never gets a Pod CIDR", async (t) => {
     const commands = await fixtureImageCommands(t, "no-pod-cidr", undefined, {
-      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "1000",
+      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "2000",
     });
     const result = await commands.prepare();
     assert.equal(result.status, 1);
-    assertStderrMatch(result.stderr, /k3d node k3d-\S+-agent-0 got no Pod CIDR within 1000 ms\./);
+    assertStderrMatch(result.stderr, /k3d node k3d-\S+-agent-0 got no Pod CIDR within 2000 ms\./);
     // Reads are paced: each starts at least 250 ms after the one before it.
     const reads = (await commands.commands()).filter(
       ({ command, args }) =>
@@ -93,7 +93,8 @@ describe("CI k3d preparation", { concurrency: true }, () => {
 
   // The node is already registered, so a refused read is retried, and a read that never answers
   // is cut off at the deadline (at least 1 s, at most 15 s per read): the error names the node
-  // and the last read's failure.
+  // and the last read's failure. Only a 1 s wait shows the 1 s per-read floor, so the refused
+  // read must finish in about 750 ms for the second read to start before the deadline.
   test("fixture preparation retries a failed Pod CIDR read and bounds a hung one", async (t) => {
     const commands = await fixtureImageCommands(t, "pod-cidr-read-fails", undefined, {
       OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "1000",
@@ -110,7 +111,11 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         args.slice(4, 6).join(" ") === "get node" &&
         args[6].endsWith("-agent-0"),
     );
-    assert.equal(reads.length, 2, "the refused read is retried once before the deadline");
+    assert.equal(
+      reads.length,
+      2,
+      `one refused read, then one hung read; reads started at +${reads.map(({ at }) => at - reads[0].at).join(", +")} ms`,
+    );
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
     assert.equal(state.env, undefined);
     const cleanup = await commands.cleanup();

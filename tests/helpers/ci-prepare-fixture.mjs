@@ -676,7 +676,8 @@ if (command === "kubectl") {
       // The node IPAM controller can assign a Ready worker's Pod CIDR late (finding 1666).
       state.podCidrReads = (state.podCidrReads ?? 0) + 1;
       if (scenario === "pod-cidr-read-fails") {
-        // A refused read, then one that never answers: both are retried until the deadline.
+        // A refused read, then reads that never answer: the first is retried, the second is cut
+        // off at the deadline.
         commitState();
         if (state.podCidrReads > 1) await hang();
         process.stderr.write("synthetic node read refusal\n");
