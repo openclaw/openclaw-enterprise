@@ -4351,7 +4351,7 @@ export const PROTECTED_CODEX_WITH_NODE_ENTRYPOINT = agentWithNodeEntrypoint(
 
 export const NATIVE_WORKER_ENTRYPOINT = String.raw`
 const { join } = require("node:path");
-const { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
+const { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
@@ -4424,9 +4424,7 @@ if (process.env.OPENCLAW_RUNTIME_STATUS_PORT !== undefined) {
   startRuntimeReadinessServer(nativeWorkerReady);
 }
 mkdirSync(temporary, { recursive: true, mode: 0o700 });
-const privateTemporary = mkdtempSync(join(temporary, "openclaw-native-worker-"));
-chmodSync(privateTemporary, 0o700);
-process.env.TMPDIR = privateTemporary;
+chmodSync(temporary, 0o700);
 initializeRuntimeAssets();
 const authenticationFailure = probeOpenClawAuthenticationFailure();
 if (authenticationFailure !== undefined) {

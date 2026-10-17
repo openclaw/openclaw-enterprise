@@ -2894,6 +2894,7 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
 function nativeRuntimeConfiguration(
   configuration: OpenClawConfigurationDocument,
   createError: (setting: string, requirement: string) => Error,
+  authMethod: HarnessAuthSnapshot["method"],
 ): object {
   const models = harnessModels(configuration);
   const providers = asRecord(asRecord(configuration.models)?.providers);
@@ -2962,6 +2963,12 @@ function nativeRuntimeConfiguration(
       throw createError(
         `${setting}.baseUrl`,
         "(or models.providers.openai.baseUrl) must be an HTTPS endpoint on port 443 ending in /v1 without credentials, query, fragment, or wildcard on Dedicated OpenClaw",
+      );
+    }
+    if (authMethod !== "credential_source" && endpoint !== "https://api.openai.com/v1") {
+      throw createError(
+        `${setting}.baseUrl`,
+        "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 unless harnessAuth.method is credential_source",
       );
     }
     if (entry.reasoning !== undefined && typeof entry.reasoning !== "boolean") {
@@ -3034,7 +3041,11 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
   }
   return {
     configuration: JSON.stringify(
-      nativeRuntimeConfiguration(revision.configuration, preparationSettingError),
+      nativeRuntimeConfiguration(
+        revision.configuration,
+        preparationSettingError,
+        revision.harnessAuth.method,
+      ),
     ),
   };
 }
@@ -4456,7 +4467,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       harnessProbeConfiguration(configuration);
     }
     if (native) {
-      nativeRuntimeConfiguration(configuration, callerSettingError);
+      nativeRuntimeConfiguration(configuration, callerSettingError, auth.method);
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);

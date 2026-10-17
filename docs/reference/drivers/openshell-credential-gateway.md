@@ -71,13 +71,12 @@ selects the bundled [Credential Refresh](credential-refresh.md) implementation,
 which must be the same Backend's `credential_refresh` member. With it and
 `toolBinaries`, the catalog adds the OAuth2 types.
 
-Changing binary lists rewrites profiles on the next update, deployment, or
-repair; until that succeeds, removed binaries retain access and deployment stays
-pending. To cut access immediately, withdraw or delete the source. Mixed-version
-controller replicas can overwrite each other's lists. Removing `toolBinaries`
-blocks tool-source registrations, updates, deployments, and repairs with
-`409 RESOURCE_CONFLICT`, because OpenShell treats an empty list as any binary.
-Existing sources remain readable and deletable.
+Binary-list changes apply on update, deployment or repair; until success,
+removed binaries retain access and deployment stays pending. Withdraw or delete
+the source for immediate revocation. Mixed-version replicas can overwrite lists.
+Removing `toolBinaries` returns `409 RESOURCE_CONFLICT` for tool-source
+registration, update, deployment and repair: OpenShell treats empty lists as any
+binary. Existing sources remain readable and deletable.
 
 Startup rejects the selection when:
 
@@ -88,10 +87,9 @@ Startup rejects the selection when:
 - `drivers.credential_refresh` is selected without `drivers.credential_gateway`; or
 - the configuration has any key other than `binaries` and `toolBinaries`.
 
-Both API and worker need gateway access with Backend credentials: the API
-registers/deletes providers; the worker creates Sandboxes, updates profiles and
-reads attachment status. The selected Refresh Driver owns device exchange and
-refresh configuration.
+Both API and worker require Backend credentials. The API registers/deletes
+providers; the worker creates Sandboxes, updates profiles and reads attachment
+status. The Refresh Driver owns device exchange and refresh configuration.
 
 ## Source-type catalog
 

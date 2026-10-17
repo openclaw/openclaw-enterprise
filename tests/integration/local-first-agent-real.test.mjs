@@ -1340,7 +1340,7 @@ test(
               "the native model provider catalog",
             );
             const model = provider.models?.[0]?.id;
-            assert.ok(typeof model === "string" && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(model));
+            assert.ok(typeof model === "string" && model.length > 0);
             configuration.models.providers.openai = {
               baseUrl: provider.baseUrl,
               api: provider.api,

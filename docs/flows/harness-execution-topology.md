@@ -142,13 +142,15 @@ Dedicated Harnesses use ServiceAccounts separate from their Gateway. Compute own
 projects admitted OpenAI-compatible models and an environment SecretRef into canonical
 `models.providers.openai`. Each model retains its normalized HTTPS endpoint on
 port 443, including nested `/v1` prefixes. The first model supplies the provider
-default. Invalid URLs fail admission. For an OpenShell-bound native revision,
+default. Secret-backed API keys remain OpenAI-only; custom endpoints require
+`credential_source` authentication. Invalid URLs fail admission.
+For an OpenShell-bound native revision,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:attachForRevision`
 requires every model endpoint to match the immutable source endpoint before
 provider attachment.
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:NATIVE_WORKER_ENTRYPOINT`
-writes private capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`. It creates
-a private temporary child beneath `TMPDIR`, preserving the shared directory's permissions.
+writes capacity/isolation settings and Driver-provided `OPENCLAW_WORKSPACE_DIR`;
+Compute and Sandbox supply private temporary directories.
 `apps/controller/src/drivers/sandbox/openshell.ts:configureAgent` pins default/main workspace to its data mount; file transfer uses that root absent an endpoint override. Node-local snapshots provide models/credentials and authorized workspaces, without an inference file, grant catalog or retired `nativeInferenceConfig`.
 
 Embedded OpenClaw combines identity and model credentials. Scoped worker permissions deliver Secrets and enrollment; Gateways receive no controller or Harness Kubernetes credentials.
@@ -307,6 +309,8 @@ owns claim sizes, mounts, StorageClass requirements and final teardown.
 - 2026-10-23 07:40: Resolve documentation conflicts. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 13f38c6206926541c354a50e92200502dae52130)
 
 - 2026-10-21 05:00: Validate execution peer label types. (authoring-run/9c5e8c34-6292-465b-a82a-7b56e03b535d - e8185dac805b737363c7178d3068b310a53a7c24)
+
+- 2026-10-17 17:48: Restrict custom native endpoints to CredentialSources and retain upstream temporary-directory ownership. (authoring-run/b639668e-1ef2-4d43-bed4-ed1a6a4be5d6 - 7eebfc12c)
 
 - 2026-10-17 15:09: Preserve compatible native model endpoints and private worker temporary state. (authoring-run/b639668e-1ef2-4d43-bed4-ed1a6a4be5d6 - bcdb0b10f)
 

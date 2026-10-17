@@ -15,9 +15,10 @@ that source for native OpenClaw. This prevents using an OpenAI-compatible model
 service such as Fireworks through the regular Agent deployment workflow.
 
 Allow the existing `openai` provider alias to use a configured HTTPS endpoint on
-TCP 443 with a path ending in `/v1`. Preserve each model's normalized endpoint in
-the native worker configuration. For OpenShell, require every native model in the
-catalog to use the bound CredentialSource endpoint, including its path.
+TCP 443 with a path ending in `/v1`, only with endpoint-bound `credential_source`
+authentication. Secret-backed API keys retain the default OpenAI endpoint.
+Preserve each model's normalized endpoint in the worker configuration and require
+every native catalog model to match the bound source, including its path.
 
 This extends the implementation behavior of the existing Compute and Credential
 Gateway Drivers. It adds no Driver interface, source type, provider ID, API
@@ -41,8 +42,8 @@ key. Source authorization, ownership, withdrawal and cleanup remain governed by
 [RFC-0016](0016-sandbox-credential-injection/index.md).
 
 No change to Agent tool permissions, required-worker placement, sandbox readiness,
-or isolation policy is proposed. A worker must create its temporary files beneath
-a private child of `TMPDIR`, preserving the Sandbox's shared temporary directory.
+or isolation policy is proposed. Existing Compute and Sandbox private temporary
+directories remain unchanged.
 
 ## Delivery and verification
 
@@ -52,9 +53,8 @@ a private child of `TMPDIR`, preserving the Sandbox's shared temporary directory
 2. Extend the existing dedicated-native OpenShell real-runtime workflow with a
    custom endpoint. Require a genuine model response from the enrolled worker;
    admission fixtures and a schema smoke alone do not prove model execution.
-3. Verify native runtime startup with a root-owned shared temporary directory,
-   provider enrollment files and the configured API selector. Update the owning
-   references and source-backed execution flow.
+3. Retain existing native startup coverage for Compute-owned readiness and setup
+   codes. Update the owning references and source-backed execution flow.
 
 The accompanying Driver implementation and registered native regression input are
 present. Final-head custom-provider model and redeployment proof remains pending.
