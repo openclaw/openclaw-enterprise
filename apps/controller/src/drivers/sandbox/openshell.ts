@@ -2815,22 +2815,26 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     const refused = gatewayIdentityRefusal(workspace, unconfirmed);
     // Read first: after the first withdrawal every reconcile pass passes here, and a
     // DeleteService per pass would be a gateway mutation per pass for nothing.
-    if ((await refused(() => client.getService(workspace, sandbox, "", signal))) !== undefined) {
-      await refused(() => client.deleteService(workspace, sandbox, "", signal));
-      return;
-    }
+    const read = () => client.getService(workspace, sandbox, "", signal);
     // An absent service is withdrawn only once GetWorkspace proves the identity still sees the
-    // Workspace (finding 1670); the next worker start's sweep reads the service again.
-    await confirmSandboxAbsent(
-      client,
-      workspace,
-      signal,
-      refused,
-      () =>
-        new OpenShellSandboxConfigurationFailure(
-          `OpenShell reports no Workspace ${workspace}, so ${unconfirmed}.`,
-        ),
-    );
+    // Workspace and a second read still finds none (findings 1670, 1692); a service the second
+    // read finds is deleted. The next worker start's sweep reads the service again.
+    const exposed =
+      (await refused(read)) ??
+      (await confirmSandboxAbsent(
+        client,
+        workspace,
+        signal,
+        refused,
+        () =>
+          new OpenShellSandboxConfigurationFailure(
+            `OpenShell reports no Workspace ${workspace}, so ${unconfirmed}.`,
+          ),
+        read,
+      ));
+    if (exposed !== undefined) {
+      await refused(() => client.deleteService(workspace, sandbox, "", signal));
+    }
   }
 
   private async initializeWorkspace(
@@ -3064,15 +3068,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // A stop, retire or delete records the Sandbox removed only once OpenShell confirms it.
       // GetSandbox and DeleteSandbox answer NOT_FOUND alike for a Sandbox that is gone and for
       // one this identity may not see (finding 1676), so an absent Sandbox counts as removed
-      // only after GetWorkspace proves the identity still sees the Workspace; a refusal on any
-      // call fails with SANDBOX_GATEWAY_UNAUTHORIZED, so the worker fails the stop or deletion
-      // with that code (a replay tries again) instead of recording a live Sandbox, with its
-      // exposure and credentials, as gone. The read also spares a DeleteSandbox per pass once
-      // the Sandbox is gone.
+      // only after GetWorkspace proves the identity still sees the Workspace and a second read
+      // still finds none (finding 1692); a Sandbox the second read finds is deleted. A refusal
+      // on any call fails with SANDBOX_GATEWAY_UNAUTHORIZED, so the worker fails the stop or
+      // deletion with that code (a replay tries again) instead of recording a live Sandbox,
+      // with its exposure and credentials, as gone. The read also spares a DeleteSandbox per
+      // pass once the Sandbox is gone.
       const unconfirmed = `Sandbox ${sandbox.resourceName} cannot be confirmed removed`;
       const refused = gatewayIdentityRefusal(workspace, unconfirmed);
-      if ((await refused(() => client.getSandbox(selector, context.signal))) === undefined) {
-        await confirmSandboxAbsent(
+      const read = () => client.getSandbox(selector, context.signal);
+      const present =
+        (await refused(read)) ??
+        (await confirmSandboxAbsent(
           client,
           workspace,
           context.signal,
@@ -3081,8 +3088,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
             new OpenShellSandboxConfigurationFailure(
               `OpenShell reports no Workspace ${workspace}, so ${unconfirmed}.`,
             ),
-        );
-      } else {
+          read,
+        ));
+      if (present !== undefined) {
         await refused(() => client.deleteSandbox(selector, context.signal));
       }
       const harnessId = context.revision.harness.id;

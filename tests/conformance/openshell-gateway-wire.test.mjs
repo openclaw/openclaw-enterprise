@@ -1874,7 +1874,8 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
       reason: "PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR",
     });
     assert.deepEqual(sandboxes.get("os-listed"), ["operator-static"]);
-    // Once the Sandbox no longer lists it, or no longer exists, a recheck mutates nothing.
+    // Once the Sandbox no longer lists it, or no longer exists, a recheck mutates nothing; a
+    // missing Sandbox is absent only after GetWorkspace and a second GetSandbox (finding 1692).
     assert.deepEqual(await recheck("os-listed"), { sourceId, state: "revoked" });
     assert.deepEqual(await recheck("os-detached"), { sourceId, state: "revoked" });
     assert.deepEqual(await recheck("os-bare"), { sourceId, state: "revoked" });
@@ -1888,6 +1889,7 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
       ["GetSandbox", "os-bare"],
       ["GetSandbox", "os-missing"],
       ["GetWorkspace", workspace],
+      ["GetSandbox", "os-missing"],
     ]);
   } finally {
     client.close();

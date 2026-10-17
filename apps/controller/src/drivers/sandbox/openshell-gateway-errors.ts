@@ -55,29 +55,37 @@ export class OpenShellDeletionUnconfirmedError extends OpenShellGatewayFailure {
 }
 
 /**
- * Proves that a Sandbox lookup's NOT_FOUND means the Sandbox is gone. OpenShell answers
- * NOT_FOUND alike for a Sandbox that does not exist and for one this identity may not see (no
- * existence oracle: GetSandbox, DeleteSandbox, GetService, DeleteService, DetachSandboxProvider
- * all hide it), so an identity that lost its Workspace role would otherwise read every Sandbox
- * as removed while it, its exposure and its credentials stay live (findings 1670, 1676).
- * GetWorkspace keeps PERMISSION_DENIED, so a Workspace this identity can still read is the
- * proof; a refusal there fails with `SANDBOX_GATEWAY_UNAUTHORIZED` through `refused`, and a
- * Workspace OpenShell reports missing fails closed with `absent()`. With the documented
- * `user` role a Workspace deleted out of band presents as a refusal too, since OpenShell
- * drops the membership before the record, so `absent()` is defense in depth for identities
- * with a platform role. A role restored between the two reads would confirm a live Sandbox;
- * that needs a flap within one round trip.
+ * Decides whether a target's NOT_FOUND (a Sandbox, its exposed service or its provider
+ * attachment) means the target is gone. OpenShell answers NOT_FOUND alike for a target that
+ * does not exist and for one this identity may not see (no existence oracle: GetSandbox,
+ * DeleteSandbox, GetService, DeleteService, DetachSandboxProvider all hide it), so an identity
+ * that lost its Workspace role would otherwise read every Sandbox as removed while it, its
+ * exposure and its credentials stay live (findings 1670, 1676). GetWorkspace keeps
+ * PERMISSION_DENIED, so a Workspace this identity can still read is the proof; a refusal there
+ * fails with `SANDBOX_GATEWAY_UNAUTHORIZED` through `refused`, and a Workspace OpenShell reports
+ * missing fails closed with `absent()`. With the documented `user` role a Workspace deleted out
+ * of band presents as a refusal too, since OpenShell drops the membership before the record, so
+ * `absent()` is defense in depth for identities with a platform role.
+ *
+ * GetWorkspace proves the role now, not at the earlier read: a role restored between the two
+ * would otherwise confirm a live target (finding 1692). So `reread` repeats the target read
+ * after GetWorkspace, and only a target still missing is absent (`undefined`); one the identity
+ * now sees is returned, and the caller deletes or withdraws it instead of recording absence.
+ * What remains needs the role lost again between GetWorkspace and that read, after it was
+ * hidden at the first: two flaps within two round trips.
  */
-export async function confirmSandboxAbsent(
+export async function confirmSandboxAbsent<T>(
   client: { getWorkspace(name: string, signal: AbortSignal): Promise<unknown> },
   workspace: string,
   signal: AbortSignal,
   refused: GatewayCall,
   absent: () => Error,
-): Promise<void> {
+  reread: () => Promise<T | undefined>,
+): Promise<T | undefined> {
   if ((await refused(() => client.getWorkspace(workspace, signal))) === undefined) {
     throw absent();
   }
+  return refused(reread);
 }
 
 export class OpenShellSandboxAlreadyExistsError extends Error {

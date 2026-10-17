@@ -224,14 +224,14 @@ started after the update; a running Harness keeps the previous value until it
 restarts.
 
 `removeSource` deletes the owned provider, confirms it gone, then deletes the
-source's profile; OpenShell cannot delete a Workspace that still holds profiles.
+source's profile; OpenShell cannot delete a Workspace still holding profiles.
 
-The source ID identifies its profile even when the persisted endpoint is invalid.
+The source ID identifies its profile even with an invalid persisted endpoint.
 Deletion refuses an unowned provider; unknown source types and gateway errors
 remain failures.
 
-For a revision, `attachForRevision` brings each source's profile up to date and
-returns its provider name. It fails when two of the revision's sources would use
+For a revision, `attachForRevision` updates each source's profile and returns
+its provider name. It fails when two of the revision's sources would use
 the same environment variable, and the worker then fails the deployment with
 `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT` without retrying. The
 OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
@@ -240,13 +240,14 @@ OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
 `pending`. `withdraw` calls `DetachSandboxProvider` for the revision's Sandbox,
 then reads that receipt's status. Only `REVOKED` reports `revoked`: the
 Sandbox's placeholders then stop resolving, even in running processes. OpenShell
-reports `REVOKED` once the Sandbox supervisor reports a running process without
-the provider. A Sandbox with no running process (still provisioning,
+reports `REVOKED` once the supervisor sees a running process without the
+provider. A Sandbox without a running process (provisioning,
 crash-looping) reports `WaitingForProcess`, which stays `pending`. A `recheck`
-first calls `GetSandbox`: a Sandbox no longer listing the provider reports
-`revoked` without a mutation; a listed one is detached again. A missing Sandbox
-is `absent` only once `GetWorkspace` answers (OpenShell hides unauthorized
-Sandboxes as missing); a refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`.
+first calls `GetSandbox`: a Sandbox no longer listing the provider is `revoked`
+without a mutation; a listed one is detached again. A missing Sandbox is
+`absent` only once `GetWorkspace` answers and a second `GetSandbox` still misses
+it (OpenShell hides unauthorized Sandboxes as missing); a refusal fails with
+`SANDBOX_GATEWAY_UNAUTHORIZED`.
 
 For API-key Codex, Compute selects a named provider with the source endpoint and
 HTTPS Responses transport. Native OpenClaw requires the default OpenAI endpoint.

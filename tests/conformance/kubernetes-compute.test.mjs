@@ -2010,7 +2010,7 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
       }
     },
   };
-  const { driver, revision, namespace } = dedicatedFirstDeployFixture({
+  const { driver, revision, namespace, clients } = dedicatedFirstDeployFixture({
     sandboxDriver,
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
@@ -2061,6 +2061,18 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
     /pinned to another Compute Driver/,
   );
   assert.equal(withdrawals.length, 3);
+  // A missing Namespace proves nothing about the exposure (finding 1693): the provider's
+  // Workspace outlives it, so the provider is still asked, in the derived placement.
+  const readNamespace = clients.core.readNamespace;
+  clients.core.readNamespace = async () => {
+    throw Object.assign(new Error("Not found"), { statusCode: 404 });
+  };
+  await driver.withdrawHarnessExposure(revision, signal);
+  assert.equal(withdrawals.length, 4);
+  assert.equal(withdrawals[3].revision, revision);
+  assert.equal(withdrawals[3].namespace.name, namespace);
+  assert.equal(withdrawals[3].workspaceNodeEnrolled, true);
+  clients.core.readNamespace = readNamespace;
 });
 
 // Finding 1297: the projection covers every setting the Harness model rule checks, not only
@@ -7368,14 +7380,17 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   );
   assert.equal(withdrawals.length, 0);
 
-  // Without the Namespace there is no Sandbox left to revoke, and the gateway is not called.
+  // A missing Namespace proves nothing about the Sandbox (finding 1693): the gateway's record
+  // outlives it, so the gateway still withdraws, in the derived placement, and its answer stands.
   namespaceExists = false;
   withdrawals.length = 0;
   assert.deepEqual(await driver.withdrawCredentialSource(revision, source, signal), {
     sourceId: source.id,
-    state: "absent",
+    state: "revoked",
   });
-  assert.equal(withdrawals.length, 0);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].namespace.name, namespace);
+  assert.equal(withdrawals[0].sandbox.resourceName, "os-rev-withdraw");
   await assert.rejects(
     driver.withdrawCredentialSource(
       { ...revision, compute: { id: "other-compute", implementation: driver.implementation } },
