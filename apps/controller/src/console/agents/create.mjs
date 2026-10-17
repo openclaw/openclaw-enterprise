@@ -10,7 +10,14 @@ import { createPresetFields } from "./presets.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import { renderChannels } from "../channels.mjs";
-import { GENERIC_CONFLICT, link, message, namespacePath, rejectionMessage } from "./list.mjs";
+import {
+  GENERIC_CONFLICT,
+  link,
+  message,
+  namespacePath,
+  PROVISIONING_REFUSAL_CODES,
+  rejectionMessage,
+} from "./list.mjs";
 
 // The API's duplicate-name sentence. Other Agent conflicts reach the client as generic text,
 // so only this one is shown as sent.
@@ -138,8 +145,9 @@ const UNNAMED_DEPENDENCY_FAILURES = new Set([
 ]);
 
 // The server's own sentence for a refused request, unless it is a catch-all answer (finding
-// 1609). Among 5xx answers only a named 503 DEPENDENCY_UNAVAILABLE refuses the request; any
-// other 5xx leaves its outcome unknown.
+// 1609). Among 5xx answers only a 503 whose code the API sends before admission refuses the
+// request (finding 1635); any other 5xx, a 503 without such a code included, leaves its
+// outcome unknown.
 function namedRefusal(error) {
   const message = error.serverMessage;
   if (message === undefined) {
@@ -149,7 +157,7 @@ function namedRefusal(error) {
     return message === GENERIC_CONFLICT ? undefined : message;
   }
   return error.status === 503 &&
-    error.code === "DEPENDENCY_UNAVAILABLE" &&
+    PROVISIONING_REFUSAL_CODES.includes(error.code) &&
     !UNNAMED_DEPENDENCY_FAILURES.has(message)
     ? message
     : undefined;
