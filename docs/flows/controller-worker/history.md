@@ -8,6 +8,8 @@ This record preserves the dated changes to the controller worker flow. See the [
 
 ## Changelog
 
+- 2026-10-11 10:38: A published deploy denial keeps Compute, requests repository-session closure, records the denial, and schedules maintenance. (authoring-run/b5c3ba79-9c77-48b0-b7c7-9e21b35726ad - 2d11065238c1a8c7b5aa5d3452c8eb784781db22)
+
 - 2026-10-11 10:30: Draining stops skip yielded stops. (fix-1093-1095)
 
 - 2026-10-11 09:30: Yield an Agent stop's Gateway drain to due work. (fix-1088)

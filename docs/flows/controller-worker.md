@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-11
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+updated: 2026-10-12
+last_updated_session: authoring-run/b5c3ba79-9c77-48b0-b7c7-9e21b35726ad
 ---
 
 # Controller Worker Flow
@@ -347,8 +347,9 @@ reconcile audit evidence, otherwise `LEGACY_OUTCOME_UNKNOWN`, with `NULL` `resul
 If Compute declares maintenance, activation schedules exact-revision observations.
 Incomplete observations, Compute bindings, and dependency retries or expired claims
 exhausting attempts close the item and schedule another while the revision stays
-active and running within its credential deadline; outages never retire it. Each
-claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
+active and running within its credential deadline; outages never retire it. See
+[AgentRevision reconciliation](../reference/controller/reconciliation.md#agentrevision-lifecycle).
+Each claim reauthorizes its actor. Successor keys use strictly later time buckets despite clock skew.
 
 `worker.completed` reports the target, outcome, and code; polling continues.
 A Namespace pass that observes the same pending state this worker last audited,
