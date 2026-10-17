@@ -438,8 +438,10 @@ for (const visit of ["a first visit", "a return"]) {
   });
 }
 
-// A list left again before its rows' rereads land is not reused: the next return rebuilds it.
-test("A list left again during its rows' rereads is rebuilt on the next return", async (t) => {
+// A list left again before its rows' rereads land is reused on the next return too: rows read
+// again whenever the list resumes, so unfinished ones don't count against it (finding 1663).
+// No row shows the answer it had, or an aborted read's failure, as current.
+test("A list left again during its rows' rereads is reused on the next return and rereads them", async (t) => {
   const { namespace, agents, page } = await openTeamList(t, "Team return again");
   const [opened] = agents;
   await tagView(page);
@@ -458,9 +460,19 @@ test("A list left again during its rows' rereads is rebuilt on the next return",
     .getByRole("region", { name: "Agent state at a glance" })
     .waitFor();
 
+  const rereads = await holdRowReads(t, page, namespace);
+  await startRecording(page);
   await page.goBack();
   await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
-  assert.equal(await viewTag(page), null, "the list was rebuilt");
+  await rereads.revisions.requested;
+  assert.equal(await viewTag(page), "kept", "the list was reused");
+  const cells = await deploymentCells(page);
+  assert.equal(Object.keys(cells).length, AGENTS);
+  assert.deepEqual(new Set(Object.values(cells)), new Set([READING]));
+  assert.equal((await revealed(page)).deployments, 0, "no stale deployment was revealed");
+  rereads.release();
   await page.getByText(READING).first().waitFor({ state: "detached" });
-  assert.equal(await page.locator(activeView).locator(".agent-table tbody tr").count(), AGENTS);
+  for (const text of Object.values(await deploymentCells(page))) {
+    assert.match(text, /^v1 · succeeded/);
+  }
 });

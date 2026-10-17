@@ -944,7 +944,8 @@ for (const focusTarget of [
     const agent = await fixture.createAgent(namespace.id, "Opening Agent", nativeValues("v1"));
     const list = agentsRead(namespace);
 
-    // Leaving while a row is still loading means Back must build a fresh list, not reuse its DOM.
+    // Leaving while a row is still loading no longer forces a rebuild (finding 1663); a changed
+    // collection does: an Agent added while the reader is away, or the opened one removed.
     const revision = await holdOnce(t, page, `${list}/${agent.id}/revisions`);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await revision.requested;
@@ -957,6 +958,9 @@ for (const focusTarget of [
     revision.release();
 
     const removed = focusTarget === "the heading if the Agent is gone";
+    if (!removed) {
+      await fixture.createAgent(namespace.id, "Added Agent", nativeValues("v1"));
+    }
     const collection = await holdRequests(t, page, list, {
       once: true,
       fulfill: removed ? { json: { data: [] } } : null,
