@@ -152,10 +152,11 @@ export function createDevUpModelProvider({
     try {
       return JSON.parse((await invoke([kind, "inspect", name])).stdout)[0];
     } catch (error) {
-      // A transport/permission failure is not evidence of absence.
+      // Match Docker's whole not-found diagnostic for this resource. Other inspect
+      // failures must leave the cleanup obligation in the recovery journal.
       const detail = error.stderr?.trim() ?? "";
       if (
-        /No such (?:object|container|network|image):/.test(detail) ||
+        detail === `Error response from daemon: No such ${kind}: ${name}` ||
         (kind === "network" && detail === `Error response from daemon: network ${name} not found`)
       ) {
         return undefined;

@@ -48,8 +48,9 @@ destination heading; **Open navigation** opens the mobile drawer.
 
 Opening an Agent shows its details page immediately. While it loads, **Back to
 Agents** returns to your place. A slow return to a retained page says **Still
-checking…** after one second. Refresh rebuilds; refocusing preserves edits, Slack
-searches, and the Namespace selector. Views belong to one account, session, route,
+checking…** after one second. Refresh rebuilds; refocusing an unchanged page preserves edits,
+Slack searches, focus, and the Namespace selector; at phone width, focus in the open drawer moves to
+**Open navigation**. Views belong to one account, session, route,
 and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
 The header's **Namespace** selector switches readable scopes on desktop and
@@ -62,7 +63,7 @@ ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**
 updates the URL in place.
 
 During session and Namespace checks, the selector is disabled and hides its choices.
-Once the list is known, it names the destination's Namespace. On returns,
+Once the list is known, it names the destination's Namespace. On returns to the same page,
 later page reads do not block it. Without a readable Namespace, Agents and Namespaces explain how to
 get access; global pages remain available.
 

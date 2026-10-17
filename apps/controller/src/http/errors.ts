@@ -9,6 +9,7 @@ import {
   DeletionRetryOwnedError,
   ChannelDirectoryError,
   ChannelCredentialError,
+  ConfigurationGenerationConflictError,
   ConfigurationHarnessError,
   ConfigurationSizeError,
   CredentialGatewayNotConfiguredError,
@@ -577,6 +578,62 @@ const RUNTIME_LOG_FAILURES: Readonly<
   },
 });
 
+type DiscoveryFailureReason =
+  ChannelDirectoryError["reason"] | ModelDiscoveryError["reason"] | PluginDiscoveryError["reason"];
+
+const DISCOVERY_FAILURE_STATUS: Record<DiscoveryFailureReason, number> = {
+  credentials_rejected: 400,
+  missing_scope: 400,
+  rate_limited: 429,
+  invalid_response: 503,
+  unavailable: 503,
+};
+
+const CHANNEL_DIRECTORY_MESSAGES: Record<ChannelDirectoryError["reason"], string> = {
+  credentials_rejected:
+    "The channel provider rejected the selected credential. Check the Secret and retry.",
+  missing_scope:
+    "The channel credential lacks directory permissions. Update its provider scopes and retry.",
+  rate_limited: "The channel provider rate-limited directory lookup. Wait and retry.",
+  invalid_response:
+    "The channel provider returned an invalid directory response. Retry or enter an exact ID.",
+  unavailable: "Channel directory lookup is unavailable. Retry or enter an exact ID.",
+};
+
+const MODEL_DISCOVERY_MESSAGES: Record<ModelDiscoveryError["reason"], string> = {
+  credentials_rejected:
+    "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
+  rate_limited:
+    "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
+  invalid_response:
+    "The provider returned an invalid model list. Retry or enter a model ID manually.",
+  unavailable: "The provider model service is unavailable. Retry or enter a model ID manually.",
+};
+
+const PLUGIN_DISCOVERY_MESSAGES: Record<PluginDiscoveryError["reason"], string> = {
+  credentials_rejected:
+    "The plugin service rejected this credential. Check its permission to list plugins, then retry.",
+  rate_limited: "The plugin service rate-limited discovery. Wait and retry.",
+  invalid_response: "The plugin service returned an invalid response. Retry discovery.",
+  unavailable: "The plugin service is unavailable. Retry discovery.",
+};
+
+function discoveryFailure<Reason extends DiscoveryFailureReason>(
+  prefix: string,
+  reason: Reason,
+  messages: Record<Reason, string>,
+): RequestFailure | undefined {
+  // Only recognized reasons may select a public message or contribute to its code.
+  if (typeof reason !== "string" || !Object.hasOwn(messages, reason)) {
+    return undefined;
+  }
+  return failure(
+    DISCOVERY_FAILURE_STATUS[reason],
+    `${prefix}_${reason.toUpperCase()}`,
+    messages[reason],
+  );
+}
+
 export function requestFailure(error: unknown): RequestFailure {
   if (error instanceof RequestFailure) {
     return error;
@@ -610,104 +667,32 @@ export function requestFailure(error: unknown): RequestFailure {
     );
   }
   if (error instanceof ChannelDirectoryError) {
-    switch (error.reason) {
-      case "credentials_rejected":
-        return failure(
-          400,
-          "CHANNEL_DIRECTORY_CREDENTIALS_REJECTED",
-          "The channel provider rejected the selected credential. Check the Secret and retry.",
-        );
-      case "missing_scope":
-        return failure(
-          400,
-          "CHANNEL_DIRECTORY_MISSING_SCOPE",
-          "The channel credential lacks directory permissions. Update its provider scopes and retry.",
-        );
-      case "rate_limited":
-        return failure(
-          429,
-          "CHANNEL_DIRECTORY_RATE_LIMITED",
-          "The channel provider rate-limited directory lookup. Wait and retry.",
-        );
-      case "invalid_response":
-        return failure(
-          503,
-          "CHANNEL_DIRECTORY_INVALID_RESPONSE",
-          "The channel provider returned an invalid directory response. Retry or enter an exact ID.",
-        );
-      case "unavailable":
-        return failure(
-          503,
-          "CHANNEL_DIRECTORY_UNAVAILABLE",
-          "Channel directory lookup is unavailable. Retry or enter an exact ID.",
-        );
+    const mapped = discoveryFailure("CHANNEL_DIRECTORY", error.reason, CHANNEL_DIRECTORY_MESSAGES);
+    if (mapped !== undefined) {
+      return mapped;
     }
   }
   if (error instanceof ModelDiscoveryError) {
-    switch (error.reason) {
-      case "credentials_rejected":
-        return failure(
-          400,
-          "MODEL_DISCOVERY_CREDENTIALS_REJECTED",
-          "The provider rejected model discovery. Check the selected credential and its permission to list models, then retry or enter a model ID manually.",
-        );
-      case "rate_limited":
-        return failure(
-          429,
-          "MODEL_DISCOVERY_RATE_LIMITED",
-          "The provider rate-limited model discovery. Wait and retry, or enter a model ID manually.",
-        );
-      case "invalid_response":
-        return failure(
-          503,
-          "MODEL_DISCOVERY_INVALID_RESPONSE",
-          "The provider returned an invalid model list. Retry or enter a model ID manually.",
-        );
-      case "unavailable":
-        return failure(
-          503,
-          "MODEL_DISCOVERY_UNAVAILABLE",
-          "The provider model service is unavailable. Retry or enter a model ID manually.",
-        );
+    const mapped = discoveryFailure("MODEL_DISCOVERY", error.reason, MODEL_DISCOVERY_MESSAGES);
+    if (mapped !== undefined) {
+      return mapped;
     }
   }
   if (error instanceof DeviceAuthorizationStartError) {
-    // Device login starts at auth.openai.com from the API Pods, which the chart's default
-    // network policy does not allow, so name that cause when no connection was made.
+    // The Refresh Driver starts Codex login at auth.openai.com from the API Pods.
+    // Name that egress boundary only when its issuer request could not get a response.
     return failure(
       503,
       "DEPENDENCY_UNAVAILABLE",
       error.reason === "unreachable"
-        ? "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs or the cluster's egress policy), then try again."
-        : "The sign-in service could not start device login. Try again.",
+        ? "OCC could not reach the sign-in service at auth.openai.com. An operator must allow HTTPS egress from the API Pods to it (Helm api.modelDiscoveryCidrs), then try again."
+        : "Device login could not start. Try again.",
     );
   }
   if (error instanceof PluginDiscoveryError) {
-    switch (error.reason) {
-      case "credentials_rejected":
-        return failure(
-          400,
-          "PLUGIN_DISCOVERY_CREDENTIALS_REJECTED",
-          "The plugin service rejected this credential. Check its permission to list plugins, then retry.",
-        );
-      case "rate_limited":
-        return failure(
-          429,
-          "PLUGIN_DISCOVERY_RATE_LIMITED",
-          "The plugin service rate-limited discovery. Wait and retry.",
-        );
-      case "invalid_response":
-        return failure(
-          503,
-          "PLUGIN_DISCOVERY_INVALID_RESPONSE",
-          "The plugin service returned an invalid response. Retry discovery.",
-        );
-      case "unavailable":
-        return failure(
-          503,
-          "PLUGIN_DISCOVERY_UNAVAILABLE",
-          "The plugin service is unavailable. Retry discovery.",
-        );
+    const mapped = discoveryFailure("PLUGIN_DISCOVERY", error.reason, PLUGIN_DISCOVERY_MESSAGES);
+    if (mapped !== undefined) {
+      return mapped;
     }
   }
   if (error instanceof IAMAccessBindingRoleError) {
@@ -825,6 +810,13 @@ export function requestFailure(error: unknown): RequestFailure {
   }
   if (isDependencyUnavailable(error)) {
     return failure(503, "DEPENDENCY_UNAVAILABLE", "A required platform dependency is unavailable.");
+  }
+  if (error instanceof ConfigurationGenerationConflictError) {
+    // The detail marks a stale read, which a reread fixes, apart from other Configuration
+    // conflicts such as a provisioning reservation, which a reread does not (finding 1511).
+    return failure(409, "RESOURCE_CONFLICT", error.message, [
+      { path: "/expectedGeneration", code: "INVALID_VALUE" },
+    ]);
   }
   if (error instanceof ResourceStateConflictError) {
     return failure(409, "RESOURCE_CONFLICT", error.message);

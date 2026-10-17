@@ -54,7 +54,11 @@ test(
         name: "PostgreSQL restart integration",
       });
       assert.equal(created.status, 201);
-      installation = created.data;
+      // The read adds the capabilities derived from the selected Drivers (#2670).
+      const read = await request(first, "GET", "/installation");
+      assert.equal(read.status, 200);
+      assert.equal(read.data.id, created.data.id);
+      installation = read.data;
     }
 
     const namespace = await request(first, "POST", "/namespaces", {

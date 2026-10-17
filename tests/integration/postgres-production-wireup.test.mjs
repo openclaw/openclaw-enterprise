@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { request as httpRequest } from "node:http";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -22,7 +23,12 @@ import { authenticatedHeaders, signInWithEmailPassword } from "../helpers/auth-s
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import { normalizePresetTemplate } from "../../packages/contracts/src/index.ts";
-import { BOOTSTRAP_DEFAULT_NAMESPACE_NAME } from "../../packages/occ/src/index.ts";
+import {
+  BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
+  PostgresPlatformState,
+} from "../../packages/occ/src/index.ts";
+import { waitFor } from "../helpers/wait-for.mjs";
+import { commitAckProxy } from "../fixtures/postgres-commit-ack-proxy.mjs";
 
 const databaseUrl = process.env.OCC_PRODUCTION_WIREUP_DATABASE_URL;
 const repository = fileURLToPath(new URL("../../", import.meta.url));
@@ -873,7 +879,7 @@ test(
 
       await t.test(
         "persisted sharing follows real cookie sessions across restart and revocation",
-        async () => {
+        async (t) => {
           // Account enrollment is a precondition, not the behavior under test. Seed an
           // existing Installation-reader Role, then provision people through the real API.
           // Their initial Role grants no Namespace, Agent, or policy administration access.
@@ -968,6 +974,22 @@ test(
             drivers: await productionDrivers(),
             logger: apiLog.logger,
           });
+          let bodyAdmission;
+          let policyRequestId;
+          // Observe completed production admission without replacing it or pausing a
+          // handler. A real HTTP request can still be uploading its body at this point.
+          app.addHook("preParsing", async (request, _reply, payload) => {
+            if (request.method === "POST" && request.url === `${policyPath}/access-bindings`) {
+              policyRequestId = request.id;
+            }
+            if (
+              bodyAdmission !== undefined &&
+              bodyAdmission.marker === request.headers["x-test-admission"]
+            ) {
+              bodyAdmission.resolve(request.id);
+            }
+            return payload;
+          });
           endpoint = await app.listen({ port: 0, host: "127.0.0.1" });
           for (const person of people) {
             const namespaces = await request("GET", "/namespaces", undefined, person.session);
@@ -1044,6 +1066,431 @@ test(
           assert.equal(
             remaining.data.some(({ id }) => id === bindings[1].id),
             true,
+          );
+
+          const grant = {
+            subjectKind: "identity",
+            subjectId: recipient.principalId,
+            roleId: agentRole.data.id,
+            resourceKind: "agent",
+            resourceId: agentId,
+          };
+          const signInAdministrator = () =>
+            signInWithEmailPassword({ origin: endpoint, email: adminEmail, password });
+
+          await t.test(
+            "a revoked assigning session cannot finish an admitted sharing grant",
+            async () => {
+              const assigning = await signInAdministrator();
+              const marker = randomUUID();
+              const admitted = Promise.withResolvers();
+              bodyAdmission = { marker, resolve: admitted.resolve };
+              const encoded = JSON.stringify(grant);
+              const response = Promise.withResolvers();
+              const upload = httpRequest(
+                `${endpoint}${policyPath}/access-bindings`,
+                {
+                  method: "POST",
+                  headers: authenticatedHeaders(assigning, {
+                    origin: authBaseURL,
+                    "x-test-admission": marker,
+                    "content-type": "application/json",
+                    "content-length": Buffer.byteLength(encoded),
+                  }),
+                },
+                (received) => {
+                  let body = "";
+                  received.setEncoding("utf8");
+                  received.on("data", (chunk) => {
+                    body += chunk;
+                  });
+                  received.on("end", () => response.resolve({ status: received.statusCode, body }));
+                },
+              );
+              upload.on("error", response.reject);
+              response.promise.catch(() => {});
+              try {
+                upload.write(encoded.slice(0, 1));
+                const requestId = await admitted.promise;
+                // Logout completes after admission but before the policy transaction starts.
+                assert.equal(
+                  (await request("POST", "/api/auth/sign-out", undefined, assigning)).status,
+                  200,
+                );
+                assert.equal(
+                  (await request("GET", `${policyPath}/roles`, undefined, assigning)).status,
+                  401,
+                );
+                upload.end(encoded.slice(1));
+                const denied = await response.promise;
+                assert.equal(denied.status, 403, denied.body);
+                assert.equal(
+                  (await request("GET", `${agentsPath}/${agentId}`, undefined, recipient.session))
+                    .status,
+                  403,
+                );
+                const persisted = await pool.query(
+                  "SELECT id FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$2 AND resource_id=$3",
+                  [namespaceId, recipient.principalId, agentId],
+                );
+                assert.equal(
+                  persisted.rowCount,
+                  0,
+                  "a denied assigning session must leave no grant",
+                );
+                const events = (
+                  await new PostgresPlatformState(pool).transact((unit) => unit.audit.list())
+                ).filter((event) => event.requestId === requestId);
+                assert.ok(events.some(({ kind }) => kind === "authorization_denial"));
+                assert.equal(
+                  events.some(({ kind }) => kind === "mutation"),
+                  false,
+                );
+                t.diagnostic(
+                  JSON.stringify({
+                    scenario: "revoked-after-http-admission",
+                    status: denied.status,
+                    persistedGrants: persisted.rowCount,
+                    denialAudit: events.filter(({ kind }) => kind === "authorization_denial")
+                      .length,
+                    successAudit: events.filter(({ kind }) => kind === "mutation").length,
+                  }),
+                );
+              } finally {
+                bodyAdmission = undefined;
+                upload.destroy();
+              }
+            },
+          );
+
+          await t.test(
+            "a sharing commit orders cross-replica logout and releases its session hold",
+            async () => {
+              const assigning = await signInAdministrator();
+              const replica = await composeProduction({
+                mode: "production",
+                host: "127.0.0.1",
+                databaseUrl,
+                authSecret,
+                authBaseURL,
+                drivers: await productionDrivers(),
+                logger: apiLog.logger,
+              });
+              const replicaEndpoint = await replica.listen({ port: 0, host: "127.0.0.1" });
+              const blocker = await pool.connect();
+              let released = false;
+              let pendingGrant;
+              let pendingLogout;
+              try {
+                await blocker.query("BEGIN");
+                const {
+                  rows: [{ pid }],
+                } = await blocker.query("SELECT pg_backend_pid() AS pid");
+                await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [
+                  namespaceId,
+                ]);
+                pendingGrant = request("POST", `${policyPath}/access-bindings`, grant, assigning);
+                const protectedPid = await waitFor(
+                  "the protected sharing write waiting for the Namespace",
+                  async () => {
+                    const waiting = await pool.query(
+                      "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+                      [pid],
+                    );
+                    return waiting.rowCount > 0 ? waiting.rows[0].pid : undefined;
+                  },
+                );
+                // Another API instance has no shared JavaScript lock. PostgreSQL must
+                // keep logout from deleting the assigning session before this commit.
+                pendingLogout = fetch(`${replicaEndpoint}/api/auth/sign-out`, {
+                  method: "POST",
+                  headers: authenticatedHeaders(assigning, { origin: authBaseURL }),
+                });
+                await waitFor("cross-replica logout waiting on the held session", async () => {
+                  const waiting = await pool.query(
+                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+                    [protectedPid],
+                  );
+                  return waiting.rowCount > 0 ? true : undefined;
+                });
+                await blocker.query("COMMIT");
+                released = true;
+                const committed = await pendingGrant;
+                assert.equal(committed.status, 201);
+                const logout = await pendingLogout;
+                assert.equal(logout.status, 200);
+                const committedRows = await pool.query(
+                  "SELECT id FROM occ.iam_access_bindings WHERE id=$1",
+                  [committed.data.id],
+                );
+                assert.equal(committedRows.rowCount, 1);
+                const committedEvents = (
+                  await new PostgresPlatformState(pool).transact((unit) => unit.audit.list())
+                ).filter((event) => event.requestId === policyRequestId);
+                assert.ok(committedEvents.some(({ kind }) => kind === "mutation"));
+                t.diagnostic(
+                  JSON.stringify({
+                    scenario: "cross-replica-logout",
+                    policyStatus: committed.status,
+                    logoutStatus: logout.status,
+                    persistedGrants: committedRows.rowCount,
+                    successAudit: committedEvents.filter(({ kind }) => kind === "mutation").length,
+                  }),
+                );
+                assert.equal(
+                  (await request("GET", `${policyPath}/roles`, undefined, assigning)).status,
+                  401,
+                );
+                assert.equal(
+                  (await request("GET", `${agentsPath}/${agentId}`, undefined, recipient.session))
+                    .status,
+                  200,
+                );
+                assert.equal(
+                  (await request("DELETE", `${policyPath}/access-bindings/${committed.data.id}`))
+                    .status,
+                  204,
+                );
+                assert.equal(
+                  (await request("GET", `${agentsPath}/${agentId}`, undefined, recipient.session))
+                    .status,
+                  403,
+                );
+              } finally {
+                if (!released) {
+                  await blocker.query("ROLLBACK");
+                }
+                blocker.release();
+                await Promise.allSettled([pendingGrant, pendingLogout]);
+                await replica.close();
+              }
+            },
+          );
+
+          await t.test(
+            "expiry after the last client check rejects COMMIT without persisting sharing authority",
+            async () => {
+              const proxy = await commitAckProxy(databaseUrl);
+              let replica;
+              let blocker;
+              let released = false;
+              let pending;
+              let requestId;
+              let committedBindingId;
+              try {
+                replica = await composeProduction({
+                  mode: "production",
+                  host: "127.0.0.1",
+                  databaseUrl: proxy.url,
+                  authSecret,
+                  authBaseURL,
+                  drivers: await productionDrivers(),
+                  logger: apiLog.logger,
+                });
+                const path = `${policyPath}/access-bindings`;
+                replica.addHook("preParsing", async (request, _reply, payload) => {
+                  if (request.method === "POST" && request.url === path) {
+                    requestId = request.id;
+                  }
+                  return payload;
+                });
+                const replicaEndpoint = await replica.listen({ port: 0, host: "127.0.0.1" });
+                const assigning = await signInWithEmailPassword({
+                  origin: replicaEndpoint,
+                  email: adminEmail,
+                  password,
+                });
+                await pool.query(
+                  `UPDATE occ.session SET expires_at=clock_timestamp()+interval '3 seconds'
+                   WHERE id=(SELECT s.id FROM occ.session s JOIN occ."user" u ON u.id=s.user_id
+                             WHERE u.email=$1 ORDER BY s.created_at DESC LIMIT 1)`,
+                  [adminEmail],
+                );
+                blocker = await pool.connect();
+                await blocker.query("BEGIN");
+                const {
+                  rows: [{ pid }],
+                } = await blocker.query("SELECT pg_backend_pid() AS pid");
+                await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [
+                  namespaceId,
+                ]);
+                pending = fetch(`${replicaEndpoint}${path}`, {
+                  method: "POST",
+                  headers: authenticatedHeaders(assigning, {
+                    origin: authBaseURL,
+                    "content-type": "application/json",
+                  }),
+                  body: JSON.stringify(grant),
+                });
+                // Arm only after the IAM unit holds the session and waits for its
+                // Namespace, so authentication's earlier transactions are unaffected.
+                await waitFor("the policy transaction waiting for its Namespace", async () => {
+                  const waiting = await pool.query(
+                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+                    [pid],
+                  );
+                  return waiting.rowCount > 0 ? true : undefined;
+                });
+                proxy.arm({ pauseCommit: true });
+                await blocker.query("COMMIT");
+                released = true;
+                await waitFor("COMMIT paused after the client's expiry checks", () =>
+                  proxy.commitPaused ? true : undefined,
+                );
+                // Time passes after every client check, before the real server sees
+                // COMMIT. No clock, auth, State or IAM implementation is replaced.
+                await waitFor("the assigning session expiring before server COMMIT", async () => {
+                  const {
+                    rows: [{ expired }],
+                  } = await pool.query(
+                    `SELECT expires_at <= clock_timestamp() AS expired FROM occ.session
+                     WHERE user_id=(SELECT id FROM occ."user" WHERE email=$1)
+                     ORDER BY created_at DESC LIMIT 1`,
+                    [adminEmail],
+                  );
+                  return expired ? true : undefined;
+                });
+                proxy.resumeCommit();
+                const denied = await pending;
+                const responseBody = await denied.json();
+                if (denied.status === 201) {
+                  committedBindingId = responseBody.data.id;
+                }
+                assert.equal(denied.status, 403, JSON.stringify(responseBody));
+                const persisted = await pool.query(
+                  "SELECT id FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$2 AND resource_id=$3",
+                  [namespaceId, recipient.principalId, agentId],
+                );
+                assert.equal(
+                  persisted.rowCount,
+                  0,
+                  "server commit rejection must roll back the grant",
+                );
+                assert.ok(requestId);
+                const events = (
+                  await new PostgresPlatformState(pool).transact((unit) => unit.audit.list())
+                ).filter((event) => event.requestId === requestId);
+                assert.ok(events.some(({ kind }) => kind === "authorization_denial"));
+                assert.equal(
+                  events.some(({ kind }) => kind === "mutation"),
+                  false,
+                );
+                t.diagnostic(
+                  JSON.stringify({
+                    scenario: "expired-before-server-commit",
+                    status: denied.status,
+                    persistedGrants: persisted.rowCount,
+                    denialAudit: events.filter(({ kind }) => kind === "authorization_denial")
+                      .length,
+                    successAudit: events.filter(({ kind }) => kind === "mutation").length,
+                  }),
+                );
+                const following = await request("POST", path, grant);
+                assert.equal(following.status, 201);
+                assert.equal((await request("DELETE", `${path}/${following.data.id}`)).status, 204);
+              } finally {
+                if (blocker) {
+                  if (!released) {
+                    await blocker.query("ROLLBACK");
+                  }
+                  blocker.release();
+                }
+                if (proxy.commitPaused) {
+                  proxy.resumeCommit();
+                }
+                await pending?.catch(() => {});
+                await replica?.close();
+                await proxy.close();
+                if (committedBindingId !== undefined) {
+                  await request("DELETE", `${policyPath}/access-bindings/${committedBindingId}`);
+                }
+              }
+            },
+          );
+
+          await t.test(
+            "expiry rolls back a waiting sharing grant and releases its locks",
+            async () => {
+              const assigning = await signInAdministrator();
+              // Expiry is a clock boundary, not a competing UPDATE that row locks can delay.
+              await pool.query(
+                `UPDATE occ.session SET expires_at=clock_timestamp()+interval '3 seconds'
+               WHERE id=(SELECT s.id FROM occ.session s JOIN occ."user" u ON u.id=s.user_id
+                         WHERE u.email=$1 ORDER BY s.created_at DESC LIMIT 1)`,
+                [adminEmail],
+              );
+              const blocker = await pool.connect();
+              let released = false;
+              let pending;
+              try {
+                await blocker.query("BEGIN");
+                const {
+                  rows: [{ pid }],
+                } = await blocker.query("SELECT pg_backend_pid() AS pid");
+                await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [
+                  namespaceId,
+                ]);
+                pending = request("POST", `${policyPath}/access-bindings`, grant, assigning);
+                await waitFor("the expiring sharing write waiting for the Namespace", async () => {
+                  const waiting = await pool.query(
+                    "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+                    [pid],
+                  );
+                  return waiting.rowCount > 0 ? true : undefined;
+                });
+                await delay(3_100);
+                await blocker.query("COMMIT");
+                released = true;
+                const denied = await pending;
+                assert.equal(denied.status, 403);
+                assert.equal(
+                  (await request("GET", `${agentsPath}/${agentId}`, undefined, recipient.session))
+                    .status,
+                  403,
+                );
+                const persisted = await pool.query(
+                  "SELECT id FROM occ.iam_access_bindings WHERE namespace_id=$1 AND identity_subject_id=$2 AND resource_id=$3",
+                  [namespaceId, recipient.principalId, agentId],
+                );
+                assert.equal(
+                  persisted.rowCount,
+                  0,
+                  "expiry must roll back the grant, not just its response",
+                );
+                const events = (
+                  await new PostgresPlatformState(pool).transact((unit) => unit.audit.list())
+                ).filter((event) => event.requestId === policyRequestId);
+                assert.ok(events.some(({ kind }) => kind === "authorization_denial"));
+                assert.equal(
+                  events.some(({ kind }) => kind === "mutation"),
+                  false,
+                );
+                t.diagnostic(
+                  JSON.stringify({
+                    scenario: "expired-during-policy-wait",
+                    status: denied.status,
+                    persistedGrants: persisted.rowCount,
+                    denialAudit: events.filter(({ kind }) => kind === "authorization_denial")
+                      .length,
+                    successAudit: events.filter(({ kind }) => kind === "mutation").length,
+                  }),
+                );
+                // Another authorized session can immediately write and remove the same grant.
+                const following = await request("POST", `${policyPath}/access-bindings`, grant);
+                assert.equal(following.status, 201);
+                assert.equal(
+                  (await request("DELETE", `${policyPath}/access-bindings/${following.data.id}`))
+                    .status,
+                  204,
+                );
+              } finally {
+                if (!released) {
+                  await blocker.query("ROLLBACK");
+                }
+                blocker.release();
+                await pending?.catch(() => {});
+              }
+            },
           );
         },
       );

@@ -264,6 +264,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       observabilityUrl,
       namespaceAdmissionPending = true,
     } = state);
+    // A page held during a navigation shows Namespace recovery only if it already did.
+    const recovery = state.recovery ?? true;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
     const menuFocus = menuControls?.account.contains(document.activeElement)
@@ -402,7 +404,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (session && feature !== "agents" && namespaceId !== null && !selected) {
+    if (recovery && session && feature !== "agents" && namespaceId !== null && !selected) {
       if (feature === "namespaces" && namespaces.length) {
         main.append(
           element(
@@ -573,6 +575,29 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     renderRows,
     switchNamespace,
     updateNamespaces,
+    // The shown shell's control, outside its page view, that matches one from an earlier
+    // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
+    // toggle. A new shell's account menu starts closed, so its items give way to the toggle. At
+    // phone width its navigation drawer starts closed too, so every control from the open drawer
+    // gives way to the drawer's toggle (finding 1680).
+    matchingControl(node) {
+      const shell = app.querySelector(":scope > .shell");
+      if (!shell) {
+        return null;
+      }
+      if (
+        mobileLayout.matches &&
+        node.closest(".sidebar") &&
+        !shell.classList.contains("drawer-open")
+      ) {
+        return shell.querySelector(".mobile-toggle");
+      }
+      if (node.closest(".account")) {
+        return shell.querySelector(".account-toggle");
+      }
+      // The sidebar, toggle and header precede the page view, so their match is found first.
+      return sameControl(node, shell);
+    },
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
       menuControls = null;

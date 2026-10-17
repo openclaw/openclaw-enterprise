@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,7 +22,7 @@ import (
 // controller downloads and network-policy probes, which only a real cluster proves
 // (see dev-up-openshell-k3d-real and local-first-agent-openshell-k3d-real).
 
-const profileTestDigest = "sha256:17b2f65d1e33f32a419ecc98dd42389b0227280be54139c14834933ec29420ea"
+const profileTestDigest = "sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8"
 
 // fakeProfileCommands puts fake binaries on PATH. Each records its arguments and
 // answers only the listed cases, so a step that issues a new command fails.
@@ -154,6 +155,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 		"mode: inCluster",
 		"workspaceMode: operator",
 		"operatorWorkspaceResources:",
+		"userNamespaces: false",
 		`openshell.ai/openclaw-workspace: "true"`,
 	} {
 		if !strings.Contains(text, required) {
@@ -207,6 +209,7 @@ func TestKubernetesOnlyOpenShellInstallationUsesInClusterServices(t *testing.T) 
 	if !reflect.DeepEqual(installation.Drivers.CredentialGateway.Configuration.Binaries, []string{
 		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-x64/node_modules/@openai/codex/vendor/x86_64-unknown-linux-musl/bin/codex",
 		"/app/node_modules/openclaw/node_modules/.pnpm/@openai+codex@0.163.0-alpha.2-linux-arm64/node_modules/@openai/codex/vendor/aarch64-unknown-linux-musl/bin/codex",
+		"/usr/local/bin/node",
 	}) {
 		t.Fatalf("unexpected OpenShell credential binary allowlist: %#v", installation.Drivers.CredentialGateway.Configuration.Binaries)
 	}
@@ -464,5 +467,114 @@ func TestKubernetesOnlyControlPlaneKeepsPostgreSQLAcrossClusterRestart(t *testin
 	render.Dir = state.Repository
 	if output, err := render.CombinedOutput(); err != nil {
 		t.Fatalf("the chart rejected the generated values: %v\n%s", err, output)
+	}
+}
+
+func TestKubernetesOnlyControlPlaneUsesItsPublishedConsoleOrigin(t *testing.T) {
+	realHelm, helmErr := exec.LookPath("helm")
+	for _, test := range []struct {
+		name          string
+		sandboxDriver string
+		browserPort   int
+		origin        string
+	}{
+		{"OpenShell loopback HTTP", "openshell", 0, "http://127.0.0.1:3100"},
+		{"HTTPS without Sandbox", "none", 8444, "https://console.occ-dev-owned.oce.localhost:8444"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := kubernetesOnlyOpenShellState(t)
+			state.SandboxDriver = test.sandboxDriver
+			state.APIPort = 3100
+			state.BrowserPort = test.browserPort
+			if err := os.WriteFile(filepath.Join(state.directory, "installation.yaml"), []byte("occ: {}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			commands := fakeProfileCommands(t, map[string]string{
+				"kubectl": `"apply -f "*) ;;
+"-n oce-system get pod bootstrap-password-prepare -o jsonpath={.status.phase}") echo Succeeded ;;
+"-n oce-system rollout status statefulset/postgres "*) ;;
+"-n oce-system get pod postgres-0 -o jsonpath={.status.podIP}") echo 10.42.0.20 ;;
+"-n default get endpoints kubernetes -o jsonpath={.subsets[0].addresses[0].ip}") echo 172.30.42.3 ;;
+"-n default get endpoints kubernetes -o jsonpath={.subsets[0].ports[0].port}") echo 6443 ;;
+"-n oce-system rollout status deployment/occ-development-api-proxy "*) ;;`,
+				"docker": `"network inspect k3d-occ-dev-owned") echo '[{"IPAM":{"Config":[{"Subnet":"172.30.42.0/24"}]}}]' ;;`,
+				"helm":   `"upgrade --install openclaw-enterprise deploy/helm/openclaw-enterprise "*) ;;`,
+			})
+			r := newRunner(Options{Repository: state.Repository})
+			r.engine = "docker"
+			if err := r.installKubernetesControlPlane(context.Background(), state, "controller@"+profileTestDigest, "postgres@"+profileTestDigest, true, time.Minute); err != nil {
+				t.Fatalf("%v\n%s", err, strings.Join(commands(), "\n"))
+			}
+			values := readJSONFile(t, filepath.Join(state.directory, "helm-values.json"))
+			if !reflect.DeepEqual(values["auth"], jsonValue(t, map[string]string{"baseUrl": test.origin})) {
+				t.Fatalf("authentication must use the published Console origin: %#v", values["auth"])
+			}
+			gatewayRouting := map[string]any{"enabled": true, "gatewayClassName": "eg", "apiKeySecretName": "occ-private-gateway-key"}
+			if test.sandboxDriver == "openshell" {
+				gatewayRouting["hostname"] = developmentGatewayServiceName("oce-system") + ".envoy-gateway-system.svc.cluster.local"
+			}
+			if !reflect.DeepEqual(values["gatewayRouting"], gatewayRouting) {
+				t.Fatalf("private Agent routing must remain enabled: %#v", values["gatewayRouting"])
+			}
+			gatewayKey := readJSONFile(t, filepath.Join(state.directory, "gateway-api-key.json"))
+			key, keyPresent := gatewayKey["stringData"].(map[string]any)["occ"].(string)
+			if gatewayKey["metadata"].(map[string]any)["name"] != "occ-private-gateway-key" ||
+				!keyPresent || key == "" {
+				t.Fatal("private Agent routing must retain its key")
+			}
+			if test.browserPort == 0 {
+				if _, exists := values["agentNativeAdmin"]; exists {
+					t.Fatal("OpenShell must not enable native administration")
+				}
+				for _, name := range []string{"browser-ca.crt", "browser-ca.key", "browser-tls.crt", "browser-tls.key", "browser-tls.json"} {
+					if _, err := os.Lstat(filepath.Join(state.directory, name)); !os.IsNotExist(err) {
+						t.Fatalf("HTTP-only Console must not create %s: %v", name, err)
+					}
+				}
+			} else {
+				if !reflect.DeepEqual(values["agentNativeAdmin"], jsonValue(t, map[string]any{
+					"enabled": true, "domain": "agents.occ-dev-owned.oce.localhost", "sharedCookieDomain": "occ-dev-owned.oce.localhost",
+				})) {
+					t.Fatalf("HTTPS Console must retain native administration: %#v", values["agentNativeAdmin"])
+				}
+				browserTLS := readJSONFile(t, filepath.Join(state.directory, "browser-tls.json"))
+				if browserTLS["metadata"].(map[string]any)["name"] != "occ-development-browser-tls" {
+					t.Fatal("HTTPS Console must retain its TLS Secret")
+				}
+			}
+			if helmErr != nil {
+				t.Log("helm is not installed; skipping chart rendering of the generated values")
+				return
+			}
+			render := exec.Command(realHelm, "template", "openclaw-enterprise", "deploy/helm/openclaw-enterprise",
+				"--namespace", "oce-system", "-f", filepath.Join(state.directory, "helm-values.json"))
+			render.Dir = state.Repository
+			output, err := render.CombinedOutput()
+			if err != nil {
+				t.Fatalf("the chart rejected the generated values: %v\n%s", err, output)
+			}
+			decoder := yaml.NewDecoder(bytes.NewReader(output))
+			for {
+				var resource map[string]any
+				if err := decoder.Decode(&resource); err == io.EOF {
+					t.Fatal("rendered API must receive its published Console origin")
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if resource["kind"] != "Deployment" || resource["metadata"].(map[string]any)["name"] != "openclaw-enterprise-api" {
+					continue
+				}
+				pod := resource["spec"].(map[string]any)["template"].(map[string]any)["spec"].(map[string]any)
+				for _, container := range pod["containers"].([]any) {
+					for _, entry := range container.(map[string]any)["env"].([]any) {
+						environment := entry.(map[string]any)
+						if environment["name"] == "OCC_AUTH_BASE_URL" && environment["value"] == test.origin {
+							return
+						}
+					}
+				}
+				t.Fatalf("rendered API must receive Console origin %s", test.origin)
+			}
+		})
 	}
 }

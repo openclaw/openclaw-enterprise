@@ -1836,7 +1836,9 @@ test("withdrawal is recorded for the active revision and queued once, and the re
     (error) =>
       error instanceof ResourceConflictError &&
       error.name === "ResourceStateConflictError" &&
-      error.message.startsWith("An Agent, active revision, or pending deployment"),
+      error.message.startsWith(
+        "An Agent, active revision, pending deployment, or provisioning request",
+      ),
   );
 
   // A later deployment's pending withdrawal with no attempt outstanding, as exhausted attempts

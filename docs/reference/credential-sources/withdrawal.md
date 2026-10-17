@@ -70,6 +70,12 @@ maintenance never prepares the revision again. It continues recovering pending
 tool withdrawals even when the model source is already `revoked`, and stops only when every withdrawal is `revoked`.
 Redeploy to resume Compute repair.
 
+For externally managed Codex OAuth, restarting the same OpenShell Sandbox after
+withdrawal keeps the Harness process alive but unready, with
+`AUTHENTICATION_FAILED` at the `login` phase. It does not start Codex or use cached
+authentication. A restart cannot restore the withdrawn binding; deploy a new
+revision to resume model execution.
+
 Withdrawals of different sources on one revision share one worker attempt, but
 each is authorized by its own `requestedBy`. A requester who lost
 `agent:operate` leaves only their withdrawal `pending` with

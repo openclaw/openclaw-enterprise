@@ -9,6 +9,7 @@ import {
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { completedPasses } from "../helpers/postgres-worker-revision-support.mjs";
 import {
   assertWorkEnds,
   denyDeploy,
@@ -177,7 +178,7 @@ revisionTest(
     // While the drain yielded, the pointer still named the predecessor; then the replacement.
     assert.deepEqual([...driver.pointers], [first.id]);
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, replacement.id);
-    const passes = workPasses(events, replacement);
+    const passes = await completedPasses(events, replacement);
     assert.ok(passes.every(({ code }) => code !== "DEPENDENCY_UNAVAILABLE"));
     // The yields are throttled like a stopped Agent's, and the completion carries their count.
     assert.deepEqual(
@@ -320,7 +321,7 @@ for (const failing of [false, true]) {
       assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
       // Its finishing drain yielded like the stopped Agent's own drain, not as a deployment
       // waiting to start: deployment status read AGENT_STOP_YIELDED meanwhile.
-      const codes = workPasses(events, replacement).map(({ code }) => code);
+      const codes = (await completedPasses(events, replacement)).map(({ code }) => code);
       assert.equal(codes.at(-1), "REVISION_STOPPED");
       assert.equal(codes.includes("DEPENDENCY_UNAVAILABLE"), failing, codes.join(", "));
       assert.equal(failOnce, false);

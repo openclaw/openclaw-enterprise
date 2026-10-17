@@ -153,6 +153,7 @@ func (app *application) printIAMRole(value any, collection bool) error {
 func (app *application) printIAMAccessBinding(value any, collection bool) error {
 	return app.printItems(value, collection, []column{
 		{title: "ID", key: "id"},
+		{title: "SUBJECT KIND", key: "subjectKind"},
 		{title: "SUBJECT", key: "subjectId"},
 		{title: "ROLE", key: "roleId"},
 		{title: "RESOURCE KIND", key: "resourceKind"},

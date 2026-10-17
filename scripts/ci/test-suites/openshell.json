@@ -5,6 +5,7 @@
     "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
     "OCC_TEST_KUBERNETES_AGENT_IMAGE",
     "CODEX_ACCESS_TOKEN",
+    "OPENAI_API_KEY",
     "OCC_TEST_OPENAI_MODEL",
     "OCC_TEST_OPENSHELL_GATEWAY_IMAGE",
     "OCC_TEST_OPENSHELL_SANDBOX_IMAGE",
@@ -24,7 +25,7 @@
     "postgres": true,
     "k3d": true,
     "requiresPreparedStateForFile": true,
-    "requireEnv": ["CODEX_ACCESS_TOKEN", "OCC_TEST_OPENAI_MODEL"],
+    "requireEnv": ["CODEX_ACCESS_TOKEN", "OPENAI_API_KEY", "OCC_TEST_OPENAI_MODEL"],
     "immutableOptionalEnvImages": [
       "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
       "OCC_TEST_KUBERNETES_AGENT_IMAGE",
@@ -49,13 +50,15 @@
     {
       "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
       "expectedTests": [
-        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes"
+        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
+        "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
       ]
     },
     {
       "path": "tests/integration/local-first-agent-openshell-k3d-real.test.mjs",
       "expectedTests": [
-        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes"
+        "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",
+        "guided native OpenClaw redeployment resumes the same session with retained files and required-worker execution"
       ]
     }
   ]

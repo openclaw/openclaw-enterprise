@@ -137,35 +137,112 @@ with `dev down` [deletes the installation and its Agents](quickstart.md#clean-up
 
 ## Clean up
 
-To remove only this Agent and keep the installation, delete the Agent and then
-the Configuration, Secret, and Role the command created for it. Set
-`OCC_NAMESPACE` to the `ID` shown for `default` in step 1, and `AGENT_ID` to the
-Agent ID the command printed. If the command stopped before printing it, run the
-`export` line first, then find the ID with `./bin/occ agent list`:
+To remove only this Agent and keep the installation, use its local helper record
+as the ownership record. Do not run the helper or edit this Agent or its credential
+source during cleanup. Select the `first-agent-*.json` for the name you used in the
+Local setup state directory (`OCC_DEVELOPMENT_STATE_DIRECTORY` when set; otherwise
+`openclaw-development` inside Node.js's `os.tmpdir()`). The filename uses the first
+32 hexadecimal characters of SHA-256 of the Agent name. Do not print the record or
+credential files.
+
+Set `OCC_NAMESPACE` to the `default` Namespace ID and `AGENT_ID` to the ID printed by
+the helper (or find it with `./bin/occ agent list`). Select the exact record path:
 
 ```bash
-export OCC_NAMESPACE=<default-namespace-id>
-AGENT_ID=<agent-id>
-AGENT_JSON="$(./bin/occ agent get "$AGENT_ID" -o json)"
-CONFIGURATION_ID="$(jq -r .configurationId <<<"$AGENT_JSON")"
-SECRET_ID="$(jq -r .harnessAuth.source.id <<<"$AGENT_JSON")"
-ROLE_ID="role_local_first_agent_secret_$(printf '%s\0%s' "$AGENT_ID" "$SECRET_ID" |
-  sha256sum | cut -d' ' -f1)"
-./bin/occ agent delete "$AGENT_ID"
-./bin/occ agent get "$AGENT_ID"
+export OCC_NAMESPACE='<default-namespace-id>'
+export AGENT_ID='<agent-id>'
+export FIRST_AGENT_RECORD='<local-state-directory>/first-agent-<name-hash>.json'
 ```
 
-Repeat `agent get` until it returns `404`, then delete the rest:
+Run this whole block in Bash. It checks the recorded Namespace, Agent,
+Configuration, credential source and original Secret before any deletion. Missing
+records, failed lookups or changed references stop cleanup; they never fall back
+to deleting whichever Secret is referenced now. For a missing record or drift,
+leave resources in place and establish ownership manually before removing them.
+A name prefix alone is not ownership evidence.
 
 ```bash
-./bin/occ configuration delete "$CONFIGURATION_ID"
-./bin/occ secret delete "$SECRET_ID"
-./bin/occ iam role delete "$ROLE_ID"
+(
+  set -euo pipefail
+  RECORD="$(jq -ec --arg ns "$OCC_NAMESPACE" --arg agent "$AGENT_ID" '
+    select(.version == 3 and .namespaceId == $ns and .agentId == $agent)
+    | select(.configurationId | type == "string" and startswith("cfg_"))
+    | select(.secretId | type == "string" and startswith("sec_"))
+    | {namespaceId, agentId, configurationId, secretId, credentialSourceId,
+       sandboxDriver, authMethod}
+  ' "$FIRST_AGENT_RECORD")"
+  CONFIGURATION_ID="$(jq -er .configurationId <<<"$RECORD")"
+  SECRET_ID="$(jq -er .secretId <<<"$RECORD")"
+  AGENT_JSON="$(./bin/occ agent get "$AGENT_ID" -o json)"
+  jq -e --arg id "$CONFIGURATION_ID" '.configurationId == $id' \
+    <<<"$AGENT_JSON" >/dev/null
+  SOURCE_ID=''
+  if [[ "$(jq -r .sandboxDriver <<<"$RECORD")" == openshell ]]; then
+    SOURCE_ID="$(jq -er '.credentialSourceId | select(startswith("cs_"))' <<<"$RECORD")"
+    jq -e --arg id "$SOURCE_ID" \
+      '.harnessAuth == {method:"credential_source", sourceId:$id}' \
+      <<<"$AGENT_JSON" >/dev/null
+    SOURCE_JSON="$(./bin/occ credential-source get "$SOURCE_ID" -o json)"
+    FIELD="$(jq -er '.authMethod | if . == "codex_pat" then "access_token"
+      elif . == "api_key" then "api_key" else error("unknown credential method") end' <<<"$RECORD")"
+    jq -e --arg field "$FIELD" --arg ns "$OCC_NAMESPACE" --arg id "$SECRET_ID" \
+      '.secrets == {($field):{kind:"secret", namespaceId:$ns, id:$id}}' \
+      <<<"$SOURCE_JSON" >/dev/null
+    ROLE_NAME="$(node --input-type=module - "$AGENT_ID" "$SOURCE_ID" <<'JS'
+import { createHash } from 'node:crypto';
+const suffix = createHash('sha256').update(process.argv[2]).update('\0')
+  .update(process.argv[3]).digest('hex').slice(0, 16);
+console.log(`Local first Agent source ${suffix}`);
+JS
+)"
+    ROLE_ID="$(./bin/occ iam role list -o json |
+      jq -er --arg name "$ROLE_NAME" '.[] | select(.name == $name) | .id')"
+  else
+    jq -e --arg ns "$OCC_NAMESPACE" --arg id "$SECRET_ID" \
+      '.harnessAuth == {method:"api_key", source:{kind:"secret", namespaceId:$ns, id:$id}}' \
+      <<<"$AGENT_JSON" >/dev/null
+    ROLE_ID="$(node --input-type=module - "$AGENT_ID" "$SECRET_ID" <<'JS'
+import { createHash } from 'node:crypto';
+const suffix = createHash('sha256').update(process.argv[2]).update('\0')
+  .update(process.argv[3]).digest('hex');
+console.log(`role_local_first_agent_secret_${suffix}`);
+JS
+)"
+  fi
+  ./bin/occ agent delete "$AGENT_ID"
+  gone=false
+  for attempt in {1..60}; do
+    if result="$(./bin/occ agent get "$AGENT_ID" -o json 2>&1)"; then
+      sleep 2
+    elif [[ "$result" == 'Error: OCC operation failed (HTTP 404): NOT_FOUND: '* ]]; then
+      gone=true
+      break
+    else
+      printf '%s\n' "$result" >&2
+      exit 1
+    fi
+  done
+  [[ "$gone" == true ]]
+  if [[ -n "$SOURCE_ID" ]]; then
+    ./bin/occ credential-source delete "$SOURCE_ID"
+  fi
+  ./bin/occ configuration delete "$CONFIGURATION_ID"
+  ./bin/occ secret delete "$SECRET_ID"
+  ./bin/occ iam role delete "$ROLE_ID"
+)
 ```
 
-Each run creates a separate Role named `Local first Agent Secret access`, so
-`occ iam role list` shows one per first Agent until you delete it. The command
-remembers the Agent name; use a new name for the next run.
+An in-place key rotation keeps the same Secret reference and passes the guard.
+Replacing the reference stops before any DELETE, even if the replacement Secret
+has no other consumers. Reads return references, never credential values.
+
+If deletion stops after removing the Agent, inspect the error and remaining
+resources manually; the block requires an existing Agent for its ownership checks.
+Source deletion can return `409` while references remain, or `503` after a gateway
+failure or during the registration safety window. Follow [source deletion recovery](../reference/credential-sources.md#delete-a-source);
+leave its Secret in place until the source is gone. Deleting the source removes
+the gateway's credential copy as well. The helper remembers the Agent name; use a
+new name for the next run.
 
 <span id="troubleshooting"></span>
 

@@ -1,8 +1,7 @@
 # Local Kubernetes development
 
-Run OpenClaw Enterprise (OCE) against a disposable, loopback-only k3d cluster.
-Start with the Kubernetes-only profile below, which runs PostgreSQL, the
-OpenClaw Control Plane (OCC), and Agent workloads in the owned cluster.
+Run OpenClaw Enterprise (OCE) in a disposable, loopback-only k3d cluster. The
+Kubernetes-only profile runs PostgreSQL, the OpenClaw Control Plane (OCC), and Agents.
 
 ## Start the profile
 
@@ -132,7 +131,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=openshell
 ./scripts/dev-up
 ```
 
-The CLI creates one k3d cluster with pinned OpenShell `v0.1.3-pre.2`, Agent
+The CLI creates one k3d cluster with pinned OpenShell `v0.1.4`, Agent
 Sandbox, cert-manager, and Envoy Gateway assets and digest-resolved images.
 PostgreSQL, the central OpenShell Gateway, and OCE run in `oce-system`; the
 Agent Sandbox controller stays in `agent-sandbox-system`. Tenant Workspaces,
@@ -140,9 +139,9 @@ Sandboxes, and Agent Pods use separate OCC-owned `oce-*` Namespaces. Startup
 exposes a loopback-only proxy, waits for bootstrap Namespace/Workspace readiness,
 and writes kubeconfig and the administrator service key to private state.
 
-If Agent Sandbox rollout fails, startup tries to print bounded controller status,
-image identities and Warning reasons before the unchanged rollback; messages,
-environment values and logs are excluded.
+If Agent Sandbox rollout fails, startup tries to report bounded controller status, image
+identities, and Warning reasons before rollback; diagnostics omit messages,
+environment values, and logs.
 
 Set `OCC_DEVELOPMENT_CONTROL_PLANE=compose` to run PostgreSQL, OCC, and its
 Kubernetes worker in Compose. Startup installs private Envoy routing in k3d,
@@ -159,16 +158,9 @@ set
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
 
-To choose the host engine:
-
-```bash
-export OCC_DEVELOPMENT_CONTAINER_ENGINE=podman
-./scripts/dev-up
-```
-
-Use `docker` for Docker Engine. Kubernetes-only startup needs no Compose and
-rejects Compose arguments. Keep profile exports for cleanup; without them,
-startup defaults to Compose with Docker Compute.
+Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker` to select the host
+engine. Kubernetes-only startup rejects Compose arguments. Keep profile exports
+for cleanup; otherwise startup defaults to Compose with Docker Compute.
 
 Startup prints the private [state directory](../../reference/settings/development.md#required-development-controller-environment)
 containing kubeconfig and credentials. Its default is `openclaw-development`
@@ -334,9 +326,8 @@ the [Kubernetes model-turn procedure](../../testing/kubernetes.md#kubernetes-mod
 
 ## Configure workspace storage on single-node k3d
 
-Dedicated Agents use separate RWO workspace and Gateway claims on stock k3d
-`local-path` storage. Each deployment has a downtime window while the worker
-stops the previous revision; see
+Dedicated Agents use separate RWO workspace and Gateway claims on `local-path`
+storage. Deployment stops the previous revision, causing downtime; see
 [storage ownership and recovery](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage).
 
 Check the Agent namespace with the printed kubeconfig and context:
@@ -346,9 +337,8 @@ kubectl --kubeconfig '<profile-kubeconfig>' --context '<profile-context>' \
   -n '<agent-kubernetes-namespace>' get pvc,pods
 ```
 
-Expect the workspace to become `Bound` with access mode `RWO`, followed by a
-running Harness Pod. With `WaitForFirstConsumer`, a pending claim before Pod
-creation is normal. Legacy RWX claims are unsupported; before upgrading an older
+Expect a `Bound` RWO claim, then a running Harness Pod. With
+`WaitForFirstConsumer`, claims remain pending until Pod creation. Legacy RWX claims are unsupported; before upgrading an older
 installation, follow the [storage transition prerequisite](upgrade-checklist.md#remove-legacy-rwx-workspaces).
 Do not change a PVC's access mode in place.
 
@@ -439,6 +429,6 @@ data-plane pools. See [production Namespace preparation](production-agents.md#pr
 for the scoped RoleBindings.
 
 - This is a development environment, not a production deployment recipe.
-- Stock OpenShell `v0.1.3-pre.2` remains fail-closed for unsupported Secret and
+- Stock OpenShell `v0.1.4` remains fail-closed for unsupported Secret and
   workload-identity projections, so Workspace readiness does not prove that an
   Agent Sandbox can start or complete a model turn.

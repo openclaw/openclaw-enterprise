@@ -57,6 +57,22 @@ is_transient() {
   esac
 }
 
+# Publish only bytes that passed the pinned checksum. Keep the temporary file
+# beside the destination so the final rename stays on the same filesystem.
+if [[ -d "${destination}" ]]; then
+  echo "Download destination is a directory: ${destination}" >&2
+  exit 1
+fi
+temporary="$(mktemp "${destination}.download.XXXXXX")"
+trap 'rm -f "${temporary}"' EXIT
+# curl preserves the mode when replacing an existing file. Seed the temporary
+# file the same way so successful publication retains that behavior.
+if [[ -f "${destination}" ]]; then
+  cp -p "${destination}" "${temporary}"
+else
+  new_file_mode="$(printf '%o' "$((0666 & ~$(umask)))")"
+fi
+
 attempt=1
 delay=2
 started=${SECONDS}
@@ -66,7 +82,7 @@ while :; do
   transfer="$(curl --fail --silent --show-error --location \
     --connect-timeout 20 --max-time 300 \
     --speed-limit "${speed_limit_bytes}" --speed-time "${speed_time_seconds}" \
-    --write-out '%{http_code} %{speed_download}' --output "${destination}" "${url}")" || status=$?
+    --write-out '%{http_code} %{speed_download}' --output "${temporary}" "${url}")" || status=$?
   http_code="${transfer%% *}"
   # curl --silent hides progress, so name slow attempts for the next stall investigation.
   if [[ $((SECONDS - attempt_started)) -ge 20 ]]; then
@@ -88,7 +104,14 @@ while :; do
 done
 
 if command -v sha256sum >/dev/null 2>&1; then
-  echo "${expected_sha256}  ${destination}" | sha256sum -c -
+  echo "${expected_sha256}  ${temporary}" | sha256sum -c -
 else
-  echo "${expected_sha256}  ${destination}" | shasum -a 256 -c -
+  echo "${expected_sha256}  ${temporary}" | shasum -a 256 -c -
 fi
+
+# Keep a first download private until verification has succeeded, then publish
+# it with the same umask-derived permissions curl would have created.
+if [[ -n "${new_file_mode:-}" ]]; then
+  chmod "${new_file_mode}" "${temporary}"
+fi
+mv -f "${temporary}" "${destination}"

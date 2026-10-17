@@ -79,9 +79,11 @@ loading.
 
 ## Return navigation
 
-Use **Pages/Navigation → Return to loaded pages**, **Return to Agent panels**, and
-**Slow rechecks**. Search, expanded configuration, native admin access, and Credentials
-survive Back/Forward and tab changes. Refresh reloads; slow checks say so.
+**Return while deployments load** shows the rechecked Agents list first. Watch
+“Reading deployment…” become “Deployment access denied,” without the old result reappearing.
+
+In **Return to loaded pages**, **Return to Agent panels**, and **Slow rechecks**,
+Back preserves search, expanded panels, and Credentials. Refresh reloads.
 
 ## Agent flows and UI gaps
 
@@ -203,9 +205,8 @@ editor's access or recovery controls.
 
 ### Choose and switch revision Secrets
 
-In **Components / Credentials / Slack tokens stored**, inspect references, cancel
-creation, then switch app tokens; the bot binding stays. The API-key switch offers
-another model Secret.
+**Slack token switch** blocks Deploy until you save or reselect the saved Secret.
+In **Discard an unsaved Secret choice**, that Secret isn’t listed; reload to discard unsaved edits.
 
 **Secret list denied** retains IDs. **Slack grant denied** requires recovery.
 In **Issued service accounts unavailable**, switch authentication methods:
@@ -266,40 +267,37 @@ admitted revision** shows the frozen snapshot.
 
 ### Update
 
-**New version in progress** shows v7 deployment work while v6 stays current;
-**Current version during deployment** opens v6 details while activity follows
-v7. Compare queued, failed, activated, and unavailable activity stories.
-In **First version**, resize the preview: each preparation step keeps its row,
-with continuation lines aligned under the text.
+Compare **New version in progress** (v7 deploying) with **Current version during
+deployment** (v6 current). Check queued, failed, activated, and unavailable states.
+In **First version**, wrapped lines align under each step, not its number.
 
-**New version failed** and **Failed deployment logs from draft** check
-focused v7 Logs, output or denial, and Back. In **Runtime status and logs for v7**,
-exercise source, instance, debug, fields, Follow, and filters. At 390px, check
-readable rows and visible selected tabs through direct routes and Back/Forward.
-These fixtures prove presentation, not live reads.
+Press Enter on **Deploy new version**. Focus moves to “Deploying…”, then:
 
-Version metadata stays visible when saved settings are unreadable. Follow the
-[walkthrough](../../scripts/console-storybook/unreadable-configuration-workflow.md)
-in **Unreadable Agent draft** and **Unreadable revision snapshot** for banner
-scope and navigation.
+- **Deployment refused before admission:** back to Deploy, enabled and described by the refusal.
+- **Deployment outcome unknown:** to “Outcome unknown.” Deploy stays disabled; inspect the saved state before retrying.
 
-**Current observations** starts unrequested; compare
-**Current observations for v7**, **Unknown observation for v6**, and
-**Current observation unavailable**. Clicking requests timestamped diagnostics
-for that version without changing its recorded deployment result.
+Open v7 Logs from **New version failed**, then go Back. At 390px, the selected
+tab and log rows stay visible. [Lose and regain log or Pod access](../../scripts/console-storybook/runtime-access-workflow.md)
+to check Follow, Download, and permission changes. These stories use simulated responses.
 
-Outcome-unknown stories in **Components/Channels** and **Components/Credentials**
-disable deployment until **Reload draft**; they cannot prove a write committed.
+Unreadable Configuration does not hide version metadata. Check the [draft and
+revision banners](../../scripts/console-storybook/unreadable-configuration-workflow.md)
+and their navigation.
 
-Browsing does not deploy. Credentials need deployment; workspace writes apply
-immediately. Native JSON excludes Agent-owned Backend and execution mode.
-[Revisions and channel drafts](../reference/console.md#inspect-detail-revisions-and-channel-drafts)
-defines version deployment and Slack sender access.
+**Current observations** starts without a request. Compare v7, unknown v6, and
+unavailable observations: requesting timestamped diagnostics must not change the
+recorded deployment result.
 
-**Enable gateway password access** stages a reference. Cancel discards it; Save
-Configuration, then Deploy new version applies it. Compare the
-**Gateway password** access configured, save denied, and save in progress
-stories; they do not prove credential delivery or login.
+In **Components/Channels** and **Components/Credentials**, an unknown write
+outcome disables deployment until **Reload draft**. Whether the write committed is still unknown.
+
+Browsing never deploys. Deploy credential changes; workspace edits apply immediately.
+Native JSON omits Agent-owned Backend and execution mode. See [versions and Slack
+sender access](../reference/console.md#inspect-detail-revisions-and-channel-drafts).
+
+In **Enable gateway password access**, Cancel discards the staged reference.
+To apply it, save Configuration, then deploy. Compare configured, save-denied,
+and save-in-progress stories; none proves credential delivery or login.
 
 ### Stop
 

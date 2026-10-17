@@ -985,7 +985,11 @@ test("the runtime release smoke runs every Image Runtime Startup file", () => {
     );
   }
   // Image Runtime Startup files outside the runtime-image-* names.
-  const otherSmokeFiles = ["tests/integration/workspace-files-native.test.mjs"];
+  const otherSmokeFiles = [
+    // Its OpenShell initializer case executes the pinned native workspace initializer.
+    "tests/integration/sandbox-driver-startup.test.mjs",
+    "tests/integration/workspace-files-native.test.mjs",
+  ];
   assert.deepEqual(
     [...runtimeImageSmokeTests].sort(),
     [

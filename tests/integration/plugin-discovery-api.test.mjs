@@ -11,6 +11,7 @@ import { InMemoryPlatformState, PluginDiscoveryError } from "../../packages/occ/
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import { createDeviceCredentialDrivers } from "../helpers/device-credential-gateway.mjs";
 import { bindRole, grantRole } from "../helpers/iam-grants.mjs";
 
 const accessToken = "at-plugin-discovery-private-fixture";
@@ -40,11 +41,24 @@ const pluginDetails = {
 
 async function createFixture(
   t,
-  { supported = true, secretDriver = createTestSecretDriver(), logger } = {},
+  {
+    supported = true,
+    secretDriver = createTestSecretDriver(),
+    logger,
+    credentialGatewayDriver,
+    sandboxDriver,
+  } = {},
 ) {
   const auditSink = new InMemoryAuditSink();
   const state = new InMemoryPlatformState({ auditSink });
-  const fixture = await createConsoleAppFixture(t, { state, auditSink, secretDriver, logger });
+  const fixture = await createConsoleAppFixture(t, {
+    state,
+    auditSink,
+    secretDriver,
+    logger,
+    credentialGatewayDriver,
+    sandboxDriver,
+  });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Plugin discovery", { ready: true });
   const calls = [];
@@ -452,6 +466,114 @@ test("Saved Agent plugin discovery requires exact Agent and Secret grants before
   const allowed = await fixture.request("POST", path, { session, body: {} });
   assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
   assert.deepEqual(fixture.calls, [{ operation: "list", input: { accessToken } }]);
+});
+
+test("Saved Agent source discovery denies missing grants and rechecks revocation after retrieval", async (t) => {
+  const { gateway, refresh } = createDeviceCredentialDrivers();
+  const fixture = await createFixture(t, {
+    credentialGatewayDriver: gateway,
+    sandboxDriver: {
+      id: "source-discovery-sandbox",
+      capability: "sandbox",
+      implementation: "test-admission-only",
+      facets: ["networking", "filesystem", "process"],
+      async cleanup() {},
+    },
+  });
+  for (const driver of [gateway, refresh]) {
+    fixture.controller.registerDriver(driver);
+    fixture.controller.selectDriver(driver.capability, driver.id);
+  }
+  const registered = await fixture.request(
+    "POST",
+    `/namespaces/${fixture.namespace.id}/credential-sources`,
+    { body: { name: "Discovery source", type: "codex-device" } },
+  );
+  assert.equal(registered.status, 201, JSON.stringify(registered.body));
+  const source = registered.data.ref;
+  // The external credential service is simulated. Its ready token must still pass
+  // the real Fastify/OCC/IAM checks; this does not prove OpenShell export or injection.
+  gateway.sources.set(source.id, "ready");
+  const agent = await fixture.createAgent(
+    fixture.namespace.id,
+    "Source discovery Agent",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    {
+      executionMode: "dedicated",
+      harnessAuth: { method: "credential_source", sourceId: source.id },
+      credentialSources: [{ sourceId: source.id }],
+    },
+  );
+  fixture.policy.identities.push({
+    id: agent.servicePrincipalId,
+    kind: "service_principal",
+    namespaceId: fixture.namespace.id,
+    agentId: agent.id,
+  });
+  const actor = await fixture.createAccountWithPolicy("source-discovery-editor", (principal) => {
+    grantRole(fixture.policy, principal.id, {
+      id: "source-agent-editor",
+      namespaceId: fixture.namespace.id,
+      permissions: { agent: ["read", "update"] },
+      resource: { kind: "agent", id: agent.id },
+    });
+  });
+  const session = await fixture.signIn(actor.credentials);
+  const sourceBindings = [actor.principal.id, agent.servicePrincipalId].map(
+    (principalId) =>
+      grantRole(fixture.policy, principalId, {
+        id: `source-operator-${principalId}`,
+        namespaceId: fixture.namespace.id,
+        permissions: { credential_source: ["operate"] },
+        resource: source,
+      }).binding,
+  );
+  const path = `/namespaces/${fixture.namespace.id}/agents/${agent.id}/plugins`;
+  const tokenReads = () =>
+    gateway.calls.filter(({ operation }) => operation === "withSourceToken").length;
+  const remove = (binding) =>
+    fixture.policy.bindings.splice(fixture.policy.bindings.indexOf(binding), 1);
+  const allowed = await fixture.request("POST", path, { session, body: {} });
+  assert.equal(allowed.status, 200, JSON.stringify(allowed.body));
+  assert.equal(tokenReads(), 1);
+  assert.equal(fixture.calls.length, 1);
+  const operations = [
+    ["", {}],
+    ["/details", { pluginId: remoteId }],
+  ];
+  const expectDenied = async (suffix, body) => {
+    const denied = await fixture.request("POST", `${path}${suffix}`, { session, body });
+    assert.equal(denied.status, 403, JSON.stringify(denied.body));
+    assert.equal(denied.body.error.code, "FORBIDDEN");
+    assert.equal(fixture.calls.length, 1, "denied source use must not invoke discovery");
+  };
+  for (const binding of sourceBindings) {
+    remove(binding);
+    for (const [suffix, body] of operations) {
+      await expectDenied(suffix, body);
+    }
+    assert.equal(tokenReads(), 1, "both grants are required before requesting a source token");
+    fixture.policy.bindings.push(binding);
+  }
+
+  const withSourceToken = gateway.withSourceToken.bind(gateway);
+  let revokedBinding;
+  gateway.withSourceToken = (context, use) =>
+    withSourceToken(context, (token) => {
+      // Revoke after the external read yields its token, before OCC may hand it to discovery.
+      // Neither the Plugin Driver nor an authorization method is replaced here.
+      remove(revokedBinding);
+      return use(token);
+    });
+  let reads = tokenReads();
+  for (const binding of sourceBindings) {
+    for (const [suffix, body] of operations) {
+      revokedBinding = binding;
+      await expectDenied(suffix, body);
+      assert.equal(tokenReads(), ++reads, "retrieval completed before its grant was rechecked");
+      fixture.policy.bindings.push(binding);
+    }
+  }
 });
 
 test("Saved Agent plugin discovery rechecks Secret authority after the backend read", async (t) => {
@@ -1252,22 +1374,21 @@ test("Selected Secret discovery requires exact Secret operate permission and sam
         undefined,
       ],
     ]) {
-      for (const field of ["secretRef", "oauthLogin"]) {
-        const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
-          body: { [field]: ref, ...extra },
-        });
-        const label = `${suffix || "list"} ${field}, ${description}: ${JSON.stringify(response.body)}`;
-        assert.equal(response.status, status, label);
-        assert.equal(response.body.error.code, code, label);
-        if (message !== undefined) {
-          assert.equal(response.body.error.message, message, label);
-        }
+      const response = await fixture.request("POST", `${fixture.path}${suffix}`, {
+        body: { secretRef: ref, ...extra },
+      });
+      const label = `${suffix || "list"} secretRef, ${description}: ${JSON.stringify(response.body)}`;
+      assert.equal(response.status, status, label);
+      assert.equal(response.body.error.code, code, label);
+      if (message !== undefined) {
+        assert.equal(response.body.error.message, message, label);
       }
     }
   }
   assert.deepEqual(fixture.calls, []);
   for (const body of [
     { accessToken, secretRef: secret.ref },
+    { oauthLogin: secret.ref },
     { secretRef: secret.ref, accountId: "untrusted" },
   ]) {
     assert.equal((await fixture.request("POST", fixture.path, { body })).status, 400);

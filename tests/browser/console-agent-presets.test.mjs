@@ -1531,7 +1531,7 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const unavailable =
-    /Dedicated OpenClaw is unavailable: this installation's OpenClaw runtime lacks native worker support/;
+    /Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support/;
   {
     // Without native worker support, the Preset opens as it was saved but cannot be created.
     const { page } = await newPage(t, fixture);

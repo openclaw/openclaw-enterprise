@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import {
   composeProductionSignIn,
@@ -16,6 +17,7 @@ import {
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
 
 const adminEmail = "activation-admin@example.test";
 const password = "activation-member-password";
@@ -184,6 +186,142 @@ test(
       assert.equal(repeated.json().data.created, false);
       const signedIn = await passwordSignIn(app, origin, { email: unprovisioned.email, password });
       assert.equal(signedIn.statusCode, 200, signedIn.body);
+    });
+
+    await t.test("guarded account revocation waits for an authenticated IAM commit", async () => {
+      const assigning = await signedInHeaders(app, origin, admin);
+      const revoking = await signedInHeaders(app, origin, admin);
+      const account = await app.inject({
+        url: `/api/auth/accounts/${admin.id}`,
+        headers: revoking,
+      });
+      assert.equal(account.statusCode, 200, account.body);
+      const createdNamespace = await app.inject({
+        method: "POST",
+        url: "/namespaces",
+        headers: assigning,
+        payload: { name: "Guarded IAM commit" },
+      });
+      assert.equal(createdNamespace.statusCode, 201, createdNamespace.body);
+      const namespaceId = createdNamespace.json().data.id;
+      const independentNamespace = await app.inject({
+        method: "POST",
+        url: "/namespaces",
+        headers: revoking,
+        payload: { name: "Independent guarded IAM commit" },
+      });
+      assert.equal(independentNamespace.statusCode, 201, independentNamespace.body);
+      const independentId = independentNamespace.json().data.id;
+      const blocker = await pool.connect();
+      let released = false;
+      let policy;
+      let settledPolicy;
+      let revoke;
+      try {
+        await blocker.query("BEGIN");
+        const {
+          rows: [{ pid }],
+        } = await blocker.query("SELECT pg_backend_pid() AS pid");
+        await blocker.query("SELECT id FROM occ.namespaces WHERE id=$1 FOR UPDATE", [namespaceId]);
+        policy = app
+          .inject({
+            method: "POST",
+            url: `/namespaces/${namespaceId}/iam/roles`,
+            headers: assigning,
+            payload: {
+              name: "Guarded commit",
+              permissions: [{ action: "read", resourceKind: "agent" }],
+            },
+          })
+          .then((response) => {
+            settledPolicy = response;
+            return response;
+          });
+        const protectedPid = await waitFor(
+          "the guarded policy transaction waiting for its Namespace",
+          async () => {
+            const waiting = await pool.query(
+              "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+              [pid],
+            );
+            return waiting.rowCount > 0 ? waiting.rows[0].pid : undefined;
+          },
+        );
+        // The retained session must not impose authentication's five-second
+        // lock limit on an otherwise valid Namespace policy transaction.
+        await delay(5_500);
+        assert.equal(settledPolicy?.statusCode, undefined, settledPolicy?.body);
+        // A different session of the same person can write another Namespace.
+        // Both user shares still exclude account/method revocation.
+        const independent = await app.inject({
+          method: "POST",
+          url: `/namespaces/${independentId}/iam/roles`,
+          headers: revoking,
+          payload: {
+            name: "Independent commit",
+            permissions: [{ action: "read", resourceKind: "agent" }],
+          },
+        });
+        assert.equal(independent.statusCode, 201, independent.body);
+        // The account owner validates method/account versions and locks the same
+        // user. Revocation must not invalidate either admitted session mid-commit.
+        revoke = app.inject({
+          method: "POST",
+          url: `/api/auth/accounts/${admin.id}/revoke`,
+          headers: revoking,
+          payload: { expectedVersion: account.json().data.version },
+        });
+        await waitFor("guarded account revocation waiting for the policy holder", async () => {
+          const waiting = await pool.query(
+            "SELECT pid FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))",
+            [protectedPid],
+          );
+          return waiting.rowCount > 0 ? true : undefined;
+        });
+        await blocker.query("COMMIT");
+        released = true;
+        const committed = await policy;
+        assert.equal(committed.statusCode, 201, committed.body);
+        const revoked = await revoke;
+        assert.equal(revoked.statusCode, 200, revoked.body);
+        assert.equal(
+          (await app.inject({ url: `/namespaces/${namespaceId}/iam/roles`, headers: assigning }))
+            .statusCode,
+          401,
+        );
+        adminHeaders = await signedInHeaders(app, origin, admin);
+        const removed = await app.inject({
+          method: "DELETE",
+          url: `/namespaces/${namespaceId}/iam/roles/${committed.json().data.id}`,
+          headers: adminHeaders,
+        });
+        assert.equal(removed.statusCode, 204, removed.body);
+        assert.equal(
+          (
+            await app.inject({
+              method: "DELETE",
+              url: `/namespaces/${independentId}/iam/roles/${independent.json().data.id}`,
+              headers: adminHeaders,
+            })
+          ).statusCode,
+          204,
+        );
+        t.diagnostic(
+          JSON.stringify({
+            scenario: "guarded-retention",
+            namespaceWaitMs: 5500,
+            independentSessionWrite: independent.statusCode,
+            policyCommit: committed.statusCode,
+            accountRevocation: revoked.statusCode,
+          }),
+        );
+      } finally {
+        if (!released) {
+          await blocker.query("ROLLBACK");
+        }
+        blocker.release();
+        await Promise.allSettled([policy, revoke]);
+      }
     });
   },
 );
