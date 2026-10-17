@@ -252,10 +252,11 @@ revision preparation waits without spending attempts until its convergence
 deadline; Namespace work retries. Each Harness takes one unnamed
 bearer-passthrough `APP_SERVER_PORT` exposure (Codex transport, native held
 failure); only Codex returns a URL. The Driver reads before creating and adopts an existing
-or `ALREADY_EXISTS` Sandbox only with exact Workspace, labels, annotations and spec,
+or `ALREADY_EXISTS` Sandbox only with exact Workspace, labels, annotations, spec,
 neither stopped nor deleting. Workspace `sandbox:write` permits replacement and
 defines the trust boundary. Native exposure ends at enrollment;
-`withdrawHarnessExposure` and `workspaceNodeEnrolled` adoption delete it.
+`withdrawHarnessExposure`, adoption and recreation with `workspaceNodeEnrolled`
+delete it.
 
 The Backend reuses clients, retrying setup. Cancellation is
 checked after setup/credential preparation, so stalled initialization/file reads
