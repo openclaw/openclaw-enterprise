@@ -721,12 +721,17 @@ test("production embedded replacements preserve their active Service across fail
   }));
   const pool = new pg.Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
   t.after(async () => pool.end());
+  const events = [];
   const worker = createControllerWorker({
     pool,
     mode: "production",
     drivers,
-    emit: () => {},
+    emit: (event) => events.push(event),
   });
+  const completed = () =>
+    events
+      .filter(({ event }) => event === "worker.completed")
+      .map(({ workId, outcome, result, code }) => ({ workId, outcome, result, code }));
   // Queue health is outside this selector unit; the PostgreSQL suites exercise
   // real health observations while activation holds and renews its claim.
   t.mock.method(worker.queue, "pending", async () => 0);
@@ -889,6 +894,27 @@ test("production embedded replacements preserve their active Service across fail
   assert.equal(activeAgent.activeRevisionId, predecessor.id);
   assert.deepEqual(service.spec.selector, activeSelector);
   assert.deepEqual(serviceWrites, []);
+  // The pass logs the retry it committed, not the success it resolved (finding 1611).
+  const lostRace = {
+    workId: claim.idempotencyKey,
+    outcome: "retry",
+    result: "retry",
+    code: "ACTIVE_REVISION_CHANGED",
+  };
+  assert.deepEqual(completed(), [lostRace]);
+
+  // The pointer moved before the compare-and-set: the same retry, and the same log.
+  activeAgent.activeRevisionId = `rev_production-${harness.mode}-newer`;
+  await worker.finalizeRevision(claim, observation);
+  assert.equal(compareAndSetAttempts, 1);
+  assert.deepEqual(retries, Array(2).fill({ code: "ACTIVE_REVISION_CHANGED" }));
+  assert.deepEqual(completed(), [lostRace, lostRace]);
+
+  // The pointer moved after activation committed it: completion retries and logs that retry too.
+  await worker.completeActivatedRevision(claim, { ...observation, revision: candidate });
+  assert.deepEqual(retries, Array(3).fill({ code: "ACTIVE_REVISION_CHANGED" }));
+  assert.deepEqual(completed(), [lostRace, lostRace, lostRace]);
+  activeAgent.activeRevisionId = predecessor.id;
 
   // Recovery for an older claim must never replace a gateway already advanced to a newer revision.
   const newerGateway = computeDriver.deployment(
