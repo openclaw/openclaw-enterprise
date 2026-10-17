@@ -93,11 +93,18 @@ test(
   },
 );
 
+// The refusal comes after dev-up builds and imports the runtime image, verifies the Codex sandbox
+// (that refusal deliberately precedes controller work), installs the routing controllers, builds
+// the controller image the network probe runs and polls the policy for up to 90 s. As the file's
+// first dev-up it pays both cold image builds: p50 947 s and max 994 s over 35 passes, one slow
+// runner past 1,100 s (finding 1709). 1,400 s is about 48% over p50 and 41% over that max.
+const refusalDevUpTimeoutMs = 1_400_000;
+
 test(
   "dev-up refuses gateway trust when Kubernetes does not enforce NetworkPolicy",
   {
     skip: selected ? false : "Set OCC_TEST_DEV_UP_K3D_REAL=1 to run the real development profile.",
-    timeout: 1_200_000,
+    timeout: refusalDevUpTimeoutMs + 100_000,
   },
   async (t) => {
     const root = await mkdtemp(join(tmpdir(), "oce-dev-policy-failure-"));
@@ -169,7 +176,7 @@ process.exit(result.status ?? 1);
       execute(join(repository, "scripts", "dev-up"), [], {
         cwd: repository,
         env: environment,
-        timeout: 1_100_000,
+        timeout: refusalDevUpTimeoutMs,
         maxBuffer: 16 * 1024 * 1024,
       }),
       (error) => {
