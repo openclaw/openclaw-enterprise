@@ -144,7 +144,8 @@ export function boundedTeardown(
     stepLimitMs = teardownStepLimitMs,
     exitGraceMs = abandonedTeardownExitGraceMs,
     log = (message) => process.stderr.write(`${message}\n`),
-    exit = () => process.exit(),
+    // A teardown that abandons a cleanup also fails, so the exit code is a failure's.
+    exit = () => process.exit(process.exitCode ?? 1),
   } = {},
 ) {
   const cleanups = [];
@@ -174,7 +175,7 @@ export function boundedTeardown(
       } catch (error) {
         log(`${label}: cleanup registered at ${site} failed: ${error?.message ?? error}`);
         failures.push(
-          new Error(`cleanup registered at ${site}: ${error?.message}`, { cause: error }),
+          new Error(`cleanup registered at ${site}: ${error?.message ?? error}`, { cause: error }),
         );
       } finally {
         clearTimeout(timer);
@@ -182,7 +183,7 @@ export function boundedTeardown(
     }
     if (abandoned.length > 0) {
       log(`${label}: exiting in ${exitGraceMs} ms; abandoned cleanups: ${abandoned.join(", ")}`);
-      // node:test reports the test once this hook returns; process.exit() keeps the exit code.
+      // node:test reports the test once this hook returns.
       setTimeout(exit, exitGraceMs).unref();
     }
     if (failures.length === 1) {
