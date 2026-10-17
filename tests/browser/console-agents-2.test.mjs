@@ -727,14 +727,16 @@ test("Dedicated Agent creation keeps one provisioning label while the job retrie
 
 // Finding 1617: a first deployment that waits on a full Namespace Pod quota names the quota
 // instead of the bare provisioning line, for a reader of the Agent. Other waits, and a reader
-// whose deployment read is refused, keep the bare line.
+// whose deployment read is refused, keep the bare line. A read cut off at the next poll, or one
+// that fails, says nothing about the wait, so the named line stays (finding 1637).
 test("Dedicated Agent creation names a full Namespace Pod quota while it waits", async (t) => {
   const quotaFull =
     "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
-  for (const deploymentReadable of [true, false]) {
+  for (const mode of ["readable", "refused", "interrupted"]) {
+    const deploymentReadable = mode !== "refused";
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`Pod quota ${deploymentReadable}`, {
+    const namespace = await fixture.createNamespace(`Pod quota ${mode}`, {
       ready: true,
     });
     const { page } = await newPage(t, fixture);
@@ -785,11 +787,14 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
         body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
       }),
     );
-    const attempts = [
-      { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
-      { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
-      { code: "REVISION_INCOMPLETE", message: "Waiting for the runtime to become ready." },
-    ];
+    const attempts =
+      mode === "interrupted"
+        ? [{ code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull }, "stalled", "unavailable"]
+        : [
+            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
+            { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
+            { code: "REVISION_INCOMPLETE", message: "Waiting for the runtime to become ready." },
+          ];
     const deploymentReads = [];
     const deploymentRequests = [];
     page.on("request", (request) => {
@@ -799,10 +804,26 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     });
     await page.route(
       `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
-      (route) => {
+      async (route) => {
         // The job read that handed this deployment off is the one this read follows.
         deploymentReads.push(read);
         const lastAttempt = attempts[Math.min(deploymentReads.length - 1, attempts.length - 1)];
+        if (lastAttempt === "stalled") {
+          // Outlast the next poll, which cancels this read.
+          await new Promise((resolve) => setTimeout(resolve, 1_500));
+          await route.abort().catch(() => {});
+          return;
+        }
+        if (lastAttempt === "unavailable") {
+          return route.fulfill({
+            status: 503,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." },
+              meta,
+            }),
+          });
+        }
         return route.fulfill(
           deploymentReadable
             ? {
@@ -864,22 +885,30 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     assert.equal(deploymentRequests.length, 3);
     assert.deepEqual(
       await page.evaluate(() => globalThis.provisioningWrites),
-      deploymentReadable
-        ? [
-            "Provisioning request accepted.",
-            "Provisioning queued…",
-            "Provisioning Agent…",
-            quotaFull,
-            "Provisioning Agent…",
-            "Provisioning failed.",
-          ]
-        : [
-            "Provisioning request accepted.",
-            "Provisioning queued…",
-            "Provisioning Agent…",
-            "Provisioning failed.",
-          ],
-      `deployment readable: ${deploymentReadable}`,
+      {
+        readable: [
+          "Provisioning request accepted.",
+          "Provisioning queued…",
+          "Provisioning Agent…",
+          quotaFull,
+          "Provisioning Agent…",
+          "Provisioning failed.",
+        ],
+        refused: [
+          "Provisioning request accepted.",
+          "Provisioning queued…",
+          "Provisioning Agent…",
+          "Provisioning failed.",
+        ],
+        interrupted: [
+          "Provisioning request accepted.",
+          "Provisioning queued…",
+          "Provisioning Agent…",
+          quotaFull,
+          "Provisioning failed.",
+        ],
+      }[mode],
+      `deployment reads: ${mode}`,
     );
   }
 });

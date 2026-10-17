@@ -1062,6 +1062,17 @@ for (const changed of ["generation", "identity"]) {
     assert.equal(await deploy.isDisabled(), true);
     await page.getByRole("button", { name: "Credentials", exact: true }).click();
     await page.getByRole("button", { name: "Reload draft", exact: true }).click();
+    if (changed === "generation") {
+      // Reload draft reapplies the chosen Secret, still unsaved, so Deploy waits for its save
+      // (finding 1640).
+      await page
+        .getByText("Save the channel Secret choices in Credentials before deploying.", {
+          exact: true,
+        })
+        .waitFor();
+      assert.equal(await deploy.isDisabled(), true);
+      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    }
     await page.getByText("Ready to deploy.", { exact: true }).waitFor();
     assert.equal(await deploy.isEnabled(), true);
   });

@@ -162,8 +162,15 @@ export function isStaleGeneration(error) {
 
 // For a refused Configuration write, show the reason the API gave this caller (for
 // example, reserved for provisioning). Never infer that a reload will fix it from the prose.
+// The catch-all conflict names nothing (a Kubernetes resourceVersion conflict answers it), so
+// the caller's own conflict text applies instead (finding 1639).
 export function configurationConflictMessage(error, submitted) {
-  if (submitted && error.status === 409 && error.code === "RESOURCE_CONFLICT") {
+  if (
+    submitted &&
+    error.status === 409 &&
+    error.code === "RESOURCE_CONFLICT" &&
+    error.serverMessage !== GENERIC_CONFLICT
+  ) {
     return error.serverMessage ?? "The Configuration could not be saved in its current state.";
   }
 }
