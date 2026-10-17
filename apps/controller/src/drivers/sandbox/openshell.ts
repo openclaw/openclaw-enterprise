@@ -2728,7 +2728,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         await this.initializeWorkspace(context, sandbox, client);
         return Object.freeze(sandbox);
       }
-      existing = await client.getSandbox(selector, context.signal);
+      existing = await refused(() => client.getSandbox(selector, context.signal));
       if (existing === undefined && alreadyExists) {
         throw new OpenShellSandboxConfigurationFailure(
           `OpenShell Sandbox ${sandbox.resourceName} disappeared during creation.`,
@@ -3065,9 +3065,10 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       // GetSandbox and DeleteSandbox answer NOT_FOUND alike for a Sandbox that is gone and for
       // one this identity may not see (finding 1676), so an absent Sandbox counts as removed
       // only after GetWorkspace proves the identity still sees the Workspace; a refusal on any
-      // call fails with SANDBOX_GATEWAY_UNAUTHORIZED, and the worker keeps retrying the stop
-      // or deletion instead of recording a live Sandbox, with its exposure and credentials, as
-      // gone. The read also spares a DeleteSandbox per pass once the Sandbox is gone.
+      // call fails with SANDBOX_GATEWAY_UNAUTHORIZED, so the worker fails the stop or deletion
+      // with that code (a replay tries again) instead of recording a live Sandbox, with its
+      // exposure and credentials, as gone. The read also spares a DeleteSandbox per pass once
+      // the Sandbox is gone.
       const unconfirmed = `Sandbox ${sandbox.resourceName} cannot be confirmed removed`;
       const refused = gatewayIdentityRefusal(workspace, unconfirmed);
       if ((await refused(() => client.getSandbox(selector, context.signal))) === undefined) {
@@ -3090,7 +3091,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         (harnessId === "codex" || harnessId === "openclaw")
       ) {
         const provider = runtimeProviderName(context.revision.id);
-        const existing = await client.getProvider(workspace, provider, context.signal);
+        const existing = await refused(() =>
+          client.getProvider(workspace, provider, context.signal),
+        );
         if (existing !== undefined) {
           verifyRuntimeProvider(
             existing,

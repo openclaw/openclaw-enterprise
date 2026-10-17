@@ -47,8 +47,11 @@ export function gatewayIdentityRefusal(workspace: string, unconfirmed: string): 
  * as removed while it, its exposure and its credentials stay live (findings 1670, 1676).
  * GetWorkspace keeps PERMISSION_DENIED, so a Workspace this identity can still read is the
  * proof; a refusal there fails with `SANDBOX_GATEWAY_UNAUTHORIZED` through `refused`, and a
- * Workspace OpenShell reports missing fails closed with `absent()`. A role restored between
- * the two reads would confirm a live Sandbox; that needs a flap within one round trip.
+ * Workspace OpenShell reports missing fails closed with `absent()`. With the documented
+ * `user` role a Workspace deleted out of band presents as a refusal too, since OpenShell
+ * drops the membership before the record, so `absent()` is defense in depth for identities
+ * with a platform role. A role restored between the two reads would confirm a live Sandbox;
+ * that needs a flap within one round trip.
  */
 export async function confirmSandboxAbsent(
   client: { getWorkspace(name: string, signal: AbortSignal): Promise<unknown> },

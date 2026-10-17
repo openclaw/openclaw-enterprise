@@ -2831,14 +2831,18 @@ export class ControllerWorker {
       // including one IAM failed to authorize, so no earlier denial stays its last reason. A
       // Compute refusal that retrying cannot change (a configuration that cannot reach the
       // Sandbox, or an object Compute does not own) fails them once instead, as a Compute
-      // mismatch does; a replay tries again.
-      const code =
-        error instanceof CredentialWithdrawalRefusedError ? error.code : "DEPENDENCY_UNAVAILABLE";
+      // mismatch does; a replay tries again. So does a Sandbox gateway that refuses the
+      // controller's identity (finding 1676): retrying cannot restore the Workspace role, and
+      // the reason names the fix instead of a generic failure.
+      const refused =
+        error instanceof CredentialWithdrawalRefusedError ||
+        error instanceof SandboxGatewayUnauthorizedError;
+      const code = refused ? error.code : "DEPENDENCY_UNAVAILABLE";
       const settled = new Set(
         [...attempts, ...denied].map(({ credentialSourceId }) => credentialSourceId),
       );
       result = {
-        outcome: error instanceof CredentialWithdrawalRefusedError ? "permanent" : "retry",
+        outcome: refused ? "permanent" : "retry",
         code,
         attempts: [
           ...attempts,

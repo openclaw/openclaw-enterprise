@@ -1148,7 +1148,8 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
    * Workspace: GetSandbox and DetachSandboxProvider answer NOT_FOUND alike for a Sandbox that is
    * gone and for one the identity may not see (finding 1676), and `absent` settles the
    * withdrawal while a hidden Sandbox would keep resolving the credential. A refusal fails
-   * with `SANDBOX_GATEWAY_UNAUTHORIZED`; the worker retries the withdrawal.
+   * with `SANDBOX_GATEWAY_UNAUTHORIZED`, which the worker records as the withdrawal's reason
+   * and fails it with; a replay tries again once the identity's role is restored.
    */
   async withdraw(context: CredentialWithdrawalContext): Promise<CredentialAttachmentStatus> {
     const workspace = openShellWorkspaceName(context.namespace);

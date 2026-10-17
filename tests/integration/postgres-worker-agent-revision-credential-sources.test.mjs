@@ -7,6 +7,7 @@ import {
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
   ResourceStateConflictError,
+  SandboxGatewayUnauthorizedError,
 } from "../../packages/occ/src/index.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
@@ -807,6 +808,56 @@ test(
     assert.equal(read.withdrawalInProgress, false);
     assert.deepEqual(await withdrawalAudit(fixture, "outcome", "reason_code"), [
       { outcome: "failure", reason_code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED" },
+    ]);
+  },
+);
+
+test(
+  "a withdrawal the Sandbox gateway refuses to confirm fails once with SANDBOX_GATEWAY_UNAUTHORIZED",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { maxAttempts: 2 });
+    const { owner, candidate: active } = await fixture.admitInitialRevision(
+      "withdraw-unauthorized",
+      {
+        agent: { auth: "credential_source" },
+      },
+    );
+    let calls = 0;
+    await fixture.start(
+      {
+        ...fixture.compute,
+        // What the Credential Gateway throws when OpenShell refuses the controller's identity
+        // in the Workspace, so a missing Sandbox cannot be told from a hidden one (finding 1676).
+        async withdrawCredentialSource() {
+          calls += 1;
+          throw new SandboxGatewayUnauthorizedError(
+            "OpenShell refused the controller gateway identity in Workspace oce-test, so the credential of Sandbox sb-test cannot be confirmed withdrawn.",
+          );
+        },
+      },
+      { convergenceTimeoutMs: 50, transformDrivers: withCredentialGateway },
+    );
+    await fixture.work(active, "succeeded");
+    const request = withdrawalRequest(fixture, owner, owner.harnessAuth.sourceId);
+    await fixture.controller.withdrawAgentCredentialSource(fixture.actor.id, request);
+    const [first] = await withdrawalAttempts(fixture, active);
+
+    // One attempt with the code as its reason: retrying cannot restore the identity's role,
+    // and nothing is recorded revoked.
+    const failed = await fixture.work(first, "failed_permanent");
+    assert.equal(failed.attempt_count, 1);
+    assert.equal(calls, 1);
+    assert.equal(
+      (await fixture.workResult(first)).rows[0].reason_code,
+      "SANDBOX_GATEWAY_UNAUTHORIZED",
+    );
+    const read = await fixture.controller.readAgentCredentialWithdrawal(fixture.actor.id, request);
+    assert.equal(read.state, "pending");
+    assert.equal(read.lastReason, "SANDBOX_GATEWAY_UNAUTHORIZED");
+    assert.equal(read.withdrawalInProgress, false);
+    assert.deepEqual(await withdrawalAudit(fixture, "outcome", "reason_code"), [
+      { outcome: "failure", reason_code: "SANDBOX_GATEWAY_UNAUTHORIZED" },
     ]);
   },
 );

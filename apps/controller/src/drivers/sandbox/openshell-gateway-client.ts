@@ -1485,7 +1485,8 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
    * for a Sandbox that is gone and for one this identity may not see (finding 1676), so it
    * confirms nothing, and the caller decides with a read it can trust (`confirmSandboxAbsent`).
    * After ACCEPTED, NOT_FOUND from GetSandbox does confirm: ACCEPTED proves this identity was
-   * allowed to delete the Sandbox, and OpenShell finishes an accepted deletion by itself.
+   * allowed to delete the Sandbox, and OpenShell finishes an accepted deletion by itself or
+   * keeps the record in DELETING, which a member identity still reads.
    * One deadline bounds the call and that wait (a GetSandbox in flight can overrun it by one
    * request timeout); past it the deletion is reported as an unavailable dependency, so the
    * caller retries the idempotent delete instead of treating the Sandbox as removed.

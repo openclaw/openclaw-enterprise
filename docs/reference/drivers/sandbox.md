@@ -169,8 +169,9 @@ at once. The driver's own message stays in the controller:
 `SANDBOX_HARNESS_UNSUPPORTED` (unsupported Harness). `SandboxGatewayUnauthorizedError`
 (`SANDBOX_GATEWAY_UNAUTHORIZED`) fails it the same way when the provider refuses
 the controller's identity while it confirms a Harness exposure withdrawn or a
-Sandbox removed; an Agent stop or deletion fails with it too, so a Sandbox the
-identity may no longer see (the provider hides it as missing) is never recorded gone.
+Sandbox removed; an Agent stop, deletion or credential withdrawal fails with it
+too, so a Sandbox the identity may no longer see (the provider hides it as
+missing) is never recorded gone.
 
 When the provider refuses the controller's own identity during `ensureNamespace`
 or Namespace `cleanup`, a retry cannot help until an operator fixes that identity.

@@ -863,8 +863,10 @@ export class SandboxRevisionUnsupportedError extends Error {
  * credentials detached, from one it is no longer allowed to see: an unauthorized Sandbox lookup
  * answers NOT_FOUND there, like a missing one. The Sandbox may still run, route unauthenticated
  * traffic and resolve credentials, so the Driver fails closed and the worker fails the deployment
- * with `code` instead of reporting the revision ready, stopped or removed. An operator restores
- * the identity's Workspace role and runs the operation again. The message stays in the controller.
+ * with `code` instead of reporting the revision ready, stopped or removed. A Workspace deleted
+ * out of band presents the same way, since the gateway drops the identity's membership with it.
+ * An operator restores the identity's Workspace role (or the Workspace, through a deploy) and
+ * runs the operation again. The message stays in the controller.
  */
 export class SandboxGatewayUnauthorizedError extends Error {
   readonly code: "SANDBOX_GATEWAY_UNAUTHORIZED";
