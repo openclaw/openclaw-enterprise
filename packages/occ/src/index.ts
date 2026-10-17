@@ -2708,12 +2708,7 @@ export class OpenClawController {
       record.agentId === undefined ||
       (record.status !== "queued" && record.status !== "running") ||
       work === undefined ||
-      work.state === "failed_permanent" ||
-      !(await this.canRead(principalId, {
-        kind: "agent_revision",
-        id: revisionId,
-        namespaceId: record.namespaceId,
-      }))
+      work.state === "failed_permanent"
     ) {
       return undefined;
     }
@@ -2723,7 +2718,12 @@ export class OpenClawController {
       deployment === undefined ||
       deployment.namespaceId !== record.namespaceId ||
       deployment.agentId !== record.agentId ||
-      deployment.revisionId !== revisionId
+      deployment.revisionId !== revisionId ||
+      !(await this.canRead(principalId, {
+        kind: "agent_revision",
+        id: revisionId,
+        namespaceId: record.namespaceId,
+      }))
     ) {
       return undefined;
     }

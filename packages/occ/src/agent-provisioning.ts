@@ -225,13 +225,14 @@ export function provisioningProgress(
       : work.attemptCount;
   const workReasonCode = work?.reasonCode;
   const failedCode = isNonEmptyString(workReasonCode) ? workReasonCode : "PROVISIONING_FAILED";
-  const status: AgentProvisioningStatus = failed
-    ? "failed"
-    : record.status === "succeeded"
-      ? "succeeded"
-      : work !== undefined && controllerWorkLeaseActive(work, now)
-        ? "running"
-        : "queued";
+  let status: AgentProvisioningStatus = "queued";
+  if (failed) {
+    status = "failed";
+  } else if (record.status === "succeeded") {
+    status = "succeeded";
+  } else if (work !== undefined && controllerWorkLeaseActive(work, now)) {
+    status = "running";
+  }
   return Object.freeze({
     workId: record.workId,
     status,

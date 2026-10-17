@@ -1687,8 +1687,9 @@ revisionTest(
       [candidate.id],
     );
     assert.deepEqual(evidence.rows, [{ reason: "CONVERGENCE_DEADLINE_EXCEEDED" }]);
-    // The Harness served a check and code outside the runtime's vocabulary: they are recorded
-    // as UNRECOGNIZED, so neither the stored work nor its status carries them (finding 1660).
+    // The Compute observation carried a check and code outside the runtime's vocabulary. They
+    // are recorded as UNRECOGNIZED, so neither the stored work nor its status carries them
+    // (finding 1660).
     const recordedRuntimeFailure = {
       ...runtimeFailure,
       check: "UNRECOGNIZED",

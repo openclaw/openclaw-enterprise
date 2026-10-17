@@ -87,10 +87,10 @@ excluding raw output and credentials.
 
 Errors have fixed codes, messages, and allowlisted `error.data`.
 `CONVERGENCE_DEADLINE_EXCEEDED` data includes `timeoutMs` and optional
-`runtimeFailure` (`component`, `check`, `checkedAt`, `code`) captured by Compute
-from that revision (unknown values read `UNRECOGNIZED`); missing evidence leaves
-the cause unspecified. Held runtime failures end deployment early:
-`RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
+`runtimeFailure` (`component`, `check`, `checkedAt`, `code`) from that revision
+(unknown values read `UNRECOGNIZED`); missing evidence leaves the cause
+unspecified. Held runtime failures end deployment early:
+`RUNTIME_AUTHENTICATION_FAILED` (rejected credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, or
 `RUNTIME_STARTUP_FAILED`; fix and redeploy. A dedicated gateway that refuses its
 own CLI fails with

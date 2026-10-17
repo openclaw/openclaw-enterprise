@@ -980,14 +980,13 @@ test(
         ? {
             phase: "deployment",
             lastAttempt: {
-              at: status.progress?.lastAttempt?.at,
+              at: status.updatedAt,
               code: "PROVISIONING_DEPLOYMENT_PENDING",
               message: "Waiting for the initial deployment to complete.",
             },
           }
         : { phase: "deployment", lastAttempt: deploymentWait },
     );
-    assert.equal(Number.isNaN(Date.parse(status.progress.lastAttempt.at)), false);
 
     await assertProvisionedSecretAccess(fixture, namespace, status, secretCreateCallCount);
     const revisions = await fixture.state.read((view) =>
@@ -1307,12 +1306,31 @@ test(
     assert.deepEqual(restricted.data.progress, {
       phase: "deployment",
       lastAttempt: {
-        at: restricted.data.progress?.lastAttempt?.at,
+        // The job's own deferral is stamped by its last checkpoint.
+        at: restricted.data.updatedAt,
         code: "PROVISIONING_DEPLOYMENT_PENDING",
         message: "Waiting for the initial deployment to complete.",
       },
     });
-    assert.equal(Number.isNaN(Date.parse(restricted.data.progress.lastAttempt.at)), false);
+
+    // Settle the job so no queued work outlives this test in the shared database.
+    const stopped = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${handoff.agentId}/stop`,
+    );
+    assert.equal(stopped.status, 202, JSON.stringify(stopped.body));
+    await fixture.startWorker();
+    try {
+      const settled = await waitFor("the stopped provisioning job to settle", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return ["succeeded", "failed"].includes(observed.data.status) ? observed.data : undefined;
+      });
+      assert.equal(settled.error?.code, "REVISION_STOPPED", JSON.stringify(settled));
+      assert.equal(Object.hasOwn(settled, "progress"), false);
+    } finally {
+      await fixture.stopWorker();
+    }
   },
 );
 
