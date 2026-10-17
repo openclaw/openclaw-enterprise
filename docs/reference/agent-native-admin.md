@@ -1,8 +1,8 @@
 # Agent native admin UI
 
-Agent native admin UI access lets an authorized operator open the selected Agent's native OpenClaw administration UI from the platform console. It is an explicit pilot capability for trusted operators. It exposes the stock native administrator surface for one Agent gateway; it does not create an OCE-managed configuration editor.
+This pilot lets trusted operators open one Agent gateway's stock OpenClaw administrator surface from the platform console. Native edits remain outside OCE-managed configuration.
 
-The feature is disabled by default. When enabled, the console shows **Native admin UI** on the Agent detail tabs only for callers with exact Agent `administer` permission. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
+The feature is disabled by default. When enabled, the console shows **Gateway administration** on the Agent detail page only for callers with exact Agent `administer` permission. Opening the Agent host uses the operator's ordinary OCE console session cookie, resolves the exact Agent represented by that host, then serves native HTTP and WebSocket traffic through OCC.
 
 ## Who can open it
 
@@ -12,11 +12,11 @@ Native admin UI is unavailable under GitHub, Google, or OIDC sign-in: startup re
 
 ## Requirements
 
-- `agentNativeAdmin.enabled: true` in Helm, which sets `OCC_AGENT_NATIVE_ADMIN_ENABLED=true` on the API.
+- `agentNativeAdmin.enabled: true` in Helm, which sets `OCC_AGENT_NATIVE_ADMIN_ENABLED=true` on the API and worker.
 - `agentNativeAdmin.domain` set to the Agent host suffix, such as `agents.oce.example.com`, without scheme, wildcard, port, or path. Helm passes it as `OCC_AGENT_NATIVE_ADMIN_DOMAIN`. Use a previously unused DNS suffix for the first pilot rollout; the proxy blocks new service-worker registration but does not evict service workers that a prior experiment registered on the same origin.
 - `agentNativeAdmin.sharedCookieDomain` set to the explicit shared OCE session cookie parent domain, such as `oce.example.com`. Helm passes it as `OCC_AUTH_COOKIE_DOMAIN` when `agentNativeAdmin.enabled` is true. The console host and Agent host suffix must both be inside this parent on DNS-label boundaries. Public suffixes, malformed domains, and DNS-label boundary violations fail closed. Helm has no public suffix list, so it renders a suffix such as `co.uk` or `github.io`; the installation profile renderer refuses it, and so does API startup (`AUTH_BASE_URL_INVALID`). The Agent suffix may equal the cookie domain; OCC excludes its configured Console hostname from native proxy routing.
 - `gatewayRouting.enabled: true`. Helm rejects native admin enablement without private gateway routing because the API process must reach each Agent gateway through the private route.
-- `OCC_AUTH_BASE_URL` set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
+- `OCC_AUTH_BASE_URL` on API and worker set to the public OCC origin that serves the console, for example `https://console.oce.example.com`.
 - Better Auth cookie configuration using the shared cookie parent domain while preserving `Secure`, `HttpOnly`, appropriate `SameSite`, CSRF, and trusted-origin protections. A domain-scoped cookie cannot use a host-only `__Host-` prefix. The shared-domain session uses the `openclaw_occ_shared` cookie prefix and clears prior host-only `openclaw_occ` and `openclaw_occ_shared` session-cookie names during sign-in/sign-out migration. When native admin is disabled, OCC ignores leftover shared-cookie-domain configuration and keeps the legacy host-only `openclaw_occ` session cookie scope.
 - Private Agent gateway routing configured through [Gateway routing with Envoy](gateway-routing.md).
 - The Agent must be running with an active revision owned by the selected Compute Driver: both Driver ID and implementation must match the revision. Its `ComputeDriver.getGatewayEndpoint` value must map from private `wss:` to private `https:`.
@@ -28,6 +28,40 @@ HTTPS on host loopback for the installation's console and wildcard Agent hosts;
 the private Envoy route in k3d still carries OCC-to-gateway traffic. The
 first-Agent helper's `--control-ui` option supplies the exact per-Agent native
 configuration. Other Compose profiles do not expose this browser endpoint.
+
+## First-deployment configuration
+
+With the Installation feature and private Kubernetes gateway routing enabled,
+OCC prepares native admin access when `gateway.controlUi.enabled` is `true`.
+The Standard OpenClaw and Standard Codex Presets already select this setting.
+At deployment admission, Kubernetes Compute adds its trusted-proxy service
+identity, administrator device approval, the exact Agent `allowedOrigins` entry,
+and `gateway.publicOrigin`. OCC derives the origin from the Installation,
+Namespace and allocated Agent identities, retaining the configured public scheme
+and port. Guided dedicated provisioning uses the same admission path after
+allocating its Agent identity.
+
+The immutable revision contains the effective policy; the reusable Configuration
+and its generation stay unchanged. Agents sharing one Configuration receive
+separate origins. Redeploying does not accumulate sibling origins. Existing
+Agents adopt this behavior on their next explicit deployment; OCC does not
+rewrite active or historical revisions or start a rollout.
+
+Disabled or omitted `controlUi.enabled`, disabled `deviceAutoApprove.enabled`,
+and disabled Installation access leave the native policy unprepared. Unsafe
+device-auth or host-header fallback settings do not enable managed access.
+Conflicting authentication, approval scopes, `publicOrigin`, wildcard origins,
+or another origin inside the Installation's Agent domain refuse deployment with
+a setting-specific message. This includes the Console origin when its hostname is
+under the Agent suffix: the browser opens the native UI at the Agent origin, not
+the Console origin. Omit managed origins from reusable Configurations.
+Compatible password SecretRefs, loopback policy, other exact origins, model,
+Harness, plugin settings and Secret bindings are preserved. Drivers without the
+admission hook retain their existing availability requirements.
+
+This enables the existing full native administrator surface, including its
+native terminal where supported. It adds no OCE grants and does not change
+native tool restrictions or support external-sign-in profiles.
 
 ## Authorization and availability
 
@@ -75,7 +109,7 @@ An Agent URL uses the derived host directly:
 https://agent-<opaque-hash>.<agentNativeAdmin.domain>/
 ```
 
-The host hash is not reversible, so native-host admission resolves the host to the exact Agent using existing platform state. Unknown hosts, wrong suffixes, deleted Agents, and hosts that do not map to exactly one Agent fail closed. This lookup does not require a persistent registry or cache.
+Admission resolves the irreversible host hash through existing platform state, without a persistent registry or cache. Unknown hosts, wrong suffixes, deleted Agents and non-unique matches fail closed.
 
 The private upstream base remains the Compute Driver's existing gateway endpoint:
 
@@ -93,7 +127,7 @@ Native chat or other activity in the Agent tab does not renew the console sessio
 
 ## Native authority and drift
 
-The native admin UI runs with the same shared native trusted-proxy identity used by workspace files: `occ-workspace-files` with `operator.admin`. OCC attributes availability, proxy admission, and socket closure checks to the human session and exact Agent IAM decision. The native gateway sees the shared service identity, not a per-human native account.
+The gateway uses the workspace-files service identity, `occ-workspace-files` with `operator.admin`, rather than per-human native accounts. OCC attributes availability, proxy admission and socket closure to the human session and exact-Agent IAM decision.
 
 Native admin changes affect gateway-local state outside OCE Configurations and
 immutable AgentRevisions. Manage durable configuration through OCE. In the

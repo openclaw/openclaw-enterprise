@@ -1,4 +1,5 @@
 import { unlink, writeFile } from "node:fs/promises";
+import { nativeAdminOriginResolver } from "./gateway/native-admin-origin.ts";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
 import {
@@ -13,6 +14,14 @@ import { PostgresMetricsSnapshot } from "@openclaw-enterprise/occ";
 import { createOccMetrics } from "./metrics/index.ts";
 import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
+
+function nativeAdminEnabled() {
+  const value = process.env.OCC_AGENT_NATIVE_ADMIN_ENABLED;
+  if (value !== undefined && value !== "true" && value !== "false") {
+    throw new Error("OCC_AGENT_NATIVE_ADMIN_ENABLED must be true or false.");
+  }
+  return value === "true";
+}
 
 function positiveEnvironment(name, fallback) {
   const raw = process.env[name];
@@ -176,6 +185,13 @@ try {
     mode,
     ...options,
     emit: createWorkerLogEmitter(logger),
+    nativeAdminOrigin: nativeAdminOriginResolver(
+      {
+        enabled: nativeAdminEnabled(),
+        domain: process.env.OCC_AGENT_NATIVE_ADMIN_DOMAIN,
+      },
+      process.env.OCC_AUTH_BASE_URL,
+    ),
     ...(drivers === undefined ? { computeDriver } : { drivers }),
     ...(readinessPath === undefined
       ? {}

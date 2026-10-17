@@ -212,7 +212,10 @@ into the immutable `AgentRevision.configuration` field and records
 `configurationId`, `configurationKind`, and `configurationGeneration` as
 separate revision fields. A selected [SandboxDriver](drivers/sandbox.md) may
 transform a copy through `configureAgent` before admission; the reusable
-Configuration and its generation remain unchanged. The snapshot contains that
+Configuration and its generation remain unchanged. The selected Compute Driver
+may then transform the deployment copy through `configureAgent`, including
+[first-deployment native admin policy](agent-native-admin.md#first-deployment-configuration)
+for enabled Kubernetes Agents. The snapshot contains that
 effective document, and its metadata identifies the source generation.
 Subsequent Configuration updates do not change a
 running gateway or existing revision; only a later explicit deployment observes

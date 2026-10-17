@@ -289,6 +289,14 @@ spec:
             - name: NODE_EXTRA_CA_CERTS
               value: /etc/openclaw/gateway-ca/ca.crt
             {{- end }}
+            - name: OCC_AGENT_NATIVE_ADMIN_ENABLED
+              value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}
+            {{- if $.Values.agentNativeAdmin.enabled }}
+            - name: OCC_AGENT_NATIVE_ADMIN_DOMAIN
+              value: {{ $.Values.agentNativeAdmin.domain | quote }}
+            {{- end }}
+            - name: OCC_AUTH_BASE_URL
+              value: {{ $.Values.auth.baseUrl | quote }}
             {{- if eq $component "api" }}
             - name: OCC_HOST
               valueFrom:
@@ -297,8 +305,6 @@ spec:
             - name: OCC_PORT
               value: {{ $.Values.api.port | quote }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_SECRET" "secretName" $.Values.auth.secretName "key" $.Values.auth.secretKey) | nindent 12 }}
-            - name: OCC_AUTH_BASE_URL
-              value: {{ $.Values.auth.baseUrl | quote }}
             {{- if and $.Values.auth.github $.Values.auth.github.enabled }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_ID" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientIdKey) | nindent 12 }}
             {{- include "openclaw.secretEnv" (dict "name" "OCC_AUTH_GITHUB_CLIENT_SECRET" "secretName" $.Values.auth.github.secretName "key" $.Values.auth.github.clientSecretKey) | nindent 12 }}
@@ -367,13 +373,9 @@ spec:
             - name: OCC_CHANNEL_DIRECTORY_PROXY_URL
               value: {{ $.Values.api.channelDirectoryProxyUrl | quote }}
             {{- end }}
-            - name: OCC_AGENT_NATIVE_ADMIN_ENABLED
-              value: {{ ternary "true" "false" $.Values.agentNativeAdmin.enabled | quote }}
             - name: OCC_AGENT_RUNTIME_LOGS_ENABLED
               value: {{ ternary "true" "false" $.Values.agentRuntimeLogs.enabled | quote }}
             {{- if $.Values.agentNativeAdmin.enabled }}
-            - name: OCC_AGENT_NATIVE_ADMIN_DOMAIN
-              value: {{ $.Values.agentNativeAdmin.domain | quote }}
             - name: OCC_AUTH_COOKIE_DOMAIN
               value: {{ $.Values.agentNativeAdmin.sharedCookieDomain | quote }}
             {{- end }}

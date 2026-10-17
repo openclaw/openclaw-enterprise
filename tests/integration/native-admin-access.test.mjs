@@ -9,6 +9,9 @@ import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
 import test from "node:test";
 
+import { readFileSync } from "node:fs";
+import { renderPresetTemplate } from "../../packages/contracts/src/index.ts";
+import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
 import { deriveNativeAdminHost } from "../../apps/controller/src/gateway/native-admin.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
@@ -63,8 +66,11 @@ function nativeAdminHarnessConfiguration(nativeOrigin) {
   };
 }
 
-function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}) {
-  return {
+function nativeComputeDriver(
+  upstreamPort,
+  { exclusiveReplacement = false, automatic = false } = {},
+) {
+  const lifecycle = {
     // Kubernetes dedicated revisions stop their predecessors before they start.
     ...(exclusiveReplacement ? { requiresStoppedPredecessors: () => true } : {}),
     id: "native-admin-compute",
@@ -90,6 +96,26 @@ function nativeComputeDriver(upstreamPort, { exclusiveReplacement = false } = {}
       return `wss://localhost:${upstreamPort}/namespaces/${revision.namespaceId}/agents/${revision.agentId}/`;
     },
   };
+  if (!automatic) {
+    return lifecycle;
+  }
+  const driver = createTestKubernetesComputeDriver("native-admin-compute", {
+    gatewayRouting: {
+      hostname: "agents.example.internal",
+      gatewayName: "oce-agent-gateways",
+      gatewayNamespace: "openclaw-system",
+      envoyNamespace: "envoy-gateway-system",
+    },
+  });
+  // Cluster effects and the upstream endpoint are controlled boundaries. The production
+  // Compute Driver still owns admission, auth validation and runtime document rendering.
+  return Object.assign(driver, {
+    ensureNamespace: lifecycle.ensureNamespace,
+    deleteNamespace: lifecycle.deleteNamespace,
+    prepareRevision: lifecycle.prepareRevision,
+    retireRevision: lifecycle.retireRevision,
+    getGatewayEndpoint: lifecycle.getGatewayEndpoint,
+  });
 }
 
 async function startNativeHttpsUpstream(t) {
@@ -204,6 +230,7 @@ async function createNativeAdminFixture(t, options = {}) {
     nativeAdminGatewayApiKey: async () => nativeGatewayApiKey,
     computeDriver: nativeComputeDriver(upstream.port, {
       exclusiveReplacement: options.exclusiveReplacement,
+      automatic: options.automatic === true,
     }),
   });
   await fixture.bootstrap("Native admin access test");
@@ -213,7 +240,8 @@ async function createNativeAdminFixture(t, options = {}) {
   const agent = await fixture.createAgent(
     namespace.id,
     "Native admin Agent",
-    createHarnessConfiguration("openclaw", "gpt-4.1"),
+    options.configuration ?? createHarnessConfiguration("openclaw", "gpt-4.1"),
+    { executionMode: options.executionMode },
   );
   const nativeOrigin = nativeOriginForAgent(
     fixture.controller.installation.id,
@@ -222,11 +250,13 @@ async function createNativeAdminFixture(t, options = {}) {
     options.nativeDomain ?? nativeDomain,
     options.publicOrigin ?? publicOrigin,
   );
-  await fixture.updateConfiguration(
-    namespace.id,
-    agent.configurationId,
-    nativeAdminHarnessConfiguration(nativeOrigin),
-  );
+  if (!options.automatic) {
+    await fixture.updateConfiguration(
+      namespace.id,
+      agent.configurationId,
+      nativeAdminHarnessConfiguration(nativeOrigin),
+    );
+  }
   const revision = await fixture.controller.deployAgent(
     adminPrincipal(fixture).id,
     { namespaceId: namespace.id, agentId: agent.id },
@@ -325,7 +355,10 @@ function trustLocalUpstreamCertificate(t, cert) {
 }
 
 test("native admin status requires exact Agent administer and reports lifecycle availability", async (t) => {
-  const context = await createNativeAdminFixture(t);
+  const context = await createNativeAdminFixture(t, {
+    automatic: true,
+    configuration: standardConfiguration("openclaw"),
+  });
 
   const available = await nativeStatus(context);
   assert.equal(available.status, 200);
@@ -754,7 +787,10 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
 });
 
 test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {
-  const context = await createNativeAdminFixture(t);
+  const context = await createNativeAdminFixture(t, {
+    automatic: true,
+    configuration: standardConfiguration("openclaw"),
+  });
   const status = await nativeStatus(context);
   const administerOnlySession = await createExactAgentAdministerSession(
     context,
@@ -1010,7 +1046,10 @@ test("native admin status decodes only the revisions it uses", async (t) => {
 });
 
 test("native Agent requests retain their own origin boundary", async (t) => {
-  const context = await createNativeAdminFixture(t);
+  const context = await createNativeAdminFixture(t, {
+    automatic: true,
+    configuration: standardConfiguration("openclaw"),
+  });
   const status = await nativeStatus(context);
   trustLocalUpstreamCertificate(t, context.upstream.cert);
   const response = await injectJson(context.fixture, "POST", "/settings", {
@@ -1133,6 +1172,216 @@ test("sign-out requires the console origin for session requests", async (t) => {
     },
   });
   assert.equal(allowed.statusCode, 200, allowed.body);
+});
+
+function standardConfiguration(harness) {
+  const preset = JSON.parse(
+    readFileSync(new URL(`../../deploy/presets/standard-${harness}.json`, import.meta.url), "utf8"),
+  );
+  return renderPresetTemplate(preset.template, {
+    name: "First native admin",
+    model: "gpt-4.1",
+    modelSecret: "synthetic-key",
+  }).configuration.values;
+}
+
+for (const harness of ["openclaw", "codex"]) {
+  test(`first ${harness} deployment admits isolated native admin policy without a Configuration PATCH`, async (t) => {
+    const configuration = standardConfiguration(harness);
+    configuration.gateway.controlUi.allowedOrigins = ["https://tools.example.test"];
+    configuration.gateway.auth.trustedProxy = { allowLoopback: false };
+    configuration.gateway.controlUi.communityInvite = false;
+    const original = structuredClone(configuration);
+    const context = await createNativeAdminFixture(t, {
+      automatic: true,
+      configuration,
+      executionMode: harness === "codex" ? "dedicated" : "embedded",
+      publicOrigin: `${publicOrigin}:8443`,
+      authBaseURL: `${publicOrigin}:8443`,
+    });
+    const { fixture, namespace, agent, revision } = context;
+    const status = await nativeStatus(context);
+    assert.equal(status.data.status, "available");
+    assert.equal(new URL(status.data.origin).port, "8443");
+    assert.equal(revision.revision, 1);
+    const expected = {
+      ...original.gateway,
+      publicOrigin: status.data.origin,
+      trustedProxies: ["127.0.0.1/32"],
+      allowRealIpFallback: true,
+      auth: {
+        ...original.gateway.auth,
+        mode: "trusted-proxy",
+        trustedProxy: {
+          allowLoopback: false,
+          userHeader: "x-occ-identity",
+          allowUsers: ["occ-workspace-files"],
+          deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+        },
+        identityScopes: { "occ-workspace-files": ["operator.admin"] },
+      },
+      controlUi: {
+        ...original.gateway.controlUi,
+        allowedOrigins: ["https://tools.example.test", status.data.origin],
+      },
+    };
+    assert.deepEqual(revision.configuration.gateway, expected);
+    assert.deepEqual(revision.configuration.agents, original.agents);
+    assert.deepEqual(revision.configuration.models, original.models);
+    assert.deepEqual(revision.configuration.plugins, original.plugins);
+    const saved = await fixture.request(
+      "GET",
+      `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    );
+    assert.equal(saved.data.generation, 1);
+    assert.deepEqual(saved.data.values, original);
+    // A sibling shares the source generation, never the admitted Agent-specific copy.
+    const sibling = await fixture.createAgent(namespace.id, "Sibling", original, {
+      executionMode: harness === "codex" ? "dedicated" : "embedded",
+    });
+    await fixture.updateAgent(namespace.id, sibling.id, { configurationId: agent.configurationId });
+    const siblingRevision = await fixture.deployAgent(namespace.id, sibling.id);
+    assert.notEqual(siblingRevision.configuration.gateway.publicOrigin, status.data.origin);
+    assert.deepEqual(siblingRevision.configuration.gateway.controlUi.allowedOrigins, [
+      "https://tools.example.test",
+      siblingRevision.configuration.gateway.publicOrigin,
+    ]);
+    const next = await fixture.deployAgent(namespace.id, agent.id);
+    assert.equal(next.revision, 2);
+    assert.deepEqual(next.configuration.gateway, expected);
+    assert.deepEqual(revision.configuration.gateway, expected);
+    // Use the production runtime renderer on the admitted revision. No cluster or native
+    // Gateway is claimed by this document-level check.
+    const driver = fixture.controller.selectedDriver("compute");
+    const rendered = driver.kubernetesGatewayConfigurationDocument(next.configuration);
+    assert.deepEqual(rendered.gateway, expected);
+  });
+}
+
+test("native admin admission preserves explicit opt-outs and refuses conflicting policy", async (t) => {
+  const context = await createNativeAdminFixture(t, {
+    automatic: true,
+    configuration: standardConfiguration("openclaw"),
+  });
+  const { fixture, namespace, agent } = context;
+  for (const configure of [
+    (values) => {
+      values.gateway.controlUi.enabled = false;
+    },
+    (values) => {
+      values.gateway.auth.trustedProxy = { deviceAutoApprove: { enabled: false } };
+    },
+    (values) => {
+      values.gateway.controlUi.dangerouslyDisableDeviceAuth = true;
+    },
+    (values) => {
+      values.gateway.controlUi.dangerouslyAllowHostHeaderOriginFallback = true;
+    },
+  ]) {
+    const values = standardConfiguration("openclaw");
+    configure(values);
+    await fixture.updateConfiguration(namespace.id, agent.configurationId, values);
+    const next = await fixture.deployAgent(namespace.id, agent.id);
+    assert.equal(next.configuration.gateway.publicOrigin, undefined);
+    assert.deepEqual(next.configuration.gateway, values.gateway);
+    await fixture.activateRevision(
+      namespace.id,
+      agent.id,
+      next.id,
+      (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)).data
+        .activeRevisionId,
+    );
+    assert.equal((await nativeStatus(context)).data.status, "unsupported");
+  }
+  const sibling = await fixture.createAgent(
+    namespace.id,
+    "Conflicting origin",
+    standardConfiguration("openclaw"),
+  );
+  const siblingOrigin = nativeOriginForAgent(
+    fixture.controller.installation.id,
+    namespace.id,
+    sibling.id,
+  );
+  for (const [setting, configure] of [
+    [
+      "gateway.auth.mode",
+      (values) => {
+        values.gateway.auth.mode = "password";
+      },
+    ],
+    [
+      "gateway.auth.trustedProxy.allowUsers",
+      (values) => {
+        values.gateway.auth.trustedProxy = { allowUsers: ["other"] };
+      },
+    ],
+    [
+      "gateway.auth.trustedProxy.userHeader",
+      (values) => {
+        values.gateway.auth.trustedProxy = { userHeader: "x-user" };
+      },
+    ],
+    [
+      "gateway.auth.identityScopes",
+      (values) => {
+        values.gateway.auth.identityScopes = { "occ-workspace-files": ["operator.read"] };
+      },
+    ],
+    [
+      "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+      (values) => {
+        values.gateway.auth.trustedProxy = { deviceAutoApprove: { scopes: ["operator.read"] } };
+      },
+    ],
+    [
+      "gateway.controlUi.allowedOrigins",
+      (values) => {
+        values.gateway.controlUi.allowedOrigins = ["*"];
+      },
+    ],
+    [
+      "gateway.controlUi.allowedOrigins",
+      (values) => {
+        values.gateway.controlUi.allowedOrigins = [siblingOrigin];
+      },
+    ],
+    [
+      "gateway.publicOrigin",
+      (values) => {
+        values.gateway.publicOrigin = siblingOrigin;
+      },
+    ],
+  ]) {
+    const values = standardConfiguration("openclaw");
+    configure(values);
+    await fixture.updateConfiguration(namespace.id, agent.configurationId, values);
+    const before = (
+      await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/revisions`)
+    ).data;
+    const refused = await fixture.request(
+      "POST",
+      `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+    );
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.ok(refused.body.error.message.includes(setting), JSON.stringify(refused.body));
+    assert.deepEqual(
+      (await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}/revisions`))
+        .data,
+      before,
+    );
+  }
+});
+
+test("Installation native admin disablement leaves UI-enabled first revisions unchanged", async (t) => {
+  const values = standardConfiguration("openclaw");
+  const context = await createNativeAdminFixture(t, {
+    automatic: true,
+    configuration: values,
+    nativeAdminEnabled: false,
+  });
+  assert.deepEqual(context.revision.configuration.gateway, values.gateway);
+  assert.equal((await nativeStatus(context)).data.status, "disabled");
 });
 
 for (const changedField of [undefined, "id", "implementation"]) {

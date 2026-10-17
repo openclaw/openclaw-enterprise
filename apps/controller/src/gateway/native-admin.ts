@@ -55,8 +55,7 @@ export function nativeAdminGatewayHttpBase(endpoint: string): string | undefined
 export function nativeAdminTarget(input: {
   readonly publicOrigin: string;
   readonly installationId: string;
-  readonly agent: Readonly<Agent>;
-  readonly revision: Readonly<AgentRevision>;
+  readonly agent: Pick<Agent, "namespaceId" | "id">;
   readonly domain: string;
 }): NativeAdminTarget {
   const host = deriveNativeAdminHost(input.installationId, input.agent, input.domain);

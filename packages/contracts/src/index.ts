@@ -1891,6 +1891,16 @@ export interface ComputeDriver extends Driver {
   readonly requiresAgentRuntimeCredentials?: true;
   /** Default: platform admission policy. Driver ownership preserves native logging settings. */
   readonly runtimeLogging?: "platform" | "driver";
+  /**
+   * Side-effect-free transformation of a deployment copy before revision admission. OCC
+   * supplies an exact native admin origin only when the Installation enables the feature.
+   * Preserve explicit opt-outs; refuse conflicting policy rather than weakening it.
+   * The reusable Configuration and historical revisions must remain unchanged.
+   */
+  configureAgent?(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    context: { readonly nativeAdminOrigin?: string },
+  ): OpenClawConfigurationDocument;
   readonly agentProvisioning?: ComputeAgentProvisioningCapabilities;
   readonly activationOrder?: "beforeCommit" | "afterCommit";
   readonly maintenanceIntervalMs?: number;

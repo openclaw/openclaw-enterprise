@@ -19,20 +19,23 @@ The [shared contracts](../../../packages/contracts/src/index.ts) define the type
 Every `ComputeDriver` has an `id`, `implementation`, and
 `capability: "compute"`.
 
-Optional `getRuntimeImages(revision)` returns
-`{workload, container, image, imageId, commit, openclawCommit}` entries for
-containers owned by that admitted revision. OCC requires exact Agent read
-authority and calls the Driver pinned by the active revision. The
-`runtime-images` API reports `undeployed` without an active revision and
-`unsupported` when the Driver omits this method.
+Optional `configureAgent(configuration, {nativeAdminOrigin?})` transforms a frozen
+deployment copy before validation and admission; OCC supplies the
+Installation-owned origin. Preserve Harness, opt-outs, unrelated settings and
+SecretRefs without source mutation or infrastructure effects. See
+[Compute policy and conflicts](../agent-native-admin.md#first-deployment-configuration)
+and [admission order](compute-admission.md#deployment-configuration).
 
-Commits must be full lowercase Git SHAs; missing IDs or provenance remain `null`.
-Results exclude separate Sandbox Driver workloads. Neither Docker nor Kubernetes
-[derives commits](../console/debug-fields.md#where-the-source-commit-comes-from)
-from a moved tag. Kubernetes
-[inspects](../console/debug-fields.md#inspection-scope) revision-owned Pods and
-binds its private metadata read to the Pod UID and running container ID; both
-commits apply only to containers with that image ID.
+Optional `getRuntimeImages(revision)` reports
+`{workload, container, image, imageId, commit, openclawCommit}` for revision-owned
+containers. OCC requires exact Agent read authority and selects the active
+revision's pinned Driver. The API reports `undeployed` without an active revision
+or `unsupported` without this method.
+
+Commits are full lowercase Git SHAs; unavailable IDs or provenance remain `null`.
+Exclude separate Sandbox workloads and [moved-tag inference](../console/debug-fields.md#where-the-source-commit-comes-from).
+Kubernetes [binds Pod metadata](../console/debug-fields.md#inspection-scope) to the
+Pod UID and running container ID; both commits describe that image ID.
 
 Optional `discoverHarnessModels({provider, apiKey})` returns native model IDs
 and names without persisting credentials. OCC checks Agent creation authority

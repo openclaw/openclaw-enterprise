@@ -581,6 +581,11 @@ export interface ControllerOptions {
    */
   readonly refreshBundledDefaultPresets?: boolean;
   readonly loggingLevel?: LoggingLevel;
+  /** Installation-owned origin resolution; never taken from a request Host or Agent input. */
+  readonly nativeAdminOrigin?: (
+    installationId: string,
+    agent: Pick<Agent, "namespaceId" | "id">,
+  ) => string | undefined;
   readonly configuredServiceAccountDriverId?: string;
   /** Installation startup `runtime.nativeWorkerSupport`; never set from the API. */
   readonly nativeWorkerSupport?: NativeWorkerSupport;
@@ -1531,6 +1536,7 @@ export class OpenClawController {
   private readonly bundledPresetVersions: readonly BundledPresetVersion[];
   private readonly refreshBundledDefaultPresets: boolean;
   private readonly loggingLevel: LoggingLevel;
+  private readonly nativeAdminOrigin: ControllerOptions["nativeAdminOrigin"];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly configuredServiceAccountDriverId: string | undefined;
 
@@ -1573,6 +1579,7 @@ export class OpenClawController {
     this.bundledPresetVersions = immutableCopy(options.bundledPresetVersions ?? []);
     this.refreshBundledDefaultPresets = options.refreshBundledDefaultPresets === true;
     this.loggingLevel = normalizeLoggingLevel(options.loggingLevel);
+    this.nativeAdminOrigin = options.nativeAdminOrigin;
     if (
       options.nativeWorkerSupport !== undefined &&
       options.nativeWorkerSupport !== "custom-image"
@@ -7243,6 +7250,7 @@ export class OpenClawController {
         revisionHarness,
         compute,
         sandbox,
+        lockedAgent,
       );
       // The model provider settings, then the Compute rules, as on Configuration save, so a
       // stored Configuration that predates a rule gets the message its next save would. A
@@ -11002,22 +11010,31 @@ export class OpenClawController {
       : immutableCopy({ ...binding, secretDriverId: source.driverId });
   }
 
-  // The Configuration values a deployment admits for this Harness: the Sandbox Driver's view,
-  // then the platform logging policy unless the Compute Driver owns logging.
+  // Sandbox transforms apply at save and deployment; Compute transforms need an allocated
+  // Agent at deployment. Apply logging after both unless the Compute Driver owns it.
   private agentRuntimeConfiguration(
     values: Readonly<OpenClawConfigurationDocument>,
     harness: RevisionHarnessDescriptor,
     compute: ComputeDriver,
     sandbox: SandboxDriver | undefined,
+    agent?: Pick<Agent, "namespaceId" | "id">,
   ): OpenClawConfigurationDocument {
     const sandboxConfiguration =
       sandbox?.configureAgent !== undefined
         ? frozenValues(sandbox.configureAgent(frozenValues(values), harness))
         : values;
+    const nativeAdminOrigin =
+      agent === undefined ? undefined : this.nativeAdminOrigin?.(this.installation.id, agent);
+    const computeConfiguration =
+      agent === undefined || compute.configureAgent === undefined
+        ? sandboxConfiguration
+        : compute.configureAgent(frozenValues(sandboxConfiguration), {
+            ...(nativeAdminOrigin === undefined ? {} : { nativeAdminOrigin }),
+          });
     return frozenValues(
       compute.runtimeLogging === "driver"
-        ? sandboxConfiguration
-        : admitLoggingConfiguration(sandboxConfiguration, this.loggingLevel),
+        ? computeConfiguration
+        : admitLoggingConfiguration(computeConfiguration, this.loggingLevel),
     );
   }
 

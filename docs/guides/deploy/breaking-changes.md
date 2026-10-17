@@ -15,6 +15,19 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-16: Native-admin pilot workers need the API's origin settings
+
+**What breaks.** A worker with `OCC_AGENT_NATIVE_ADMIN_ENABLED=true` exits at
+startup if `OCC_AGENT_NATIVE_ADMIN_DOMAIN` or `OCC_AUTH_BASE_URL` is missing, or
+the public URL is not HTTPS. Look for `worker.startup-error`. Workers with the
+pilot disabled are unaffected; the supplied Helm chart already passes both values.
+
+**Before upgrading.** In a custom deployment, set the worker's Agent host suffix
+and public HTTPS URL to the same values as the API. Do not copy
+`OCC_AUTH_COOKIE_DOMAIN` to the worker. Check that the worker becomes ready.
+These steps are _untested_ against a live Installation; see
+[native-admin setup](native-admin.md#install-on-an-existing-cluster) for the settings.
+
 ## 2026-10-16: stored model provider settings are checked at deploy
 
 **What breaks.** On every Compute, deploying or redeploying an Agent runs the

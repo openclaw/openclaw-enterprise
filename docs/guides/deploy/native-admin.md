@@ -4,29 +4,17 @@ Enable Agent native admin UI access only for a trusted-operator pilot. The featu
 
 ## Local development
 
-Local setup prepares private routing and the browser endpoint. To opt a selected
-Agent into native admin access:
+Local setup prepares private routing and the browser endpoint. With native admin
+enabled for the Installation:
 
-1. [Create and deploy an Agent](../../reference/console/create-and-deploy.md) in the
-   console, for example with the Standard Codex Preset. Wait for its active
-   version. The account opening the UI needs `administer` permission on that
-   exact Agent.
-2. In the authenticated console session, follow [Configure each Agent](native-admin.md#configure-each-agent)
-   to obtain the exact `data.origin` and active revision ID from the status
-   route. Include the returned port; do not construct or reuse another Agent's
-   origin. An `unsupported` response can include the origin. If OCC cannot
-   select an active revision, resolve that first.
-3. Use **Create new version** → **Configuration** → **Edit Configuration** to
-   merge the documented native policy and origin into the existing JSON. Review
-   other Agents that share the Configuration: they use its new values on their
-   next deployment. Preserve existing origins, gateway settings, and Secret
-   references. Resolve explicit opt-outs or conflicting policy before changing
-   them; do not silently replace them. Recheck the active revision before saving;
-   if it changed, refresh and review the current Configuration again.
-4. Save the Configuration and select **Deploy new version**. Once it is active,
-   request status again and expect `available` with the same origin. Open
-   **Native admin UI** on the Agent detail page. For stale drafts or uncertain
-   saves, follow the [Configuration editor recovery](../console/agent-details.md#configuration-tab).
+1. [Create and deploy an Agent](../../reference/console/create-and-deploy.md), for
+   example from Standard OpenClaw or Standard Codex. Their UI-enabled
+   Configurations receive native admin policy in the first admitted revision.
+2. Wait for the Agent to run, then open **Native admin UI** → **Open native admin UI**.
+   The account needs exact Agent `administer` permission.
+3. For a custom Configuration or an existing Agent, follow
+   [Deploy each Agent](#configure-each-agent). Explicit opt-outs remain effective;
+   existing Agents adopt prepared policy on their next explicit deployment.
 
 For the Compose control plane with Kubernetes Compute and OpenShell, the
 [first-Agent command](../first-agent.md) can perform these per-Agent steps with
@@ -124,7 +112,9 @@ spec:
           port: 8080
 ```
 
-Verify Helm passes these API environment variables:
+Verify Helm passes these API environment variables. The worker also receives
+`OCC_AGENT_NATIVE_ADMIN_ENABLED`, `OCC_AGENT_NATIVE_ADMIN_DOMAIN` and the same
+`OCC_AUTH_BASE_URL`; it does not receive the shared cookie-domain setting:
 
 ```text
 OCC_AGENT_NATIVE_ADMIN_ENABLED=true
@@ -142,59 +132,47 @@ names before testing Agent hosts. If `agentNativeAdmin.enabled` is false, OCC
 ignores the shared cookie-domain value and keeps the legacy host-only
 `openclaw_occ` session cookie behavior.
 
-Kubernetes Compute renders baseline gateway trust from Installation settings.
-Native admin availability still checks the explicit Agent policy below; keep
-its matching identity fields and opt-in settings in the saved Configuration.
+<a id="configure-each-agent"></a>
 
-## Configure each Agent
+## Deploy each Agent
 
-Configure each pilot Agent after the API feature and wildcard route are enabled. Native admin availability requires the Agent's native configuration to trust the exact derived Agent origin. In an existing authenticated console browser session, open the status URL before the final compatible redeploy:
+Create an Agent from Standard OpenClaw or Standard Codex in the console and
+complete its ordinary deployment. With the Installation feature configured above,
+Kubernetes Compute prepares native admin policy in the first admitted revision.
+Open **Gateway administration** on the Agent detail page after deployment reports
+running, then choose **Open admin console**. Expect the isolated Agent host, including any
+port configured on the public OCC origin.
+
+For a custom Configuration, select `gateway.controlUi.enabled: true`. Leave
+managed `gateway.publicOrigin` and the Agent-domain entries in
+`gateway.controlUi.allowedOrigins` unset; OCC resolves them per Agent. Existing
+exact origins and compatible gateway, model, Harness, plugin and Secret settings
+remain intact. The shared Configuration stays reusable.
+
+UI or device approval disabled explicitly keeps the Agent opted out. Conflicting
+native authentication, approval scopes, public origin or origin policy refuses
+deployment with the setting to fix. Review that policy with its owner; do not
+use wildcard origins, disabled device authentication or host-header fallback.
+See [first-deployment configuration](../../reference/agent-native-admin.md#first-deployment-configuration)
+for the contract.
+
+For an existing Agent, deploy its next revision explicitly to adopt the policy.
+OCC leaves its active and historical revisions unchanged until then. No manual
+origin discovery, JSON repair or second deployment is required for new supported
+Agents. The status endpoint remains useful for diagnostics:
 
 ```text
-https://occ.example.com/namespaces/<namespaceId>/agents/<agentId>/native-admin
+GET /namespaces/<namespaceId>/agents/<agentId>/native-admin
 ```
 
-For browser devtools, the same check is:
+Expect `data.status: "available"` once the compatible revision is active.
+For `stopped`, `unavailable` or `unsupported`, follow the
+[troubleshooting checks](#troubleshooting).
 
-```js
-await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
-  credentials: "include",
-}).then((response) => response.json());
-```
-
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/agent-details.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
-
-```json
-{
-  "gateway": {
-    "publicOrigin": "https://agent-<opaque-hash>.agents.oce.example.com",
-    "auth": {
-      "mode": "trusted-proxy",
-      "trustedProxy": {
-        "userHeader": "x-occ-identity",
-        "allowUsers": ["occ-workspace-files"],
-        "deviceAutoApprove": {
-          "enabled": true,
-          "scopes": ["operator.admin"]
-        }
-      },
-      "identityScopes": {
-        "occ-workspace-files": ["operator.admin"]
-      }
-    },
-    "controlUi": {
-      "enabled": true,
-      "allowedOrigins": ["https://agent-<opaque-hash>.agents.oce.example.com"]
-    }
-  }
-}
-```
-
-Keep existing model, Harness, channel, gateway, Secret reference, and allowed origin settings. Add the exact origin to any existing allowed origins. `publicOrigin` is optional for native admin access: set it to the same origin so links the Agent returns, such as embedded Diffs viewer links, open through this Agent host instead of the Gateway's private address. Review any other Agents sharing this Configuration before saving; they use its new values on their next deployment. Resolve explicitly disabled UI or device approval and conflicting authentication policy with the Configuration owner instead of silently overwriting them.
-
-The editor preserves Secret bindings. If someone saves a newer Configuration first, OCC refuses your stale save. Choose **Reload draft**, check your edits against the current values, then save only the changes you still intend. See [Configuration update conflicts](../../reference/configuration.md#create-read-update-and-delete) for the API contract.
-
-Do not set unsupported gateway authentication fields, `controlUi.dangerouslyDisableDeviceAuth`, or `controlUi.dangerouslyAllowHostHeaderOriginFallback`. Deploy the updated Agent revision, then call the status route again and expect `data.status: "available"` with the same `data.origin`. For `stopped` or `unavailable`, follow the [troubleshooting checks](#troubleshooting) before changing configuration.
+The Configuration editor preserves Secret bindings and refuses stale saves.
+If another save lands first, choose **Reload draft**, check your changes against
+the current values and save only the edits you still intend. See
+[Configuration update conflicts](../../reference/configuration.md#create-read-update-and-delete).
 
 Keep durable configuration changes in OCE. For compatible Kubernetes gateways,
 native edits affect a Pod-local copy and are discarded when the Pod is replaced
