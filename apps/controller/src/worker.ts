@@ -3104,8 +3104,8 @@ export class ControllerWorker {
    * Compute's status read used, which nothing reads any more and which the Gateway's node
    * binding never closed (finding 1672): the sweep withdraws it from the next pass on, and a
    * restart lists it again from its failed deployment (as a non-active revision). An active
-   * revision is left alone: its exposure went with its readiness. The failure is already committed, so a read that fails
-   * here only defers the withdrawal to the next start.
+   * revision is left alone: its exposure went with its readiness. The failure is already
+   * committed, so a read that fails here only defers the withdrawal to the next start.
    */
   private async scheduleFailedCandidateExposureWithdrawal(claim: ClaimedWork): Promise<void> {
     if (

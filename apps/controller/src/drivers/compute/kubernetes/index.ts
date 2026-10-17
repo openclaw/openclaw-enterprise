@@ -10746,10 +10746,14 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       try {
         connected = await enrollment.isConnected(url, deviceId, this.operationSignal());
       } catch (error) {
-        // The code goes even when the Gateway does not answer.
+        // The code goes even when the Gateway does not answer; that answer is the error kept.
         if (dropping) {
-          await replaceSecret(withoutSetupCode(secret.data ?? {}));
-          await setupCodeRemoved();
+          try {
+            await replaceSecret(withoutSetupCode(secret.data ?? {}));
+            await setupCodeRemoved();
+          } catch {
+            // The next pass drops it.
+          }
         }
         throw error;
       }
