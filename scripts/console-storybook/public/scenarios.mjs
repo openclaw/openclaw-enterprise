@@ -3410,6 +3410,26 @@ export const scenarios = {
     description:
       "Deployment reads show loading beside the current pointer, then show the visible result.",
   },
+  agentsReturnWhileDeploymentsLoad: {
+    group: "Pages/Agents",
+    name: "Return while deployments load",
+    deployed: true,
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        delayMs: 2500,
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "Back reveals the rechecked Agents list before a slow deployment read finishes. The previous result does not stand in for the pending one.",
+    steps: [
+      "Wait for the Research assistant’s deployment, open Documentation assistant, then use browser Back.",
+      "The list is usable while Latest deployment says “Reading deployment…”. It changes to “Deployment access denied”; the Agent is still visible.",
+    ],
+  },
   agentsDeploymentError: {
     group: "Pages/Agents",
     name: "Latest deployment unavailable",

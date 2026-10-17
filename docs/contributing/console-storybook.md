@@ -79,9 +79,11 @@ loading.
 
 ## Return navigation
 
-Use **Pages/Navigation → Return to loaded pages**, **Return to Agent panels**, and
-**Slow rechecks**. Search, expanded configuration, native admin access, and Credentials
-survive Back/Forward and tab changes. Refresh reloads; slow checks say so.
+**Return while deployments load** shows the rechecked Agents list first. Watch
+“Reading deployment…” become “Deployment access denied,” without the old result reappearing.
+
+In **Return to loaded pages**, **Return to Agent panels**, and **Slow rechecks**,
+Back preserves search, expanded panels, and Credentials. Refresh reloads.
 
 ## Agent flows and UI gaps
 
