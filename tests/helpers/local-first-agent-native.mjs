@@ -25,12 +25,125 @@ const runtimeFailureCodes = new Set([
   "RUNTIME_CPU_STARVED",
   "RUNTIME_MODEL_PROBE_TIMEOUT",
   "RUNTIME_MODEL_PROBE_FAILED",
+  "RUNTIME_LOGIN_FAILED",
+  "RUNTIME_STARTUP_FAILED",
+  "CONVERGENCE_DEADLINE_EXCEEDED",
+  "PROVISIONING_DEPLOYMENT_FAILED",
+]);
+// Held failures whose model check can name the provider's response.
+const providerFailureCodes = new Set([
+  "RUNTIME_AUTHENTICATION_FAILED",
+  "RUNTIME_MODEL_PROBE_FAILED",
+]);
+// The fixed values the runtime wrapper logs on `openclaw.model_probe` (runtime-entrypoints.ts):
+// its result code and a provider error code from its closed list or classified upfront 401.
+const modelProbeCodes = new Set([
+  "READY",
+  "AUTHENTICATION_FAILED",
+  "MODEL_PROBE_FAILED",
+  "MODEL_PROBE_TIMEOUT",
+  "MODEL_PROBE_CPU_STARVED",
+  "UNAVAILABLE",
+]);
+const providerCodes = new Set([
+  "usage_limit_reached",
+  "rate_limit_exceeded",
+  "rate_limit_error",
+  "insufficient_quota",
+  "invalid_api_key",
+  "model_not_found",
+  "server_error",
+  "overloaded_error",
+  "missing_api_key",
+  "insufficient_permissions",
 ]);
 
-export function assertNativeWorkNotFailed(response, expectation) {
+const absentOr = (value, observe) =>
+  value === undefined || value === null ? "none" : observe(value);
+const failureCategory = (code) => (runtimeFailureCodes.has(code) ? code : "unrecognized");
+const progressCode = (code) => (deploymentProgressCodes.has(code) ? code : "unknown");
+
+// The latest model check in the exact revision's agent log page, as fixed values only.
+function observedModelProbe(logs, revisionId) {
+  if (logs?.revisionId !== revisionId || logs.source !== "agent" || !Array.isArray(logs.records)) {
+    return "unavailable";
+  }
+  const probes = logs.records.filter(
+    (record) =>
+      record?.type === "line" &&
+      record.kind === "wrapper" &&
+      record.message === "openclaw.model_probe",
+  );
+  const fields = probes.at(-1)?.fields ?? {};
+  return {
+    probes: probes.length,
+    code: absentOr(fields.code, (code) => (modelProbeCodes.has(code) ? code : "other")),
+    providerStatus: absentOr(fields.providerStatus, (status) =>
+      Number.isInteger(status) && status >= 400 && status <= 599 ? status : "other",
+    ),
+    providerCode: absentOr(fields.providerCode, (code) =>
+      providerCodes.has(code) ? code : "other",
+    ),
+  };
+}
+
+// Codes from the provisioning record, its exact deployment and, for a held model-check
+// failure, that check's log event. Every value comes from a fixed vocabulary.
+async function observeNativeFailure({
+  request,
+  namespaceId,
+  provisioningPath,
+  provisioned,
+  signal,
+}) {
+  const observation = {
+    provisioning: {
+      ...observedProvisioning(provisioned),
+      errorCode: absentOr(provisioned?.error?.code, failureCategory),
+    },
+  };
+  if (!observation.provisioning.agentIdPresent || !observation.provisioning.revisionIdPresent) {
+    return observation;
+  }
+  observation.deployment = "unavailable";
+  try {
+    const deploymentPath = nativeDeploymentPath(namespaceId, provisioned, provisioningPath);
+    const diagnosticSignal = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
+    const deployment = await request("GET", deploymentPath, undefined, diagnosticSignal);
+    if (
+      deployment?.namespaceId === namespaceId &&
+      deployment.agentId === provisioned.agentId &&
+      deployment.deploymentId === provisioned.revisionId
+    ) {
+      const code = deployment.error?.code;
+      observation.deployment = {
+        status: observedStatus(deployment.status),
+        errorCode: absentOr(code, failureCategory),
+        lastAttemptCode: absentOr(deployment.progress?.lastAttempt?.code, progressCode),
+      };
+      if (deployment.status === "failed" && providerFailureCodes.has(code)) {
+        observation.modelProbe = "unavailable";
+        const logs = await request(
+          "GET",
+          `${deploymentPath}/runtime/logs?source=agent&tailLines=1000`,
+          undefined,
+          diagnosticSignal,
+        );
+        observation.modelProbe = observedModelProbe(logs, provisioned.revisionId);
+      }
+    }
+  } catch {
+    // Diagnostic failures cannot replace the terminal failure or reveal peer errors.
+  }
+  return observation;
+}
+
+export async function assertNativeWorkNotFailed(response, expectation, diagnostics = {}) {
   if (response.status === "failed") {
-    const code = response.error?.code;
-    assert.fail(`${expectation}: ${runtimeFailureCodes.has(code) ? code : "unrecognized"}`);
+    const observation = await observeNativeFailure(diagnostics);
+    assert.fail(
+      `${expectation}: ${failureCategory(response.error?.code)} ${JSON.stringify(observation)}`,
+    );
   }
 }
 
@@ -55,6 +168,16 @@ export function nativeProvisioningPath(namespaceId, provisioning) {
   const path = `/namespaces/${namespaceId}/agents/provision/${encodeURIComponent(workId)}`;
   assert.ok(provisioning.url === path, "Guided native provisioning returned an invalid binding");
   return path;
+}
+
+function nativeDeploymentPath(namespaceId, provisioned, provisioningPath) {
+  assert.ok(
+    isResourceId(provisioned.agentId, "agt") &&
+      isResourceId(provisioned.revisionId, "rev") &&
+      nativeProvisioningPath(namespaceId, provisioned) === provisioningPath,
+    "Guided native provisioning returned an invalid binding",
+  );
+  return `/namespaces/${namespaceId}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`;
 }
 
 function observedProvisioning(provisioning) {
@@ -138,14 +261,8 @@ export async function failNativeProvisioningDeadline({
   if (observation.provisioning.agentIdPresent && observation.provisioning.revisionIdPresent) {
     observation.deployment = "unavailable";
     try {
-      assert.ok(
-        isResourceId(provisioned.agentId, "agt") &&
-          isResourceId(provisioned.revisionId, "rev") &&
-          nativeProvisioningPath(namespaceId, provisioned) === provisioningPath,
-        "Guided native provisioning returned an invalid binding",
-      );
+      const deploymentPath = nativeDeploymentPath(namespaceId, provisioned, provisioningPath);
       const diagnosticSignal = AbortSignal.any([signal, AbortSignal.timeout(5_000)]);
-      const deploymentPath = `/namespaces/${namespaceId}/agents/${provisioned.agentId}/deployments/${provisioned.revisionId}`;
       const deployment = await request("GET", deploymentPath, undefined, diagnosticSignal);
       if (
         deployment?.namespaceId === namespaceId &&
