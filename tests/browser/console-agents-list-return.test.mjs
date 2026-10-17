@@ -8,6 +8,9 @@ import {
   nativeValues,
   newPage,
   persistedDeploymentError,
+  trackSettledFetches,
+  waitForCondition,
+  waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 
 // Returning to the Agents list held the Agent page, inert, until the retained list had read
@@ -450,6 +453,105 @@ for (const visit of ["a first visit", "a return"]) {
     }
   });
 }
+
+// Opens a list of three Agents, leaves it for an Agent, and goes Back with every row's reread
+// held and the page clock paused, so the test decides when the rereads land.
+async function returnWithHeldRows(t, name) {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace(name, { ready: true });
+  const agents = [];
+  for (const label of ["Steady Agent 1", "Steady Agent 2", "Steady Agent 3"]) {
+    const agent = await fixture.createAgent(namespace.id, label, nativeValues(label));
+    await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    agents.push({ ...agent, name: label });
+  }
+  const { page } = await newPage(t, fixture);
+  await page.route(deploymentsRead(namespace), (route) =>
+    route.fulfill(deploymentRecord(namespace, "succeeded")),
+  );
+  await trackSettledFetches(page);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  await page.getByText(READING).first().waitFor({ state: "detached" });
+  await tagView(page);
+  await openAgent(page, agents[0]);
+  const rows = await holdRowReads(t, page, namespace);
+  let landed = 0;
+  page.on("response", (response) => {
+    if (/\/agents\/[^/]+\/deployments\/[^/]+$/u.test(new URL(response.url()).pathname)) {
+      landed += 1;
+    }
+  });
+  const start = Date.now();
+  await page.clock.install({ time: start });
+  await page.clock.pauseAt(start + 1_000);
+  await page.goBack();
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  assert.equal(await viewTag(page), "kept", "the retained list was reused");
+  await rows.revisions.requested;
+  const readingCells = async () =>
+    Object.values(await deploymentCells(page)).filter((text) => text === READING).length;
+  assert.equal(await readingCells(), agents.length);
+  return {
+    namespace,
+    page,
+    readingCells,
+    // Lets the held rereads land after `ms` and waits until the page has handled them.
+    async land(ms) {
+      await page.clock.runFor(ms);
+      const before = landed;
+      rows.release();
+      await waitForCondition(
+        () => landed === before + agents.length,
+        "every row's deployment read lands",
+      );
+      await waitForIdleFetches(page);
+    },
+  };
+}
+
+// With a dozen rows, rereads that landed just past the 250 ms delay replaced "Reading
+// deployment…" a frame or a few after it showed (16-133 ms on oce-dogfood-b, finding 1683). Once
+// shown, it now stays 150 ms; reads that land before it shows, or after that, fill the rows at
+// once. The page clock decides when each read lands and when the rows fill.
+for (const [landsAt, fillsAt] of [
+  [100, 100],
+  [300, 400],
+  [450, 450],
+]) {
+  test(`Rows whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
+    const { page, readingCells, land } = await returnWithHeldRows(t, `Steady rows ${landsAt}`);
+    await land(landsAt);
+    if (fillsAt > landsAt) {
+      assert.equal(await readingCells(), 3, "the shown text stays");
+      await page.clock.runFor(fillsAt - landsAt - 1);
+      assert.equal(await readingCells(), 3, "the shown text stays 150 ms");
+      await page.clock.runFor(1);
+    }
+    for (const text of Object.values(await deploymentCells(page))) {
+      assert.match(text, /^v1 · succeeded/);
+    }
+    assert.equal(await viewTag(page), "kept");
+  });
+}
+
+// A refocus that resumes the list while a landed reread waits out those 150 ms starts the rows
+// reading again; the earlier answer never fills a row that reads again.
+test("A list resumed while its rows wait to fill shows only the new rereads", async (t) => {
+  const { namespace, page, readingCells, land } = await returnWithHeldRows(t, "Steady resume");
+  await land(300);
+  assert.equal(await readingCells(), 3);
+  const rereads = await holdRowReads(t, page, namespace);
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await rereads.revisions.requested;
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  await page.clock.runFor(200);
+  assert.equal(await readingCells(), 3, "the earlier answers stay unpainted");
+  rereads.release();
+  await page.getByText(READING).first().waitFor({ state: "detached" });
+  assert.equal(await viewTag(page), "kept");
+});
 
 // A list left again before its rows' rereads land is reused on the next return too: rows read
 // again whenever the list resumes, so unfinished ones don't count against it (finding 1663).

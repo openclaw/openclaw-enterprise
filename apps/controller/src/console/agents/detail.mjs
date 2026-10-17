@@ -872,6 +872,13 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
   }
 
   function renderChecks() {
+    if (loading) {
+      return element(
+        "p",
+        { className: "muted", role: "status" },
+        "Waiting for diagnostic results…",
+      );
+    }
     if (!diagnostics) {
       return element(
         "p",

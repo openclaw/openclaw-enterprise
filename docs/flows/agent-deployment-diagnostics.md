@@ -111,10 +111,11 @@ Agent's active one has no Sandbox, such as a stopped Agent's.
 ### 3. Return validated evidence
 
 `packages/occ/src/deployment-diagnostics.ts:deploymentDiagnostics` requires
-the requested revision ID, valid timestamps, and at most 32 bounded checks.
-OCC converts native Driver errors to `DEPENDENCY_UNAVAILABLE` without returning
-their messages. The API returns the observation and leaves persisted deployment
-status, startup evidence, plugin warnings, and Agent state unchanged.
+the requested revision ID, valid timestamps, and at most 32 bounded checks. A
+component, check or code outside `packages/contracts/src/runtime-failure.mjs`
+reads `UNRECOGNIZED`. Native Driver errors become `DEPENDENCY_UNAVAILABLE`
+without messages. Stored deployment status, startup evidence, plugin warnings
+and Agent state stay unchanged.
 
 ## Debugging and Verification
 

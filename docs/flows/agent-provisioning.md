@@ -116,8 +116,8 @@ defers work without consuming retries until that revision activates or fails. Th
 success or the deployment’s safe error; meanwhile `progress` names its wait. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
 before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
 
-Create Agent (`apps/controller/src/console/agents/create.mjs:waitForProvisioning`) waits one second
-between status reads, spending it on details such as a full Pod quota, cancelling unfinished reads
+Create Agent (`apps/controller/src/console/agents/create.mjs:waitForProvisioning`) shows the job's named
+wait and waits one second between status reads, spending it on details such as a full Pod quota, cancelling unfinished reads
 at the next poll. Leaving the page stops polling, not provisioning.
 If the first deployment fails, open the existing Agent, correct the cause and deploy a new version.
 After an intentional Stop, deploy when ready. Reconciliation owns startup and activation;

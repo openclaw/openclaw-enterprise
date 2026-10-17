@@ -1755,13 +1755,14 @@ export interface RuntimeFailureEvidence {
 
 /**
  * Why an unready revision is still pending, when Compute knows: its Pods cannot be
- * scheduled, the Namespace's Pod quota refuses to create them, or its workloads are
- * ready but the workspace node has not connected.
+ * scheduled, the Namespace's Pod quota refuses to create them, its workspace setup failed
+ * and is being retried, or its workloads are ready but the workspace node has not connected.
  */
 export type ComputePendingReason =
   | "WORKLOAD_UNSCHEDULABLE"
   | "NAMESPACE_POD_QUOTA_EXCEEDED"
   | "WORKSPACE_NODE_PENDING"
+  | "WORKSPACE_SETUP_RETRYING"
   | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING";
 
 export interface ComputeReadiness extends Scope {
@@ -2097,6 +2098,20 @@ export {
   presetTemplateDefaults,
   presetTemplateDefaultsWithPlaceholders,
 } from "./preset-variables.mjs";
+
+export {
+  PROCESS_EXIT_ERROR_CODES,
+  PROCESS_EXIT_MAX_STATUS,
+  PROCESS_EXIT_SIGNALS,
+  RUNTIME_COMPONENTS,
+  RUNTIME_DIAGNOSTIC_CHECKS,
+  RUNTIME_DIAGNOSTIC_CODES,
+  RUNTIME_FAILURE_CHECKS,
+  UNRECOGNIZED_RUNTIME_VALUE,
+  WORKSPACE_SETUP_CHECK,
+  WORKSPACE_SETUP_FAILED,
+  WORKSPACE_SETUP_REFUSED,
+} from "./runtime-failure.mjs";
 
 export type { InitialWorkspaceFiles, WorkspaceSetup } from "./workspace-setup.ts";
 export { normalizeInitialWorkspaceFiles, normalizeWorkspaceDefaultsId } from "./workspace-setup.ts";

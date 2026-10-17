@@ -13,6 +13,11 @@ import {
 } from "../helpers/runtime-model-probe-observation.mjs";
 import reporter from "../../scripts/ci/reporter.mjs";
 import { GATEWAY_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import {
+  bodyShapes as helperBodyShapes,
+  providerErrorCodes as helperErrorCodes,
+  providerErrorTypes as helperErrorTypes,
+} from "../helpers/local-first-agent-native.mjs";
 
 const execute = promisify(execFile);
 const ready = {
@@ -282,8 +287,10 @@ test("real generated probe marks spawn return and cleanup without changing CAP",
   }
 });
 
-// The generated upfront credential check, run with a recording spawnSync.
+// The generated upfront credential check, run with a recording spawnSync. `status`
+// is the child's exit status, or its whole `{ status, stdout }` result.
 function upfrontCheck(provider, fragment, key = "fixture-key", status = 3) {
+  const result = typeof status === "object" && status !== null ? status : { status };
   const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("const UPFRONT_ENDPOINTS = {");
   const end = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("\nfunction runOpenClawAuthenticationProbe(");
   assert.ok(begin >= 0 && end > begin);
@@ -302,7 +309,7 @@ function upfrontCheck(provider, fragment, key = "fixture-key", status = 3) {
       require: () => ({
         spawnSync(command, args, options) {
           calls.push({ command, args, options });
-          return { status };
+          return result;
         },
       }),
     },
@@ -399,6 +406,101 @@ test("the upfront credential check runs only where OpenClaw would send the same 
   ]) {
     const skipped = upfrontCheck(provider, fragment, key);
     assert.deepEqual([skipped.rejected, skipped.calls, skipped.stages], [false, [], []]);
+  }
+});
+
+// The closed sets the child receives (C, T) and the parent keeps.
+const UPFRONT_ERROR_CODES = [
+  "invalid_api_key",
+  "insufficient_permissions",
+  "invalid_organization",
+  "mismatched_organization",
+  "no_organization",
+  "invalid_project",
+  "mismatched_project",
+  "account_deactivated",
+  "deactivated_workspace",
+  "ip_not_authorized",
+];
+const UPFRONT_ERROR_TYPES = ["invalid_request_error", "authentication_error", "permission_error"];
+const HOSTILE_KEY = "sk-proj-HostileFixtureKey0123456789abcdef";
+
+test("the upfront check keeps only closed-set body tokens from its child", () => {
+  const { calls } = upfrontCheck("openai", undefined);
+  // Only stdout is read, bounded; the child gets the closed sets, never "other".
+  assert.deepEqual([...calls[0].options.stdio], ["ignore", "pipe", "ignore"]);
+  assert.equal(calls[0].options.encoding, "utf8");
+  assert.ok(calls[0].options.maxBuffer <= 1024);
+  assert.deepEqual(JSON.parse(calls[0].options.env.C), UPFRONT_ERROR_CODES);
+  assert.deepEqual(JSON.parse(calls[0].options.env.T), UPFRONT_ERROR_TYPES);
+  // The QA helper reads the same sets, plus "other".
+  assert.deepEqual([...helperErrorCodes], [...UPFRONT_ERROR_CODES, "other"]);
+  assert.deepEqual([...helperErrorTypes], [...UPFRONT_ERROR_TYPES, "other"]);
+  assert.deepEqual(
+    [...helperBodyShapes],
+    ["json-error-code", "json-error-no-code", "json-no-error", "non-json", "empty"],
+  );
+  const rejected = (stdout, status = 13) =>
+    upfrontCheck("openai", undefined, "fixture-key", { status, stdout }).rejected;
+  const base = { providerStatus: 401, responseHeaderMarker: "provider-like" };
+  for (const [bodyShape, providerErrorCode, providerErrorType] of [
+    ["json-error-code", "no_organization", "invalid_request_error"],
+    ["json-error-code", "other", "other"],
+    ["json-error-code", "ip_not_authorized", "permission_error"],
+    ["json-error-no-code", "", "authentication_error"],
+    ["json-error-no-code", "", ""],
+    ["json-no-error", "", ""],
+    ["non-json", "", ""],
+    ["empty", "", ""],
+  ]) {
+    assert.deepEqual(
+      rejected(JSON.stringify([bodyShape, providerErrorCode, providerErrorType])),
+      {
+        ...base,
+        bodyShape,
+        ...(providerErrorCode && { providerErrorCode }),
+        ...(providerErrorType && { providerErrorType }),
+      },
+      bodyShape,
+    );
+  }
+  for (const code of UPFRONT_ERROR_CODES) {
+    assert.equal(rejected(JSON.stringify(["json-error-code", code, ""])).providerErrorCode, code);
+  }
+  for (const type of UPFRONT_ERROR_TYPES) {
+    assert.equal(rejected(JSON.stringify(["json-error-code", "", type])).providerErrorType, type);
+  }
+  // Each token is checked on its own: exact, case-sensitive set members only.
+  assert.deepEqual(
+    rejected(JSON.stringify(["json-error-code", "Invalid_API_Key", "authentication_error "])),
+    { ...base, bodyShape: "json-error-code" },
+  );
+  assert.deepEqual(rejected(JSON.stringify(["html", "other", "permission_error"])), {
+    ...base,
+    providerErrorCode: "other",
+    providerErrorType: "permission_error",
+  });
+  // Anything off-set, misplaced or malformed is dropped, never passed on.
+  for (const stdout of [
+    JSON.stringify(["html", "", ""]),
+    JSON.stringify(["other", "invalid_request_error", "invalid_api_key"]),
+    JSON.stringify([HOSTILE_KEY, HOSTILE_KEY, "Bearer " + HOSTILE_KEY]),
+    JSON.stringify([["empty"], { code: "invalid_api_key" }, 401]),
+    JSON.stringify({ bodyShape: "empty", providerErrorCode: "invalid_api_key" }),
+    '"empty"',
+    "empty",
+    "",
+    HOSTILE_KEY,
+    undefined,
+    null,
+  ]) {
+    const result = rejected(stdout);
+    assert.deepEqual(result, base, String(stdout));
+    assert.ok(!JSON.stringify(result).includes("Hostile"));
+  }
+  // Tokens never turn a non-401 into a rejection.
+  for (const status of [0, 1, 7, null]) {
+    assert.equal(rejected(JSON.stringify(["empty", "", ""]), status), false, String(status));
   }
 });
 
@@ -508,4 +610,207 @@ test("the upfront request exits 3 only when the provider answers 401", async (t)
   assert.equal(await run(url), 0, "a forwarded 403");
   answerHeaders = {};
   assert.equal(await run("http://127.0.0.1:1/v1/responses"), 0, "an unreachable endpoint");
+});
+
+test("the upfront child names a 401 body's shape and closed-set code and type, never its text", async (t) => {
+  const { createServer } = await import("node:http");
+  const begin = GATEWAY_RUNTIME_ENTRYPOINT.indexOf("const UPFRONT_ENDPOINTS = {");
+  const source = /\["-e",\s*'([^']+)',/.exec(GATEWAY_RUNTIME_ENTRYPOINT.slice(begin))?.[1];
+  assert.ok(source);
+  // The child runs with the environment the parent gives it.
+  const { env } = upfrontCheck("openai", undefined).calls[0].options;
+  let answer = 401;
+  let answerBody = "";
+  let breakOff = false;
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(answer, {
+        "content-type": "application/json",
+        "x-request-id": "req_" + HOSTILE_KEY,
+        "openai-organization": HOSTILE_KEY,
+        ...(breakOff && { "content-length": String(answerBody.length + 100) }),
+      });
+      if (breakOff) {
+        response.write(answerBody, () => response.socket.destroy());
+      } else {
+        response.end(answerBody);
+      }
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}/v1/responses`;
+  const run = (body) => {
+    answerBody = body;
+    return execute(process.execPath, ["-e", source], {
+      env: {
+        U: url,
+        H: JSON.stringify({ authorization: "Bearer fixture-key" }),
+        C: env.C,
+        T: env.T,
+      },
+    }).then(
+      ({ stdout, stderr }) => ({ status: 0, stdout, stderr }),
+      ({ code, stdout, stderr }) => ({ status: code, stdout, stderr }),
+    );
+  };
+  const quoted = JSON.stringify(HOSTILE_KEY);
+  for (const [body, status, bodyShape, providerErrorCode, providerErrorType] of [
+    [
+      `{"error":{"message":"Incorrect API key provided: ${HOSTILE_KEY}","type":"invalid_request_error","param":null,"code":"invalid_api_key"}}`,
+      14,
+      "json-error-code",
+      "invalid_api_key",
+      "invalid_request_error",
+    ],
+    [
+      '{"error":{"message":"Missing bearer or basic authentication in header","type":"invalid_request_error","param":null,"code":null}}',
+      15,
+      "json-error-no-code",
+      undefined,
+      "invalid_request_error",
+    ],
+    [
+      '{"error":{"message":"You must be a member of an organization to use the API.","type":"invalid_request_error","param":null,"code":"no_organization"}}',
+      13,
+      "json-error-code",
+      "no_organization",
+      "invalid_request_error",
+    ],
+    [
+      '{"error":{"code":"mismatched_project","message":"x"}}',
+      13,
+      "json-error-code",
+      "mismatched_project",
+      undefined,
+    ],
+    [
+      '{"error":{"code":"ip_not_authorized","type":"permission_error"}}',
+      13,
+      "json-error-code",
+      "ip_not_authorized",
+      "permission_error",
+    ],
+    [
+      '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
+      14,
+      "json-error-no-code",
+      undefined,
+      "authentication_error",
+    ],
+    // Off-set codes and types, however key-shaped, become "other".
+    [
+      `{"error":{"code":${quoted},"type":${quoted},"message":${quoted},"param":${quoted}}}`,
+      13,
+      "json-error-code",
+      "other",
+      "other",
+    ],
+    [
+      '{"error":{"code":"INVALID_API_KEY","type":"Authentication_Error"}}',
+      13,
+      "json-error-code",
+      "other",
+      "other",
+    ],
+    [
+      '{"error":{"code":401,"type":["authentication_error"]}}',
+      13,
+      "json-error-code",
+      "other",
+      "other",
+    ],
+    ['{"error":{"code":"","type":{"name":"x"}}}', 13, "json-error-code", "other", "other"],
+    ['{"error":{"code":false}}', 13, "json-error-code", "other", undefined],
+    // Prototype-shaped names are plain off-set values or own keys, never lookups.
+    [
+      '{"error":{"code":"__proto__","type":"constructor"}}',
+      13,
+      "json-error-code",
+      "other",
+      "other",
+    ],
+    [
+      '{"error":{"code":"toString","type":"hasOwnProperty"}}',
+      13,
+      "json-error-code",
+      "other",
+      "other",
+    ],
+    [
+      '{"error":{"__proto__":{"code":"invalid_api_key"}}}',
+      13,
+      "json-error-no-code",
+      undefined,
+      undefined,
+    ],
+    [
+      '{"__proto__":{"error":{"code":"invalid_api_key"}}}',
+      13,
+      "json-no-error",
+      undefined,
+      undefined,
+    ],
+    ['{"error":{}}', 13, "json-error-no-code", undefined, undefined],
+    // JSON without an error object, including a bare error string or array.
+    [`{"error":${quoted}}`, 13, "json-no-error", undefined, undefined],
+    ['{"error":["invalid_api_key"]}', 13, "json-no-error", undefined, undefined],
+    ['{"error":null,"code":"invalid_api_key"}', 13, "json-no-error", undefined, undefined],
+    [`{"message":${quoted}}`, 13, "json-no-error", undefined, undefined],
+    ["null", 13, "json-no-error", undefined, undefined],
+    [quoted, 13, "json-no-error", undefined, undefined],
+    [`Unauthorized: ${HOSTILE_KEY}`, 13, "non-json", undefined, undefined],
+    [`<html><body>401 ${HOSTILE_KEY}</body></html>`, 13, "non-json", undefined, undefined],
+    ["", 13, "empty", undefined, undefined],
+    [" \n\t", 13, "empty", undefined, undefined],
+  ]) {
+    const child = await run(body);
+    assert.equal(child.status, status, body);
+    assert.deepEqual(
+      JSON.parse(child.stdout),
+      [bodyShape, providerErrorCode ?? "", providerErrorType ?? ""],
+      body,
+    );
+    // The parent turns the child's result into the probe's fields.
+    const { rejected } = upfrontCheck("openai", undefined, "fixture-key", child);
+    assert.deepEqual(
+      rejected,
+      {
+        providerStatus: 401,
+        responseHeaderMarker: "provider-like",
+        ...({ 4: { providerCode: "invalid_api_key" }, 5: { providerCode: "missing_api_key" } }[
+          status % 10
+        ] ?? {}),
+        bodyShape,
+        ...(providerErrorCode && { providerErrorCode }),
+        ...(providerErrorType && { providerErrorType }),
+      },
+      body,
+    );
+    // Neither the body, a header value, the request's key nor any part of a
+    // hostile key leaves the child.
+    for (const text of [child.stdout, child.stderr, JSON.stringify(rejected)]) {
+      assert.ok(
+        !/Hostile|sk-proj|fixture-key|Incorrect|Unauthorized|member|html/i.test(text),
+        text,
+      );
+    }
+  }
+  // A body that breaks off mid-read names no shape: it was neither empty nor parsed.
+  breakOff = true;
+  const broken = await run(`{"error":{"code":"invalid_api_key","message":${quoted}`);
+  breakOff = false;
+  assert.equal(broken.status, 13);
+  assert.deepEqual(JSON.parse(broken.stdout), ["", "", ""]);
+  assert.deepEqual(upfrontCheck("openai", undefined, "fixture-key", broken).rejected, {
+    providerStatus: 401,
+    responseHeaderMarker: "provider-like",
+  });
+  // A non-401 answer writes nothing, whatever its body.
+  for (const status of [400, 403, 500]) {
+    answer = status;
+    const child = await run(`{"error":{"code":"invalid_api_key","message":${quoted}}}`);
+    assert.deepEqual([child.status, child.stdout], [0, ""], String(status));
+  }
 });

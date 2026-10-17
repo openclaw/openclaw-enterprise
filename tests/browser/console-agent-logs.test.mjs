@@ -389,6 +389,39 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
   assert.match(await timestamp("after the clocks went back"), /1:30:00\s+AM\s+GMT-5$/u);
 });
 
+// The UTC offset made timestamps wrap onto a second line in the fixed 170 px (150 px at 1100 px
+// and below) time column above 760 px, so every log row took two lines (findings 1681, 1697).
+// From 1000 px down the message moves below the time instead of shrinking to a sliver.
+test("log timestamps with their UTC offset stay on one line", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30.
+  computeDriver.state.lines = [{ time: "2026-12-31T02:29:59Z", raw: "longest timestamp" }];
+  for (const [locale, timezoneId, shown] of [
+    ["en-US", "Australia/Adelaide", /^12\/31\/2026, 12:59:59\sPM\sGMT\+10:30$/u],
+    ["en-US", "Asia/Kolkata", /^12\/31\/2026, 7:59:59\sAM\sGMT\+5:30$/u],
+    ["en-US", "America/New_York", /^12\/30\/2026, 9:29:59\sPM\sGMT-5$/u],
+    ["fr-FR", "Europe/Paris", /^31\/12\/2026\s03:29:59\sUTC\+1$/u],
+    ["de-DE", "Europe/Berlin", /^31\.12\.2026,\s03:29:59\sGMT\+1$/u],
+  ]) {
+    const { page } = await newPage(t, fixture, { context: { locale, timezoneId } });
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+    const time = page
+      .getByRole("log", { name: "Runtime log output" })
+      .locator(".log-row", { hasText: "longest timestamp" })
+      .locator(".log-time");
+    assert.match(await time.innerText(), shown);
+    for (const width of [1440, 1100, 1001, 1000, 761]) {
+      await page.setViewportSize({ width, height: 900 });
+      const lines = await time.evaluate((cell) => {
+        const range = cell.ownerDocument.createRange();
+        range.selectNodeContents(cell);
+        return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+      });
+      assert.equal(lines, 1, `one ${locale} ${timezoneId} timestamp line at ${width}px`);
+    }
+  }
+});
+
 test("log levels stay on one line and keep log columns aligned", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   const levels = ["error", "warn", "info", "debug"];
@@ -971,6 +1004,106 @@ test("the Logs tab explains cluster RBAC, unsupported Drivers and unavailable re
     .getByText(/This Compute Driver does not expose runtime status or logs/)
     .first()
     .waitFor();
+});
+
+const rateLimitRequestId = "req_12345678-1234-1234-1234-123456789abc";
+
+function rateLimitedResponse(retryAfter) {
+  return {
+    status: 429,
+    contentType: "application/json",
+    headers: retryAfter ? { "Retry-After": String(retryAfter) } : {},
+    body: JSON.stringify({
+      error: {
+        code: "RUNTIME_LOGS_RATE_LIMITED",
+        message: "Too many runtime log requests. Wait for Retry-After and try again.",
+      },
+      meta: { requestId: rateLimitRequestId },
+    }),
+  };
+}
+
+async function logsBeforeRateLimit(t) {
+  const logs = await logsFixture(t);
+  logs.computeDriver.state.lines = [line(1, "output before the rate limit")];
+  const { page } = await openRetainedLogs(t, logs);
+  await page.getByRole("log").getByText("output before the rate limit").waitFor();
+  return page;
+}
+
+test("rate-limited manual log reads explain when to retry without reading again", async (t) => {
+  const page = await logsBeforeRateLimit(t);
+  const reads = [];
+  let seconds;
+  await page.route("**/runtime/logs?*", (route) => {
+    reads.push(
+      new URL(route.request().url()).searchParams.has("download") ? "Download" : "Refresh logs",
+    );
+    return route.fulfill(rateLimitedResponse(seconds));
+  });
+
+  for (const [action, retryAfter, advice] of [
+    ["Refresh logs", 7, "Try again in 7 seconds."],
+    ["Download", 1, "Try again in 1 second."],
+    ["Refresh logs", undefined, "Try again shortly."],
+  ]) {
+    seconds = retryAfter;
+    await page.getByRole("button", { name: action }).click();
+    await waitForIdleFetches(page);
+    assert.equal(
+      await page.locator(".log-error").textContent(),
+      `Too many requests. ${advice} Request ID: ${rateLimitRequestId}`,
+    );
+    // Runtime status keeps polling, but a manual log read is audited and must not repeat.
+    await page.clock.runFor(15_000);
+    await waitForIdleFetches(page);
+    assert.deepEqual(reads.splice(0), [action]);
+    assert.equal(
+      await page.getByRole("button", { name: "Follow" }).getAttribute("aria-pressed"),
+      "false",
+    );
+  }
+});
+
+test("rate limits keep Follow and status automatic, but not a download made while following", async (t) => {
+  const page = await logsBeforeRateLimit(t);
+  const counts = { follow: 0, status: 0, download: 0 };
+  await page.route(/\/runtime(?:\/logs\?|$)/, (route) => {
+    const url = new URL(route.request().url());
+    const read = url.searchParams.has("download")
+      ? "download"
+      : url.pathname.endsWith("/logs")
+        ? "follow"
+        : "status";
+    counts[read]++;
+    return route.fulfill(rateLimitedResponse(read === "follow" ? 1 : 13));
+  });
+  const logError = page.locator(".log-error");
+  const waiting = `Too many requests. Waiting before the next read. Request ID: ${rateLimitRequestId}`;
+  await page.getByRole("button", { name: "Follow", exact: true }).click();
+  await page.clock.runFor(2_000);
+  await waitForIdleFetches(page);
+  assert.equal(await logError.textContent(), waiting);
+  // A one-second Retry-After does not shorten Follow's two-second minimum.
+  await page.clock.runFor(1_999);
+  assert.equal(counts.follow, 1);
+  await page.clock.runFor(1);
+  await waitForIdleFetches(page);
+  assert.equal(counts.follow, 2);
+
+  await page.getByRole("button", { name: "Download" }).click();
+  await waitForIdleFetches(page);
+  assert.match(await logError.textContent(), /Too many requests\. Try again in 13 seconds\./);
+
+  // Status has its own ten-second poll. Neither automatic read repeats the download.
+  await page.clock.runFor(6_000);
+  await waitForIdleFetches(page);
+  assert.equal(await page.getByRole("status").filter({ hasText: waiting }).textContent(), waiting);
+  assert.equal(counts.status, 1);
+  await page.clock.runFor(10_000);
+  await waitForIdleFetches(page);
+  assert.equal(counts.status, 2);
+  assert.equal(counts.download, 1);
 });
 
 test("the Sandbox source shows redacted policy decisions without a Pod picker", async (t) => {

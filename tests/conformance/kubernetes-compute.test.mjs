@@ -1106,8 +1106,21 @@ function dedicatedFirstDeployFixture({
         }
         return read(kind, name, target);
       };
-      const write = async ({ body }) => {
+      const write = async ({ body }, { replace = false } = {}) => {
         const previous = objects.get(key(kind, body.metadata.name, body.metadata.namespace));
+        // Like the API server: every write bumps resourceVersion, and a replace that names a
+        // stale one is a 409 Conflict (finding 1678). Two writes with the metadata of one read,
+        // as workspaceNodeReady once did (#2750 review), fail here as they do live.
+        const current = previous?.metadata.resourceVersion;
+        const named = body.metadata.resourceVersion;
+        if (replace && previous !== undefined && named !== undefined && named !== current) {
+          throw Object.assign(
+            new Error(
+              `Operation cannot be fulfilled on ${kind} ${body.metadata.name}: the object has been modified`,
+            ),
+            { statusCode: 409 },
+          );
+        }
         const changed =
           kind === "Deployment" && JSON.stringify(previous?.spec) !== JSON.stringify(body.spec);
         const value = {
@@ -1117,7 +1130,7 @@ function dedicatedFirstDeployFixture({
             ...previous?.metadata,
             ...body.metadata,
             uid: `${body.metadata.name}-uid`,
-            resourceVersion: "1",
+            resourceVersion: String(Number(current ?? "0") + 1),
           },
         };
         if (kind === "Deployment") {
@@ -1147,7 +1160,7 @@ function dedicatedFirstDeployFixture({
       };
       api[`patchNamespaced${kind}`] = write;
       api[`createNamespaced${kind}`] = write;
-      api[`replaceNamespaced${kind}`] = write;
+      api[`replaceNamespaced${kind}`] = (request) => write(request, { replace: true });
     }
   }
   clients.core.listNamespace = async () => ({ items: [] });
@@ -2057,7 +2070,7 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
       }
     },
   };
-  const { driver, revision, namespace } = dedicatedFirstDeployFixture({
+  const { driver, revision, namespace, clients } = dedicatedFirstDeployFixture({
     sandboxDriver,
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
@@ -2108,6 +2121,18 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
     /pinned to another Compute Driver/,
   );
   assert.equal(withdrawals.length, 3);
+  // A missing Namespace proves nothing about the exposure (finding 1693): the provider's
+  // Workspace outlives it, so the provider is still asked, in the derived placement.
+  const readNamespace = clients.core.readNamespace;
+  clients.core.readNamespace = async () => {
+    throw Object.assign(new Error("Not found"), { statusCode: 404 });
+  };
+  await driver.withdrawHarnessExposure(revision, signal);
+  assert.equal(withdrawals.length, 4);
+  assert.equal(withdrawals[3].revision, revision);
+  assert.equal(withdrawals[3].namespace.name, namespace);
+  assert.equal(withdrawals[3].workspaceNodeEnrolled, true);
+  clients.core.readNamespace = readNamespace;
 });
 
 // Finding 1297: the projection covers every setting the Harness model rule checks, not only
@@ -7415,14 +7440,17 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
   );
   assert.equal(withdrawals.length, 0);
 
-  // Without the Namespace there is no Sandbox left to revoke, and the gateway is not called.
+  // A missing Namespace proves nothing about the Sandbox (finding 1693): the gateway's record
+  // outlives it, so the gateway still withdraws, in the derived placement, and its answer stands.
   namespaceExists = false;
   withdrawals.length = 0;
   assert.deepEqual(await driver.withdrawCredentialSource(revision, source, signal), {
     sourceId: source.id,
-    state: "absent",
+    state: "revoked",
   });
-  assert.equal(withdrawals.length, 0);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].namespace.name, namespace);
+  assert.equal(withdrawals[0].sandbox.resourceName, "os-rev-withdraw");
   await assert.rejects(
     driver.withdrawCredentialSource(
       { ...revision, compute: { id: "other-compute", implementation: driver.implementation } },
@@ -11379,8 +11407,12 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
                   if (args[0] === "-e") {
                     // The upfront request's child exits 3-6 (plus 10 or 20 for the
                     // responder) only on the provider's 401: 13 is an unclassified
-                    // 401 that carried OpenAI's response headers.
-                    return { status: upfront ? 13 : 0 };
+                    // 401 that carried OpenAI's response headers. Its stdout names
+                    // the body's shape and closed-set error code and type.
+                    return {
+                      status: upfront ? 13 : 0,
+                      stdout: upfront ? '["json-error-code","other","invalid_request_error"]' : "",
+                    };
                   }
                   if (variant.startsWith("cap exceeded")) {
                     return {
@@ -11446,16 +11478,21 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         assert.equal(calls.length, upfront ? 1 : 2);
         assert.equal(probeTemplate, "/approved-temporary/openclaw-auth-probe-");
         // The upfront request carries the credential as OpenClaw sends it to
-        // the provider's default endpoint, and nothing else from the environment.
+        // the provider's default endpoint, the closed sets of error codes (C) and
+        // types (T) it may name, and nothing else from the environment.
         const [upfrontCall, probeCall] = calls;
         assert.equal(upfrontCall.command, "/usr/local/bin/node");
         assert.equal(upfrontCall.timeout, 10_000);
         assert.deepEqual(Object.keys(upfrontCall.environment).sort(), [
+          "C",
           "H",
           "NODE_EXTRA_CA_CERTS",
           "SSL_CERT_FILE",
+          "T",
           "U",
         ]);
+        assert.ok(JSON.parse(upfrontCall.environment.C).includes("invalid_api_key"));
+        assert.ok(JSON.parse(upfrontCall.environment.T).includes("invalid_request_error"));
         assert.equal(upfrontCall.environment.NODE_EXTRA_CA_CERTS, "/run/openshell/ca.crt");
         assert.deepEqual(
           [upfrontCall.environment.U, JSON.parse(upfrontCall.environment.H)],
@@ -11585,6 +11622,9 @@ test("embedded startup probes its selected provider and allows graceful Gateway 
         );
         assert.equal(probeLog.providerCode, undefined);
         assert.equal(probeLog.responseHeaderMarker, upfront ? "provider-like" : undefined);
+        assert.equal(probeLog.bodyShape, upfront ? "json-error-code" : undefined);
+        assert.equal(probeLog.providerErrorCode, upfront ? "other" : undefined);
+        assert.equal(probeLog.providerErrorType, upfront ? "invalid_request_error" : undefined);
         assert.doesNotMatch(body + probeLines[0], /fixture-model-key|provider-detail/);
         if (accepted) {
           signals.get("SIGTERM")();
@@ -16372,7 +16412,7 @@ function workspaceSetupFixture(
                         name: "initialize-workspace",
                         state: {
                           terminated: {
-                            exitCode: 1,
+                            exitCode: state.initializerExitCode ?? 1,
                             finishedAt: "2026-09-22T00:00:00Z",
                             message: "private-content-must-not-escape",
                           },
@@ -17353,6 +17393,17 @@ for (const embedded of [true, false]) {
       code: "WORKSPACE_SETUP_FAILED",
       checkedAt: "2026-09-22T00:00:00Z",
     });
+    // The kubelet restarts the init container, which may pass: the wait is named (finding 1677).
+    assert.equal(result.pendingReason, "WORKSPACE_SETUP_RETRYING");
+    // The setup runner refused the workspace, which every restart repeats: no wait to name.
+    fixture.state.initializerExitCode = 2;
+    const refused = await fixture.driver.prepareRevision(fixture.revision, fixture.context);
+    assert.equal(refused.ready, false);
+    assert.deepEqual(refused.runtimeFailure, {
+      ...result.runtimeFailure,
+      code: "WORKSPACE_SETUP_REFUSED",
+    });
+    assert.equal(Object.hasOwn(refused, "pendingReason"), false);
     const secret = [...fixture.objects.values()].find(
       ({ kind, metadata }) => kind === "Secret" && metadata.name.startsWith("workspace-setup-"),
     );
@@ -17365,6 +17416,8 @@ for (const embedded of [true, false]) {
     for (const scenario of [
       { finishedAt: new Date("2026-09-22T00:00:00Z"), waiting: false },
       { finishedAt: new Date("2026-09-22T00:00:00Z"), waiting: true },
+      // A refusal in back-off is read from the last failed instance too (finding 1677).
+      { finishedAt: new Date("2026-09-22T00:00:00Z"), waiting: true, exitCode: 2 },
       { finishedAt: new Date(Number.NaN) },
       { finishedAt: null },
       { finishedAt: undefined },
@@ -17377,6 +17430,7 @@ for (const embedded of [true, false]) {
     ]) {
       const fixture = workspaceSetupFixture(embedded);
       fixture.state.failedInitializer = true;
+      fixture.state.initializerExitCode = scenario.exitCode;
       const clients = await fixture.driver.apiClients;
       const list = clients.core.listNamespacedPod;
       // The shipped SDK decodes the API's finishedAt into Date. A waiting
@@ -17400,7 +17454,10 @@ for (const embedded of [true, false]) {
       const result = await fixture.driver.prepareRevision(fixture.revision, fixture.context);
       const after = Date.now();
       assert.equal(result.ready, false);
-      assert.equal(result.runtimeFailure.code, "WORKSPACE_SETUP_FAILED");
+      assert.equal(
+        result.runtimeFailure.code,
+        scenario.exitCode === 2 ? "WORKSPACE_SETUP_REFUSED" : "WORKSPACE_SETUP_FAILED",
+      );
       const checkedAt = Date.parse(result.runtimeFailure.checkedAt);
       if (scenario.expected !== undefined) {
         assert.equal(result.runtimeFailure.checkedAt, scenario.expected);

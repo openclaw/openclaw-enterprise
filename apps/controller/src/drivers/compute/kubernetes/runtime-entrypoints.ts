@@ -1,3 +1,11 @@
+// A relative import, like the others here: CI image builds and the in-image supervisor proof
+// load this file from a checkout or copy with no workspace packages installed.
+import {
+  RUNTIME_DIAGNOSTIC_CHECKS,
+  RUNTIME_DIAGNOSTIC_CODES,
+  RUNTIME_FAILURE_CHECKS,
+} from "../../../../../../packages/contracts/src/runtime-failure.mjs";
+
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
@@ -107,22 +115,14 @@ function startRuntimeReadinessServer(readiness) {
 `;
 
 // The status path Compute reads a held startup failure from, and the closed
-// vocabulary of codes a runtime may hold. Shared by the Codex Harness and the
+// vocabulary of checks and codes a runtime may report, injected from the contract
+// OCC records them by (finding 1674). Shared by the Codex Harness and the
 // dedicated OpenClaw worker programs.
 const RUNTIME_STATUS_CONSTANTS_HELPER = String.raw`
 const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
-const RUNTIME_DIAGNOSTIC_CODES = new Set([
-  "LOGIN_FAILED",
-  "MODEL_PROBE_FAILED",
-  "MODEL_PROBE_TIMEOUT",
-  "MODEL_PROBE_CPU_STARVED",
-  "UNAVAILABLE",
-  "NOT_CONFIGURED",
-  "AUTHENTICATION_FAILED",
-  "DISCONNECTED",
-  "INCOMPATIBLE_RESPONSE",
-  "PROBE_FAILED",
-]);
+const RUNTIME_DIAGNOSTIC_CODES = new Set(${JSON.stringify(RUNTIME_DIAGNOSTIC_CODES)});
+const RUNTIME_FAILURE_CHECKS = new Set(${JSON.stringify(RUNTIME_FAILURE_CHECKS)});
+const RUNTIME_DIAGNOSTIC_CHECKS = new Set(${JSON.stringify(RUNTIME_DIAGNOSTIC_CHECKS)});
 `;
 
 // A provider-owned Harness (a Codex app-server or a dedicated OpenClaw worker) gets
@@ -160,7 +160,9 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
   ) {
     return;
   }
-  requireNonEmptyString(check, "Runtime failure check");
+  if (!RUNTIME_FAILURE_CHECKS.has(check)) {
+    throw new Error("Runtime failure check is invalid.");
+  }
   if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
     throw new Error("Runtime failure code is invalid.");
   }
@@ -379,7 +381,9 @@ function publishPluginRuntimeStatus(report) {
 
 function publishRuntimeFailure(check, code, cause) {
   if (runtimeStatusPort() === undefined) return;
-  requireNonEmptyString(check, "Runtime failure check");
+  if (!RUNTIME_FAILURE_CHECKS.has(check)) {
+    throw new Error("Runtime failure check is invalid.");
+  }
   if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
     throw new Error("Runtime failure code is invalid.");
   }
@@ -398,7 +402,9 @@ function publishRuntimeReady() {
 }
 
 function runtimeDiagnosticCheck(check, state, checkedAt, code) {
-  requireNonEmptyString(check, "Runtime diagnostic check");
+  if (!RUNTIME_DIAGNOSTIC_CHECKS.has(check)) {
+    throw new Error("Runtime diagnostic check is invalid.");
+  }
   if (code !== undefined && !RUNTIME_DIAGNOSTIC_CODES.has(code)) {
     throw new Error("Runtime diagnostic code is invalid.");
   }
@@ -2085,13 +2091,24 @@ function probeOpenClawAuthenticationFailure() {
 // Anthropic's request-id plus x-should-retry), "openshell-policy" (the
 // X-OpenShell-Policy header the OpenShell supervisor stamps on its own answers,
 // today 403/502), "mixed" (both) or "none". It is an observation, not an origin:
-// the relay forwards an upstream 401 with its headers intact.
+// the relay forwards an upstream 401 with its headers intact. "bodyShape" names the
+// 401 body's form ("json-error-code", "json-error-no-code": an error object with or
+// without a non-null code, "json-no-error", "non-json" or "empty"; absent if the
+// body could not be read); "providerErrorCode" and
+// "providerErrorType" carry error.code and error.type only when they are in the
+// closed sets below, else "other". The child alone reads the body and writes only
+// those tokens to stdout; the parent keeps a token only if it is in the same sets,
+// so message text, header values and the body never leave the child.
 const UPFRONT_ENDPOINTS = {
   openai: ["https://api.openai.com/v1", { "openai-responses": "/responses", "openai-completions": "/chat/completions" }, (key) => ({ authorization: "Bearer " + key })],
   anthropic: ["https://api.anthropic.com", { "anthropic-messages": "/v1/messages" }, (key) => !key.startsWith("sk-ant-oat") && { "x-api-key": key, "anthropic-version": "2023-06-01" }],
 };
 const UPFRONT_REJECTION_CODES = { 4: "invalid_api_key", 5: "missing_api_key", 6: "insufficient_permissions" };
 const UPFRONT_HEADER_MARKERS = { 0: "none", 10: "provider-like", 20: "openshell-policy", 30: "mixed" };
+const UPFRONT_BODY_SHAPES = ["json-error-code", "json-error-no-code", "json-no-error", "non-json", "empty"];
+const UPFRONT_ERROR_CODES = ["invalid_api_key", "insufficient_permissions", "invalid_organization", "mismatched_organization", "no_organization", "invalid_project", "mismatched_project", "account_deactivated", "deactivated_workspace", "ip_not_authorized"];
+const UPFRONT_ERROR_TYPES = ["invalid_request_error", "authentication_error", "permission_error"];
+const upfrontToken = (name, value, names) => (names.includes(value) ? { [name]: value } : {});
 function credentialRejectedUpfront(provider, fragment, key, stage) {
   fragment ??= {};
   const [base, paths, authorize] = UPFRONT_ENDPOINTS[provider] ?? [];
@@ -2106,17 +2123,21 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
   stage("preflight");
   // The exit status is a 401's header marker (0, 10, 20 or 30) plus its class (3:
   // unclassified, 4-6: the codes above); anything else proves nothing.
-  const status = require("node:child_process").spawnSync(process.execPath, ["-e",
-    'fetch(process.env.U,{method:"POST",headers:JSON.parse(process.env.H),body:"{}",signal:AbortSignal.timeout(8000)}).then(async(r)=>{if(r.status!==401)process.exit(0);const n=[...r.headers.keys()],p=(r.headers.has("x-request-id")&&n.some((k)=>/^(x-)?openai-/.test(k)))||(r.headers.has("request-id")&&r.headers.has("x-should-retry")),o=r.headers.has("x-openshell-policy"),s=o?(p?30:20):p?10:0;let e;try{e=(await r.json())?.error}catch{}const c=e?.code,m=typeof e?.message==="string"?e.message:"";process.exit(s+(c==="invalid_api_key"||/invalid x-api-key/i.test(m)?4:/didn.t provide an api key|no api key provided|x-api-key header is required|missing bearer or basic authentication/i.test(m)?5:c==="insufficient_permissions"||/insufficient permissions|missing scopes/i.test(m)?6:3))},()=>process.exit(0))',
+  const { status, stdout } = require("node:child_process").spawnSync(process.execPath, ["-e",
+    'fetch(process.env.U,{method:"POST",headers:JSON.parse(process.env.H),body:"{}",signal:AbortSignal.timeout(8000)}).then(async(r)=>{if(r.status!==401)process.exit(0);const n=[...r.headers.keys()],p=(r.headers.has("x-request-id")&&n.some((k)=>/^(x-)?openai-/.test(k)))||(r.headers.has("request-id")&&r.headers.has("x-should-retry")),o=r.headers.has("x-openshell-policy"),s=o?(p?30:20):p?10:0;let t,e,b="";try{t=await r.text()}catch{}if(typeof t==="string")if(!t.trim())b="empty";else try{const j=JSON.parse(t);b="json-no-error";if(j?.error&&typeof j.error==="object"&&!Array.isArray(j.error)){e=j.error;b=e.code==null?"json-error-no-code":"json-error-code"}}catch{b="non-json"}const c=e?.code,m=typeof e?.message==="string"?e.message:"",k=(x,l)=>x==null?"":JSON.parse(l).includes(x)?x:"other";try{require("node:fs").writeSync(1,JSON.stringify([b,k(c,process.env.C),k(e?.type,process.env.T)]))}catch{}process.exit(s+(c==="invalid_api_key"||/invalid x-api-key/i.test(m)?4:/didn.t provide an api key|no api key provided|x-api-key header is required|missing bearer or basic authentication/i.test(m)?5:c==="insufficient_permissions"||/insufficient permissions|missing scopes/i.test(m)?6:3))},()=>process.exit(0))',
   ], {
-    env: { U: base + path, H: JSON.stringify({ ...headers, "content-type": "application/json" }), NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS, SSL_CERT_FILE: process.env.SSL_CERT_FILE },
-    stdio: "ignore", timeout: 10000, killSignal: "SIGKILL",
-  }).status;
+    env: { U: base + path, H: JSON.stringify({ ...headers, "content-type": "application/json" }), C: JSON.stringify(UPFRONT_ERROR_CODES), T: JSON.stringify(UPFRONT_ERROR_TYPES), NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS, SSL_CERT_FILE: process.env.SSL_CERT_FILE },
+    stdio: ["ignore", "pipe", "ignore"], encoding: "utf8", maxBuffer: 1024, timeout: 10000, killSignal: "SIGKILL",
+  });
   if (!Number.isInteger(status)) return false;
   const rejection = status % 10;
   const marker = UPFRONT_HEADER_MARKERS[status - rejection];
   if (!(rejection >= 3 && rejection <= 6) || marker === undefined) return false;
-  return { providerStatus: 401, responseHeaderMarker: marker, ...(UPFRONT_REJECTION_CODES[rejection] === undefined ? {} : { providerCode: UPFRONT_REJECTION_CODES[rejection] }) };
+  let tokens;
+  try { tokens = JSON.parse(stdout); } catch {}
+  const [bodyShape, errorCode, errorType] = Array.isArray(tokens) ? tokens : [];
+  return { providerStatus: 401, responseHeaderMarker: marker, ...(UPFRONT_REJECTION_CODES[rejection] === undefined ? {} : { providerCode: UPFRONT_REJECTION_CODES[rejection] }),
+    ...upfrontToken("bodyShape", bodyShape, UPFRONT_BODY_SHAPES), ...upfrontToken("providerErrorCode", errorCode, [...UPFRONT_ERROR_CODES, "other"]), ...upfrontToken("providerErrorType", errorType, [...UPFRONT_ERROR_TYPES, "other"]) };
 }
 
 function runOpenClawAuthenticationProbe(fs, capMs) {

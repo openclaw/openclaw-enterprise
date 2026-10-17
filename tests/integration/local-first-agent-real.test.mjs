@@ -488,11 +488,15 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       providerStatus: 401,
       providerCode: "invalid_api_key",
       responseHeaderMarker: "provider-like",
+      bodyShape: "json-error-code",
+      providerErrorCode: "invalid_api_key",
+      providerErrorType: "invalid_request_error",
     };
     const records = probeLog({ code: "AUTHENTICATION_FAILED", ...provider });
     // The provider fields reach the assertion's input through the production sanitizer.
-    assert.equal(records[0]?.fields?.providerCode, provider.providerCode);
-    assert.equal(records[0]?.fields?.responseHeaderMarker, provider.responseHeaderMarker);
+    for (const [name, value] of Object.entries(provider)) {
+      assert.equal(records[0]?.fields?.[name], value, name);
+    }
     const observed = await observe(
       handoff,
       handoff,
@@ -525,9 +529,15 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       providerStatus: 200,
       providerCode: "private-sentinel",
       responseHeaderMarker: "private-sentinel-source",
+      bodyShape: "private-sentinel-shape",
+      providerErrorCode: "private-sentinel-code",
+      providerErrorType: "private-sentinel-type",
     });
     assert.equal(records[0]?.fields?.providerCode, "private-sentinel");
     assert.equal(records[0]?.fields?.responseHeaderMarker, "private-sentinel-source");
+    assert.equal(records[0]?.fields?.bodyShape, "private-sentinel-shape");
+    assert.equal(records[0]?.fields?.providerErrorCode, "private-sentinel-code");
+    assert.equal(records[0]?.fields?.providerErrorType, "private-sentinel-type");
     const failed = { ...deployment, error: failure("RUNTIME_MODEL_PROBE_FAILED") };
     const observed = await observe(
       failed,
@@ -543,6 +553,9 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       providerStatus: "other",
       providerCode: "none",
       responseHeaderMarker: "absent",
+      bodyShape: "absent",
+      providerErrorCode: "absent",
+      providerErrorType: "absent",
     });
     const single = await observe(
       failed,
@@ -556,6 +569,9 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       providerStatus: "other",
       providerCode: "other",
       responseHeaderMarker: "other",
+      bodyShape: "other",
+      providerErrorCode: "other",
+      providerErrorType: "other",
     });
     for (const providerStatus of [399, 401.5, 600]) {
       const statusPage = page(probeLog({ providerStatus }));
@@ -623,6 +639,9 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       providerStatus: "none",
       providerCode: "none",
       responseHeaderMarker: "absent",
+      bodyShape: "absent",
+      providerErrorCode: "absent",
+      providerErrorType: "absent",
     });
     for (const other of [
       { ...deployment, deploymentId: "another-revision" },
@@ -716,6 +735,9 @@ test("native terminal failures report only fixed failure codes", async (t) => {
           code: "MODEL_PROBE_FAILED",
           ...provider,
           responseHeaderMarker: "absent",
+          bodyShape: "absent",
+          providerErrorCode: "absent",
+          providerErrorType: "absent",
         },
       },
     );

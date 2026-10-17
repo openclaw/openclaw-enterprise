@@ -3,7 +3,7 @@ import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contra
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
 import { ScopeViolationError } from "../errors.ts";
-import { runtimeFailureCause } from "../runtime-failure-cause.ts";
+import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
 
 export { runtimeFailureCause };
 
@@ -80,6 +80,11 @@ export function deploymentProgressForWork(
     case "WORKSPACE_NODE_PENDING":
       code = attempt.code;
       message = "Workloads are ready; waiting for the workspace node to connect to the Gateway.";
+      break;
+    case "WORKSPACE_SETUP_RETRYING":
+      code = attempt.code;
+      message =
+        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.";
       break;
     case "WORKSPACE_NODE_BINDING_PENDING":
       code = attempt.code;
@@ -398,54 +403,11 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
   });
 }
 
-// The values runtime entrypoints publish with a held startup failure
-// (drivers/compute/kubernetes/runtime-entrypoints.ts and drivers/compute/runtime-startup.ts),
-// plus the evidence a Compute driver builds itself from what its platform reports: Kubernetes
-// Compute records a failed initialize-workspace init container as workspace-setup /
-// WORKSPACE_SETUP_FAILED (finding 1675). A provider-owned Harness serves runtime evidence from
-// inside its Sandbox, where Agent code can answer in its place, so a value outside these sets
-// is recorded, and read back, as UNRECOGNIZED rather than as served (finding 1660).
-const UNRECOGNIZED_RUNTIME_FAILURE_VALUE = "UNRECOGNIZED";
-const RUNTIME_FAILURE_COMPONENTS: ReadonlySet<string> = new Set(["agent", "gateway"]);
-const RUNTIME_FAILURE_CHECKS: ReadonlySet<string> = new Set([
-  "login",
-  "model-probe",
-  "peer-bridge-record",
-  "plugin-approvers",
-  "state-migration",
-  "workspace-setup",
-]);
-const RUNTIME_FAILURE_CODES: ReadonlySet<string> = new Set([
-  "AUTHENTICATION_FAILED",
-  "DISCONNECTED",
-  "INCOMPATIBLE_RESPONSE",
-  "LOGIN_FAILED",
-  "MODEL_PROBE_CPU_STARVED",
-  "MODEL_PROBE_FAILED",
-  "MODEL_PROBE_TIMEOUT",
-  "NOT_CONFIGURED",
-  "PROBE_FAILED",
-  "UNAVAILABLE",
-  "WORKSPACE_SETUP_FAILED",
-]);
-
-function recognizedRuntimeFailureValue(value: string, known: ReadonlySet<string>): string {
-  return known.has(value) ? value : UNRECOGNIZED_RUNTIME_FAILURE_VALUE;
-}
-
-function recordedRuntimeFailureEvidence(
-  evidence: Readonly<RuntimeFailureEvidence>,
-): RuntimeFailureEvidence {
-  return Object.freeze({
-    component: recognizedRuntimeFailureValue(evidence.component, RUNTIME_FAILURE_COMPONENTS),
-    check: recognizedRuntimeFailureValue(evidence.check, RUNTIME_FAILURE_CHECKS),
-    checkedAt: evidence.checkedAt,
-    code: recognizedRuntimeFailureValue(evidence.code, RUNTIME_FAILURE_CODES),
-    ...(evidence.cause === undefined ? {} : { cause: evidence.cause }),
-  });
-}
-
-/** Validates failure data before it is recorded, and again when it is read back. */
+/**
+ * Validates failure data before it is recorded, and again when it is read back. A runtime
+ * failure value outside the vocabulary in packages/contracts/src/runtime-failure.mjs is recorded,
+ * and read back, as UNRECOGNIZED rather than as served (findings 1660, 1674).
+ */
 export function validateFailureData(
   reasonCode: string,
   data: unknown,
@@ -498,7 +460,7 @@ export function validateFailureData(
       timeoutMs,
       ...(evidence === undefined
         ? {}
-        : { runtimeFailure: recordedRuntimeFailureEvidence(evidence) }),
+        : { runtimeFailure: recognizedRuntimeFailureValues(evidence) }),
     });
   }
   if (reasonCode === "RUNTIME_MODEL_PROBE_FAILED") {
@@ -518,7 +480,7 @@ export function validateFailureData(
     if (evidence.code !== "MODEL_PROBE_FAILED") {
       throw new ScopeViolationError("Model probe failure data requires its runtime failure.");
     }
-    return Object.freeze({ runtimeFailure: recordedRuntimeFailureEvidence(evidence) });
+    return Object.freeze({ runtimeFailure: recognizedRuntimeFailureValues(evidence) });
   }
   throw new ScopeViolationError("Controller work failure data is not allowed for this code.");
 }
@@ -719,6 +681,8 @@ function deploymentErrorMessage(code: string): string {
       return "A Secret this revision binds is missing or no longer belongs to the selected Secret Driver. Bind available Secrets, then deploy again.";
     case "NAMESPACE_NOT_READY":
       return "The Agent's Namespace was not ready when the controller ran this deployment, for example while it is being deleted. Deploy again once the Namespace is ready.";
+    case "WORKSPACE_SETUP_REFUSED":
+      return "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.";
     case "WORKSPACE_SETUP_UNSUPPORTED":
       return "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.";
     case "DEPENDENCY_UNAVAILABLE":
@@ -736,7 +700,7 @@ function deploymentErrorMessage(code: string): string {
     case "SANDBOX_HARNESS_UNSUPPORTED":
       return "The Sandbox Driver does not support this revision's Harness.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
-      return "The Sandbox gateway refused the controller's identity in this revision's Workspace, so the Driver could not confirm the Harness exposure withdrawn. Restore the controller gateway identity's Workspace role, then deploy again.";
+      return "The Sandbox gateway refused the controller's identity in this revision's Workspace, so the Driver could not confirm the revision's Sandbox removed, its Harness exposure withdrawn or its credentials detached. A Workspace removed outside the controller presents the same way. Restore the controller gateway identity's Workspace role (or recreate the Workspace with a deploy), then deploy, stop, delete or withdraw again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
       return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
     case "CREDENTIAL_WITHDRAWN":

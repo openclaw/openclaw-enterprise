@@ -200,7 +200,11 @@ const NAMED_DEPLOYMENT_WAITS = new Set(["NAMESPACE_POD_QUOTA_EXCEEDED"]);
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
   "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+// The deployment read was refused (401, 403 or 404): the reader can't see its waits now.
+const DEPLOYMENT_UNREADABLE = Symbol("deployment unreadable");
 
+// The deployment's actionable wait (a sentence), none (null), DEPLOYMENT_UNREADABLE, or undefined
+// when the read was cut off or temporarily unavailable.
 async function namedDeploymentWait(request, namespaceId, job, signal) {
   if (
     typeof job.agentId !== "string" ||
@@ -222,8 +226,29 @@ async function namedDeploymentWait(request, namespaceId, job, signal) {
       ? attempt.message
       : null;
   } catch (error) {
-    return [401, 403, 404].includes(error.status) ? null : undefined;
+    return [401, 403, 404].includes(error.status) ? DEPLOYMENT_UNREADABLE : undefined;
   }
+}
+
+// The wait a job past handoff names for its first deployment (finding 1690), as the deployment's
+// status does: its fixed sentence after the provisioning line. A reader who can't read the
+// deployment gets the job's own PROVISIONING_DEPLOYMENT_PENDING, which says no more than the
+// provisioning line, so that line stays. A wait someone must act on stands alone, as above, and
+// so does a stop, which provisioning no longer continues.
+const STANDALONE_JOB_WAITS = new Set([...NAMED_DEPLOYMENT_WAITS, "AGENT_STOP_YIELDED"]);
+
+function jobDeploymentWait(job) {
+  const attempt = job.progress?.lastAttempt;
+  if (
+    typeof attempt?.message !== "string" ||
+    !attempt.message ||
+    attempt.code === "PROVISIONING_DEPLOYMENT_PENDING"
+  ) {
+    return null;
+  }
+  return STANDALONE_JOB_WAITS.has(attempt.code)
+    ? attempt.message
+    : `${provisioningStatusText("running")} ${attempt.message}`;
 }
 
 async function waitForProvisioning({ request, status, first, namespaceId, isCurrent }) {
@@ -232,8 +257,9 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
-  // The last named wait stays shown until a later deployment read names another or none: a read
-  // cut off at the next poll would otherwise flip the line back to the bare text (finding 1637).
+  // The quota wait the last fresh deployment read named. It fills in when a later read is cut off
+  // or unavailable and the job names no wait, so the line doesn't flip back to the bare text
+  // (finding 1637); a fresh answer or a refusal replaces it.
   let named = null;
   while (current?.status === "queued" || current?.status === "running") {
     if (typeof current.url !== "string" || !current.url) {
@@ -245,10 +271,20 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
     const detail = new AbortController();
     const nextPoll = wait(1_000).then(() => detail.abort());
     const read = await namedDeploymentWait(request, namespaceId, current, detail.signal);
-    if (read !== undefined) {
+    let detailText;
+    if (read === DEPLOYMENT_UNREADABLE) {
+      // A refusal clears every detail, the job's too: the job was read before the refusal.
+      named = null;
+      detailText = null;
+    } else if (read !== undefined) {
+      // A fresh answer's actionable wait comes first; otherwise the job names the wait.
       named = read;
+      detailText = read ?? jobDeploymentWait(current);
+    } else {
+      // Without a fresh answer, the job's wait is newer than the one kept from an earlier read.
+      detailText = jobDeploymentWait(current) ?? named;
     }
-    setText(status, named ?? provisioningStatusText(started ? "running" : current.status));
+    setText(status, detailText ?? provisioningStatusText(started ? "running" : current.status));
     await nextPoll;
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");

@@ -266,7 +266,7 @@ literal `APP_SERVER_PORT`. The revision UUID is the first `request_id`; bounded
 [request ID retries](../../flows/openshell-sandbox-provisioning.md#4-call-the-versioned-gateway-contract)
 handle unresolved refusals when no Sandbox exists. Reconciliation adopts only an
 exact Sandbox and, before enrollment, exposure. The client keeps a normalized control URL and the
-original advertised workload URL, which `harnessEndpoint` returns
+advertised workload URL, which `harnessEndpoint` returns
 as a WebSocket origin.
 
 Compute supplies only `APP_TOKEN_SHA`, never the raw token; bearer passthrough
@@ -274,18 +274,18 @@ forwards the header Codex, or a native held failure, authenticates. Other
 exposures keep OpenShell's authorization-stripping default. A Sandbox without a
 replayable Create receipt must be removed, not mutated by `ExposeService`.
 
-With that capability, Compute replaces the fail-closed Gateway target and omits
+With it, Compute replaces the fail-closed Gateway target and omits
 the direct Agent Service and Compute-owned Harness route. Drivers without it
 retain the Kubernetes transport.
 
-A native worker's node opens the Gateway connection itself. Its exposure serves
+A native worker's node opens its Gateway connection. Its exposure serves
 only Compute's held-failure read before enrollment; OpenShell routes it
 unauthenticated, so once the node enrolls the Driver deletes it
-(`DeleteService`, fail closed); adoption or recreation then has none. A missing
-service counts as withdrawn only while `GetWorkspace` answers (OpenShell hides
-unauthorized Sandboxes as missing); a refusal fails the revision with
-`SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's sweep covers revisions that get no
-pass and candidates that fail for good.
+(`DeleteService`, fail closed); adoption or recreation has none. A missing
+service, Sandbox or credential attachment is gone only if `GetWorkspace` answers
+and a second read still misses it (OpenShell hides unauthorized Sandboxes as
+missing); a refusal fails with `SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's
+sweep covers passless revisions and failed candidates.
 
 ## Kubernetes and admission requirements
 

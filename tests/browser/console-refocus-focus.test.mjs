@@ -212,3 +212,34 @@ test("refocusing the Agents list restores focus on sidebar and header controls",
   await refocusHeld(t, page);
   assert.equal(await isFocused(navigation), true, "focus returns to the navigation toggle");
 });
+
+// At phone width the recheck's new shell starts with its navigation drawer closed, so a control
+// that was focused in the open drawer is hidden. Focus goes to the drawer's toggle, as an account
+// menu item gives it to the account toggle, instead of falling to the body (finding 1680).
+test("refocusing at phone width with the navigation drawer open focuses the drawer toggle", async (t) => {
+  const { fixture, namespace, page } = await openDeployedList(t, "Refocus drawer");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.locator(settledView).locator(".agent-deployment a").waitFor();
+  const navigation = page.getByRole("button", { name: "Open navigation" });
+  const drawer = page.locator("#navigation-drawer");
+  const toggle = drawer.locator(".account-toggle");
+  for (const [name, control, openMenu = false] of [
+    ["a navigation link", drawer.getByRole("link", { name: "Namespaces", exact: true })],
+    ["the account toggle", toggle],
+    ["an account menu item", drawer.getByRole("menuitem", { name: "Settings" }), true],
+    ["the drawer's close button", drawer.getByRole("button", { name: "Close navigation" })],
+  ]) {
+    await navigation.click();
+    await drawer.waitFor({ state: "visible" });
+    if (openMenu) {
+      await toggle.click();
+    }
+    await control.focus();
+    assert.equal(await isFocused(control), true, `focus ${name}`);
+    await refocusHeld(t, page);
+    assert.equal(await isFocused(navigation), true, `${name} gives focus to the drawer toggle`);
+    assert.equal(await navigation.getAttribute("aria-expanded"), "false");
+    assert.equal(await drawer.isVisible(), false, "the drawer is closed");
+  }
+});

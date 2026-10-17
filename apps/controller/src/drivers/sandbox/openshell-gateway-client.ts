@@ -36,6 +36,8 @@ import type {
 import type { PackageDefinition } from "@grpc/proto-loader";
 
 export {
+  confirmSandboxAbsent,
+  gatewayIdentityRefusal,
   OpenShellAdmissionLimitError,
   OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
@@ -340,6 +342,12 @@ export interface OpenShellGatewayClient
     name: string,
     signal: AbortSignal,
   ): Promise<void>;
+  /**
+   * Removes one Sandbox. Resolves only once OpenShell confirms it gone; NOT_FOUND is a failure,
+   * since it names a Sandbox that is gone or that this identity may not see (OpenShell answers
+   * both alike), so it confirms nothing. Callers read first and confirm an absent Sandbox with
+   * `confirmSandboxAbsent`.
+   */
   deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void>;
   /** Discards process output and returns its exit code only after the stream completes. */
   execSandbox(request: OpenShellSandboxExecRequest, signal: AbortSignal): Promise<number>;
@@ -1471,14 +1479,17 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   }
 
   /**
-   * Resolves only once OpenShell reports the Sandbox gone: COMPLETED, ALREADY_ABSENT or
-   * NOT_FOUND from DeleteSandbox, or, after ACCEPTED (or no outcome), GetSandbox no longer
-   * finding the targeted Sandbox. NOT_FOUND is also OpenShell's answer for a Sandbox this
-   * identity may not see, so a lost Workspace role reads as "gone" here (finding 1676; the
-   * Harness exposure path confirms it through GetWorkspace instead). One deadline bounds the call and that wait (a GetSandbox in
-   * flight can overrun it by one request timeout); past it the deletion is reported as an
-   * unavailable dependency, so the caller retries the idempotent delete instead of treating
-   * the Sandbox as removed.
+   * Resolves only once OpenShell reports the Sandbox gone: COMPLETED or ALREADY_ABSENT from
+   * DeleteSandbox, or, after ACCEPTED (or no outcome), GetSandbox no longer finding the
+   * targeted Sandbox. NOT_FOUND from DeleteSandbox is a failure: OpenShell answers it alike
+   * for a Sandbox that is gone and for one this identity may not see (finding 1676), so it
+   * confirms nothing, and the caller decides with a read it can trust (`confirmSandboxAbsent`).
+   * After ACCEPTED, NOT_FOUND from GetSandbox does confirm: ACCEPTED proves this identity was
+   * allowed to delete the Sandbox, and OpenShell finishes an accepted deletion by itself or
+   * keeps the record in DELETING, which a member identity still reads.
+   * One deadline bounds the call and that wait (a GetSandbox in flight can overrun it by one
+   * request timeout); past it the deletion is reported as an unavailable dependency, so the
+   * caller retries the idempotent delete instead of treating the Sandbox as removed.
    */
   async deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void> {
     const deadlineAt = Date.now() + this.sandboxDeleteTimeoutMs;
@@ -1493,7 +1504,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     } catch (error) {
       const { grpc } = await this.ensureClient();
       if (statusCode(error) === grpc.status.NOT_FOUND) {
-        return;
+        throw new OpenShellGatewayFailure(
+          "OpenShell DeleteSandbox did not find the Sandbox, so the deletion is unconfirmed.",
+          { cause: error },
+        );
       }
       throw error;
     }

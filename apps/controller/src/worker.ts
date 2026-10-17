@@ -165,6 +165,7 @@ const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKLOAD_UNSCHEDULABLE: "REVISION_UNSCHEDULABLE",
   NAMESPACE_POD_QUOTA_EXCEEDED: "NAMESPACE_POD_QUOTA_EXCEEDED",
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
+  WORKSPACE_SETUP_RETRYING: "WORKSPACE_SETUP_RETRYING",
   HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
 });
 const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
@@ -882,7 +883,9 @@ function runtimeFailureFromObservation(observation: unknown): RuntimeFailureEvid
 // invalid-key rejection; MODEL_PROBE_CPU_STARVED ran out of a CPU budget sized
 // for the container's CPU limit; the others are a probe timeout or failure, a
 // failed Codex login, a missing probe configuration, and an invalid plugin
-// approver configuration. Unknown codes stay pending until the deadline.
+// approver configuration. Kubernetes Compute reports a workspace setup refusal
+// that every init container restart repeats (finding 1677). Unknown codes stay
+// pending until the deadline.
 const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.freeze({
   AUTHENTICATION_FAILED: "RUNTIME_AUTHENTICATION_FAILED",
   MODEL_PROBE_CPU_STARVED: "RUNTIME_CPU_STARVED",
@@ -891,6 +894,7 @@ const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.free
   LOGIN_FAILED: "RUNTIME_LOGIN_FAILED",
   UNAVAILABLE: "RUNTIME_STARTUP_FAILED",
   INCOMPATIBLE_RESPONSE: "RUNTIME_STARTUP_FAILED",
+  WORKSPACE_SETUP_REFUSED: "WORKSPACE_SETUP_REFUSED",
 });
 
 function heldRuntimeFailureCode(code: string): string | undefined {
@@ -2186,6 +2190,9 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
+      // The Sandbox gateway refused the controller's identity, so the Driver could not confirm
+      // the revision's Sandbox gone: retrying cannot help until an operator restores the role,
+      // so the stop fails with that code instead of recording the Sandbox stopped (finding 1676).
       result =
         error instanceof ComputeStopYieldedError
           ? {
@@ -2193,7 +2200,9 @@ export class ControllerWorker {
               code: "AGENT_STOP_YIELDED",
               ...(stopping === undefined ? {} : { revision: stopping }),
             }
-          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+          : error instanceof SandboxGatewayUnauthorizedError
+            ? { outcome: "permanent", code: error.code }
+            : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentStop(claim, result);
   }
@@ -2399,7 +2408,11 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+      // As for a stop: a refused identity cannot confirm a Sandbox removed (finding 1676).
+      result =
+        error instanceof SandboxGatewayUnauthorizedError
+          ? { outcome: "permanent", code: error.code }
+          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentDeletion(claim, result);
   }
@@ -2822,14 +2835,18 @@ export class ControllerWorker {
       // including one IAM failed to authorize, so no earlier denial stays its last reason. A
       // Compute refusal that retrying cannot change (a configuration that cannot reach the
       // Sandbox, or an object Compute does not own) fails them once instead, as a Compute
-      // mismatch does; a replay tries again.
-      const code =
-        error instanceof CredentialWithdrawalRefusedError ? error.code : "DEPENDENCY_UNAVAILABLE";
+      // mismatch does; a replay tries again. So does a Sandbox gateway that refuses the
+      // controller's identity (finding 1676): retrying cannot restore the Workspace role, and
+      // the reason names the fix instead of a generic failure.
+      const refused =
+        error instanceof CredentialWithdrawalRefusedError ||
+        error instanceof SandboxGatewayUnauthorizedError;
+      const code = refused ? error.code : "DEPENDENCY_UNAVAILABLE";
       const settled = new Set(
         [...attempts, ...denied].map(({ credentialSourceId }) => credentialSourceId),
       );
       result = {
-        outcome: error instanceof CredentialWithdrawalRefusedError ? "permanent" : "retry",
+        outcome: refused ? "permanent" : "retry",
         code,
         attempts: [
           ...attempts,
@@ -4651,7 +4668,8 @@ export class ControllerWorker {
     // end, and then hold the container unready until an explicit restart that
     // nothing performs: no liveness probe or controller restarts it. Waiting for
     // the convergence deadline therefore cannot change the result, so every held
-    // failure ends the deployment at once with a code naming its cause.
+    // failure ends the deployment at once with a code naming its cause. The kubelet
+    // does restart a refused workspace setup, but it refuses the same way each time.
     const heldFailureCode =
       runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure.code);
     let resolved: RevisionDispatchResult;

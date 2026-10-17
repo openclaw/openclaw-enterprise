@@ -59,9 +59,9 @@ A stale path fails the Harness startup model probe with
 `RUNTIME_MODEL_PROBE_FAILED`, or `RUNTIME_AUTHENTICATION_FAILED` when the provider
 rejects the missing credential, and the active revision keeps serving.
 
-`toolBinaries` is optional: a nonempty list of absolute paths inside the Sandbox
-image that may carry [tool sources](../credential-sources.md#bind-a-source-to-an-agent)
-to their endpoints, such as `/usr/bin/curl`. Without it the catalog omits
+`toolBinaries` is optional: nonempty absolute paths inside the Sandbox image that
+may carry [tool sources](../credential-sources.md#bind-a-source-to-an-agent) to
+their endpoints, such as `/usr/bin/curl`. Without it the catalog omits
 `bearer-token` and the OAuth2 types.
 
 `drivers.credential_refresh` is optional and takes an empty configuration. It
@@ -217,29 +217,30 @@ calls `UpdateProvider`. It rejects empty values because upstream merges nonempty
 values, retaining omitted ones. New values reach only processes started after
 update; running Harnesses keep old values until restart.
 
-`removeSource` deletes the owned provider, confirms that it is gone, and deletes
-the source's profile. OpenShell cannot delete a Workspace that still holds profiles.
+`removeSource` deletes the owned provider, confirms it gone, then deletes the
+source's profile; OpenShell cannot delete a Workspace still holding profiles.
 
 Deletion identifies profiles by source ID even with an invalid persisted endpoint.
 Foreign ownership, unknown types and gateway errors fail closed.
 
-For a revision, `attachForRevision` brings each source's profile up to date and
-returns its provider name. It fails when two of the revision's sources would use
+For a revision, `attachForRevision` updates each source's profile and returns
+its provider name. It fails when two of the revision's sources would use
 the same environment variable, and the worker then fails the deployment with
 `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT` without retrying. The
 OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
 `attachmentStatus` calls `GetSandboxProviderStatus` for each provider and maps
 OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
 `pending`. `withdraw` calls `DetachSandboxProvider` for the revision's Sandbox,
-then reads the status of that detach receipt. Only `REVOKED` reports `revoked`:
-the Sandbox's placeholders then stop resolving, even in running processes.
-OpenShell reports `REVOKED` only after the Sandbox supervisor reports a running
-process with the provider removed. A Sandbox with no running process, for
-example one still provisioning or crash-looping, reports `WaitingForProcess`,
-which stays `pending`. A `recheck` first calls `GetSandbox`: a missing Sandbox
-reports `absent`, one that no longer lists the provider in
-`SandboxSpec.providers` reports `revoked` without a mutation, and only a listed
-provider is detached again.
+then reads that receipt's status. Only `REVOKED` reports `revoked`: the
+Sandbox's placeholders then stop resolving, even in running processes. OpenShell
+reports `REVOKED` once the supervisor sees a running process without the
+provider. A Sandbox without a running process (provisioning,
+crash-looping) reports `WaitingForProcess`, which stays `pending`. A `recheck`
+first calls `GetSandbox`: a Sandbox no longer listing the provider is `revoked`
+without a mutation; a listed one is detached again. A missing Sandbox is
+`absent` only once `GetWorkspace` answers and a second `GetSandbox` still misses
+it (OpenShell hides unauthorized Sandboxes as missing); a refusal fails with
+`SANDBOX_GATEWAY_UNAUTHORIZED`.
 
 For API-key Codex, Compute selects a named provider with the source endpoint and
 HTTPS Responses transport. Native OpenClaw retains its configured OpenAI-compatible

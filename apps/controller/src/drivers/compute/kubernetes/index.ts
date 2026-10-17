@@ -138,6 +138,7 @@ import {
   HARNESS_WORKSPACE,
   MANAGED_WORKSPACE,
   requireWorkspaceSetupConfiguration,
+  WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
   WORKSPACE_SETUP_RUNTIME,
   workspaceSetupMainEntry,
   workspaceSetupVerifier,
@@ -5452,8 +5453,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
         workspaceSetup !== undefined,
       );
+      // A setup the kubelet is retrying names that wait; a held failure needs none.
       const reason =
-        pendingReason ?? (runtimeFailure === undefined ? await observedPendingReason() : undefined);
+        pendingReason ??
+        (runtimeFailure === undefined
+          ? await observedPendingReason()
+          : runtimeFailure.code === "WORKSPACE_SETUP_FAILED"
+            ? "WORKSPACE_SETUP_RETRYING"
+            : undefined);
       return {
         ...result,
         ...(runtimeFailure === undefined ? {} : { runtimeFailure }),
@@ -7058,9 +7065,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
 
   /**
    * Revokes one credential source from the revision's paired Sandbox. The Sandbox identity is
-   * derived exactly as provisioning created it; a missing Namespace or Sandbox has nothing left
-   * to revoke. A configuration that cannot reach the Sandbox, or an object this Driver does
-   * not own, is a CredentialWithdrawalRefusedError: retrying cannot change it.
+   * derived exactly as provisioning created it, so the gateway withdraws and confirms whether or
+   * not the Kubernetes Namespace still exists: the provider's Workspace record outlives the
+   * Namespace, and only the gateway can tell a missing Sandbox from a hidden one (finding 1693).
+   * A configuration that cannot reach the Sandbox, or an object this Driver does not own, is a
+   * CredentialWithdrawalRefusedError: retrying cannot change it.
    */
   async withdrawCredentialSource(
     revision: Readonly<AgentRevision>,
@@ -7109,14 +7118,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const existingNamespace = await this.getNamespace(namespace);
-    if (existingNamespace === undefined) {
-      return Object.freeze({ sourceId: source.id, state: "absent" });
+    // A missing Namespace proves nothing about the Sandbox (finding 1693): only its ownership
+    // check needs the object; the gateway withdraws and confirms either way. Without the object
+    // the placement is the derived default, so an adopted Namespace of another name fails closed
+    // in the gateway (no such Workspace) rather than reporting absence.
+    if (existingNamespace !== undefined) {
+      this.verifyNamespaceOwnership(
+        existingNamespace,
+        { namespaceId: revision.namespaceId },
+        external,
+      );
     }
-    this.verifyNamespaceOwnership(
-      existingNamespace,
-      { namespaceId: revision.namespaceId },
-      external,
-    );
     const sandboxNamespace = this.sandboxNamespaceForRevision(revision, namespace);
     const sandbox = sandboxDriver.harnessResource({ namespace: sandboxNamespace, revision });
     this.verifySandboxResourceRef(sandbox, revision, namespace);
@@ -7163,15 +7175,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
     const existingNamespace = await this.getNamespace(namespace);
-    if (existingNamespace === undefined) {
-      // The Namespace's teardown releases the provider's Workspace with every Sandbox in it.
-      return;
+    // The Namespace's teardown releases the provider's Workspace with every Sandbox in it, but
+    // a Namespace missing before that proves nothing about the exposure (finding 1693): only
+    // its ownership check needs the object; the provider withdraws and confirms either way, in
+    // the derived default placement (an adopted Namespace of another name then fails closed).
+    if (existingNamespace !== undefined) {
+      this.verifyNamespaceOwnership(
+        existingNamespace,
+        { namespaceId: revision.namespaceId },
+        external,
+      );
     }
-    this.verifyNamespaceOwnership(
-      existingNamespace,
-      { namespaceId: revision.namespaceId },
-      external,
-    );
     const context = await this.sandboxNamespaceContext(
       this.sandboxNamespaceForRevision(revision, namespace),
       namespace,
@@ -9508,16 +9522,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
               ? undefined
               : asRecord(asRecord(initialized?.lastState)?.terminated));
           if (typeof terminated?.exitCode === "number" && terminated.exitCode !== 0) {
-            return {
-              component,
-              check: "workspace-setup",
-              code: "WORKSPACE_SETUP_FAILED",
-              checkedAt:
-                typeof terminated.finishedAt === "string" &&
-                this.validIsoTimestamp(terminated.finishedAt)
-                  ? terminated.finishedAt
-                  : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString()),
-            };
+            const checkedAt =
+              typeof terminated.finishedAt === "string" &&
+              this.validIsoTimestamp(terminated.finishedAt)
+                ? terminated.finishedAt
+                : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString());
+            // The kubelet restarts a failed init container (these Pods restart Always), which
+            // can pass after an I/O or native setup failure. A refusal fails every restart the
+            // same way (finding 1677).
+            return terminated.exitCode === WORKSPACE_SETUP_REFUSED_EXIT_STATUS
+              ? { component, check: "workspace-setup", code: "WORKSPACE_SETUP_REFUSED", checkedAt }
+              : { component, check: "workspace-setup", code: "WORKSPACE_SETUP_FAILED", checkedAt };
           }
         }
       }

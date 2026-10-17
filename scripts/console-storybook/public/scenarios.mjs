@@ -1639,6 +1639,23 @@ export const scenarios = {
       "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
+  createDeploymentNamedWait: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment names its wait",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "REVISION_INCOMPLETE",
+      message: "Waiting for the runtime to become ready.",
+    },
+    provisioningNamesDeploymentWait: true,
+    description:
+      "After handoff the provisioning job names its first deployment's wait. Create Agent adds that sentence, the one Deployment activity shows, to the provisioning line.",
+    steps: [
+      "Click Create Agent. The line moves from “Provisioning Agent…” to “Provisioning Agent… Waiting for the runtime to become ready.” and Create Agent stays disabled.",
+    ],
+  },
   createDeploymentPodQuotaFull: {
     group: "Pages/Create Agent",
     name: "Initial deployment waits on a full Pod quota",
@@ -3663,9 +3680,10 @@ export const scenarios = {
     deployed: true,
     slack: true,
     candidateDeploymentStatus: "succeeded",
+    rules: [{ suffix: "/diagnostics", method: "POST", delayMs: 1200 }],
     actions: [click("Run diagnostics for this version")],
     description:
-      "An on-demand observation for viewed v7 reports timestamped Slack configuration, authentication, and connectivity checks. It does not change v7's persisted deployment result.",
+      "Run diagnostics for v7. The panel shows it is waiting for results, then displays timestamped Slack configuration, authentication, and connectivity checks. The recorded deployment result stays the same.",
   },
   diagnosticsUnknown: {
     group: "Pages/Agent detail",
@@ -3708,7 +3726,7 @@ export const scenarios = {
     steps: [
       "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
       "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
-      "Expand the runtime.startup_phase row to inspect its fields. Check the local date, time, and UTC offset in each timestamp. On a narrow screen the offset can wrap, but it should remain readable beside the level, origin, and message.",
+      "Expand the runtime.startup_phase row to inspect its fields. Check the local date, time, and UTC offset in each timestamp. Wider than 520px, each timestamp stays on one line; below 1000px the message moves under the time, level, and origin.",
       "Select Follow, confirm it changes to Following, then select Following to stop. At 390px, check that the controls remain usable, each log level stays on one line, and long messages wrap without horizontal scrolling.",
     ],
     gap: "Runtime records and refreshes are simulated UI evidence; source reads, filtering, and following require real backend verification.",
@@ -3765,6 +3783,18 @@ export const scenarios = {
     steps: [
       "Check that info is deselected, the Filter field contains slack, and the visible row keeps its level, origin, and redacted message readable.",
       "Clear Filter and enable info to restore the loaded rows; the filter status and source retention notice stay visible.",
+    ],
+  },
+  runtimeLogsRateLimited: {
+    ...runtimeLogsPage,
+    name: "Rate-limited log reads with Follow off or on",
+    rules: [{ suffix: "/runtime/logs", skip: 1, status: 429, code: "RUNTIME_LOGS_RATE_LIMITED" }],
+    actions: [click("Refresh logs")],
+    description:
+      "The first page loads, then log requests are rate limited. This fixture omits Retry-After: Refresh logs asks you to try again, without another audited read.",
+    steps: [
+      "Select Follow. When its next read is rate limited, the message says the Console is waiting for the next read.",
+      "While Following is still selected, choose Download. That action asks you to try again; the Console will not repeat the download.",
     ],
   },
   runtimeLogsDenied: {

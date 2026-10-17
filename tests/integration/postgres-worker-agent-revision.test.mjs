@@ -1312,8 +1312,10 @@ revisionTest(
     const unscheduled = await fixture.agent("pending-unschedulable");
     const unpaired = await fixture.agent("pending-node");
     const overQuota = await fixture.agent("pending-pod-quota");
+    const setupRetrying = await fixture.agent("pending-workspace-setup");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
     const overQuotaRevision = await fixture.revision(overQuota, 1);
+    const setupRetryingRevision = await fixture.revision(setupRetrying, 1);
     // Admitted five minutes ago by PostgreSQL's clock, which judges work age (finding 1187),
     // and still inside the 900-second deadline.
     const unpairedRevision = await fixture.revision(unpaired, 1, { workAge: "300 seconds" });
@@ -1321,6 +1323,7 @@ revisionTest(
       [unscheduledRevision.id, "WORKLOAD_UNSCHEDULABLE"],
       [unpairedRevision.id, "WORKSPACE_NODE_PENDING"],
       [overQuotaRevision.id, "NAMESPACE_POD_QUOTA_EXCEEDED"],
+      [setupRetryingRevision.id, "WORKSPACE_SETUP_RETRYING"],
     ]);
     const delays = new Map([
       [unscheduledRevision.idempotencyKey, []],
@@ -1378,6 +1381,12 @@ revisionTest(
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
       message:
         "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+    });
+    // Finding 1677: Kubernetes is restarting a failed workspace setup that may still pass.
+    assert.deepEqual(await progress(setupRetrying, setupRetryingRevision), {
+      code: "WORKSPACE_SETUP_RETRYING",
+      message:
+        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
     });
     const firstDelay = async (revision) => {
       const recorded = delays.get(revision.idempotencyKey);
@@ -2078,6 +2087,27 @@ for (const scenario of [
         code: "RUNTIME_CPU_STARVED",
         message:
           "Deployment runtime did not get enough CPU to finish its startup model check, because of a CPU limit below one core or a busy node. Ask an admin to raise the limit or free node capacity, then deploy a new version.",
+      },
+    },
+  },
+  {
+    // Finding 1677: the kubelet restarts the init container, but a refusal repeats.
+    name: "a refused workspace setup fails deployment before the convergence deadline",
+    label: "refused-workspace-setup",
+    pendingPasses: 1,
+    runtimeFailure: {
+      component: "agent",
+      check: "workspace-setup",
+      checkedAt: "2026-10-17T08:00:00.000Z",
+      code: "WORKSPACE_SETUP_REFUSED",
+    },
+    expected: {
+      preparations: 2,
+      activeRevisionId: null,
+      error: {
+        code: "WORKSPACE_SETUP_REFUSED",
+        message:
+          "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.",
       },
     },
   },

@@ -70,7 +70,8 @@ block direct Secret-backed model and environment projection.
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   Provisioning waits for deployment activation or failure.
+   Provisioning waits for deployment activation or failure, naming the deployment's current wait
+   when you can read the deployment.
    Success opens Agent details. Failure links to the same Agent and revision;
    correct its cause and deploy again through **Deployment activity**. If the
    first deployment was stopped, no repair is needed before deploying again.
