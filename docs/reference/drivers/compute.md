@@ -81,19 +81,14 @@ Restart resumes cleanup, not preparation; codes exclude credentials.
 | `activationOrder`, `maintenanceIntervalMs`                                                          | Control [activation timing](#production-revision-stages) and optional [maintenance](#optional-active-runtime-maintenance).                                                          |
 | `requiresStoppedPredecessors(revision)`                                                             | A side-effect-free declaration, derived from the admitted revision, that opts into [exclusive replacement](#production-revision-stages).                                            |
 
-### Optional Gateway outbound admission
+### Optional Gateway access
 
 `gatewayOutboundCapabilities`, `validateGatewayOutbound` and `admitGatewayOutbound`
-enforce [Gateway limits](../gateway-outbound.md) and snapshot access/exclusions.
-Admitted snapshots require withdrawal support.
-
-### Optional revision access withdrawal
-
-Pure `revisionAccessStatus(revision)` returns `none`, `current` or `withdrawn` from
-immutable admission and current configuration. OCC persists `REVISION_ACCESS_WITHDRAWN`
-before effects. `withdrawRevisionAccess(revision)` closes routes
-and awaits workload/connection termination; restored approval cannot cancel removal.
-Kubernetes terminates the admitted [reader Harness](../public-github-reads.md).
+enforce [Gateway admission](../gateway-outbound.md). Pure
+`revisionAccessStatus(revision)` returns `none`, `current` or `withdrawn`.
+OCC persists removal before calling `withdrawRevisionAccess(revision)`, which
+awaits route/workload termination even if approval returns. See the
+[withdrawal flow](../../flows/gateway-outbound.md#5-persist-withdrawal-before-terminal-maintenance).
 
 ### Optional startup preflight
 
