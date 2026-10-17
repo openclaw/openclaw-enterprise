@@ -3685,6 +3685,7 @@ export const scenarios = {
       "Tab to Run diagnostics for this version, then press Enter or Space.",
       "Focus moves to “Waiting for diagnostic results…” while the button is disabled. Leave focus there.",
       "When the checks arrive, focus returns to Run diagnostics. Its description gives the Observed time.",
+      "Click Refresh record, which re-renders this panel as a deployment poll does, then press Tab. Run diagnostics still has that description.",
     ],
     description:
       "Run diagnostics for v7. The panel shows it is waiting for results, then displays timestamped Slack configuration, authentication, and connectivity checks. The recorded deployment result stays the same.",
@@ -3719,6 +3720,7 @@ export const scenarios = {
     steps: [
       "Tab to Run diagnostics for this version and press Enter. Leave focus on “Waiting for diagnostic results…” until the response arrives.",
       "Focus returns to Run diagnostics, described by the alert that current-runtime diagnostics are unavailable (a simulated 503).",
+      "Click Refresh record, which re-renders this panel as a deployment poll does, then press Tab. Run diagnostics is still described by the alert.",
       "Press Enter to run it again. While waiting, press Shift+Tab to move to Refresh record. Focus should stay there when the same alert appears.",
     ],
     description:
