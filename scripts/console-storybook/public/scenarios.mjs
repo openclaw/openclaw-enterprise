@@ -3663,9 +3663,10 @@ export const scenarios = {
     deployed: true,
     slack: true,
     candidateDeploymentStatus: "succeeded",
+    rules: [{ suffix: "/diagnostics", method: "POST", delayMs: 1200 }],
     actions: [click("Run diagnostics for this version")],
     description:
-      "An on-demand observation for viewed v7 reports timestamped Slack configuration, authentication, and connectivity checks. It does not change v7's persisted deployment result.",
+      "Run diagnostics for v7. The panel shows it is waiting for results, then displays timestamped Slack configuration, authentication, and connectivity checks. The recorded deployment result stays the same.",
   },
   diagnosticsUnknown: {
     group: "Pages/Agent detail",

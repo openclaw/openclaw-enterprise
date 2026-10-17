@@ -87,9 +87,9 @@ test("Agent detail separates the current version, viewed version, and latest dep
       },
     );
   }
-  await page.route(`${fixture.origin}${diagnosticsPath}`, async (route) => {
-    assert.equal(route.request().method(), "POST");
-    await route.fulfill({
+  const diagnosticsRequest = await holdRequests(t, page, `${fixture.origin}${diagnosticsPath}`, {
+    method: "POST",
+    fulfill: {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
@@ -107,7 +107,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
         },
         meta: { requestId: "req_test_exact_diagnostics" },
       }),
-    });
+    },
   });
   const url = detailUrl(fixture, namespace.id, agent.id, current.revision.id, "configuration");
   await login(page, fixture, url);
@@ -151,12 +151,28 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await observations
     .getByText(/For Kubernetes Compute, gateway checks cover only the Slack channel/)
     .waitFor();
-  await observations
-    .getByText("No current observation has been requested for this version.")
-    .waitFor();
-  await observations.getByRole("button", { name: "Run diagnostics for this version" }).click();
+  const idle = observations.getByText(
+    "No current observation has been requested for this version.",
+  );
+  const waiting = observations
+    .getByRole("status")
+    .filter({ hasText: "Waiting for diagnostic results…" });
+  const runDiagnostics = observations.getByRole("button", {
+    name: "Run diagnostics for this version",
+  });
+  await idle.waitFor();
+  await runDiagnostics.click();
+  try {
+    await diagnosticsRequest.requested;
+    await waiting.waitFor();
+    assert.equal(await idle.isVisible(), false);
+  } finally {
+    diagnosticsRequest.release();
+  }
   await observations.getByText(/Observed /).waitFor();
   await observations.getByText("slack / authentication").waitFor();
+  assert.equal(await waiting.isVisible(), false);
+  assert.equal(await runDiagnostics.isEnabled(), true);
   assert.equal(pathRequests(requests, "POST", diagnosticsPath).length, 1);
   await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
   await activity.getByText("Recorded status: queued").waitFor();
