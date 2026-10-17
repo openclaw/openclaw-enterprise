@@ -1,7 +1,7 @@
 ---
 created: "2026-10-16"
-updated: "2026-10-16"
-last_updated_session: authoring-run/avatar-exclusions-2596
+updated: "2026-10-17"
+last_updated_session: authoring-run/c469521f-2427-4a7f-bdcd-211e9384938d
 ---
 
 # Gateway people flow
@@ -53,8 +53,8 @@ Compute must own the revision; another Driver's endpoint is not reused.
 Composition uses the existing private Compute endpoint and mounted gateway API
 key. The native adapter connects as the existing machine identity, checks its
 admin grant, and calls `users.list`. OpenClaw supplies effective native roles.
-Merged aliases, the shared workspace profile and the loopback owner profile are
-excluded. Only profile IDs, display names, roles and avatar availability reach
+Merged aliases, `gateway-owner`, and profiles with the `occ-workspace-files`
+login alias in native `emails` are excluded. Only profile IDs, display names, roles and avatar availability reach
 OCC clients; linked identities, email addresses and GitHub metadata do not.
 
 Avatar reads first load the filtered roster and return `404` for excluded or
@@ -109,6 +109,8 @@ without turning normal unavailability into a failed Console read.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 09:50: Clarify machine alias filtering; verify roster search independently of Agent updates. (authoring-run/c469521f-2427-4a7f-bdcd-211e9384938d - 2990608dd47c1129acbab295c4bf90f711e14d43)
 
 - 2026-10-16 18:54: Apply filtered-roster membership to avatar reads. (authoring-run/avatar-exclusions-2596 - 630a02a5b039ab2972d40af57498e22b2fc3d1fe)
 

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-10-16
-last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
+updated: "2026-10-17"
+last_updated_session: authoring-run/c469521f-2427-4a7f-bdcd-211e9384938d
 ---
 
 # Agent provisioning flow
@@ -51,12 +51,10 @@ graph TD
 
 `apps/controller/src/console/agents/create.mjs:renderCreateAgent`
 
-Console keeps the configured Harness separate from execution mode: dedicated
-OpenClaw retains its native provider/model and uses the same provisioning,
-retry, and deployment navigation as dedicated Codex. Selecting OpenClaw starts
-in Embedded mode; Dedicated is an explicit choice when the Installation reports
-native worker support. Preset restoration and
-Credentials read native model runtime policy through
+Harness and execution mode are separate. OpenClaw defaults to Embedded; Dedicated
+requires reported native worker support. Dedicated OpenClaw retains its native
+provider/model and shares Codex's provisioning, retry and deployment navigation.
+Preset restoration and Credentials read native model runtime policy through
 `apps/controller/src/console/agents/harness-auth.mjs:configuredHarnessId`.
 Service Accounts and Codex plugin browsing remain specific to Codex.
 
@@ -67,7 +65,7 @@ Secret before source-backed provisioning. [Console recovery](../reference/consol
 reuses confirmed sources and safely retries uncertain registration.
 Installation discovery preserves catalog metadata.
 
-Create Agent sends the parsed inline Configuration, ordinary Secret bindings, model-auth references, supported Agent options, selected repository bindings with an explicit access profile, and a stable request ID. The provisioning worker owns exact Secret grants; Slack has no special worker path. After an uncertain admission response, the Console resends the same request ID and accepted inputs, without resaving acknowledged Secrets.
+Create Agent submits inline Configuration, Secret and model-auth references, Agent options, repository bindings with an explicit access profile, and a stable request ID. The worker grants exact Secret access, including Slack. After uncertain admission, Console resends the same ID and inputs without resaving acknowledged Secrets.
 
 On ordinary draft creation paths, Console creates the Configuration and Agent, then grants access to the selected Slack Secrets. A grant failure retains the saved Agent and offers Retry credential access on that Agent, without repeating creation.
 
@@ -102,10 +100,13 @@ Source-backed provisioning records the canonical model source and grants only so
 Admission, replay, retry and execution recheck caller authority, source readiness and Gateway
 ownership. Queued or running work prevents source deletion.
 
-Compute prepares runtime credentials without loopback HTTP. Kubernetes owns trusted-proxy
-configuration and credential protection; provisioning supplies neither gateway token nor trust
-override. Losing the provisioning claim cancels outstanding Kubernetes Configuration requests,
-freeing the serial worker.
+Kubernetes `kubernetesGatewayConfigurationDocument` prepares trusted-proxy credentials
+without loopback HTTP. It preserves explicit human identities/scopes alongside
+machine administration, defaulting to machine-only. Provisioning and deploy
+admission reject malformed identity grants and human admission with admin device
+scopes, including whitespace. See [Gateway authentication](../reference/drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication).
+Provisioning supplies no Gateway token or trust override. Losing its claim cancels
+Kubernetes Configuration requests, freeing the worker.
 
 ### 4. Deployment becomes the lifecycle owner
 
@@ -168,6 +169,8 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 09:50: Match trimmed device admin scopes and preserve current provisioning behavior. (authoring-run/c469521f-2427-4a7f-bdcd-211e9384938d - 2990608dd47c1129acbab295c4bf90f711e14d43)
 
 - 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
 

@@ -700,7 +700,7 @@ test(
           ...gatewayAuth,
           trustedProxy: {
             ...gatewayAuth.trustedProxy,
-            deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+            deviceAutoApprove: { enabled: true, scopes: [" operator.admin "] },
           },
         },
         "gateway.auth.trustedProxy.deviceAutoApprove.scopes",

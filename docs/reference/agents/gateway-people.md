@@ -9,7 +9,9 @@ a raster image or `404`. Both responses prohibit caching. An installation withou
 the runtime adapter returns `people: null` after authorization; the Console hides
 the card. Its avatar operation returns `501`.
 
-The roster omits merged aliases and the shared workspace/loopback owner profiles.
+The roster omits merged aliases, `gateway-owner`, and profiles whose native
+`emails` aliases contain the machine login `occ-workspace-files`. It uses that
+login alias rather than a display name; the native list has no machine-kind flag.
 Avatar reads require membership in that filtered roster; excluded or unknown
 profile IDs return `404` without fetching an image.
 It exposes no linked identity aliases, emails or GitHub metadata. It lists profiles

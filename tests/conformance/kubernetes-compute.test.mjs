@@ -4389,26 +4389,33 @@ test("Kubernetes preserves explicit human proxy identities alongside workspace a
 
     // Legacy auto-approval grants are unioned into every human's identity scopes upstream.
     // A human allowlist must not silently inherit the pilot's admin device grant.
-    assert.throws(
-      () =>
-        driver.validateAgentProvisioning({
-          executionMode: "dedicated",
-          configuration: {
-            gateway: {
-              auth: {
-                ...auth,
-                trustedProxy: {
-                  ...auth.trustedProxy,
-                  deviceAutoApprove: { enabled: true, scopes: ["operator.admin"] },
+    for (const adminScope of [
+      "operator.admin",
+      " operator.admin",
+      "operator.admin ",
+      "\toperator.admin\n",
+    ]) {
+      assert.throws(
+        () =>
+          driver.validateAgentProvisioning({
+            executionMode: "dedicated",
+            configuration: {
+              gateway: {
+                auth: {
+                  ...auth,
+                  trustedProxy: {
+                    ...auth.trustedProxy,
+                    deviceAutoApprove: { enabled: true, scopes: [adminScope] },
+                  },
                 },
               },
             },
-          },
-        }),
-      (error) =>
-        error instanceof ComputeGatewaySettingError &&
-        error.setting === "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
-    );
+          }),
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.setting === "gateway.auth.trustedProxy.deviceAutoApprove.scopes",
+      );
+    }
     for (const scopes of ["operator.read", null, {}, ["operator.read", 42]]) {
       assert.throws(
         () =>

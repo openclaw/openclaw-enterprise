@@ -1,8 +1,7 @@
 # Agents
 
 An Agent is a named AI workload in a [Namespace](namespaces.md), with its own
-identity, revision history, and deployed gateway. Its permissions do not grant
-access to another Namespace's resources.
+identity, revisions and gateway. Its permissions do not cross Namespace boundaries.
 
 Use a [Preset](presets.md) to copy launch settings into an Agent draft.
 

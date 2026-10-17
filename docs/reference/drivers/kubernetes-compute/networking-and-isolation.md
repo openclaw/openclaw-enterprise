@@ -5,14 +5,11 @@ namespace ownership for the [Kubernetes Compute Driver](../kubernetes-compute.md
 
 ## Networking
 
-Configure the cluster DNS namespace and Pod labels and the gateway port.
-Every peer namespace must be a DNS label of at most 63 characters; startup
-refuses others.
-Set `network.gatewayTrustedProxyCidrs` to nonempty, valid CIDRs for the proxy
-socket sources. This trusted Installation setting has no production default and
+Configure cluster DNS namespace/Pod labels and gateway port. Peer namespaces
+must be DNS labels of at most 63 characters. `network.gatewayTrustedProxyCidrs`
+requires nonempty proxy socket-source CIDRs; it has no production default and
 rejects all-source ranges, including IPv4-mapped equivalents. Without private
-routing, also configure the namespace and Pod selectors in
-`network.gatewayClients` for your authenticated proxy.
+routing, set `network.gatewayClients` namespace/Pod selectors for the authenticated proxy.
 
 `podLabels` use [Kubernetes label syntax](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set), checked before provisioning.
 Values may be empty; key names and values allow 63 characters, DNS prefixes 253. This covers
@@ -33,19 +30,15 @@ This ClusterIP bridge is only for owned k3d profiles advertising
 `*.openshell.localhost`; it is not production configuration. Drivers without
 the endpoint capability retain ordinary Service or private routing.
 
-For Compute-owned startup failure evidence, plugin reporting, and on-demand
-deployment diagnostics, set `network.pluginStatusProxySourceCidrs` to the
-Kubernetes API server's source addresses for Pod proxy requests, as `/32` or
-`/128` addresses: wider ranges warn and all-address ranges fail. On overlay
-networks, the source may be the control-plane node's overlay address rather than
-its node IP; verify it across
-nodes with enforced policies. The policy allows those sources only to the private
-status port, TCP/18791, even when an Agent has no enabled plugins. Worker and API
-ServiceAccounts each need namespace-local `get` on `pods/proxy`. An omitted list
-adds no API-proxy ingress rule and leaves status unavailable where the cluster
-blocks that traffic. It also restarts the Gateway once on each
-dedicated Codex first deploy. This setting does not expose the native
-gateway or grant workloads Kubernetes API access.
+For startup, plugin and deployment diagnostics, set
+`network.pluginStatusProxySourceCidrs` to the API server's Pod-proxy source
+addresses as `/32` or `/128`: wider ranges warn; all-address ranges fail.
+On overlays, verify whether each node uses its overlay or node IP, with enforced
+policies. This allows only private TCP/18791, including Agents without plugins.
+API and worker ServiceAccounts need namespace-local `get` on `pods/proxy`.
+Omission adds no ingress rule, potentially blocking diagnostics, and restarts the
+Gateway once per dedicated Codex first deploy. It grants neither native Gateway
+nor Kubernetes API access.
 
 When private Agent routing is enabled, Compute derives the only allowed peer
 from `gatewayRouting`: the Envoy namespace and the Gateway's exact owning name
@@ -102,9 +95,16 @@ Ingress must validate OIDC, authorize humans per Gateway and overwrite identity
 headers. Ingress deployment remains external; private operator routes retain
 machine identity, which native roles must allow to administer.
 
-Human allowlists forbid `operator.admin` in `deviceAutoApprove.scopes`: device
-grants are unioned with `identityScopes`. Grant human admins explicitly. Identity
-grants must be string arrays. Machine-only admin auto-approval remains valid.
+Human allowlists forbid `operator.admin` in `deviceAutoApprove.scopes`, including
+surrounding whitespace. Device grants are unioned with `identityScopes`; grant
+human admins explicitly. Identity grants must be string arrays. Machine-only
+admin auto-approval remains valid.
+
+With auto-approval enabled, device scopes are a shared grant, not a per-human cap.
+Omitting them uses OpenClaw's defaults: `operator.read`, `operator.write`,
+`operator.approvals` and `operator.questions`. Explicit read/write device scopes
+can likewise widen a narrower identity grant. Set device scopes explicitly for
+the least-privileged admitted human; per-identity grants cannot subtract them.
 
 Compute renders `gateway.bind: lan` when it is omitted or `auto`, as native
 container detection misses containerd on cgroup v2. Deployment/provisioning
@@ -136,12 +136,11 @@ Agent Pod for dedicated Codex, or the gateway for embedded OpenClaw with
 `plugins.driver.implementation: occ/codex-plugin`. Embedded OpenClaw using
 `occ/openclaw-plugin` or no PluginDriver selection receives no Codex projection.
 
-Selected Codex plugins receive a filesystem-only profile that grants read-only
-access to the stock runtime package at `/app/node_modules/openclaw` and
-published plugin skills at `/home/node/.openclaw/plugin-skills` and
-`/home/node/openclaw-runtime-assets/plugin-skills`. It does not enable proxy
-networking, grant repository credential paths or whole-filesystem reads, or
-change project write permissions.
+Selected Codex plugins get filesystem-only, read-only access to
+`/app/node_modules/openclaw`, `/home/node/.openclaw/plugin-skills` and
+`/home/node/openclaw-runtime-assets/plugin-skills`. This enables neither proxy
+networking, repository credential paths nor whole-filesystem reads, and leaves
+project write permissions unchanged.
 
 For Codex consumers with repository bindings, Compute also adds the exact broker
 hostname from admitted session material to the tool proxy's domain allowlist and
@@ -254,23 +253,20 @@ gatewayRouting:
   envoyNamespace: envoy-gateway-system
 ```
 
-These three settings are required when routing is enabled; `hostname` is
-optional. The Gateway name and namespace must match the Helm-managed Gateway,
-which the chart always creates in its release namespace; `envoyNamespace`
-identifies its Envoy data-plane Pods. `envoyHttpsTargetPort` defaults to
-`10443` and must match Helm. Compute grants Harness egress only to this
-installation's Envoy Pods on that port, before waiting for node enrollment.
-`endpointPort` defaults to `443` and changes only the port in generated WSS URLs.
-When set, the external load balancer must forward that port to the HTTPS listener.
+Routing requires these three settings. Gateway name/namespace must match Helm's
+Gateway in its release namespace; `envoyNamespace` selects its data-plane Pods.
+`envoyHttpsTargetPort` defaults to `10443` and must match Helm. Before enrollment,
+Compute grants Harness egress only to these Envoy Pods/port.
+`endpointPort` defaults to `443`; it changes only generated WSS URLs. Configure
+the external load balancer to forward that port to the HTTPS listener.
 
-When `hostname` is omitted or empty, Compute and Helm derive the same Envoy
-Service hostname without a lookup; see
-[endpoint and route](../../gateway-routing.md#endpoint-and-route). Set the same
-explicit `hostname` in Compute and Helm for custom DNS or clients outside that
-cluster DNS context. The operator installs Envoy Gateway and cert-manager and configures the
-[private gateway infrastructure](../../../guides/deploy/workspace-routing.md#agent-workspace-files).
-Do not put an Agent endpoint, service key, certificate, or file contents into
-native Configuration or an AgentRevision.
+Omitted/empty `hostname` derives Envoy's Service hostname without lookups
+([endpoint and route](../../gateway-routing.md#endpoint-and-route)). Custom DNS
+or external clients require matching explicit `hostname` in Helm and Compute.
+Operators install Envoy Gateway/cert-manager and configure
+[private infrastructure](../../../guides/deploy/workspace-routing.md#agent-workspace-files).
+Keep Agent endpoints, service keys, certificates and file contents out of native
+Configuration and AgentRevision.
 
 `getGatewayEndpoint` derives
 `wss://<hostname>/namespaces/<namespaceId>/agents/<agentId>` without Kubernetes
@@ -293,11 +289,9 @@ route-specific SecurityPolicy for native device authentication. The
 [routing reference](../../gateway-routing.md#native-node-endpoint) owns its
 credential boundary and the remaining Harness lifecycle requirements.
 
-The Service and route stay stable across revision cutover and are repaired only
-during revision reconciliation; see
-[endpoint and route](../../gateway-routing.md#endpoint-and-route). Missing CRDs
-or denied worker permissions fail reconciliation rather than disabling routing
-silently.
+The Service and route survive revision cutover; only revision reconciliation
+repairs them ([endpoint and route](../../gateway-routing.md#endpoint-and-route)).
+Missing CRDs or worker permissions fail reconciliation.
 
 Envoy authenticates the OCC service key and the route rewrites identity headers
 ([service key and native identity](../../gateway-routing.md#service-key-and-native-identity)).

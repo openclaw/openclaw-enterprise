@@ -11639,7 +11639,9 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       Array.isArray(allowUsers) &&
       allowUsers.some((user) => user !== TRUSTED_PROXY_IDENTITY) &&
       Array.isArray(deviceAutoApprove?.scopes) &&
-      deviceAutoApprove.scopes.includes("operator.admin")
+      deviceAutoApprove.scopes.some(
+        (scope) => typeof scope === "string" && scope.trim() === "operator.admin",
+      )
     ) {
       // Upstream unions device and identity grants; an admin device grant would
       // silently elevate every admitted human, regardless of identityScopes.

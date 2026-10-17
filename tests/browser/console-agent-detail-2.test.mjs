@@ -3602,3 +3602,89 @@ test("Gateway people preview opens a searchable, alphabetized full roster", asyn
   assert.equal(await preview.getByRole("listitem").count(), 0);
   assert.equal(await viewAll.isVisible(), false);
 });
+
+test("Gateway roster administrators can search without Agent update and lose the roster on denial", async (t) => {
+  let reads = 0;
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: {
+      async list() {
+        reads++;
+        return Array.from({ length: 7 }, (_, index) => ({
+          id: `profile-${index}`,
+          displayName: `Teammate ${index}`,
+          role: "member",
+          hasAvatar: false,
+        }));
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Roster read access", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Team Claw", nativeValues("people"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const reader = await fixture.createAccountWithPolicy("roster-reader", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-roster-reader",
+      namespaceId: namespace.id,
+      permissions: [
+        ...["namespace", "agent", "agent_revision", "configuration"].map((resourceKind) => ({
+          action: "read",
+          resourceKind,
+        })),
+        { action: "administer", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-roster-reader",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-roster-reader",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  const writes = [];
+  page.on("request", (request) => {
+    if (["PATCH", "PUT", "DELETE"].includes(request.method())) {
+      writes.push(request.url());
+    }
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
+    reader.credentials,
+  );
+  const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
+  await page
+    .getByText(
+      "Your access does not include updating this Agent. Ask an administrator for Agent update access to save these settings.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await save.isDisabled(), true);
+  const card = page.getByRole("region", { name: "People" });
+  await card.getByRole("button", { name: "View all 7 people", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "People", exact: true });
+  await panel.getByRole("searchbox", { name: "Search people" }).fill("Teammate 6");
+  await panel.getByText("1 of 7 people", { exact: true }).waitFor();
+  assert.equal(await panel.getByRole("listitem").count(), 1);
+  assert.deepEqual(writes, [], "roster search never writes Agent settings");
+  const readsBeforeDenial = reads;
+  // Withdraw only roster administration. The real HTTP denial must clear
+  // previously readable data without contacting the Gateway adapter again.
+  fixture.policy.restrictions.push({
+    id: "deny-roster-read",
+    namespaceId: namespace.id,
+    effect: "deny",
+    action: "administer",
+    resourceKind: "agent",
+    resourceId: agent.id,
+  });
+  await panel.getByRole("button", { name: "Close people" }).click();
+  await card.getByRole("button", { name: "Refresh people" }).click();
+  await card.waitFor({ state: "hidden" });
+  assert.equal(await page.locator(".gateway-people li").count(), 0);
+  assert.equal(await panel.isVisible(), false);
+  assert.equal(reads, readsBeforeDenial);
+});
