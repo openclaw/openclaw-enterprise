@@ -4670,17 +4670,18 @@ export const scenarios = {
     slack: true,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets/sec_demo_slack_app_token",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         hold: true,
+        once: true,
       },
     ],
     actions: [
-      { selector: "#runtime-slack-app-token", value: "simulated-token" },
+      { selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" },
       click("Save channel Secrets"),
     ],
     description:
-      "A pending Secret save disables deployment. The real client times out after 15 seconds; reset the story to replay it.",
+      "Saving and deployment stay blocked while the channel Secret binding save is pending. After the 15-second timeout, select Reload draft and inspect the saved app token binding before retrying.",
   },
   credentialsSaveUnknown: {
     group: "Components/Credentials",
@@ -4689,15 +4690,15 @@ export const scenarios = {
     slack: true,
     rules: [
       {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets/sec_demo_slack_app_token",
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
         method: "PATCH",
         status: 503,
         once: true,
       },
     ],
-    actions: [{ selector: "#runtime-slack-app-token", value: "simulated-token" }],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
-      "Save the simulated replacement to see an uncertain Secret save. Reload the draft and inspect saved state before deploying or retrying.",
+      "Press Save channel Secrets to simulate an uncertain save. Select Reload draft and inspect the saved app token binding before deploying or retrying; the Console does not retry automatically.",
   },
   credentialsSlackPartial: {
     group: "Components/Credentials",
