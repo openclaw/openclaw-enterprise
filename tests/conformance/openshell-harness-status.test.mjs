@@ -922,7 +922,7 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
 // A provider-owned dedicated OpenClaw worker (finding 1642) holds a failed model
 // check the same way: it never connects its node, so without this nothing reports
 // the hold and the revision waits for its deadline as WORKSPACE_NODE_PENDING.
-function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, probeStatus }) {
+function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, upfrontStdout, probeStatus }) {
   const directory = mkdtempSync(join(tmpdir(), "native-held-failure-"));
   const servers = [];
   const diagnostics = [];
@@ -996,12 +996,13 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, probeStatus })
           execFile() {},
           // The upfront credential check: the exit status is a 401's header marker
           // (0 none, 10 provider-like, 20 openshell-policy, 30 mixed) plus its class (3 unclassified, 4
-          // invalid_api_key, 5 missing_api_key, 6 insufficient_permissions). The
-          // full probe, when reached, reports `probeStatus` for the model.
+          // invalid_api_key, 5 missing_api_key, 6 insufficient_permissions); its
+          // stdout is `upfrontStdout`, the 401 body's closed-set tokens. The full
+          // probe, when reached, reports `probeStatus` for the model.
           spawnSync(command, args) {
             if (args[0] === "-e") {
               assert.equal(command, process.execPath);
-              return { status: upfrontStatus };
+              return { status: upfrontStatus, stdout: upfrontStdout };
             }
             assert.equal(command, "node");
             assert.equal(args[0], "/app/openclaw.mjs");
@@ -1047,8 +1048,45 @@ function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3, probeStatus })
 const nativeProviderEnv = { APP_TOKEN_SHA: sha256(TOKEN), APP_SERVER_PORT: "18790" };
 
 test("a provider-owned native OpenClaw worker serves its held model-check failure to the transport token holder", async (t) => {
-  for (const [name, upfrontStatus, providerCode, responseHeaderMarker] of [
+  const hostile = "sk-proj-HostileFixtureKey0123456789abcdef";
+  for (const [name, upfrontStatus, providerCode, responseHeaderMarker, upfrontStdout, body] of [
     ["an unclassified 401 without known header names", 3, undefined, "none"],
+    [
+      "an unclassified 401 whose error carries a closed-set code and type",
+      13,
+      undefined,
+      "provider-like",
+      '["json-error-code","no_organization","invalid_request_error"]',
+      {
+        bodyShape: "json-error-code",
+        providerErrorCode: "no_organization",
+        providerErrorType: "invalid_request_error",
+      },
+    ],
+    [
+      "an unclassified 401 whose error has an off-set code and no type",
+      13,
+      undefined,
+      "provider-like",
+      '["json-error-code","other",""]',
+      { bodyShape: "json-error-code", providerErrorCode: "other" },
+    ],
+    [
+      "an unclassified non-JSON 401",
+      23,
+      undefined,
+      "openshell-policy",
+      '["non-json","",""]',
+      { bodyShape: "non-json" },
+    ],
+    [
+      "a 401 whose child output is off-set",
+      15,
+      "missing_api_key",
+      "provider-like",
+      JSON.stringify([hostile, hostile, "Bearer " + hostile]),
+      {},
+    ],
     ["a rejected key with provider-like headers", 14, "invalid_api_key", "provider-like"],
     [
       "a request that arrived at the provider without its credential",
@@ -1064,6 +1102,7 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
       const { servers, diagnostics, events, connectStarts } = runNativeWorkerEntrypoint({
         env: nativeProviderEnv,
         upfrontStatus,
+        upfrontStdout,
       });
       assert.equal(connectStarts, 0, "a held failure never starts the node");
       assert.ok(diagnostics.includes("Harness model authentication probe failed."));
@@ -1074,9 +1113,24 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
       assert.equal(probe.providerStatus, 401);
       assert.equal(probe.providerCode, providerCode);
       assert.equal(probe.responseHeaderMarker, responseHeaderMarker);
+      // The 401 body's closed-set tokens, each only when the child named it.
+      assert.deepEqual(
+        {
+          bodyShape: probe.bodyShape,
+          providerErrorCode: probe.providerErrorCode,
+          providerErrorType: probe.providerErrorType,
+        },
+        {
+          bodyShape: undefined,
+          providerErrorCode: undefined,
+          providerErrorType: undefined,
+          ...body,
+        },
+      );
       assert.equal(probe.cause, undefined);
       for (const line of diagnostics) {
         assert.ok(!line.includes("fixture-model-key"), "the credential never reaches the log");
+        assert.ok(!line.includes("Hostile"), "off-set child output never reaches the log");
       }
 
       const listening = servers.filter((server) => server.listening !== undefined);

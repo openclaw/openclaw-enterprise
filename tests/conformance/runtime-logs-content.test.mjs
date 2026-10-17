@@ -410,15 +410,26 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
         },
       ),
       probe("openclaw.model_probe", { kind: "WRAPPER_ERROR" }),
-      // The upfront 401 reports which header names it saw; the Codex probe has no
-      // such field, and provider text never passes.
+      // The upfront 401 reports which header names it saw and its body's shape and
+      // closed-set error code and type; the Codex probe has none of these fields,
+      // and provider text never passes.
       probe("openclaw.model_probe", undefined, {
         providerStatus: 401,
         providerCode: "missing_api_key",
         responseHeaderMarker: "provider-like",
+        bodyShape: "json-error-code",
+        providerErrorCode: "no_organization",
+        providerErrorType: "invalid_request_error",
         providerMessage: "Missing bearer or basic authentication in header",
+        error: { code: "no_organization", message: "sk-live-abc" },
+        body: '{"error":{"message":"sk-live-abc"}}',
       }),
-      probe("codex.model_probe", undefined, { responseHeaderMarker: "provider-like" }),
+      probe("codex.model_probe", undefined, {
+        responseHeaderMarker: "provider-like",
+        bodyShape: "json-error-code",
+        providerErrorCode: "no_organization",
+        providerErrorType: "invalid_request_error",
+      }),
       // Off-vocabulary details, unknown kinds and extra keys drop the cause, never the line.
       probe("openclaw.model_probe", { kind: "PROBE_STATUS", detail: "sk-live-abc" }),
       probe("openclaw.model_probe", { kind: "PROVIDER_TEXT" }),
@@ -457,6 +468,9 @@ test("a failed model probe keeps its closed-vocabulary cause, never other cause 
       providerStatus: 401,
       providerCode: "missing_api_key",
       responseHeaderMarker: "provider-like",
+      bodyShape: "json-error-code",
+      providerErrorCode: "no_organization",
+      providerErrorType: "invalid_request_error",
     }),
     fields("codex.model_probe"),
     fields("openclaw.model_probe"),
