@@ -1,13 +1,11 @@
 # Kubernetes Compute Driver
 
-The Kubernetes Compute Driver runs OpenClaw Agents on Kubernetes. It provisions
-or adopts one namespace per tenant in a single cluster and creates an OpenClaw
-gateway for each deployed Agent. Dedicated Gateways and Harnesses use separate
-Pods, identities and volumes within that namespace; embedded OpenClaw combines
-them in one Pod.
-The experimental `executionCluster` configuration selects a second Kubernetes
-API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/kubernetes.md#two-cluster-validation)
-before using it; cloud deployment and complete runtime acceptance remain pending.
+Kubernetes Compute provisions or adopts one namespace per tenant and creates an
+OpenClaw gateway for each deployed Agent. Dedicated Gateways and Harnesses have
+separate Pods, identities and volumes; embedded OpenClaw shares one Pod.
+Experimental `executionCluster` places dedicated Harnesses in a second cluster;
+[validation limits](../../testing/kubernetes.md#two-cluster-validation) include
+pending cloud and complete runtime acceptance.
 
 New managed tenant namespaces are named `oce-` plus the first 15 hexadecimal
 characters of the Namespace ID's SHA-256 digest: stable, DNS-safe, and short
@@ -107,23 +105,17 @@ operator-approved RuntimeClass or equivalent admission exemption with a matching
 fail-closed policy ([admission requirements](openshell-sandbox.md#kubernetes-and-admission-requirements));
 the Harness container itself remains unprivileged.
 
-A provider-owned dedicated Harness is ready only when exactly one live Pod in
-the resolved namespace carries the Agent, revision, and `agent` workload-role
-labels used by the active Service selector, plus all supplied Harness
-requirement labels, and reports `Ready=True`. Zero candidates, multiple live
-candidates (including one Ready and one unready), or a single unready candidate
-leave preparation at `ready: false` and prevent activation. Pods with a valid
-deletion timestamp, in another namespace, or with another Agent, revision, or
-role do not count.
+Provider-owned Harness readiness requires exactly one nonterminating `Ready=True`
+Pod in the resolved namespace, matching the active Service's Agent, revision,
+workload-role and supplied Harness labels. Zero, multiple or unready candidates
+block activation. Foreign identities and valid deletion timestamps exclude Pods.
 
-Malformed or incomplete Pod-list observations raise an error, including invalid
-identity or condition fields, duplicate condition types, contradictory Harness
-requirement labels, and pagination indicating more results. Missing optional
-Pod status or conditions means not ready. Preparation errors run the existing
-workload cleanup hooks; activation errors occur before changing routing.
-A cancelled observation cannot report ready. The check covers Kubernetes workload readiness and label uniqueness; it does not attest a
-provider Sandbox ID or Pod UID, authenticate the guest, or fence a runtime
-generation.
+Malformed identities, conditions, duplicate condition types, contradictory labels
+or pagination raise errors. Missing optional status or conditions means unready.
+Preparation errors invoke cleanup; activation checks precede routing changes.
+Cancellation cannot report ready. These checks establish workload readiness and
+label uniqueness, without attesting Sandbox identity, Pod UID, guest identity or
+runtime generation.
 
 ## Configuration
 
@@ -252,8 +244,10 @@ The Agent's Harness configuration determines its execution topology:
   selection. A missing or disconnected Harness fails the turn without gateway
   inference fallback. Explicit `openai/` models require complete API,
   token-limit, input, reasoning, and cost metadata. OpenAI-compatible provider
-  endpoints retain their configured HTTPS base URL, on port 443 with a path ending
-  in `/v1`; URLs with credentials, queries, fragments, or wildcards are rejected.
+  endpoints require endpoint-bound `credential_source` authentication and HTTPS
+  on port 443 with a path ending in `/v1`. Secret-backed API keys remain restricted
+  to `https://api.openai.com/v1`. Credentials, queries, fragments and wildcards
+  in model URLs are rejected.
 
 Dedicated replacement opts into the [exclusive preparation contract](compute.md#production-revision-stages):
 the worker stops predecessors before starting the new Harness. This permits RWO

@@ -884,6 +884,8 @@ function dedicatedFirstDeployFixture({
   clock,
   modelEndpoint,
   sandboxDriver,
+  credentialGatewayDriver,
+  context,
   revision: revisionOverrides = {},
 } = {}) {
   const state = {
@@ -921,6 +923,7 @@ function dedicatedFirstDeployFixture({
     }),
     {
       sandboxDriver,
+      credentialGatewayDriver,
       nodeEnrollment: {
         async createSetup() {
           state.setupCalls++;
@@ -1257,7 +1260,7 @@ function dedicatedFirstDeployFixture({
     };
   };
   driver.apiClients = Promise.resolve(clients);
-  const prepare = () => driver.prepareRevision(revision, authContext(revision));
+  const prepare = () => driver.prepareRevision(revision, context ?? authContext(revision));
   const markReady = (name) => {
     const object = read(
       "Deployment",
@@ -1276,6 +1279,7 @@ function dedicatedFirstDeployFixture({
     state,
     driver,
     revision,
+    context,
     namespace,
     gatewayName,
     agentName,
@@ -1461,16 +1465,63 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   };
   const withdrawals = [];
   let withdrawalFailure;
-  const nativeConfiguration = createHarnessConfiguration("openclaw", "gpt-5");
+  const nativeConfiguration = createHarnessConfiguration("openclaw", "team/model");
   nativeConfiguration.models.providers.openai.baseUrl = "https://provider.example.test/v1";
   nativeConfiguration.models.providers.openai.models[0].baseUrl =
     "https://models.example.test:443/inference/v1/";
   nativeConfiguration.models.providers.openai.api = "openai-completions";
+  const sourceType = {
+    type: "openai",
+    config: [],
+    secrets: [{ name: "api_key", required: true }],
+    rotation: "none",
+    harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+  };
+  const snapshot = {
+    method: "credential_source",
+    sourceId: "cs_native_custom",
+    credentialGatewayId: "native-credentials",
+    sourceType: "openai",
+    loginMode: "api_key",
+  };
+  const source = {
+    id: snapshot.sourceId,
+    name: "Native model",
+    createdAt: tenant.createdAt,
+    namespaceId: tenant.id,
+    driverId: snapshot.credentialGatewayId,
+    type: "openai",
+    config: { base_url: "https://models.example.test/inference/v1" },
+    secrets: {},
+    state: "ready",
+  };
   const fixture = dedicatedFirstDeployFixture({
     sandboxDriver,
+    credentialGatewayDriver: {
+      id: snapshot.credentialGatewayId,
+      capability: "credential_gateway",
+      async listSourceTypes() {
+        return [sourceType];
+      },
+      async attachForRevision() {
+        return [{ sourceId: source.id, ref: "native-provider" }];
+      },
+      async attachmentStatus() {
+        return [{ sourceId: source.id, state: "ready" }];
+      },
+    },
+    context: { harnessAuth: { ...snapshot, source }, credentialSources: [source] },
     revision: {
       harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
       sandboxDriverId: sandboxDriver.id,
+      harnessAuth: snapshot,
+      credentialSources: [
+        {
+          sourceId: source.id,
+          credentialGatewayId: snapshot.credentialGatewayId,
+          sourceType: source.type,
+        },
+      ],
       configuration: admitLoggingConfiguration(nativeConfiguration, "info"),
       plugins: undefined,
     },
@@ -1478,6 +1529,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   const {
     driver,
     revision,
+    context,
     state,
     namespace,
     gatewayName,
@@ -1548,7 +1600,7 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   });
   assert.deepEqual(
     nativeConfig.models.providers.openai.models.map(({ id }) => id),
-    ["gpt-5"],
+    ["team/model"],
   );
   // The provider's observed Pod readiness and enrolled node are independent of provisioning.
   // Until the provider's Pod is Ready, the wait has no named reason.
@@ -1600,12 +1652,9 @@ test("native OpenClaw preparation and activation use only outbound Sandbox enrol
   assert.equal(withdrawals.length, 1);
   assert.deepEqual(read("NetworkPolicy", stale.metadata.name), stale);
   assert.deepEqual(deleted, []);
-  await assert.rejects(
-    driver.activateRevision(revision, authContext(revision)),
-    /gateway is not ready/,
-  );
+  await assert.rejects(driver.activateRevision(revision, context), /gateway is not ready/);
   markReady(gatewayName);
-  await driver.activateRevision(revision, authContext(revision));
+  await driver.activateRevision(revision, context);
 
   assert.deepEqual(deleted, [stale.metadata.name]);
   assert.equal(objects.has(key("NetworkPolicy", `allow-gateway-agent-${suffix}`)), false);
@@ -7821,8 +7870,11 @@ test("credential-source authentication renders no model Secret and requires the 
   const nativeRevision = {
     ...revision,
     harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-    configuration: createHarnessConfiguration("openclaw", "gpt-4o-mini"),
+    configuration: createHarnessConfiguration("openclaw", "team/model"),
   };
+  nativeRevision.configuration.models.providers.openai.baseUrl =
+    "https://models.example.test/inference/v1";
+  nativeRevision.configuration.models.providers.openai.api = "openai-completions";
   driver.validateHarnessAuth(
     nativeRevision.harness,
     snapshot,
@@ -8499,7 +8551,7 @@ test("dedicated OpenClaw renders an enrolled Harness without exposing model cred
     worker.env.find(({ name }) => name === "NODE_COMPILE_CACHE")?.value,
     "/home/node/.openclaw-node/.cache/node-compile",
   );
-  assert.equal(workerProgram.includes("chmodSync(privateTemporary, 0o700)"), true);
+  assert.equal(workerProgram.includes("chmodSync(temporary, 0o700)"), true);
   assert.equal(workerProgram.includes("initializeRuntimeAssets();"), true);
   assert.equal(workerProgram.includes("OPENCLAW_BUNDLED_SKILLS_DIR"), true);
   assert.equal(workerProgram.includes('publishImageTree("/app/custodian-skills"'), true);
@@ -12705,24 +12757,30 @@ test("revision lifecycle rejects another driver or missing identity before clust
         "Configuration setting models.providers.openai.models.0 must set api, baseUrl, positive integer contextWindow and maxTokens, and non-negative cost input, output, cacheRead and cacheWrite (here or on models.providers.openai) on Dedicated OpenClaw.",
     },
   );
-  // A compatible provider can use a different host and a nested API prefix.
-  assert.doesNotThrow(() =>
-    production.validateHarnessAuth(
-      { id: "openclaw", version: "1.0.0", mode: "dedicated" },
-      apiKeyAuth,
-      {
-        ...dedicatedNativeConfiguration,
-        models: {
-          providers: {
-            openai: {
-              ...dedicatedNativeConfiguration.models.providers.openai,
-              baseUrl: "https://models.example.test/inference/v1",
-              api: "openai-completions",
+  // A Secret grant must not let an Agent editor choose where the raw key is sent.
+  assert.throws(
+    () =>
+      production.validateHarnessAuth(
+        { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+        apiKeyAuth,
+        {
+          ...dedicatedNativeConfiguration,
+          models: {
+            providers: {
+              openai: {
+                ...dedicatedNativeConfiguration.models.providers.openai,
+                baseUrl: "https://models.example.test/inference/v1",
+                api: "openai-completions",
+              },
             },
           },
         },
-      },
-    ),
+      ),
+    {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting models.providers.openai.models.0.baseUrl (or models.providers.openai.baseUrl) must be https://api.openai.com/v1 unless harnessAuth.method is credential_source.",
+    },
   );
   // Each dedicated OpenClaw catalog refusal names the setting the caller fixes (finding 1116);
   // preparation applies the same rule to the admitted revision.

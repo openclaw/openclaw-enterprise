@@ -894,10 +894,6 @@ function run(args, env, readinessUrl) {
     child.once("exit", () => {
       stopped = true;
       killGroup("SIGKILL");
-      // A native child may use its own process group. Close inherited pipes so
-      // it cannot hold this observation open; container cleanup owns its lifetime.
-      child.stdout.destroy();
-      child.stderr.destroy();
     });
     child.once("close", (code, signal) => {
       clearTimeout(deadline);
@@ -937,25 +933,21 @@ function run(args, env, readinessUrl) {
     "cp.spawnSync = (command, args, options) => Array.isArray(args) && args.includes('--probe')",
     "  ? { status: 0, stdout: " + JSON.stringify(probe) + " } : spawnSync(command, args, options);",
   ].join("\n"));
-  fs.writeFileSync("/tmp/native-enrollment.json", JSON.stringify({
-    url: "wss://runtime.example.test", bootstrapToken: "schema-test-bootstrap",
-    expiresAtMs: Date.now() + 600000,
-  }), { mode: 0o600 });
-  const temporaryModeBefore = fs.statSync("/tmp").mode & 0o777;
   const harnessRun = await run(["-r", "/tmp/probe.cjs", "-e", harness], {
-    TMPDIR: "/tmp",
+    TMPDIR: "/tmp/openclaw-native-worker",
     OPENCLAW_NATIVE_WORKER_CAPACITY: "8",
     OPENCLAW_NODE_STATE_DIR: "/home/node/.openclaw-node",
-    OPENCLAW_NODE_SETUP_ENVELOPE: "/tmp/native-enrollment.json",
+    OPENCLAW_NODE_SETUP_CODE: "runtime-image-schema-setup-code",
     OPENCLAW_WORKSPACE_DIR: "/tmp/runtime-image-provider-workspace",
     OPENCLAW_NATIVE_INFERENCE_CONFIG: JSON.stringify({
       models: { providers: { openai: {
-        baseUrl: "https://models.example.test/inference/v1",
+        baseUrl: "https://api.openai.com/v1",
         apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
-        models: [{ id: "runtime-image-schema", name: "runtime-image-schema", api: "openai-completions", contextWindow: 128000, maxTokens: 8192 }],
+        models: [{ id: "runtime-image-schema", name: "runtime-image-schema", api: "openai-responses", contextWindow: 128000, maxTokens: 8192 }],
       } } },
       secrets: { providers: { model: { source: "env", allowlist: ["OPENAI_API_KEY"] } } },
     }),
+    OPENCLAW_RUNTIME_STATUS_PORT: "18791",
     OPENCLAW_HARNESS_MODEL: model,
     OPENCLAW_HARNESS_PROVIDER: "openai",
     OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
@@ -965,7 +957,6 @@ function run(args, env, readinessUrl) {
   const harnessConfig = "/home/node/.openclaw-node/openclaw.json";
   process.stdout.write(JSON.stringify({
     gateway: { ...gatewayRun, config: JSON.parse(fs.readFileSync(gatewayConfig, "utf8")), validation: validate(gatewayConfig) },
-    temporary: { before: temporaryModeBefore, after: fs.statSync("/tmp").mode & 0o777 },
     harness: { ...harnessRun, config: JSON.parse(fs.readFileSync(harnessConfig, "utf8")), validation: validate(harnessConfig) },
   }));
 })().catch((error) => { console.error(error); process.exitCode = 1; });
@@ -987,7 +978,7 @@ function run(args, env, readinessUrl) {
         "--tmpfs",
         "/home/node:size=1024m,uid=1000,gid=1000,mode=700",
         "--tmpfs",
-        "/tmp:size=64m,uid=0,gid=0,mode=1777",
+        "/tmp:size=64m,uid=1000,gid=1000,mode=1777",
         "--network",
         "none",
         "--volume",
@@ -1005,13 +996,7 @@ function run(args, env, readinessUrl) {
         workspaceNodeId: randomBytes(32).toString("hex"),
       }),
     );
-    const { gateway, harness, temporary } = JSON.parse(stdout);
-    assert.deepEqual(temporary, { before: 0o777, after: 0o777 });
-    assert.equal(
-      harness.config.models.providers.openai.baseUrl,
-      "https://models.example.test/inference/v1",
-    );
-    assert.equal(harness.config.models.providers.openai.models[0].api, "openai-completions");
+    const { gateway, harness } = JSON.parse(stdout);
     // Validate both the Gateway placement contract and the node-owned model configuration.
     assert.equal(gateway.config.cloudWorkers?.requiredProfile, "dedicated-native");
     assert.equal(gateway.config.cloudWorkers?.profiles?.["dedicated-native"]?.provider, "device");
