@@ -694,6 +694,9 @@ test("a PROCESS_EXIT cause recorded today reads under a controller from before t
     cause.kind === "PROCESS_EXIT" &&
     Object.keys(cause).every((key) => key === "kind" || key === "detail") &&
     (cause.detail === undefined || earlierReader.test(cause.detail.replace(/-attempt2$/u, "")));
+  // What #2763 first recorded fails it, so this test catches a return to writing it.
+  assert.equal(readsEarlier({ kind: "PROCESS_EXIT", detail: "UNRECOGNIZED" }), false);
+  assert.equal(readsEarlier({ kind: "PROCESS_EXIT", detail: "UNRECOGNIZED-attempt2" }), false);
   for (const served of [
     "exit-1",
     "signal-SIGKILL-attempt2",

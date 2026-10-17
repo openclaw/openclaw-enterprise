@@ -33,7 +33,7 @@ const RUNTIME_FAILURE_CAUSE_DETAILS: Readonly<
 
 // A PROCESS_EXIT token of the right shape names a status, signal or system error code
 // from the contract's lists; any other is recorded without its detail (finding 1673).
-// UNRECOGNIZED is read back only from rows recorded while #2763 wrote it.
+// UNRECOGNIZED is read back only from rows recorded before that (#2763 wrote it).
 const PROCESS_EXIT_DETAILS: ReadonlySet<string> = new Set([
   ...Array.from({ length: PROCESS_EXIT_MAX_STATUS }, (_, index) => `exit-${index + 1}`),
   ...PROCESS_EXIT_SIGNALS.map((signal) => `signal-${signal}`),
