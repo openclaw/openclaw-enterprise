@@ -102,7 +102,8 @@ const modelPort = Number(modelEndpoint.port || 443);
 // Codex hands a long command back to the model, which may reply and end the turn before the
 // command ends. The tool upstream probe bounds its curl, and every turn waits for a command
 // still running at turn end up to that bound plus a margin (finding 1630: a 20 s curl outlived
-// a fixed 5 s wait).
+// a fixed 5 s wait). The grace is sized for that probe only; longer commands elsewhere in this
+// suite can still outlive it and report an unknown outcome.
 const toolProbeCurlMaxSeconds = 8;
 const codexCommandGraceMs = (toolProbeCurlMaxSeconds + 6) * 1_000;
 const selected =
@@ -5640,13 +5641,22 @@ async function assertToolUpstreamOutageFailsClosed(topology) {
   );
   // OpenShell usually closes the client connection without a response when it cannot reach
   // the upstream (curl exit 52). If it holds the connection instead, curl gives up at its own
-  // bound (exit 28); curlSeconds above shows which happened. Either way no response and
-  // no token arrive. Any other result, a response included, means the outage was not observed.
+  // --max-time bound (exit 28). A timeout well before that bound, such as the 3 s connect
+  // timeout to the proxy itself, is not an upstream outage. Any other result, a response
+  // included, means the outage was not observed.
   assert.equal(outage.httpStatus, "000", "a request to an unreachable upstream gets no response.");
+  const held = outage.exitCode === 28 && outage.curlSeconds >= toolProbeCurlMaxSeconds - 0.5;
   assert.ok(
-    [52, 28].includes(outage.exitCode),
-    `OpenShell must end or hold a request to an unreachable upstream, not answer it (curl exit ${outage.exitCode}).`,
+    outage.exitCode === 52 || held,
+    "OpenShell must end or hold a request to an unreachable upstream, not answer it " +
+      `(curl exit ${outage.exitCode} after ${outage.curlSeconds} s).`,
   );
+  if (held) {
+    process.stderr.write(
+      "OpenShell integration: OpenShell held the request to the unreachable upstream until " +
+        "curl's bound instead of closing it.\n",
+    );
+  }
   assert.equal(outage.tokenDelivered, false, "no token may arrive while the upstream is down.");
   // Once the upstream is back, the same running Harness gets tool A's own token again.
   assert.deepEqual(
