@@ -138,7 +138,7 @@
     "tests/integration/compute-singleton-worker.test.mjs": 200,
     "tests/integration/configuration-body-limits.test.mjs": 2400,
     "tests/integration/configuration-controller.test.mjs": 10500,
-    "tests/integration/configuration-startup.test.mjs": 47400,
+    "tests/integration/configuration-startup.test.mjs": 12300,
     "tests/integration/console-api.test.mjs": 6500,
     "tests/integration/console-build-metadata.test.mjs": 200,
     "tests/integration/container-promote.test.mjs": 100,
