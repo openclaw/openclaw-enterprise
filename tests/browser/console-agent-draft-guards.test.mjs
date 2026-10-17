@@ -1070,7 +1070,7 @@ for (const changed of ["generation", "identity"]) {
       // (finding 1640).
       await page
         .getByText(
-          "Save the channel Secret choices, or choose the saved Secrets again, before deploying.",
+          "Save the channel Secret choices before deploying, or reload the page to discard unsaved changes.",
           {
             exact: true,
           },

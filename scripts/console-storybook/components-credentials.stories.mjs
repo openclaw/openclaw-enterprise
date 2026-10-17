@@ -13,6 +13,10 @@ export const CredentialsSlackReplacement = {
   ...story("credentialsSlackReplacement"),
   name: "Slack token switch",
 };
+export const DiscardSecretChoice = {
+  ...story("credentialsDiscardSecretChoice"),
+  name: "Discard an unsaved Secret choice",
+};
 export const CredentialsSlackCarried = {
   ...story("credentialsSlackCarried"),
   name: "Slack token choice carried through a conflict",

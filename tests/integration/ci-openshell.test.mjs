@@ -325,6 +325,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   // The command completes this long after the turn: past the former fixed 5 s wait would make
   // the test slow, so the bounds below scale it down. The client sees only message order and time.
   const lateMs = 800;
+  let turnCompletedAt;
   peer.on("connection", (socket) => {
     socket.on("message", (data) => {
       const { method, id } = JSON.parse(data);
@@ -349,6 +350,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
         method: "item/commandExecution/outputDelta",
         params: { threadId, turnId, itemId: item.id, delta: "TOOL_EXIT=" },
       });
+      turnCompletedAt = performance.now();
       send({
         method: "turn/completed",
         params: { threadId, turn: { ...turn, status: "completed" } },
@@ -379,11 +381,10 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   };
 
   // Within the bound, the late completion settles the probe with the command's own result.
-  const started = Date.now();
   const { run } = await probe(lateMs * 4);
   assert.equal(run.exitCode, 28, "keep the late command's actual result");
-  // The wait ends on the completion event, not at the bound.
-  assert.ok(Date.now() - started < lateMs * 4, "settle on the completion event");
+  // The grace starts when the turn ends; launching the client isn't part of that wait.
+  assert.ok(performance.now() - turnCompletedAt < lateMs * 4, "settle on the completion event");
 
   // Past the bound, the outcome stays unknown and the failure says how long the command ran.
   const error = await probe(lateMs / 4).then(
