@@ -48,18 +48,22 @@ async function driverBuiltEvidence() {
   const records = [];
   for (const path of files) {
     const text = await readFile(new URL(path, driverRoot), "utf8");
-    const read = new Set();
-    for (const [literal] of text.matchAll(/\{[^{}]*\}/gu)) {
-      if (!/\bcheck\s*:/u.test(literal)) {
+    // Two records can use the same check name. Account for each occurrence, not just its value.
+    const readCheckOffsets = new Set();
+    for (const object of text.matchAll(/\{[^{}]*\}/gu)) {
+      const literal = object[0];
+      const checkKey = /\bcheck\s*:/u.exec(literal);
+      if (!checkKey) {
         continue;
       }
+      const checkOffset = object.index + checkKey.index;
       const value = (key) =>
         new RegExp(`\\b${key}\\s*:\\s*("[^"\\n]*"|[^,\\n}]+)`, "u").exec(literal)?.[1].trim();
       const check = value("check");
       const code = value("code");
       if (/\bstate\s*:/u.test(literal)) {
         // A diagnostic check, not failure evidence (finding 1673 covers those).
-        read.add(check);
+        readCheckOffsets.add(checkOffset);
         continue;
       }
       // A copy of evidence the runtime published (failed.check, failed.code) adds no value of
@@ -73,13 +77,13 @@ async function driverBuiltEvidence() {
         /^"[^"]+" "[^"]+"$/u,
         `${path} builds runtime failure evidence this test cannot read; update it:\n${literal}`,
       );
-      read.add(check);
+      readCheckOffsets.add(checkOffset);
       records.push({ path, check: JSON.parse(check), code: JSON.parse(code) });
     }
-    for (const [, check] of text.matchAll(/\bcheck\s*:\s*("[^"\n]*")/gu)) {
+    for (const match of text.matchAll(/\bcheck\s*:\s*("[^"\n]*")/gu)) {
       assert.ok(
-        read.has(check),
-        `${path} sets check ${check} in a shape this test cannot read; update it`,
+        readCheckOffsets.has(match.index),
+        `${path} sets check ${match[1]} in a shape this test cannot read; update it`,
       );
     }
   }
