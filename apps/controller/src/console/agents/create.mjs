@@ -194,6 +194,35 @@ async function cancelledAgentState(request, namespaceId, agentId) {
   }
 }
 
+// First-deployment waits that someone must act on (finding 1617): the deployment's own fixed
+// sentence replaces the bare provisioning line. The deployment read needs read access to the
+// Agent; a reader without it, or any other wait, keeps the bare line.
+const NAMED_DEPLOYMENT_WAITS = new Set(["NAMESPACE_POD_QUOTA_EXCEEDED"]);
+
+async function namedDeploymentWait(request, namespaceId, job) {
+  if (
+    typeof job.agentId !== "string" ||
+    !job.agentId ||
+    typeof job.revisionId !== "string" ||
+    !job.revisionId
+  ) {
+    return undefined;
+  }
+  try {
+    const deployment = await request(
+      `${namespacePath(namespaceId)}/agents/${encodeURIComponent(job.agentId)}/deployments/${encodeURIComponent(job.revisionId)}`,
+    );
+    const attempt = deployment?.progress?.lastAttempt;
+    return NAMED_DEPLOYMENT_WAITS.has(attempt?.code) &&
+      typeof attempt.message === "string" &&
+      attempt.message
+      ? attempt.message
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function waitForProvisioning({ request, status, first, namespaceId }) {
   let current = first.provisioning ?? first;
   const jobUrl = current?.url;
@@ -202,7 +231,11 @@ async function waitForProvisioning({ request, status, first, namespaceId }) {
   let started = false;
   while (current?.status === "queued" || current?.status === "running") {
     started ||= current.status === "running";
-    setText(status, provisioningStatusText(started ? "running" : current.status));
+    setText(
+      status,
+      (await namedDeploymentWait(request, namespaceId, current)) ??
+        provisioningStatusText(started ? "running" : current.status),
+    );
     if (typeof current.url !== "string" || !current.url) {
       throw new Error("Provisioning status URL is unavailable.");
     }

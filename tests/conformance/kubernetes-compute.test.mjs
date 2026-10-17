@@ -2196,6 +2196,73 @@ test("a pending dedicated deploy reports an unschedulable Pod or an unpaired nod
   assert.equal(ready.pendingReason, undefined);
 });
 
+// A deploy whose Pods the Namespace's Pod quota refuses names the quota instead of a
+// bare wait (finding 1617). The Deployment controller copies its ReplicaSet's
+// ReplicaFailure condition onto the Deployment, which the driver reads.
+test("a pending dedicated deploy names a full Namespace Pod quota", async () => {
+  const { state, gatewayName, agentName, read, save, prepare, markReady } =
+    dedicatedFirstDeployFixture({ clock: { now: 0 } });
+  assert.equal((await prepare()).pendingReason, undefined);
+  const setConditions = (name, conditions) => {
+    const object = read("Deployment", name);
+    object.status = { ...object.status, conditions };
+    save(object);
+  };
+  const refusal = (requested, used = "pods=10", limited = "pods=10") =>
+    `pods "${agentName}-5d8f7c9b4-x2k9q" is forbidden: exceeded quota: openclaw-quota, requested: ${requested}, used: ${used}, limited: ${limited}`;
+  const failure = (message, overrides = {}) => ({
+    type: "ReplicaFailure",
+    status: "True",
+    reason: "FailedCreate",
+    message,
+    ...overrides,
+  });
+  const pendingReasonWith = async (name, conditions) => {
+    setConditions(name, conditions);
+    const observed = await prepare();
+    setConditions(name, []);
+    assert.equal(observed.ready, false);
+    return observed.pendingReason;
+  };
+  const quota = "NAMESPACE_POD_QUOTA_EXCEEDED";
+  for (const name of [agentName, gatewayName]) {
+    assert.equal(await pendingReasonWith(name, [failure(refusal("pods=1"))]), quota, name);
+  }
+  assert.equal(
+    await pendingReasonWith(agentName, [
+      { type: "Available", status: "False", reason: "MinimumReplicasUnavailable" },
+      failure(refusal("pods=1,requests.cpu=500m", "pods=10,requests.cpu=4", "pods=10,requests.cpu=4")),
+    ]),
+    quota,
+  );
+  assert.equal(
+    await pendingReasonWith(agentName, [failure(refusal("count/pods=1", "count/pods=10", "count/pods=10"))]),
+    quota,
+  );
+  // Only a refusal for want of Pods is a full Pod quota.
+  for (const conditions of [
+    [failure(refusal("requests.cpu=500m", "pods=4,requests.cpu=4", "pods=10,requests.cpu=4"))],
+    [failure(refusal("pods=1"), { status: "False" })],
+    [failure(refusal("pods=1"), { reason: "FailedDelete" })],
+    [failure(refusal("pods=1"), { type: "Progressing" })],
+    [failure(`pods "${agentName}-5d8f7c9b4-x2k9q" is forbidden: error looking up service account`)],
+    [failure(undefined)],
+  ]) {
+    assert.equal(await pendingReasonWith(agentName, conditions), undefined, inspect(conditions));
+  }
+  // A full quota names the wait before a Pod the scheduler cannot place.
+  state.unschedulableRole = "gateway";
+  assert.equal(await pendingReasonWith(agentName, [failure(refusal("pods=1"))]), quota);
+  assert.equal((await prepare()).pendingReason, "WORKLOAD_UNSCHEDULABLE");
+  state.unschedulableRole = undefined;
+  markReady(agentName);
+  markReady(gatewayName);
+  state.connected = true;
+  const ready = await prepare();
+  assert.equal(ready.ready, true);
+  assert.equal(ready.pendingReason, undefined);
+});
+
 // The worker is serial: every pass one Agent spends waiting for its node holds
 // up every other Agent's deploy. A node that never pairs gets one bounded wait
 // per setup, across all passes, then a single read per pass, as before #816 (D88).
