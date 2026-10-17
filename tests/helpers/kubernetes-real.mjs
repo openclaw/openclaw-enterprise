@@ -151,7 +151,9 @@ export function boundedTeardown(
   const cleanups = [];
   let started = false;
   const after = (cleanup) => {
-    cleanups.push({ cleanup, site: registrationSite(new Error().stack) });
+    // A named cleanup is logged by its name too.
+    const site = `registered at ${registrationSite(new Error().stack)}`;
+    cleanups.push({ cleanup, site: cleanup?.name ? `${cleanup.name} ${site}` : site });
   };
   testContext.after(async () => {
     started = true;
@@ -160,7 +162,7 @@ export function boundedTeardown(
     // A cleanup may register another; it runs next.
     while (cleanups.length > 0) {
       const { cleanup, site } = cleanups.pop();
-      log(`${label}: cleanup registered at ${site}`);
+      log(`${label}: cleanup ${site}`);
       let timer;
       try {
         await Promise.race([
@@ -173,16 +175,14 @@ export function boundedTeardown(
           }),
         ]);
       } catch (error) {
-        log(`${label}: cleanup registered at ${site} failed: ${error?.message ?? error}`);
-        failures.push(
-          new Error(`cleanup registered at ${site}: ${error?.message ?? error}`, { cause: error }),
-        );
+        log(`${label}: cleanup ${site} failed: ${error?.message ?? error}`);
+        failures.push(new Error(`cleanup ${site}: ${error?.message ?? error}`, { cause: error }));
       } finally {
         clearTimeout(timer);
       }
     }
     if (abandoned.length > 0) {
-      log(`${label}: exiting in ${exitGraceMs} ms; abandoned cleanups: ${abandoned.join(", ")}`);
+      log(`${label}: exiting in ${exitGraceMs} ms; abandoned cleanups ${abandoned.join(", ")}`);
       // node:test reports the test once this hook returns.
       setTimeout(exit, exitGraceMs).unref();
     }

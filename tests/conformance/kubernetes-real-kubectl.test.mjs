@@ -275,7 +275,10 @@ test(
     context.after(() => ran.push("port-forward stop"));
     await assert.rejects(testContext.hooks[0](), /: did not finish within 50 ms$/);
     assert.deepEqual(ran, ["port-forward stop", "namespace delete"]);
-    assert.match(logs.at(-1), /^teardown: exiting in 10 ms; abandoned cleanups: \S+:\d+$/);
+    assert.match(
+      logs.at(-1),
+      /^teardown: exiting in 10 ms; abandoned cleanups registered at kubernetes-real-kubectl\.test\.mjs:\d+$/,
+    );
     await delay(100);
     assert.deepEqual(exits, ["exit"]);
     assert.equal(teardownStepLimitMs, 180_000, "longer than the 120 s Namespace delete waits");
@@ -284,29 +287,37 @@ test(
 );
 
 test(
-  "a node:test file whose worker stop never settles attempts every later cleanup and exits",
+  "the OpenShell proof's installation cleanups all run when its worker stop never settles",
   { timeout: 20_000 },
   async () => {
-    // The OpenShell proof's cleanups, registered one each as it does (finding 1711), in a real
-    // node:test process. The worker stop never settles and its poll interval keeps the process
-    // alive; the file must still attempt the other five cleanups, name the stalled one and exit.
-    const helper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
+    // Finding 1711: the proof's own cleanup registration, in a real node:test process. The
+    // worker stop never settles and its poll interval keeps the process alive; every later
+    // cleanup must still be attempted, the stalled one named, and the file must exit by itself.
+    // Registering all six as one cleanup would attempt only the worker stop.
+    const kubernetesHelper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
+    const openShellHelper = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
+      .href;
     const script = `
       import test from "node:test";
-      import { boundedTeardown } from ${JSON.stringify(helper)};
+      import { boundedTeardown } from ${JSON.stringify(kubernetesHelper)};
+      import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelper)};
       const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
       test("proof", async (testContext) => {
         const { context } = boundedTeardown(testContext, { stepLimitMs: 200, exitGraceMs: 50 });
-        context.after(() => attempt("temporary directory"));
-        context.after(() => attempt("workload Namespace"));
-        context.after(() => attempt("observer pool"));
-        context.after(() => attempt("production app"));
-        context.after(() => attempt("port-forwards"));
-        const poll = setInterval(() => {}, 50);
-        context.after(() => {
-          attempt("worker stop");
-          return new Promise(() => poll);
+        let poll;
+        registerOpenShellInstallationCleanups(context, {
+          workerStop: () => {
+            attempt("worker stop");
+            return new Promise(() => poll);
+          },
+          portForwards: () => attempt("port-forwards"),
+          productionApp: () => attempt("production app"),
+          observerPool: () => attempt("observer pool"),
+          workloadNamespace: () => attempt("workload Namespace"),
+          temporaryDirectory: () => attempt("temporary directory"),
         });
+        // Assigned after registration, like the proof's worker: cleanups read it when they run.
+        poll = setInterval(() => {}, 50);
         throw new Error("replacement timed out");
       });
     `;
@@ -334,9 +345,12 @@ test(
     ]);
     assert.match(
       exited.stderr,
-      /teardown: cleanup registered at \[eval1\]:\d+ failed: did not finish within 200 ms/,
+      /teardown: cleanup workerStop registered at openshell-kubernetes-real\.mjs:\d+ failed: did not finish within 200 ms/,
     );
-    assert.match(exited.stderr, /teardown: exiting in 50 ms; abandoned cleanups: \[eval1\]:\d+/);
+    assert.match(
+      exited.stderr,
+      /teardown: exiting in 50 ms; abandoned cleanups workerStop registered at openshell-kubernetes-real\.mjs:\d+/,
+    );
   },
 );
 

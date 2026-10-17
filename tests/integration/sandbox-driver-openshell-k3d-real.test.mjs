@@ -36,6 +36,7 @@ import {
   openShellAgentName,
   openShellGatewayName,
   openshellHash as hash,
+  registerOpenShellInstallationCleanups,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import {
   boundedTeardown,
@@ -2047,6 +2048,9 @@ function isKubernetesUnauthorized(error) {
   return error?.code === 401 || /^HTTP-Code: 401$/m.test(String(error?.message));
 }
 
+// Whether the test's bounded teardown has begun, for the 401 diagnostic below.
+let teardownStarted = () => false;
+
 // Finding 1711: a 401 on prepareRevision names no credential. On the first one, `tokenSources()`
 // names the credentials the call may have used, by name and kind, never a value.
 function withUnauthorizedTokenSourceDiagnostic(computeDriver, tokenSources) {
@@ -2076,7 +2080,7 @@ function withUnauthorizedTokenSourceDiagnostic(computeDriver, tokenSources) {
 
 async function prepareProductionInstallation(
   context,
-  { harnessId = "codex", controllerPort, teardownStarted = () => false } = {},
+  { harnessId = "codex", controllerPort } = {},
 ) {
   const kubeconfig = await validateOpenShellPrerequisites();
   const identifier = randomUUID();
@@ -2313,41 +2317,34 @@ async function prepareProductionInstallation(
   let controllerUrl;
   let placement;
   let gatewayPlacement;
-  // Each step is its own bounded cleanup, so one that never settles (a worker stop) cannot keep
-  // the later ones from running (finding 1711). They run last-registered first: worker, port-
-  // forwards, app, observer pool, workload Namespace, temporary directory.
-  context.after(async () => {
-    await rm(directory, { recursive: true, force: true });
-  });
-  context.after(async () => {
-    if (placement !== undefined) {
-      await kubectl(
-        "delete",
-        "namespace",
-        placement,
-        "--ignore-not-found=true",
-        "--wait=true",
-        "--timeout=120s",
-      );
-    }
-  });
-  context.after(async () => {
-    await observerPool.end();
-  });
-  context.after(async () => {
-    if (productionApp !== undefined) {
-      await productionApp.close();
-    }
-  });
-  context.after(async () => {
-    await createSandboxDriver.disposeGatewayForwards();
-  });
-  context.after(async () => {
-    if (worker !== undefined) {
-      await worker.stop();
-    } else if (workerPool !== undefined) {
-      await workerPool.end();
-    }
+  registerOpenShellInstallationCleanups(context, {
+    workerStop: async () => {
+      if (worker !== undefined) {
+        await worker.stop();
+      } else if (workerPool !== undefined) {
+        await workerPool.end();
+      }
+    },
+    portForwards: () => createSandboxDriver.disposeGatewayForwards(),
+    productionApp: async () => {
+      if (productionApp !== undefined) {
+        await productionApp.close();
+      }
+    },
+    observerPool: () => observerPool.end(),
+    workloadNamespace: async () => {
+      if (placement !== undefined) {
+        await kubectl(
+          "delete",
+          "namespace",
+          placement,
+          "--ignore-not-found=true",
+          "--wait=true",
+          "--timeout=120s",
+        );
+      }
+    },
+    temporaryDirectory: () => rm(directory, { recursive: true, force: true }),
   });
 
   const existing = await new PostgresPlatformState(observerPool).loadInstallation();
@@ -6292,6 +6289,7 @@ test(
   async (testContext) => {
     // Finding 1711: every cleanup this test registers runs, last-registered first, each bounded.
     const teardown = boundedTeardown(testContext, { label: "OpenShell integration teardown" });
+    teardownStarted = () => teardown.started;
     const { context } = teardown;
     if (demoStatePath !== undefined) {
       context.after(() => {
@@ -6303,7 +6301,6 @@ test(
       process.stderr.write("OpenShell integration: selected real provider-delivery proof.\n");
       const topology = await prepareProductionInstallation(context, {
         harnessId: selectedHarness,
-        teardownStarted: () => teardown.started,
         ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
       });
       assert.equal(

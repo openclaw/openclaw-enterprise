@@ -41,6 +41,28 @@ const requiredWorkspaceMounts = Object.freeze([
   { subPath: "workspace", mountPath: "/sandbox/enterprise", readOnly: false },
 ]);
 
+// The OpenShell proof's installation cleanups, each its own registration on a bounded teardown
+// context (finding 1711), so a worker stop that never settles cannot keep the later ones from
+// running. Operations are closures, so resources the proof assigns later are read at cleanup
+// time. They run last-registered first: the worker stops before what it uses goes away.
+export const openShellInstallationCleanupOrder = Object.freeze([
+  "workerStop",
+  "portForwards",
+  "productionApp",
+  "observerPool",
+  "workloadNamespace",
+  "temporaryDirectory",
+]);
+
+export function registerOpenShellInstallationCleanups(context, operations) {
+  for (const name of [...openShellInstallationCleanupOrder].reverse()) {
+    const operation = operations[name];
+    assert.equal(typeof operation, "function", `OpenShell installation cleanup ${name}`);
+    // Named for the teardown log: every registration comes from this line.
+    context.after({ [name]: () => operation() }[name]);
+  }
+}
+
 export function openshellHash(value, length = 12) {
   return sha256Hex(value, length);
 }
