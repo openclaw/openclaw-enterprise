@@ -19,7 +19,7 @@ import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/
 
 import { ScopeViolationError, SecretBindingValidationError } from "./errors.ts";
 import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
-import type { ControllerWork, DeploymentStatusResult } from "./state/controller-work.ts";
+import type { ControllerWork } from "./state/controller-work.ts";
 import { controllerWorkLeaseActive } from "./state/controller-work.ts";
 
 export type AgentProvisioningStatus = "queued" | "running" | "failed" | "succeeded";
@@ -64,6 +64,11 @@ export interface AgentProvisioningDeploymentWait {
     readonly message: string;
   } | null;
 }
+
+/** The initial deployment's own progress (`deploymentProgressForWork`), as far as it is used here. */
+export type AgentProvisioningDeploymentProgress = {
+  readonly lastAttempt: AgentProvisioningDeploymentWait["lastAttempt"];
+} | null;
 
 export interface AgentProvisioningProgress {
   readonly workId: string;
@@ -176,7 +181,7 @@ export function normalizeProvisioningWorkspace(
  */
 function provisioningDeploymentWait(
   record: Readonly<AgentProvisioningRecord>,
-  deployment: DeploymentStatusResult["progress"] | undefined,
+  deployment: AgentProvisioningDeploymentProgress | undefined,
 ): AgentProvisioningDeploymentWait {
   const named = deployment?.lastAttempt;
   if (named != null && named.code !== "RECONCILIATION_PENDING") {
@@ -204,7 +209,7 @@ export function provisioningProgress(
   record: Readonly<AgentProvisioningRecord>,
   work?: Readonly<ControllerWork>,
   now: Date = new Date(),
-  deployment?: DeploymentStatusResult["progress"],
+  deployment?: AgentProvisioningDeploymentProgress,
 ): Readonly<AgentProvisioningProgress> {
   const progress = asRecord(record.progress);
   const error = asRecord(progress?.error);

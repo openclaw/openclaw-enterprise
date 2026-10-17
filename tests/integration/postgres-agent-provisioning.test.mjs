@@ -1202,43 +1202,12 @@ for (const authMethod of ["api_key", "codex_pat"]) {
       await fixture.startWorker();
       // This suite proves the real API, worker and PostgreSQL lifecycle with its
       // existing development Compute fixture, not Kubernetes or model execution.
-      // Past handoff the job defers without a lease or spent attempts, so the status names the
-      // deployment phase and the deployment's own wait for its unready runtime (finding 1634).
       const handoff = await waitFor("initial deployment to remain pending", async () => {
         const observed = await fixture.request("GET", admitted.data.provisioning.url);
         assert.equal(observed.status, 200, JSON.stringify(observed.body));
-        return observed.data.revisionId !== undefined &&
-          observed.data.progress?.lastAttempt?.code === "REVISION_INCOMPLETE"
-          ? observed.data
-          : undefined;
+        return observed.data.revisionId !== undefined ? observed.data : undefined;
       });
       assert.notEqual(handoff.status, "succeeded");
-      assert.equal(handoff.progress.phase, "deployment");
-      assert.equal(
-        handoff.progress.lastAttempt.message,
-        "Waiting for the runtime to become ready.",
-      );
-      // The deployment's wait needs agent_revision read, which the provisioning read does not
-      // check: without it the job reports only its own deferral.
-      await fixture.stopWorker();
-      const restrictionId = `restriction_${randomUUID()}`;
-      await fixture.pool.query(
-        `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id)
-         VALUES ($1, $2, 'read', 'agent_revision', NULL)`,
-        [restrictionId, namespace.id],
-      );
-      const deploymentPath = `/namespaces/${namespace.id}/agents/${handoff.agentId}/deployments/${handoff.revisionId}`;
-      assert.equal((await fixture.request("GET", deploymentPath)).status, 403);
-      const restricted = await fixture.request("GET", admitted.data.provisioning.url);
-      assert.equal(restricted.status, 200, JSON.stringify(restricted.body));
-      assert.equal(restricted.data.progress.phase, "deployment");
-      assert.equal(restricted.data.progress.lastAttempt.code, "PROVISIONING_DEPLOYMENT_PENDING");
-      assert.equal(
-        restricted.data.progress.lastAttempt.message,
-        "Waiting for the initial deployment to complete.",
-      );
-      await fixture.pool.query("DELETE FROM occ.iam_restrictions WHERE id = $1", [restrictionId]);
-      await fixture.startWorker();
       deploymentReady = true;
       const status = await waitFor("Agent provisioning to succeed", async () => {
         const observed = await fixture.request("GET", admitted.data.provisioning.url);
@@ -1283,6 +1252,69 @@ for (const authMethod of ["api_key", "codex_pat"]) {
     },
   );
 }
+
+test(
+  "a provisioning status past handoff names its deployment's wait only to a reader of that deployment",
+  { ...requiresPostgres, timeout: 60_000 },
+  async (context) => {
+    // Finding 1634: past handoff the job defers without a lease or spent attempts while its
+    // first deployment converges, so status and attemptCount alone read like a job never claimed.
+    const computeDriver = createRuntimeComputeDriver();
+    const prepareRevision = computeDriver.prepareRevision.bind(computeDriver);
+    computeDriver.prepareRevision = async (...args) => ({
+      ...(await prepareRevision(...args)),
+      ready: false,
+    });
+    const fixture = await createFixture(context, { computeDriver });
+    const namespace = await fixture.bootstrapNamespace();
+    const secrets = await createProvisioningSecrets(fixture, namespace.id);
+    const admitted = await fixture.request("POST", `/namespaces/${namespace.id}/agents/provision`, {
+      body: provisioningBody(namespace.id, secrets),
+    });
+    assert.equal(admitted.status, 202, JSON.stringify(admitted.body));
+    await fixture.startWorker();
+    let handoff;
+    try {
+      // The unready runtime keeps the deployment pending with its own named wait.
+      handoff = await waitFor("the first deployment to name its wait", async () => {
+        const observed = await fixture.request("GET", admitted.data.provisioning.url);
+        assert.equal(observed.status, 200, JSON.stringify(observed.body));
+        return observed.data.revisionId !== undefined &&
+          observed.data.progress?.lastAttempt?.code === "REVISION_INCOMPLETE"
+          ? observed.data
+          : undefined;
+      });
+    } finally {
+      await fixture.stopWorker();
+    }
+    fixture.cancelProvisioningAtTeardown(namespace.id, handoff.agentId);
+    assert.notEqual(handoff.status, "succeeded");
+    assert.equal(handoff.progress.phase, "deployment");
+    assert.equal(handoff.progress.lastAttempt.message, "Waiting for the runtime to become ready.");
+
+    // The deployment's wait needs agent_revision read, which the provisioning read does not
+    // check. Without it the job still reads, but names only its own deferral.
+    await fixture.pool.query(
+      `INSERT INTO occ.iam_restrictions (id, namespace_id, action, resource_kind, resource_id)
+       VALUES ($1, $2, 'read', 'agent_revision', $3)`,
+      [`restriction_${randomUUID()}`, namespace.id, handoff.revisionId],
+    );
+    const deploymentPath = `/namespaces/${namespace.id}/agents/${handoff.agentId}/deployments/${handoff.revisionId}`;
+    assert.equal((await fixture.request("GET", deploymentPath)).status, 403);
+    const restricted = await fixture.request("GET", admitted.data.provisioning.url);
+    assert.equal(restricted.status, 200, JSON.stringify(restricted.body));
+    assert.equal(restricted.data.revisionId, handoff.revisionId);
+    assert.deepEqual(restricted.data.progress, {
+      phase: "deployment",
+      lastAttempt: {
+        at: restricted.data.progress?.lastAttempt?.at,
+        code: "PROVISIONING_DEPLOYMENT_PENDING",
+        message: "Waiting for the initial deployment to complete.",
+      },
+    });
+    assert.equal(Number.isNaN(Date.parse(restricted.data.progress.lastAttempt.at)), false);
+  },
+);
 
 test(
   "initial provisioning settles when a stop interrupts its first deployment",

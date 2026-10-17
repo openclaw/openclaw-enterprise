@@ -235,7 +235,6 @@ import {
   deploymentErrorForWork,
   deploymentProgressForWork,
   deploymentWarningsForWork,
-  type ControllerWork as QueuedControllerWork,
   type DeploymentStatusResult,
 } from "./state/controller-work.ts";
 import { PostgresCommitOutcomeUnknownError } from "./state/postgres-state.ts";
@@ -2701,7 +2700,7 @@ export class OpenClawController {
     state: PlatformReadView,
     principalId: string,
     record: Readonly<AgentProvisioningRecord>,
-    work: Readonly<QueuedControllerWork> | undefined,
+    work: { readonly state: string } | undefined,
   ): Promise<DeploymentStatusResult["progress"] | undefined> {
     const revisionId = record.revisionId;
     if (
