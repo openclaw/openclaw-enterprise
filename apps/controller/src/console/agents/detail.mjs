@@ -874,12 +874,15 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         loading = false;
         render();
         // The result replaces the waiting line: focus returns to the button, described by
-        // the outcome, unless the reader has moved on.
+        // the alert or the "Observed" line (not the whole check list, which the view's live
+        // region already reads), unless the reader has moved on.
         if (waited) {
           focusSaveOutcome(
             section,
             [runButton],
-            error ? section.querySelector('[role="alert"]') : section.lastElementChild,
+            error
+              ? section.querySelector('[role="alert"]')
+              : section.lastElementChild.firstElementChild,
           );
         }
       }

@@ -227,15 +227,17 @@ test("Agent detail separates the current version, viewed version, and latest dep
   assert.equal(await waiting.isVisible(), false);
   assert.equal(await runDiagnostics.isEnabled(), true);
   assert.equal(await focused(runDiagnostics), true);
-  assert.match(
-    await runDiagnostics.evaluate(
+  const description = () =>
+    runDiagnostics.evaluate(
       (node) =>
         globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
-    ),
-    /^Observed /,
-  );
+    );
+  // The "Observed" line, not the whole check list.
+  assert.match(await description(), /^Observed /);
+  assert.doesNotMatch(await description(), /authentication/);
   assert.equal(pathRequests(requests, "POST", diagnosticsPath).length, 1);
-  // A refused run returns focus the same way, described by its alert.
+  // A refused run returns focus the same way, described by its alert. This route answers every
+  // later diagnostics run in this test.
   await page.route(`${fixture.origin}${diagnosticsPath}`, (route) =>
     route.fulfill({
       status: 503,
@@ -252,13 +254,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
     .getByText(/Current-runtime diagnostics are unavailable/)
     .waitFor();
   assert.equal(await focused(runDiagnostics), true);
-  assert.match(
-    await runDiagnostics.evaluate(
-      (node) =>
-        globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
-    ),
-    /^Current-runtime diagnostics are unavailable/,
-  );
+  assert.match(await description(), /^Current-runtime diagnostics are unavailable/);
   await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
   await activity.getByText("Recorded status: queued").waitFor();
   assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);
