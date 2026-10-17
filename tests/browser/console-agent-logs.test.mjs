@@ -1853,9 +1853,16 @@ test("a follow poll refused with operate revoked too clears the Pod cards at onc
 // A status read authorized before the revoke can answer after the log refusal. The refusal's
 // own status read supersedes it, so its stale answer neither brings the Pod cards back after a
 // refused status nor overrides a fresh one (finding 1597).
-for (const { name, revoked, podsKept } of [
+for (const { name, revoked, podsKept, staleFails = false } of [
   { name: "operate revoked too", revoked: ["read_logs", "operate"], podsKept: false },
   { name: "only read_logs revoked", revoked: ["read_logs"], podsKept: true },
+  // A superseded failure is ignored too: no error over the fresh answer's Pod cards.
+  {
+    name: "only read_logs revoked, the stale read failing",
+    revoked: ["read_logs"],
+    podsKept: true,
+    staleFails: true,
+  },
 ]) {
   test(`a status read in flight at a log refusal yields to a fresh one: ${name}`, async (t) => {
     const logs = await logsFixture(t);
@@ -1876,7 +1883,15 @@ for (const { name, revoked, podsKept } of [
     // The next status poll is answered with the grants it was authorized under, then held.
     const stale = await holdRequests(t, page, `**${statusPath}`, {
       once: true,
-      afterServer: true,
+      ...(staleFails
+        ? {
+            fulfill: {
+              status: 504,
+              contentType: "application/json",
+              body: JSON.stringify({ error: { code: "TIMEOUT", message: "Timed out." } }),
+            },
+          }
+        : { afterServer: true }),
     });
     await page.clock.runFor(10_000);
     await stale.requested;
@@ -1895,7 +1910,8 @@ for (const { name, revoked, podsKept } of [
     await page.getByText(/Log text requires Agent read_logs/).waitFor();
     await fresh;
     const arriving = page.waitForResponse(
-      (response) => response.url().endsWith(statusPath) && response.status() === 200,
+      (response) =>
+        response.url().endsWith(statusPath) && response.status() === (staleFails ? 504 : 200),
     );
     stale.release();
     await arriving;
@@ -1905,6 +1921,7 @@ for (const { name, revoked, podsKept } of [
     if (podsKept) {
       assert.ok((await pods.count()) > 0, "a fresh status answer keeps the Pod cards");
       assert.equal(await page.getByText(/Runtime status requires Agent operate/).count(), 0);
+      assert.equal(await page.getByText("The read timed out. Try again.").count(), 0);
     } else {
       assert.equal(await pods.count(), 0, "the stale answer does not bring the Pod cards back");
       await page.getByText(/Runtime status requires Agent operate/).waitFor();

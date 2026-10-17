@@ -495,6 +495,17 @@ test("Codex runtime retries a transient startup model probe failure once", async
       "turn-failed",
     ],
     ["a broken pipe", erroredWith("broken pipe"), "error-event"],
+    ["a reset connection", erroredWith("Connection reset by peer (os error 104)"), "error-event"],
+    [
+      "a closed connection",
+      erroredWith("connection closed before message completed"),
+      "error-event",
+    ],
+    [
+      "a failed connection that names its cause",
+      erroredWith("Connection failed: tcp connect error"),
+      "error-event",
+    ],
     ["a killed probe", killed, "signal-SIGKILL", undefined, "PROCESS_EXIT"],
     [
       "a terminated probe",
@@ -559,6 +570,42 @@ test("Codex runtime retries a transient startup model probe failure once", async
       erroredWith(
         "stream disconnected before completion: failed to lookup address information: Name has no usable address",
       ),
+      "error-event",
+    ],
+    [
+      "a provider 400 with its status that says overloaded",
+      failedWith(
+        "unexpected status 400 Bad Request: the server is overloaded, url: https://provider.example/v1/responses",
+      ),
+      "turn-failed",
+      { status: 400 },
+    ],
+    [
+      "the highest provider 4xx",
+      failedWith("unexpected status 499: overloaded"),
+      "turn-failed",
+      { status: 499 },
+    ],
+    // A credential marker vetoes a transient one, each on its own.
+    [
+      "a dropped stream naming auth",
+      erroredWith("stream disconnected before completion: auth token expired"),
+      "error-event",
+    ],
+    [
+      "a server error naming a forbidden request",
+      erroredWith("server_error: forbidden by the workspace policy"),
+      "error-event",
+      { code: "server_error" },
+    ],
+    [
+      "an overload naming a credential",
+      erroredWith("overloaded: the credential was revoked"),
+      "error-event",
+    ],
+    [
+      "a dropped stream naming a 403 without its status",
+      erroredWith("stream disconnected before completion: upstream answered 403"),
       "error-event",
     ],
   ];
@@ -739,6 +786,32 @@ test("Codex runtime retries a transient startup model probe failure once", async
       name: "a transient failure with no budget left for a retry holds at once",
       native: [login(), failedWith("unexpected status 503", 60500)],
       expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
+    },
+    {
+      // The retry waits one second, so exactly one second left is not enough.
+      name: "a transient failure with exactly the retry delay left holds at once",
+      native: [login(), failedWith("unexpected status 503", 60000)],
+      expect: probeFailure({ kind: "PROBE_STATUS", detail: "turn-failed" }, { status: 503 }),
+    },
+    {
+      // A transient event the attempt saw is its failure, even when the attempt then timed out.
+      name: "a transient error then a timeout in the same attempt is retried as transient",
+      native: [
+        login(),
+        probe([started, errorEvent("unexpected status 503")], timedOut, 30000),
+        success,
+      ],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+    },
+    {
+      // Only a detail token is marked as retried; a cause with no detail keeps none.
+      name: "a wrapper error after a transient failure holds a cause with no detail",
+      native: [login(), killed, probe([], { stdout: 1 })],
+      retryAfterMs: 1000,
+      expect: probeFailure({ kind: "WRAPPER_ERROR" }),
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
     },
   ];
   for (const scenario of scenarios) {

@@ -841,6 +841,23 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
     .getByRole("link", { name: "Open Configuration" });
   await open.waitFor();
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  // A modified click (open in a new tab) is left to the browser; this page does not take it.
+  const taken = await open.evaluate((link) => {
+    let prevented;
+    globalThis.addEventListener(
+      "click",
+      (event) => {
+        prevented = event.defaultPrevented;
+        event.preventDefault();
+      },
+      { once: true },
+    );
+    link.dispatchEvent(
+      new globalThis.MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }),
+    );
+    return prevented;
+  });
+  assert.equal(taken, false);
   // Click and read the position in one task: an instant scroll has already landed.
   const top = await open.evaluate((link) => {
     link.click();
@@ -871,8 +888,11 @@ for (const viewport of [
     // The fixture has no deployment worker: serve the record a deploy reports as it runs.
     let record = { status: "running", progress: { lastAttempt: null, nextAttemptAt: null } };
     const recordUrl = deploymentUrl(fixture, namespace, agent, pending);
-    await page.route(recordUrl, (route) =>
-      route.fulfill({
+    // Set to hold the record's reads until the test releases them.
+    let recordGate = null;
+    await page.route(recordUrl, async (route) => {
+      await recordGate;
+      await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
@@ -886,8 +906,8 @@ for (const viewport of [
           },
           meta: { requestId: "req_test_quiet_deploy" },
         }),
-      }),
-    );
+      });
+    });
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
     await login(
       page,
@@ -952,6 +972,11 @@ for (const viewport of [
     };
     await poll();
     await page.getByText("Waiting for the runtime to become ready.").waitFor();
+    // A patched row drops the attributes the new one lacks: the result is no longer muted.
+    assert.equal(
+      await page.getByText("Waiting for the runtime to become ready.").getAttribute("class"),
+      null,
+    );
     const changed = await page.evaluate(() => globalThis.pollChanges.splice(0));
     assert.ok(changed.length > 0);
     // Only the activity's details changed: the version's record and diagnostics read the same.
@@ -960,6 +985,24 @@ for (const viewport of [
       `only the changed details were written: ${changed.join(" | ")}`,
     );
     const attemptTop = await shareTop();
+
+    // Refresh pressed during a poll shows busy and reads once the poll lands.
+    let releaseRecord;
+    recordGate = new Promise((resolve) => {
+      releaseRecord = resolve;
+    });
+    const held = page.waitForRequest(recordUrl);
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    await held;
+    const refresh = page.getByRole("button", { name: "Refresh deployment" });
+    await refresh.click();
+    assert.equal(await refresh.getAttribute("aria-disabled"), "true");
+    const queued = page.waitForRequest(recordUrl);
+    recordGate = null;
+    releaseRecord();
+    await queued;
+    await waitForIdleFetches(page);
+    assert.equal(await refresh.getAttribute("aria-disabled"), "false");
 
     // The deploy settles.
     record = { status: "succeeded", progress: null };
@@ -972,6 +1015,63 @@ for (const viewport of [
     assert.ok(Math.abs(settledTop - firstTop) <= 1, `moved ${settledTop - firstTop} px`);
   });
 }
+
+// The patch behind those quiet polls keeps what is unchanged, rewrites only changed text, drops
+// children a shorter render no longer has, and replaces a node whose role (or role node kind)
+// changes, since a live region or alert announces reliably only when it is inserted.
+test("deployment poll patches rewrite only changed text and replace a node whose role changes", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const { page } = await newPage(t, fixture);
+  await page.goto(new URL("/console/", fixture.origin).href);
+  const outcome = await page.evaluate(async () => {
+    const { element, patchChildren } = await import("/console/dom.mjs");
+    const parent = globalThis.document.createElement("div");
+    globalThis.document.body.append(parent);
+    const render = (state, role, className) => [
+      element("p", {}, "Recorded status: ", element("b", {}, state)),
+      element("p", { role, className }, "Deploying"),
+      ...(state === "running" ? [element("p", {}, "Not recorded yet")] : []),
+    ];
+    patchChildren(parent, render("running", "status", "hint"));
+    const [label, region] = parent.children;
+    const records = [];
+    new globalThis.MutationObserver((list) => {
+      records.push(...list.map((record) => record.type));
+    }).observe(parent, { attributes: true, characterData: true, childList: true, subtree: true });
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const unchanged = patchChildren(parent, render("running", "status", "hint"));
+    await flush();
+    const quiet = records.splice(0);
+    patchChildren(parent, render("succeeded", "status", "hint"));
+    await flush();
+    const settled = records.splice(0);
+    const kept = parent.children[0] === label && parent.children[1] === region;
+    patchChildren(parent, render("succeeded", "alert", "hint"));
+    const roleReplaced = parent.children[1] !== region;
+    const alert = parent.children[1];
+    patchChildren(parent, render("succeeded", "alert", "error"));
+    const kindReplaced = parent.children[1] !== alert;
+    return {
+      unchanged,
+      quiet,
+      settled,
+      kept,
+      shown: parent.textContent,
+      roleReplaced,
+      kindReplaced,
+    };
+  });
+  assert.deepEqual(outcome, {
+    unchanged: false,
+    quiet: [],
+    // Only the state's text and the dropped row; the unchanged label text is not rewritten.
+    settled: ["characterData", "childList"],
+    kept: true,
+    shown: "Recorded status: succeededDeploying",
+    roleReplaced: true,
+    kindReplaced: true,
+  });
+});
 
 // A recovery link that opened another version, abandoned (Back) before that page was built, left
 // its request for a later visit to the same tab, which would scroll and steal focus unasked.

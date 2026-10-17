@@ -647,6 +647,43 @@ for (const { elapsed, held } of [
   });
 }
 
+// The same minimum holds when the loading page appears because the session check outlasted the
+// startup delay, not the Agent's reads (finding 1587).
+test("A fresh load whose session check outlasts the startup delay holds the loading page its minimum time", async (t) => {
+  const { fixture, namespace, agent, page } = await openList(t, "Fresh session", "Session Agent", {
+    deploy: true,
+  });
+  await recordShownOnLoad(page, "frames");
+  const session = await holdOnce(t, page);
+  const record = await holdOverview(t, page, namespace, agent);
+  await page.goto(detailUrl(fixture, namespace.id, agent.id).href);
+  await session.requested;
+  await page.clock.runFor(450);
+  session.release();
+  await record.requested;
+  await page.locator(".agent-detail-pending").waitFor({ state: "attached" });
+  const settled = page.waitForResponse((response) =>
+    response.url().includes(`/agents/${agent.id}/deployments/`),
+  );
+  record.release();
+  await settled;
+  await page.locator(".content .deployment-evidence").waitFor({ state: "attached" });
+  // The reveal is asked for in the same turn as the first read; give it time to run.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const loading = page.locator(activeView).getByText("Reading this Agent.");
+  assert.equal(await loading.count(), 1);
+  await page.clock.runFor(299);
+  assert.equal(await loading.count(), 1);
+  await page.clock.runFor(1);
+  await agentShown(page);
+  assert.deepEqual(await shownFrames(page), [
+    "none | none | no selector | none",
+    "agents | Agents | selector | Loading…Checking Namespace access.",
+    "agents | Agents | selector | Loading…Reading this Agent.",
+    "agents | Session Agent | selector | Agent",
+  ]);
+});
+
 // While an Agent page rendered hidden behind a held page, its tab handler took Back between two
 // tabs of the same version in place: it marked the Agent's route mounted with another page on
 // screen, so one more navigation could retain that page under the Agent's URL (finding 1542).

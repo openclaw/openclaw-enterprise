@@ -1015,6 +1015,14 @@ for (const c of declinedCarryCases) {
     await page.getByRole("status").filter({ hasText: c.note }).waitFor();
     assert.equal(await dialog.count(), 0);
     await c.check(context);
+    // The declined draft is forgotten: a later visit to Channels does not try it again.
+    await page.getByRole("link", { name: "← Agents", exact: true }).click();
+    await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+    await page.getByRole("link", { name: "Declined Carry", exact: true }).click();
+    await page.getByRole("button", { name: "Channels", exact: true }).click();
+    await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
+    assert.equal(await page.getByRole("status").filter({ hasText: c.note }).count(), 0);
+    assert.equal(await dialog.count(), 0);
   });
 }
 
