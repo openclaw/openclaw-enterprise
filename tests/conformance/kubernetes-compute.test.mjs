@@ -7476,10 +7476,10 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
     }),
     status: { phase: "Active" },
   };
-  withdrawals.length = 0;
   await assert.rejects(driver.withdrawCredentialSource(revision, source, signal), (error) => {
     assert.ok(error instanceof CredentialWithdrawalRefusedError, String(error));
     assert.equal(error.code, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    assert.match(error.message, /Refusing an unowned Kubernetes namespace/);
     return true;
   });
   assert.equal(withdrawals.length, 0);

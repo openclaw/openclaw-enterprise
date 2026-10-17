@@ -1243,15 +1243,6 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
     ["detachSandboxProvider", sandbox, provider],
   ]);
   assert.deepEqual(receipts, ["receipt-restored"]);
-  // Outside a recheck only a receipt revokes: a restored Sandbox that does not list the provider
-  // is detached all the same.
-  calls.length = 0;
-  listed = ["operator-static"];
-  detachAnswers.push(undefined, { receiptId: "receipt-unlisted" });
-  assert.deepEqual(await withdraw(false), { sourceId, state: "revoked" });
-  assert.deepEqual(calls.at(-1), ["detachSandboxProvider", sandbox, provider]);
-  assert.deepEqual(receipts, ["receipt-restored", "receipt-unlisted"]);
-  listed = [provider];
   detachAnswers.push(undefined, undefined);
   await assert.rejects(
     withdraw(false),
@@ -1264,6 +1255,21 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   };
   await unauthorized(false, true);
   client.getSandbox = sandboxRead;
+  // Outside a recheck only a receipt revokes: a restored Sandbox that does not list the provider
+  // is detached all the same.
+  calls.length = 0;
+  receipts.length = 0;
+  listed = ["operator-static"];
+  detachAnswers.push(undefined, { receiptId: "receipt-unlisted" });
+  assert.deepEqual(await withdraw(false), { sourceId, state: "revoked" });
+  assert.deepEqual(calls, [
+    ["detachSandboxProvider", sandbox, provider],
+    ["getWorkspace", workspace],
+    ["getSandbox", sandbox],
+    ["detachSandboxProvider", sandbox, provider],
+  ]);
+  assert.deepEqual(receipts, ["receipt-unlisted"]);
+  listed = [provider];
   // A refusal on the receipt's status read carries the code too.
   const statusRead = client.getSandboxProviderStatus;
   client.getSandboxProviderStatus = async () => {

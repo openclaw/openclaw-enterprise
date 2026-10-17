@@ -109,7 +109,7 @@ test("workspace setup fails closed for invalid delivery, lost completed workspac
   // An oversized or unexpected delivery, and a workspace path that is not absolute and
   // normalized, are refused alike: every restart reads the same input.
   const setup = { ...identity, completed: false, files: { "USER.md": "secret" } };
-  failed(f.execute(WORKSPACE_SETUP_RUNTIME, " ".repeat(400_001)));
+  failed(f.execute(WORKSPACE_SETUP_RUNTIME, JSON.stringify(setup) + " ".repeat(400_000)));
   failed(f.run({ ...setup, extra: true }));
   failed(f.run(setup, { OPENCLAW_WORKSPACE_DIR: "workspace" }));
   failed(f.run({ ...identity, completed: true }));
