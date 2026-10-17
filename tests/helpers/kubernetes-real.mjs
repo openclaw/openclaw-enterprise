@@ -130,6 +130,9 @@ export async function withinDiagnosticDeadline(
 export const teardownStepLimitMs = 180_000;
 export const abandonedTeardownExitGraceMs = 2_000;
 
+// The contexts boundedTeardown returned, so a helper does not nest a second teardown inside one.
+const boundedContexts = new WeakSet();
+
 function registrationSite(stack) {
   // Frame 0 is the message, 1 is `after` here, 2 is its caller.
   const frame = String(stack).split("\n")[2] ?? "";
@@ -193,21 +196,32 @@ export function boundedTeardown(
       throw new AggregateError(failures, `${label}: ${failures.length} cleanups failed`);
     }
   });
+  const context = new Proxy(testContext, {
+    get(target, property) {
+      if (property === "after") {
+        return after;
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  boundedContexts.add(context);
   return {
-    context: new Proxy(testContext, {
-      get(target, property) {
-        if (property === "after") {
-          return after;
-        }
-        const value = Reflect.get(target, property, target);
-        return typeof value === "function" ? value.bind(target) : value;
-      },
-    }),
+    context,
     // Whether teardown has begun, for failure diagnostics.
     get started() {
       return started;
     },
   };
+}
+
+// A helper that registers several cleanups gets them run newest-first and bounded whatever context
+// its caller passes: a raw node:test context gets its own bounded teardown, and one from
+// boundedTeardown is used as is.
+export function withBoundedTeardown(testContext, options) {
+  return boundedContexts.has(testContext)
+    ? testContext
+    : boundedTeardown(testContext, options).context;
 }
 
 const alreadyCreated = /^Error from server \(AlreadyExists\): /m;
