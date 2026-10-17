@@ -1,6 +1,6 @@
 ---
 created: 2026-09-01
-updated: 2026-10-15
+updated: 2026-10-17
 last_updated_session: authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3
 ---
 
@@ -292,11 +292,13 @@ Stop and Delete stay put. Direct navigation focuses and scrolls to the output; s
 the tab leaves visible output in place. Recovery links scroll their version tab into view
 and focus its tab control, smoothly unless the page rebuilds or motion is reduced.
 
-[Runtime logs](agent-runtime-logs.md) explains access. A status `403` hides Pod details,
-not separately authorized logs. Denials last until logout; newly granted `operate` permits
-another status read. A refused log read or download clears the rows. A late success cannot
-restore them or start a download. Refusing previously allowed log text rereads status at
-once; that read supersedes a stale one in flight. Back rebuilds a refused view; otherwise it shows the page it checked.
+[Runtime logs](agent-runtime-logs.md) explains access. Status `403` hides Pod details, not
+separately authorized logs. Denials last until logout; newly granted `operate` permits another
+status read. Refused reads or downloads clear the rows; late successes cannot restore them or
+download. Refusing allowed log text rereads status at once, superseding stale reads. Back
+rebuilds refused views, else shows the checked page. Refresh keeps rows and cursor until
+replaced; rate-limit notices update at the retry time without rereading. New streams or
+rejected cursors clear rows.
 
 ### 7. Commit only the current response, or clear the view
 
