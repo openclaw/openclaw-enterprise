@@ -2156,10 +2156,8 @@ const deadline = setTimeout(() => {
   },
 );
 
-test(
-  "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace",
-  imageTestOptions,
-  async (t) => {
+async function runSubagentRoutingCase(t, proofEnvironment = []) {
+  {
     const nativeIds = {
       parent: "vendor/organization/parent",
       main: "vendor/organization/default-child",
@@ -2244,6 +2242,7 @@ test(
           `OCC_TEST_SUBAGENT_MODELS=${JSON.stringify(Object.values(nativeIds))}`,
           "-e",
           `OCC_TEST_OPENCLAW_COMMIT=${commit}`,
+          ...proofEnvironment.flatMap((entry) => ["-e", entry]),
           containerName,
           "node",
           "--input-type=module",
@@ -2272,5 +2271,45 @@ test(
     assert.ok(
       result.observed.every(({ childSessionKey }) => childSessionKey.includes(":subagent:")),
     );
+    return result;
+  }
+}
+
+test(
+  "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace",
+  imageTestOptions,
+  async (t) => {
+    await runSubagentRoutingCase(t);
+  },
+);
+
+// PROOF ONLY (temporary, finding 1645).
+test(
+  "PROOF 1645 attribution ignores a parent-route request ahead of the child",
+  imageTestOptions,
+  async (t) => {
+    const result = await runSubagentRoutingCase(t, [
+      "OCC_TEST_SUBAGENT_INTERFERE=object",
+      "OCC_TEST_SUBAGENT_HEARTBEAT_PROBE=1",
+    ]);
+    const object = result.observed.find(({ agentId }) => agentId === "object");
+    const report = {
+      object: {
+        model: object.model,
+        legacyModel: object.legacyModel,
+        interference: object.interference,
+      },
+      legacy: result.observed.map(({ agentId, model, legacyModel }) => ({
+        agentId,
+        model,
+        legacyModel,
+      })),
+      heartbeat: result.heartbeat,
+    };
+    assert.equal(object.interference?.model, "vendor/organization/parent", JSON.stringify(report));
+    assert.equal(object.legacyModel, "vendor/organization/parent", JSON.stringify(report));
+    assert.equal(object.model, "vendor/organization/object-child", JSON.stringify(report));
+    // Always fail so the CI diagnostics artifact carries the heartbeat probe.
+    assert.fail("PROOF-1645 " + JSON.stringify(report));
   },
 );
