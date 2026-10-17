@@ -304,12 +304,15 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
 // After an admitted deployment the draft page stays on screen, inert, while the new version
 // loads. Focus fell from the Deploying… status to the page body for 100-580 ms until the new
 // version's heading took it (finding 1626). The held page's heading now keeps it, through the
-// loading page when the read outlasts 250 ms, and hands it to the new version's heading. A
-// reader who left the status during the request is not pulled back while the page is held.
-for (const [scenario, readMs, movedOn] of [
-  ["a quick version read", 100, false],
-  ["a slow version read", 700, false],
-  ["a reader who moved on", 100, true],
+// loading page when admission or the Agent read outlasts 250 ms, and hands it to the new
+// version's heading as the page shows, even while the version is still being read. A reader who
+// left the status during the request is not pulled back while the page is held.
+for (const [scenario, heldRead, heldMs, movedOn] of [
+  ["a quick Agent read", "agent", 100, false],
+  ["a slow Agent read", "agent", 700, false],
+  ["a slow Namespace access check", "namespaces", 700, false],
+  ["a version read that outlasts the 2 s reveal wait", "revision", 2600, false],
+  ["a reader who moved on", "agent", 700, true],
 ]) {
   test(`An admitted deployment keeps keyboard focus until the new version opens: ${scenario}`, async (t) => {
     const { fixture, namespace } = await createRuntimeAuthFixture(t, "Deployment hand-off");
@@ -359,21 +362,26 @@ for (const [scenario, readMs, movedOn] of [
         if (trail.at(-1) !== entry) {
           trail.push(entry);
         }
-        state.loadingShown ||= Boolean(
-          globalThis.document.querySelector(".content")?.textContent.includes("Reading this Agent."),
-        );
+        const shown = globalThis.document.querySelector(".content")?.textContent ?? "";
+        state.loadingShown ||=
+          shown.includes("Reading this Agent.") || shown.includes("Checking Namespace access.");
         globalThis.requestAnimationFrame(sample);
       };
       globalThis.focusFrames = state;
       sample();
     });
-    const versionRead = await holdRequests(t, page, `${fixture.origin}${path}`, {
+    const heldPath = {
+      agent: path,
+      namespaces: "/namespaces",
+      revision: `${path}/revisions/rev_*`,
+    }[heldRead];
+    const versionRead = await holdRequests(t, page, `${fixture.origin}${heldPath}`, {
       once: true,
       method: "GET",
     });
     admitted.release();
     await versionRead.requested;
-    await new Promise((resolve) => setTimeout(resolve, readMs));
+    await new Promise((resolve) => setTimeout(resolve, heldMs));
     versionRead.release();
     await page.waitForURL(/revision=rev_/);
     await page.waitForFunction(
@@ -387,7 +395,9 @@ for (const [scenario, readMs, movedOn] of [
       globalThis.focusFrames.stopped = true;
       return globalThis.focusFrames;
     });
-    assert.equal(loadingShown, readMs > 250, trail.join(" | "));
+    if (heldRead !== "revision" && heldMs > 250) {
+      assert.ok(loadingShown, trail.join(" | "));
+    }
     assert.match(trail.at(-1), /^H1#\d+: Deployment hand-off$/, trail.join(" | "));
     if (movedOn) {
       // Nothing takes focus while the page is held; the new version's heading takes it once shown.

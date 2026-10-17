@@ -1023,13 +1023,6 @@ async function loadPage({
     reuseView = false;
   }
   namespaceId = current.namespace;
-  // An Agent page that opens another of the Agent's versions (an admitted deployment, a version
-  // link) keeps keyboard focus on the held heading until the new version's heading takes it.
-  const agentToAgent =
-    mountedAgent !== null &&
-    Boolean(current.agentId) &&
-    !current.creating &&
-    previousMountedRouteKey !== routeKey(current);
   const active = resetReads({
     retainView: knownPrivateState,
     returnLink: openingAgent ? document.activeElement : null,
@@ -1050,9 +1043,11 @@ async function loadPage({
   let retained = retainedView !== null;
   // An Agent link opens its destination immediately. Other visits keep the shown page inert
   // until a retained view revalidates or admission and the destination's first read settle.
+  // An Agent page loading behind the held page (the new version an admitted deployment opens,
+  // say) keeps keyboard focus on the held heading until its own heading takes it (finding 1626).
   let shell =
     knownPrivateState && !openingAgent
-      ? holdShownView(current, { busyCue: !resumingView, keepFocus: agentToAgent })
+      ? holdShownView(current, { busyCue: !resumingView, keepFocus: Boolean(current.agentId) })
       : null;
   let held = shell !== null;
   // The stand-in's heading while it holds focus for the Agent page loading behind it.
