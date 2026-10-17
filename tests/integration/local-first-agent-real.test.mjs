@@ -12,6 +12,7 @@ import {
   WORKSPACE_DEFAULTS,
   WORKSPACE_DEFAULTS_ID,
 } from "../../packages/contracts/src/workspace-defaults.mjs";
+import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   assertNativeWorkerProofInController,
@@ -402,7 +403,7 @@ test("the first-Agent model check discovers the gateway in the tenant namespace"
   assert.equal(execCall?.[execCall.indexOf("--namespace") + 1], "tenant-runtime");
 });
 
-test("the missed native handoff deadline reports only Pod readiness and fixed runtime output for its exact revision", async () => {
+test("the missed native handoff deadline reports only Pod readiness and fixed runtime output for its exact revision", async (t) => {
   const namespaceId = `ns_${randomUUID()}`;
   const agentId = `agt_${randomUUID()}`;
   const revisionId = `rev_${randomUUID()}`;
@@ -450,21 +451,15 @@ test("the missed native handoff deadline reports only Pod readiness and fixed ru
     );
     const signal = calls[0]?.signal;
     assert.ok(signal instanceof AbortSignal);
-    for (const call of calls) {
-      if (call.path.includes("/runtime/logs?")) {
-        // Each optional log page has its own bounded budget.
-        assert.ok(call.signal instanceof AbortSignal);
-        assert.notEqual(call.signal, signal);
-      } else {
-        assert.equal(call.signal, signal, "all reads must share the original diagnostic budget");
-      }
-      assert.equal(call.method, "GET");
-      assert.equal(call.body, undefined);
-    }
     assert.deepEqual(
       calls.map(({ path }) => path),
       expectedPaths,
     );
+    for (const call of calls) {
+      assert.equal(call.signal, signal, "all reads must share the original diagnostic budget");
+      assert.equal(call.method, "GET");
+      assert.equal(call.body, undefined);
+    }
     return observation;
   }
 
@@ -478,122 +473,96 @@ test("the missed native handoff deadline reports only Pod readiness and fixed ru
   const logPaths = runtimeLogSources.map(
     (source) => `${deploymentPath}/runtime/logs?source=${source}&tailLines=1000`,
   );
-  const runtimePaths = [deploymentPath, `${deploymentPath}/runtime`, ...logPaths];
-  const unavailableOutput = Object.fromEntries(
-    runtimeLogSources.map((source) => [source, "unavailable"]),
-  );
-  async function sample(pods, revision = revisionId, pending = deployment) {
-    const observation = await observe([pending, { revisionId: revision, pods }], runtimePaths);
-    assert.deepEqual(observation.runtimeOutput, unavailableOutput);
-    return observation.runtimeAfterDeadline;
-  }
-  // A dedicated Harness may not exist yet while its Gateway starts. Neither sample is acceptance.
-  assert.deepEqual(await sample([gateway]), {
-    gateway: { count: "one", phase: "Running", ready: false },
-    agent: { count: "zero" },
-  });
-  const oneReady = { count: "one", phase: "Running", ready: true };
-  assert.deepEqual(await sample([{ ...gateway, ready: true }, agent]), {
-    gateway: oneReady,
-    agent: oneReady,
-  });
-  assert.equal(await sample([{ ...agent, role: "private-sentinel" }]), "unavailable");
-  assert.equal(await sample([{ ...gateway, phase: "private-sentinel" }]), "unavailable");
-  assert.equal(await sample([gateway], "another-revision"), "unavailable");
-  // The named node wait (WORKSPACE_NODE_PENDING) is observed like the unnamed one.
-  const nodePending = {
-    ...deployment,
-    progress: { lastAttempt: { code: "WORKSPACE_NODE_PENDING" } },
-  };
-  assert.deepEqual(await sample([{ ...gateway, ready: true }, agent], revisionId, nodePending), {
-    gateway: oneReady,
-    agent: oneReady,
+  const runtimePaths = [deploymentPath, `${deploymentPath}/runtime`];
+  const readyPods = [{ ...gateway, ready: true }, agent];
+  const readyRuntime = { revisionId, pods: readyPods };
+  const pendingPaths = [...runtimePaths, ...logPaths];
+
+  await t.test("count known events without publishing values retained by the log API", async () => {
+    const phase = "private-sentinel-phase";
+    const event = "runtime.startup_phase";
+    const raw = JSON.stringify({ event, phase, code: "SYNTHETIC_SENTINEL", ms: 987654 });
+    const { records } = sanitizeRuntimeLogChunk({
+      stream: { source: "agent", container: "agent" },
+      lines: [{ raw, time: "2026-01-02T03:04:05Z" }],
+      truncated: false,
+    });
+    // Prove that the marker reaches the assertion's input through the production sanitizer.
+    assert.equal(records[0]?.fields?.phase, phase);
+    const sandbox = ["DENIED", "ALLOWED", "SENTINEL"].map((action) => ({
+      type: "line",
+      kind: "sandbox",
+      message: "private-sentinel",
+      fields: { action, rule_type: "private-sentinel" },
+    }));
+    const logged = await observe(
+      [
+        deployment,
+        readyRuntime,
+        { revisionId, source: "agent", records },
+        { revisionId, source: "sandbox", records: sandbox },
+        { revisionId: "another-revision", source: "gateway", records },
+      ],
+      pendingPaths,
+    );
+    assert.deepEqual(logged.runtimeOutput, {
+      agent: { records: 1, events: { [event]: 1 }, decisions: {} },
+      sandbox: { records: 3, events: {}, decisions: { DENIED: 1, ALLOWED: 1, other: 1 } },
+      gateway: "unavailable",
+    });
   });
 
-  // Runtime log pages are summarized as fixed event names, shape-checked tokens and counts;
-  // message text, hosts and token-shaped values outside each field's shape never print.
-  const page = (source, records) => ({ revisionId, source, truncated: false, records });
-  const wrapper = (message, fields, level = "info") => ({
-    type: "line",
-    kind: "wrapper",
-    level,
-    message,
-    fields,
+  await t.test("request no log pages without exactly one ready Pod per role", async () => {
+    for (const pods of [
+      undefined,
+      [],
+      [gateway],
+      [gateway, agent],
+      [readyPods[0], { ...agent, role: "private-sentinel" }],
+      [{ ...gateway, phase: "private-sentinel" }, agent],
+      [readyPods[0], { ...agent, ready: false }],
+      [readyPods[0], readyPods[0], agent],
+      [...readyPods, agent],
+    ]) {
+      const observed = await observe([deployment, { revisionId, pods }], runtimePaths);
+      assert.equal(observed.runtimeOutput, undefined);
+      if (pods?.length === 1) {
+        assert.deepEqual(observed.runtimeAfterDeadline, {
+          gateway: { count: "one", phase: "Running", ready: false },
+          agent: { count: "zero" },
+        });
+      }
+    }
+    const observed = await observe(
+      [deployment, { ...readyRuntime, revisionId: "another-revision" }],
+      runtimePaths,
+    );
+    assert.equal(observed.runtimeAfterDeadline, "unavailable");
+    assert.equal(observed.runtimeOutput, undefined);
   });
-  const logged = await observe(
-    [
-      deployment,
-      { revisionId, pods: [{ ...gateway, ready: true }, agent] },
-      page("agent", [
-        wrapper("runtime.startup_phase", { phase: "supervisor-spawn", outcome: "ok", ms: 7 }),
-        wrapper(
-          "openclaw.model_probe",
-          { code: "MODEL_PROBE_FAILED", causeKind: "AUTH", providerStatus: 401, elapsedMs: 9 },
-          "error",
-        ),
-        wrapper("openclaw.model_probe", { code: "private-sentinel" }, "error"),
-        wrapper("private-sentinel", { code: "READY" }),
-        { type: "line", kind: "openclaw", level: "error", message: "private-sentinel" },
-        { type: "withheld", count: 3, reason: "unrecognised_structured" },
-      ]),
-      page("sandbox", [
-        {
-          type: "line",
-          kind: "sandbox",
-          level: "warn",
-          message: "private-sentinel",
-          fields: {
-            action: "DENIED",
-            rule_type: "network",
-            source: "sandbox",
-            dst_host: "private-sentinel",
-          },
-        },
-        {
-          type: "line",
-          kind: "sandbox",
-          level: "info",
-          message: "private-sentinel",
-          fields: { action: "private-sentinel", source: "gateway" },
-        },
-      ]),
-      { ...page("gateway", []), revisionId: "another-revision" },
-    ],
-    runtimePaths,
+
+  await t.test(
+    "keep workspace-node pending and exclude a log page with the wrong source",
+    async () => {
+      const lastAttempt = { code: "WORKSPACE_NODE_PENDING" };
+      const observed = await observe(
+        [
+          { ...deployment, progress: { lastAttempt } },
+          readyRuntime,
+          { revisionId, source: "gateway", records: [] },
+        ],
+        pendingPaths,
+      );
+      const ready = { count: "one", phase: "Running", ready: true };
+      assert.deepEqual(observed.runtimeAfterDeadline, { gateway: ready, agent: ready });
+      assert.equal(observed.deployment.lastAttemptCode, lastAttempt.code);
+      assert.deepEqual(observed.runtimeOutput, {
+        agent: "unavailable",
+        sandbox: "unavailable",
+        gateway: "unavailable",
+      });
+    },
   );
-  assert.deepEqual(logged.runtimeOutput, {
-    agent: {
-      records: { line: 5, withheld: 3, gap: 0, other: 0 },
-      levels: { info: 2, error: 3 },
-      truncated: false,
-      events: [
-        {
-          time: null,
-          event: "runtime.startup_phase",
-          phase: "supervisor-spawn",
-          outcome: "ok",
-          ms: 7,
-        },
-        {
-          time: null,
-          event: "openclaw.model_probe",
-          code: "MODEL_PROBE_FAILED",
-          causeKind: "AUTH",
-          elapsedMs: 9,
-          providerStatus: 401,
-        },
-        { time: null, event: "openclaw.model_probe", code: "unknown" },
-      ],
-    },
-    sandbox: {
-      records: { line: 2, withheld: 0, gap: 0, other: 0 },
-      levels: { warn: 1, info: 1 },
-      truncated: false,
-      decisions: { "DENIED:network:sandbox": 1, "unknown:none:gateway": 1 },
-      events: [],
-    },
-    gateway: "unavailable",
-  });
 
   await observe([{ ...deployment, deploymentId: "another-revision" }], [deploymentPath]);
   const late = { ...provisioned, status: "succeeded" };
