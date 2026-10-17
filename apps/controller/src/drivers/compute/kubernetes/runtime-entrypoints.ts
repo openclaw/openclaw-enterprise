@@ -3456,9 +3456,10 @@ function codexRateLimited(message) {
 // pass on its own, so the startup probe tries such a failure once more. A rate limit,
 // a credential marker or a Reconnecting notice the recovered-stream rule refused, except
 // Codex's network wait, is never transient: the provider account or the event shape
-// failed, not the transport. Codex reports each failed connection to an unreachable
-// provider as "Reconnecting... waiting for network (Connection failed: ...)" and keeps
-// waiting, so that attempt runs to its timeout and the notice is its transient failure.
+// failed, not the transport. The pinned Codex reports each failed connection to an
+// unreachable provider as exactly CODEX_NETWORK_WAIT and keeps waiting, so that attempt
+// runs to its timeout and the notice is its transient failure. A network wait with any
+// other cause is held: a later Codex that names the cause could name a permanent one.
 // Nor is any provider 4xx, whatever its body says: the request itself was refused.
 // Codex prints a 400 as its bare body, so an invalid_request_error body counts as one.
 // Codex reports a content-filter stop, a host name its musl resolver cannot resolve
@@ -3466,10 +3467,11 @@ function codexRateLimited(message) {
 // error; they fail the same way again. Codex's HTTP client prints a failed connection
 // as "error sending request" without its cause, so a DNS or TLS failure it reports
 // only that way cannot be told from a dropped connection and keeps its retry.
+const CODEX_NETWORK_WAIT = "Reconnecting... waiting for network (Connection failed: error sending request)";
 function codexTransientFailure(message, summary) {
   if (typeof message !== "string" || codexRateLimited(message) ||
     /auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b/i.test(message) ||
-    (/Reconnecting\.\.\./i.test(message) && !/^Reconnecting\.\.\. waiting for network \(Connection failed: .*\)$/.test(message))) return false;
+    (/Reconnecting\.\.\./i.test(message) && message !== CODEX_NETWORK_WAIT)) return false;
   if (summary.providerStatus >= 400 && summary.providerStatus < 500) return false;
   if (/invalid_request_error|content_filter|certificate|Name does not resolve|Name has no usable address/i.test(message)) return false;
   return summary.providerStatus >= 500 ||
@@ -3568,13 +3570,17 @@ function probeCodexAuthentication(timeout) {
     // A transient failure is only a retry candidate: a later deterministic failure in
     // the same attempt (a tool event, a rate limit) still holds at once. A transient
     // message is never a recovered stream notice, so no recovered stream error lands here.
+    // Codex reconnects after a network wait on its own, so a network wait inside the turn
+    // of an attempt that still exits answered recovered like a stream notice.
     let transientFailure;
+    let unrecoveredTransientFailure = false;
     for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
       const failure = event.type === "error" ? codexProbeStatusFailure(event.message, "error-event")
         : event.type === "turn.failed" ? codexProbeStatusFailure(event.error?.message, "turn-failed") : undefined;
       if (failure?.transient === true) {
         transientFailure ??= failure;
+        if (event.message !== CODEX_NETWORK_WAIT || !turnStarted) unrecoveredTransientFailure = true;
         continue;
       }
       if (event.type === "error") {
@@ -3589,7 +3595,13 @@ function probeCodexAuthentication(timeout) {
       }
       if (event.type === "turn.completed") turnCompleted = true;
     }
-    if (transientFailure !== undefined) return finish(transientFailure);
+    const answered = events.filter((event) => event.type === "turn.completed").length === 1 &&
+      events.filter((event) => event.type === "turn.started").length === 1 &&
+      events.at(-1)?.type === "turn.completed" &&
+      events.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
+        typeof event.item.text === "string" && event.item.text.trim().length > 0);
+    if (transientFailure !== undefined &&
+      (unrecoveredTransientFailure || !answered || result.status !== 0 || result.error)) return finish(transientFailure);
     // A timeout cannot make an observed tool call or protocol failure retryable.
     if (result.error?.code === "ETIMEDOUT") return finish("MODEL_PROBE_TIMEOUT");
     // A probe killed from outside (not by its own timeout) may pass on a second try.
@@ -3597,13 +3609,7 @@ function probeCodexAuthentication(timeout) {
       const exit = probeExitFailure(result);
       return finish(result.error === undefined && ["SIGKILL", "SIGTERM"].includes(result.signal) ? { ...exit, transient: true } : exit);
     }
-    return finish(events.filter((event) => event.type === "turn.completed").length === 1 &&
-      events.filter((event) => event.type === "turn.started").length === 1 &&
-      events.at(-1)?.type === "turn.completed" &&
-      events.some((event) => event.type === "item.completed" && event.item?.type === "agent_message" &&
-        typeof event.item.text === "string" && event.item.text.trim().length > 0)
-        ? undefined
-        : probeFailure("PROBE_STATUS", "no-reply"));
+    return finish(answered ? undefined : probeFailure("PROBE_STATUS", "no-reply"));
   } catch {
     return finish(probeFailure("WRAPPER_ERROR"));
   } finally {

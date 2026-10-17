@@ -439,6 +439,7 @@ test("Codex runtime retries a transient startup model probe failure once", async
   const recoveredNotice = errorEvent("Reconnecting... 1/3 stream disconnected before completion");
   // Finding 1618: the pinned Codex build prints this for a provider it cannot connect to
   // (refused, unresolvable or failed TLS alike) and keeps waiting until the probe times out.
+  // Finding 1621: only this exact text is transient; any other cause is held.
   const networkWait = (cause = "Connection failed: error sending request") =>
     errorEvent(`Reconnecting... waiting for network (${cause})`);
   const unreachable = probe([started, networkWait(), networkWait()], timedOut, 30000);
@@ -644,6 +645,17 @@ test("Codex runtime retries a transient startup model probe failure once", async
       erroredWith(networkWait("Connection failed: invalid credential").message),
       "error-event",
     ],
+    // Finding 1621: a cause other than the pinned text may be permanent, so it is held.
+    ...[
+      "Connection failed: invalid URL, scheme is not http",
+      "Connection failed: builder error",
+      "Connection failed: error sending request for url (https://provider.example/v1/responses)",
+      "Connection failed: blocked by policy",
+    ].map((cause) => [
+      `a network wait for "${cause}"`,
+      erroredWith(networkWait(cause).message),
+      "error-event",
+    ]),
   ];
   const scenarios = [
     ...heldAtOnce.map(([description, first, detail, provider]) => ({
@@ -745,6 +757,48 @@ test("Codex runtime retries a transient startup model probe failure once", async
       expect: ready,
       probeCodes: ["MODEL_PROBE_FAILED", "READY"],
     },
+    // Finding 1622: Codex reconnects after a network wait on its own, so a wait inside the
+    // turn of an attempt that exits answered passes, like a recovered stream notice.
+    {
+      name: "network waits then a completed reply in the same attempt pass",
+      native: [login(), probe([started, networkWait(), networkWait(), assistant, completed])],
+      expect: ready,
+    },
+    ...[
+      ["a network wait before the turn", [networkWait(), started, assistant, completed]],
+      [
+        "a failed turn with the network wait text",
+        [started, failedTurn(networkWait().message), assistant, completed],
+        undefined,
+        "turn-failed",
+      ],
+      [
+        "a network wait and a transient error",
+        [started, errorEvent("unexpected status 503"), networkWait(), assistant, completed],
+      ],
+      ["a network wait then a completed turn with no reply", [started, networkWait(), completed]],
+      [
+        "a network wait then a reply after the turn",
+        [started, networkWait(), completed, assistant],
+      ],
+      [
+        "a network wait then a reply from a failed process",
+        [started, networkWait(), assistant, completed],
+        { status: 1 },
+      ],
+      [
+        "a network wait then a reply from a probe that overflowed its output",
+        [started, networkWait(), assistant, completed],
+        { error: { code: "ENOBUFS" } },
+      ],
+    ].map(([description, events, result, detail = "error-event"]) => ({
+      name: `${description} in one attempt is still retried`,
+      native: [login(), probe(events, result), success],
+      retryAfterMs: 1000,
+      expect: ready,
+      probeCodes: ["MODEL_PROBE_FAILED", "READY"],
+      probeCauses: [{ kind: "PROBE_STATUS", detail }, undefined],
+    })),
     {
       name: "two transient failures in one attempt still get one retry",
       native: [
