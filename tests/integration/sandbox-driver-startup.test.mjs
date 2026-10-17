@@ -31,13 +31,18 @@ import {
   OpenShellRequestReplayRefusedError,
   OpenShellSandboxAlreadyExistsError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
-import { serviceTarget } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
+import {
+  OpenShellServiceTransportError,
+  serviceTarget,
+} from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import {
   CredentialSourceConfigError,
   CredentialSourceRevisionError,
+  DependencyUnavailableError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
+  TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { loadInstallationFile } from "../helpers/installation-file.mjs";
@@ -1108,6 +1113,100 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
     driver.harnessEndpoint({ ...context, revision, requirements: exposed }),
     /only for dedicated Codex revisions/,
   );
+  // A projected APP_SERVER_PORT asks for no exposure (finding 1661): it is refused as a
+  // secretKeyRef variable, not for a missing verifier, before any gateway call.
+  await assert.rejects(
+    driver.provisionHarness({
+      ...context,
+      revision,
+      requirements: exposing([
+        { name: "APP_SERVER_PORT", valueFrom: { secretKeyRef: { name: "ports", key: "port" } } },
+      ]),
+    }),
+    (error) => {
+      assert.ok(error instanceof SandboxRevisionUnsupportedError, String(error));
+      assert.match(error.message, /cannot receive secretKeyRef environment APP_SERVER_PORT/);
+      return true;
+    },
+  );
+  assert.equal(requests.length, 1);
+
+  // Finding 1657: the exposure serves Compute's read only until the worker's node enrolls.
+  // OpenShell routes it without authenticating the caller, so once nothing of Compute's
+  // listens there it goes, and a Sandbox adopted after enrollment is without it.
+  const deletions = [];
+  let deletion = async () => {
+    exposedService = undefined;
+  };
+  gatewayClient.deleteService = async (workspace, sandboxName, name) => {
+    deletions.push([workspace, sandboxName, name]);
+    await deletion();
+  };
+  const enrolled = { ...context, revision, requirements: exposed, workspaceNodeEnrolled: true };
+  // The gateway does not confirm the delete: adoption fails closed, the service stays.
+  deletion = async () => {
+    throw new Error("OpenShell DeleteService did not confirm deletion.");
+  };
+  await assert.rejects(driver.provisionHarness(enrolled), /did not confirm deletion/);
+  assert.deepEqual(deletions, [[requests[0].workspace, requests[0].name, ""]]);
+  assert.notEqual(exposedService, undefined);
+  deletion = async () => {
+    exposedService = undefined;
+  };
+  await driver.provisionHarness(enrolled);
+  assert.equal(deletions.length, 2);
+  assert.equal(exposedService, undefined);
+  // Absent after enrollment is the steady state: no delete, no complaint, no create.
+  await driver.provisionHarness(enrolled);
+  assert.equal(deletions.length, 2);
+  assert.equal(requests.length, 1);
+  // Before enrollment the same absence stays an anomaly.
+  await assert.rejects(
+    driver.provisionHarness({ ...context, revision, requirements: exposed }),
+    /exists without its exact bearer-passthrough Harness service/,
+  );
+  // The enrolling pass withdraws it directly, once; a Codex Harness keeps its transport.
+  exposedService = service;
+  await driver.withdrawHarnessExposure(enrolled);
+  assert.equal(deletions.length, 3);
+  assert.equal(exposedService, undefined);
+  await driver.withdrawHarnessExposure(enrolled);
+  assert.equal(deletions.length, 3);
+  exposedService = service;
+  deletion = async () => {
+    throw new Error("OpenShell DeleteService did not confirm deletion.");
+  };
+  await assert.rejects(driver.withdrawHarnessExposure(enrolled), /did not confirm deletion/);
+  assert.notEqual(exposedService, undefined);
+  assert.equal(deletions.length, 4);
+  await assert.rejects(
+    driver.withdrawHarnessExposure({
+      ...enrolled,
+      revision: { ...revision, harness: { id: "codex", version: "1.0.0", mode: "dedicated" } },
+    }),
+    (error) => {
+      assert.ok(error instanceof SandboxRevisionUnsupportedError, String(error));
+      assert.equal(error.code, "SANDBOX_HARNESS_UNSUPPORTED");
+      assert.match(error.message, /keeps its exposure as the Gateway transport/);
+      return true;
+    },
+  );
+  await assert.rejects(
+    driver.withdrawHarnessExposure({
+      ...enrolled,
+      revision: { ...revision, sandboxDriverId: "other" },
+    }),
+    /another Sandbox Driver/,
+  );
+  assert.equal(deletions.length, 4);
+  // Nothing is observed through a withdrawn exposure, and nothing is asked of the gateway.
+  const getService = gatewayClient.getService;
+  gatewayClient.getService = async () => assert.fail("an enrolled worker is not observed");
+  await assert.rejects(
+    driver.harnessStatus({ ...enrolled, transportToken: "transport-token" }),
+    /node has enrolled; its Harness exposure is withdrawn/,
+  );
+  gatewayClient.getService = getService;
 });
 
 test("OpenShell native startup creates private temporary state without changing the supervisor temporary directory", async () => {
@@ -3696,6 +3795,63 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     /only for dedicated Codex or OpenClaw revisions/,
   );
   await assert.rejects(driver.harnessEndpoint(nativeContext), /only for dedicated Codex revisions/);
+  // Finding 1658: a gateway that does not answer, over its service listener or over gRPC, is
+  // no evidence about the Harness. The read is a transient dependency failure the worker
+  // rechecks until the deadline without spending attempts, with the transport's own reason.
+  // Refusals, invalid answers and the gateway's own transient classes keep their classes.
+  document = { status: 200, json: { runtimeFailure } };
+  for (const [fail, reason] of [
+    [
+      () =>
+        (gatewayClient.serviceWebSocketHandshake = async () => {
+          throw new OpenShellServiceTransportError("timeout");
+        }),
+      "timeout",
+    ],
+    [
+      () =>
+        (gatewayClient.getServiceDocument = async () => {
+          throw new OpenShellServiceTransportError("unreachable");
+        }),
+      "unreachable",
+    ],
+    [
+      () =>
+        (gatewayClient.getService = async () => {
+          throw new DependencyUnavailableError("OpenShell GetService failed with gRPC status 14.");
+        }),
+      "unavailable",
+    ],
+  ]) {
+    const restore = {
+      serviceWebSocketHandshake: gatewayClient.serviceWebSocketHandshake,
+      getServiceDocument: gatewayClient.getServiceDocument,
+      getService: gatewayClient.getService,
+    };
+    fail();
+    for (const target of [statusContext, nativeContext]) {
+      await assert.rejects(driver.harnessStatus(target), (error) => {
+        assert.ok(error instanceof TransientDependencyError, String(error));
+        assert.equal(error.dependency, "sandbox_gateway");
+        assert.equal(error.reason, reason);
+        assert.equal(error.code, "SANDBOX_GATEWAY_UNAVAILABLE");
+        assert.ok(error.cause instanceof DependencyUnavailableError);
+        return true;
+      });
+    }
+    Object.assign(gatewayClient, restore);
+  }
+  const transient = new TransientDependencyError("sandbox_admission", "unavailable", "limit");
+  const refused = new Error("OpenShell GetService refused: PERMISSION_DENIED");
+  for (const thrown of [transient, refused]) {
+    const getService = gatewayClient.getService;
+    gatewayClient.getService = async () => {
+      throw thrown;
+    };
+    await assert.rejects(driver.harnessStatus(statusContext), (error) => error === thrown);
+    gatewayClient.getService = getService;
+  }
+  assert.deepEqual(await driver.harnessStatus(statusContext), { state: "failed", runtimeFailure });
   // Another Sandbox Driver's revision, or a deferred managed Workspace, is refused before the
   // Harness is observed.
   observed.length = 0;

@@ -632,11 +632,48 @@ test("OpenShell client reads an existing Sandbox and its service endpoint", asyn
         url: "http://tenant-workspace--sandbox-wire.openshell.localhost:8080/",
       });
     },
+    // Per Sandbox name: how DeleteService answers (finding 1657).
+    DeleteService(call, callback) {
+      requests.push(["DeleteService", call.request]);
+      const outcomes = {
+        "sandbox-wire": { outcome: "DELETION_OUTCOME_COMPLETED" },
+        "sandbox-absent": { outcome: "DELETION_OUTCOME_ALREADY_ABSENT" },
+        "sandbox-accepted": { outcome: "DELETION_OUTCOME_ACCEPTED" },
+        "sandbox-silent": {},
+      };
+      const answer = outcomes[call.request.sandbox];
+      if (answer === undefined) {
+        notFound(callback);
+        return;
+      }
+      callback(null, answer);
+    },
   });
   const port = await bindWireServer(server);
   const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
   const signal = AbortSignal.timeout(2_000);
   try {
+    // A service is gone on COMPLETED, ALREADY_ABSENT or NOT_FOUND only; an accepted or
+    // unstated outcome is not a confirmation, so the exposure is reported as still present.
+    for (const sandbox of ["sandbox-wire", "sandbox-absent", "sandbox-missing"]) {
+      await client.deleteService("tenant-workspace", sandbox, "", signal);
+    }
+    for (const sandbox of ["sandbox-accepted", "sandbox-silent"]) {
+      await assert.rejects(
+        client.deleteService("tenant-workspace", sandbox, "", signal),
+        /DeleteService did not confirm deletion/,
+      );
+    }
+    const deletions = requests.filter(([method]) => method === "DeleteService");
+    assert.equal(deletions.length, 5);
+    // The delete is idempotent by itself: no request_id, so no durable admission per pass.
+    assert.deepEqual(deletions[0][1], {
+      sandbox: "sandbox-wire",
+      name: "",
+      workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
+      allow_missing: true,
+    });
+    requests.length = 0;
     const sandbox = await client.getSandbox(
       { name: "sandbox-wire", workspace: "tenant-workspace" },
       signal,

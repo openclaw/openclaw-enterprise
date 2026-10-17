@@ -27,6 +27,7 @@ service OpenShell {
   rpc GetSandbox(GetSandboxRequest) returns (SandboxResponse);
   // Read-only. Recovers the stable create-time route without replaying CreateSandbox.
   rpc GetService(GetServiceRequest) returns (ServiceEndpointResponse);
+  rpc DeleteService(DeleteServiceRequest) returns (DeleteServiceResponse);
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
   // Read-only. Upstream authorization: bearer, scope sandbox:read, workspace role user.
   rpc GetSandboxLogs(GetSandboxLogsRequest) returns (GetSandboxLogsResponse);
@@ -333,6 +334,21 @@ message GetServiceRequest {
   // Empty selects the unnamed endpoint.
   string name = 2;
   WorkspaceSelector workspace_scope = 3;
+}
+
+message DeleteServiceRequest {
+  string sandbox = 1;
+  // Empty selects the unnamed endpoint.
+  string name = 2;
+  WorkspaceSelector workspace_scope = 3;
+  bool allow_missing = 4;
+  string request_id = 5;
+}
+
+message DeleteServiceResponse {
+  reserved 1;
+  reserved "deleted";
+  DeletionOutcome outcome = 2;
 }
 
 message WorkspaceSelector {

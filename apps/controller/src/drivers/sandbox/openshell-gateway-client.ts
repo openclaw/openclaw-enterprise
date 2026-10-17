@@ -328,6 +328,16 @@ export interface OpenShellGatewayClient
     name: string,
     signal: AbortSignal,
   ): Promise<OpenShellServiceResponse | undefined>;
+  /**
+   * Removes one exposed service endpoint. Resolves only once OpenShell confirms the endpoint
+   * gone (COMPLETED, ALREADY_ABSENT or NOT_FOUND); any other answer is a failure.
+   */
+  deleteService(
+    workspace: string,
+    sandbox: string,
+    name: string,
+    signal: AbortSignal,
+  ): Promise<void>;
   deleteSandbox(request: OpenShellSandboxDeleteRequest, signal: AbortSignal): Promise<void>;
   /** Discards process output and returns its exit code only after the stream completes. */
   execSandbox(request: OpenShellSandboxExecRequest, signal: AbortSignal): Promise<number>;
@@ -452,6 +462,7 @@ type OpenShellMethod =
   | "CreateSandbox"
   | "GetSandbox"
   | "GetService"
+  | "DeleteService"
   | "DeleteSandbox"
   | "GetSandboxLogs"
   | "GetSandboxProviderStatus"
@@ -1418,6 +1429,37 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       advertisedUrl: serviceUrl(response.url).toString(),
       url: normalizeServiceUrl(response.url, this.options.endpoint),
     });
+  }
+
+  async deleteService(
+    workspace: string,
+    sandbox: string,
+    name: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    let response: RecordValue;
+    try {
+      // No request_id: the delete is idempotent by itself, and a durable admission per call
+      // would count against the gateway identity's limit on every reconcile pass.
+      response = await this.unary(
+        "DeleteService",
+        {
+          sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
+          name,
+          workspace_scope: { workspace },
+          allow_missing: true,
+        },
+        signal,
+      );
+    } catch (error) {
+      if (await this.isStatus(error, "NOT_FOUND")) {
+        return;
+      }
+      throw error;
+    }
+    if (!deletionConfirmed(response)) {
+      throw new OpenShellGatewayFailure("OpenShell DeleteService did not confirm deletion.");
+    }
   }
 
   /**

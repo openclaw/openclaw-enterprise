@@ -1143,6 +1143,12 @@ export interface SandboxNamespaceContext {
 export interface SandboxHarnessContext extends SandboxNamespaceContext {
   readonly revision: Readonly<AgentRevision>;
   readonly requirements: HarnessWorkloadRequirements;
+  /**
+   * True once the revision's workspace node has enrolled with its Agent Gateway. A dedicated
+   * OpenClaw worker's Harness exposure serves Compute's status read only before that: a Driver
+   * withdraws it on `provisionHarness` and `withdrawHarnessExposure`, and refuses `harnessStatus`.
+   */
+  readonly workspaceNodeEnrolled?: boolean;
 }
 
 export interface SandboxHarnessStatusContext extends SandboxHarnessContext {
@@ -1557,6 +1563,14 @@ export interface SandboxDriver extends Driver {
    * dedicated OpenClaw worker it reads this only while the worker's node has not connected.
    */
   harnessStatus?(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus>;
+  /**
+   * Removes the exposure `provisionHarness` created for Compute's status read of a dedicated
+   * OpenClaw worker, once its workspace node has enrolled: nothing of Compute's listens there
+   * afterwards, and the exposure would route unauthenticated traffic to whatever does. Resolves
+   * only once the provider confirms the exposure gone; Compute does not report the revision
+   * ready before that. A Codex Harness keeps its exposure as the Gateway's transport.
+   */
+  withdrawHarnessExposure?(context: SandboxHarnessContext): Promise<void>;
   /**
    * The exact Sandbox `provisionHarness` creates for this revision, derived without effects.
    * Required to revoke credentials from a running revision.

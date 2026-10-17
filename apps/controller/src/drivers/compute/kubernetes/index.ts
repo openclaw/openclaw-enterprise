@@ -6084,12 +6084,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
             ...this.credentialSourceEnvironment(revision, attachments),
           ],
         };
+        // Whether the node has ever enrolled, read before provisioning: a dedicated OpenClaw
+        // worker's exposure serves only Compute's status read before its first enrollment,
+        // and the provider withdraws it from a Sandbox adopted after that (finding 1657).
+        const nodeEnrolled = await this.workspaceNodeEnrolled(revision, namespace);
+        const harnessContext = {
+          ...sandboxContext,
+          revision,
+          requirements,
+          workspaceNodeEnrolled: nodeEnrolled,
+        };
         const sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
-          sandboxDriver.provisionHarness!({
-            ...sandboxContext,
-            revision,
-            requirements,
-          }),
+          sandboxDriver.provisionHarness!(harnessContext),
         );
         this.verifySandboxResourceRef(sandbox, revision, namespace);
         if (this.options.runtime !== undefined) {
@@ -6106,11 +6112,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           nativeRuntime !== undefined || sandboxDriver.harnessEndpoint === undefined
             ? undefined
             : await this.prepareRevisionStage("sandbox_provision", () =>
-                sandboxDriver.harnessEndpoint!({
-                  ...sandboxContext,
-                  revision,
-                  requirements,
-                }),
+                sandboxDriver.harnessEndpoint!(harnessContext),
               );
         if (
           providerEndpoint !== undefined &&
@@ -6132,16 +6134,31 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // provider with the Agent transport token. `failed` carries a held startup
         // failure (a failed model probe), validated like a Compute-owned status port.
         const observeProviderHarness = async (): Promise<SandboxHarnessStatus> =>
-          this.prepareRevisionStage("sandbox_provision", async () =>
-            sandboxDriver.harnessStatus!({
-              ...sandboxContext,
-              revision,
-              requirements,
-              transportToken: await this.prepareRevisionStage("harness_auth", () =>
-                this.sandboxTransportTokenText(revision),
-              ),
-            }),
-          );
+          this.prepareRevisionStage("sandbox_provision", async () => {
+            const transportToken = await this.prepareRevisionStage("harness_auth", () =>
+              this.sandboxTransportTokenText(revision),
+            );
+            try {
+              return await sandboxDriver.harnessStatus!({ ...harnessContext, transportToken });
+            } catch (error) {
+              // A provider that does not answer is no evidence about the Harness. Like a
+              // Kubernetes API that is converging, it is rechecked until the deployment
+              // deadline without spending the attempt budget (finding 1658). A Driver may
+              // classify the failure itself; refusals and invalid data keep their classes.
+              if (
+                error instanceof DependencyUnavailableError &&
+                !(error instanceof TransientDependencyError)
+              ) {
+                throw new TransientDependencyError(
+                  "sandbox_gateway",
+                  "unavailable",
+                  "The Sandbox provider did not answer the Harness status read.",
+                  { cause: error },
+                );
+              }
+              throw error;
+            }
+          });
         const heldProviderHarnessFailure = (
           harness: SandboxHarnessStatus,
         ): ComputeReadiness | undefined => {
@@ -6156,12 +6173,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
           return { ...result, runtimeFailure };
         };
         if (!(await this.workspaceNodeReady(revision, namespace))) {
-          if (nativeRuntime !== undefined && sandboxDriver.harnessStatus !== undefined) {
+          if (
+            nativeRuntime !== undefined &&
+            sandboxDriver.harnessStatus !== undefined &&
+            !nodeEnrolled
+          ) {
             // A dedicated OpenClaw worker holding a failed model check never connects
             // its node, and nothing else reports the hold: read it through the
             // provider and fail the revision with its code instead of waiting for
             // the deadline (finding 1642). A worker that is still starting, or one
-            // that has started its node, serves nothing there.
+            // that has started its node, serves nothing there; once the node has
+            // enrolled, the exposure the read used is withdrawn.
             const held = heldProviderHarnessFailure(await observeProviderHarness());
             if (held !== undefined) {
               return held;
@@ -6178,6 +6200,22 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ))
             ? incomplete("WORKSPACE_NODE_PENDING")
             : incomplete();
+        }
+        if (
+          nativeRuntime !== undefined &&
+          !nodeEnrolled &&
+          sandboxDriver.withdrawHarnessExposure !== undefined
+        ) {
+          // The node enrolled this pass: the worker is past its checks, and from now on
+          // agent-run code may bind the worker's transport port, so the exposure Compute's
+          // read used must go before the revision is ready (finding 1657). A withdrawal that
+          // fails keeps the revision unready; the provider completes it on the next adoption.
+          await this.prepareRevisionStage("sandbox_provision", () =>
+            sandboxDriver.withdrawHarnessExposure!({
+              ...harnessContext,
+              workspaceNodeEnrolled: true,
+            }),
+          );
         }
         if (credentialContext !== undefined) {
           const statuses = await this.requireCredentialGateway().attachmentStatus({
@@ -10543,6 +10581,30 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         budgets.delete(oldest);
       }
     }
+  }
+
+  /**
+   * Whether the revision's workspace node has ever enrolled: its node Secret records the device.
+   * Without node enrollment there is no enrollment window, as `workspaceNodeReady` holds.
+   */
+  private async workspaceNodeEnrolled(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+  ): Promise<boolean> {
+    if (
+      this.nodeEnrollment === undefined ||
+      this.options.runtime === undefined ||
+      this.getGatewayEndpoint(revision) === undefined
+    ) {
+      return true;
+    }
+    const secret = await this.getOwned(
+      "Secret",
+      this.workspaceNodeName(revision),
+      namespace,
+      this.workspaceNodeOwnership(revision),
+    );
+    return Buffer.from(secret?.data?.deviceId ?? "", "base64").toString("utf8") !== "";
   }
 
   private async workspaceNodeReady(

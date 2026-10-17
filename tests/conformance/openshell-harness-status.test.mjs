@@ -15,6 +15,7 @@ import {
   NATIVE_WORKER_ENTRYPOINT,
 } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellServiceTransportError } from "../../apps/controller/src/drivers/sandbox/openshell-service-transport.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
 // A provider-owned Codex Harness (OpenShell) receives only the transport token's
@@ -550,6 +551,9 @@ test("an unreachable OpenShell gateway listener is a dependency failure, not a s
   ]) {
     await assert.rejects(observe(), (error) => {
       assert.ok(error instanceof DependencyUnavailableError, String(error));
+      // The reason is closed vocabulary for the worker's transient-dependency log.
+      assert.ok(error instanceof OpenShellServiceTransportError);
+      assert.equal(error.reason, "unreachable");
       return true;
     });
   }
@@ -577,6 +581,8 @@ test("an OpenShell service that never answers times out as a dependency failure"
     // The caller's own deadline is longer: the request bound must fire first.
     await assert.rejects(observe(AbortSignal.timeout(20_000)), (error) => {
       assert.ok(error instanceof DependencyUnavailableError, String(error));
+      assert.ok(error instanceof OpenShellServiceTransportError);
+      assert.equal(error.reason, "timeout");
       assert.match(error.message, /timed out/);
       return true;
     });
@@ -1143,4 +1149,28 @@ test("a native OpenClaw worker without an exposed port, or with a Compute status
     computeOwned.servers.map((server) => server.listening),
     [{ port: 18789, host: "0.0.0.0" }],
   );
+  // A present but malformed verifier or port never starts the server (finding 1661): a
+  // loosened check would serve the held failure against a credential nobody can hold.
+  const verifier = sha256(TOKEN);
+  for (const env of [
+    { ...nativeProviderEnv, APP_TOKEN_SHA: "" },
+    { ...nativeProviderEnv, APP_TOKEN_SHA: verifier.toUpperCase() },
+    { ...nativeProviderEnv, APP_TOKEN_SHA: verifier.slice(0, 63) },
+    { ...nativeProviderEnv, APP_TOKEN_SHA: `${verifier}a` },
+    { ...nativeProviderEnv, APP_TOKEN_SHA: `${verifier.slice(0, 63)}g` },
+    { ...nativeProviderEnv, APP_SERVER_PORT: "" },
+    { ...nativeProviderEnv, APP_SERVER_PORT: "0" },
+    { ...nativeProviderEnv, APP_SERVER_PORT: "65536" },
+    { ...nativeProviderEnv, APP_SERVER_PORT: "18790.5" },
+    { ...nativeProviderEnv, APP_SERVER_PORT: "-18790" },
+    { ...nativeProviderEnv, APP_SERVER_PORT: "port" },
+  ]) {
+    const malformed = runNativeWorkerEntrypoint({ env });
+    assert.equal(malformed.connectStarts, 0, JSON.stringify(env));
+    assert.deepEqual(
+      malformed.servers.filter((server) => server.listening !== undefined),
+      [],
+      JSON.stringify(env),
+    );
+  }
 });

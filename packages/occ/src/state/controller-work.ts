@@ -135,6 +135,11 @@ export function deploymentProgressForWork(
       message =
         "The Sandbox gateway refuses new requests from the controller until its request admissions free up. The controller will retry until the deployment deadline.";
       break;
+    case "SANDBOX_GATEWAY_UNAVAILABLE":
+      code = attempt.code;
+      message =
+        "The Sandbox gateway did not answer the controller's read of the Harness status yet. The controller will retry until the deployment deadline.";
+      break;
     case "ACTIVE_REVISION_CHANGED":
       code = attempt.code;
       message = "The selected version changed. The controller will reconcile again.";
@@ -700,6 +705,8 @@ function deploymentErrorMessage(code: string): string {
       return "The ServiceAccount's Backend binding no longer matches the Agent's Backend, or its credential is no longer issued. Bind a ServiceAccount created and issued under the Agent's current Backend, then deploy again.";
     case "SANDBOX_ADMISSION_LIMIT_REACHED":
       return "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.";
+    case "SANDBOX_GATEWAY_UNAVAILABLE":
+      return "The Sandbox gateway still did not answer the controller's read of the Harness status at the deployment deadline.";
     default:
       return "Deployment reconciliation failed.";
   }

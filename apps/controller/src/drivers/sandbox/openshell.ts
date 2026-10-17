@@ -8,10 +8,12 @@ import {
 import {
   ConfigurationHarnessError,
   configurationSettingMessage,
+  DependencyUnavailableError,
   RuntimeLogsForbiddenByClusterError,
   RuntimeLogsSandboxNotFoundError,
   SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
+  TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
@@ -57,6 +59,7 @@ import {
   OpenShellWorkspaceAlreadyExistsError,
   toProtobufStruct,
 } from "./openshell-gateway-client.ts";
+import { OpenShellServiceTransportError } from "./openshell-service-transport.ts";
 import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
@@ -2723,7 +2726,12 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         `OpenShell Sandbox ${sandbox.resourceName} has stopped; remove the stale Sandbox before retrying.`,
       );
     }
-    if (exposed) {
+    if (exposed && !codex && context.workspaceNodeEnrolled === true) {
+      // The worker's node has enrolled: Compute reads nothing more through the exposure,
+      // so a Sandbox adopted after enrollment is without it (finding 1657). A withdrawal
+      // the enrolling pass could not finish is completed here.
+      await this.withdrawNativeExposure(client, workspace, sandbox.resourceName, context.signal);
+    } else if (exposed) {
       // The spec match above already proves the live Sandbox was created with this
       // exposure, so a missing service is an anomaly, not an older Sandbox.
       const service = await client.getService(workspace, sandbox.resourceName, "", context.signal);
@@ -2740,6 +2748,52 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     await this.initializeWorkspace(context, sandbox, client);
     return Object.freeze(sandbox);
+  }
+
+  /**
+   * Drops the dedicated OpenClaw worker's bearer-passthrough exposure once its node has
+   * enrolled. OpenShell routes the exposure to the Sandbox without authenticating the caller,
+   * and nothing of Compute's listens on the worker's transport port after enrollment, so the
+   * exposure would otherwise hand agent-run code an inbound channel for the Sandbox's lifetime
+   * (finding 1657). Fails closed: resolves only once OpenShell confirms the service gone.
+   */
+  async withdrawHarnessExposure(context: SandboxHarnessContext): Promise<void> {
+    this.requireOperatorWorkspaceMode("withdraw a Harness exposure");
+    if (
+      context.revision.harness.mode !== "dedicated" ||
+      context.revision.harness.id !== "openclaw"
+    ) {
+      throw new SandboxRevisionUnsupportedError(
+        "SANDBOX_HARNESS_UNSUPPORTED",
+        "OpenShell withdraws a Harness exposure only for dedicated OpenClaw revisions; a Codex Harness keeps its exposure as the Gateway transport.",
+      );
+    }
+    if (context.revision.sandboxDriverId !== this.id) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "Refusing to withdraw a Harness exposure for another Sandbox Driver.",
+      );
+    }
+    const sandbox = this.sandboxRef(context);
+    await this.withdrawNativeExposure(
+      this.gatewayClientForNamespace(sandbox.namespaceName),
+      workspaceName(context.namespace),
+      sandbox.resourceName,
+      context.signal,
+    );
+  }
+
+  private async withdrawNativeExposure(
+    client: OpenShellGatewayClient,
+    workspace: string,
+    sandbox: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    // Read first: after the first withdrawal every reconcile pass passes here, and a
+    // DeleteService per pass would be a gateway mutation per pass for nothing.
+    if ((await client.getService(workspace, sandbox, "", signal)) === undefined) {
+      return;
+    }
+    await client.deleteService(workspace, sandbox, "", signal);
   }
 
   private async initializeWorkspace(
@@ -2839,25 +2893,49 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * Anything else, including OpenShell's own `502` while nothing listens, is still starting.
    */
   async harnessStatus(context: SandboxHarnessStatusContext): Promise<SandboxHarnessStatus> {
-    const { client, service } = await this.exactHarnessService(context, "observe a Harness");
-    // Handshake first, so a serving app-server never receives a plain request. A
-    // Harness wrapper holding a startup failure answers the upgrade 503 with the held
-    // code and serves the failure itself on the status path.
-    if (
-      await client.serviceWebSocketHandshake(service.url, context.transportToken, context.signal)
-    ) {
-      return Object.freeze({ state: "serving" });
+    if (context.revision.harness.id === "openclaw" && context.workspaceNodeEnrolled === true) {
+      // The exposure is withdrawn with enrollment, and nothing of Compute's listens there.
+      throw new OpenShellSandboxConfigurationFailure(
+        "Refusing to observe a dedicated OpenClaw worker whose node has enrolled; its Harness exposure is withdrawn.",
+      );
     }
-    const document = await client.getServiceDocument(
-      service.url,
-      HARNESS_RUNTIME_STATUS_PATH,
-      context.transportToken,
-      context.signal,
-    );
-    const runtimeFailure = asRecord(document.json)?.runtimeFailure;
-    return document.status === 200 && runtimeFailure !== undefined
-      ? Object.freeze({ state: "failed", runtimeFailure })
-      : Object.freeze({ state: "starting" });
+    try {
+      const { client, service } = await this.exactHarnessService(context, "observe a Harness");
+      // Handshake first, so a serving app-server never receives a plain request. A
+      // Harness wrapper holding a startup failure answers the upgrade 503 with the held
+      // code and serves the failure itself on the status path.
+      if (
+        await client.serviceWebSocketHandshake(service.url, context.transportToken, context.signal)
+      ) {
+        return Object.freeze({ state: "serving" });
+      }
+      const document = await client.getServiceDocument(
+        service.url,
+        HARNESS_RUNTIME_STATUS_PATH,
+        context.transportToken,
+        context.signal,
+      );
+      const runtimeFailure = asRecord(document.json)?.runtimeFailure;
+      return document.status === 200 && runtimeFailure !== undefined
+        ? Object.freeze({ state: "failed", runtimeFailure })
+        : Object.freeze({ state: "starting" });
+    } catch (error) {
+      // A gateway that does not answer, over gRPC or its service listener, is no evidence
+      // about the Harness: the read waits for convergence without spending the revision's
+      // attempt budget (finding 1658). Refusals and invalid answers keep their classes.
+      if (
+        error instanceof DependencyUnavailableError &&
+        !(error instanceof TransientDependencyError)
+      ) {
+        throw new TransientDependencyError(
+          "sandbox_gateway",
+          error instanceof OpenShellServiceTransportError ? error.reason : "unavailable",
+          "OpenShell did not answer the Harness status read.",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
   }
 
   /**
