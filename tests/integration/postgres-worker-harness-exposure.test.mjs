@@ -531,7 +531,25 @@ test(
       [stopped.id, deleted.id].sort(),
     );
     for (const { hint } of terminal) {
-      assert.match(hint, /Restore the controller gateway identity's Workspace role/);
+      assert.match(hint, /restore that identity's Workspace role/);
+    }
+    // Attempt 1 is the Driver's retry and the queue's; attempt 2 is still the Driver's retry
+    // but the queue's permanent failure, which is what the line reports with the guidance.
+    for (const agent of [stopped, deleted]) {
+      assert.deepEqual(
+        completed
+          .filter(({ agentId }) => agentId === agent.id)
+          .map(({ attempt, result, outcome, hint }) => [
+            attempt,
+            result,
+            outcome,
+            hint !== undefined,
+          ]),
+        [
+          [1, "retry", "retry", false],
+          [2, "retry", "permanent", true],
+        ],
+      );
     }
     // Every retried attempt was logged without it (the deployments never get it: their status
     // shows the guidance).

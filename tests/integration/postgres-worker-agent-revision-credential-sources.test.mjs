@@ -953,7 +953,12 @@ test(
         hint !== undefined,
     );
     assert.equal(terminal.length, 1);
-    assert.match(terminal[0].hint, /Restore the controller gateway identity's Workspace role/);
+    assert.match(terminal[0].hint, /restore that identity's Workspace role/);
+    // The Driver's retry, the queue's permanent failure (with the recovery series queued).
+    assert.deepEqual(
+      [terminal[0].attempt, terminal[0].result, terminal[0].outcome],
+      [2, "retry", "permanent"],
+    );
     assert.deepEqual(await withdrawalAudit(fixture, "outcome", "reason_code"), [
       { outcome: "success", reason_code: "CREDENTIALS_WITHDRAWN" },
       { outcome: "failure", reason_code: "SANDBOX_GATEWAY_UNAUTHORIZED" },

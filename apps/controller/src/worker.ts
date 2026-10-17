@@ -2537,8 +2537,10 @@ export class ControllerWorker {
       ...workLogFields(claim),
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
+      // `result` is the Driver's classification; `outcome` the queue's decision, so a retry that
+      // spent the attempt budget reads `permanent` here, as the hint says (finding 1694).
       result: result.outcome,
-      outcome: result.outcome,
+      outcome: this.passOutcome,
       code: result.code,
       ...refusalHintField(this.passOutcome === "permanent", result.code),
     });
@@ -2642,8 +2644,9 @@ export class ControllerWorker {
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
       revisionId: result.revision?.id,
+      // As for a deletion: `outcome` is the queue's decision (finding 1694).
       result: result.outcome,
-      outcome: result.outcome,
+      outcome: this.passOutcome,
       code: result.code,
       ...stopYieldsField(stopYields),
       ...refusalHintField(this.passOutcome === "permanent", result.code),
@@ -2989,8 +2992,10 @@ export class ControllerWorker {
       namespaceId: claim.namespaceId,
       agentId: claim.agentId,
       revisionId: claim.revisionId,
+      // `outcome` is the queue's decision; a terminal retry (`permanent` here) has its recovery
+      // series queued (finding 1694).
       result: result.outcome,
-      outcome: result.outcome,
+      outcome: this.passOutcome,
       code: result.code,
       ...refusalHintField(terminal(result), result.code),
     });

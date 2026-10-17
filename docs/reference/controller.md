@@ -119,7 +119,8 @@ The worker emits fixed operational event classes through the same logger:
 - `worker.started`: confirms the selected Compute Driver and optional
   SandboxDriver.
 - `worker.health`: reports readiness and pending work count at debug level.
-- `worker.completed`: includes `namespaceId`, work identity, attempt, outcome,
+- `worker.completed`: includes `namespaceId`, work identity, attempt, outcome
+  (the queue's decision: a retry that spent the attempt budget is `permanent`)
   and a stable result code; AgentRevision operations also include `agentId` and
   `revisionId`. A failed or deferred revision pass adds `cause`: the error class,
   or for a transient dependency its closed failure code, with `dependency` naming
