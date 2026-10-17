@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "source": "Median wallDurationMs of each shared file in the checks-baseline and checks-browser lanes over five green main CI runs (c08598210 and the four before it, all after #2736), rounded to 100 ms, from the ci-results-<lane> artifacts. Refresh rows when a lane's longest files change (a PR that edits this table runs full CI); a file without a row starts first.",
+  "source": "Median wallDurationMs of each shared file in the checks-baseline and checks-browser lanes over five green main CI runs (c08598210 and the four before it, from #2736 on), rounded to 100 ms, from the ci-results-<lane> artifacts. Refresh rows when a lane's longest files change (a PR that edits this table runs full CI); a file without a row starts first.",
   "files": {
     "tests/browser/console-agent-channels.test.mjs": 11000,
     "tests/browser/console-agent-deploy-focus.test.mjs": 3800,
