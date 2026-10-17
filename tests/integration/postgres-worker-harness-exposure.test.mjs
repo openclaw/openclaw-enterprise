@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after } from "node:test";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts";
 
 // The worker's native Harness exposure sweep (findings 1669 and 1672). Deployment and dispatch
 // cases are in postgres-worker-agent-revision.test.mjs and its siblings; the lane runs the
@@ -122,5 +123,66 @@ revisionTest(
     assert.equal(withdrawals.filter((id) => id === active.id).length, 1);
     assert.equal(withdrawals.filter((id) => id === failed.id).length, 1);
     assert.equal(named("worker.error").length, 0, JSON.stringify(named("worker.error")));
+  },
+);
+
+// A candidate that fails for good keeps its Sandbox for diagnosis, and with it the exposure
+// Compute's status read used, which nothing reads any more (finding 1672): the worker that
+// commits the failure hands the revision to the sweep, which withdraws it on a later pass. A
+// candidate without a provider exposure is not handed over.
+revisionTest(
+  "a native candidate that fails for good has its Harness exposure withdrawn by the sweep",
+  async (fixture) => {
+    const sandboxDriverId = "native-sandbox";
+    const nativeHarness = { ...fixture.productionHarness, id: "openclaw", mode: "dedicated" };
+    // The Codex candidate is queued first, so it fails first: a hand-over that ignored the
+    // exposure kind would withdraw it before the native one.
+    const { candidate: codex } = await fixture.admitInitialRevision("failing-codex", {
+      agent: { executionMode: "dedicated" },
+      revision: { sandboxDriverId },
+    });
+    const { candidate: native } = await fixture.admitInitialRevision("failing-native", {
+      agent: { executionMode: "dedicated" },
+      revision: { harness: nativeHarness, sandboxDriverId },
+    });
+    const withdrawals = [];
+    const events = [];
+    await fixture.start(
+      {
+        ...fixture.compute,
+        async prepareRevision() {
+          throw new SandboxRevisionUnsupportedError("SANDBOX_HARNESS_UNSUPPORTED", "test");
+        },
+        async withdrawHarnessExposure(revision) {
+          withdrawals.push(revision.id);
+        },
+      },
+      { emit: (event) => events.push(event) },
+    );
+    for (const candidate of [codex, native]) {
+      const failed = await fixture.work(candidate, "failed_permanent");
+      assert.equal(failed.attempt_count, 1);
+    }
+    const named = (name) => events.filter(({ event }) => event === name);
+    await waitFor("the failed native candidate's exposure to be withdrawn", async () =>
+      named("worker.harness-exposure-withdrawn").length > 0 ? true : undefined,
+    );
+    // Two more idle passes: anything else handed over would have been withdrawn by now.
+    const settledPasses = named("worker.health").length + 2;
+    await waitFor("two more idle passes", async () =>
+      named("worker.health").length >= settledPasses ? true : undefined,
+    );
+    assert.deepEqual(named("worker.harness-exposure-withdrawn"), [
+      {
+        event: "worker.harness-exposure-withdrawn",
+        namespaceId: fixture.namespace.id,
+        agentId: native.agentId,
+        revisionId: native.id,
+      },
+    ]);
+    assert.deepEqual(withdrawals, [native.id]);
+    assert.deepEqual(named("worker.harness-exposure-withdrawal-failed"), []);
+    // Nothing was listed at start: both deployments were still queued then.
+    assert.deepEqual(named("worker.harness-exposure-sweep"), []);
   },
 );

@@ -149,7 +149,8 @@
     {
       "path": "tests/integration/postgres-worker-harness-exposure.test.mjs",
       "expectedTests": [
-        "the worker withdraws native Harness exposures of revisions that get no preparation pass"
+        "the worker withdraws native Harness exposures of revisions that get no preparation pass",
+        "a native candidate that fails for good has its Harness exposure withdrawn by the sweep"
       ]
     }
   ]

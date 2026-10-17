@@ -284,8 +284,8 @@ unauthenticated, so once the node enrolls the Driver deletes it
 (`DeleteService`, fail closed); adoption or recreation then has none. A missing
 service counts as withdrawn only while `GetWorkspace` answers (OpenShell hides
 unauthorized Sandboxes as missing); a refusal fails the revision with
-`SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's start sweep covers revisions that
-get no pass.
+`SANDBOX_GATEWAY_UNAUTHORIZED`. The worker's sweep covers revisions that get no
+pass and candidates that fail for good.
 
 ## Kubernetes and admission requirements
 

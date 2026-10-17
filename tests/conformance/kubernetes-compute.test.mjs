@@ -1805,6 +1805,171 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   assert.equal(withdrawals.length, 1);
 });
 
+// Finding 1671: the node Secret is the Agent's, so a redeploy found a recorded device from its
+// first pass, counted as enrolled, never read the provider's held failure, and created its
+// exposure only to delete it at once; a redeploy holding a failed model check waited for the
+// deadline. Enrollment is per revision: the Secret names the revision whose node readiness saw
+// paired or connected, and a replacement counts as enrolled only once its own node connects.
+test("Kubernetes native Sandbox redeploy reads the held failure before its own node enrolls", async () => {
+  const heldFailure = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: "2026-10-17T12:30:00.000Z",
+    code: "AUTHENTICATION_FAILED",
+  };
+  const provisions = [];
+  const observations = [];
+  const withdrawals = [];
+  let answer = { state: "starting" };
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels({ revision: target }) {
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      return {
+        namespaceName: context.namespace.name,
+        resourceName: "native-harness",
+        agentId: context.revision.agentId,
+        revisionId: context.revision.id,
+      };
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async harnessStatus(context) {
+      observations.push(context);
+      return answer;
+    },
+    async withdrawHarnessExposure(context) {
+      withdrawals.push(context);
+    },
+  };
+  const nativeRevision = {
+    harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+    sandboxDriverId: sandboxDriver.id,
+    configuration: admitLoggingConfiguration(
+      createHarnessConfiguration("openclaw", "gpt-5"),
+      "info",
+    ),
+    plugins: undefined,
+  };
+  const encode = (value) => Buffer.from(value, "utf8").toString("base64");
+  const decode = (value) => Buffer.from(value ?? "", "base64").toString("utf8");
+  // The predecessor enrolled the Agent's device under its own revision.
+  const seedNodeSecret = (fixture, data) => {
+    const nodeName = fixture.driver.workspaceNodeName(fixture.revision);
+    const manifest = fixture.driver.manifest(
+      "v1",
+      "Secret",
+      nodeName,
+      fixture.driver.workspaceNodeOwnership(fixture.revision),
+      { name: fixture.namespace, plane: "execution" },
+    );
+    fixture.save({
+      ...manifest,
+      type: "Opaque",
+      metadata: { ...manifest.metadata, uid: "node-uid", resourceVersion: "1" },
+      data: Object.fromEntries(Object.entries(data).map(([key, value]) => [key, encode(value)])),
+    });
+    return fixture.key("Secret", nodeName);
+  };
+  const redeploy = dedicatedFirstDeployFixture({ sandboxDriver, revision: nativeRevision });
+  const nodeSecretKey = seedNodeSecret(redeploy, {
+    deviceId: "node-1",
+    enrolledRevisionId: "rev_predecessor",
+    setupId: "setup-0",
+    expiresAtMs: String(Date.now() + 60_000),
+  });
+  const { revision, state, namespace, gatewayName, markReady, prepare, objects } = redeploy;
+  // The Agent's node setup is in place, so the provider is provisioned from the first pass.
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.length, 2);
+  // The predecessor's enrollment is not this revision's: the provider is told so, so the
+  // Sandbox carries the exposure Compute's read needs, and nothing is withdrawn yet.
+  assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === false));
+  assert.deepEqual(withdrawals, []);
+  assert.equal(state.setupCalls, 0, "the Agent's device needs no new setup");
+  state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: { name: "native-harness", namespace, labels: provisions[0].requirements.labels },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  const nodePending = await prepare();
+  assert.equal(nodePending.ready, false);
+  assert.equal(nodePending.pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].workspaceNodeEnrolled, false);
+  // The redeploy's held failure fails it with its code instead of waiting for the deadline.
+  answer = { state: "failed", runtimeFailure: heldFailure };
+  const held = await prepare();
+  assert.equal(held.ready, false);
+  assert.deepEqual(held.runtimeFailure, heldFailure);
+  assert.equal(observations.length, 2);
+  assert.deepEqual(withdrawals, []);
+  assert.equal(decode(objects.get(nodeSecretKey).data.enrolledRevisionId), "rev_predecessor");
+  // Its own node connects: the Secret now names this revision, the exposure goes before the
+  // revision is ready, and later passes provision with the node enrolled.
+  answer = { state: "starting" };
+  state.connected = true;
+  assert.equal((await prepare()).ready, true);
+  assert.equal(decode(objects.get(nodeSecretKey).data.enrolledRevisionId), revision.id);
+  assert.equal(decode(objects.get(nodeSecretKey).data.deviceId), "node-1");
+  assert.equal(withdrawals.length, 1);
+  assert.equal(withdrawals[0].workspaceNodeEnrolled, true);
+  assert.equal(observations.length, 2);
+  assert.equal((await prepare()).ready, true);
+  assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
+  assert.equal(withdrawals.length, 1);
+  assert.equal(observations.length, 2);
+
+  // A Secret written before this check named no revision: the device it records enrolled
+  // under the revision that wrote it, so that revision still counts as enrolled, and the
+  // exposure its provider creates again goes at once (as before this change).
+  provisions.length = 0;
+  observations.length = 0;
+  withdrawals.length = 0;
+  const upgraded = dedicatedFirstDeployFixture({ sandboxDriver, revision: nativeRevision });
+  const upgradedSecretKey = seedNodeSecret(upgraded, {
+    deviceId: "node-1",
+    setupId: "setup-0",
+    expiresAtMs: String(Date.now() + 60_000),
+  });
+  assert.equal((await upgraded.prepare()).ready, false);
+  upgraded.markReady(upgraded.gatewayName);
+  assert.equal((await upgraded.prepare()).ready, false);
+  assert.equal(provisions.length, 2);
+  assert.ok(provisions.every(({ workspaceNodeEnrolled }) => workspaceNodeEnrolled === true));
+  upgraded.state.providerPod = {
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name: "native-harness",
+      namespace: upgraded.namespace,
+      labels: provisions[0].requirements.labels,
+    },
+    status: { conditions: [{ type: "Ready", status: "True" }] },
+  };
+  assert.equal((await upgraded.prepare()).pendingReason, "WORKSPACE_NODE_PENDING");
+  assert.deepEqual(observations, []);
+  upgraded.state.connected = true;
+  assert.equal((await upgraded.prepare()).ready, true);
+  assert.equal(
+    decode(upgraded.objects.get(upgradedSecretKey).data.enrolledRevisionId),
+    upgraded.revision.id,
+  );
+  assert.deepEqual(withdrawals, []);
+});
+
 // Findings 1669 and 1672: a revision that gets no preparation pass (already active at an
 // upgrade from a controller that kept the exposure, or failed for good with its Sandbox kept
 // for diagnosis) has its exposure withdrawn through Compute's own hook, outside a pass, with the
@@ -2165,11 +2330,17 @@ test("dedicated startup initializes Harness plugins before enrolling its workspa
   assert.equal(state.setupCalls, 1);
   // Once the device is recorded the node reconnects with its saved device
   // token. The setup code, readable by Codex in the same container, is removed.
+  // The Secret names this revision as the one whose node enrolled (finding 1671).
   assert.deepEqual(Object.keys(objects.get(nodeSecretKey).data).sort(), [
     "deviceId",
+    "enrolledRevisionId",
     "expiresAtMs",
     "setupId",
   ]);
+  assert.equal(
+    Buffer.from(objects.get(nodeSecretKey).data.enrolledRevisionId, "base64").toString("utf8"),
+    revision.id,
+  );
   // The removal nudges the running Harness Pod again, with a new value, so the
   // kubelet removes the file now instead of on its periodic resync.
   assert.equal(podPatches.length, 3);
@@ -2290,7 +2461,11 @@ test("an upgraded file-delivered node drops its leftover setup code and tolerate
   }
   assert.equal(ready, true);
   assert.equal(state.setupCalls, 0, "a recorded device needs no new setup");
-  assert.deepEqual(nodeSecretReplaces, [["deviceId", "expiresAtMs", "setupId"]]);
+  // The code goes first; the connected node then records this revision as enrolled.
+  assert.deepEqual(nodeSecretReplaces, [
+    ["deviceId", "expiresAtMs", "setupId"],
+    ["deviceId", "enrolledRevisionId", "expiresAtMs", "setupId"],
+  ]);
   assert.equal(objects.get(key("Secret", nodeName)).data.setupCode, undefined);
   assert.deepEqual(
     podPatches.map(({ name }) => name).filter((name) => name === "agent-pod"),
