@@ -47,10 +47,11 @@ block direct Secret-backed model and environment projection.
    **Choose a model from the list** returns. Switching modes retains that provider's listed models; returning with an unlisted custom ID
    requires another selection. Other settings remain.
    No model is preselected.
-4. Confirm Installation, credential, and runtime support for the model. Primary
-   and fallback models must share a supported provider and Harness. For custom settings,
-   open **Advanced settings**. Selection changes preserve unrelated JSON edits;
-   **Reset template** replaces them.
+4. Confirm model support and a shared provider/Harness for primary/fallback models. **Advanced settings** preserves
+   unrelated JSON; **Reset template** replaces it. Harness switches preserve
+   `plugins.allow` and `plugins.deny`, including unrestricted missing/empty allowlists;
+   only Codex’s runtime entry changes. For blocked plugins, edit **Configuration JSON**
+   or select a compatible Harness/provider.
 5. Under **Repository access**, optionally select up to 16 approved repositories
    and set their access levels. Kubernetes supports Codex (Dedicated) and Embedded
    OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories
@@ -240,9 +241,9 @@ approval policy; review both before demonstrating edits.
 
 ## Initial runtime credentials
 
-Select model authentication and bind Slack tokens as Namespace Secrets. When
-Compute requires them, OCC creates missing transport credentials before first
-revision admission; supported Dedicated provisioning does so during creation.
+Select model authentication and bind Slack Namespace Secrets. OCC creates required
+transport credentials before first revision admission; Dedicated provisioning
+creates them during creation.
 Neither path creates the selected `harnessAuth` model credential or channel tokens.
 
 Kubernetes generates an app-server token and local gateway password, never

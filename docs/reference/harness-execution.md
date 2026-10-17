@@ -56,10 +56,15 @@ built-in provider with no runtime policy, custom provider, or plugin routing.
 `openai`, `codex`, explicitly configured providers, and plugin-routed providers
 require an explicit supported runtime policy.
 
-Dedicated Codex accepts only the native `codex` provider, or `openai` when the
+Dedicated Codex accepts `codex`, or `openai` when the
 Codex plugin is explicitly enabled with `websocket` app-server transport.
 Its Gateway renders the main workspace as `/home/node/workspace`; Codex executes
 in the separate Harness workspace.
+
+Kubernetes Compute rejects Agent save, provisioning and deployment when policy
+blocks required `codex` or OpenClaw’s `openai`/`anthropic` plugin through disablement,
+duplicate normalized entries, denial or allowlist exclusion. Missing/empty
+allowlists are unrestricted. Admission preserves policy.
 
 Selectable model catalogs and fallbacks under Agent defaults or entries
 must retain the selected provider. Additional catalog models need an
@@ -95,8 +100,7 @@ revoked authority, or a missing required Driver fail closed; see
 
 ## Harness authentication
 
-The Agent's [harnessAuth binding](agents.md#harness-authentication) is the sole
-model-auth selector. Kubernetes supports these combinations:
+The Agent's [harnessAuth binding](agents.md#harness-authentication) selects model authentication. Kubernetes supports:
 
 | Binding                                     | Topology           | Credential consumer                                                                                               |
 | ------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------- |
