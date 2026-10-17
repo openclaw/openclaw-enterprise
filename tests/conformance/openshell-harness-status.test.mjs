@@ -912,3 +912,181 @@ test("runtime wrapper status servers answer 400 to a request target that is not 
     assert.equal(document.status, 200);
   });
 });
+
+// A provider-owned dedicated OpenClaw worker (finding 1642) holds a failed model
+// check the same way: it never connects its node, so without this nothing reports
+// the hold and the revision waits for its deadline as WORKSPACE_NODE_PENDING.
+function runNativeWorkerEntrypoint({ env = {}, upfrontStatus = 3 }) {
+  const directory = mkdtempSync(join(tmpdir(), "native-held-failure-"));
+  const servers = [];
+  const diagnostics = [];
+  let connectStarts = 0;
+  const realFs = nodeRequire("node:fs");
+  const sandbox = {
+    URL,
+    Buffer,
+    AbortSignal,
+    setTimeout() {},
+    setInterval() {},
+    console: { error: (message) => diagnostics.push(message) },
+    process: {
+      execPath: process.execPath,
+      env: {
+        HOME: join(directory, "home"),
+        TMPDIR: join(directory, "tmp"),
+        OPENCLAW_NATIVE_INFERENCE_CONFIG: "{}",
+        OPENCLAW_NODE_STATE_DIR: join(directory, "state"),
+        OPENCLAW_NODE_SETUP_CODE: "fixture-setup-code",
+        OPENCLAW_WORKSPACE_DIR: join(directory, "workspace"),
+        OPENCLAW_NATIVE_WORKER_CAPACITY: "1",
+        OPENCLAW_HARNESS_MODEL: "openai/gpt-5",
+        OPENCLAW_HARNESS_PROVIDER: "openai",
+        OPENCLAW_HARNESS_CREDENTIAL_ENV: "OPENAI_API_KEY",
+        OPENAI_API_KEY: "fixture-model-key",
+        OPENCLAW_HARNESS_PROBE_CONFIG: JSON.stringify({
+          agents: { defaults: { model: "openai/gpt-5" } },
+          models: { providers: { openai: {} } },
+        }),
+        ...env,
+      },
+      on() {},
+      exit() {
+        assert.fail("a held failure never exits the worker");
+      },
+    },
+    require(specifier) {
+      if (specifier === "node:http") {
+        return {
+          createServer(handler) {
+            const server = { handler, listening: undefined };
+            servers.push(server);
+            return {
+              on(event, listener) {
+                if (event === "error") {
+                  server.onError = listener;
+                }
+              },
+              listen(port, host) {
+                server.listening = { port, host };
+              },
+            };
+          },
+        };
+      }
+      if (specifier === "node:fs") {
+        // The image asset trees exist and are non-empty; everything else is real
+        // under the fixture directory.
+        return {
+          ...realFs,
+          existsSync: () => true,
+          lstatSync: () => ({ isDirectory: () => true }),
+          readdirSync: (path) => (String(path).startsWith("/app/") ? ["asset"] : []),
+          cpSync() {},
+          chmodSync() {},
+        };
+      }
+      if (specifier === "node:child_process") {
+        return {
+          execFile() {},
+          // The upfront credential check: exit 3-6 is a 401 (3 unclassified, 4
+          // invalid_api_key, 5 missing_api_key, 6 insufficient_permissions).
+          spawnSync(command, args) {
+            assert.equal(command, process.execPath);
+            assert.equal(args[0], "-e");
+            return { status: upfrontStatus };
+          },
+          spawn() {
+            connectStarts++;
+            return { on() {}, kill() {} };
+          },
+        };
+      }
+      return nodeRequire(specifier);
+    },
+  };
+  try {
+    vm.runInNewContext(NATIVE_WORKER_ENTRYPOINT, sandbox);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+  const events = diagnostics
+    .filter((line) => typeof line === "string" && line.startsWith("{"))
+    .map((line) => JSON.parse(line));
+  return { servers, diagnostics, events, connectStarts };
+}
+
+const nativeProviderEnv = { APP_TOKEN_SHA: sha256(TOKEN), APP_SERVER_PORT: "18790" };
+
+test("a provider-owned native OpenClaw worker serves its held model-check failure to the transport token holder", async (t) => {
+  for (const [name, upfrontStatus, providerCode] of [
+    ["an unclassified 401", 3, undefined],
+    ["a rejected key", 4, "invalid_api_key"],
+    ["a request that arrived without its credential", 5, "missing_api_key"],
+    ["a key without the endpoint's scope", 6, "insufficient_permissions"],
+  ]) {
+    await t.test(name, () => {
+      const { servers, diagnostics, events, connectStarts } = runNativeWorkerEntrypoint({
+        env: nativeProviderEnv,
+        upfrontStatus,
+      });
+      assert.equal(connectStarts, 0, "a held failure never starts the node");
+      assert.ok(diagnostics.includes("Harness model authentication probe failed."));
+      // The probe event names the HTTP status and a closed-vocabulary code only.
+      const probe = events.find((event) => event.event === "openclaw.model_probe");
+      assert.equal(probe.code, "AUTHENTICATION_FAILED");
+      assert.equal(probe.providerStatus, 401);
+      assert.equal(probe.providerCode, providerCode);
+      assert.equal(probe.cause, undefined);
+      for (const line of diagnostics) {
+        assert.ok(!line.includes("fixture-model-key"), "the credential never reaches the log");
+      }
+
+      const listening = servers.filter((server) => server.listening !== undefined);
+      assert.equal(listening.length, 1);
+      assert.deepEqual(listening[0].listening, { port: 18790, host: "0.0.0.0" });
+      const { handler } = listening[0];
+      const answer = call(handler, { authorization: `Bearer ${TOKEN}` });
+      assert.equal(answer.status, 200);
+      assert.equal(answer.headers["cache-control"], "no-store");
+      const { checkedAt, ...failure } = answer.body.runtimeFailure;
+      assert.ok(!Number.isNaN(Date.parse(checkedAt)));
+      // The held code and nothing else: no cause, no provider status or text.
+      assert.deepEqual(failure, {
+        component: "agent",
+        check: "model-probe",
+        code: "AUTHENTICATION_FAILED",
+      });
+      assert.deepEqual(Object.keys(answer.body), ["runtimeFailure"]);
+      for (const authorization of [undefined, `Bearer ${TOKEN}x`, `Bearer ${sha256(TOKEN)}`]) {
+        const refused = call(handler, { authorization });
+        assert.equal(refused.status, 401, String(authorization));
+        assert.deepEqual(refused.body, { error: "unauthorized" });
+      }
+      const unavailable = call(handler, { url: "/", authorization: `Bearer ${TOKEN}` });
+      assert.equal(unavailable.status, 503);
+      assert.deepEqual(unavailable.body, {
+        error: "runtime_failure_held",
+        code: "AUTHENTICATION_FAILED",
+      });
+    });
+  }
+});
+
+test("a native OpenClaw worker without an exposed port, or with a Compute status port, keeps its held failure private", () => {
+  // A Sandbox provisioned before Compute asked for the exposure: nothing listens.
+  const outboundOnly = runNativeWorkerEntrypoint({});
+  assert.equal(outboundOnly.connectStarts, 0);
+  assert.deepEqual(
+    outboundOnly.servers.filter((server) => server.listening !== undefined),
+    [],
+  );
+  // Compute-owned: the readiness server alone, like the Compute-owned Codex Harness.
+  const computeOwned = runNativeWorkerEntrypoint({
+    env: { ...nativeProviderEnv, OPENCLAW_RUNTIME_STATUS_PORT: "18789" },
+  });
+  assert.equal(computeOwned.connectStarts, 0);
+  assert.deepEqual(
+    computeOwned.servers.map((server) => server.listening),
+    [{ port: 18789, host: "0.0.0.0" }],
+  );
+});

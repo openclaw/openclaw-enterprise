@@ -997,6 +997,107 @@ test("OpenShell provisions native OpenClaw without exposing an inbound Harness s
   assert.equal(gatewayClient.profiles.has("oce-openclaw-runtime"), false);
 });
 
+// Finding 1642: a native worker that holds a failed model check never connects its node.
+// Compute asks for the Codex bearer-passthrough exposure (APP_SERVER_PORT with the
+// APP_TOKEN_SHA verifier) so it can read that held failure; the raw token never arrives.
+test("OpenShell exposes a native OpenClaw worker's held-failure port when Compute asks for it", async () => {
+  const requests = [];
+  let storedSandbox;
+  const gatewayClient = workspaceGatewayClient();
+  gatewayClient.createSandbox = async (request) => {
+    requests.push(request);
+    storedSandbox = {
+      name: request.name,
+      workspace: request.workspace,
+      labels: structuredClone(request.labels),
+      annotations: structuredClone(request.annotations),
+      spec: structuredClone(request.spec),
+      serviceUrls: {},
+    };
+    return storedSandbox;
+  };
+  gatewayClient.getSandbox = async () => storedSandbox;
+  const service = {
+    sandbox: "",
+    name: "",
+    targetPort: 18790,
+    authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+    advertisedUrl: "http://native.example.test:18790/",
+    url: "http://native.example.test:9443/",
+  };
+  let exposedService = undefined;
+  gatewayClient.getService = async (_workspace, sandbox, name) =>
+    exposedService === undefined ? undefined : { ...exposedService, sandbox, name };
+  const driver = openShellDriver(gatewayClient);
+  const { context, revision, requirements } = runtimeSandboxFixture(driver, {
+    harnessId: "openclaw",
+  });
+  const exposing = (environment) => ({
+    ...requirements,
+    environment: [...requirements.environment, ...environment],
+  });
+  await driver.ensureNamespace(context);
+
+  // The exposure needs the verifier, and never the raw token, exactly like Codex.
+  for (const [environment, message] of [
+    [[{ name: "APP_SERVER_PORT", value: "18790" }], /requires one literal APP_TOKEN_SHA verifier/],
+    [
+      [
+        { name: "APP_SERVER_PORT", value: "18790" },
+        { name: "APP_TOKEN_SHA", value: "b".repeat(64) },
+        {
+          name: "APP_SERVER_TOKEN",
+          valueFrom: { secretKeyRef: { name: "agent-token", key: "token" } },
+        },
+      ],
+      /cannot receive APP_SERVER_TOKEN/,
+    ],
+  ]) {
+    await assert.rejects(
+      driver.provisionHarness({ ...context, revision, requirements: exposing(environment) }),
+      (error) => {
+        assert.ok(error instanceof SandboxRevisionUnsupportedError, String(error));
+        assert.equal(error.code, "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED");
+        assert.match(error.message, message);
+        return true;
+      },
+    );
+  }
+  assert.equal(requests.length, 0);
+
+  const exposed = exposing([
+    { name: "APP_SERVER_PORT", value: "18790" },
+    { name: "APP_TOKEN_SHA", value: "b".repeat(64) },
+  ]);
+  const sandbox = await driver.provisionHarness({ ...context, revision, requirements: exposed });
+  assert.equal(sandbox.revisionId, revision.id);
+  assert.equal(requests.length, 1);
+  // The worker's transport port, not Codex's app-server port.
+  assert.deepEqual(requests[0].serviceExposures, [
+    { service: "", targetPort: 18790, authorizationMode: "bearer_passthrough" },
+  ]);
+  assert.equal(requests[0].spec.environment.APP_SERVER_PORT, "18790");
+  assert.equal(requests[0].spec.environment.APP_TOKEN_SHA, "b".repeat(64));
+  assert.equal(requests[0].spec.environment.APP_SERVER_TOKEN, undefined);
+  assert.equal(requests[0].spec.environment.OPENAI_API_KEY, undefined);
+  // Adoption of a Sandbox provisioned before the exposure was requested tolerates its
+  // absence (the worker then keeps its hold private); a mismatched exposure fails closed.
+  await driver.provisionHarness({ ...context, revision, requirements: exposed });
+  exposedService = { ...service, targetPort: 8081 };
+  await assert.rejects(
+    driver.provisionHarness({ ...context, revision, requirements: exposed }),
+    /exists without its exact bearer-passthrough Harness service/,
+  );
+  exposedService = service;
+  await driver.provisionHarness({ ...context, revision, requirements: exposed });
+  assert.equal(requests.length, 1);
+  // The exposure is for Compute's status read only: no inbound Harness endpoint.
+  await assert.rejects(
+    driver.harnessEndpoint({ ...context, revision, requirements: exposed }),
+    /only for dedicated Codex revisions/,
+  );
+});
+
 test("OpenShell native startup creates private temporary state without changing the supervisor temporary directory", async () => {
   const directory = await mkdtemp(join(tmpdir(), "oce-native-temporary-"));
   try {
@@ -3551,13 +3652,35 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
     await assert.rejects(driver.harnessStatus(statusContext), /exact Codex bearer-passthrough/);
     Object.assign(service, { targetPort: 8080, authorizationMode: 2 });
   }
+  // A dedicated OpenClaw worker (finding 1642) is observed through the same exposure, with
+  // the same exactness; a Sandbox provisioned before the exposure existed reads as starting.
+  const nativeContext = {
+    ...statusContext,
+    revision: { ...revision, harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" } },
+  };
+  document = { status: 200, json: { runtimeFailure } };
+  assert.deepEqual(await driver.harnessStatus(nativeContext), { state: "failed", runtimeFailure });
+  Object.assign(service, { targetPort: 8081 });
+  await assert.rejects(
+    driver.harnessStatus(nativeContext),
+    /exact OpenClaw worker bearer-passthrough/,
+  );
+  Object.assign(service, { targetPort: 8080 });
+  const getService = gatewayClient.getService;
+  gatewayClient.getService = async () => undefined;
+  observed.length = 0;
+  assert.deepEqual(await driver.harnessStatus(nativeContext), { state: "starting" });
+  assert.deepEqual(observed, []);
+  await assert.rejects(driver.harnessStatus(statusContext), /exact Codex bearer-passthrough/);
+  gatewayClient.getService = getService;
   await assert.rejects(
     driver.harnessStatus({
       ...statusContext,
-      revision: { ...revision, harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" } },
+      revision: { ...revision, harness: { id: "other", version: "1.0.0", mode: "dedicated" } },
     }),
-    /only for dedicated Codex revisions/,
+    /only for dedicated Codex or OpenClaw revisions/,
   );
+  await assert.rejects(driver.harnessEndpoint(nativeContext), /only for dedicated Codex revisions/);
   // Another Sandbox Driver's revision, or a deferred managed Workspace, is refused before the
   // Harness is observed.
   observed.length = 0;
