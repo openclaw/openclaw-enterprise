@@ -941,6 +941,11 @@ test(
     );
     assert.equal(pending.state, "pending");
     assert.equal(pending.lastReason, "SANDBOX_GATEWAY_UNAUTHORIZED");
+    // Like any withdrawal that ran out of attempts, it enters the recovery series, which is why
+    // one failure audit and one guidance line are enough here: the series logs its own.
+    const recovery = await queuedWithdrawal(fixture, other.candidate);
+    assert.equal(recovery.idempotencyKey, `${persistent.idempotencyKey}:recovery:1`);
+    assertRetryDelay(recovery, 30_000);
     const terminal = events.filter(
       ({ event, code, hint }) =>
         event === "worker.completed" &&

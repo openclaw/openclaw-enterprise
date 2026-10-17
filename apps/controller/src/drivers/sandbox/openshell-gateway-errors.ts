@@ -1,4 +1,5 @@
 import {
+  SANDBOX_DELETION_UNCONFIRMED,
   SandboxGatewayUnauthorizedError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
@@ -42,7 +43,6 @@ export function gatewayIdentityRefusal(workspace: string, unconfirmed: string): 
 }
 
 /** The code `OpenShellDeletionUnconfirmedError` carries; the worker's sweep logs it apart. */
-export const SANDBOX_DELETION_UNCONFIRMED = "SANDBOX_DELETION_UNCONFIRMED";
 
 /**
  * DeleteSandbox or DeleteService answered NOT_FOUND for a target a read had just found: the

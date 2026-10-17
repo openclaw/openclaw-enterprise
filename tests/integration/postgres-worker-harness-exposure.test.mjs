@@ -447,8 +447,10 @@ test(
     const { owner: deleted, candidate: deleting } = await fixture.admitInitialRevision("delete-t");
     const { owner: recovered, candidate: recovering } =
       await fixture.admitInitialRevision("stop-r");
-    const { candidate: refusedDeploy } = await fixture.admitInitialRevision("deploy-t");
-    const { candidate: recoveredDeploy } = await fixture.admitInitialRevision("deploy-r");
+    const { owner: refusedDeployOwner, candidate: refusedDeploy } =
+      await fixture.admitInitialRevision("deploy-t");
+    const { owner: recoveredDeployOwner, candidate: recoveredDeploy } =
+      await fixture.admitInitialRevision("deploy-r");
     // Refusals left per revision (every Compute call on it); Infinity never clears.
     const refusals = new Map([
       [refusedDeploy.id, Number.POSITIVE_INFINITY],
@@ -531,7 +533,21 @@ test(
     for (const { hint } of terminal) {
       assert.match(hint, /Restore the controller gateway identity's Workspace role/);
     }
-    assert.ok(completed.length > terminal.length, "the first attempts were logged without it");
+    // Every retried attempt was logged without it (the deployments never get it: their status
+    // shows the guidance).
+    const retried = completed.filter(
+      ({ outcome, hint }) => outcome === "retry" && hint === undefined,
+    );
+    assert.deepEqual(
+      new Set(retried.map(({ agentId }) => agentId)),
+      new Set([
+        stopped.id,
+        deleted.id,
+        recovered.id,
+        refusedDeployOwner.id,
+        recoveredDeployOwner.id,
+      ]),
+    );
   },
 );
 
@@ -590,14 +606,16 @@ revisionTest(
     const completed = indices("worker.completed");
     const withdrawn = indices("worker.harness-exposure-withdrawn");
     assert.ok(completed.length >= 8, `claimed passes: ${completed.length}`);
-    // The first withdrawal is the start pass's; the second ran after five claimed passes, before
-    // the queue drained, not on the idle pass after it.
+    // The first withdrawal is the start pass's; the second ran after at most five claimed passes
+    // (one claim per pass, so five completions), before the queue drained, not on the idle pass
+    // after it.
     assert.ok(
       withdrawn[0] < completed[0],
       `first withdrawal at ${withdrawn[0]}, passes ${completed}`,
     );
+    const between = completed.filter((index) => index > withdrawn[0] && index < withdrawn[1]);
     assert.ok(
-      withdrawn[1] > completed[4] && withdrawn[1] < completed[5],
+      between.length >= 1 && between.length <= 5 && withdrawn[1] < completed.at(-1),
       `second withdrawal at ${withdrawn[1]}, passes ${completed}`,
     );
     assert.equal(indices("worker.harness-exposure-withdrawal-failed").length, 0);
@@ -643,8 +661,9 @@ revisionTest(
         async withdrawHarnessExposure(revision) {
           withdrawals.push(revision.id);
           if (revision.id === failed.id) {
-            // What the OpenShell Sandbox Driver throws when DeleteService answers NOT_FOUND for a
-            // service GetService had just found.
+            // The shape of what the OpenShell Sandbox Driver throws when DeleteService answers
+            // NOT_FOUND for a service GetService had just found (OpenShellDeletionUnconfirmedError;
+            // the wire conformance test covers the class and its code).
             throw Object.assign(
               new Error(
                 "OpenShell DeleteService did not find the Sandbox, so the deletion is unconfirmed.",

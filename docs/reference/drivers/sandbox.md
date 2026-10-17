@@ -175,6 +175,8 @@ missing) is never recorded gone. A missing role fails at once; an identity the
 provider could not authenticate (`transient`: a token file or signing key between
 refreshes) retries within the attempt budget first. The worker logs the failed
 stop, deletion or withdrawal with the same guidance the deployment status shows.
+A delete that finds nothing where the read just did is `SANDBOX_DELETION_UNCONFIRMED`:
+the sweep logs it `worker.harness-exposure-withdrawal-unconfirmed` and retries.
 
 When the provider refuses the controller's own identity during `ensureNamespace`
 or Namespace `cleanup`, a retry cannot help until an operator fixes that identity.

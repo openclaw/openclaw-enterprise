@@ -858,6 +858,14 @@ export class SandboxRevisionUnsupportedError extends Error {
 }
 
 /**
+ * A Sandbox Driver's code for a DeleteService or DeleteSandbox that found nothing where a read
+ * had just found the target: the target went between the two (a failed candidate retired by the
+ * next activation) or the identity lost sight of it. Neither is confirmed, so the caller keeps
+ * its retry and the worker's exposure sweep logs it apart from a failure (finding 1696).
+ */
+export const SANDBOX_DELETION_UNCONFIRMED = "SANDBOX_DELETION_UNCONFIRMED";
+
+/**
  * The Sandbox gateway refuses the controller's own identity in the revision's Workspace, so the
  * Driver cannot tell a Sandbox that is gone, with its Harness exposure withdrawn and its
  * credentials detached, from one it is no longer allowed to see: an unauthorized Sandbox lookup

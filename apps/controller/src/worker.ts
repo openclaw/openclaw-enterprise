@@ -52,6 +52,7 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   SandboxGatewayUnauthorizedError,
+  SANDBOX_DELETION_UNCONFIRMED,
   operationRefusalHint,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
@@ -517,7 +518,6 @@ const HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS = 30_000;
  */
 const HARNESS_EXPOSURE_SWEEP_CLAIMED_PASSES = 5;
 /** The code a Sandbox Driver's delete reports when its target vanished between read and delete. */
-const SANDBOX_DELETION_UNCONFIRMED = "SANDBOX_DELETION_UNCONFIRMED";
 
 interface PendingHarnessExposureWithdrawal {
   readonly revision: Readonly<AgentRevision>;
@@ -3132,10 +3132,12 @@ export class ControllerWorker {
       const code = harnessExposureWithdrawalCode(error);
       // A target that vanished between the Driver's read and its delete (a failed candidate
       // retired by the next activation, or a role lost in between) is unconfirmed, not failed:
-      // the next attempt settles it through the Driver's absence check (finding 1696).
+      // the next attempt settles it through the Driver's absence check (finding 1696). An
+      // exposure dropped on its last attempt is a failure whatever the error, since nothing
+      // settles it before the next start.
       this.emit({
         event:
-          code === SANDBOX_DELETION_UNCONFIRMED
+          code === SANDBOX_DELETION_UNCONFIRMED && !permanent
             ? "worker.harness-exposure-withdrawal-unconfirmed"
             : "worker.harness-exposure-withdrawal-failed",
         ...fields,
