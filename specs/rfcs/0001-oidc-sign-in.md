@@ -9,28 +9,37 @@ status: Proposed
 - **ID:** RFC-0001
 - **Owner:** rclarke0 (proposal). Auth design review: freeqaz. Scope and release: kevinlin-openai.
 - **Created:** 2026-09-30
-- **Last updated:** 2026-10-01
-- **RFC PR:** [#731][pr-731]; implementation [#790][pr-790], stacked on it
-- **Related:** [#729][issue-729]; SSO/SCIM stays in the 1.0 backlog ([#82][issue-82], [#92][issue-92]);
+- **Last updated:** 2026-10-15
+- **RFC and implementation:** [#731][pr-731] and [#790][pr-790], both merged 2026-10-01
+- **Related:** [#729][issue-729]; the original proposal left SSO/SCIM in the 1.0 backlog ([#82][issue-82], [#92][issue-92]);
   Google sign-in [PR #594][pr-594]; [RFC-0007](0007-human-federated-sign-in/index.md).
-- **Source baseline:** `main` at `ccf5d79b`; source links are pinned to it. Details may change as
-  the implementation lands in the stacked PR; this document follows the code, not the reverse.
+- **Historical baseline:** Source links to `ccf5d79b` show the code this proposal started from.
+  The design, comparisons to `main`, and verification plan below describe the original proposal.
+  [PR #790][pr-790] records which checks ran. For the operating contract, use the
+  [OIDC deployment guide](../../docs/guides/deploy/oidc-sign-in.md).
 
 <a id="problem-and-decision"></a>
 
 ## Summary
 
-Add one operator-configured provider, `oidc`, to the guarded profile. It runs the existing
-Google authorization-code flow (PKCE, nonce, ID-token checks) against a single configured
-issuer with four pinned URLs. An administrator attaches a person's exact `(iss, sub)` to an
-existing account; sign-in admits only that account. Nothing is provisioned or mapped.
+A team can use its own OpenID Connect (OIDC) provider to sign in to the Console. An
+administrator first attaches the person's exact identity at that provider to an existing
+OpenClaw Enterprise (OCE) account. The provider authenticates the person at sign-in.
+OCE decides whether to admit them and controls how long they stay signed in.
+
+Suppose Maya signs in through Keycloak at 09:00 and her team disables her there at 09:05.
+She may remain signed in to the Console until 17:00. The eight-hour limit runs from sign-in,
+and Keycloak does not notify OCE that her access ended. To [end Maya's access][offboard-guide],
+disable her **OCE account** to end its sessions and block another human sign-in, then revoke
+any applicable service keys separately. Detaching just her Keycloak identity would leave her
+able to sign in again wherever password sign-in is allowed.
 
 ## Motivation
 
 A team using Auth0, Okta, Entra ID or Keycloak wants to sign in to the Console with that
-identity provider (IdP). OCC offers password, GitHub and Google sign-in and states that generic
-OIDC is unsupported ([authentication.md:15][ref-unsupported]). Google sign-in is already an
-OIDC flow, but its issuer and endpoints are constants ([google.ts:10-15][g-const]).
+identity provider (IdP). When this RFC was written, OCC offered password, GitHub and Google
+sign-in. Its [authentication guide][ref-unsupported] said generic OIDC was unsupported.
+Google sign-in already used OIDC, with a [fixed issuer and endpoints][g-const].
 RFC-0007 left other providers to a future spec ([scope](0007-human-federated-sign-in/index.md#scope));
 this is that spec, limited to sign-in.
 
@@ -97,17 +106,20 @@ secret keeps enrollment and voids pending attempts, as for Google.
 The subject is an opaque string matching `^[\x21-\x7E]{1,255}$`, the rule Google uses
 ([google.ts:97][g-sub]), within the 512-character column ([0008:52][db-length]). Auth0
 (`auth0|…`), Okta and Keycloak subjects fit and are visible in each admin console. Entra ID's
-`sub` is pairwise per application and not shown in the portal; see the open questions.
+`sub` is pairwise per application and not shown in the portal; see the
+[questions and defaults recorded in the original proposal](#open-questions-blocking).
 
 `POST /api/auth/accounts/:userId/providers/oidc` with `{subject, expectedVersion}` joins the
 account operations ([index.ts:3798-3812][account-ops]) under unchanged rules: a human session,
 exact `Origin`, Installation `administer`, and every IAM grant of the target account's
 Principal ([index.ts:3677][covers]). Attach advances the version and ends the account's
-sessions ([human-authentication.ts:797-840][attach-state]). Statuses match the Google route:
-`409` when OIDC is off, the version is stale or the account is disabled; a subject attached
-elsewhere is refused as `404` today ([errors.ts:378-383][errors]). Account creation accepts
-only `github.subject` ([index.ts:4278][create-account]), so OIDC identities are attached
-afterwards.
+sessions ([human-authentication.ts:797-840][attach-state]).
+
+If another account already held the subject, the original route returned [`404`][errors].
+For the current response, see [Attach and detach][attach-guide].
+The original route returned `409` if OIDC was off, the account version was stale or the account
+was disabled. [Create the account][create-account] with a password, then attach its OIDC identity.
+At creation, the only external identity you can optionally attach is a GitHub subject.
 
 The callback admits only an attached (instance, subject) pair
 ([human-authentication.ts:545-562][snapshot]); anything else is audited as
@@ -115,27 +127,34 @@ The callback admits only an attached (instance, subject) pair
 email is never read. A brokering IdP can give one person several subjects; only attached
 ones sign in.
 
-Changing the issuer or client ID makes a new instance: administrators attach again and
-detach stale methods. A session authenticates only while its sign-in method's instance is
-configured, so an issuer or client change, or removing the provider, ends the old instance's
-sessions on their next use, audited as `authentication.session.end`. Other sessions end at
-detach (version bump) or expiry, eight hours at most. OCE does not learn when an IdP
-disables someone, so offboarding also means detaching or disabling in OCE. Sign-out is
-local: while the IdP session lives, one click signs in again.
+### What ends access
+
+- **Disable the OCE account to offboard a person.** This advances the account version, ends
+  every OCE session for that account and prevents another human sign-in. Disabling the person
+  only at the IdP stops new sign-ins there. It cannot end an OCE session already issued.
+  [Service keys][service-key-guide] represent service principals and must be revoked separately.
+- **Detach the OIDC identity to remove that sign-in method.** Detach also advances the account
+  version and ends every session, even one opened with a password. Other enabled sign-in
+  methods remain usable. Signing out of OCE is local. If the IdP session is still active,
+  the person can sign back in without another password prompt.
+- **Change the issuer or client ID to replace the provider instance.** Sessions signed in
+  through the old instance end on their next use, audited as `authentication.session.end`.
+  Removing the provider has the same effect on those sessions. Attach identities to the new
+  instance, then detach the stale methods. Each detach ends all sessions for that account.
 
 ### ID-token checks
 
 Google's verifier ([google.ts:132-205][g-verify]) generalised, with the contract stated:
 `iss` equals the configured issuer exactly; `alg` is `RS256` and `kid` names an RSA key of at
-least 2,048 bits in the JWKS fetched for this callback, a floor main lacks
+least 2,048 bits in the JWKS fetched for this callback, a floor the baseline verifier lacked
 ([google.ts:109-127][g-key]); `none`, `HS*` and the header members `jwk`, `jku`, `x5c`, `x5u`
 and `crit` are refused;
 `aud` is the client ID alone, as a string or a one-element list, and `azp` equals it when
 present. The configured client is the only trusted audience, so a token naming any other
-audience is refused, as [OIDC Core 3.1.3.7][oidc-validation] requires; main's Google verifier
-accepts an extra audience when `azp` names the client, and the shared verifier refuses it for
+audience is refused, as [OIDC Core 3.1.3.7][oidc-validation] requires; the baseline Google verifier
+accepted an extra audience when `azp` named the client, and the shared verifier refuses it for
 Google too. The nonce is the HMAC of the one-use, browser-bound state; `exp > now` with no leeway; `iat` within
-`[now − 3600 s, now + 60 s]`; `nbf`, which Entra emits and main ignores, is refused when more
+`[now − 3600 s, now + 60 s]`; `nbf`, which Entra emits and the baseline verifier ignored, is refused when more
 than 60 s ahead; the subject is bounded as above. The JWKS is fetched on every callback with no
 cache ([google.ts:233][g-jwks]), a decision: rotation needs no restart and a JWKS outage
 fails closed. `hd`, email, `auth_time`, `acr` and `amr` are not checked; multi-factor policy
@@ -215,9 +234,9 @@ Proposed flow; the browser steps are the implemented Google flow.
    three-way Secret distinctness, egress checks, NetworkPolicy), profile renderer, and
    documentation: [authentication.md:15][ref-unsupported], the external sign-in reference, an
    OIDC guide with the IdP table and where each IdP shows `sub`, and the cheat sheets.
-3. The live check, recorded in the implementation PR.
+3. Record the outcome of the planned live check in the implementation PR.
 
-Proof:
+### Verification plan in the original RFC
 
 - `oidc-id-token`: configuration refusals (HTTP, off-host URL, query, partial set) and token
   refusals (trailing-slash mismatch, `HS256`, `none`, a 1,024-bit, foreign or header-carried
@@ -228,18 +247,17 @@ Proof:
 - `postgres-oidc-sign-in`, modelled on `postgres-google-sign-in`: attach and sign in; an
   unattached subject refused; a 4,000-character code; key rotation between callbacks; issuer
   change, which ends the old instance's session; recovery during an outage; the coverage
-  report naming an OIDC-only account only before attach; disable; three providers side by side. The shared budgets are proven in
-  `oidc-login-transport`.
+  report naming an OIDC-only account only before attach; disable; three providers side by side.
+  Check the shared budgets in `oidc-login-transport`.
 - `postgres-oidc-tab-binding`: the GitHub tab-binding proof with only OIDC configured; a tab
   that signed in with OIDC signs out after another tab's password sign-in.
 
 A `fakeOidc` fixture beside `fakeGoogle` ([production-sign-in.mjs:385][fake-google]) serves
-the token and JWKS URLs with Auth0-shaped issuers and subjects; it proves OCE against its own
-reading of OIDC, not any IdP's behaviour. The live check, against an Auth0 development tenant
-(which the requesting team can provide) and a disposable Keycloak realm, covers the
-authorization request, the real `iss` form, subjects, both token methods, key rotation,
-NetworkPolicy egress and a Console sign-in. Okta and Entra ID stay unverified unless someone
-runs them. [#790][pr-790] implements this RFC and records which of these checks ran.
+the token and JWKS URLs with Auth0-shaped issuers and subjects. It tests OCE against its own
+reading of OIDC, not any IdP's behaviour. The proposal called for a live check against an Auth0
+development tenant and a disposable Keycloak realm, covering the authorization request, the real
+`iss` form, subjects, both token methods, key rotation, NetworkPolicy egress and a Console sign-in.
+That plan left Okta and Entra ID unverified. [PR #790][pr-790] records which checks ran.
 
 <a id="alternatives-and-open-decisions"></a>
 
@@ -252,9 +270,11 @@ the IdP choose what the controller fetches. **Email matching** fails when addres
 owners. **A JWKS cache** needs lifetime and unknown-`kid` rules; parity with Google is
 simpler first.
 
-## Open questions (blocking)
+<a id="open-questions-blocking"></a>
 
-Each default stands, so implementation can proceed, unless the owner overrules it.
+## Questions and defaults recorded in the original proposal
+
+These were the named owners and working defaults at proposal time. They are preserved here as history.
 
 | Question                                                                 | Owner           | Proposed default                                                                                                                                                                     |
 | ------------------------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -263,7 +283,7 @@ Each default stands, so implementation can proceed, unless the owner overrules i
 | Entra ID: subjects are pairwise and invisible in the portal              | freeqaz         | Entra ships unverified. The guide documents where Okta, Auth0 and Keycloak show `sub`; an opt-in `subjectClaim: oid` is a follow-up. Unattached subjects are never listed to anyone. |
 | Sessions after an issuer or client change                                | freeqaz         | Resolved: `currentSession` admits an external session only while its GitHub, Google or OIDC instance is configured. Detaching stale methods remains the cleanup.                     |
 
-Defaults unless overruled (not blocking): ports other than 443 and extra hosts are refused
+Other working defaults at proposal time (not blocking): ports other than 443 and extra hosts are refused
 until an IdP needs them; `ES256`/`PS256` wait, symmetric algorithms never; `exp` keeps zero
 leeway; the JWKS stays uncached; the code cap is 4,096; denial audits carry the provider name.
 
@@ -307,12 +327,15 @@ leeway; the JWKS stays uncached; the code cap is 4,096; denial audits carry the 
 [covers]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/apps/controller/src/index.ts#L3677
 [account-ops]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/apps/controller/src/index.ts#L3798-L3812
 [create-account]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/apps/controller/src/index.ts#L4278
-[errors]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/apps/controller/src/http/errors.ts#L378-L383
 [console-table]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/apps/controller/src/console/console.mjs#L31-L51
 [console-check]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/apps/controller/src/console/console.mjs#L463
 [console-error]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/apps/controller/src/console/console.mjs#L646-L648
 [snapshot]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/packages/occ/src/state/human-authentication.ts#L545-L562
 [attach-state]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/packages/occ/src/state/human-authentication.ts#L797-L840
+[errors]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/apps/controller/src/http/errors.ts#L378-L383
+[attach-guide]: ../../docs/guides/deploy/oidc-sign-in.md#attach-and-detach
+[offboard-guide]: ../../docs/guides/deploy/oidc-operations.md#offboard-a-person
+[service-key-guide]: ../../docs/reference/authentication/service-api-keys.md#revoke-or-rotate-a-service-key
 [denied]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/packages/occ/src/state/human-authentication.ts#L1151
 [db-length]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/migrations/0008_better_auth_sessions.sql#L52
 [db-unique]: https://github.com/openclaw/openclaw-enterprise/blob/ccf5d79bd377d11d9e6ce66117839aa0e538fa19/migrations/0008_better_auth_sessions.sql#L58
