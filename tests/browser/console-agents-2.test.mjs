@@ -967,6 +967,8 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
   const node = "Workloads are ready; waiting for the workspace node to connect to the Gateway.";
   const quotaFull =
     "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+  const stopping =
+    "The Agent was stopped; its gateway is finishing active work before the stop completes.";
   for (const reader of ["deployment reader", "member without deployment access"]) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
@@ -1009,16 +1011,18 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
         body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
       });
     });
-    // The job hands off its first deployment, which waits for the runtime, the Pod quota and the
-    // workspace node, then has no recorded wait for a read, and the job then fails. The quota
-    // wait stands alone, as the deployment read shows it, even before that read names it.
+    // The job hands off its first deployment, which waits for the runtime, the Pod quota, the
+    // workspace node and a stop's gateway drain, then has no recorded wait for a read, and the
+    // job then fails. The quota wait stands alone, as the deployment read shows it, even before
+    // that read names it, and so does the stop.
     const waits = deploymentReader
       ? [
           { code: "REVISION_INCOMPLETE", message: runtime },
           { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
           { code: "WORKSPACE_NODE_PENDING", message: node },
+          { code: "AGENT_STOP_YIELDED", message: stopping },
         ]
-      : [pending, pending, pending];
+      : [pending, pending, pending, pending];
     const reads = [
       job("running"),
       job("queued", waiting(null)),
@@ -1040,37 +1044,42 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
         body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
       }),
     );
-    // The deployment read names no wait that someone must act on; a member can't read it.
+    // The deployment read names the wait the job read before it named, as the server does, but
+    // is briefly unavailable once the quota frees: the job's newer wait then shows, not the
+    // quota sentence the console kept from that read. A member can't read the deployment.
     await page.route(
       `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
-      (route) =>
-        route.fulfill(
-          deploymentReader
-            ? {
-                status: 200,
-                contentType: "application/json",
-                body: JSON.stringify({
-                  data: {
-                    deploymentId: revisionId,
-                    namespaceId: namespace.id,
-                    agentId,
-                    status: "queued",
-                    error: null,
-                    warnings: [],
-                    progress: null,
-                  },
-                  meta,
-                }),
-              }
-            : {
-                status: 403,
-                contentType: "application/json",
-                body: JSON.stringify({
-                  error: { code: "FORBIDDEN", message: "Access denied." },
-                  meta,
-                }),
-              },
-        ),
+      (route) => {
+        const lastAttempt = reads[read - 1].progress?.lastAttempt ?? null;
+        if (!deploymentReader || lastAttempt?.code === "WORKSPACE_NODE_PENDING") {
+          return route.fulfill({
+            status: deploymentReader ? 503 : 403,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: deploymentReader
+                ? { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." }
+                : { code: "FORBIDDEN", message: "Access denied." },
+              meta,
+            }),
+          });
+        }
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            data: {
+              deploymentId: revisionId,
+              namespaceId: namespace.id,
+              agentId,
+              status: "queued",
+              error: null,
+              warnings: [],
+              progress: lastAttempt && { lastAttempt, nextAttemptAt: updatedAt },
+            },
+            meta,
+          }),
+        });
+      },
     );
 
     await trackSettledFetches(page);
@@ -1087,7 +1096,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
         for (const record of records) {
           if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
             const text = [...record.addedNodes].map((node) => node.textContent).join("");
-            if (text.startsWith("Provisioning") || text.startsWith("The Namespace")) {
+            if (text.startsWith("Provisioning") || text.startsWith("The ")) {
               globalThis.provisioningWrites.push(text);
             }
           }
@@ -1116,6 +1125,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
             `Provisioning Agent… ${runtime}`,
             quotaFull,
             `Provisioning Agent… ${node}`,
+            stopping,
             "Provisioning Agent…",
             "Provisioning failed.",
           ]

@@ -2704,8 +2704,8 @@ summary:focus-visible {
 .log-line {
   /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned. */
   --log-level-column: minmax(max-content, 6.5em);
-  /* Fit a whole timestamp with its UTC offset on one line (finding 1681): 33 characters of the
-     11px time, as in "12/31/2026, 12:59:59 PM GMT+10:30". ch here is the row's 12px character. */
+  /* Fit a whole en-US timestamp with its UTC offset on one line (finding 1681): 33 characters of
+     the 11px time, as in "12/31/2026, 12:59:59 PM GMT+10:30". ch is the row's 12px character. */
   --log-time-column: calc(33ch * 11 / 12);
   display: grid;
   grid-template-columns:
@@ -2826,7 +2826,7 @@ summary:focus-visible {
   }
 }
 /* Below 1000 px a whole timestamp would leave the message column under about 200 px, so the
-   message moves below the time, level and origin (finding 1681). */
+   message moves below the time, level and origin, as it does on phones (finding 1681). */
 @media (max-width: 1000px) {
   .log-line {
     grid-template-columns: minmax(var(--log-time-column), 1fr) max-content minmax(60px, 112px);
@@ -2844,6 +2844,14 @@ summary:focus-visible {
   }
   .log-actions {
     margin-left: 0;
+  }
+  .log-line {
+    grid-template-columns: minmax(0, 1fr) max-content minmax(60px, 112px);
+    gap: 4px 10px;
+  }
+  .log-content {
+    grid-column: 1 / -1;
+    margin-top: 2px;
   }
   .log-fields {
     grid-template-columns: minmax(70px, 110px) minmax(0, 1fr);

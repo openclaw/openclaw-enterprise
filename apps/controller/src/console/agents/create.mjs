@@ -229,7 +229,10 @@ async function namedDeploymentWait(request, namespaceId, job, signal) {
 // The wait a job past handoff names for its first deployment (finding 1690), as the deployment's
 // status does: its fixed sentence after the provisioning line. A reader who can't read the
 // deployment gets the job's own PROVISIONING_DEPLOYMENT_PENDING, which says no more than the
-// provisioning line, so that line stays. A wait someone must act on stands alone, as above.
+// provisioning line, so that line stays. A wait someone must act on stands alone, as above, and
+// so does a stop, which provisioning no longer continues.
+const STANDALONE_JOB_WAITS = new Set([...NAMED_DEPLOYMENT_WAITS, "AGENT_STOP_YIELDED"]);
+
 function jobDeploymentWait(job) {
   const attempt = job.progress?.lastAttempt;
   if (
@@ -239,7 +242,7 @@ function jobDeploymentWait(job) {
   ) {
     return null;
   }
-  return NAMED_DEPLOYMENT_WAITS.has(attempt.code)
+  return STANDALONE_JOB_WAITS.has(attempt.code)
     ? attempt.message
     : `${provisioningStatusText("running")} ${attempt.message}`;
 }
@@ -266,10 +269,11 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
     if (read !== undefined) {
       named = read;
     }
+    // The job's named wait is as recent as its read; a kept deployment wait only fills in.
     setText(
       status,
-      named ??
-        jobDeploymentWait(current) ??
+      jobDeploymentWait(current) ??
+        named ??
         provisioningStatusText(started ? "running" : current.status),
     );
     await nextPoll;

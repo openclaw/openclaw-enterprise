@@ -147,7 +147,7 @@ reads, password input, and mutations prevent reuse; read-only catalog and diagno
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
 list, not each row’s deployment read. On reuse, `agents/list.mjs:renderAgentList`
-sets visible deployment cells to **Reading deployment…**, hidden for 250 ms and then shown at least 150 ms, before paint, then shows
+sets visible deployment cells to **Reading deployment…**, hidden for 250 ms and, once shown, kept at least 150 ms, before paint, then shows
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
 not a link to the old revision. Unfinished or failed row reads never prevent reuse; resuming rereads them.
 
