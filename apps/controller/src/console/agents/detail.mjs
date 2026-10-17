@@ -791,7 +791,7 @@ function createVersionDeploymentRecord(
         "div",
         { className: "deployment-heading" },
         element("h3", {}, "This version’s deployment record"),
-        button(loading ? "Refreshing..." : "Refresh record", () => void load(), {
+        button(loading ? "Refreshing…" : "Refresh record", () => void load(), {
           disabled: loading,
         }),
       ),
@@ -960,13 +960,10 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         "div",
         { className: "deployment-heading" },
         element("h3", {}, "Current observations"),
-        button(
-          loading ? "Running diagnostics..." : "Run diagnostics for this version",
-          () => void run(),
-          {
-            disabled: loading,
-          },
-        ),
+        // The button keeps its label while it waits, as Deploy and Save do: the status line
+        // below is the one announcement, and a changed label inside the Agent view's live
+        // region was announced as well (finding 1698).
+        button("Run diagnostics for this version", () => void run(), { disabled: loading }),
       ),
       element(
         "p",
