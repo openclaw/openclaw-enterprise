@@ -15,10 +15,35 @@ import {
   newPage,
 } from "./console-agents-browser-helpers.mjs";
 
+// The fixture's login asks the Console to poll every 5 s, and the API refuses an earlier poll.
+// Each ready login moves both clocks past that interval instead of waiting it out.
+const DEVICE_POLL_MS = 5_000;
+
+async function signInReady(page, advanceApiClock) {
+  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
+  // The pending view schedules the poll in the same update that shows this status.
+  await page
+    .getByText("Waiting for you to complete sign-in in the other tab…", { exact: true })
+    .waitFor();
+  advanceApiClock(DEVICE_POLL_MS);
+  await page.clock.fastForward(DEVICE_POLL_MS);
+  await page
+    .getByText(
+      "ChatGPT login ready. Clearing this selection leaves the saved credential source available.",
+      { exact: true },
+    )
+    .waitFor();
+}
+
 test("Codex OAuth console saves a credential source and reuses it for plugin editing", async (t) => {
+  let apiClockAheadMs = 0;
+  const advanceApiClock = (ms) => {
+    apiClockAheadMs += ms;
+  };
   const fixture = await createConsoleAppFixture(t, {
     provisionedPeople: [],
     agentProvisioning: true,
+    now: () => new Date(Date.now() + apiClockAheadMs),
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("OAuth console", { ready: true });
@@ -82,6 +107,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  await page.clock.install();
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
@@ -103,13 +129,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
 
   // A ready login provides a source reference; its polling session never becomes Agent auth.
   approved = true;
-  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
-  await page
-    .getByText(
-      "ChatGPT login ready. Clearing this selection leaves the saved credential source available.",
-      { exact: true },
-    )
-    .waitFor();
+  await signInReady(page, advanceApiClock);
   const started = requests.filter(
     (request) => request.method === "POST" && request.path.endsWith("/device-authorizations"),
   );
@@ -224,13 +244,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   // Reconnection is a separate, explicit authentication save with a newly completed login.
   await page.getByRole("button", { name: "Credentials", exact: true }).click();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "credential_source");
-  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
-  await page
-    .getByText(
-      "ChatGPT login ready. Clearing this selection leaves the saved credential source available.",
-      { exact: true },
-    )
-    .waitFor();
+  await signInReady(page, advanceApiClock);
   assert.deepEqual((await fixture.request("GET", agentPath)).data.harnessAuth, originalAuth);
   const saved = page.waitForResponse(
     (response) => response.url().endsWith(agentPath) && response.request().method() === "PATCH",
@@ -272,13 +286,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
 
   // Clearing a staged selection immediately restores the saved source. A concurrent save
   // must not adopt the cleared source while the session close is still pending.
-  await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
-  await page
-    .getByText(
-      "ChatGPT login ready. Clearing this selection leaves the saved credential source available.",
-      { exact: true },
-    )
-    .waitFor();
+  await signInReady(page, advanceApiClock);
   const releaseDiscard = Promise.withResolvers();
   const slowDiscard = Promise.withResolvers();
   await page.route("**/device-authorizations/*", async (route) => {
