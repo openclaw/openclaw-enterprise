@@ -2102,6 +2102,16 @@ revisionTest(
       component: "agent",
       cause: { kind: "WRAPPER_ERROR" },
     };
+    // Only failed model probes retain evidence in both persisted and public errors.
+    const expectedProbeFailure = (runtimeFailure) => ({
+      resultData: { runtimeFailure },
+      error: {
+        code: "RUNTIME_MODEL_PROBE_FAILED",
+        message:
+          "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
+        data: { runtimeFailure },
+      },
+    });
     const cases = [
       {
         label: "held-runtime-0",
@@ -2122,29 +2132,12 @@ revisionTest(
       {
         label: "held-runtime-1",
         runtimeFailure: probeStatusFailure,
-        // Only failed model probes retain their classified runtime evidence.
-        expected: {
-          resultData: { runtimeFailure: probeStatusFailure },
-          error: {
-            code: "RUNTIME_MODEL_PROBE_FAILED",
-            message:
-              "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
-            data: { runtimeFailure: probeStatusFailure },
-          },
-        },
+        expected: expectedProbeFailure(probeStatusFailure),
       },
       {
         label: "held-runtime-2",
         runtimeFailure: wrapperFailure,
-        expected: {
-          resultData: { runtimeFailure: wrapperFailure },
-          error: {
-            code: "RUNTIME_MODEL_PROBE_FAILED",
-            message:
-              "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
-            data: { runtimeFailure: wrapperFailure },
-          },
-        },
+        expected: expectedProbeFailure(wrapperFailure),
       },
       {
         label: "held-runtime-3",

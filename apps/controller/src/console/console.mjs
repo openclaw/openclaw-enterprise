@@ -1080,10 +1080,8 @@ async function loadPage({
   // On a navigation, focus that was in the held page waits on its heading until the destination
   // takes it: the Agent's heading for an Agent page loading behind it (the new version an
   // admitted deployment opens, say; finding 1626), or the Agent's link on a return to the Agents
-  // list (finding 1636). So does focus anywhere in the sidebar, whose pressed link the pending
-  // shell replaces (finding 1653). A
-  // refocus recheck never moves focus to the heading: the control it blurs takes focus back if
-  // the page remounts unchanged, as on an Agent page (finding 1654).
+  // list (finding 1636). The pending shell also replaces a pressed sidebar link (finding 1653).
+  // On refocus, restore the reader’s place only if we reuse the view (finding 1654).
   const refocused = resumingView ? focusInShownView() : null;
   let shell =
     knownPrivateState && !openingAgent
@@ -1528,6 +1526,9 @@ async function loadPage({
     if (unchanged) {
       stopLoadingTimer();
       forgetRetainedView(taken);
+      // Holding the page made it inert. If the reader moved on, don't reclaim focus even if
+      // replacing the shell briefly leaves it on the body again.
+      const restoreFocus = document.activeElement === document.body ? refocused : null;
       shell = mountRetainedView(current, retainedView);
       // The chat-link notice belongs to that landing: a refocus keeps it, a return does not.
       if (!resumingView) {
@@ -1543,7 +1544,7 @@ async function loadPage({
       navigateAgentTab = retainedState.tabNavigation;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
-      refocused?.restore(shell.view);
+      restoreFocus?.restore(shell.view);
       return;
     }
     // The destination rebuilds: a retained view that did not match is stale from here on.
