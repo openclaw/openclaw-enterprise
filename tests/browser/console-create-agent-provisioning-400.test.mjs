@@ -693,6 +693,12 @@ test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, C
     await page.locator("#agent-harness-hint").textContent(),
     "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution.",
   );
+  // Anthropic hides Codex, so the hint names only the condition for Embedded OpenClaw.
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver.",
+  );
 
   // A saved Dedicated OpenClaw Preset opens as saved and is blocked; the alert names Codex first,
   // Embedded only with its condition, and the administrator's fix.
@@ -706,7 +712,7 @@ test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, C
   await alert.waitFor();
   assert.equal(
     await alert.textContent(),
-    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw.",
+    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
   );
   assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "dedicated");
   assert.equal(

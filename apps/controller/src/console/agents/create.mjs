@@ -486,7 +486,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const nativeWorkersUnavailable = element(
     "p",
     { className: "error", role: "alert", hidden: true },
-    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw.",
+    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
   );
   const configuration = element("textarea", {
     id: "configuration-json",
@@ -1643,9 +1643,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     harnessHint.textContent =
       harness.disabled && usesPat
         ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
-        : nativeRefused
-          ? "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution."
-          : "OpenClaw is available for both providers. With OpenAI it supports Dedicated or Embedded execution; Anthropic uses Embedded OpenClaw.";
+        : nativeRefused && nativeProvider.value === "anthropic"
+          ? "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver."
+          : nativeRefused
+            ? "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution."
+            : "OpenClaw is available for both providers. With OpenAI it supports Dedicated or Embedded execution; Anthropic uses Embedded OpenClaw.";
     if (binding?.method === "runtime") {
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
