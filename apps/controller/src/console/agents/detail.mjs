@@ -840,6 +840,10 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
   let diagnostics = null;
   let error = null;
   let loading = false;
+  // The id of the result that describes the button after a run. render() sets it on both: a
+  // deployment poll re-renders the panel, and patchChildren drops attributes that render()
+  // does not set (finding 1712).
+  let outcomeId = null;
 
   async function run() {
     if (loading || !context.isCurrent()) {
@@ -848,6 +852,7 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
     loading = true;
     error = null;
     diagnostics = null;
+    outcomeId = null;
     render();
     // The button disables itself while it waits: move focus to the waiting line, as Deploy
     // does, so a keyboard reader is not dropped to the page (finding 1705).
@@ -877,13 +882,11 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         // the alert or the "Observed" line (not the whole check list, which the view's live
         // region already reads), unless the reader has moved on.
         if (waited) {
-          focusSaveOutcome(
-            section,
-            [runButton],
-            error
-              ? section.querySelector('[role="alert"]')
-              : section.lastElementChild.firstElementChild,
-          );
+          const outcome = error
+            ? section.querySelector('[role="alert"]')
+            : section.lastElementChild.firstElementChild;
+          focusSaveOutcome(section, [runButton], outcome);
+          outcomeId = runButton.getAttribute("aria-describedby") ? outcome.id || null : null;
         }
       }
     }
@@ -922,7 +925,11 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
     return element(
       "div",
       {},
-      element("p", { className: "muted" }, `Observed ${displayDate(diagnostics.observedAt)}`),
+      element(
+        "p",
+        { className: "muted", ...describedOutcome() },
+        `Observed ${displayDate(diagnostics.observedAt)}`,
+      ),
       diagnostics.checks.length
         ? checks
         : element("p", { className: "muted" }, "No diagnostic checks were returned."),
@@ -973,6 +980,10 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
       : [];
   }
 
+  function describedOutcome() {
+    return outcomeId ? { id: outcomeId } : {};
+  }
+
   // The version's record calls this on every deployment poll: rewrite only what changed.
   function render() {
     patchChildren(section, [
@@ -983,7 +994,10 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         // The button keeps its label while it waits, as Deploy and Save do: the status line
         // below is the one announcement, and a changed label inside the Agent view's live
         // region was announced as well (finding 1698).
-        button("Run diagnostics for this version", () => void run(), { disabled: loading }),
+        button("Run diagnostics for this version", () => void run(), {
+          disabled: loading,
+          ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
+        }),
       ),
       element(
         "p",
@@ -999,7 +1013,7 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         ? [
             element(
               "p",
-              { className: "error", role: "alert" },
+              { className: "error", role: "alert", ...describedOutcome() },
               error.status === 403
                 ? "Diagnostics require Agent read and operate access plus read access to this version. Ask a Namespace administrator to confirm those grants."
                 : error.status === 503
