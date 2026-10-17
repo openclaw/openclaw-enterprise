@@ -518,10 +518,10 @@ async function createFixture(context, options = {}) {
       maxAttempts: 3,
       emit: (event) => {
         options.onWorkerEvent?.(event);
-        // This persistence case ends at durable handoff, before credential service dispatch.
-        // `stopWorkerAfter` ends the run inside the pass that emitted the event, so a retry
-        // whose jittered backoff is already due cannot be claimed before the test stops the
-        // worker (finding 1610).
+        // stopAfterProvisioning: this persistence case ends at durable handoff, before
+        // credential service dispatch. stopWorkerAfter: the run ends inside the pass that
+        // emitted the event, so a retry whose jittered backoff is already due cannot be claimed
+        // before the test stops the worker (finding 1610).
         if (
           (options.stopAfterProvisioning && event.code === "PROVISIONING_DEPLOYMENT_PENDING") ||
           options.stopWorkerAfter?.(event)
@@ -1952,6 +1952,8 @@ test(
     assert.equal(replay.status, 503, JSON.stringify(replay.body));
     const retry = await switched.request("POST", `${admitted.data.provisioning.url}/retry`);
     assert.equal(retry.status, 503, JSON.stringify(retry.body));
+    const { workId } = admitted.data.provisioning;
+    const ended = (event) => event.event === "worker.completed" && event.workId === workId;
     const events = [];
     const worker = await createFixture(context, {
       ...drivers,
@@ -1960,15 +1962,16 @@ test(
         id: "credential-gateway-replacement",
       },
       onWorkerEvent: (event) => events.push(event),
+      // Stop in the pass that ends the first attempt: its retry can be due at once (finding 1610).
+      stopWorkerAfter: ended,
     });
     await worker.startWorker();
-    await waitFor("the worker to revalidate the source owner", async () =>
-      events.find(
-        ({ event, workId }) =>
-          event === "worker.completed" && workId === admitted.data.provisioning.workId,
-      ),
-    );
+    await waitFor("the worker to revalidate the source owner", async () => events.find(ended));
     await worker.stopWorker();
+    assert.deepEqual(
+      events.filter(ended).map(({ attempt, outcome, code }) => ({ attempt, outcome, code })),
+      [{ attempt: 1, outcome: "retry", code: "PROVISIONING_DEPENDENCY_UNAVAILABLE" }],
+    );
     const row = await provisioningRow(fixture.pool, namespace.id, body.requestId);
     assert.equal(row.completed_phase, "admitted");
     assert.equal(row.agent_id, null);
@@ -3188,6 +3191,7 @@ test(
         }
       },
       // Stop in the pass that ends the first attempt: its retry can be due at once (finding 1610).
+      // workId is unset while bootstrapNamespace runs the worker.
       stopWorkerAfter: (event) =>
         workId !== undefined && event.event === "worker.completed" && event.workId === workId,
     });
