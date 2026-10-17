@@ -138,18 +138,19 @@ test(
       return name;
     }
     async function removeContainer(name) {
+      await run(engine, ["rm", "-f", "-v", name], { timeout: 60_000 });
       const index = names.findIndex(([, entry]) => entry === name);
       if (index !== -1) {
         names.splice(index, 1);
       }
-      await run(engine, ["rm", "-f", "-v", name], { timeout: 60_000 });
     }
     // Containers use host networking solely to reach this test's real loopback
     // listener. The checked-in Compose overlay instead shares OCC namespaces.
     // Both ports are picked before either container starts, so the agent's cannot
-    // be one the server has not bound yet. Docker still owns the final bind and
-    // another process can take a port first (finding 1667): a container that
-    // exits on "address already in use" is retried with new ports, bounded.
+    // be one the server has not bound yet. Docker still owns the final bind, and
+    // another process can take a port before then (finding 1667); the retry
+    // handles that: a container that exits on "address already in use" is
+    // restarted with new ports, bounded.
     let promURL;
     let server;
     let agent;
@@ -196,15 +197,18 @@ test(
       } catch (error) {
         const diagnostic = error.openclawCiDiagnostic;
         const exited = { server, agent }[diagnostic?.container];
-        if (
-          attempt >= prometheusStartAttempts ||
-          diagnostic?.reason !== "container-exited" ||
-          exited === undefined ||
-          !portClash(await containerLog(exited, 50))
-        ) {
+        const clash =
+          attempt < prometheusStartAttempts &&
+          diagnostic?.reason === "container-exited" &&
+          exited !== undefined
+            ? containerLogTail(await containerLog(exited, 50), 50).findLast(portClash)
+            : undefined;
+        if (clash === undefined) {
           throw error;
         }
-        t.diagnostic(`${diagnostic.container} could not bind its port (attempt ${attempt})`);
+        t.diagnostic(
+          `${diagnostic.container} could not bind its port (attempt ${attempt}): ${clash}`,
+        );
         await removeContainer(agent);
         await removeContainer(server);
       }
