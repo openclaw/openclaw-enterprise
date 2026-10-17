@@ -195,11 +195,26 @@ test("Agent detail separates the current version, viewed version, and latest dep
       characterData: true,
     });
   });
-  await runDiagnostics.click();
+  // Run it from the keyboard: the button disables itself, so focus moves to the waiting line
+  // and returns to the button with the result, instead of falling to the page (finding 1705).
+  const focused = (locator) =>
+    locator.evaluate((node) => node === globalThis.document.activeElement);
+  await runDiagnostics.focus();
+  await page.keyboard.press("Enter");
   try {
     await diagnosticsRequest.requested;
     await waiting.waitFor();
     assert.equal(await idle.isVisible(), false);
+    assert.equal(await focused(waiting), true);
+    // A record read re-renders the panel (as each deployment poll does); the waiting line
+    // keeps focus through it. A dispatched click leaves focus where it is.
+    const recordPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${current.revision.id}`;
+    const recordReads = pathRequests(requests, "GET", recordPath).length;
+    const refreshRecord = versionRecord.getByRole("button", { name: "Refresh record" });
+    await refreshRecord.dispatchEvent("click");
+    await refreshRecord.waitFor();
+    assert.equal(pathRequests(requests, "GET", recordPath).length, recordReads + 1);
+    assert.equal(await focused(waiting), true);
     assert.deepEqual(await page.evaluate(() => globalThis.diagnosticsAnnouncements), [
       "Waiting for diagnostic results…",
     ]);
@@ -211,7 +226,39 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await observations.getByText("slack / authentication").waitFor();
   assert.equal(await waiting.isVisible(), false);
   assert.equal(await runDiagnostics.isEnabled(), true);
+  assert.equal(await focused(runDiagnostics), true);
+  assert.match(
+    await runDiagnostics.evaluate(
+      (node) =>
+        globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
+    ),
+    /^Observed /,
+  );
   assert.equal(pathRequests(requests, "POST", diagnosticsPath).length, 1);
+  // A refused run returns focus the same way, described by its alert.
+  await page.route(`${fixture.origin}${diagnosticsPath}`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Diagnostics are unavailable." },
+        meta: { requestId: "req_test_diagnostics_unavailable" },
+      }),
+    }),
+  );
+  await page.keyboard.press("Enter");
+  await observations
+    .getByRole("alert")
+    .getByText(/Current-runtime diagnostics are unavailable/)
+    .waitFor();
+  assert.equal(await focused(runDiagnostics), true);
+  assert.match(
+    await runDiagnostics.evaluate(
+      (node) =>
+        globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
+    ),
+    /^Current-runtime diagnostics are unavailable/,
+  );
   await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
   await activity.getByText("Recorded status: queued").waitFor();
   assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);

@@ -849,6 +849,11 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
     error = null;
     diagnostics = null;
     render();
+    // The button disables itself while it waits: move focus to the waiting line, as Deploy
+    // does, so a keyboard reader is not dropped to the page (finding 1705).
+    const runButton = section.querySelector(".deployment-heading button");
+    const waitingLine = section.lastElementChild;
+    focusSaveOutcome(section, [], waitingLine);
     try {
       diagnostics = await context.request(
         `${path}/deployments/${encodeURIComponent(revisionId)}/diagnostics`,
@@ -865,17 +870,29 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
       error = cause;
     } finally {
       if (context.isCurrent()) {
+        const waited = document.activeElement === waitingLine;
         loading = false;
         render();
+        // The result replaces the waiting line: focus returns to the button, described by
+        // the outcome, unless the reader has moved on.
+        if (waited) {
+          focusSaveOutcome(
+            section,
+            [runButton],
+            error ? section.querySelector('[role="alert"]') : section.lastElementChild,
+          );
+        }
       }
     }
   }
 
   function renderChecks() {
     if (loading) {
+      // Focusable here, not only by focusSaveOutcome: a deployment poll re-renders the panel,
+      // and patchChildren drops attributes that render() does not set.
       return element(
         "p",
-        { className: "muted", role: "status" },
+        { className: "muted", role: "status", tabindex: "-1" },
         "Waiting for diagnostic results…",
       );
     }
