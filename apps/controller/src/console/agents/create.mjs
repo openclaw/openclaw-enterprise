@@ -1891,6 +1891,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       capabilityDiscoveryDone = true;
       // A mode the form chose but the Installation refuses becomes the usable one, if any.
       if (
+        openclawExecutionModes !== undefined &&
         modeDefaulted &&
         harness.value === "openclaw" &&
         !embeddedRequired() &&

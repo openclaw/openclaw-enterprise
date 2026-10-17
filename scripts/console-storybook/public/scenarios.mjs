@@ -1877,6 +1877,37 @@ export const scenarios = {
       "Select Codex and confirm Dedicated remains available.",
     ],
   },
+  createOpenclawNoExecutionMode: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw with no usable execution mode",
+    path: create,
+    nativeWorkerSupport: false,
+    openclawExecutionModes: [],
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation selects a Sandbox Driver that cannot provision dedicated OpenClaw, so it admits no OpenClaw execution mode: the Sandbox Driver refuses Embedded and cannot run Dedicated. Both modes are disabled, an alert explains why, and Create Agent stays disabled before any Configuration or Agent is saved.",
+    steps: [
+      "Confirm both execution modes are disabled for OpenClaw and Create Agent is disabled.",
+      "Select Codex and confirm the alert clears and Dedicated remains available.",
+    ],
+  },
+  createOpenclawSandboxDedicated: {
+    group: "Pages/Create Agent",
+    name: "OpenClaw on a Sandbox Driver installation",
+    path: create,
+    openclawExecutionModes: ["dedicated"],
+    actions: [
+      ...form,
+      { selector: "#agent-harness", value: "openclaw" },
+      { selector: ".launch-runtime summary", click: true },
+    ],
+    description:
+      "This simulated Installation selects a Sandbox Driver that provisions dedicated OpenClaw. It refuses Embedded execution, so selecting OpenClaw preselects Dedicated and disables Embedded.",
+  },
   createDedicatedOpenclawExperimental: {
     group: "Pages/Create Agent",
     name: "Experimental Dedicated OpenClaw",

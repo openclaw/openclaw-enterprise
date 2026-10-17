@@ -690,7 +690,10 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
   const singleton = await controller.request("GET", "/installation");
   assert.equal(singleton.status, 200);
   // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
-  assert.deepEqual(singleton.data, { ...installation, capabilities: { openclaw: { executionModes: ["embedded"] } } });
+  assert.deepEqual(singleton.data, {
+    ...installation,
+    capabilities: { openclaw: { executionModes: ["embedded"] } },
+  });
   const bootstrappedDefault = await defaultNamespace(controller);
 
   const namespace = await createNamespace(controller, "research");

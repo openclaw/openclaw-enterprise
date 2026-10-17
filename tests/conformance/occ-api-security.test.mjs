@@ -541,7 +541,10 @@ test("bootstrap owns one Installation without a plural installation collection",
   const read = await request(fixture.app, "/installation");
   assert.equal(read.response.status, 200);
   // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
-  assert.deepEqual(read.payload.data, { ...installation, capabilities: { openclaw: { executionModes: ["embedded"] } } });
+  assert.deepEqual(read.payload.data, {
+    ...installation,
+    capabilities: { openclaw: { executionModes: ["embedded"] } },
+  });
 
   const again = await request(fixture.app, "/installation/bootstrap", {
     body: { name: "Second installation" },
@@ -703,7 +706,10 @@ test("concurrent streaming bootstrap creates one audited Installation", async ()
   const confirmed = await request(fixture.app, "/installation");
   assert.equal(confirmed.response.status, 200);
   // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
-  assert.deepEqual(confirmed.payload.data, { ...installation, capabilities: { openclaw: { executionModes: ["embedded"] } } });
+  assert.deepEqual(confirmed.payload.data, {
+    ...installation,
+    capabilities: { openclaw: { executionModes: ["embedded"] } },
+  });
 
   const bootstrapEvents = fixture.auditSink.events.filter(
     (event) => event.kind === "bootstrap" && event.resource.kind === "installation",
@@ -741,7 +747,10 @@ test("an existing controller cannot be configured for a different Installation",
   const unchanged = await request(fixture.app, "/installation");
   assert.equal(unchanged.response.status, 200);
   // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
-  assert.deepEqual(unchanged.payload.data, { ...installation, capabilities: { openclaw: { executionModes: ["embedded"] } } });
+  assert.deepEqual(unchanged.payload.data, {
+    ...installation,
+    capabilities: { openclaw: { executionModes: ["embedded"] } },
+  });
   assert.deepEqual(fixture.controller.installation, installation);
 });
 

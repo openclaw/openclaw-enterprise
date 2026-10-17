@@ -78,6 +78,14 @@ export const CreateOpenclawWithoutNativeWorkers = {
   ...story("createOpenclawWithoutNativeWorkers"),
   name: "OpenClaw without native worker support",
 };
+export const CreateOpenclawNoExecutionMode = {
+  ...story("createOpenclawNoExecutionMode"),
+  name: "OpenClaw with no usable execution mode",
+};
+export const CreateOpenclawSandboxDedicated = {
+  ...story("createOpenclawSandboxDedicated"),
+  name: "OpenClaw on a Sandbox Driver installation",
+};
 export const CreateDedicatedOpenclawExperimental = {
   ...story("createDedicatedOpenclawExperimental"),
   name: "Experimental Dedicated OpenClaw",
