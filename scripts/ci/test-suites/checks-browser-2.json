@@ -17,7 +17,8 @@
     "tests/browser/console-agent-save-refusals.test.mjs",
     "tests/browser/console-repository-dedicated.test.mjs",
     "tests/browser/console-create-agent-provisioning-400.test.mjs",
-    "tests/browser/console-create-agent-mode-defaults.test.mjs"
+    "tests/browser/console-create-agent-mode-defaults.test.mjs",
+    "tests/browser/console-agent-deploy-focus.test.mjs"
   ],
   "files": [
     {
@@ -61,6 +62,9 @@
     },
     {
       "path": "tests/browser/console-create-agent-mode-defaults.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-agent-deploy-focus.test.mjs"
     }
   ]
 }
