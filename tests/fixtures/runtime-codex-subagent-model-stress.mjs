@@ -202,6 +202,8 @@ try {
       timeline.push({
         iteration,
         agentId: scenario.agentId,
+        childSessionKey: receipt.childSessionKey,
+        windowEntries: window,
         spawnAt,
         settledAt,
         status: completed.status,
@@ -229,6 +231,33 @@ try {
       }
     }
   }
+  // Any thread/start whose developer instructions name no spawned child is a stray,
+  // wherever it landed; a child's request inside another case's window is misplaced.
+  const childKeys = timeline.map(({ childSessionKey }) => childSessionKey);
+  const owner = (entry) =>
+    childKeys.find(
+      (key) =>
+        typeof entry.params?.developerInstructions === "string" &&
+        entry.params.developerInstructions.includes(key),
+    );
+  const strays = requests
+    .filter(({ method }) => method === "thread/start")
+    .filter((entry) => owner(entry) === undefined)
+    .map((entry) => {
+      const after = timeline.filter(({ spawnAt }) => spawnAt <= entry.receivedAt).at(-1);
+      return {
+        after:
+          after &&
+          `${after.iteration}:${after.agentId}+${entry.receivedAt - after.spawnAt}ms (settled ${after.settledAt - after.spawnAt}ms)`,
+        ...describe(entry),
+      };
+    });
+  const misplaced = timeline.flatMap(({ iteration, agentId, childSessionKey, windowEntries }) =>
+    windowEntries
+      .filter((entry) => owner(entry) !== undefined && owner(entry) !== childSessionKey)
+      .map((entry) => ({ iteration, agentId, owner: owner(entry), model: entry.params?.model })),
+  );
+  for (const row of timeline) delete row.windowEntries;
   // Show one ordinary child and one requester-free reference for comparison.
   const reference = requests
     .filter(({ method }) => method === "thread/start")
@@ -238,6 +267,9 @@ try {
     JSON.stringify({
       commit: provenance.commit,
       caseCount,
+      strays: strays.slice(0, 4),
+      strayCount: strays.length,
+      misplaced: misplaced.slice(0, 4),
       anomalies,
       reference,
       timelineTail: timeline.slice(-8),

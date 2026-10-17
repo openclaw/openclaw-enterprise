@@ -2379,8 +2379,11 @@ test("PROOF 1645 stress custom-provider subagent routing", imageTestOptions, asy
     }
     const result = JSON.parse(stdout.trim().split("\n").at(-1));
     let logs = [];
-    if (result.anomalies.length > 0) {
-      const first = result.anomalies[0];
+    const focus =
+      result.anomalies[0] ??
+      (result.strays?.[0] && { spawnAt: result.strays[0].t, settledAt: result.strays[0].t });
+    if (focus) {
+      const first = focus;
       const raw = await runDocker([
         "logs",
         "--since",
@@ -2403,10 +2406,10 @@ test("PROOF 1645 stress custom-provider subagent routing", imageTestOptions, asy
   // Fresh Gateways (one sequence each, like the real test) and warm ones (many sequences).
   const fresh = async () => {
     const collected = [];
-    for (let batch = 0; batch < 6; batch += 1) {
+    for (let batch = 0; batch < 10; batch += 1) {
       collected.push(
         ...(await Promise.all(
-          Array.from({ length: 8 }, (_, slot) => runOne(100 + batch * 8 + slot, 1)),
+          Array.from({ length: 3 }, (_, slot) => runOne(100 + batch * 3 + slot, 1)),
         )),
       );
     }
@@ -2414,34 +2417,54 @@ test("PROOF 1645 stress custom-provider subagent routing", imageTestOptions, asy
   };
   const [freshResults, ...warmResults] = await Promise.all([
     fresh(),
-    ...Array.from({ length: 6 }, (_, index) => runOne(index, 40)),
+    ...Array.from({ length: 3 }, (_, index) => runOne(index, 40)),
   ]);
   const results = [...freshResults, ...warmResults];
   const found = results.flatMap(({ index, anomalies = [], logs = [] }) =>
     anomalies.map((anomaly, position) => ({ index, ...anomaly, logs: position === 0 ? logs : [] })),
+  );
+  const strayLogs = results.flatMap(({ index, anomalies = [], strays = [], logs = [] }) =>
+    anomalies.length === 0 && strays.length > 0 ? [{ index, logs }] : [],
   );
   const report = {
     anomalies: found.slice(0, 2).map(({ window, completed, ...rest }) => ({
       ...rest,
       completedStatus: completed?.status,
       window: window
-        .filter(({ method }) => method === "thread/start" || method === "initialize")
-        .slice(-8),
+        .filter(({ method }) => method === "thread/start")
+        .slice(-4)
+        .map(({ configKeys, tools, ...entry }) => entry),
     })),
     totals: {
       gateways: results.length,
       cases: results.reduce((sum, { caseCount = 0 }) => sum + caseCount, 0),
       errors: results.filter(({ error }) => error).length,
       anomalies: found.length,
+      strays: results.reduce((sum, { strayCount = 0 }) => sum + strayCount, 0),
+      misplaced: results.reduce((sum, { misplaced = [] }) => sum + misplaced.length, 0),
     },
+    strays: results
+      .flatMap(({ index, strays = [] }) =>
+        strays.map(({ configKeys, ...stray }) => ({ index, ...stray })),
+      )
+      .slice(0, 3),
+    misplaced: results
+      .flatMap(({ index, misplaced = [] }) => misplaced.map((row) => ({ index, ...row })))
+      .slice(0, 4),
     summary: results
-      .filter(({ error, anomalies }) => error || anomalies?.length)
-      .map(({ index, error, caseCount, anomalies }) => ({
+      .filter(
+        ({ error, anomalies, strayCount, misplaced }) =>
+          error || anomalies?.length || strayCount || misplaced?.length,
+      )
+      .map(({ index, error, caseCount, anomalies, strayCount, misplaced }) => ({
         index,
         error: error?.slice(-600),
         caseCount,
         anomalies: anomalies?.map(({ iteration, agentId }) => `${iteration}:${agentId}`),
+        strayCount,
+        misplaced: misplaced?.length,
       })),
+    strayLogs: strayLogs.slice(0, 1),
     reference: results.find(({ reference }) => reference)?.reference?.slice(0, 1),
     timelineTail: results.find(({ timelineTail }) => timelineTail)?.timelineTail?.slice(-4),
   };
