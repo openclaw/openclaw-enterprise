@@ -750,7 +750,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   const driver = new CodexPluginDriver({
     codexExecutable: executable,
     codexHome: directory,
-    requestTimeoutMs: 1_000,
+    requestTimeoutMs: 5_000,
   });
   const listWith = async (result) => {
     await writeFile(resultFile, JSON.stringify(result));
@@ -767,6 +767,8 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     "null result": null,
     "array result": [],
     "string result": "catalog",
+    "result without marketplaces": {},
+    "null marketplaces": { marketplaces: null },
     "null plugin summary": curated([null]),
     "plugin without an ID": curated([{ remotePluginId: "linear" }]),
     "plugin from another marketplace": curated([

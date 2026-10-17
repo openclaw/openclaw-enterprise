@@ -69,7 +69,7 @@ function catalogEntries(listResponse: unknown): readonly PluginCatalogEntry[] {
       "Codex plugin catalog discovery returned an invalid plugin catalog.",
     );
   const response = asRecord(listResponse);
-  if (response === undefined) {
+  if (response === undefined || !Array.isArray(response.marketplaces)) {
     throw invalid();
   }
   try {
