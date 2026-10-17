@@ -960,8 +960,10 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
 
 // Since #2744 a job past handoff names its first deployment's wait, but Create Agent showed one
 // "Provisioning Agent…" line until the job ended, about 48 s on oce-dogfood-b (finding 1690). It
-// now adds the wait's sentence, the one the deployment status shows. A member who can't read the
-// deployment gets only the job's own pending code, which adds nothing, so the line stays as is.
+// now adds the wait's sentence, the one the deployment status shows. A fresh deployment read's
+// quota wait comes first, a refused read clears the detail, and an unavailable one keeps the
+// job's newer wait. A member who can't read the deployment gets only the job's own pending code,
+// which adds nothing, so the line stays as is.
 test("Dedicated Agent creation names the first deployment's wait while it provisions", async (t) => {
   const runtime = "Waiting for the runtime to become ready.";
   const node = "Workloads are ready; waiting for the workspace node to connect to the Gateway.";
@@ -1011,22 +1013,29 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
         body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
       });
     });
-    // The job hands off its first deployment, which waits for the runtime, the Pod quota, the
-    // workspace node and a stop's gateway drain, then has no recorded wait for a read, and the
-    // job then fails. The quota wait stands alone, as the deployment read shows it, even before
-    // that read names it, and so does the stop.
-    const waits = deploymentReader
+    // Each poll: the job's named wait, then what the deployment read that follows it answers.
+    // The job hands off its first deployment, which waits for the runtime, the Pod quota and the
+    // workspace node while that read is briefly unavailable (503). Then the job still names the
+    // runtime wait while the read already reports the Pod quota, and then the reader loses access
+    // (403). A stop's gateway drain follows, then no recorded wait, and the job fails. The quota
+    // and the stop stand alone. A member can't read the deployment and gets the job's own code.
+    const runtimeWait = { code: "REVISION_INCOMPLETE", message: runtime };
+    const quotaWait = { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull };
+    const stopWait = { code: "AGENT_STOP_YIELDED", message: stopping };
+    const polls = deploymentReader
       ? [
-          { code: "REVISION_INCOMPLETE", message: runtime },
-          { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull },
-          { code: "WORKSPACE_NODE_PENDING", message: node },
-          { code: "AGENT_STOP_YIELDED", message: stopping },
+          [runtimeWait, runtimeWait],
+          [quotaWait, quotaWait],
+          [{ code: "WORKSPACE_NODE_PENDING", message: node }, 503],
+          [runtimeWait, quotaWait],
+          [runtimeWait, 403],
+          [stopWait, stopWait],
         ]
-      : [pending, pending, pending, pending];
+      : Array.from({ length: 6 }, () => [pending, 403]);
     const reads = [
       job("running"),
       job("queued", waiting(null)),
-      ...waits.map((wait) => job("queued", waiting(wait))),
+      ...polls.map(([wait]) => job("queued", waiting(wait))),
       job("queued", waiting(null)),
       job("failed", {
         ...handedOff,
@@ -1044,21 +1053,20 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
         body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
       }),
     );
-    // The deployment read names the wait the job read before it named, as the server does, but
-    // is briefly unavailable once the quota frees: the job's newer wait then shows, not the
-    // quota sentence the console kept from that read. A member can't read the deployment.
     await page.route(
       `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
       (route) => {
-        const lastAttempt = reads[read - 1].progress?.lastAttempt ?? null;
-        if (!deploymentReader || lastAttempt?.code === "WORKSPACE_NODE_PENDING") {
+        // Job reads 2 to 7 carry the polls; the first handed-off one and the last record no wait.
+        const answer = deploymentReader ? (polls[read - 3]?.[1] ?? null) : 403;
+        if (typeof answer === "number") {
           return route.fulfill({
-            status: deploymentReader ? 503 : 403,
+            status: answer,
             contentType: "application/json",
             body: JSON.stringify({
-              error: deploymentReader
-                ? { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." }
-                : { code: "FORBIDDEN", message: "Access denied." },
+              error:
+                answer === 503
+                  ? { code: "SERVICE_UNAVAILABLE", message: "Service unavailable." }
+                  : { code: "FORBIDDEN", message: "Access denied." },
               meta,
             }),
           });
@@ -1074,7 +1082,10 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
               status: "queued",
               error: null,
               warnings: [],
-              progress: lastAttempt && { lastAttempt, nextAttemptAt: updatedAt },
+              progress: answer && {
+                lastAttempt: { at: updatedAt, ...answer },
+                nextAttemptAt: updatedAt,
+              },
             },
             meta,
           }),
@@ -1125,6 +1136,8 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
             `Provisioning Agent… ${runtime}`,
             quotaFull,
             `Provisioning Agent… ${node}`,
+            quotaFull,
+            "Provisioning Agent…",
             stopping,
             "Provisioning Agent…",
             "Provisioning failed.",

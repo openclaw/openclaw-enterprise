@@ -200,7 +200,11 @@ const NAMED_DEPLOYMENT_WAITS = new Set(["NAMESPACE_POD_QUOTA_EXCEEDED"]);
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
   "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+// The deployment read was refused (401, 403 or 404): the reader can't see its waits now.
+const DEPLOYMENT_UNREADABLE = Symbol("deployment unreadable");
 
+// The deployment's actionable wait (a sentence), none (null), DEPLOYMENT_UNREADABLE, or undefined
+// when the read was cut off or temporarily unavailable.
 async function namedDeploymentWait(request, namespaceId, job, signal) {
   if (
     typeof job.agentId !== "string" ||
@@ -222,7 +226,7 @@ async function namedDeploymentWait(request, namespaceId, job, signal) {
       ? attempt.message
       : null;
   } catch (error) {
-    return [401, 403, 404].includes(error.status) ? null : undefined;
+    return [401, 403, 404].includes(error.status) ? DEPLOYMENT_UNREADABLE : undefined;
   }
 }
 
@@ -266,16 +270,20 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
     const detail = new AbortController();
     const nextPoll = wait(1_000).then(() => detail.abort());
     const read = await namedDeploymentWait(request, namespaceId, current, detail.signal);
-    if (read !== undefined) {
+    let detailText;
+    if (read === DEPLOYMENT_UNREADABLE) {
+      // A refusal clears every detail, the job's too: the job was read before the refusal.
+      named = null;
+      detailText = null;
+    } else if (read !== undefined) {
+      // A fresh answer's actionable wait comes first; otherwise the job names the wait.
       named = read;
+      detailText = read ?? jobDeploymentWait(current);
+    } else {
+      // Without a fresh answer, the job's wait is newer than the one kept from an earlier read.
+      detailText = jobDeploymentWait(current) ?? named;
     }
-    // The job's named wait is as recent as its read; a kept deployment wait only fills in.
-    setText(
-      status,
-      jobDeploymentWait(current) ??
-        named ??
-        provisioningStatusText(started ? "running" : current.status),
-    );
+    setText(status, detailText ?? provisioningStatusText(started ? "running" : current.status));
     await nextPoll;
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");
