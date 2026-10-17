@@ -4783,11 +4783,18 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
         ({ method, params }) =>
           method === "item/started" && params?.item?.type === "commandExecution",
       ).length;
+    const commandActivity = (turn) =>
+      turn.items.filter(
+        ({ method, params }) =>
+          method === "item/commandExecution/requestApproval" ||
+          ((method === "item/started" || method === "item/completed") &&
+            params?.item?.type === "commandExecution"),
+      ).length;
     let backendTurn = await requestBackendTurn();
     const skippedTurns = [];
-    // Ask once more only when the turn started no command at all. A rewritten, declined or
-    // unsettled command is still judged below.
-    if (startedCommands(backendTurn) === 0) {
+    // Ask once more only when the turn showed no command activity at all. A rewritten,
+    // declined, approval-gated or unsettled command is still judged below.
+    if (commandActivity(backendTurn) === 0) {
       skippedTurns.push({
         items: backendTurn.items.length,
         replyHasNonce: new RegExp(backendNonce).test(backendTurn.assistant),
