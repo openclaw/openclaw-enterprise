@@ -28,6 +28,7 @@ import {
   routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -652,10 +653,17 @@ async function openPreset(t, fixture, namespace, presetId, openclaw) {
   return page;
 }
 
+async function startWithoutPreset(page, fixture, namespace) {
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+}
+
 test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated OpenClaw", async (t) => {
-  const fixture = await createConsoleAppFixture(t, provisioningDrivers());
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("No provisioning Sandbox", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(
+    t,
+    "No provisioning Sandbox",
+    provisioningDrivers(),
+  );
   // The real Installation: the pinned runtime supports native workers, but no Sandbox Driver can
   // provision them, so it does not report native worker support (finding 1608).
   const installation = await fixture.request("GET", "/installation");
@@ -666,8 +674,7 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   });
   assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: ["embedded"] });
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await startWithoutPreset(page, fixture, namespace);
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await page.locator(".launch-runtime:not([open]) > summary").click();
@@ -735,12 +742,10 @@ test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, C
   // Installation admits no OpenClaw mode (#2670).
   const drivers = provisioningDrivers();
   drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
-  const fixture = await createConsoleAppFixture(t, {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Partial Sandbox", {
     ...drivers,
     sandboxDriver: nativeSandboxDriver(["networking", "filesystem"]),
   });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Partial Sandbox", { ready: true });
   const installation = await fixture.request("GET", "/installation");
   assert.equal(installation.status, 200);
   assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
@@ -759,8 +764,7 @@ test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, C
   );
 
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await startWithoutPreset(page, fixture, namespace);
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   await page.locator(".launch-runtime:not([open]) > summary").click();
@@ -806,8 +810,7 @@ function createWrites(requests, namespaceId) {
 async function fillOpenClawDraft(t, fixture, namespace, name) {
   const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await startWithoutPreset(page, fixture, namespace);
   await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
   await page.getByLabel("Agent name").fill(name);
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
@@ -835,12 +838,10 @@ async function assertBypassedSubmitWritesNothing(page, writePath) {
 // The filesystem Configuration Driver saves without a cluster, so a submit that got past the form
 // would save the Configuration (201) and then be refused at Agent save (400), as in #2670.
 test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent refuses before any write", async (t) => {
-  const fixture = await createConsoleAppFixture(t, {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "No OpenClaw mode", {
     filesystemConfiguration: true,
     sandboxDriver: nativeSandboxDriver(["networking", "filesystem"]),
   });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("No OpenClaw mode", { ready: true });
   const installation = await fixture.request("GET", "/installation");
   assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: [] });
   const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "No mode");
@@ -875,12 +876,10 @@ test("During a Sandbox Driver outage, Create Agent says Agents are unavailable f
   // Agent save and deploy answer a retryable 503 for every harness in this state, so the copy must
   // not ask an administrator to select another Sandbox Driver or point to Codex (finding 1624).
   const sandboxDriver = nativeSandboxDriver();
-  const fixture = await createConsoleAppFixture(t, {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Sandbox outage", {
     filesystemConfiguration: true,
     sandboxDriver,
   });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Sandbox outage", { ready: true });
   // The registry no longer matches the selection, as after a Driver swap at runtime.
   sandboxDriver.implementation = `${sandboxDriver.implementation}-unavailable`;
   const installation = await fixture.request("GET", "/installation");
@@ -927,9 +926,9 @@ test("During a Sandbox Driver outage, Create Agent says Agents are unavailable f
 });
 
 test("Without a Sandbox Driver, the same Create Agent steps save an Embedded OpenClaw Agent", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { filesystemConfiguration: true });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("No Sandbox control", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "No Sandbox control", {
+    filesystemConfiguration: true,
+  });
   const installation = await fixture.request("GET", "/installation");
   assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: ["embedded"] });
   const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Embedded");
@@ -979,9 +978,9 @@ test("Without a Sandbox Driver, the same Create Agent steps save an Embedded Ope
 
 test("With a Sandbox Driver that provisions Dedicated OpenClaw, Create Agent preselects Dedicated", async (t) => {
   // Every selected Sandbox Driver refuses Embedded execution, so OpenClaw starts on Dedicated.
-  const fixture = await createConsoleAppFixture(t, { sandboxDriver: nativeSandboxDriver() });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Full Sandbox", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Full Sandbox", {
+    sandboxDriver: nativeSandboxDriver(),
+  });
   const installation = await fixture.request("GET", "/installation");
   assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: ["dedicated"] });
   assert.deepEqual(installation.data.capabilities?.nativeWorkers, { support: "pinned-runtime" });
@@ -1043,15 +1042,14 @@ test("With a Sandbox Driver that provisions Dedicated OpenClaw, Create Agent pre
 });
 
 test("OpenClaw chosen before the Installation answers switches to the mode it admits", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { sandboxDriver: nativeSandboxDriver() });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Early OpenClaw", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Early OpenClaw", {
+    sandboxDriver: nativeSandboxDriver(),
+  });
   const { page } = await newPage(t, fixture, { browser });
   const installation = await holdRequests(t, page, `${fixture.origin}/installation`, {
     method: "GET",
   });
-  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await startWithoutPreset(page, fixture, namespace);
   await installation.requested;
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   const mode = page.getByLabel("Execution mode");
@@ -1122,9 +1120,9 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
 // stays as it is and shows its refusal. Each case reads the form before the Installation answers.
 // The Sandbox Driver provisions dedicated OpenClaw, so the Installation admits Dedicated only.
 test("Create Agent switches only a mode it chose itself when the Installation answers", async (t) => {
-  const fixture = await createConsoleAppFixture(t, { sandboxDriver: nativeSandboxDriver() });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Mode defaults", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Mode defaults", {
+    sandboxDriver: nativeSandboxDriver(),
+  });
   const cases = [
     {
       name: "a mode the reader picked is kept",
@@ -1167,8 +1165,7 @@ test("Create Agent switches only a mode it chose itself when the Installation an
       const installation = await holdRequests(t, page, `${fixture.origin}/installation`, {
         method: "GET",
       });
-      await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
-      await page.getByRole("button", { name: "Start without Preset" }).click();
+      await startWithoutPreset(page, fixture, namespace);
       await installation.requested;
       await scenario.before(page);
       // Before the answer every choice is open and the form keeps Embedded.
