@@ -1384,18 +1384,11 @@ async function ensureK3dCluster(statePath, state) {
     }
     if (crossNodePluginStatus) {
       resource.pluginStatusProxyCidrs = await k3dStage(state, "k3d-overlay", async () => {
-        const worker = await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
-          "--kubeconfig",
-          kubeconfig,
-          "--context",
-          resource.context,
-          "get",
-          "node",
+        const podCidr = await waitForK3dNodePodCidr(
+          process.env.OCC_KUBECTL_BIN ?? "kubectl",
+          ["--kubeconfig", kubeconfig, "--context", resource.context],
           `k3d-${cluster}-agent-0`,
-          "-o",
-          "json",
-        ]);
-        const podCidr = JSON.parse(worker.stdout)?.spec?.podCIDR;
+        );
         const destination = typeof podCidr === "string" ? podCidr.split("/")[0] : undefined;
         if (!isIPv4(destination ?? "")) {
           throw new Error("The plugin status worker must have an IPv4 Pod CIDR.");
@@ -1454,6 +1447,41 @@ async function waitForK3dNodesRegistered(kubectl, kubectlArgs, nodes) {
       );
     }
     await delay(1_000);
+  }
+}
+
+// A Ready node can still lack its Pod CIDR: the node IPAM controller assigned
+// the worker's about 30 ms after the overlay stage read it (finding 1666).
+// Poll until spec.podCIDR is set; the caller still checks it is IPv4.
+const k3dPodCidrWaitMs =
+  Number(process.env.OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS)
+    : 60_000;
+
+async function waitForK3dNodePodCidr(kubectl, kubectlArgs, node) {
+  const deadline = performance.now() + k3dPodCidrWaitMs;
+  for (;;) {
+    let lastError;
+    try {
+      const listed = await execFile(kubectl, [...kubectlArgs, "get", "node", node, "-o", "json"], {
+        timeoutMs: Math.max(1_000, Math.min(30_000, deadline - performance.now())),
+      });
+      const podCidr = JSON.parse(listed.stdout)?.spec?.podCIDR;
+      if (typeof podCidr === "string" && podCidr !== "") {
+        return podCidr;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    if (performance.now() >= deadline) {
+      throw new Error(
+        lastError
+          ? `Unable to read k3d node ${node} within ${k3dPodCidrWaitMs} ms: ${lastError.message}`
+          : `k3d node ${node} got no Pod CIDR within ${k3dPodCidrWaitMs} ms.`,
+        { cause: lastError },
+      );
+    }
+    await delay(250);
   }
 }
 

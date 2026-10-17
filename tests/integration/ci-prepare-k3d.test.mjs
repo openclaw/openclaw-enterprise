@@ -45,6 +45,34 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
 
+  test("fixture preparation waits for the worker's Pod CIDR before the overlay check", async (t) => {
+    const commands = await fixtureImageCommands(t, "late-pod-cidr");
+    const result = await commands.prepare();
+    assert.equal(result.status, 0, result.stderr);
+    const calls = await commands.commands();
+    const reads = calls.filter(
+      ({ args }) =>
+        args.at(-4) === "node" && args.at(-3).endsWith("-agent-0") && args.at(-1) === "json",
+    );
+    // Two reads without a Pod CIDR, then the assigned one.
+    assert.equal(reads.length, 3);
+    const cleanup = await commands.cleanup();
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+  });
+
+  test("fixture preparation names the worker that never gets a Pod CIDR", async (t) => {
+    const commands = await fixtureImageCommands(t, "no-pod-cidr", undefined, {
+      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "1000",
+    });
+    const result = await commands.prepare();
+    assert.equal(result.status, 1);
+    assertStderrMatch(result.stderr, /k3d node k3d-\S+-agent-0 got no Pod CIDR within 1000 ms\./);
+    const state = JSON.parse(await readFile(commands.statePath, "utf8"));
+    assert.equal(state.env, undefined);
+    const cleanup = await commands.cleanup();
+    assert.equal(cleanup.status, 0, cleanup.stderr);
+  });
+
   for (const { scenario, stage, error } of [
     {
       scenario: "nodes-unready",
