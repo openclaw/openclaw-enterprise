@@ -749,6 +749,7 @@ export const scenarios = {
       "Wait for Agents, then select Refresh. The list stays shown, inactive, for 250 ms, then Loading replaces it. When the list returns, focus is on Refresh.",
       "Open Namespaces and wait for it, then use browser Back. The Namespaces page stays shown, inactive; after 300 ms it dims with a progress cursor, without moving, and after 1 s Still checking… appears beside Refresh until the unchanged Agents list returns.",
       "Focus an Agent link, switch windows, then return. The list stays visible and inactive, says Still checking… after 1 s, then returns focus to the link. If you focus Namespaces while waiting, focus stays there.",
+      "Focus Refresh, the Namespace selector or a sidebar link, switch windows, then return. When the list returns, focus is back on that control.",
       "Open the Agent. In the sidebar, focus Agents and press Enter. Focus waits on the page heading while the list loads, then returns to the Agent link; it does not drop to the page body.",
     ],
   },
@@ -3441,6 +3442,7 @@ export const scenarios = {
     steps: [
       "Wait for the Research assistant’s deployment, open Documentation assistant, then use browser Back.",
       "The list is usable immediately. Latest deployment starts blank; after 250 ms it says “Reading deployment…”, never linking to the old result. When access is denied, the Agent stays visible.",
+      "Go Back again, focus the Research assistant link while its deployment still reads, switch windows, then return. The same list returns with focus on the link.",
     ],
   },
   agentsDeploymentError: {
