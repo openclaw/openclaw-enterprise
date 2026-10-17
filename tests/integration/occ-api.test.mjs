@@ -2972,7 +2972,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
   assert.equal(knownDeployment.status, 200, JSON.stringify(knownDeployment.body));
   assert.deepEqual(knownDeployment.data.error?.data?.runtimeFailure, knownRuntimeFailure);
   // So does the evidence Kubernetes Compute builds from a failed initialize-workspace init
-  // container, which docs/flows/workspace-files.md tells operators to look for (finding 1675).
+  // container, whose code docs/flows/workspace-files.md names (finding 1675).
   const workspaceSetupFailure = {
     component: "agent",
     check: "workspace-setup",

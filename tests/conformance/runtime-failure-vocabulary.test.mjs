@@ -5,9 +5,10 @@ import test from "node:test";
 import { validateFailureData } from "../../packages/occ/src/state/controller-work.ts";
 
 // Finding 1660: OCC records runtime failure evidence only in the vocabulary the runtime
-// entrypoints publish, and records anything else as UNRECOGNIZED. These lists are maintained
-// apart from that vocabulary, so a check or code the runtime gains must be added to OCC too, or
-// a real failure would show as UNRECOGNIZED.
+// entrypoints publish, plus the values Compute drivers build themselves (finding 1675), and
+// records anything else as UNRECOGNIZED. These lists are maintained apart from that vocabulary,
+// so a check or code the runtime or a driver gains must be added to OCC too, or a real failure
+// would show as UNRECOGNIZED.
 
 const sources = [
   "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts",
@@ -34,8 +35,10 @@ async function runtimeVocabulary() {
 
 // Finding 1675: a Compute driver also builds runtime failure evidence itself, from what its
 // platform reports (Kubernetes Compute reads a failed initialize-workspace init container from
-// Pod status). Every object literal in a driver source that carries a check and a code, and no
-// diagnostic state, is such a record. Its literal values must be recorded as built too.
+// Pod status). Every brace-free object literal in a driver source with a check key and no
+// diagnostic state is read as such a record, and its literal values must record as built. As a
+// backstop for records this cannot read (nested braces, say), every literal check in a driver
+// source must belong to a record or a diagnostic check that it did read.
 const driverRoot = new URL("../../apps/controller/src/drivers/", import.meta.url);
 
 async function driverBuiltEvidence() {
@@ -45,19 +48,24 @@ async function driverBuiltEvidence() {
   const records = [];
   for (const path of files) {
     const text = await readFile(new URL(path, driverRoot), "utf8");
+    const read = new Set();
     for (const [literal] of text.matchAll(/\{[^{}]*\}/gu)) {
-      if (!/\bcheck\s*:/u.test(literal) || /\bstate\s*:/u.test(literal)) {
-        // Not runtime failure evidence, or a diagnostic check (finding 1673).
+      if (!/\bcheck\s*:/u.test(literal)) {
         continue;
       }
-      const value = (key) => {
-        const match = new RegExp(`\\b${key}\\s*:\\s*([^,\\n]+)`, "u").exec(literal);
-        return match?.[1].trim();
-      };
+      const value = (key) =>
+        new RegExp(`\\b${key}\\s*:\\s*("[^"\\n]*"|[^,\\n}]+)`, "u").exec(literal)?.[1].trim();
       const check = value("check");
       const code = value("code");
-      // Copying evidence the runtime published (failed.check) adds no value of its own.
-      if (/^[A-Za-z_$][\w$]*\.check$/u.test(check)) {
+      if (/\bstate\s*:/u.test(literal)) {
+        // A diagnostic check, not failure evidence (finding 1673 covers those).
+        read.add(check);
+        continue;
+      }
+      // A copy of evidence the runtime published (failed.check, failed.code) adds no value of
+      // its own; the runtime's vocabulary is checked above.
+      const copied = /^[A-Za-z_$][\w$]*\.check$/u.test(check);
+      if (copied && /^[A-Za-z_$][\w$]*\.code$/u.test(code)) {
         continue;
       }
       assert.match(
@@ -65,7 +73,14 @@ async function driverBuiltEvidence() {
         /^"[^"]+" "[^"]+"$/u,
         `${path} builds runtime failure evidence this test cannot read; update it:\n${literal}`,
       );
+      read.add(check);
       records.push({ path, check: JSON.parse(check), code: JSON.parse(code) });
+    }
+    for (const [, check] of text.matchAll(/\bcheck\s*:\s*("[^"\n]*")/gu)) {
+      assert.ok(
+        read.has(check),
+        `${path} sets check ${check} in a shape this test cannot read; update it`,
+      );
     }
   }
   return records;
