@@ -45,7 +45,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     await assert.rejects(() => stat(commands.statePath), { code: "ENOENT" });
   });
 
-  test("fixture preparation waits for the worker's Pod CIDR before the overlay check", async (t) => {
+  test("fixture preparation retries a failed worker Pod CIDR read and waits for assignment", async (t) => {
     const commands = await fixtureImageCommands(t, "late-pod-cidr");
     const result = await commands.prepare();
     assert.equal(result.status, 0, result.stderr);
@@ -57,8 +57,12 @@ describe("CI k3d preparation", { concurrency: true }, () => {
         args[6].endsWith("-agent-0") &&
         args.slice(7).join(" ") === "-o json",
     );
-    // Two reads without a Pod CIDR, then the assigned one.
+    // A refused read, a Ready node without a Pod CIDR, then the assigned CIDR.
     assert.equal(reads.length, 3);
+    for (let index = 1; index < reads.length; index += 1) {
+      const gap = reads[index].at - reads[index - 1].at;
+      assert.ok(gap >= 245, `read ${index + 1} started ${gap} ms after the one before it`);
+    }
     assertStderrMatch(result.stderr, /waiting for k3d-\S+-agent-0 to get its Pod CIDR/);
     // The wait is announced once, not on every read.
     assert.equal(result.stderr.match(/to get its Pod CIDR/g)?.length, 1);
@@ -68,53 +72,27 @@ describe("CI k3d preparation", { concurrency: true }, () => {
 
   test("fixture preparation names the worker that never gets a Pod CIDR", async (t) => {
     const commands = await fixtureImageCommands(t, "no-pod-cidr", undefined, {
-      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "2000",
+      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "1000",
     });
     const result = await commands.prepare();
     assert.equal(result.status, 1);
-    assertStderrMatch(result.stderr, /k3d node k3d-\S+-agent-0 got no Pod CIDR within 2000 ms\./);
-    // Reads are paced: each starts at least 250 ms after the one before it.
-    const reads = (await commands.commands()).filter(
-      ({ command, args }) =>
-        command === "kubectl" &&
-        args.slice(4, 6).join(" ") === "get node" &&
-        args[6].endsWith("-agent-0"),
-    );
-    assert.ok(reads.length >= 2, `${reads.length} Pod CIDR reads`);
-    for (let index = 1; index < reads.length; index += 1) {
-      const gap = reads[index].at - reads[index - 1].at;
-      assert.ok(gap >= 245, `read ${index + 1} started ${gap} ms after the one before it`);
-    }
+    assertStderrMatch(result.stderr, /k3d node k3d-\S+-agent-0 got no Pod CIDR within 1000 ms\./);
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
     assert.equal(state.env, undefined);
     const cleanup = await commands.cleanup();
     assert.equal(cleanup.status, 0, cleanup.stderr);
   });
 
-  // The node is already registered, so a refused read is retried, and a read that never answers
-  // is cut off at the deadline (at least 1 s, at most 15 s per read): the error names the node
-  // and the last read's failure. Only a 1 s wait shows the 1 s per-read floor, so the refused
-  // read must finish in about 750 ms for the second read to start before the deadline.
-  test("fixture preparation retries a failed Pod CIDR read and bounds a hung one", async (t) => {
-    const commands = await fixtureImageCommands(t, "pod-cidr-read-fails", undefined, {
-      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "1000",
+  test("fixture preparation bounds a hung Pod CIDR read and reports its failure", async (t) => {
+    // A wait shorter than the one-second read floor makes the first hung read decisive.
+    const commands = await fixtureImageCommands(t, "hung-pod-cidr-read", undefined, {
+      OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "100",
     });
     const result = await commands.prepare();
     assert.equal(result.status, 1);
     assertStderrMatch(
       result.stderr,
-      /Unable to read k3d node k3d-\S+-agent-0 within 1000 ms: .*timed out after 1000ms/,
-    );
-    const reads = (await commands.commands()).filter(
-      ({ command, args }) =>
-        command === "kubectl" &&
-        args.slice(4, 6).join(" ") === "get node" &&
-        args[6].endsWith("-agent-0"),
-    );
-    assert.equal(
-      reads.length,
-      2,
-      `one refused read, then one hung read; reads started at +${reads.map(({ at }) => at - reads[0].at).join(", +")} ms`,
+      /Unable to read k3d node k3d-\S+-agent-0 within 100 ms: .*timed out after 1000ms/,
     );
     const state = JSON.parse(await readFile(commands.statePath, "utf8"));
     assert.equal(state.env, undefined);

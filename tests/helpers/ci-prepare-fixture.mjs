@@ -675,11 +675,10 @@ if (command === "kubectl") {
     if (equals(args.slice(4), ["get", "node", "k3d-" + state.cluster + "-agent-0", "-o", "json"])) {
       // The node IPAM controller can assign a Ready worker's Pod CIDR late (finding 1666).
       state.podCidrReads = (state.podCidrReads ?? 0) + 1;
-      if (scenario === "pod-cidr-read-fails") {
-        // A refused read, then reads that never answer: the first is retried, the second is cut
-        // off at the deadline.
+      if (scenario === "hung-pod-cidr-read") await hang();
+      if (scenario === "late-pod-cidr" && state.podCidrReads === 1) {
+        // First refused, then Ready without a Pod CIDR, then assigned.
         commitState();
-        if (state.podCidrReads > 1) await hang();
         process.stderr.write("synthetic node read refusal\n");
         process.exit(1);
       }
