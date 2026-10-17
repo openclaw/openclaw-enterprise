@@ -2080,12 +2080,12 @@ export const scenarios = {
           "Team \u{1f468}\u200d\u{1f469}\u200d\u{1f467} \u{1f3f3}\ufe0f\u200d\u{1f308} " +
           "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f} " +
           "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645 \u0915\u094d\u200d\u0937, " +
-          "stray \u200d\u200djoiners",
+          "joined A\u200dB, stray \u200d\u200djoiners",
         allowedProfiles: ["git-read"],
       },
     ],
     description:
-      "Bidi controls, zero-width and other invisible characters in a description show as escapes, so text cannot display reversed or hidden. Joiners inside words and emoji, and the England, Scotland and Wales flags, display intact. Other scripts display as written.",
+      "The picker shows bidi controls and stray joiners as escapes. It preserves a single joiner between letters, marks, or symbols, and the England, Scotland, and Wales flag sequences. In the Team row, the joiner between A and B is present even if it looks like plain AB.",
   },
   createRepositoriesContributor: {
     group: "Pages/Create Agent",
