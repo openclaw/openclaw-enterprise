@@ -140,6 +140,11 @@ func (app *application) serviceKeyCommand() *cobra.Command {
 					_ = os.Remove(outFile)
 				}
 			}()
+			// Creation mode is filtered by umask. Establish the promised private,
+			// owner-readable file before issuing a key that must be saved here.
+			if err := file.Chmod(0o600); err != nil {
+				return fmt.Errorf("failed to set key file permissions: %w", err)
+			}
 			client, err := app.client()
 			if err != nil {
 				return err
