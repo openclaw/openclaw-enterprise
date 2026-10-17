@@ -3454,8 +3454,11 @@ function codexRateLimited(message) {
 }
 // A provider 5xx, overload or server error, or a dropped stream or connection can
 // pass on its own, so the startup probe tries such a failure once more. A rate limit,
-// a credential marker or a Reconnecting notice the recovered-stream rule refused is
-// never transient: the provider account or the event shape failed, not the transport.
+// a credential marker or a Reconnecting notice the recovered-stream rule refused, except
+// Codex's network wait, is never transient: the provider account or the event shape
+// failed, not the transport. Codex reports each failed connection to an unreachable
+// provider as "Reconnecting... waiting for network (Connection failed: ...)" and keeps
+// waiting, so that attempt runs to its timeout and the notice is its transient failure.
 // Nor is any provider 4xx, whatever its body says: the request itself was refused.
 // Codex prints a 400 as its bare body, so an invalid_request_error body counts as one.
 // Codex reports a content-filter stop, a host name its musl resolver cannot resolve
@@ -3465,7 +3468,8 @@ function codexRateLimited(message) {
 // only that way cannot be told from a dropped connection and keeps its retry.
 function codexTransientFailure(message, summary) {
   if (typeof message !== "string" || codexRateLimited(message) ||
-    /auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b|Reconnecting\.\.\./i.test(message)) return false;
+    /auth|unauthori[sz]ed|forbidden|credential|api.?key|\b40[13]\b/i.test(message) ||
+    (/Reconnecting\.\.\./i.test(message) && !/^Reconnecting\.\.\. waiting for network \(Connection failed: .*\)$/.test(message))) return false;
   if (summary.providerStatus >= 400 && summary.providerStatus < 500) return false;
   if (/invalid_request_error|content_filter|certificate|Name does not resolve|Name has no usable address/i.test(message)) return false;
   return summary.providerStatus >= 500 ||
@@ -3563,7 +3567,7 @@ function probeCodexAuthentication(timeout) {
     let recoveredStreamErrors = 0;
     // A transient failure is only a retry candidate: a later deterministic failure in
     // the same attempt (a tool event, a rate limit) still holds at once. A transient
-    // message is never a Reconnecting notice, so no recovered stream error lands here.
+    // message is never a recovered stream notice, so no recovered stream error lands here.
     let transientFailure;
     for (const event of events) {
       if (event.type === "turn.started") turnStarted = true;
