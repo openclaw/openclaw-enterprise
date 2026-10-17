@@ -409,6 +409,8 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
         for (const node of record.addedNodes) {
           if (node.textContent.includes("Waiting for diagnostic results")) {
             globalThis.diagnosticsSeen.push("waiting line");
+          } else if (node.textContent.startsWith("Observed ")) {
+            globalThis.diagnosticsSeen.push("result");
           }
         }
       }
@@ -428,10 +430,12 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
 
   await run.focus();
   assert.deepEqual(await seen(), ["focus button"]);
+  // The last run repeats the result shown: it is added anew, so it is announced again.
   for (const [observedAt, slow] of [
     ["2026-09-30T12:00:02.000Z", false],
     ["2026-09-30T12:00:04.000Z", false],
     ["2026-09-30T12:00:06.000Z", true],
+    ["2026-09-30T12:00:06.000Z", false],
   ]) {
     const held = await holdRun(observedAt);
     await page.keyboard.press("Enter");
@@ -459,7 +463,7 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
     await observed.waitFor();
     assert.equal(await focused(run), true);
     assert.equal(await description(), await observed.textContent());
-    assert.deepEqual(await seen(), slow ? ["focus button"] : []);
+    assert.deepEqual((await seen()).sort(), slow ? ["focus button", "result"] : ["result"]);
   }
 });
 

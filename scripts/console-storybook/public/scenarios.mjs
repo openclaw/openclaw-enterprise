@@ -3701,7 +3701,7 @@ export const scenarios = {
     steps: [
       "Tab to Run diagnostics for this version, then press Enter. The checks answer in 100 ms.",
       "No “Waiting for diagnostic results…” line appears and the button does not disable. Focus stays on Run diagnostics, and its description gives the Observed time.",
-      "Press Enter again. The checks replace the earlier ones directly, with no waiting line in between.",
+      "Press Enter again. No waiting line appears in between; the same checks are inserted again, so a screen reader announces them again.",
     ],
     description:
       "Diagnostics that answer within 250 ms replace the panel's result directly, without painting the waiting line or moving focus.",

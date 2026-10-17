@@ -897,6 +897,13 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
       if (context.isCurrent()) {
         const active = document.activeElement;
         const waited = active === runButton || (waitingLine !== null && active === waitingLine);
+        if (!waitingShown) {
+          // With no waiting line in between, patching would keep a result identical to the last
+          // one in place, and nothing would be announced: insert it anew instead.
+          for (const node of [section.querySelector('[role="alert"]'), section.lastElementChild]) {
+            node?.remove();
+          }
+        }
         loading = false;
         waitingShown = false;
         diagnostics = answer;
