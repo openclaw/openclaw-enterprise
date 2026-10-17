@@ -689,8 +689,8 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
 
   const singleton = await controller.request("GET", "/installation");
   assert.equal(singleton.status, 200);
-  // No Sandbox Driver can provision dedicated OpenClaw, so no capability is reported.
-  assert.deepEqual(singleton.data, installation);
+  // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
+  assert.deepEqual(singleton.data, { ...installation, capabilities: { openclaw: { executionModes: ["embedded"] } } });
   const bootstrappedDefault = await defaultNamespace(controller);
 
   const namespace = await createNamespace(controller, "research");
@@ -826,7 +826,7 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
   assert.equal(auditEndpoint.status, 404);
 
   const unchanged = await controller.request("GET", "/installation");
-  assert.deepEqual(unchanged.data, installation);
+  assert.deepEqual(unchanged.data, { ...installation, capabilities: singleton.data.capabilities });
 });
 
 test("Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver", async () => {
@@ -2827,8 +2827,12 @@ test("Installation API exposes Agent provisioning capabilities without configure
 
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  // Without a provisioning Sandbox Driver, dedicated OpenClaw cannot be admitted (finding 1608).
-  assert.deepEqual(installation.data.capabilities, bootstrapped.capabilities);
+  // Without a provisioning Sandbox Driver, dedicated OpenClaw cannot be admitted (finding 1608);
+  // without any Sandbox Driver, Embedded OpenClaw can (#2670). Bootstrap reports neither.
+  assert.deepEqual(installation.data.capabilities, {
+    ...bootstrapped.capabilities,
+    openclaw: { executionModes: ["embedded"] },
+  });
 
   const backends = await controller.request("GET", "/backends");
   assert.equal(backends.status, 200);

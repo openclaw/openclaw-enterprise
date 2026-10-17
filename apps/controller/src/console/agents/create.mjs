@@ -488,6 +488,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     { className: "error", role: "alert", hidden: true },
     "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
   );
+  // The Installation lists the OpenClaw execution modes admission accepts (#2670). When the
+  // selected mode is not one of them, say so here and keep Create disabled, before any write.
+  const openclawModeUnavailable = element("p", {
+    className: "error",
+    role: "alert",
+    hidden: true,
+  });
   const configuration = element("textarea", {
     id: "configuration-json",
     name: "configuration",
@@ -657,6 +664,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     harnessHint,
     nativeHarnessWarning,
     nativeWorkersUnavailable,
+    openclawModeUnavailable,
     binding
       ? element("p", {}, `Preset authentication: ${harnessAuthDescription(binding)}`)
       : authMethodField,
@@ -866,8 +874,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   model.addEventListener("change", () => updateModelConfiguration());
   harness.addEventListener("change", () => {
     // Embedded is OpenClaw's default because dedicated OpenClaw needs a provisioning
-    // Sandbox Driver; operators opt into it through Execution mode.
-    mode.value = harness.value === "codex" ? "dedicated" : "embedded";
+    // Sandbox Driver; operators opt into it through Execution mode. An Installation that
+    // refuses Embedded preselects Dedicated when it accepts that (#2670).
+    mode.value = harness.value === "codex" ? "dedicated" : defaultOpenClawMode();
+    modeDefaulted = true;
     // Service account tokens cannot authenticate OpenClaw; require a new API key.
     if (
       !binding &&
@@ -883,6 +893,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     updateControls();
   });
   mode.addEventListener("change", () => {
+    modeDefaulted = false;
     const previousHarness = harness.value;
     if (mode.value === "embedded") {
       harness.value = "openclaw";
@@ -1087,6 +1098,20 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let capabilityDiscoveryDenied = false;
   const provisionableExecutionModes = new Set();
   let nativeWorkersAvailable = false;
+  // The OpenClaw execution modes the Installation admits, or undefined from a server that does
+  // not report them; that keeps the earlier check, Dedicated from nativeWorkers only (#2670).
+  let openclawExecutionModes;
+  // Whether the form chose the execution mode, rather than the Preset, the draft or the user.
+  let modeDefaulted = agent.executionMode === undefined;
+  const openclawModeUsable = (value) =>
+    openclawExecutionModes?.has(value) ?? (value === "embedded" || nativeWorkersAvailable);
+  const defaultOpenClawMode = () =>
+    capabilityDiscoveryDone && !openclawModeUsable("embedded") && openclawModeUsable("dedicated")
+      ? "dedicated"
+      : "embedded";
+  // Anthropic and operator-managed Preset credentials fix OpenClaw to Embedded.
+  const embeddedRequired = () =>
+    nativeProvider.value === "anthropic" || binding?.method === "runtime";
   let credentialSourceTypes;
   let savedCredentialSource;
   let credentialRegistration;
@@ -1614,16 +1639,38 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       binding?.method === "runtime";
     harness.disabled ||=
       binding?.method === "runtime" || (usesPat && Boolean(binding || savedSecret));
-    const nativeRefused =
-      capabilityDiscoveryDone && !nativeWorkersAvailable && harness.value === "openclaw";
+    const dedicatedRefused = capabilityDiscoveryDone && !openclawModeUsable("dedicated");
+    const nativeRefused = dedicatedRefused && harness.value === "openclaw";
+    const embeddedRefused = capabilityDiscoveryDone && !openclawModeUsable("embedded");
+    const openclawEmbeddedRefused = embeddedRefused && harness.value === "openclaw";
+    const noOpenClawMode = nativeRefused && openclawEmbeddedRefused;
     mode.querySelector('[value="dedicated"]').disabled = nativeRefused;
-    nativeWorkersUnavailable.hidden = !nativeRefused || mode.value !== "dedicated";
+    mode.querySelector('[value="embedded"]').disabled = embeddedRefused;
+    nativeWorkersUnavailable.hidden =
+      !nativeRefused || noOpenClawMode || mode.value !== "dedicated";
+    const modeRefusal = noOpenClawMode
+      ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support."
+      : openclawEmbeddedRefused && mode.value === "embedded"
+        ? binding?.method === "runtime"
+          ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."
+          : nativeProvider.value === "anthropic"
+            ? "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution."
+            : "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details."
+        : "";
+    if (openclawModeUnavailable.textContent !== modeRefusal) {
+      openclawModeUnavailable.textContent = modeRefusal;
+    }
+    openclawModeUnavailable.hidden = !modeRefusal;
     runtimeModeSummary.textContent = ` · ${mode.value === "dedicated" ? "Dedicated" : "Embedded"}`;
     const modeHint = form.querySelector("#execution-mode-hint");
     if (modeHint) {
       modeHint.textContent = nativeRefused
         ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
-        : "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Dedicated execution.";
+        : embeddedRefused && dedicatedRefused
+          ? "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Dedicated execution."
+          : embeddedRefused
+            ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
+            : "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Dedicated execution.";
     }
     if (capabilityDiscoveryDone) {
       const nextStatus = shouldProvision()
@@ -1647,7 +1694,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           ? "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver."
           : nativeRefused
             ? "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution."
-            : "OpenClaw is available for both providers. With OpenAI it supports Dedicated or Embedded execution; Anthropic uses Embedded OpenClaw.";
+            : embeddedRefused && dedicatedRefused
+              ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw."
+              : embeddedRefused
+                ? "OpenClaw is available for OpenAI with Dedicated execution. Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver."
+                : "OpenClaw is available for both providers. With OpenAI it supports Dedicated or Embedded execution; Anthropic uses Embedded OpenClaw.";
     if (binding?.method === "runtime") {
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
@@ -1761,6 +1812,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       outcomeUnknown ||
       !capabilityDiscoveryDone ||
       !nativeWorkersUnavailable.hidden ||
+      !openclawModeUnavailable.hidden ||
       credentialSourceRefused() ||
       Boolean(provisioningAttempt);
     checkCredentialRegistration.hidden = !credentialRegistration;
@@ -1828,6 +1880,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         defaultApprovers.refreshNames();
       }
       nativeWorkersAvailable = installation.capabilities?.nativeWorkers !== undefined;
+      const openclawModes = installation.capabilities?.openclaw?.executionModes;
+      openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
       credentialSourceTypes = installation.capabilities?.credentialSources?.types;
       provisionableExecutionModes.clear();
       for (const executionMode of installation.capabilities?.agentProvisioning?.executionModes ??
@@ -1835,6 +1889,18 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         provisionableExecutionModes.add(executionMode);
       }
       capabilityDiscoveryDone = true;
+      // A mode the form chose but the Installation refuses becomes the usable one, if any.
+      if (
+        modeDefaulted &&
+        harness.value === "openclaw" &&
+        !embeddedRequired() &&
+        !savedConfiguration &&
+        !openclawModeUsable(mode.value) &&
+        openclawModeUsable(defaultOpenClawMode())
+      ) {
+        mode.value = defaultOpenClawMode();
+        renderChannelEditor();
+      }
     } catch (error) {
       if (!context.isCurrent()) {
         return;
@@ -2007,6 +2073,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       provisioningAttempt ||
       (!savedAgent && repositoryRetryLocked()) ||
       !capabilityDiscoveryDone ||
+      !nativeWorkersUnavailable.hidden ||
+      !openclawModeUnavailable.hidden ||
       credentialSourceRefused() ||
       !form.reportValidity()
     ) {

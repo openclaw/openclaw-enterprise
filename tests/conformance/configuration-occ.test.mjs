@@ -1861,7 +1861,9 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
     dedicatedSandboxRefusal,
   );
   // Without that Sandbox Driver the Installation cannot admit dedicated OpenClaw (finding 1608).
-  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {});
+  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {
+    openclaw: { executionModes: ["embedded"] },
+  });
   // Listing returns the revision's summary: no saved settings.
   assert.deepEqual(
     (await controller.listRevisions(administrator, namespace.id, agent.id)).revisions,
@@ -1941,7 +1943,9 @@ test("The pinned runtime admits dedicated OpenClaw without waiving Sandbox conta
   assert.equal(PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS, true);
   // nativeWorkers promises that dedicated OpenClaw can be admitted, so runtime support alone
   // does not report it (finding 1608).
-  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {});
+  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {
+    openclaw: { executionModes: ["embedded"] },
+  });
   const openclawConfiguration = await controller.createConfiguration(administrator, {
     namespaceId: namespace.id,
     kind: "agent",
@@ -1976,7 +1980,7 @@ test("The pinned runtime admits dedicated OpenClaw without waiving Sandbox conta
     registerAndSelectDrivers(controller, [sandbox]);
     assert.deepEqual(
       (await controller.getInstallation(administrator)).capabilities,
-      {},
+      { openclaw: { executionModes: [] } },
       sandbox.id,
     );
     await assert.rejects(deploy(), dedicatedSandboxRefusal, sandbox.id);
@@ -1989,11 +1993,94 @@ test("The pinned runtime admits dedicated OpenClaw without waiving Sandbox conta
   registerAndSelectDrivers(controller, [conformanceSandbox("full", facets)]);
   assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {
     nativeWorkers: { support: "pinned-runtime" },
+    openclaw: { executionModes: ["dedicated"] },
   });
   assert.throws(
     () => new OpenClawController(installation, { nativeWorkerSupport: "pinned-runtime" }),
     ScopeViolationError,
   );
+});
+
+// Admission refusals for an OpenClaw execution mode the Installation shape cannot run: Agent save
+// (embedded with a Sandbox Driver, or the Sandbox Driver unavailable) or deploy (dedicated).
+function openclawModeRefusal(error) {
+  return (
+    error instanceof ConfigurationHarnessError ||
+    error instanceof DedicatedOpenClawSandboxError ||
+    (error instanceof DependencyUnavailableError &&
+      error.message === "The selected Sandbox Driver is unavailable.")
+  );
+}
+
+test("The Installation lists exactly the OpenClaw execution modes Agent save and deploy admit", async () => {
+  const facets = ["networking", "filesystem", "process"];
+  const shapes = [
+    { name: "no Sandbox Driver", modes: ["embedded"] },
+    { name: "contain-only", sandbox: conformanceSandbox("contain-only", facets, false), modes: [] },
+    ...facets.map((missing) => ({
+      name: `no-${missing}`,
+      sandbox: conformanceSandbox(
+        `no-${missing}`,
+        facets.filter((facet) => facet !== missing),
+      ),
+      modes: [],
+    })),
+    { name: "full", sandbox: conformanceSandbox("full", facets), modes: ["dedicated"] },
+    {
+      name: "full but unavailable",
+      sandbox: conformanceSandbox("unavailable", facets),
+      unavailable: true,
+      modes: [],
+    },
+  ];
+  for (const shape of shapes) {
+    const { agent, controller, namespace } = await fixture();
+    const openclawConfiguration = await controller.createConfiguration(administrator, {
+      namespaceId: namespace.id,
+      kind: "agent",
+      values: {},
+    });
+    if (shape.sandbox !== undefined) {
+      registerAndSelectDrivers(controller, [shape.sandbox]);
+    }
+    if (shape.unavailable) {
+      // The registry no longer matches the selection, as after a Driver swap at runtime.
+      shape.sandbox.implementation = "replaced-sandbox";
+    }
+    const { capabilities } = await controller.getInstallation(administrator);
+    assert.deepEqual(capabilities.openclaw, { executionModes: shape.modes }, shape.name);
+    // nativeWorkers promises dedicated admission, so it appears exactly with that mode.
+    assert.equal(
+      capabilities.nativeWorkers === undefined,
+      !shape.modes.includes("dedicated"),
+      shape.name,
+    );
+    for (const executionMode of ["embedded", "dedicated"]) {
+      const label = `${shape.name}: ${executionMode}`;
+      let admitted = true;
+      try {
+        await controller.updateAgent(administrator, {
+          namespaceId: namespace.id,
+          agentId: agent.id,
+          configurationId: openclawConfiguration.id,
+          executionMode,
+        });
+        await controller.deployAgent(
+          administrator,
+          { namespaceId: namespace.id, agentId: agent.id },
+          resolveApprovedProductionHarness,
+        );
+      } catch (error) {
+        if (!openclawModeRefusal(error)) {
+          // Admission passed; the conformance Sandbox Driver refuses to provision.
+          assert.equal(shape.modes.includes(executionMode), true, `${label}: ${error}`);
+          continue;
+        }
+        admitted = false;
+      }
+      assert.equal(admitted, shape.modes.includes(executionMode), label);
+    }
+  }
 });
 
 test("Agent deployment separately authorizes its exact Configuration", async () => {

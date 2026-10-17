@@ -318,6 +318,19 @@ const InstallationCapabilitiesSchema = Type.Object(
         },
       ),
     ),
+    openclaw: Type.Optional(
+      Type.Object(
+        {
+          executionModes: Type.Array(HarnessExecutionModeSchema, {
+            maxItems: 2,
+            uniqueItems: true,
+            description:
+              "The OpenClaw execution modes Agent save and deploy admission accept on this Installation. Empty when they accept none: a selected Sandbox Driver refuses Embedded execution, and Dedicated needs one that can provision dedicated OpenClaw.",
+          }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
   },
   { additionalProperties: false },
 );

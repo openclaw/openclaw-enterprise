@@ -10934,6 +10934,25 @@
                               "required": ["support"],
                               "type": "object"
                             },
+                            "openclaw": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "description": "The OpenClaw execution modes Agent save and deploy admission accept on this Installation. Empty when they accept none: a selected Sandbox Driver refuses Embedded execution, and Dedicated needs one that can provision dedicated OpenClaw.",
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                }
+                              },
+                              "required": ["executionModes"],
+                              "type": "object"
+                            },
                             "pluginDiscovery": {
                               "additionalProperties": false,
                               "properties": {
@@ -11259,6 +11278,25 @@
                                 }
                               },
                               "required": ["support"],
+                              "type": "object"
+                            },
+                            "openclaw": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "description": "The OpenClaw execution modes Agent save and deploy admission accept on this Installation. Empty when they accept none: a selected Sandbox Driver refuses Embedded execution, and Dedicated needs one that can provision dedicated OpenClaw.",
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                }
+                              },
+                              "required": ["executionModes"],
                               "type": "object"
                             },
                             "pluginDiscovery": {
