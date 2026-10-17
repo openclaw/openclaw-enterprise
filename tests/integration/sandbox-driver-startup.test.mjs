@@ -44,6 +44,7 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
+  SandboxWorkspaceSetupRefusedError,
   ScopeViolationError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
@@ -2679,10 +2680,45 @@ for (const harnessId of ["codex", "openclaw"]) {
     // Failed initialization and foreign Secret ownership must never report successful delivery.
     exitCode = 1;
     await assert.rejects(provision(), /workspace initialization failed/);
+    // A refusal (the runner's exit status 2) repeats on every retry, so Compute fails the
+    // deployment at once with WORKSPACE_SETUP_REFUSED (finding 1708).
+    exitCode = 2;
+    await assert.rejects(provision(), (error) => {
+      assert.ok(error instanceof SandboxWorkspaceSetupRefusedError, String(error));
+      assert.equal(error.code, "WORKSPACE_SETUP_REFUSED");
+      assert.equal(error.message, "OpenShell workspace initialization refused.");
+      return true;
+    });
     foreign = true;
     const before = executions.length;
     await assert.rejects(provision(), /workspace initialization failed/);
     assert.equal(executions.length, before);
+
+    await t.test("the setup wrapper passes the runner's refusal status through", async (t) => {
+      const root = await mkdtemp(join(tmpdir(), "openshell-workspace-wrapper-"));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, "workspace");
+      await mkdir(workspace);
+      const wrapped = (payload, environment = {}) =>
+        spawnSync(process.execPath, ["-e", execution.command[2]], {
+          input: JSON.stringify(payload),
+          encoding: "utf8",
+          timeout: 60_000,
+          env: {
+            ...process.env,
+            HOME: root,
+            OPENCLAW_STATE_DIR: join(root, "state"),
+            OPENCLAW_WORKSPACE_DIR: workspace,
+            OPENCLAW_EXECUTABLE: join(root, "absent-runtime.mjs"),
+            ...environment,
+          },
+        }).status;
+      // A completed setup whose workspace has no record refuses on every retry.
+      assert.equal(wrapped({ ...setup, completed: true }), 2);
+      // A missing runtime may be back on a retry, and so may a lock the wrapper cannot take.
+      assert.equal(wrapped(setup), 1);
+      assert.equal(wrapped(setup, { OPENCLAW_WORKSPACE_DIR: "relative" }), 1);
+    });
 
     if (harnessId === "codex") {
       await t.test(

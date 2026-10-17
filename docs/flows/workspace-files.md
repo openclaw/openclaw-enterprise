@@ -127,9 +127,9 @@ Missing or mismatched markers after recorded completion block startup, preservin
 later edits. Errors omit document contents.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
-reports a refusal (exit 2) as `WORKSPACE_SETUP_REFUSED`, failing deployment at
-once; Kubernetes restarts other failures (`WORKSPACE_SETUP_RETRYING`).
-`checkedAt` is the valid termination time or observation time.
+reports a refusal (exit 2) as `WORKSPACE_SETUP_REFUSED`, failing at once, as
+does OpenShell's initializer; Kubernetes restarts other failures
+(`WORKSPACE_SETUP_RETRYING`). `checkedAt` is termination or observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 
