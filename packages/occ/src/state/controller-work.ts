@@ -399,10 +399,12 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
 }
 
 // The values runtime entrypoints publish with a held startup failure
-// (drivers/compute/kubernetes/runtime-entrypoints.ts and drivers/compute/runtime-startup.ts).
-// A provider-owned Harness serves that evidence from inside its Sandbox, where Agent code can
-// answer in its place, so a value outside these sets is recorded, and read back, as
-// UNRECOGNIZED rather than as served (finding 1660).
+// (drivers/compute/kubernetes/runtime-entrypoints.ts and drivers/compute/runtime-startup.ts),
+// plus the evidence a Compute driver builds itself from what its platform reports: Kubernetes
+// Compute records a failed initialize-workspace init container as workspace-setup /
+// WORKSPACE_SETUP_FAILED (finding 1675). A provider-owned Harness serves runtime evidence from
+// inside its Sandbox, where Agent code can answer in its place, so a value outside these sets
+// is recorded, and read back, as UNRECOGNIZED rather than as served (finding 1660).
 const UNRECOGNIZED_RUNTIME_FAILURE_VALUE = "UNRECOGNIZED";
 const RUNTIME_FAILURE_COMPONENTS: ReadonlySet<string> = new Set(["agent", "gateway"]);
 const RUNTIME_FAILURE_CHECKS: ReadonlySet<string> = new Set([
@@ -411,6 +413,7 @@ const RUNTIME_FAILURE_CHECKS: ReadonlySet<string> = new Set([
   "peer-bridge-record",
   "plugin-approvers",
   "state-migration",
+  "workspace-setup",
 ]);
 const RUNTIME_FAILURE_CODES: ReadonlySet<string> = new Set([
   "AUTHENTICATION_FAILED",
@@ -423,6 +426,7 @@ const RUNTIME_FAILURE_CODES: ReadonlySet<string> = new Set([
   "NOT_CONFIGURED",
   "PROBE_FAILED",
   "UNAVAILABLE",
+  "WORKSPACE_SETUP_FAILED",
 ]);
 
 function recognizedRuntimeFailureValue(value: string, known: ReadonlySet<string>): string {

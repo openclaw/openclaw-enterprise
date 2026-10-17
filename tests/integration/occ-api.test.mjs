@@ -2971,6 +2971,24 @@ test("Agent deployment status polls the admitted revision work with exact read a
   const knownDeployment = await injectedRequest(readerApp, "GET", path);
   assert.equal(knownDeployment.status, 200, JSON.stringify(knownDeployment.body));
   assert.deepEqual(knownDeployment.data.error?.data?.runtimeFailure, knownRuntimeFailure);
+  // So does the evidence Kubernetes Compute builds from a failed initialize-workspace init
+  // container, which docs/flows/workspace-files.md tells operators to look for (finding 1675).
+  const workspaceSetupFailure = {
+    component: "agent",
+    check: "workspace-setup",
+    checkedAt: "2026-09-19T20:30:00.000Z",
+    code: "WORKSPACE_SETUP_FAILED",
+  };
+  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+    ...deploymentWork,
+    resultData: { timeoutMs: 900_000, runtimeFailure: workspaceSetupFailure },
+  });
+  const workspaceSetupDeployment = await injectedRequest(readerApp, "GET", path);
+  assert.equal(workspaceSetupDeployment.status, 200, JSON.stringify(workspaceSetupDeployment.body));
+  assert.deepEqual(
+    workspaceSetupDeployment.data.error?.data?.runtimeFailure,
+    workspaceSetupFailure,
+  );
 
   fixture.state.roles.find(
     (role) => role.id === "role-deployment-status-reader",
