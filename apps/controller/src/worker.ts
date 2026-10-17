@@ -4699,8 +4699,8 @@ export class ControllerWorker {
     } else {
       stopYields = this.stopYields.count(claim.idempotencyKey);
     }
-    // The line reports what was committed: a lost pointer race is a retry, not the resolved
-    // success (finding 1611).
+    // A lost pointer race reports the retry this pass committed, not the resolved success
+    // (finding 1611).
     const reported = activeRevisionChanged
       ? { outcome: "retry" as const, code: "ACTIVE_REVISION_CHANGED" }
       : resolved;
@@ -5091,6 +5091,7 @@ export class ControllerWorker {
         outcome: "retry",
         code: "ACTIVE_REVISION_CHANGED",
         ...this.deployTimingFields(claim),
+        ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
       });
       return;
     }

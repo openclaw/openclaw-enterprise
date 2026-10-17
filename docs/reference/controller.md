@@ -126,7 +126,8 @@ The worker emits fixed operational event classes through the same logger:
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
   write. A revision pass that loses the race for the Agent's active revision logs
-  the retry it committed, outcome `retry` with code `ACTIVE_REVISION_CHANGED`.
+  outcome `retry` with code `ACTIVE_REVISION_CHANGED`; the work fails once its
+  attempts are exhausted.
   A pass that could not stop a refused candidate stays pending with code
   `REFUSED_CANDIDATE_STOP_PENDING` and adds `refusal`, the refusal's code
   (`CONVERGENCE_DEADLINE_EXCEEDED` once a lifted refusal outlived the deadline),
