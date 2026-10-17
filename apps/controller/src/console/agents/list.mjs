@@ -219,6 +219,11 @@ export function assertReadableConfiguration(resource) {
 // focusable holder wraps stays readable to a screen reader meanwhile.
 const readingDeployment = (className = "delayed-status") =>
   element("span", { className }, "Reading deployment…");
+// The 250 ms rule's delay (console.css .delayed-status and .delayed-text). With a dozen rows, reads
+// that landed just after it replaced the text a frame or a few after it showed (16-133 ms,
+// finding 1683), so once shown it stays at least READING_SHOWN_MS.
+const READING_DELAY_MS = 250;
+const READING_SHOWN_MS = 150;
 
 export function renderAgentList(context) {
   const { view, items } = context;
@@ -288,6 +293,24 @@ export function renderAgentList(context) {
     if (!deployments.has(item.id)) {
       deployments.set(item.id, readDeployment(item));
     }
+    // The cell's "Reading deployment…" (or its focusable holder) and when its text shows.
+    const reading = deployment.firstElementChild;
+    const shownAt = performance.now() + READING_DELAY_MS;
+    // A read that lands before the text shows, or after it has shown long enough, fills the cell
+    // now; otherwise once it has. A later resume or render replaces the text, and its own read
+    // fills the cell instead.
+    const fill = (...content) => {
+      const wait = shownAt + READING_SHOWN_MS - performance.now();
+      if (wait <= 0 || wait > READING_SHOWN_MS) {
+        fillDeployment(deployment, ...content);
+        return;
+      }
+      setTimeout(() => {
+        if (context.isCurrent() && reading.isConnected) {
+          fillDeployment(deployment, ...content);
+        }
+      }, wait);
+    };
     void deployments
       .get(item.id)
       .then((result) => {
@@ -295,7 +318,7 @@ export function renderAgentList(context) {
           return;
         }
         if (result === null) {
-          fillDeployment(deployment, "No visible deployments");
+          fill("No visible deployments");
           return;
         }
         const neutral = neutralDeploymentOutcome(result.status);
@@ -304,8 +327,7 @@ export function renderAgentList(context) {
             ? (result.status.error?.message ?? "Deployment failed.")
             : null;
         // A long failure fits one line; its title and the Agent page give the whole text.
-        fillDeployment(
-          deployment,
+        fill(
           link(
             `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
             `agents/${item.id}?revision=${result.revision.id}`,
@@ -327,10 +349,7 @@ export function renderAgentList(context) {
         if (!context.isCurrent()) {
           return;
         }
-        fillDeployment(
-          deployment,
-          error.status === 403 ? "Deployment access denied" : "Deployment unavailable",
-        );
+        fill(error.status === 403 ? "Deployment access denied" : "Deployment unavailable");
       });
   }
   function render() {

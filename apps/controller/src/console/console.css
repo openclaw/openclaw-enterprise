@@ -2704,8 +2704,13 @@ summary:focus-visible {
 .log-line {
   /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned. */
   --log-level-column: minmax(max-content, 6.5em);
+  /* Fit a whole timestamp with its UTC offset on one line (finding 1681): 33 characters of the
+     11px time, as in "12/31/2026, 12:59:59 PM GMT+10:30". ch here is the row's 12px character. */
+  --log-time-column: calc(33ch * 11 / 12);
   display: grid;
-  grid-template-columns: 170px var(--log-level-column) minmax(72px, 112px) minmax(0, 1fr);
+  grid-template-columns:
+    var(--log-time-column) var(--log-level-column) minmax(72px, 112px)
+    minmax(0, 1fr);
   align-items: baseline;
   gap: 12px;
 }
@@ -2814,8 +2819,22 @@ summary:focus-visible {
 }
 @media (max-width: 1100px) {
   .log-line {
-    grid-template-columns: 150px var(--log-level-column) minmax(60px, 88px) minmax(0, 1fr);
+    grid-template-columns:
+      var(--log-time-column) var(--log-level-column) minmax(60px, 88px)
+      minmax(0, 1fr);
     gap: 10px;
+  }
+}
+/* Below 1000 px a whole timestamp would leave the message column under about 200 px, so the
+   message moves below the time, level and origin (finding 1681). */
+@media (max-width: 1000px) {
+  .log-line {
+    grid-template-columns: minmax(var(--log-time-column), 1fr) max-content minmax(60px, 112px);
+    gap: 4px 10px;
+  }
+  .log-content {
+    grid-column: 1 / -1;
+    margin-top: 2px;
   }
 }
 @media (max-width: 760px) {
@@ -2825,14 +2844,6 @@ summary:focus-visible {
   }
   .log-actions {
     margin-left: 0;
-  }
-  .log-line {
-    grid-template-columns: minmax(0, 1fr) max-content minmax(60px, 112px);
-    gap: 4px 10px;
-  }
-  .log-content {
-    grid-column: 1 / -1;
-    margin-top: 2px;
   }
   .log-fields {
     grid-template-columns: minmax(70px, 110px) minmax(0, 1fr);

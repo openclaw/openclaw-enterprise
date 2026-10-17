@@ -226,6 +226,24 @@ async function namedDeploymentWait(request, namespaceId, job, signal) {
   }
 }
 
+// The wait a job past handoff names for its first deployment (finding 1690), as the deployment's
+// status does: its fixed sentence after the provisioning line. A reader who can't read the
+// deployment gets the job's own PROVISIONING_DEPLOYMENT_PENDING, which says no more than the
+// provisioning line, so that line stays. A wait someone must act on stands alone, as above.
+function jobDeploymentWait(job) {
+  const attempt = job.progress?.lastAttempt;
+  if (
+    typeof attempt?.message !== "string" ||
+    !attempt.message ||
+    attempt.code === "PROVISIONING_DEPLOYMENT_PENDING"
+  ) {
+    return null;
+  }
+  return NAMED_DEPLOYMENT_WAITS.has(attempt.code)
+    ? attempt.message
+    : `${provisioningStatusText("running")} ${attempt.message}`;
+}
+
 async function waitForProvisioning({ request, status, first, namespaceId, isCurrent }) {
   let current = first.provisioning ?? first;
   const jobUrl = current?.url;
@@ -248,7 +266,12 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
     if (read !== undefined) {
       named = read;
     }
-    setText(status, named ?? provisioningStatusText(started ? "running" : current.status));
+    setText(
+      status,
+      named ??
+        jobDeploymentWait(current) ??
+        provisioningStatusText(started ? "running" : current.status),
+    );
     await nextPoll;
     if (!isCurrent()) {
       throw new DOMException("View closed", "AbortError");

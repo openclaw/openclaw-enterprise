@@ -147,7 +147,7 @@ reads, password input, and mutations prevent reuse; read-only catalog and diagno
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
 list, not each row’s deployment read. On reuse, `agents/list.mjs:renderAgentList`
-sets visible deployment cells to **Reading deployment…**, hidden for 250 ms, before paint, then shows
+sets visible deployment cells to **Reading deployment…**, hidden for 250 ms and then shown at least 150 ms, before paint, then shows
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
 not a link to the old revision. Unfinished or failed row reads never prevent reuse; resuming rereads them.
 
@@ -375,9 +375,9 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-17 16:30: Keep row loading text 150 ms once shown; refocus at phone width focuses Open navigation. (ui-fix-1680)
 - 2026-10-17 12:10: Keep list focus when refocusing during row reads or from sidebar and header controls. (lows-1017n)
 - 2026-10-17 10:50: Delay row loading text 250 ms; keep focus through sidebar navigation and list refocus. (lows-1017m)
 - 2026-10-17 10:36: Restore the reader’s focus when a tab recheck reuses the same view.
-- 2026-10-17 08:32: Show the rechecked Agents list before refreshing visible deployment cells. (fix-1644 - c29af02c98)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

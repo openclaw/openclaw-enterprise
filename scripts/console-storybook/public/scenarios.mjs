@@ -1639,6 +1639,23 @@ export const scenarios = {
       "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
+  createDeploymentNamedWait: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment names its wait",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "REVISION_INCOMPLETE",
+      message: "Waiting for the runtime to become ready.",
+    },
+    provisioningNamesDeploymentWait: true,
+    description:
+      "After handoff the provisioning job names its first deployment's wait. Create Agent adds that sentence, the one Deployment activity shows, to the provisioning line.",
+    steps: [
+      "Click Create Agent. The line moves from “Provisioning Agent…” to “Provisioning Agent… Waiting for the runtime to become ready.” and Create Agent stays disabled.",
+    ],
+  },
   createDeploymentPodQuotaFull: {
     group: "Pages/Create Agent",
     name: "Initial deployment waits on a full Pod quota",
@@ -3709,7 +3726,7 @@ export const scenarios = {
     steps: [
       "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
       "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
-      "Expand the runtime.startup_phase row to inspect its fields. Check the local date, time, and UTC offset in each timestamp. On a narrow screen the offset can wrap, but it should remain readable beside the level, origin, and message.",
+      "Expand the runtime.startup_phase row to inspect its fields. Check the local date, time, and UTC offset in each timestamp. Wider than 520px, each timestamp stays on one line; below 1000px the message moves under the time, level, and origin.",
       "Select Follow, confirm it changes to Following, then select Following to stop. At 390px, check that the controls remain usable, each log level stays on one line, and long messages wrap without horizontal scrolling.",
     ],
     gap: "Runtime records and refreshes are simulated UI evidence; source reads, filtering, and following require real backend verification.",

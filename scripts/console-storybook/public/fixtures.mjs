@@ -1221,6 +1221,19 @@ export function installFixture(scenario, evidence) {
                     revisionId: current.revisionId,
                   }
                 : {}),
+              // After handoff the job names its first deployment's wait, as it does for a
+              // reader of that deployment (#2744).
+              ...(scenario.provisioningNamesDeploymentWait &&
+              current.reads > 1 &&
+              (current.status === "queued" || current.status === "running")
+                ? {
+                    progress: {
+                      phase: "deployment",
+                      lastAttempt:
+                        deployments.get(current.revisionId)?.progress?.lastAttempt ?? null,
+                    },
+                  }
+                : {}),
             },
           });
         }

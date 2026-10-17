@@ -389,6 +389,33 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
   assert.match(await timestamp("after the clocks went back"), /1:30:00\s+AM\s+GMT-5$/u);
 });
 
+// The UTC offset made the longest timestamps wrap onto a second line in the fixed time column
+// above 760 px, so every log row took two lines (finding 1681). From 1000 px down the message
+// moves below the time instead of shrinking to a sliver.
+test("log timestamps with a half-hour UTC offset stay on one line", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  // 12:59:59 PM on 12/31 in Kolkata: two-digit month, day and hour.
+  computeDriver.state.lines = [{ time: "2026-12-31T07:29:59Z", raw: "longest timestamp" }];
+  const { page } = await newPage(t, fixture, {
+    context: { locale: "en-US", timezoneId: "Asia/Kolkata" },
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const time = page
+    .getByRole("log", { name: "Runtime log output" })
+    .locator(".log-row", { hasText: "longest timestamp" })
+    .locator(".log-time");
+  assert.match(await time.innerText(), /^12\/31\/2026, 12:59:59\sPM\sGMT\+5:30$/u);
+  for (const width of [1440, 1100, 1001, 1000, 761, 521]) {
+    await page.setViewportSize({ width, height: 900 });
+    const lines = await time.evaluate((cell) => {
+      const range = cell.ownerDocument.createRange();
+      range.selectNodeContents(cell);
+      return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+    });
+    assert.equal(lines, 1, `one timestamp line at ${width}px`);
+  }
+});
+
 test("log levels stay on one line and keep log columns aligned", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   const levels = ["error", "warn", "info", "debug"];
