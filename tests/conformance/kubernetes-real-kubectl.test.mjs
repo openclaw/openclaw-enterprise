@@ -422,13 +422,28 @@ test(
     assert.throws(() => context.after(() => ran.push("port-forward stop")), {
       message: stopsSetup,
     });
+    // A late cleanup may register another, as during the teardown, without being stopped.
+    assert.throws(
+      () =>
+        context.after(() => {
+          context.after(() => ran.push("pool end"));
+          ran.push("observer stop");
+        }),
+      { message: stopsSetup },
+    );
     await delay(300);
-    assert.deepEqual(ran, ["early cleanup", "worker stop", "port-forward stop"]);
-    assert.equal(events.filter((event) => event === "fail").length, 3);
+    assert.deepEqual(ran, [
+      "early cleanup",
+      "worker stop",
+      "port-forward stop",
+      "observer stop",
+      "pool end",
+    ]);
+    assert.equal(events.filter((event) => event === "fail").length, 5);
     assert.equal(events.filter((event) => event === "exit").length, 1);
     assert.equal(
       logs.filter((line) => / came after the teardown ran; running it now$/.test(line)).length,
-      3,
+      5,
     );
     assert.ok(
       logs.some((line) =>
@@ -511,6 +526,10 @@ test(
       after(async () => {
         await delay(500);
         process.stdout.write("attempted file after\\n");
+      });
+      // A failing file hook skips the root's later ones; the file's end must still be seen.
+      after(() => {
+        throw new Error("file after hook failed");
       });
       // Named like node:test's own root, which must not pass for the file's end.
       it("<root>", (testContext) => {
@@ -601,20 +620,17 @@ test(
 );
 
 test(
-  "a pending exit stops waiting for timed-out setup at its limit",
+  "a timeout arms the exit, which waits for setup that never stops only to its limit",
   { timeout: 20_000 },
   async () => {
-    // Setup that never reaches another cleanup registration holds the exit only for its limit.
+    // Setup still running after its test timed out, holding a handle and never registering
+    // again, kept the file alive until the runner's file timeout. The timeout now arms the exit,
+    // which waits for that setup only to its limit.
     const exited = await runTestScript(`
       import test from "node:test";
-      import { setTimeout as delay } from "node:timers/promises";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
-      test("first abandons a cleanup", (testContext) => {
-        const { context } = boundedTeardown(testContext, { stepLimitMs: 100, exitGraceMs: 200 });
-        context.after(() => new Promise(() => setInterval(() => {}, 50)));
-      });
-      test("second never stops", { timeout: 200 }, async (testContext) => {
-        boundedTeardown(testContext, { label: "second", stepLimitMs: 1_000 });
+      test("never stops", { timeout: 200 }, async (testContext) => {
+        boundedTeardown(testContext, { label: "setup", stepLimitMs: 1_000, exitGraceMs: 200 });
         await new Promise(() => setInterval(() => {}, 50));
       });
     `);
@@ -623,7 +639,81 @@ test(
     assert.equal(exited.code, 1);
     assert.match(
       exited.stderr,
-      /^second: setup still ran 1000 ms after its test ended; exiting without it$/m,
+      /^setup: exiting once the file's tests settle for 200 ms; its test timed out or was cancelled with setup that may still run$/m,
+    );
+    assert.match(
+      exited.stderr,
+      /^setup: setup still ran 1000 ms after its test ended; exiting without it$/m,
+    );
+  },
+);
+
+test(
+  "the topology and OpenShell cleanup lists register every cleanup after their teardown ran",
+  { timeout: 20_000 },
+  async () => {
+    // A late registration throws to stop the setup; a list that stopped at its first entry would
+    // leave every resource behind the later entries (the pools, Namespaces and directories).
+    const topologyHelper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url)
+      .href;
+    const openShellHelper = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
+      .href;
+    const exited = await runTestScript(`
+      import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
+      import {
+        productionTopologyCleanupOrder,
+        registerProductionTopologyCleanups,
+      } from ${JSON.stringify(topologyHelper)};
+      import {
+        openShellInstallationCleanupOrder,
+        registerOpenShellInstallationCleanups,
+      } from ${JSON.stringify(openShellHelper)};
+      const attempt = (name) => process.stdout.write("attempted " + name + "\\n");
+      for (const [order, register] of [
+        [productionTopologyCleanupOrder, registerProductionTopologyCleanups],
+        [openShellInstallationCleanupOrder, registerOpenShellInstallationCleanups],
+      ]) {
+        const hooks = [];
+        const { context } = boundedTeardown(
+          { after: (hook) => hooks.push(hook) },
+          { exitGraceMs: 0, log: () => {}, exit: () => {}, failFile: () => {} },
+        );
+        await hooks[0]();
+        const operations = Object.fromEntries(order.map((name) => [name, () => attempt(name)]));
+        try {
+          register(context, operations);
+          process.stdout.write("not stopped\\n");
+        } catch (error) {
+          process.stdout.write("stopped: " + /setup stops here/.test(error.message) + "\\n");
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    `);
+    assert.equal(exited.code, 0, exited.stderr);
+    assert.deepEqual(exited.stdout.match(/^stopped: .+$/gm), ["stopped: true", "stopped: true"]);
+    assert.doesNotMatch(exited.stdout, /^not stopped$/m);
+    assert.deepEqual(
+      exited.stdout.match(/^attempted .+$/gm),
+      [
+        ...[
+          "temporaryDirectory",
+          "placementNamespace",
+          "gatewayRuntimeNamespace",
+          "postgresNetwork",
+          "observerPool",
+          "productionApp",
+          "worker",
+          "gatewayForward",
+        ],
+        ...[
+          "temporaryDirectory",
+          "workloadNamespace",
+          "observerPool",
+          "productionApp",
+          "portForwards",
+          "workerStop",
+        ],
+      ].map((name) => `attempted ${name}`),
     );
   },
 );

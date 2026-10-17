@@ -55,11 +55,20 @@ export const openShellInstallationCleanupOrder = Object.freeze([
 ]);
 
 export function registerOpenShellInstallationCleanups(context, operations) {
+  let stopped;
   for (const name of [...openShellInstallationCleanupOrder].reverse()) {
     const operation = operations[name];
     assert.equal(typeof operation, "function", `OpenShell installation cleanup ${name}`);
-    // Named for the teardown log: every registration comes from this line.
-    context.after({ [name]: () => operation() }[name]);
+    // Named for the teardown log: every registration comes from this line. Registered after its
+    // test's teardown, each runs at once and throws to stop the setup; register them all first.
+    try {
+      context.after({ [name]: () => operation() }[name]);
+    } catch (error) {
+      stopped ??= error;
+    }
+  }
+  if (stopped !== undefined) {
+    throw stopped;
   }
 }
 

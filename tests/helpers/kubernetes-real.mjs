@@ -1,13 +1,12 @@
 import { sha256Hex } from "../../packages/utils/src/index.ts";
 import assert from "node:assert/strict";
-import { AsyncLocalStorage, AsyncResource } from "node:async_hooks";
+import { AsyncLocalStorage, executionAsyncResource } from "node:async_hooks";
 import { execFile, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { tracingChannel } from "node:diagnostics_channel";
 import { once } from "node:events";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { after as afterFile } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
@@ -140,11 +139,10 @@ export const abandonedTeardownExitGraceMs = 2_000;
 // parent's before hook failed publishes only its end. Without the channel (an older Node), the
 // exit waits out the grace alone. Subscribing makes node:test call each test function with its
 // internal Test as `this`.
-const testChannel = tracingChannel("node.test");
-// The test whose body (or anything it started) is running, if any.
-const currentTest = new AsyncLocalStorage();
-testChannel.start.bindStore(currentTest);
 const runningTests = new Set();
+// The root's events, told from a test's by the Test that publishes them (the async resource it
+// runs in has no parent), not by its display name, which a test can share.
+const rootEvents = new WeakSet();
 let testEventsSeen = false;
 let fileFinished = false;
 let lateCleanupsRunning = 0;
@@ -152,36 +150,24 @@ let lastActivity = performance.now();
 const markActivity = () => {
   lastActivity = performance.now();
 };
-// The file root's after hooks run once every test has finished, so the first end after this hook
-// starts is the root's own. It is added from this module's own async scope, made at import, so
-// it lands on the root even when the first teardown is made inside a test, and only once a test
-// runs, so a program that is no test file (scripts/k3d-demo.mjs) never starts node:test.
-// Imported from inside a test, the hook would land on that test, so the exit then does without
-// the root's end.
-const importScope = new AsyncResource("kubernetes-real-import");
-const fileEndObservable = currentTest.getStore() === undefined;
-let fileHookAdded = false;
-let fileHooksStarted = false;
-function observeFileEnd() {
-  if (fileHookAdded || !fileEndObservable || currentTest.getStore() === undefined) {
-    return;
-  }
-  fileHookAdded = true;
-  importScope.runInAsyncScope(() =>
-    afterFile(() => {
-      fileHooksStarted = true;
-    }),
-  );
+function publishedByRoot(test) {
+  const publisher = executionAsyncResource();
+  return publisher !== null && typeof publisher === "object" && "parent" in publisher
+    ? publisher.parent === null
+    : test.name === "<root>";
 }
-testChannel.subscribe({
+tracingChannel("node.test").subscribe({
   start(test) {
     testEventsSeen = true;
+    if (publishedByRoot(test)) {
+      rootEvents.add(test);
+    }
     runningTests.add(test);
     markActivity();
   },
   end(test) {
     runningTests.delete(test);
-    if (fileHooksStarted) {
+    if (rootEvents.has(test)) {
       fileFinished = true;
     }
     markActivity();
@@ -190,8 +176,14 @@ testChannel.subscribe({
 
 // Setup that may still run after its test's teardown, because a node:test timeout or
 // cancellation does not stop a test's body: the label it is logged by, and when the exit stops
-// waiting for it.
+// waiting for it. The exit waits for it to reach its next cleanup registration, where it is
+// stopped, so setup must register an idempotent rollback for each acquisition before it starts
+// the next one, and run its acquisitions one at a time: a parallel branch's acquisition still in
+// flight when another branch is stopped is not waited for. Setup that ends without registering
+// again holds a pending exit to its limit, while anything else holds the process.
 const unsettledSetups = new Map();
+// Set while a cleanup runs, so one that registers another is not taken for setup.
+const runningCleanup = new AsyncLocalStorage();
 
 function setupsSettled(now) {
   for (const [setup, { label, limitMs, deadline, log }] of unsettledSetups) {
@@ -215,7 +207,7 @@ async function testsSettled(quietMs) {
     const idle =
       runningTests.size === 0 &&
       lateCleanupsRunning === 0 &&
-      (fileFinished || !testEventsSeen || !fileHookAdded) &&
+      (fileFinished || !testEventsSeen) &&
       setupsSettled(now);
     const quietFor = now - lastActivity;
     if (idle && quietFor >= quietMs) {
@@ -260,7 +252,6 @@ export function boundedTeardown(
   if (existing !== undefined) {
     return existing;
   }
-  observeFileEnd();
   const cleanups = [];
   let started = false;
   let finished = false;
@@ -283,7 +274,7 @@ export function boundedTeardown(
     let abandoned = false;
     try {
       await Promise.race([
-        Promise.resolve().then(cleanup),
+        runningCleanup.run(true, () => Promise.resolve().then(cleanup)),
         new Promise((_, reject) => {
           timer = setTimeout(() => {
             abandoned = true;
@@ -327,9 +318,12 @@ export function boundedTeardown(
       failFile();
       endProcess(`cleanup ${step.site} came after its test's teardown`);
     });
-    throw new Error(
-      `${label}: setup outlived its test; cleanup ${step.site} runs now and setup stops here`,
-    );
+    // A cleanup may register another, as during the teardown; only setup is stopped.
+    if (runningCleanup.getStore() !== true) {
+      throw new Error(
+        `${label}: setup outlived its test; cleanup ${step.site} runs now and setup stops here`,
+      );
+    }
   };
   testContext.after(async () => {
     started = true;
@@ -349,9 +343,11 @@ export function boundedTeardown(
     finished = true;
     // A timed-out or cancelled test's signal aborts before its hooks run; its setup may still run.
     // An exit waits for it to reach its next cleanup registration, where it stops, within the limit.
+    // The exit then also bounds that setup, should it hold the process (finding 1722).
     if (testContext.signal?.aborted === true) {
       const deadline = performance.now() + stepLimitMs;
       unsettledSetups.set(after, { label, limitMs: stepLimitMs, deadline, log });
+      endProcess("its test timed out or was cancelled with setup that may still run");
     }
     if (abandoned.length > 0) {
       endProcess(`abandoned cleanups ${abandoned.join(", ")}`);
