@@ -130,6 +130,18 @@ function provisioningStatusText(status) {
   }
 }
 
+// The API's catch-all outage answer, which names nothing the caller can act on.
+const GENERIC_DEPENDENCY_UNAVAILABLE = "A required platform dependency is unavailable.";
+
+// The server's own sentence, unless it is a catch-all answer (finding 1609).
+function namedRefusal(error) {
+  return error.serverMessage !== undefined &&
+    error.serverMessage !== GENERIC_CONFLICT &&
+    error.serverMessage !== GENERIC_DEPENDENCY_UNAVAILABLE
+    ? error.serverMessage
+    : undefined;
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -454,11 +466,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     { className: "notice", role: "status", hidden: true },
     "Experimental: Dedicated OpenClaw requires a runtime build with native worker-inference support. Released OpenClaw images may not include it yet.",
   );
-  // Admission refuses dedicated OpenClaw unless the Installation reports native worker support.
+  // The Installation reports native worker support only when it can admit dedicated OpenClaw:
+  // the runtime supports native workers and a Sandbox Driver can provision them (finding 1608).
   const nativeWorkersUnavailable = element(
     "p",
     { className: "error", role: "alert", hidden: true },
-    "Dedicated OpenClaw is unavailable: this installation's OpenClaw runtime lacks native worker support. Choose Embedded execution or the Codex harness.",
+    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose Embedded execution or the Codex harness.",
   );
   const configuration = element("textarea", {
     id: "configuration-json",
@@ -1594,7 +1607,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const modeHint = form.querySelector("#execution-mode-hint");
     if (modeHint) {
       modeHint.textContent = nativeRefused
-        ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation's OpenClaw runtime lacks native worker support, so OpenClaw uses Embedded execution. Slack requires Codex."
+        ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support, so OpenClaw uses Embedded execution. Slack requires Codex."
         : "Codex uses Dedicated execution. OpenClaw supports Dedicated or Embedded execution. Slack requires Dedicated execution.";
     }
     if (capabilityDiscoveryDone) {
@@ -1867,6 +1880,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         mutationStarted &&
         !error.provisioningTerminal &&
         ![400, 403, 404, 409, 429].includes(error.status);
+      // A refused request that names its reason is shown as sent. An outage keeps Retry, since
+      // the same request ID cannot duplicate the job, but leads with the reason instead of
+      // "Outcome unknown" (finding 1609).
+      const reason = error.status === 409 || error.status >= 500 ? namedRefusal(error) : undefined;
       // The API refuses to retry a job whose Namespace or Agent lifecycle changed, that was
       // cancelled or handed off, or whose Secret was deleted; that job can never finish. A
       // refusal that names its reason is shown as sent; a race in the store can still
@@ -1881,7 +1898,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         detail =
           "Outcome unknown after provisioning admission. Retry resumes the accepted provisioning job, or retries it if it failed. If the API refuses because the job finished, select Create Agent to resend the same request ID.";
       } else if (outcomeUnknown) {
-        detail = "Outcome unknown. Retry resubmits the same request ID and saved references.";
+        detail = `${reason ?? "Outcome unknown."} Retry resubmits the same request ID and saved references.`;
       } else if (error.provisioningTerminal && error.canRetryProvisioning) {
         detail = `${error.message} Retry uses the accepted provisioning job.`;
       } else if (error.provisioningStopped) {
@@ -1901,6 +1918,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       } else if (recovering && error.status === 409) {
         detail =
           "The provisioning job can no longer be retried; it may have finished. Select Create Agent to resend the same request ID and open its result.";
+      } else if (reason !== undefined && error.code !== "NAMESPACE_NOT_READY") {
+        detail = reason;
       } else {
         detail = rejectionMessage(error, mutationStarted);
       }

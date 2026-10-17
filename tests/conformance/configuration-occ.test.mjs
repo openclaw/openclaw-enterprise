@@ -11,6 +11,7 @@ import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts
 import {
   AuthorizationDeniedError,
   ConfigurationHarnessError,
+  DedicatedOpenClawSandboxError,
   DependencyUnavailableError,
   InMemoryPlatformState,
   NamespaceNotEmptyError,
@@ -1857,15 +1858,10 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
       { namespaceId: namespace.id, agentId: agent.id },
       resolveApprovedProductionHarness,
     ),
-    (error) =>
-      error instanceof DependencyUnavailableError &&
-      /requires a provisioning SandboxDriver with networking, filesystem, and process containment/.test(
-        error.message,
-      ),
+    dedicatedSandboxRefusal,
   );
-  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {
-    nativeWorkers: { support: "pinned-runtime" },
-  });
+  // Without that Sandbox Driver the Installation cannot admit dedicated OpenClaw (finding 1608).
+  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {});
   // Listing returns the revision's summary: no saved settings.
   assert.deepEqual(
     (await controller.listRevisions(administrator, namespace.id, agent.id)).revisions,
@@ -1911,12 +1907,41 @@ test("Harness admission rejects conflicting selections, mode mismatches, and una
   );
 });
 
+// The fixed refusal for dedicated OpenClaw without a provisioning Sandbox Driver: a permanent
+// conflict (409) naming the Driver, not a dependency outage (503) with generic text (finding 1609).
+function dedicatedSandboxRefusal(error) {
+  return (
+    error instanceof DedicatedOpenClawSandboxError &&
+    error instanceof ResourceStateConflictError &&
+    !(error instanceof DependencyUnavailableError) &&
+    error.message ===
+      "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment."
+  );
+}
+
+function conformanceSandbox(id, facets, provisions = true) {
+  return {
+    id: `configuration-occ-sandbox-${id}`,
+    capability: "sandbox",
+    implementation: "configuration-conformance-sandbox",
+    facets,
+    ...(provisions
+      ? {
+          async provisionHarness() {
+            assert.fail("admission checks never provision");
+          },
+        }
+      : {}),
+    async cleanup() {},
+  };
+}
+
 test("The pinned runtime admits dedicated OpenClaw without waiving Sandbox containment", async () => {
   const { agent, controller, namespace } = await fixture();
   assert.equal(PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS, true);
-  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {
-    nativeWorkers: { support: "pinned-runtime" },
-  });
+  // nativeWorkers promises that dedicated OpenClaw can be admitted, so runtime support alone
+  // does not report it (finding 1608).
+  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {});
   const openclawConfiguration = await controller.createConfiguration(administrator, {
     namespaceId: namespace.id,
     kind: "agent",
@@ -1930,22 +1955,41 @@ test("The pinned runtime admits dedicated OpenClaw without waiving Sandbox conta
   });
   // Native runtime support does not grant containment: dedicated OpenClaw still fails closed
   // without a provisioning SandboxDriver that declares networking, filesystem, and process containment.
-  await assert.rejects(
+  const deploy = () =>
     controller.deployAgent(
       administrator,
       { namespaceId: namespace.id, agentId: agent.id },
       resolveApprovedProductionHarness,
-    ),
-    (error) =>
-      error instanceof DependencyUnavailableError &&
-      /requires a provisioning SandboxDriver with networking, filesystem, and process containment/.test(
-        error.message,
+    );
+  await assert.rejects(deploy(), dedicatedSandboxRefusal);
+  const facets = ["networking", "filesystem", "process"];
+  // A Sandbox Driver that cannot provision, or lacks any one facet, changes neither answer.
+  for (const sandbox of [
+    conformanceSandbox("contain-only", facets, false),
+    ...facets.map((missing) =>
+      conformanceSandbox(
+        `no-${missing}`,
+        facets.filter((facet) => facet !== missing),
       ),
-  );
+    ),
+  ]) {
+    registerAndSelectDrivers(controller, [sandbox]);
+    assert.deepEqual(
+      (await controller.getInstallation(administrator)).capabilities,
+      {},
+      sandbox.id,
+    );
+    await assert.rejects(deploy(), dedicatedSandboxRefusal, sandbox.id);
+  }
   assert.deepEqual(
     (await controller.listRevisions(administrator, namespace.id, agent.id)).revisions,
     [],
   );
+  // A qualifying Sandbox Driver is what makes the Installation report native worker support.
+  registerAndSelectDrivers(controller, [conformanceSandbox("full", facets)]);
+  assert.deepEqual((await controller.getInstallation(administrator)).capabilities, {
+    nativeWorkers: { support: "pinned-runtime" },
+  });
   assert.throws(
     () => new OpenClawController(installation, { nativeWorkerSupport: "pinned-runtime" }),
     ScopeViolationError,

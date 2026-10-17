@@ -151,6 +151,8 @@ import {
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  DEDICATED_OPENCLAW_SANDBOX_REQUIRED,
+  DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -286,6 +288,7 @@ export {
   AgentDeletingError,
   AgentPrincipalAuthorizationError,
   AuthorizationDeniedError,
+  DedicatedOpenClawSandboxError,
   DeletionRetryOwnedError,
   DependencyUnavailableError,
   DeviceAuthorizationStartError,
@@ -1294,7 +1297,10 @@ function requireDedicatedNativeSupport(
   harness: Readonly<RevisionHarnessDescriptor>,
   sandbox: SandboxDriver | undefined,
   nativeWorkers: NativeWorkerSupportSource | undefined,
-  { runtimeImage = true }: { readonly runtimeImage?: boolean } = {},
+  {
+    runtimeImage = true,
+    stored = false,
+  }: { readonly runtimeImage?: boolean; readonly stored?: boolean } = {},
 ): void {
   if (harness.id !== "openclaw" || harness.mode !== "dedicated") {
     return;
@@ -1302,15 +1308,23 @@ function requireDedicatedNativeSupport(
   if (runtimeImage && nativeWorkers === undefined) {
     throw new NativeWorkerSupportError();
   }
-  const requiredFacets: readonly SandboxFacet[] = ["networking", "filesystem", "process"];
-  if (
-    sandbox?.provisionHarness === undefined ||
-    requiredFacets.some((facet) => !sandbox.facets.includes(facet))
-  ) {
-    throw new DependencyUnavailableError(
-      "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.",
-    );
+  if (!provisionsDedicatedOpenClaw(sandbox)) {
+    // A new request meets a fixed Installation shape: a permanent refusal (finding 1609). Stored
+    // provisioning work waits for the Driver to return, as for any dependency outage.
+    if (stored) {
+      throw new DependencyUnavailableError(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
+    }
+    throw new DedicatedOpenClawSandboxError();
   }
+}
+
+/** Whether the Sandbox Driver can provision dedicated native OpenClaw: all three facets. */
+function provisionsDedicatedOpenClaw(sandbox: SandboxDriver | undefined): boolean {
+  const requiredFacets: readonly SandboxFacet[] = ["networking", "filesystem", "process"];
+  return (
+    sandbox?.provisionHarness !== undefined &&
+    requiredFacets.every((facet) => sandbox.facets.includes(facet))
+  );
 }
 
 function validRepositorySelector(value: unknown): value is string {
@@ -1629,11 +1643,13 @@ export class OpenClawController {
       kind: "installation",
       id: this.installation.id,
     });
+    // nativeWorkers promises that dedicated native OpenClaw can be admitted, so it is reported
+    // only when admission's Sandbox Driver check passes too (finding 1608).
+    const { nativeWorkers: _unchecked, ...declared } = this.installation.capabilities ?? {};
+    const nativeWorkers = this.dedicatedOpenClawSupport();
     const capabilities = {
-      ...this.installation.capabilities,
-      ...(this.nativeWorkers === undefined
-        ? {}
-        : { nativeWorkers: { support: this.nativeWorkers } }),
+      ...declared,
+      ...(nativeWorkers === undefined ? {} : { nativeWorkers: { support: nativeWorkers } }),
       ...(this.selections.has("credential_gateway")
         ? {
             credentialSources: {
@@ -1663,6 +1679,23 @@ export class OpenClawController {
         },
       },
     });
+  }
+
+  /** Native worker support, when dedicated native OpenClaw admission can pass. */
+  private dedicatedOpenClawSupport(): NativeWorkerSupportSource | undefined {
+    if (this.nativeWorkers === undefined) {
+      return undefined;
+    }
+    let sandbox: SandboxDriver | undefined;
+    try {
+      sandbox = this.sandboxDriver();
+    } catch (error) {
+      if (error instanceof DependencyUnavailableError) {
+        return undefined;
+      }
+      throw error;
+    }
+    return provisionsDedicatedOpenClaw(sandbox) ? this.nativeWorkers : undefined;
   }
 
   async getInstallationDeploymentInventory(
@@ -2560,7 +2593,9 @@ export class OpenClawController {
           },
         },
       });
-      await this.authorizeProvisioningRecord(state, principalId, record.record);
+      await this.authorizeProvisioningRecord(state, principalId, record.record, {
+        admission: true,
+      });
       await state.audit.append({
         id: `aud_${crypto.randomUUID()}`,
         installationId: this.installation.id,
@@ -8680,7 +8715,10 @@ export class OpenClawController {
     state: PlatformUnitOfWork,
     principalId: string,
     record: Readonly<AgentProvisioningRecord>,
-    { statusRead = false }: { readonly statusRead?: boolean } = {},
+    {
+      statusRead = false,
+      admission = false,
+    }: { readonly statusRead?: boolean; readonly admission?: boolean } = {},
   ): Promise<void> {
     const namespaceId = record.namespaceId;
     await this.authorizeProvisioningRequest(principalId, namespaceId);
@@ -8778,6 +8816,7 @@ export class OpenClawController {
     // the plugin policy below: a status read still reports the stored work after the image loses it.
     requireDedicatedNativeSupport(harness, sandbox, this.nativeWorkers, {
       runtimeImage: !statusRead,
+      stored: !admission,
     });
     const configuration =
       sandbox?.configureAgent?.(plan.configuration.values, harness) ?? plan.configuration.values;
