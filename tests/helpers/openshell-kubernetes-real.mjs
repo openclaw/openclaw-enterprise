@@ -1132,6 +1132,8 @@ export function createOpenShellKubernetesFixture({
       const timeout = setTimeout(() => fail(new Error("Codex harness turn timed out")), 300000);
       const pending = new Map();
       const items = [];
+      const pendingCommands = new Map();
+      let threadId, turnId, commandDeadline;
       let nextId = 1;
       let assistant = "";
       let finished = false;
@@ -1178,10 +1180,25 @@ export function createOpenShellKubernetesFixture({
         process.exit(1);
       }
 
+      function unknownCommandOutcome() {
+        fail(new Error("Codex command outcome is unknown; not sending another turn"));
+      }
+
+      function finish() {
+        clearTimeout(commandDeadline);
+        finished = true;
+        clearTimeout(timeout);
+        // Exit once the result is flushed. Through the OpenShell service route the WebSocket
+        // close handshake never completes, so waiting for it would hold kubectl exec open.
+        process.stdout.write(JSON.stringify({ assistant, items }), () => process.exit(0));
+      }
+
       function request(method, params = {}) {
         const id = nextId++;
-        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
-        return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+        return new Promise((resolve, reject) => {
+          pending.set(id, { method, resolve, reject });
+          socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+        });
       }
 
       const socket = new WebSocket(appServerUrl, {
@@ -1210,8 +1227,9 @@ export function createOpenShellKubernetesFixture({
           if (started.sandbox?.type !== "dangerFullAccess") {
             throw new Error("OpenShell requires the Codex account to allow :danger-full-access.");
           }
+          threadId = started.thread.id;
           await request("turn/start", {
-            threadId: started.thread.id,
+            threadId,
             input: [{ type: "text", text: ${JSON.stringify(prompt)} }],
             permissions: ":danger-full-access",
           });
@@ -1221,37 +1239,70 @@ export function createOpenShellKubernetesFixture({
       });
 
       socket.addEventListener("message", ({ data }) => {
+        if (finished) return;
         const message = JSON.parse(String(data));
+        const { method, params } = message;
+        const item = params?.item;
+        const decline = message.id !== undefined && (
+          method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval"
+        );
+        const commandEvent = item?.type === "commandExecution" &&
+          (method === "item/started" || method === "item/completed");
+        const command = commandEvent && threadId && turnId &&
+          params.threadId === threadId && params.turnId === turnId;
+        // Before the turn ends, an unbound command leaves the probe outcome unknown.
+        // Afterward we observe only the commands already outstanding on our turn.
+        if (!commandDeadline && commandEvent && !command) return unknownCommandOutcome();
+        const starting = method === "item/started" && command;
+        const ending = method === "item/completed" && command;
+        if (commandDeadline) {
+          if (starting) return unknownCommandOutcome();
+          if (ending) {
+            // Only a terminal matching a command outstanding at turn completion can
+            // settle it. Never discard a second command and then report only the first.
+            if (!pendingCommands.has(item.id) || pendingCommands.get(item.id) !== item.command ||
+                !["completed", "failed"].includes(item.status) || !Number.isSafeInteger(item.exitCode)) {
+              return unknownCommandOutcome();
+            }
+          } else if (!decline) return;
+        }
         rememberFailureSignals(message);
         items.push(message);
-        if (message.id !== undefined && (
-          message.method === "item/commandExecution/requestApproval" ||
-          message.method === "item/fileChange/requestApproval"
-        )) {
+        if (starting) pendingCommands.set(item.id, item.command);
+        if (ending) {
+          pendingCommands.delete(item.id);
+          if (commandDeadline && !pendingCommands.size) finish();
+          return;
+        }
+        if (decline) {
           // Boundary probes must observe denials, never grant escalation or wait for a human.
           socket.send(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { decision: "decline" } }));
           return;
         }
-        if (message.id !== undefined) {
+        if (message.id !== undefined && method === undefined) {
           const entry = pending.get(message.id);
           pending.delete(message.id);
           if (entry) {
-            if (message.error) entry.reject(new Error(message.error.message));
-            else entry.resolve(message.result);
+            if (message.error) return entry.reject(new Error(message.error.message));
+            if (entry.method === "turn/start") {
+              // Notifications can arrive in this socket read, before an await continuation runs.
+              const id = message.result?.turn?.id;
+              if (typeof id !== "string" || !id) return fail(new Error("Codex turn/start returned no turn ID"));
+              turnId = id;
+            }
+            entry.resolve(message.result);
           }
-        } else if (message.method === "item/completed") {
-          const item = message.params?.item;
+        } else if (method === "item/completed") {
           if (item?.type === "agentMessage") assistant = item.text ?? "";
         } else if (message.method === "turn/completed") {
-          if (message.params?.turn?.status !== "completed") {
+          if (params?.turn?.status !== "completed" || params.threadId !== threadId || params.turn.id !== turnId) {
             fail(new Error("Codex harness turn did not complete successfully"));
             return;
           }
-          finished = true;
-          clearTimeout(timeout);
-          // Exit once the result is flushed. Through the OpenShell service route the WebSocket
-          // close handshake never completes, so waiting for it would hold kubectl exec open.
-          process.stdout.write(JSON.stringify({ assistant, items }), () => process.exit(0));
+          // A command can outlive its turn. Briefly observe only its original socket;
+          // the overall turn deadline still applies. Never extend either deadline on activity.
+          if (pendingCommands.size) commandDeadline = setTimeout(unknownCommandOutcome, 5_000);
+          else finish();
         } else if (message.method === "error" && message.params?.willRetry !== true) {
           // Codex reports retried model reconnects as errors; only a final error ends the turn,
           // and turn/completed still requires a completed status.
@@ -1259,10 +1310,14 @@ export function createOpenShellKubernetesFixture({
         }
       });
       socket.addEventListener("error", () => {
-        if (!finished) fail(new Error("Codex harness connection failed"));
+        if (finished) return;
+        if (commandDeadline) return unknownCommandOutcome();
+        fail(new Error("Codex harness connection failed"));
       });
       socket.addEventListener("close", () => {
-        if (!finished) fail(new Error("Codex harness connection closed before completion"));
+        if (finished) return;
+        if (commandDeadline) return unknownCommandOutcome();
+        fail(new Error("Codex harness connection closed before completion"));
       });
     `;
     const containerArguments = container === undefined ? [] : ["--container", container];

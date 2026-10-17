@@ -131,7 +131,11 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
   `turn-failed-attempt2`, means the check was retried once, after a timeout or
   a transient failure, and the second attempt failed that way. An unreachable
   model provider is transient: each attempt waits out its 30-second limit, so
-  `error-event-attempt2` follows about a minute after the check starts.
+  `error-event-attempt2` follows about a minute after the check starts. Codex
+  reports a refused port, an unresolvable host and a rejected TLS certificate
+  the same way, so a permanent mistake such as a wrong endpoint host or port
+  or a blocked egress route is also retried once before it is held. If Codex
+  reconnects and the model answers in the same attempt, the check passes.
 - On an OpenShell Harness, the `agent` `runtime-status` check says nothing about
   its health; the `agent` `sandbox` check does. A failed one means the Sandbox
   is lost; [deploy the Agent again](../guides/topics/agent-troubleshoot.md#an-openshell-agent-stops-answering).
@@ -161,6 +165,8 @@ status, startup evidence, plugin warnings, and Agent state unchanged.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 03:40: Say that an unreachable model provider covers permanent connection mistakes, and pass a check whose network wait recovered. (lows-1017d, findings 1621 and 1622)
 
 - 2026-10-17 02:30: Retry the dedicated Codex model check once when the model provider is unreachable. (lows-1017c, finding 1618)
 
