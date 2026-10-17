@@ -349,7 +349,7 @@ export function createChannelSecretsPanel({
       changedSecrets: {},
       ...structuredClone(state.draftSeed ?? {}),
     };
-    // Seeded choices show once: after a conflict, or in the panel Reload draft rebuilt.
+    // Reopen the form with its unsaved choices after a refused write or a draft reload.
     state.draftSeed = null;
     const pickers = [];
     const status = element(
@@ -524,6 +524,15 @@ export function createChannelSecretsPanel({
         if (isStaleGeneration(cause) && mutationStarted && !configurationSaved) {
           carryChoices();
           return;
+        }
+        if (
+          mutationStarted &&
+          !configurationSaved &&
+          cause.status === 409 &&
+          cause.code === "RESOURCE_CONFLICT"
+        ) {
+          // The write was refused. Keep the choices in this form, without requesting a reload.
+          state.draftSeed = draft;
         }
         state.saveError = cause;
         state.saveErrorBeforeWrite = !mutationStarted;

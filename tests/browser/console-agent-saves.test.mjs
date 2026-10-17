@@ -5,6 +5,7 @@ import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  accessBindingPostRequests,
   apiRequests,
   detailUrl,
   fileBrowser,
@@ -1087,8 +1088,15 @@ for (const c of reservedSaveCases) {
     });
     await page.getByRole("heading", { name: `Reserved ${c.name}` }).waitFor();
     await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+    const requests = apiRequests(page, fixture.origin);
     await c.act(page, context);
     await page.getByText(refusal).first().waitFor();
+    if (c.tab === "credentials") {
+      // The refused write did not bind these Secrets. Keep both choices in the rebuilt form.
+      await waitForInputValue(page.getByLabel("Slack app token"), context.secondApp.name);
+      await waitForInputValue(page.getByLabel("Slack bot token"), context.secondBot.name);
+      assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
+    }
     assert.equal(writes, 1);
     assert.equal(await page.getByRole("button", { name: "Reload draft" }).count(), 0);
     assert.equal(
