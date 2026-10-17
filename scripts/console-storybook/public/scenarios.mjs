@@ -3842,6 +3842,30 @@ export const scenarios = {
     description:
       "A typed conflict shows the API's sentence, which names the setting to change. No version is created.",
   },
+  deployOpensVersion: {
+    group: "Pages/Agent detail",
+    name: "Deployment opens the new version",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        delayMs: 600,
+      },
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 2,
+        once: true,
+        delayMs: 900,
+      },
+    ],
+    description:
+      "An admitted deployment opens the new version. The draft stays shown, inactive, while the version loads; keyboard focus moves from “Deploying…” to the page heading, then to the new version’s heading, never to the page itself.",
+    steps: [
+      "Use Tab to reach Deploy new version, then press Enter. “Deploying…” appears and holds focus during the 600 ms request.",
+      "Once the deployment is admitted, focus moves to the Agent heading while the draft stays shown, then to the Loading page heading after 250 ms, then to the new version’s heading when it opens.",
+    ],
+  },
   deployAgentPrincipalDenied: {
     group: "Pages/Agent detail",
     name: "Deployment denied for the Agent's service principal",

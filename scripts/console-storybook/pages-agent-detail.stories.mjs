@@ -79,6 +79,10 @@ export const DeployRefusedSetting = {
   ...story("deployRefusedSetting"),
   name: "Deployment refused by a Configuration setting",
 };
+export const DeployOpensVersion = {
+  ...story("deployOpensVersion"),
+  name: "Deployment opens the new version",
+};
 export const DeployAgentPrincipalDenied = {
   ...story("deployAgentPrincipalDenied"),
   name: "Deployment denied for the Agent's service principal",
