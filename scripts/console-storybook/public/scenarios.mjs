@@ -3732,7 +3732,7 @@ export const scenarios = {
     ],
     actions: [click("Deploy new version")],
     description:
-      "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus until the new version opens.",
+      "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus while the request runs.",
   },
   deployRefusedSetting: {
     group: "Pages/Agent detail",

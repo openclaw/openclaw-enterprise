@@ -247,6 +247,32 @@ test("Deploy new version keeps keyboard focus and shows one delayed status", asy
   assert.equal(await focusedRole(), "status");
   assert.equal(await focusedText(page), stale);
 
+  // A submitted request whose outcome is unknown keeps Deploy disabled, so the failure takes
+  // focus.
+  await page.reload();
+  await page.getByText(/generation 2/).waitFor();
+  const unknownOutcome = await holdRequests(t, page, `${fixture.origin}${path}/deploy`, {
+    once: true,
+    method: "POST",
+    fulfill: {
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Deploy unavailable" },
+      }),
+    },
+  });
+  await pressDeploy();
+  await unknownOutcome.requested;
+  unknownOutcome.release();
+  const failure = page.locator(".agent-draft-actions p[role=alert]");
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.getAttribute("role") === "alert",
+  );
+  assert.ok((await failure.textContent()).length > 0);
+  assert.equal(await focusedText(page), await failure.textContent());
+  assert.equal(await deploy.isDisabled(), true);
+
   // An admitted deployment shows one status while its request runs, and the status keeps
   // focus until the new version opens.
   await page.reload();
