@@ -2702,8 +2702,10 @@ summary:focus-visible {
   outline-offset: 3px;
 }
 .log-line {
+  /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned. */
+  --log-level-column: minmax(max-content, 6.5em);
   display: grid;
-  grid-template-columns: 170px 48px minmax(72px, 112px) minmax(0, 1fr);
+  grid-template-columns: 170px var(--log-level-column) minmax(72px, 112px) minmax(0, 1fr);
   align-items: baseline;
   gap: 12px;
 }
@@ -2812,7 +2814,7 @@ summary:focus-visible {
 }
 @media (max-width: 1100px) {
   .log-line {
-    grid-template-columns: 150px 44px minmax(60px, 88px) minmax(0, 1fr);
+    grid-template-columns: 150px var(--log-level-column) minmax(60px, 88px) minmax(0, 1fr);
     gap: 10px;
   }
 }
@@ -2825,7 +2827,7 @@ summary:focus-visible {
     margin-left: 0;
   }
   .log-line {
-    grid-template-columns: minmax(0, 1fr) 48px minmax(60px, 112px);
+    grid-template-columns: minmax(0, 1fr) max-content minmax(60px, 112px);
     gap: 4px 10px;
   }
   .log-content {
@@ -2865,7 +2867,7 @@ summary:focus-visible {
     padding-left: 28px;
   }
   .log-line {
-    grid-template-columns: minmax(0, 1fr) 48px;
+    grid-template-columns: minmax(0, 1fr) max-content;
   }
   .log-origin {
     grid-column: 1 / -1;

@@ -3709,7 +3709,7 @@ export const scenarios = {
       "At 390px, open this direct Logs route and check its selected tab is visible. Visit Configuration, then use Back and Forward; selected tabs remain visible without resetting expanded panels.",
       "Inspect Source, Previous instance, and Include debug in the controls card; toggle the two options and check their selected states.",
       "Expand the runtime.startup_phase row to inspect its fields. Check the local date, time, and UTC offset in each timestamp. On a narrow screen the offset can wrap, but it should remain readable beside the level, origin, and message.",
-      "Select Follow, confirm it changes to Following, then select Following to stop. Resize the preview to 390px and check that controls remain usable and log metadata wraps without clipping messages.",
+      "Select Follow, confirm it changes to Following, then select Following to stop. At 390px, check that the controls remain usable, each log level stays on one line, and long messages wrap without horizontal scrolling.",
     ],
     gap: "Runtime records and refreshes are simulated UI evidence; source reads, filtering, and following require real backend verification.",
   },

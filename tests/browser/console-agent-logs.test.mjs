@@ -389,6 +389,58 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
   assert.match(await timestamp("after the clocks went back"), /1:30:00\s+AM\s+GMT-5$/u);
 });
 
+test("log levels stay on one line and keep log columns aligned", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  const levels = ["error", "warn", "info", "debug"];
+  computeDriver.state.lines = [
+    ...levels.map((level, i) =>
+      line(i, JSON.stringify({ level, subsystem: "gateway", message: level + " message" })),
+    ),
+    line(4, "plain output with a long token " + "x".repeat(160)),
+  ];
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const pane = page.getByRole("log", { name: "Runtime log output" });
+  await pane.getByText("error message", { exact: true }).waitFor();
+  await page.getByLabel("Include debug").check();
+  await pane.getByText("debug message", { exact: true }).waitFor();
+
+  for (const width of [390, 700, 900, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    const fittingLevels = await pane.locator(".log-level").evaluateAll((badges) =>
+      badges.flatMap((badge) => {
+        const range = badge.ownerDocument.createRange();
+        range.selectNodeContents(badge);
+        const [word, wrapped] = range.getClientRects();
+        const box = badge.getBoundingClientRect();
+        return !wrapped && word.left >= box.left && word.right <= box.right
+          ? [badge.textContent]
+          : [];
+      }),
+    );
+    // Plain output has no declared level; its UNKNOWN label needs to fit, too.
+    assert.deepEqual(
+      fittingLevels,
+      [...levels, "unknown"],
+      "whole level labels at " + width + "px",
+    );
+    for (const column of [".log-origin", ".log-content"]) {
+      const starts = await pane
+        .locator(column)
+        .evaluateAll((cells) => cells.map((cell) => cell.getBoundingClientRect().left));
+      assert.equal(
+        new Set(starts).size,
+        1,
+        column + " stays aligned across log levels at " + width + "px",
+      );
+    }
+    assert.ok(
+      await pane.evaluate((log) => log.scrollWidth <= log.clientWidth),
+      "no horizontal log overflow",
+    );
+  }
+});
+
 test("invisible and bidirectional characters in log text show as visible escapes", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   computeDriver.state.events = [
