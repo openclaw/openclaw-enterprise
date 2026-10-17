@@ -53,10 +53,7 @@ func TestResourceRequestStopsWhenCommandContextIsCanceled(t *testing.T) {
 			defer server.Close()
 			defer close(release)
 
-			keyFile := filepath.Join(t.TempDir(), "service-key.json")
-			if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -279,10 +276,7 @@ func runLogsCommandTo(t *testing.T, ctx context.Context, stub *runtimeLogStub, o
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(stub.serve))
 	t.Cleanup(server.Close)
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	command := New(out, errOut)
 	command.SetArgs(append(args, "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"))
 	return command.ExecuteContext(ctx)
@@ -926,10 +920,7 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 		_, _ = io.WriteString(w, `{"data":{"id":"agt_1","name":"stopped-agent","namespaceId":"ns_1","desiredRuntimeState":"stopped"},"meta":{"requestId":"req_1"}}`)
 	}))
 	t.Cleanup(server.Close)
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	var out, errOut strings.Builder
 	command := New(&out, &errOut)
 	command.SetArgs([]string{"agent", "stop", "agt_1", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"})
@@ -981,10 +972,7 @@ func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *tes
 		}
 	}))
 	t.Cleanup(server.Close)
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	for _, test := range []struct {
 		args []string
 		rows [][]string
@@ -1035,10 +1023,7 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 				w.WriteHeader(http.StatusPermanentRedirect)
 			}))
 			defer origin.Close()
-			keyFile := filepath.Join(t.TempDir(), "service-key.json")
-			if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 			command := New(io.Discard, io.Discard)
 			command.SetArgs([]string{"installation", "get", "--url", origin.URL, "--service-key-file", keyFile})
 			err := command.Execute()

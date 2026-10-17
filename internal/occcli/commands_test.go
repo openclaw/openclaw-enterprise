@@ -71,32 +71,17 @@ func (fake *fakeOCC) ServeHTTP(writer http.ResponseWriter, request *http.Request
 
 func runOCC(t *testing.T, responses map[string]string, args ...string) (string, []string, error) {
 	t.Helper()
-	fake := &fakeOCC{responses: responses}
-	server := httptest.NewServer(fake)
-	defer server.Close()
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-	command := New(&out, &bytes.Buffer{})
-	command.SetArgs(append([]string{"--url", server.URL, "--service-key-file", keyFile}, args...))
-	err := command.Execute()
-	fake.mu.Lock()
-	defer fake.mu.Unlock()
-	return out.String(), append([]string(nil), fake.requested...), err
+	out, _, requested, err := runOCCWithNotices(t, responses, args...)
+	return out, requested, err
 }
 
-// runOCCWithNotices is runOCC that also returns what the command wrote to stderr.
+// runOCCWithNotices returns stdout, stderr, and the request trace.
 func runOCCWithNotices(t *testing.T, responses map[string]string, args ...string) (string, string, []string, error) {
 	t.Helper()
 	fake := &fakeOCC{responses: responses}
 	server := httptest.NewServer(fake)
 	defer server.Close()
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	var out, errOut bytes.Buffer
 	command := New(&out, &errOut)
 	command.SetArgs(append([]string{"--url", server.URL, "--service-key-file", keyFile}, args...))
@@ -271,27 +256,17 @@ func TestServiceAccountDeleteForceReportsTheUnrevokedToken(t *testing.T) {
 	unrevoked := map[string]string{
 		"DELETE " + path: `{"id":"` + accountID + `","namespaceId":"` + testNamespaceID + `","revocation":"skipped","backendId":"chatgpt"}`,
 	}
-	var warnings bytes.Buffer
-	fake := &fakeOCC{responses: unrevoked}
-	server := httptest.NewServer(fake)
-	defer server.Close()
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
+	out, warnings, _, err := runOCCWithNotices(t, unrevoked,
+		"--namespace", testNamespaceID, "service-account", "delete", "--force", accountID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var stdout bytes.Buffer
-	command := New(&stdout, &warnings)
-	command.SetArgs([]string{"--url", server.URL, "--service-key-file", keyFile,
-		"--namespace", testNamespaceID, "service-account", "delete", "--force", accountID})
-	if err := command.Execute(); err != nil {
-		t.Fatal(err)
+	if out != "Deleted service account "+accountID+"; its access token was not revoked.\n" {
+		t.Fatalf("unexpected table output %q", out)
 	}
-	if stdout.String() != "Deleted service account "+accountID+"; its access token was not revoked.\n" {
-		t.Fatalf("unexpected table output %q", stdout.String())
-	}
-	if !strings.Contains(warnings.String(), "revoke it at the provider") ||
-		!strings.Contains(warnings.String(), `ChatGPT Backend "chatgpt"`) {
-		t.Fatalf("expected a revocation warning, got %q", warnings.String())
+	if !strings.Contains(warnings, "revoke it at the provider") ||
+		!strings.Contains(warnings, `ChatGPT Backend "chatgpt"`) {
+		t.Fatalf("expected a revocation warning, got %q", warnings)
 	}
 
 	out, _, err = runOCC(t, unrevoked,
@@ -317,10 +292,7 @@ func TestServiceAccountDeleteForceReportsTheUnrevokedToken(t *testing.T) {
 
 func TestServiceAccountForceDeleteRejectsAMalformedSuccess(t *testing.T) {
 	const accountID = "sa_66666666-6666-4666-8666-666666666666"
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	// A forced delete succeeds only with a bodyless 204 or a full 200 envelope.
 	for _, test := range []struct {
 		respond func(http.ResponseWriter)
