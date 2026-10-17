@@ -376,16 +376,18 @@ export function renderAgentList(context) {
   }
   // A retained list is mounted without rereading its rows' deployments, so what they showed is
   // not presented as current: each row reads its deployment again from "Reading deployment…".
-  // A row's deployment link stays, saying only that, since Back from it focuses it again by its
-  // address; the fresh link takes its focus.
+  // Back from a deployment can focus the loading text. Keep its address only to match that
+  // return: until the read settles, the previous revision must not be an active link.
   context.onResume?.(() => {
     deployments.clear();
     for (const [deployment, item] of cells) {
       const shown = deployment.querySelector("a");
-      if (shown) {
-        shown.textContent = "Reading deployment…";
-      }
-      deployment.replaceChildren(shown ?? "Reading deployment…");
+      const reading = "Reading deployment…";
+      deployment.replaceChildren(
+        shown
+          ? element("span", { tabindex: "-1", "data-return-focus-href": shown.href }, reading)
+          : reading,
+      );
       showDeployment(item, deployment);
     }
   });

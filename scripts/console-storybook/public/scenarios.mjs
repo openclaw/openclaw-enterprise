@@ -3427,7 +3427,7 @@ export const scenarios = {
       "Back reveals the rechecked Agents list before a slow deployment read finishes. The previous result does not stand in for the pending one.",
     steps: [
       "Wait for the Research assistant’s deployment, open Documentation assistant, then use browser Back.",
-      "The list is usable while Latest deployment says “Reading deployment…”. It changes to “Deployment access denied”; the Agent is still visible.",
+      "The list is usable while Latest deployment says “Reading deployment…”, with no link to the previous revision. It changes to “Deployment access denied”; the Agent is still visible.",
     ],
   },
   agentsDeploymentError: {

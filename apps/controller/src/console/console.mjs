@@ -1994,12 +1994,13 @@ async function loadPage({
         previousMountedRouteKey !== routeKey(current) &&
         document.activeElement === document.body
       ) {
-        const link =
+        // A deployment being reread can receive return focus, but is not a link until it settles.
+        const focusTarget =
           agentReturnHref &&
-          Array.from(shell.view.querySelectorAll("a[href]")).find(
-            (item) => item.href === agentReturnHref,
+          Array.from(shell.view.querySelectorAll("a[href], [data-return-focus-href]")).find(
+            (item) => (item.dataset.returnFocusHref ?? item.href) === agentReturnHref,
           );
-        (link || app.querySelector(".content h1"))?.focus({ preventScroll: true });
+        (focusTarget || app.querySelector(".content h1"))?.focus({ preventScroll: true });
       }
       if (fromRefresh && document.activeElement === document.body) {
         // The held page's shell, and the Refresh button pressed in it, were replaced.

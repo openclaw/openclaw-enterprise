@@ -275,9 +275,8 @@ test("A return rereads only the rows the search shows", async (t) => {
   );
 });
 
-// Back from a row's deployment link focuses that link again. The retained row keeps the link while
-// it rereads, so the return finds it, and the fresh link (or, with none, the Agent link) keeps
-// focus once the read lands.
+// Back from a deployment link restores focus in that cell, not a link to the old revision.
+// Enter does nothing until the reread supplies a link; a refusal returns focus to the Agent.
 for (const outcome of ["fills", "is refused"]) {
   test(`Back from a row's deployment link keeps focus on that row while its reread ${outcome}`, async (t) => {
     const { namespace, agents, page } = await openTeamList(t, `Team return focus ${outcome}`, {
@@ -317,8 +316,12 @@ for (const outcome of ["fills", "is refused"]) {
     await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
     await rows.revisions.requested;
     assert.equal(await viewTag(page), "kept");
-    assert.equal(await deploymentLink.textContent(), READING);
-    assert.equal(await isFocused(deploymentLink), true, "Back focused the row's deployment link");
+    const loading = row.getByText(READING, { exact: true });
+    assert.equal(await isFocused(loading), true, "Back focused the pending deployment");
+    const listUrl = page.url();
+    await page.keyboard.press("Enter");
+    assert.equal(page.url(), listUrl, "Enter must not open the previous deployment");
+    assert.equal(await deploymentLink.count(), 0, "the old deployment is not a link");
 
     rows.release();
     own.release();
