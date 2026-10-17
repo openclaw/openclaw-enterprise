@@ -116,7 +116,9 @@ try {
       worker = undefined;
     }
   }
-  const installation = await request("GET", "/installation");
+  // Capabilities come from current Drivers; compare persisted identity across versions.
+  const { id, name, createdAt } = await request("GET", "/installation");
+  const installation = { id, name, createdAt };
   if (phase === "seed") {
     const namespaces = await request("GET", "/namespaces");
     assert.equal(namespaces.length, 1);
