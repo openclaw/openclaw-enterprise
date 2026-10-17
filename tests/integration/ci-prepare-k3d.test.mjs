@@ -76,7 +76,8 @@ describe("CI k3d preparation", { concurrency: true }, () => {
 
   // The deadline error names the last read's outcome: a refused read followed by reads that
   // answer without a Pod CIDR reports the missing CIDR, not the earlier refusal (finding 1699).
-  // The wait only has to outlast one refused read, so no read count or pacing is asserted.
+  // The wait only has to outlast one refused read (it fails only if that fake kubectl read takes
+  // 2 s or more), so no read count or pacing is asserted.
   test("fixture preparation reports the last Pod CIDR read, not an earlier refusal", async (t) => {
     const commands = await fixtureImageCommands(t, "refused-then-no-pod-cidr", undefined, {
       OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS: "2000",

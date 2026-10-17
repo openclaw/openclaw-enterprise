@@ -22,7 +22,7 @@ import { runInNewContext } from "node:vm";
 import {
   captureChild,
   concurrencyLimit,
-  eachSettled,
+  eachSettled as all,
   settled,
 } from "../helpers/child-processes.mjs";
 
@@ -75,8 +75,6 @@ async function command(cwd, program, args) {
   assert.equal(result.status, 0, `${program} ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.trim();
 }
-
-const all = eachSettled;
 
 function tempDir(t, prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));

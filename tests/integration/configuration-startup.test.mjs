@@ -46,7 +46,7 @@ if (compileCache !== process.env.NODE_COMPILE_CACHE) {
   after(() => rm(compileCache, { recursive: true, force: true }));
 }
 
-// The API's production listener and sign-in settings shared by the production boots.
+// The production listener and sign-in settings of the API boots that reach session auth.
 const productionServer = {
   OCC_HOST: "192.0.2.10",
   OCC_PORT: "8080",
