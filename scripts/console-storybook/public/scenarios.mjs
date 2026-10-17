@@ -2927,13 +2927,20 @@ export const scenarios = {
     name: "Edit Configuration",
     path: draft,
     actions: [click("Edit Configuration")],
+    rules: [
+      {
+        method: "PATCH",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        delayMs: 1500,
+      },
+    ],
     description:
       "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
     steps: [
       "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
       "Change a draft setting, then choose Save Configuration.",
-      "Look for “Configuration saved.” Focus returns to Edit Configuration, with that confirmation as its description.",
-      "Open the editor again and choose Cancel. Focus returns to Edit Configuration without saving.",
+      "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
+      "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
     ],
   },
   gatewayPasswordAccess: {

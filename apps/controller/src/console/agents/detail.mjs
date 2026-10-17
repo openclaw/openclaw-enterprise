@@ -2678,8 +2678,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       status.tabIndex = -1;
       control = status;
     }
-    // Focus scrolls only if the control left the viewport.
-    control.focus();
+    // Disabling Save or replacing its editor can leave focus on the body. Restore it
+    // then, but don't take it back from a control the reader reached while saving.
+    if (!document.activeElement || document.activeElement === document.body) {
+      control.focus();
+    }
   }
 
   async function renderTab({ activated = false } = {}) {

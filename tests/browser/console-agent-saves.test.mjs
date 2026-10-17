@@ -1493,6 +1493,39 @@ test("a Configuration save that lands late does not move the cards below the edi
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).isVisible(), true);
 });
 
+test("a late Configuration save leaves focus on the Agents link when the reader moved there", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Team", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Field Guide", nativeValues("before"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const page = await openTab(t, fixture, namespace, agent, "configuration");
+  const edit = page.getByRole("button", { name: "Edit Configuration" });
+  await edit.click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("after"), null, 2));
+
+  const saved = await holdRequests(t, page, `**${configurationPath({ namespace, agent })}`, {
+    once: true,
+    method: "PATCH",
+    afterServer: true,
+  });
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await saved.requested;
+  await page.getByRole("link", { name: "← Agents", exact: true }).focus();
+  saved.release();
+
+  await edit.waitFor();
+  assert.equal(
+    await edit.evaluate(
+      (control) =>
+        control.ownerDocument.getElementById(control.getAttribute("aria-describedby"))?.textContent,
+    ),
+    "Configuration saved.",
+  );
+  assert.equal(await focusedText(page), "← Agents");
+});
+
 // A save from another browser that landed between a save's reread and its PATCH was silently
 // overwritten (finding 1505). The PATCH now names the generation the page read, and the API's
 // 409 leaves Reload draft as the next step, as a conflict found by the reread does.
