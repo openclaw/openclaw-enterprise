@@ -2,7 +2,7 @@
   "version": 1,
   "source": "Median wallDurationMs of each shared file in the checks-baseline and checks-browser lanes over five green main CI runs (3d9ad33ab and the four before it), rounded to 100 ms, from the ci-results-<lane> artifacts. Refresh rows when a lane's longest files change (a PR that edits this table runs full CI); a file without a row starts first.",
   "files": {
-    "tests/browser/console-agent-channels.test.mjs": 18000,
+    "tests/browser/console-agent-channels.test.mjs": 34200,
     "tests/browser/console-agent-detail-2.test.mjs": 77600,
     "tests/browser/console-agent-detail.test.mjs": 57600,
     "tests/browser/console-agent-draft-guards.test.mjs": 40100,
