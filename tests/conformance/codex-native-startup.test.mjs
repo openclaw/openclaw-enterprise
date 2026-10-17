@@ -621,7 +621,8 @@ test("Codex runtime retries a transient startup model probe failure once", async
       "error-event",
     ],
     // Only a network wait for a failed connection is transient; any other Reconnecting
-    // notice the recovered-stream rule refused is held, even with a transient cause.
+    // notice the recovered-stream rule refused is held, even with a transient cause. These
+    // are boundary shapes the pinned build does not print, so a looser match fails here.
     [
       "a network wait for a provider 503",
       erroredWith("Reconnecting... waiting for network (unexpected status 503)"),
@@ -631,6 +632,11 @@ test("Codex runtime retries a transient startup model probe failure once", async
     [
       "a network wait that does not start the notice",
       erroredWith(`Error: ${networkWait().message}`),
+      "error-event",
+    ],
+    [
+      "a network wait with text after its cause",
+      erroredWith(`${networkWait().message} after 3 tries`),
       "error-event",
     ],
     [
