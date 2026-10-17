@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
   chmodSync,
@@ -14,11 +14,17 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { availableParallelism, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { after } from "node:test";
 import { runInNewContext } from "node:vm";
+import {
+  captureChild,
+  concurrencyLimit,
+  eachSettled,
+  settled,
+} from "../helpers/child-processes.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
@@ -61,36 +67,8 @@ const reasons = [
 
 // Every case spawns Git, the selector or a workflow script, so independent
 // processes run concurrently, about one per CPU (each spawns more of its own).
-const slots = { free: Math.max(2, availableParallelism()), waiting: [] };
-async function run(program, args, { encoding = "utf8", ...options } = {}) {
-  if (slots.free > 0) {
-    slots.free -= 1;
-  } else {
-    await new Promise((resolve) => slots.waiting.push(resolve));
-  }
-  try {
-    return await new Promise((resolve, reject) => {
-      const child = spawn(program, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
-      const stdout = [];
-      const stderr = [];
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.stderr.on("data", (chunk) => stderr.push(chunk));
-      child.on("error", reject);
-      child.on("close", (status) => {
-        const text = (chunks) =>
-          encoding === null ? Buffer.concat(chunks) : Buffer.concat(chunks).toString(encoding);
-        resolve({ status, stdout: text(stdout), stderr: text(stderr) });
-      });
-    });
-  } finally {
-    const next = slots.waiting.shift();
-    if (next) {
-      next();
-    } else {
-      slots.free += 1;
-    }
-  }
-}
+const limit = concurrencyLimit();
+const run = (program, args, options) => limit(() => captureChild(program, args, options));
 
 async function command(cwd, program, args) {
   const result = await run(program, args, { cwd });
@@ -98,17 +76,7 @@ async function command(cwd, program, args) {
   return result.stdout.trim();
 }
 
-// Like Promise.all, but waits for every check so no process outlives its
-// test's temporary directories, then rethrows the first failure.
-async function settled(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
-}
-const all = (items, each) => settled(items.map(each));
+const all = eachSettled;
 
 function tempDir(t, prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -1005,8 +973,7 @@ test("an event base that is present but not behind the tested base selects full"
   const shallow = await shallowBootstrap(f);
   for (const base of [side, f.head]) {
     f.writeEvent(pr(base, f.head));
-    await f.expect("full");
-    assert.equal(await f.select(), "mode=full\nreason=checkout_mismatch\n");
+    await f.expect("full", {}, "checkout_mismatch");
   }
   // A depth-two checkout lacks the side commit, so it is ignored like any
   // stale base: the ancestor rule can only add full selections there.
@@ -1014,8 +981,7 @@ test("an event base that is present but not behind the tested base selects full"
   await shallow.expect("docs");
   // The pull request head is in the shallow checkout and is not an ancestor.
   f.writeEvent(pr(f.head, f.head));
-  await shallow.expect("full");
-  assert.equal(await shallow.select(), "mode=full\nreason=bootstrap_checkout_mismatch\n");
+  await shallow.expect("full", {}, "bootstrap_checkout_mismatch");
   // A head that is not the tested merge's second parent still selects full.
   f.writeEvent(pr(f.base, f.mergeBase));
   await settled([f.expect("full"), shallow.expect("full")]);
@@ -2119,8 +2085,7 @@ test("the pull request's own selector never decides test-only mode", async (t) =
   assert.equal(existsSync(marker), false);
   const verify = await legacy.run("verify", "tests", { EXPECTED_LANES: '["checks-baseline-1"]' });
   assert.notEqual(verify.status, 0);
-  await fallback.expect("full");
-  assert.equal(await fallback.select(), "mode=full\nreason=bootstrap_policy_unavailable\n");
+  await fallback.expect("full", {}, "bootstrap_policy_unavailable");
 });
 
 test("test-only selection is limited to pull request events", async (t) => {
