@@ -1,8 +1,8 @@
 # View Agent runtime status and logs
 
-Use an Agent version’s **Logs** tab to inspect Pods, container exits, Events,
-redacted output or Sandbox policy decisions. Reads fetch through Compute;
-raw logs are not persisted.
+Use an Agent version’s **Logs** tab for runtime status and redacted logs.
+For applied policies and synthetic results, see [network policy testing](agent-network-policy.md).
+Raw logs are not persisted.
 
 Runtime status and logs are available for **Kubernetes Compute** only. Docker and
 SSH Compute, and Drivers that own their runtime logging (`runtimeLogging:

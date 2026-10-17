@@ -17,7 +17,7 @@ import {
 } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
-import { NotImplementedError } from "../../packages/occ/src/index.ts";
+import { NotImplementedError, simulatePolicy } from "../../packages/occ/src/index.ts";
 
 const OCC_DIFFS_DIGEST =
   "sha512-5VTDNEo7D3iOgRoL5C31JPTbA/EXQEFRuxOvLy67IMFmOajwroGsUMWeuKkmqzFbPNQxvn7GACDSr/5Vmpx3/g==";
@@ -162,6 +162,136 @@ test("OpenClaw Plugin Driver lists the vetted Diffs catalog entry", async () => 
     name: "Diffs",
     tools: [{ id: "diffs", name: "diffs", ownerId: "diffs" }],
   });
+});
+
+test("OpenClaw policy simulation applies authored precedence through the Driver's vetted tools", async (context) => {
+  const driver = new OCCPluginDriver();
+  const cases = [
+    {
+      name: "an explicit tool enable overrides a disabled default",
+      selection: {
+        toolDefaults: { enabled: false, approval: "none" },
+        tools: { diffs: { enabled: true } },
+      },
+      decision: "allow",
+    },
+    {
+      name: "an explicit tool disable overrides an enabled default",
+      selection: {
+        toolDefaults: { enabled: true, approval: "none" },
+        tools: { diffs: { enabled: false } },
+      },
+      decision: "deny",
+    },
+    {
+      name: "an enabled tool cannot re-enable a disabled plugin",
+      selection: { enabled: false, tools: { diffs: { enabled: true, approval: "none" } } },
+      decision: "deny",
+    },
+    {
+      name: "provider approval inheritance remains unknown",
+      selection: { toolDefaults: { approval: "provider_default" } },
+      decision: "unknown",
+    },
+    {
+      name: "unsupported reviewer policy remains unknown",
+      selection: { toolDefaults: { approval: "none", reviewer: "human" } },
+      decision: "unknown",
+    },
+    {
+      name: "unsupported approval policy remains unknown",
+      selection: { toolDefaults: { approval: "all_actions" } },
+      decision: "unknown",
+    },
+    {
+      name: "opaque Driver policy remains unknown",
+      selection: { driverPolicy: { customCondition: true } },
+      decision: "unknown",
+    },
+    {
+      name: "an unowned tool remains unknown",
+      selection: {},
+      toolId: "unowned",
+      decision: "unknown",
+    },
+  ];
+  for (const scenario of cases) {
+    await context.test(scenario.name, async () => {
+      const plugins = occSelection(scenario.selection);
+      const policy = await driver.describePolicySimulation(
+        { plugins: { driver, plugins } },
+        new AbortController().signal,
+      );
+      assert.deepEqual(policy.toolIds["occ-plugin:diffs"], ["diffs"]);
+      const result = simulatePolicy(policy, {
+        kind: "plugin",
+        pluginId: "occ-plugin:diffs",
+        toolId: scenario.toolId ?? "diffs",
+        expectedSimulationHash: "a".repeat(64),
+      });
+      assert.equal(result.decision, scenario.decision);
+      assert.match(result.unevaluatedChecks.join(" "), /Native tool policies/);
+    });
+  }
+});
+
+test("Plugin simulation describes an immutable revision without discovery and verifies Driver scope", async () => {
+  const occ = new OCCPluginDriver();
+  const plugins = { diffs: { enabled: true, toolDefaults: { approval: "none" } } };
+  const policy = await occ.describePolicySimulation(
+    { plugins: { driver: occ, plugins } },
+    new AbortController().signal,
+  );
+  assert.deepEqual(policy.toolIds, { diffs: ["diffs"] });
+  plugins.diffs.enabled = false;
+  assert.equal(policy.plugins.diffs.enabled, true);
+  assert.equal(Object.isFrozen(policy.plugins.diffs), true);
+
+  const codex = new CodexPluginDriver(
+    {},
+    {},
+    {
+      listCatalog() {
+        assert.fail("Read-only policy inspection must not discover a native catalog.");
+      },
+    },
+  );
+  const toolId = "connector_fixture/read";
+  const codexPolicy = await codex.describePolicySimulation(
+    {
+      plugins: {
+        driver: codex,
+        plugins: codexSelection(linearPluginId, {
+          toolDefaults: { approval: "none" },
+          tools: { [toolId]: { enabled: true } },
+        }),
+      },
+    },
+    new AbortController().signal,
+  );
+  assert.equal(codexPolicy.toolIds[linearPluginId], null);
+  assert.deepEqual(codexPolicy.capabilities, codex.policyCapabilities);
+  assert.equal(
+    simulatePolicy(codexPolicy, {
+      kind: "plugin",
+      pluginId: linearPluginId,
+      toolId,
+      expectedSimulationHash: "a".repeat(64),
+    }).decision,
+    "unknown",
+    "Authored tool overrides do not establish native tool ownership.",
+  );
+  await assert.rejects(
+    occ.describePolicySimulation(
+      { plugins: { driver: codex, plugins: {} } },
+      new AbortController().signal,
+    ),
+    /another Plugin Driver/,
+  );
+  await assert.rejects(
+    occ.describePolicySimulation({ plugins: { driver: occ, plugins: {} } }, AbortSignal.abort()),
+    { name: "AbortError" },
+  );
 });
 
 test("OpenClaw plugin startup translation renders native install and enablement", () => {

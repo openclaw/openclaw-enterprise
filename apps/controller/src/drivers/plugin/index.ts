@@ -11,6 +11,8 @@ import {
   type PluginDriverContext,
   type PluginDriverIdentity,
   type OpenClawConfigurationDocument,
+  type AgentRevision,
+  type PluginSimulationPolicy,
 } from "@openclaw-enterprise/contracts";
 import {
   NotImplementedError,
@@ -342,6 +344,39 @@ class BundledPluginDriverBase {
   protected catalog(catalog: readonly BundledCatalogEntry[]): readonly PluginCatalogEntry[] {
     return immutableCopy(catalog) as readonly PluginCatalogEntry[];
   }
+
+  protected policySimulation(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+    capabilities: PluginPolicyCapabilities,
+    catalog?: readonly PluginCatalogEntry[],
+  ): PluginSimulationPolicy {
+    signal.throwIfAborted();
+    if (revision.plugins !== undefined && !sameDriver(revision.plugins.driver, this)) {
+      throw new PluginValidationError("The AgentRevision belongs to another Plugin Driver.");
+    }
+    const plugins = revision.plugins?.plugins ?? {};
+    const toolIds = Object.fromEntries(
+      Object.keys(plugins).map((pluginId) => {
+        const entry = catalog?.find(
+          (candidate) =>
+            candidate.id === pluginId || candidate.id === `${OCC_DRIVER_ID}:${pluginId}`,
+        );
+        return [pluginId, entry?.tools?.map(({ id }) => id) ?? null];
+      }),
+    );
+    return immutableCopy({
+      kind: "plugin",
+      plugins,
+      capabilities,
+      toolIds,
+      unevaluatedChecks: [
+        "Native tool policies, profiles, managed requirements, and session policy are not evaluated.",
+        "Runtime authentication, installation, and tool availability are not verified.",
+        "Reviewer decisions and approval transport are not exercised.",
+      ],
+    });
+  }
 }
 
 export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDriver {
@@ -355,6 +390,13 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
     this.validate("openclaw", selections, defaultApprovers);
+  }
+
+  async describePolicySimulation(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<PluginSimulationPolicy> {
+    return this.policySimulation(revision, signal, this.policyCapabilities, OCC_CATALOG);
   }
 
   static validateConfiguration(configuration: unknown): void {
@@ -415,6 +457,15 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
     validateCodexAutomaticReviewerPolicy(selections, configuration);
+  }
+
+  async describePolicySimulation(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<PluginSimulationPolicy> {
+    // Catalog action names and authored overrides do not establish native tool ownership.
+    // A verified runtime inventory is required before exposing Codex tool identities.
+    return this.policySimulation(revision, signal, this.policyCapabilities);
   }
   private readonly catalogReader: CodexPluginCatalogReader | undefined;
   private readonly catalogSource: "hosted" | "openai-curated";

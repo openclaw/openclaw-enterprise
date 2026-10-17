@@ -70,3 +70,25 @@ The Calendar scenario also checks that an enabled tool exception can run and a d
 The nested policy contract has not been verified in a real Kubernetes Agent deployment. Before claiming approval enforcement, verify effective native configuration, session approval and permissions, reviewer availability, and a normal Agent turn. Check `write_actions` with both a read and a non-read action; a permissive session can bypass MCP review. Native effective-policy introspection, installation composition, and later session or model changes remain unverified. Historical installation results in [PR #228](https://github.com/openclaw/openclaw-enterprise/pull/228) do not prove these policies or production Helm and shared-cluster admission guardrails.
 
 Record the commit, selected cases, nonsecret image references, runtime versions, model, pass/fail/skip counts, and sanitized evidence for any claimed proof.
+
+## Policy simulation conformance
+
+The policy tester predicts authored OCE intent separately from native state.
+`tests/conformance/plugin-driver.test.mjs` exercises actual Driver descriptors
+and independent precedence expectations. Existing real plugin lanes compare
+these predictions with normal Agent tool outcomes when their prerequisites exist.
+
+Sandbox conformance can run the actual translated protobuf policy through the
+OpenShell native evaluator built from a matching source checkout:
+
+```sh
+OCC_TEST_OPENSHELL_NATIVE_SOURCE=/path/to/OpenShell \
+  node --test --test-name-pattern='OpenShell authored simulation' \
+  tests/integration/sandbox-driver-startup.test.mjs
+```
+
+This explicit native-source option runs the ignored Rust conformance test with
+a captured production translation. It proves supported selector/REST evaluator
+parity, without deploying a Sandbox or exercising DNS, credentials and workload
+identity. Without the option, the native bridge is skipped explicitly. The
+regular OpenShell Kubernetes and plugin Agent tests remain separate runtime proof.

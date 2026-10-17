@@ -13,6 +13,9 @@ import {
   RuntimeLogsSandboxNotFoundError,
   SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
+  NotImplementedError,
+  ResourceConflictError,
+  sanitizeRuntimeLogText,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
@@ -23,6 +26,7 @@ import type {
   HarnessWorkloadRequirements,
   KubernetesNamespacedResource,
   Namespace,
+  NetworkSimulationPolicy,
   OpenClawConfigurationDocument,
   OpenClawConfigurationValue,
   SandboxDriver,
@@ -37,6 +41,11 @@ import type {
   SandboxNamespaceContext,
   SandboxResourceRef,
   SandboxHarnessLostCode,
+  SandboxNetworkPolicyDescription,
+  SandboxNetworkPolicyEvaluation,
+  SandboxNetworkPolicyRequest,
+  SandboxNetworkPolicyRule,
+  SandboxPolicyDecision,
 } from "@openclaw-enterprise/contracts";
 import {
   isOpenShellProviderName,
@@ -52,6 +61,7 @@ import {
   type OpenShellStoredProviderProfile,
   type OpenShellSandboxCreateRequest,
   type OpenShellSandboxResponse,
+  type OpenShellSandboxPolicyConfig,
   type OpenShellWorkspaceResponse,
   OpenShellRequestReplayRefusedError,
   OpenShellProviderAlreadyExistsError,
@@ -63,6 +73,7 @@ import { OpenShellServiceTransportError } from "./openshell-service-transport.ts
 import { RUNTIME_WRAPPER_COMMAND } from "../compute/kubernetes/runtime-entrypoints.ts";
 import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.ts";
 import { nodeProgramArguments } from "../compute/node-program.ts";
+import { statusCode } from "./openshell-gateway-errors.ts";
 import {
   requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_RUNTIME,
@@ -2390,6 +2401,283 @@ export function validateConfiguration(configuration: unknown): void {
   validateOptions(options as unknown as OpenShellSandboxDriverOptions);
 }
 
+function policyText(value: string, limit = 4096): string {
+  return sanitizeRuntimeLogText(value, limit).text;
+}
+
+function policyRuleId(native: unknown, builtin = false): string {
+  if (
+    typeof native !== "string" ||
+    native.length === 0 ||
+    native.length > 505 ||
+    /\p{Cc}/u.test(native)
+  ) {
+    throw new DependencyUnavailableError("The Sandbox returned an invalid policy rule identity.");
+  }
+  if (builtin) {
+    if (native !== "default-deny") {
+      throw new DependencyUnavailableError("The Sandbox returned an unsupported built-in rule.");
+    }
+    return "builtin:default-deny";
+  }
+  return `policy:${native}`;
+}
+
+/** Preserve the native conditions while rejecting values JSON cannot represent. */
+function policyJson(value: unknown, depth = 0): unknown {
+  if (depth > 12) {
+    throw new DependencyUnavailableError("The Sandbox policy is too deeply nested.");
+  }
+  if (typeof value === "string") {
+    return policyText(value);
+  }
+  if (value === null || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => policyJson(item, depth + 1));
+  }
+  const record = asRecord(value);
+  if (
+    record !== undefined &&
+    (Object.getPrototypeOf(record) === Object.prototype || Object.getPrototypeOf(record) === null)
+  ) {
+    return Object.fromEntries(
+      Object.entries(record).map(([key, item]) => [
+        policyText(key, 256),
+        policyJson(item, depth + 1),
+      ]),
+    );
+  }
+  throw new DependencyUnavailableError("The Sandbox policy contains an unsupported value.");
+}
+
+function policyEnum(value: unknown, names: readonly string[], labels: readonly string[]): string {
+  const index =
+    value === undefined ? 0 : names.findIndex((name, i) => value === name || value === i);
+  if (index < 0 || labels[index] === undefined) {
+    throw new DependencyUnavailableError("The Sandbox policy contains an unsupported mode.");
+  }
+  return labels[index]!;
+}
+
+function networkPolicyRules(config: OpenShellSandboxPolicyConfig): SandboxNetworkPolicyRule[] {
+  const native = asRecord(config.policy.network_policies) ?? {};
+  const rules = Object.keys(native)
+    .sort()
+    .map((id): SandboxNetworkPolicyRule => {
+      const rule = asRecord(native[id]);
+      if (
+        rule === undefined ||
+        (rule.binaries !== undefined && !Array.isArray(rule.binaries)) ||
+        !Array.isArray(rule.endpoints)
+      ) {
+        throw new DependencyUnavailableError("The Sandbox returned an invalid network rule.");
+      }
+      const nativeBinaries = (rule.binaries ?? []) as readonly unknown[];
+      const binaries = nativeBinaries.map((value) => {
+        const path = asRecord(value)?.path;
+        if (typeof path !== "string") {
+          throw new DependencyUnavailableError("The Sandbox returned an invalid binary condition.");
+        }
+        return policyText(path);
+      });
+      const destinations = rule.endpoints.map((value) => {
+        const endpoint = asRecord(value);
+        if (endpoint === undefined) {
+          throw new DependencyUnavailableError(
+            "The Sandbox returned an invalid endpoint condition.",
+          );
+        }
+        const ports =
+          Array.isArray(endpoint.ports) && endpoint.ports.length > 0
+            ? endpoint.ports
+            : [endpoint.port];
+        if (
+          ports.some(
+            (port) => !Number.isInteger(port) || (port as number) < 1 || (port as number) > 65535,
+          )
+        ) {
+          throw new DependencyUnavailableError("The Sandbox returned invalid endpoint ports.");
+        }
+        const access = policyEnum(
+          endpoint.access,
+          [
+            "NETWORK_ACCESS_PRESET_UNSPECIFIED",
+            "NETWORK_ACCESS_PRESET_READ_ONLY",
+            "NETWORK_ACCESS_PRESET_READ_WRITE",
+            "NETWORK_ACCESS_PRESET_FULL",
+          ],
+          ["", "read_only", "read_write", "full"],
+        );
+        return {
+          host: policyText(typeof endpoint.host === "string" ? endpoint.host : ""),
+          ports: ports as number[],
+          protocol: policyText(typeof endpoint.protocol === "string" ? endpoint.protocol : "tcp"),
+          tls: policyEnum(
+            endpoint.tls,
+            [
+              "NETWORK_TLS_MODE_UNSPECIFIED",
+              "NETWORK_TLS_MODE_SKIP",
+              "NETWORK_TLS_MODE_TERMINATE",
+              "NETWORK_TLS_MODE_PASSTHROUGH",
+            ],
+            ["automatic", "skip", "terminate", "passthrough"],
+          ),
+          enforcement: policyEnum(
+            endpoint.enforcement,
+            [
+              "NETWORK_ENFORCEMENT_MODE_UNSPECIFIED",
+              "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+              "NETWORK_ENFORCEMENT_MODE_AUDIT",
+            ],
+            ["audit", "enforce", "audit"],
+          ),
+          ...(access === "" ? {} : { access }),
+        };
+      });
+      return {
+        id: policyRuleId(id),
+        name: policyText(
+          typeof rule.name === "string" && rule.name.length > 0 ? rule.name : id,
+          256,
+        ),
+        origin: id.startsWith("_provider_") ? "provider" : "configured",
+        binaries,
+        destinations,
+        configuration: policyJson({
+          name: rule.name ?? id,
+          binaries: nativeBinaries.map((value) => ({ path: asRecord(value)!.path })),
+          endpoints: rule.endpoints.map((value) => {
+            const endpoint = asRecord(value)!;
+            return Object.fromEntries(
+              [
+                "host",
+                "port",
+                "protocol",
+                "tls",
+                "enforcement",
+                "access",
+                "rules",
+                "allowed_ips",
+                "ports",
+                "deny_rules",
+                "allow_encoded_slash",
+                "persisted_queries",
+                "graphql_persisted_queries",
+                "graphql_max_body_bytes",
+                "path",
+                "websocket_credential_rewrite",
+                "request_body_credential_rewrite",
+                "advisor_proposed",
+                "credential_signing",
+                "signing_service",
+                "signing_region",
+                "json_rpc_max_body_bytes",
+                "mcp",
+                "credential_binding",
+                "allow_uninspected_credentials",
+                "provider_credentialed",
+              ]
+                .filter((key) => Object.hasOwn(endpoint, key))
+                .map((key) => [key, endpoint[key]]),
+            );
+          }),
+        }) as ConfigurationRecord,
+      };
+    });
+  // The fallback is a built-in condition, not a provider policy returned by the evaluator.
+  rules.push({
+    id: "builtin:default-deny",
+    name: "Default deny",
+    origin: "builtin",
+    binaries: [],
+    destinations: [],
+    configuration: {
+      effect: "deny",
+      condition: "No network policy matches the destination and binary.",
+    },
+  });
+  return rules;
+}
+
+function policyAdmission(
+  config: OpenShellSandboxPolicyConfig,
+  observed: ConfigurationRecord | undefined,
+  phase: OpenShellSandboxResponse["phase"],
+): SandboxNetworkPolicyDescription["admission"] {
+  if (observed === undefined) {
+    return { state: "unknown" };
+  }
+  const matches =
+    config.instanceId.length > 0 &&
+    observed.instance_id === config.instanceId &&
+    observed.policy_version === config.version &&
+    observed.policy_hash === config.policyHash &&
+    String(observed.config_revision ?? "0") === config.configRevision &&
+    String(observed.provider_env_revision ?? "0") === config.providerEnvRevision;
+  let state: SandboxNetworkPolicyDescription["admission"]["state"] = "unknown";
+  if (
+    [
+      "CONFIGURATION_ADMISSION_STATE_PENDING",
+      "CONFIGURATION_ADMISSION_STATE_ACCEPTED",
+      "CONFIGURATION_ADMISSION_STATE_REJECTED",
+      1,
+      2,
+      3,
+    ].includes(observed.state as string | number)
+  ) {
+    state = "pending";
+  }
+  if (
+    matches &&
+    config.configurationAdmitted &&
+    (observed.state === "CONFIGURATION_ADMISSION_STATE_ACCEPTED" || observed.state === 2)
+  ) {
+    // Accepted admission survives stop/exit observations; only a Ready runtime
+    // can establish that this snapshot is currently applied, as in evaluation.
+    state = phase === "SANDBOX_PHASE_READY" || phase === 2 ? "applied" : "unknown";
+  } else if (
+    matches &&
+    (observed.state === "CONFIGURATION_ADMISSION_STATE_REJECTED" || observed.state === 3)
+  ) {
+    state = "rejected";
+  }
+  return {
+    state,
+    ...(typeof observed.policy_hash === "string" && /^[a-f0-9]{64}$/.test(observed.policy_hash)
+      ? { policyHash: observed.policy_hash }
+      : {}),
+    ...(typeof observed.config_revision === "string"
+      ? { configRevision: observed.config_revision }
+      : {}),
+    ...(typeof observed.provider_env_revision === "string"
+      ? { providerEnvRevision: observed.provider_env_revision }
+      : {}),
+    ...(typeof observed.instance_id === "string" && observed.instance_id.length > 0
+      ? { instanceId: policyText(observed.instance_id, 256) }
+      : {}),
+  };
+}
+
+function policyDecision(value: unknown): SandboxPolicyDecision {
+  switch (value) {
+    case "allowed":
+      return "allow";
+    case "denied":
+      return "deny";
+    case "audit":
+      return "audit";
+    case "not_evaluated":
+      return "unknown";
+    default:
+      throw new DependencyUnavailableError("The Sandbox returned an invalid policy decision.");
+  }
+}
+
 export class OpenShellSandboxDriver implements SandboxDriver {
   static readonly configurationSchema = configurationSchema;
 
@@ -3145,6 +3433,251 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       lines: response.lines,
       bufferTotal: response.bufferTotal,
     });
+  }
+
+  async describeNetworkPolicy(
+    context: SandboxLogContext,
+  ): Promise<SandboxNetworkPolicyDescription> {
+    try {
+      const { sandbox, client, selector, existing } = await this.networkPolicyTarget(context);
+      if (typeof client.getSandboxConfig !== "function") {
+        throw new NotImplementedError(
+          "describeNetworkPolicy",
+          "The Sandbox provider cannot inspect effective network policies.",
+        );
+      }
+      const config = await client.getSandboxConfig(selector, context.signal);
+      return {
+        sandbox: sandbox.resourceName,
+        observedAt: new Date().toISOString(),
+        identity: {
+          source: config.source,
+          version: config.version,
+          ...(config.globalVersion === undefined ? {} : { globalVersion: config.globalVersion }),
+          policyHash: config.policyHash,
+          configRevision: config.configRevision,
+          providerEnvRevision: config.providerEnvRevision,
+        },
+        admission: policyAdmission(config, existing.configurationAdmission, existing.phase),
+        rules: networkPolicyRules(config),
+      };
+    } catch (error) {
+      throw this.networkPolicyFailure(error, "describeNetworkPolicy");
+    }
+  }
+
+  async describePolicySimulation(context: SandboxLogContext): Promise<NetworkSimulationPolicy> {
+    context.signal.throwIfAborted();
+    if (
+      context.revision.namespaceId !== context.namespace.id ||
+      context.revision.sandboxDriverId !== this.id ||
+      context.revision.harness.mode !== "dedicated"
+    ) {
+      throw new DependencyUnavailableError("The selected revision does not own this Sandbox.");
+    }
+    const unsupportedGlob = /[?[\]{}\\]/;
+    const methods = {
+      read_only: ["GET", "HEAD", "OPTIONS"],
+      read_write: ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH"],
+      full: ["*"],
+    };
+    return {
+      kind: "network",
+      source: "driver_configuration",
+      rules: this.options.policy.networkPolicies.map((policy) => {
+        const binaries = policy.binaries.map(({ path }) => path);
+        const unsupported = binaries.some(
+          (path) => !path.startsWith("/") || unsupportedGlob.test(path),
+        );
+        return {
+          id: policyRuleId(policy.name),
+          name: policy.name,
+          binaries,
+          ...(unsupported
+            ? {
+                unsupportedReason:
+                  "Binary selectors require absolute paths and simple '*' or '**' globs.",
+              }
+            : {}),
+          destinations: policy.endpoints.map((endpoint) => ({
+            host: endpoint.host,
+            ports: [...endpoint.ports],
+            ...(unsupportedGlob.test(endpoint.host)
+              ? { unsupportedReason: "Host selectors support simple '*' or '**' globs only." }
+              : {}),
+            ...(endpoint.protocol === "rest" &&
+            endpoint.tls !== "skip" &&
+            endpoint.access !== undefined
+              ? {
+                  http: {
+                    methods: [...methods[endpoint.access]],
+                    enforcement: endpoint.enforcement ?? "audit",
+                  },
+                }
+              : {}),
+          })),
+        };
+      }),
+      unevaluatedChecks: [
+        "Current Sandbox Driver configuration is simulated; the deployed revision's original configuration, global, provider and generated workspace-node rules are excluded.",
+        "HTTP policy is covered only for inspectable REST endpoints with an explicit access preset.",
+        "Runtime admission, process identity, binary integrity, workload symlinks, DNS/IP safety, TLS, credentials, middleware and upstream responses are not evaluated.",
+      ],
+    };
+  }
+
+  async evaluateNetworkPolicy(
+    context: SandboxLogContext,
+    request: SandboxNetworkPolicyRequest,
+  ): Promise<SandboxNetworkPolicyEvaluation> {
+    try {
+      const { client, selector } = await this.networkPolicyTarget(context);
+      if (typeof client.evaluateSandboxNetworkPolicy !== "function") {
+        throw new NotImplementedError(
+          "evaluateNetworkPolicy",
+          "The Sandbox provider does not support network policy evaluation.",
+        );
+      }
+      const query = new URLSearchParams();
+      for (const [name, values] of Object.entries(request.http?.query ?? {})) {
+        for (const value of values) {
+          query.append(name, value);
+        }
+      }
+      const { http, ...network } = request;
+      const result = await client.evaluateSandboxNetworkPolicy(
+        {
+          ...selector,
+          ...network,
+          ...(http === undefined
+            ? {}
+            : {
+                http: {
+                  method: http.method,
+                  path: http.path,
+                  query: query.toString(),
+                },
+              }),
+        },
+        context.signal,
+      );
+      if (typeof result.policy_hash !== "string" || !/^[a-f0-9]{64}$/.test(result.policy_hash)) {
+        throw new DependencyUnavailableError(
+          "The Sandbox returned an invalid evaluated policy identity.",
+        );
+      }
+      if (result.policy_hash !== request.expectedPolicyHash) {
+        throw new ResourceConflictError(
+          "The effective Sandbox policy changed. Refresh the policy before testing again.",
+        );
+      }
+      const rows = (value: unknown): readonly ConfigurationRecord[] => {
+        if (value === undefined) {
+          return [];
+        }
+        if (!Array.isArray(value) || value.some((item) => asRecord(item) === undefined)) {
+          throw new DependencyUnavailableError("The Sandbox returned an invalid evaluation trace.");
+        }
+        return value as ConfigurationRecord[];
+      };
+      const text = (value: unknown): string => {
+        if (typeof value !== "string") {
+          throw new DependencyUnavailableError(
+            "The Sandbox returned an invalid evaluation diagnostic.",
+          );
+        }
+        return policyText(value);
+      };
+      if (
+        result.unevaluated_checks !== undefined &&
+        (!Array.isArray(result.unevaluated_checks) ||
+          result.unevaluated_checks.some((value) => typeof value !== "string"))
+      ) {
+        throw new DependencyUnavailableError("The Sandbox returned invalid evaluation boundaries.");
+      }
+      return {
+        policyHash: request.expectedPolicyHash,
+        applied: result.loaded === true,
+        decision: policyDecision(result.decision),
+        reason: text(result.reason ?? ""),
+        rules: rows(result.rules).map((rule) => ({
+          id: policyRuleId(rule.rule, rule.builtin === true),
+          matched: rule.matched === true,
+          reason: text(rule.reason ?? ""),
+        })),
+        stages: rows(result.stages).map((stage) => ({
+          id: policyText(text(stage.id), 256),
+          decision: policyDecision(stage.decision),
+          reason: text(stage.reason ?? ""),
+        })),
+        unevaluatedChecks: ((result.unevaluated_checks ?? []) as string[]).map((value) =>
+          policyText(value),
+        ),
+      };
+    } catch (error) {
+      throw this.networkPolicyFailure(error, "evaluateNetworkPolicy");
+    }
+  }
+
+  private async networkPolicyTarget(context: SandboxLogContext) {
+    this.requireOperatorWorkspaceMode("inspect Sandbox network policy");
+    if (
+      context.revision.namespaceId !== context.namespace.id ||
+      context.revision.sandboxDriverId !== this.id ||
+      context.revision.harness.mode !== "dedicated"
+    ) {
+      throw new DependencyUnavailableError("The selected revision does not own this Sandbox.");
+    }
+    const sandbox = this.sandboxRef(context);
+    const client = this.gatewayClientForNamespace(sandbox.namespaceName);
+    const selector = { name: sandbox.resourceName, workspace: workspaceName(context.namespace) };
+    const existing = await client.getSandbox(selector, context.signal);
+    if (existing === undefined) {
+      throw new DependencyUnavailableError("The revision's Sandbox is unavailable.");
+    }
+    if (
+      existing.name !== selector.name ||
+      existing.workspace !== selector.workspace ||
+      existing.labels["openclaw.dev/agent"] !== context.revision.agentId ||
+      existing.labels["openclaw.dev/revision"] !== context.revision.id ||
+      existing.annotations["openclaw.dev/namespace-id"] !== context.revision.namespaceId ||
+      existing.annotations["openclaw.dev/agent-id"] !== context.revision.agentId ||
+      existing.annotations["openclaw.dev/revision-id"] !== context.revision.id
+    ) {
+      throw new DependencyUnavailableError(
+        "The Sandbox does not match the selected Agent revision's ownership.",
+      );
+    }
+    return { sandbox, client, selector, existing };
+  }
+
+  private networkPolicyFailure(error: unknown, operation: string): Error {
+    if (error instanceof NotImplementedError || error instanceof ResourceConflictError) {
+      // Wrapped gRPC failures are also dependency errors; normalize their status below.
+      if (statusCode(error) === undefined) {
+        return error;
+      }
+    }
+    const wrappedStatus = asRecord(error)?.grpcStatus;
+    const code =
+      statusCode(error) ?? (typeof wrappedStatus === "number" ? wrappedStatus : undefined);
+    if (code === 12) {
+      return new NotImplementedError(
+        operation,
+        "The installed Sandbox provider does not support this network policy operation.",
+      );
+    }
+    if (code === 9 && operation === "evaluateNetworkPolicy") {
+      return new ResourceConflictError(
+        "The effective Sandbox policy changed or cannot be evaluated. Refresh the policy before testing again.",
+      );
+    }
+    if (code === GRPC_PERMISSION_DENIED || code === GRPC_UNAUTHENTICATED) {
+      return new DependencyUnavailableError(
+        "The Sandbox provider refused policy access. Verify its Workspace membership and read scopes.",
+      );
+    }
+    return new DependencyUnavailableError("The Sandbox network policy operation is unavailable.");
   }
 
   /**

@@ -21,6 +21,7 @@ export {
 export { maskRuntimeEventText, redactRuntimeLogText } from "./redact.ts";
 export { readSandboxLogPage, SANDBOX_LOG_RETENTION } from "./sandbox.ts";
 export {
+  sanitizeRuntimeLogText,
   sanitizeRuntimeLogChunk,
   sanitizeSandboxLogLines,
   type SanitizedRuntimeLogChunk,

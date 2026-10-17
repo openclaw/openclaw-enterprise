@@ -110,7 +110,43 @@ export interface OpenShellSandboxResponse {
   readonly exitCode?: number;
   /** The gateway's restart number in the current crash loop; absent before any restart. */
   readonly restartCount?: number;
+  readonly configurationAdmission?: RecordValue;
   readonly serviceUrls: Readonly<Record<string, string>>;
+}
+
+/** Effective policy only: settings, certificates and credential values are not decoded. */
+export interface OpenShellSandboxPolicyConfig {
+  readonly policy: RecordValue;
+  readonly version: number;
+  readonly policyHash: string;
+  readonly configRevision: string;
+  readonly source: "sandbox" | "global";
+  readonly globalVersion?: number;
+  readonly providerEnvRevision: string;
+  readonly configurationAdmitted: boolean;
+  readonly instanceId: string;
+}
+
+export interface OpenShellNetworkPolicyEvaluationRequest extends OpenShellSandboxDeleteRequest {
+  readonly host: string;
+  readonly port: number;
+  readonly binaryPath: string;
+  readonly binarySha256?: string;
+  readonly ancestors?: readonly string[];
+  readonly cmdlinePaths?: readonly string[];
+  readonly http?: { readonly method: string; readonly path: string; readonly query: string };
+  readonly expectedPolicyHash: string;
+}
+
+export interface OpenShellSandboxPolicyReader {
+  getSandboxConfig(
+    request: OpenShellSandboxDeleteRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxPolicyConfig>;
+  evaluateSandboxNetworkPolicy(
+    request: OpenShellNetworkPolicyEvaluationRequest,
+    signal: AbortSignal,
+  ): Promise<RecordValue>;
 }
 
 export interface OpenShellServiceResponse {
@@ -302,7 +338,7 @@ export function openShellSandboxObserver(
 }
 
 export interface OpenShellGatewayClient
-  extends OpenShellSandboxLogReader, OpenShellSandboxObserver {
+  extends OpenShellSandboxLogReader, OpenShellSandboxObserver, OpenShellSandboxPolicyReader {
   health(signal: AbortSignal): Promise<void>;
   getWorkspace(name: string, signal: AbortSignal): Promise<OpenShellWorkspaceResponse | undefined>;
   createWorkspace(
@@ -465,6 +501,8 @@ type OpenShellMethod =
   | "DeleteService"
   | "DeleteSandbox"
   | "GetSandboxLogs"
+  | "GetSandboxConfig"
+  | "EvaluateSandboxNetworkPolicy"
   | "GetSandboxProviderStatus"
   | "CreateProvider"
   | "UpdateProvider"
@@ -884,6 +922,9 @@ function sandboxResponse(
     ...(typeof restartCount === "number" && Number.isSafeInteger(restartCount) && restartCount > 0
       ? { restartCount }
       : {}),
+    ...(asRecord(status?.configuration_admission) === undefined
+      ? {}
+      : { configurationAdmission: asRecord(status?.configuration_admission)! }),
   });
 }
 
@@ -1549,6 +1590,85 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       lines: Object.freeze(logs.map(sandboxLogLine)),
       bufferTotal: Number.isSafeInteger(bufferTotal) && bufferTotal >= 0 ? bufferTotal : 0,
     });
+  }
+
+  async getSandboxConfig(
+    request: OpenShellSandboxDeleteRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellSandboxPolicyConfig> {
+    const response = await this.unary(
+      "GetSandboxConfig",
+      {
+        name: nonempty(request.name, "OpenShell Sandbox name"),
+        workspace_scope: { workspace: nonempty(request.workspace, "OpenShell Workspace name") },
+      },
+      signal,
+    );
+    const policy = asRecord(response.policy);
+    let source: OpenShellSandboxPolicyConfig["source"] | undefined;
+    if (response.policy_source === "POLICY_SOURCE_SANDBOX" || response.policy_source === 1) {
+      source = "sandbox";
+    } else if (response.policy_source === "POLICY_SOURCE_GLOBAL" || response.policy_source === 2) {
+      source = "global";
+    }
+    const configRevision = String(response.config_revision ?? "0");
+    const providerEnvRevision = String(response.provider_env_revision ?? "0");
+    const fingerprint = (value: string) =>
+      /^\d{1,20}$/.test(value) && BigInt(value) <= 18_446_744_073_709_551_615n;
+    if (
+      policy === undefined ||
+      source === undefined ||
+      response.workspace !== request.workspace ||
+      typeof response.version !== "number" ||
+      !Number.isSafeInteger(response.version) ||
+      response.version < 1 ||
+      typeof response.policy_hash !== "string" ||
+      !/^[a-f0-9]{64}$/.test(response.policy_hash) ||
+      !fingerprint(configRevision) ||
+      !fingerprint(providerEnvRevision) ||
+      (source === "global" &&
+        (typeof response.global_policy_version !== "number" ||
+          !Number.isSafeInteger(response.global_policy_version) ||
+          response.global_policy_version < 1))
+    ) {
+      throw new OpenShellGatewayFailure("OpenShell returned an invalid effective policy snapshot.");
+    }
+    return Object.freeze({
+      policy,
+      version: response.version,
+      policyHash: response.policy_hash,
+      configRevision,
+      source,
+      ...(source === "global" ? { globalVersion: response.global_policy_version as number } : {}),
+      providerEnvRevision,
+      configurationAdmitted: response.configuration_admitted === true,
+      instanceId:
+        typeof response.configuration_instance_id === "string"
+          ? response.configuration_instance_id
+          : "",
+    });
+  }
+
+  async evaluateSandboxNetworkPolicy(
+    request: OpenShellNetworkPolicyEvaluationRequest,
+    signal: AbortSignal,
+  ): Promise<RecordValue> {
+    return this.unary(
+      "EvaluateSandboxNetworkPolicy",
+      {
+        workspace_scope: { workspace: nonempty(request.workspace, "OpenShell Workspace name") },
+        name: nonempty(request.name, "OpenShell Sandbox name"),
+        host: request.host,
+        port: request.port,
+        binary_path: request.binaryPath,
+        ...(request.binarySha256 === undefined ? {} : { binary_sha256: request.binarySha256 }),
+        ...(request.ancestors === undefined ? {} : { ancestors: [...request.ancestors] }),
+        ...(request.cmdlinePaths === undefined ? {} : { cmdline_paths: [...request.cmdlinePaths] }),
+        ...(request.http === undefined ? {} : { http: { ...request.http } }),
+        expected_policy_hash: request.expectedPolicyHash,
+      },
+      signal,
+    );
   }
 
   async getProviderProfile(

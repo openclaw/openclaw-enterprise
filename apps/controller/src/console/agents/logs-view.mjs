@@ -146,7 +146,7 @@ const INFERRED_JOIN_LABEL = "Gateway lines: inferred (time window)";
 const INFERRED_JOIN_TITLE =
   "OpenShell does not record which Agent turn made this request. Gateway or Harness lines near this time may be related; clocks on different nodes can differ.";
 
-export function recordRow(record) {
+export function recordRow(record, { inspectPolicy } = {}) {
   if (record.type === "gap") {
     return element(
       "div",
@@ -208,6 +208,18 @@ export function recordRow(record) {
       fields.append(element("dt", {}, visibleText(name)), element("dd", {}, visibleText(value)));
     }
     row = element("details", { className: "log-row" }, element("summary", {}, summary), fields);
+  }
+  if (provenance !== null && inspectPolicy) {
+    const inspect = element(
+      "button",
+      { type: "button", className: "policy-inspect" },
+      "Inspect / test action",
+    );
+    inspect.addEventListener("click", (event) => {
+      event.preventDefault();
+      inspectPolicy(record, event.currentTarget);
+    });
+    content.append(inspect);
   }
   // Filters match only lines; gap and withheld rows always stay visible.
   row.dataset.level = record.level;

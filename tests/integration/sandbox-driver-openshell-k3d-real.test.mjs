@@ -1773,6 +1773,13 @@ function createIntegrationSandboxDriverFactory(
       harnessResource(context) {
         return configurationDriver.harnessResource(context);
       },
+      describePolicySimulation(context) {
+        return new OpenShellSandboxDriver(selection.configuration, {
+          id: selection.id,
+          implementation: "openshell",
+          backend: backendFor(undefined),
+        }).describePolicySimulation(context);
+      },
       async ensureNamespace(context) {
         try {
           const endpoint = await endpointForNamespace(context);
@@ -4769,6 +4776,31 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.notEqual(escapedCommand.exitCode, 0, "OpenShell must deny writes outside the workspace.");
   assert.equal(approvedCommand.exitCode, 0, "OpenShell must allow the approved destination.");
   assert.notEqual(deniedCommand.exitCode, 0, "OpenShell must deny the unapproved destination.");
+  const simulationPath = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}/deployments/${topology.revision.id}/runtime/policy-simulation`;
+  const description = await topology.request("GET", simulationPath);
+  assert.equal(description.status, 200);
+  assert.ok(
+    description.data.network,
+    "the regular Agent flow must expose authored network simulation",
+  );
+  for (const { host, expected } of [
+    { host: "www.openclaw.org", expected: "allow" },
+    { host: "acme.com", expected: "deny" },
+  ]) {
+    const prediction = await topology.request("POST", simulationPath, {
+      kind: "network",
+      host,
+      port: 443,
+      binaryPath: "/usr/bin/curl",
+      expectedSimulationHash: description.data.network.simulationHash,
+    });
+    assert.equal(prediction.status, 200);
+    assert.equal(
+      prediction.data.decision,
+      expected,
+      "OCE prediction must agree with the real Harness network outcome",
+    );
+  }
   if (modelSourceType === "codex-pat") {
     // Which numbered commands ran and how long each took, by label only: a missing command 7
     // then shows whether the model skipped it, rewrote it, or ran it after the turn's reply.

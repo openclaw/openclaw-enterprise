@@ -19365,6 +19365,1270 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/network-policy": {
+      "get": {
+        "description": "Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.",
+        "operationId": "getAgentDeploymentNetworkPolicy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deploymentId",
+            "required": true,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "admission": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "configRevision": {
+                              "maxLength": 20,
+                              "pattern": "^[0-9]+$",
+                              "type": "string"
+                            },
+                            "instanceId": { "maxLength": 256, "minLength": 1, "type": "string" },
+                            "policyHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                            "providerEnvRevision": {
+                              "maxLength": 20,
+                              "pattern": "^[0-9]+$",
+                              "type": "string"
+                            },
+                            "state": {
+                              "anyOf": [
+                                { "const": "applied", "type": "string" },
+                                { "const": "pending", "type": "string" },
+                                { "const": "rejected", "type": "string" },
+                                { "const": "unknown", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": ["state"],
+                          "type": "object"
+                        },
+                        "identity": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "configRevision": {
+                              "maxLength": 20,
+                              "pattern": "^[0-9]+$",
+                              "type": "string"
+                            },
+                            "globalVersion": { "minimum": 0, "type": "integer" },
+                            "policyHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                            "providerEnvRevision": {
+                              "maxLength": 20,
+                              "pattern": "^[0-9]+$",
+                              "type": "string"
+                            },
+                            "source": { "maxLength": 256, "minLength": 1, "type": "string" },
+                            "version": { "minimum": 0, "type": "integer" }
+                          },
+                          "required": [
+                            "source",
+                            "version",
+                            "policyHash",
+                            "configRevision",
+                            "providerEnvRevision"
+                          ],
+                          "type": "object"
+                        },
+                        "observedAt": { "format": "date-time", "type": "string" },
+                        "revisionId": {
+                          "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "rules": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "binaries": {
+                                "items": { "maxLength": 4096, "type": "string" },
+                                "maxItems": 256,
+                                "type": "array"
+                              },
+                              "configuration": { "additionalProperties": {}, "type": "object" },
+                              "destinations": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "access": { "maxLength": 4096, "type": "string" },
+                                    "enforcement": { "maxLength": 4096, "type": "string" },
+                                    "host": { "maxLength": 4096, "type": "string" },
+                                    "ports": {
+                                      "items": {
+                                        "maximum": 65535,
+                                        "minimum": 1,
+                                        "type": "integer"
+                                      },
+                                      "maxItems": 256,
+                                      "type": "array"
+                                    },
+                                    "protocol": { "maxLength": 4096, "type": "string" },
+                                    "tls": { "maxLength": 4096, "type": "string" }
+                                  },
+                                  "required": ["host", "ports", "protocol", "tls", "enforcement"],
+                                  "type": "object"
+                                },
+                                "maxItems": 256,
+                                "type": "array"
+                              },
+                              "id": { "maxLength": 512, "minLength": 1, "type": "string" },
+                              "name": { "maxLength": 256, "minLength": 1, "type": "string" },
+                              "origin": {
+                                "anyOf": [
+                                  { "const": "configured", "type": "string" },
+                                  { "const": "provider", "type": "string" },
+                                  { "const": "builtin", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "name",
+                              "origin",
+                              "binaries",
+                              "destinations",
+                              "configuration"
+                            ],
+                            "type": "object"
+                          },
+                          "maxItems": 1024,
+                          "type": "array"
+                        },
+                        "sandbox": { "maxLength": 256, "minLength": 1, "type": "string" }
+                      },
+                      "required": [
+                        "sandbox",
+                        "observedAt",
+                        "identity",
+                        "admission",
+                        "rules",
+                        "revisionId"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "429": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "501": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "504": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Inspect effective sandbox network rules and exact runtime load evidence",
+        "tags": ["Agent deployments"],
+        "x-openclaw-permissions": [
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent_revision", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/network-policy/evaluate": {
+      "post": {
+        "description": "Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.",
+        "operationId": "evaluateAgentDeploymentNetworkPolicy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deploymentId",
+            "required": true,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "ancestors": {
+                    "items": { "maxLength": 4096, "pattern": "^/", "type": "string" },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "binaryPath": { "maxLength": 4096, "pattern": "^/", "type": "string" },
+                  "binarySha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "cmdlinePaths": {
+                    "items": { "maxLength": 4096, "pattern": "^/", "type": "string" },
+                    "maxItems": 64,
+                    "type": "array"
+                  },
+                  "expectedPolicyHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                  "host": {
+                    "maxLength": 253,
+                    "minLength": 1,
+                    "pattern": "^[^\\s/:?#]+$",
+                    "type": "string"
+                  },
+                  "http": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "method": { "pattern": "^[A-Z]{1,16}$", "type": "string" },
+                      "path": { "maxLength": 4096, "pattern": "^/", "type": "string" },
+                      "query": {
+                        "additionalProperties": {
+                          "items": { "maxLength": 4096, "type": "string" },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "maxProperties": 64,
+                        "type": "object"
+                      }
+                    },
+                    "required": ["method", "path"],
+                    "type": "object"
+                  },
+                  "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                },
+                "required": ["host", "port", "binaryPath", "expectedPolicyHash"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "applied": { "type": "boolean" },
+                        "decision": {
+                          "anyOf": [
+                            { "const": "allow", "type": "string" },
+                            { "const": "deny", "type": "string" },
+                            { "const": "audit", "type": "string" },
+                            { "const": "unknown", "type": "string" }
+                          ]
+                        },
+                        "policyHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "reason": { "maxLength": 4096, "type": "string" },
+                        "revisionId": {
+                          "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "rules": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": { "maxLength": 512, "minLength": 1, "type": "string" },
+                              "matched": { "type": "boolean" },
+                              "reason": { "maxLength": 4096, "type": "string" }
+                            },
+                            "required": ["id", "matched", "reason"],
+                            "type": "object"
+                          },
+                          "maxItems": 1024,
+                          "type": "array"
+                        },
+                        "stages": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "decision": {
+                                "anyOf": [
+                                  { "const": "allow", "type": "string" },
+                                  { "const": "deny", "type": "string" },
+                                  { "const": "audit", "type": "string" },
+                                  { "const": "unknown", "type": "string" }
+                                ]
+                              },
+                              "id": { "maxLength": 256, "minLength": 1, "type": "string" },
+                              "reason": { "maxLength": 4096, "type": "string" }
+                            },
+                            "required": ["id", "decision", "reason"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "unevaluatedChecks": {
+                          "items": { "maxLength": 4096, "type": "string" },
+                          "maxItems": 32,
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "policyHash",
+                        "applied",
+                        "decision",
+                        "reason",
+                        "rules",
+                        "stages",
+                        "unevaluatedChecks",
+                        "revisionId"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "429": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "501": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "504": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Evaluate a synthetic network request against a sandbox policy without sending it",
+        "tags": ["Agent deployments"],
+        "x-openclaw-permissions": [
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent_revision", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/policy-simulation": {
+      "get": {
+        "description": "Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.",
+        "operationId": "getAgentDeploymentPolicySimulation",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deploymentId",
+            "required": true,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "network": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "policy": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "kind": { "const": "network", "type": "string" },
+                                "rules": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "binaries": {
+                                        "items": { "maxLength": 4096, "type": "string" },
+                                        "maxItems": 256,
+                                        "type": "array"
+                                      },
+                                      "destinations": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "host": { "maxLength": 4096, "type": "string" },
+                                            "http": {
+                                              "additionalProperties": false,
+                                              "properties": {
+                                                "enforcement": {
+                                                  "anyOf": [
+                                                    { "const": "enforce", "type": "string" },
+                                                    { "const": "audit", "type": "string" }
+                                                  ]
+                                                },
+                                                "methods": {
+                                                  "items": {
+                                                    "pattern": "^(?:[A-Z]{1,16}|[*])$",
+                                                    "type": "string"
+                                                  },
+                                                  "maxItems": 32,
+                                                  "type": "array"
+                                                }
+                                              },
+                                              "required": ["methods", "enforcement"],
+                                              "type": "object"
+                                            },
+                                            "ports": {
+                                              "items": {
+                                                "maximum": 65535,
+                                                "minimum": 1,
+                                                "type": "integer"
+                                              },
+                                              "maxItems": 256,
+                                              "type": "array"
+                                            },
+                                            "unsupportedReason": {
+                                              "maxLength": 4096,
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": ["host", "ports"],
+                                          "type": "object"
+                                        },
+                                        "maxItems": 256,
+                                        "type": "array"
+                                      },
+                                      "id": { "maxLength": 512, "minLength": 1, "type": "string" },
+                                      "name": {
+                                        "maxLength": 512,
+                                        "minLength": 1,
+                                        "type": "string"
+                                      },
+                                      "unsupportedReason": { "maxLength": 4096, "type": "string" }
+                                    },
+                                    "required": ["id", "name", "binaries", "destinations"],
+                                    "type": "object"
+                                  },
+                                  "maxItems": 1024,
+                                  "type": "array"
+                                },
+                                "source": {
+                                  "anyOf": [
+                                    { "const": "driver_configuration", "type": "string" },
+                                    { "const": "revision", "type": "string" }
+                                  ]
+                                },
+                                "unevaluatedChecks": {
+                                  "items": { "maxLength": 4096, "type": "string" },
+                                  "maxItems": 64,
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["kind", "rules", "unevaluatedChecks"],
+                              "type": "object"
+                            },
+                            "simulationHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
+                          },
+                          "required": ["simulationHash", "policy"],
+                          "type": "object"
+                        },
+                        "plugins": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "policy": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "capabilities": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "approvers": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "agent": { "type": "boolean" },
+                                        "plugin": { "type": "boolean" },
+                                        "tools": { "type": "boolean" }
+                                      },
+                                      "required": ["agent", "plugin", "tools"],
+                                      "type": "object"
+                                    },
+                                    "driverPolicySchema": {
+                                      "additionalProperties": {},
+                                      "type": "object"
+                                    },
+                                    "toolDefaults": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "approval": {
+                                          "items": {
+                                            "anyOf": [
+                                              { "const": "provider_default", "type": "string" },
+                                              { "const": "none", "type": "string" },
+                                              { "const": "all_actions", "type": "string" },
+                                              { "const": "write_actions", "type": "string" }
+                                            ]
+                                          },
+                                          "maxItems": 4,
+                                          "type": "array"
+                                        },
+                                        "enabled": { "type": "boolean" },
+                                        "reviewer": {
+                                          "items": {
+                                            "anyOf": [
+                                              { "const": "human", "type": "string" },
+                                              { "const": "auto", "type": "string" }
+                                            ]
+                                          },
+                                          "maxItems": 2,
+                                          "type": "array"
+                                        }
+                                      },
+                                      "required": ["enabled", "approval", "reviewer"],
+                                      "type": "object"
+                                    },
+                                    "tools": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "approval": {
+                                          "items": {
+                                            "anyOf": [
+                                              { "const": "provider_default", "type": "string" },
+                                              { "const": "none", "type": "string" },
+                                              { "const": "all_actions", "type": "string" },
+                                              { "const": "write_actions", "type": "string" }
+                                            ]
+                                          },
+                                          "maxItems": 4,
+                                          "type": "array"
+                                        },
+                                        "enabled": { "type": "boolean" },
+                                        "reviewer": {
+                                          "items": {
+                                            "anyOf": [
+                                              { "const": "human", "type": "string" },
+                                              { "const": "auto", "type": "string" }
+                                            ]
+                                          },
+                                          "maxItems": 2,
+                                          "type": "array"
+                                        }
+                                      },
+                                      "required": ["enabled", "approval", "reviewer"],
+                                      "type": "object"
+                                    }
+                                  },
+                                  "required": ["toolDefaults", "tools", "driverPolicySchema"],
+                                  "type": "object"
+                                },
+                                "kind": { "const": "plugin", "type": "string" },
+                                "plugins": {
+                                  "additionalProperties": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "approvers": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "channel": {
+                                              "maxLength": 512,
+                                              "minLength": 1,
+                                              "type": "string"
+                                            },
+                                            "id": {
+                                              "maxLength": 512,
+                                              "minLength": 1,
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": ["channel", "id"],
+                                          "type": "object"
+                                        },
+                                        "maxItems": 64,
+                                        "type": "array"
+                                      },
+                                      "driverPolicy": {
+                                        "additionalProperties": {},
+                                        "type": "object"
+                                      },
+                                      "enabled": { "type": "boolean" },
+                                      "toolDefaults": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "approval": {
+                                            "anyOf": [
+                                              { "const": "provider_default", "type": "string" },
+                                              { "const": "none", "type": "string" },
+                                              { "const": "all_actions", "type": "string" },
+                                              { "const": "write_actions", "type": "string" }
+                                            ]
+                                          },
+                                          "enabled": { "type": "boolean" },
+                                          "reviewer": {
+                                            "anyOf": [
+                                              { "const": "human", "type": "string" },
+                                              { "const": "auto", "type": "string" }
+                                            ]
+                                          }
+                                        },
+                                        "type": "object"
+                                      },
+                                      "tools": {
+                                        "additionalProperties": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "approval": {
+                                              "anyOf": [
+                                                { "const": "provider_default", "type": "string" },
+                                                { "const": "none", "type": "string" },
+                                                { "const": "all_actions", "type": "string" },
+                                                { "const": "write_actions", "type": "string" }
+                                              ]
+                                            },
+                                            "approvers": {
+                                              "items": {
+                                                "additionalProperties": false,
+                                                "properties": {
+                                                  "channel": {
+                                                    "maxLength": 512,
+                                                    "minLength": 1,
+                                                    "type": "string"
+                                                  },
+                                                  "id": {
+                                                    "maxLength": 512,
+                                                    "minLength": 1,
+                                                    "type": "string"
+                                                  }
+                                                },
+                                                "required": ["channel", "id"],
+                                                "type": "object"
+                                              },
+                                              "maxItems": 64,
+                                              "type": "array"
+                                            },
+                                            "enabled": { "type": "boolean" },
+                                            "reviewer": {
+                                              "anyOf": [
+                                                { "const": "human", "type": "string" },
+                                                { "const": "auto", "type": "string" }
+                                              ]
+                                            }
+                                          },
+                                          "type": "object"
+                                        },
+                                        "type": "object"
+                                      }
+                                    },
+                                    "required": ["enabled"],
+                                    "type": "object"
+                                  },
+                                  "maxProperties": 256,
+                                  "type": "object"
+                                },
+                                "toolIds": {
+                                  "additionalProperties": {
+                                    "anyOf": [
+                                      {
+                                        "items": {
+                                          "maxLength": 512,
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "maxItems": 1024,
+                                        "type": "array"
+                                      },
+                                      { "type": "null" }
+                                    ]
+                                  },
+                                  "maxProperties": 256,
+                                  "type": "object"
+                                },
+                                "unevaluatedChecks": {
+                                  "items": { "maxLength": 4096, "type": "string" },
+                                  "maxItems": 64,
+                                  "type": "array"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "plugins",
+                                "capabilities",
+                                "toolIds",
+                                "unevaluatedChecks"
+                              ],
+                              "type": "object"
+                            },
+                            "simulationHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" }
+                          },
+                          "required": ["simulationHash", "policy"],
+                          "type": "object"
+                        },
+                        "revisionId": { "maxLength": 512, "minLength": 1, "type": "string" },
+                        "unsupported": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "kind": {
+                                "anyOf": [
+                                  { "const": "network", "type": "string" },
+                                  { "const": "plugin", "type": "string" }
+                                ]
+                              },
+                              "reason": { "maxLength": 4096, "type": "string" }
+                            },
+                            "required": ["kind", "reason"],
+                            "type": "object"
+                          },
+                          "maxItems": 2,
+                          "type": "array"
+                        }
+                      },
+                      "required": ["revisionId", "unsupported"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "429": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "501": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "504": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Inspect authored sandbox and plugin policies for OCE simulation",
+        "tags": ["Agent deployments"],
+        "x-openclaw-permissions": [
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent_revision", "scope": "requested" }
+        ]
+      },
+      "post": {
+        "description": "Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.",
+        "operationId": "simulateAgentDeploymentPolicy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deploymentId",
+            "required": true,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "ancestors": {
+                        "items": { "maxLength": 4096, "pattern": "^/", "type": "string" },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "binaryPath": { "maxLength": 4096, "pattern": "^/", "type": "string" },
+                      "binarySha256": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                      "cmdlinePaths": {
+                        "items": { "maxLength": 4096, "pattern": "^/", "type": "string" },
+                        "maxItems": 64,
+                        "type": "array"
+                      },
+                      "expectedSimulationHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                      "host": {
+                        "maxLength": 253,
+                        "minLength": 1,
+                        "pattern": "^[^\\s/:?#]+$",
+                        "type": "string"
+                      },
+                      "http": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "method": { "pattern": "^[A-Z]{1,16}$", "type": "string" },
+                          "path": { "maxLength": 4096, "pattern": "^/", "type": "string" },
+                          "query": {
+                            "additionalProperties": {
+                              "items": { "maxLength": 4096, "type": "string" },
+                              "maxItems": 32,
+                              "type": "array"
+                            },
+                            "maxProperties": 64,
+                            "type": "object"
+                          }
+                        },
+                        "required": ["method", "path"],
+                        "type": "object"
+                      },
+                      "kind": { "const": "network", "type": "string" },
+                      "port": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                    },
+                    "required": ["host", "port", "binaryPath", "kind", "expectedSimulationHash"],
+                    "type": "object"
+                  },
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "destructive": { "type": "boolean" },
+                      "expectedSimulationHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                      "kind": { "const": "plugin", "type": "string" },
+                      "pluginId": { "maxLength": 512, "minLength": 1, "type": "string" },
+                      "readOnly": { "type": "boolean" },
+                      "toolId": { "maxLength": 512, "minLength": 1, "type": "string" }
+                    },
+                    "required": ["kind", "pluginId", "toolId", "expectedSimulationHash"],
+                    "type": "object"
+                  }
+                ]
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "decision": {
+                          "anyOf": [
+                            { "const": "allow", "type": "string" },
+                            { "const": "deny", "type": "string" },
+                            { "const": "audit", "type": "string" },
+                            { "const": "approval_required", "type": "string" },
+                            { "const": "unknown", "type": "string" }
+                          ]
+                        },
+                        "kind": {
+                          "anyOf": [
+                            { "const": "network", "type": "string" },
+                            { "const": "plugin", "type": "string" }
+                          ]
+                        },
+                        "reason": { "maxLength": 4096, "type": "string" },
+                        "revisionId": { "maxLength": 512, "minLength": 1, "type": "string" },
+                        "rules": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "decision": {
+                                "anyOf": [
+                                  { "const": "allow", "type": "string" },
+                                  { "const": "deny", "type": "string" },
+                                  { "const": "audit", "type": "string" },
+                                  { "const": "approval_required", "type": "string" },
+                                  { "const": "unknown", "type": "string" }
+                                ]
+                              },
+                              "id": { "maxLength": 1024, "minLength": 1, "type": "string" },
+                              "matched": { "type": "boolean" },
+                              "name": { "maxLength": 512, "minLength": 1, "type": "string" },
+                              "reason": { "maxLength": 4096, "type": "string" }
+                            },
+                            "required": ["id", "name", "matched", "decision", "reason"],
+                            "type": "object"
+                          },
+                          "maxItems": 1026,
+                          "type": "array"
+                        },
+                        "simulationHash": { "pattern": "^[a-f0-9]{64}$", "type": "string" },
+                        "unevaluatedChecks": {
+                          "items": { "maxLength": 4096, "type": "string" },
+                          "maxItems": 65,
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "decision",
+                        "reason",
+                        "rules",
+                        "unevaluatedChecks",
+                        "revisionId",
+                        "kind",
+                        "simulationHash"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "429": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "501": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "504": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Simulate a network or plugin action under authored OCE policy",
+        "tags": ["Agent deployments"],
+        "x-openclaw-permissions": [
+          { "action": "operate", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "agent_revision", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/device-authorizations": {
       "post": {
         "description": "Requires update permission on the requested Agent. Requires read permission on the requested Agent. Requires create permission for Secret resources in the requested Namespace.",

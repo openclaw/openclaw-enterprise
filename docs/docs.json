@@ -231,6 +231,7 @@
               }
             ],
             "hidden": [
+              "guides/topics/agent-network-policy",
               "reference/console/debug-fields",
               "reference/console/agent-sharing",
               "reference/configuration/secrets",
@@ -950,6 +951,7 @@
               "flows/controller-worker",
               "flows/agent-deployment-diagnostics",
               "flows/agent-runtime-logs",
+              "flows/agent-network-policy",
               "flows/platform-console",
               "flows/platform-console/agent-editing",
               "flows/platform-console/agent-sharing",

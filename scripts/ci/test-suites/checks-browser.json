@@ -12,6 +12,7 @@
     "tests/browser/console-agent-repositories.test.mjs",
     "tests/integration/repository-credentials-github-token.test.mjs",
     "tests/integration/repository-credentials-client-config.test.mjs",
+    "tests/browser/console-network-policy.test.mjs",
     "tests/browser/console-agent-overview.test.mjs",
     "tests/browser/console-agent-plugin-approvers.test.mjs",
     "tests/browser/docs-compute-matrix.test.mjs"
@@ -49,6 +50,9 @@
     },
     {
       "path": "tests/browser/console-agent-overview.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-network-policy.test.mjs"
     }
   ]
 }

@@ -172,3 +172,12 @@ and [Compute startup warnings](compute.md#plugin-startup-warnings).
 - [Bundled Driver source](../../../apps/controller/src/drivers/plugin/index.ts), [runtime translator](../../../apps/controller/src/drivers/plugin/runtime-translator.ts), and [trusted selection](../../../apps/controller/src/composition/installation-config.ts)
 - [Agent plugin runtime flow](../../flows/agent-plugins.md), [deployment](../../guides/deploy.md), and [verification guide](../../testing/plugins.md)
 - [Implementation proof requirements](../../../specs/plans/16-plugin-driver.md#verification)
+
+## Policy simulation
+
+`describePolicySimulation(revision, signal)` optionally returns revision-authored
+selections, capability constraints and verified tool identities. OCE predicts
+plugin/tool enablement and supported approval requirements from this descriptor.
+Native defaults, unavailable tool ownership and opaque Driver conditions remain
+unknown. The method performs no installation or authenticated discovery. See
+[policy testing](../../guides/topics/agent-network-policy.md).

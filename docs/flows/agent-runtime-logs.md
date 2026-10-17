@@ -72,14 +72,13 @@ graph TD
 (`Client.GetAgentRevision`) proves them older. Harness-only candidates must be
 proven newer. Status is reused.
 
-`packages/contracts/src/api/routes.ts:occApiRoutes` declares both GET routes with
-a closed query schema. `apps/controller/src/index.ts:perform` answers `501` when
-`agentRuntimeLogs` is disabled. `OpenClawController.runtimeLogTarget` authorizes
-the tier action and Agent `read` (plus revision `read` for status only), resolves
-the revision within the exact Agent, then rejects a Driver without
-`describeAgentRuntime` or with `runtimeLogging: "driver"`. Only then does
-`apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` admit reads;
-audited denials spend no token.
+`packages/contracts/src/api/routes.ts:occApiRoutes` declares both GET routes and their
+closed query schema. `apps/controller/src/index.ts:perform` returns `501` when
+`agentRuntimeLogs` is disabled. `OpenClawController.agentRuntimeTarget` requires the
+tier action, Agent `read` and, for status, revision `read`. It resolves that Agent’s
+revision and rejects Drivers lacking `describeAgentRuntime` or declaring
+`runtimeLogging: "driver"`. `apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter`
+admits authorized reads; denials are audited and consume no token.
 
 ### 2. Describe the runtime
 
@@ -254,6 +253,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 - 2026-10-15 09:08: Select newer provider Harness status before revision Pods exist. (authoring-run/7163351c-af75-410f-bd45-a2809e178c9e - 422cb3fe407204d4add49ea8494f0fd0ce49be52)
 
 - 2026-10-15 09:25: Honor HTTP-date Retry-After in CLI follow. (authoring-run/613fa018-dc4e-4c4d-b05b-f2f8f79e3244 - 422cb3fe407204d4add49ea8494f0fd0ce49be52)
+
+- 2026-10-13 13:43: Name shared revision authorization. (authoring-run/57611bd1-494b-4484-940a-7767f8814376 - 0989be91e37275f690a9c048a9ff001b269f3aa6)
 
 - 2026-10-13: Key cursor hashes; `v1` cursors expire. (#2274)
 

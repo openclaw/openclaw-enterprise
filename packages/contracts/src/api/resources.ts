@@ -1,5 +1,13 @@
 import { Type } from "typebox";
+import {
+  PolicySimulationDescriptionSchema,
+  AgentPolicySimulationResultSchema,
+} from "../policy-simulation.ts";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
+import {
+  SandboxNetworkPolicyDescriptionSchema,
+  SandboxNetworkPolicyEvaluationSchema,
+} from "../sandbox-policies.ts";
 
 import {
   AgentId,
@@ -1650,6 +1658,37 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
 export const AgentRuntimeResponse = Type.Object(
   { data: AgentRuntimeDescriptionSchema, meta: Meta },
   { $id: "AgentRuntimeResponse", additionalProperties: false },
+);
+
+export const AgentNetworkPolicyResponse = Type.Object(
+  {
+    data: Type.Object(
+      { ...SandboxNetworkPolicyDescriptionSchema.properties, revisionId: RevisionId },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+export const AgentPolicySimulationResponse = Type.Object(
+  { data: PolicySimulationDescriptionSchema, meta: Meta },
+  { additionalProperties: false },
+);
+export const AgentPolicySimulationResultResponse = Type.Object(
+  { data: AgentPolicySimulationResultSchema, meta: Meta },
+  { additionalProperties: false },
+);
+
+export const AgentNetworkPolicyEvaluationResponse = Type.Object(
+  {
+    data: Type.Object(
+      { ...SandboxNetworkPolicyEvaluationSchema.properties, revisionId: RevisionId },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
 );
 
 export const AgentRuntimeLogPageSchema = Type.Object(

@@ -10,6 +10,35 @@ const candidateRevisionId = "rev_00000000-0000-4000-8000-000000000007";
 const hiddenRevisionId = "rev_00000000-0000-4000-8000-000000000008";
 const secretRef = (id) => ({ kind: "secret", namespaceId, id });
 const auth = { method: "api_key", source: secretRef("sec_demo_model") };
+const networkPolicyHash = "a".repeat(64);
+// Policy responses are presentation fixtures, not an evaluator or live Sandbox proof.
+const networkPolicyRules = [
+  {
+    id: "policy:github-api",
+    name: "github-api",
+    origin: "configured",
+    binaries: ["/usr/bin/curl"],
+    destinations: [
+      {
+        host: "api.github.com",
+        ports: [443],
+        protocol: "https",
+        tls: "terminate",
+        enforcement: "enforce",
+        access: "read-only",
+      },
+    ],
+    configuration: { endpoints: [{ host: "api.github.com", port: 443, access: "read-only" }] },
+  },
+  {
+    id: "builtin:default-deny",
+    name: "Default deny",
+    origin: "builtin",
+    binaries: [],
+    destinations: [],
+    configuration: { description: "Requests without a matching allowed rule are denied." },
+  },
+];
 
 function initialDeploymentProgress(status) {
   if (status !== "queued" && status !== "running") {
@@ -1369,10 +1398,204 @@ export function installFixture(scenario, evidence) {
             ? response(revisions.get(suffix.split("/")[2]))
             : error(404);
         }
+        if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime/policy-simulation")) {
+          const revisionId = suffix.split("/")[2];
+          const plugins = {
+            "occ-plugin:diffs": {
+              enabled: true,
+              toolDefaults: { approval: "none" },
+              tools: { diffs: { enabled: false } },
+            },
+          };
+          if (method === "GET") {
+            return response({
+              revisionId,
+              ...(scenario.policyPluginOnly
+                ? {}
+                : {
+                    network: {
+                      simulationHash: networkPolicyHash,
+                      policy: {
+                        kind: "network",
+                        rules: [
+                          {
+                            id: "policy:github-api",
+                            name: "github-api",
+                            binaries: ["/usr/bin/curl"],
+                            destinations: [{ host: "api.github.com", ports: [443] }],
+                          },
+                        ],
+                        unevaluatedChecks: [
+                          "Global, provider and generated rules are not included in OCE simulation.",
+                        ],
+                      },
+                    },
+                  }),
+              plugins: {
+                simulationHash: "b".repeat(64),
+                policy: {
+                  kind: "plugin",
+                  plugins,
+                  capabilities: {
+                    toolDefaults: {
+                      enabled: true,
+                      approval: ["provider_default", "none"],
+                      reviewer: [],
+                    },
+                    tools: { enabled: true, approval: ["provider_default", "none"], reviewer: [] },
+                    driverPolicySchema: {},
+                  },
+                  toolIds: { "occ-plugin:diffs": ["diffs"] },
+                  unevaluatedChecks: [
+                    "Plugin authentication, installation and runtime availability are not verified.",
+                  ],
+                },
+              },
+              unsupported: scenario.policyPluginOnly
+                ? [{ kind: "network", reason: "This version has no Sandbox Driver." }]
+                : [],
+            });
+          }
+          if (method === "POST") {
+            const kind = body.kind;
+            const decision = scenario.policyDecision ?? "deny";
+            return response({
+              revisionId,
+              kind,
+              simulationHash: kind === "plugin" ? "b".repeat(64) : networkPolicyHash,
+              decision,
+              reason:
+                kind === "plugin"
+                  ? "The tool is disabled by its intended policy."
+                  : "No authored network rule grants this action.",
+              rules:
+                kind === "plugin"
+                  ? [
+                      {
+                        id: "plugin:occ-plugin:diffs",
+                        name: "Plugin enablement",
+                        matched: true,
+                        decision: "allow",
+                        reason: "The plugin is enabled.",
+                      },
+                      {
+                        id: "tool:diffs",
+                        name: "Tool enablement",
+                        matched: true,
+                        decision: "deny",
+                        reason: "The tool is explicitly disabled.",
+                      },
+                    ]
+                  : [
+                      {
+                        id: "policy:github-api",
+                        name: "github-api",
+                        matched: decision === "allow",
+                        decision: decision === "allow" ? "allow" : "deny",
+                        reason:
+                          decision === "allow"
+                            ? "Destination and supplied process identity match."
+                            : "Destination does not match.",
+                      },
+                      {
+                        id: "builtin:default-deny",
+                        name: "Default deny",
+                        matched: decision === "deny",
+                        decision,
+                        reason: "Default decision after authored rules.",
+                      },
+                    ],
+              unevaluatedChecks: [
+                kind === "plugin"
+                  ? "Plugin authentication, installation and runtime availability are not verified."
+                  : "Runtime admission, DNS, TLS and connectivity are not tested.",
+              ],
+            });
+          }
+        }
+        if (
+          suffix.startsWith("/deployments/") &&
+          suffix.endsWith("/runtime/network-policy") &&
+          method === "GET"
+        ) {
+          if (scenario.policyPluginOnly) {
+            return error(501);
+          }
+          return response({
+            revisionId: suffix.split("/")[2],
+            sandbox: "sb-policy-demo",
+            observedAt: createdAt,
+            identity: {
+              source: "sandbox",
+              version: 12,
+              globalVersion: 4,
+              policyHash: networkPolicyHash,
+              configRevision: "12",
+              providerEnvRevision: "4",
+            },
+            admission: {
+              state: scenario.policyAdmission ?? "applied",
+              policyHash: networkPolicyHash,
+            },
+            rules: networkPolicyRules,
+          });
+        }
+        if (
+          suffix.startsWith("/deployments/") &&
+          suffix.endsWith("/runtime/network-policy/evaluate") &&
+          method === "POST"
+        ) {
+          const decision = scenario.policyDecision ?? "deny";
+          return response({
+            revisionId: suffix.split("/")[2],
+            policyHash: networkPolicyHash,
+            applied: (scenario.policyAdmission ?? "applied") === "applied",
+            decision,
+            reason:
+              decision === "deny"
+                ? "No configured rule allows this destination."
+                : "Simulated provider evaluation result.",
+            rules: [
+              {
+                id: "policy:github-api",
+                matched: decision === "allow",
+                reason:
+                  decision === "allow"
+                    ? "Destination and executable conditions matched."
+                    : "Destination does not match api.github.com.",
+              },
+              {
+                id: "builtin:default-deny",
+                matched: decision === "deny",
+                reason: "Default decision after configured rules.",
+              },
+            ],
+            stages: [{ id: "network-policy", decision, reason: "Simulated network policy stage." }],
+            unevaluatedChecks: [
+              "Live DNS resolution and remote endpoint connectivity are not tested.",
+            ],
+          });
+        }
         if (suffix.startsWith("/deployments/") && suffix.endsWith("/runtime") && method === "GET") {
           const revisionId = suffix.split("/")[2];
           if (!revisions.has(revisionId)) {
             return error(404);
+          }
+          if (scenario.networkPolicy) {
+            return response({
+              revisionId,
+              observedAt: createdAt,
+              pods: [],
+              sources: [
+                {
+                  id: "sandbox",
+                  kind: "sandbox",
+                  pods: [],
+                  available: true,
+                  retention: "Simulated Sandbox log buffer.",
+                },
+              ],
+            });
           }
           if (scenario.bootstrapRuntime) {
             const terminated = (name, reason, exitCode) => ({
@@ -1488,6 +1711,41 @@ export function installFixture(scenario, evidence) {
           method === "GET"
         ) {
           const revisionId = suffix.split("/")[2];
+          if (scenario.networkPolicy) {
+            const stream = { source: "sandbox", sandbox: "sb-policy-demo" };
+            return response({
+              revisionId,
+              source: "sandbox",
+              stream,
+              observedAt: createdAt,
+              cursor: null,
+              withheld: 0,
+              truncated: false,
+              records: scenario.policyEmptyLogs
+                ? []
+                : [
+                    {
+                      type: "line",
+                      time: createdAt,
+                      stream,
+                      contentClass: "operational",
+                      kind: "sandbox",
+                      level: "warn",
+                      message:
+                        "NET:OPEN [MED] DENIED curl(42) -> blocked.example.com:443 [policy:- engine:opa]",
+                      fields: {
+                        action: "DENIED",
+                        dst_host: "blocked.example.com",
+                        dst_port: 443,
+                        binary: "curl",
+                        rule_name: "-",
+                        rule_type: "opa",
+                        policy_generation: 11,
+                      },
+                    },
+                  ],
+            });
+          }
           if (url.searchParams.get("download") === "true") {
             // Downloads are a text/plain attachment, not a JSON envelope.
             if (scenario.runtimeLogDownloadNoPod) {

@@ -31,6 +31,11 @@ service OpenShell {
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
   // Read-only. Upstream authorization: bearer, scope sandbox:read, workspace role user.
   rpc GetSandboxLogs(GetSandboxLogsRequest) returns (GetSandboxLogsResponse);
+  // Read-only effective policy. Upstream: config:read, Workspace role user.
+  rpc GetSandboxConfig(GetSandboxConfigRequest) returns (GetSandboxConfigResponse);
+  // Read-only hypothetical evaluation; no request is sent to the destination.
+  rpc EvaluateSandboxNetworkPolicy(EvaluateSandboxNetworkPolicyRequest)
+      returns (EvaluateSandboxNetworkPolicyResponse);
   rpc GetSandboxProviderStatus(GetSandboxProviderStatusRequest)
       returns (GetSandboxProviderStatusResponse);
   rpc CreateProvider(CreateProviderRequest) returns (ProviderResponse);
@@ -218,10 +223,62 @@ message NetworkEndpoint {
   NetworkTlsMode tls = 4;
   NetworkEnforcementMode enforcement = 5;
   NetworkAccessPreset access = 6;
+  repeated L7Rule rules = 7;
+  repeated string allowed_ips = 8;
   repeated uint32 ports = 9;
+  repeated L7DenyRule deny_rules = 10;
+  bool allow_encoded_slash = 11;
+  string persisted_queries = 12;
+  map<string, GraphqlOperation> graphql_persisted_queries = 13;
+  uint32 graphql_max_body_bytes = 14;
   string path = 15;
   bool websocket_credential_rewrite = 16;
+  bool request_body_credential_rewrite = 17;
+  bool advisor_proposed = 18;
+  string credential_signing = 19;
+  string signing_service = 20;
+  string signing_region = 21;
+  uint32 json_rpc_max_body_bytes = 22;
+  McpOptions mcp = 23;
   NetworkCredentialBinding credential_binding = 24;
+  bool allow_uninspected_credentials = 25;
+  bool provider_credentialed = 26;
+}
+
+message L7Rule { L7Allow allow = 1; }
+message L7Allow {
+  string method = 1;
+  string path = 2;
+  string command = 3;
+  map<string, L7QueryMatcher> query = 4;
+  string operation_type = 5;
+  string operation_name = 6;
+  repeated string fields = 7;
+  map<string, L7QueryMatcher> params = 9;
+}
+message L7DenyRule {
+  string method = 1;
+  string path = 2;
+  string command = 3;
+  map<string, L7QueryMatcher> query = 4;
+  string operation_type = 5;
+  string operation_name = 6;
+  repeated string fields = 7;
+  map<string, L7QueryMatcher> params = 9;
+}
+message L7QueryMatcher {
+  string glob = 1;
+  repeated string any = 2;
+}
+message GraphqlOperation {
+  string operation_type = 1;
+  string operation_name = 2;
+  repeated string fields = 3;
+}
+message McpOptions {
+  optional bool strict_tool_names = 1;
+  optional bool allow_all_known_mcp_methods = 2;
+  repeated string versions = 3;
 }
 
 enum NetworkTlsMode {
@@ -273,7 +330,90 @@ message SandboxStatus {
   uint32 current_policy_version = 7;
   string main_process_instance_id = 8;
   optional int32 exit_code = 9;
+  SandboxConfigurationAdmission configuration_admission = 11;
   uint32 restart_count = 14;
+}
+
+enum ConfigurationAdmissionState {
+  CONFIGURATION_ADMISSION_STATE_UNSPECIFIED = 0;
+  CONFIGURATION_ADMISSION_STATE_PENDING = 1;
+  CONFIGURATION_ADMISSION_STATE_ACCEPTED = 2;
+  CONFIGURATION_ADMISSION_STATE_REJECTED = 3;
+}
+message SandboxConfigurationAdmission {
+  string instance_id = 1;
+  ConfigurationAdmissionState state = 2;
+  uint32 policy_version = 3;
+  string policy_hash = 4;
+  uint64 config_revision = 5;
+  uint64 provider_env_revision = 6;
+  string error = 7;
+}
+
+message GetSandboxConfigRequest {
+  string name = 1;
+  WorkspaceSelector workspace_scope = 3;
+}
+enum PolicySource {
+  POLICY_SOURCE_UNSPECIFIED = 0;
+  POLICY_SOURCE_SANDBOX = 1;
+  POLICY_SOURCE_GLOBAL = 2;
+}
+message GetSandboxConfigResponse {
+  SandboxPolicy policy = 1;
+  uint32 version = 2;
+  string policy_hash = 3;
+  uint64 config_revision = 5;
+  PolicySource policy_source = 6;
+  uint32 global_policy_version = 7;
+  uint64 provider_env_revision = 8;
+  string workspace = 10;
+  bool configuration_admitted = 13;
+  string configuration_instance_id = 15;
+}
+
+message SandboxHttpPolicyInput {
+  string method = 1;
+  string path = 2;
+  string query = 3;
+}
+message EvaluateSandboxNetworkPolicyRequest {
+  WorkspaceSelector workspace_scope = 1;
+  string name = 2;
+  string host = 3;
+  uint32 port = 4;
+  string binary_path = 5;
+  string binary_sha256 = 6;
+  repeated string ancestors = 7;
+  repeated string cmdline_paths = 8;
+  SandboxHttpPolicyInput http = 9;
+  string expected_policy_hash = 10;
+}
+message SandboxNetworkPolicyRuleTrace {
+  string rule = 1;
+  bool matched = 2;
+  string reason = 3;
+  bool endpoint_matched = 4;
+  bool binary_matched = 5;
+  bool builtin = 6;
+}
+message SandboxNetworkPolicyEvaluationStage {
+  string id = 1;
+  string decision = 2;
+  string reason = 3;
+}
+message EvaluateSandboxNetworkPolicyResponse {
+  string policy_hash = 1;
+  uint32 policy_version = 2;
+  uint64 config_revision = 3;
+  string policy_source = 4;
+  bool loaded = 5;
+  string decision = 6;
+  string reason = 7;
+  repeated SandboxNetworkPolicyRuleTrace rules = 8;
+  repeated SandboxNetworkPolicyEvaluationStage stages = 9;
+  repeated string unevaluated_checks = 10;
+  uint32 global_policy_version = 11;
 }
 
 message SandboxCondition {

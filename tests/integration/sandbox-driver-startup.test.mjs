@@ -42,6 +42,7 @@ import {
   DependencyUnavailableError,
   SandboxRevisionUnsupportedError,
   ScopeViolationError,
+  simulatePolicy,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
@@ -1275,6 +1276,250 @@ test("OpenShell native startup creates private temporary state without changing 
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test("OpenShell authored simulation conforms to the real provisioning translation", async (t) => {
+  const loader = controllerRequire("@grpc/proto-loader");
+  const definition = await loader.load(
+    new URL(
+      "../../apps/controller/src/drivers/sandbox/proto/openshell-gateway.proto",
+      import.meta.url,
+    ).pathname,
+    { keepCase: true, longs: String },
+  );
+  const policyType = definition["openshell.v1.SandboxPolicy"];
+  const cases = [
+    { name: "named destination", expected: "allow" },
+    { name: "case insensitive host", action: { host: "API.EXAMPLE.TEST" }, expected: "allow" },
+    { name: "default deny destination", action: { host: "other.example.test" }, expected: "deny" },
+    { name: "default deny port", action: { port: 80 }, expected: "deny" },
+    { name: "default deny binary", action: { binaryPath: "/usr/bin/wget" }, expected: "deny" },
+    {
+      name: "binary ancestor",
+      action: { binaryPath: "/usr/bin/node", ancestors: ["/usr/bin/curl"] },
+      expected: "allow",
+    },
+    {
+      name: "command line cannot grant",
+      action: { binaryPath: "/usr/bin/node", cmdlinePaths: ["/usr/bin/curl"] },
+      expected: "deny",
+    },
+    { name: "single label host glob", endpoint: { host: "*.example.test" }, expected: "allow" },
+    {
+      name: "host glob cannot cross labels",
+      endpoint: { host: "*.example.test" },
+      action: { host: "nested.api.example.test" },
+      expected: "deny",
+    },
+    { name: "binary glob", binary: "/usr/bin/*", expected: "allow" },
+    { name: "REST read", action: { http: { method: "GET", path: "/public" } }, expected: "allow" },
+    {
+      name: "overlapping REST enforce and audit do not imply a denial",
+      secondEndpoint: { enforcement: "audit" },
+      action: { http: { method: "POST", path: "/public" } },
+      expected: "unknown",
+    },
+    { name: "REST HEAD", action: { http: { method: "HEAD", path: "/public" } }, expected: "allow" },
+    {
+      name: "REST write denied",
+      action: { http: { method: "POST", path: "/public" } },
+      expected: "deny",
+    },
+    {
+      name: "REST write audited",
+      endpoint: { enforcement: "audit" },
+      action: { http: { method: "POST", path: "/public" } },
+      expected: "audit",
+    },
+    {
+      name: "omitted enforcement inherits audit",
+      endpoint: { enforcement: undefined },
+      action: { http: { method: "POST", path: "/public" } },
+      expected: "audit",
+    },
+    {
+      name: "REST write preset",
+      endpoint: { access: "read_write" },
+      action: { http: { method: "PATCH", path: "/public" } },
+      expected: "allow",
+    },
+    {
+      name: "REST full covers arbitrary methods",
+      endpoint: { access: "full" },
+      action: { http: { method: "CUSTOM", path: "/public" } },
+      expected: "allow",
+    },
+    {
+      name: "raw tunnel has no HTTP policy",
+      endpoint: { protocol: undefined, tls: "skip", access: undefined },
+      action: { http: { method: "GET", path: "/a%2Fb" } },
+      expected: "unknown",
+    },
+    {
+      name: "unsupported host glob stays visible",
+      endpoint: { host: "[a]pi.example.test" },
+      expected: "unknown",
+      unsupported: true,
+    },
+    {
+      name: "unsupported binary glob stays visible",
+      binary: "/usr/bin/c?rl",
+      expected: "unknown",
+      unsupported: true,
+    },
+  ];
+  const nativeCases = [];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async () => {
+      const options = sandboxInstallation().drivers.sandbox.configuration;
+      options.policy.networkPolicies = [
+        {
+          name: "api",
+          binaries: [{ path: scenario.binary ?? "/usr/bin/curl" }],
+          endpoints: [
+            {
+              host: "api.example.test",
+              ports: [443, 8443],
+              protocol: "rest",
+              access: "read_only",
+              enforcement: "enforce",
+              ...scenario.endpoint,
+            },
+          ],
+        },
+      ];
+      const gatewayClient = workspaceGatewayClient();
+      if (scenario.secondEndpoint) {
+        const { endpoints } = options.policy.networkPolicies[0];
+        endpoints.push({ ...endpoints[0], ...scenario.secondEndpoint });
+      }
+      let captured;
+      // This fixture only captures transport. It does not return policy decisions
+      // or replace the provisioning translator or the native matcher.
+      gatewayClient.createSandbox = async (request) => {
+        captured = request;
+        return { name: request.name, labels: request.labels, serviceUrls: {} };
+      };
+      const driver = new OpenShellSandboxDriver(options, {
+        id: "openshell-sandbox",
+        implementation: "openshell",
+        backend: backendFor(gatewayClient),
+      });
+      const context = namespaceContext();
+      nativePreparationClient(context);
+      const revision = {
+        id: "rev_00000000-0000-4000-8000-000000000001",
+        namespaceId: context.namespace.id,
+        agentId: "agt_00000000-0000-4000-8000-000000000001",
+        harness: { id: "openclaw", mode: "dedicated" },
+        sandboxDriverId: driver.id,
+      };
+      await driver.provisionHarness({
+        ...context,
+        revision,
+        requirements: {
+          loginMode: "api_key",
+          image: "openclaw-runtime@sha256:synthetic",
+          command: harnessRuntimeCommand('console.error("policy conformance");'),
+          workspaceMounts: [
+            {
+              claimName: "policy-workspace",
+              subPath: "workspace",
+              mountPath: "/home/node/workspace",
+              readOnly: false,
+            },
+          ],
+          credentialAttachments: [],
+          environment: [],
+          labels: { "openclaw.dev/revision": revision.id },
+        },
+      });
+      assert.ok(captured, "the actual provisioning path must emit a native policy");
+      const readsBefore = gatewayClient.calls.length;
+      const policy = await driver.describePolicySimulation({ ...context, revision });
+      assert.equal(
+        gatewayClient.calls.length,
+        readsBefore,
+        "authored simulation does not consult mutable provider state",
+      );
+      const action = {
+        kind: "network",
+        host: "api.example.test",
+        port: 443,
+        binaryPath: "/usr/bin/curl",
+        expectedSimulationHash: "ab".repeat(32),
+        ...scenario.action,
+      };
+      const simulated = simulatePolicy(policy, action);
+      assert.equal(simulated.decision, scenario.expected);
+      if (scenario.unsupported) {
+        assert.equal(policy.rules.length, 1, "unsupported authored rules must not disappear");
+        assert.ok(
+          policy.rules[0].unsupportedReason ?? policy.rules[0].destinations[0].unsupportedReason,
+        );
+        return;
+      }
+      if (scenario.secondEndpoint) {
+        assert.equal(policy.rules[0].destinations.length, 2);
+        // The portable policy does not specify which overlapping endpoint the provider selects.
+        // An unknown prediction is intentional, not a claim of parity with a native verdict.
+        assert.equal(simulated.rules.at(-1).decision, "unknown");
+        const read = simulatePolicy(policy, { ...action, http: { ...action.http, method: "GET" } });
+        assert.equal(read.decision, "allow", "both endpoints allow GET");
+        return;
+      }
+      nativeCases.push({
+        name: scenario.name,
+        policy: policyType.serialize(captured.spec.policy).toString("base64"),
+        host: action.host,
+        port: action.port,
+        binary_path: action.binaryPath,
+        ancestors: action.ancestors ?? [],
+        cmdline_paths: action.cmdlinePaths ?? [],
+        http: action.http,
+        expected: scenario.expected,
+        simulated: simulated.decision,
+      });
+    });
+  }
+  const source = process.env.OCC_TEST_OPENSHELL_NATIVE_SOURCE;
+  if (source === undefined) {
+    t.diagnostic(
+      "Compiled OpenShell evaluator parity was not run; set OCC_TEST_OPENSHELL_NATIVE_SOURCE to the native evaluator checkout.",
+    );
+    return;
+  }
+  await t.test("compiled OpenShell evaluator parity", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "openshell-native-policy-conformance-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const fixturePath = join(directory, "cases.json");
+    await writeFile(fixturePath, JSON.stringify(nativeCases));
+    const result = spawnSync(
+      "cargo",
+      [
+        "test",
+        "-p",
+        "openshell-supervisor-network",
+        "--lib",
+        "--no-default-features",
+        "evaluation::tests::driver_translated_policy_conformance",
+        "--",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+      ],
+      {
+        cwd: source,
+        env: { ...process.env, OPENSHELL_NETWORK_POLICY_CONFORMANCE_FILE: fixturePath },
+        encoding: "utf8",
+        timeout: 180_000,
+        maxBuffer: 8 * 1024 * 1024,
+      },
+    );
+    assert.equal(result.error, undefined, result.error?.message);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /1 passed; 0 failed/);
+  });
 });
 
 test("OpenShell adopts its revision's existing Sandbox instead of re-sending CreateSandbox", async () => {

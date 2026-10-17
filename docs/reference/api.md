@@ -68,7 +68,7 @@ the paths.
 | [Installation](#installation) | 4 operations |
 | [Namespaces](#namespaces) | 5 operations |
 | [Agents](#agents) | 35 operations |
-| [Agent deployments](#agent-deployments) | 4 operations |
+| [Agent deployments](#agent-deployments) | 8 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
 | [Credential sources](#credential-sources) | 6 operations |
@@ -3960,6 +3960,10 @@ Resolve an authorized Agent from a copied native chat link
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/diagnostics`](#post-namespacesnamespaceidagentsagentiddeploymentsdeploymentiddiagnostics) | Run explicit current-runtime diagnostics for one exact Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime`](#get-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntime) | Read Pod status, restarts, Events and log sources for one exact Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/logs`](#get-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimelogs) | Read one bounded, redacted page of container output for one exact Agent revision |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/network-policy`](#get-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimenetworkpolicy) | Inspect effective sandbox network rules and exact runtime load evidence |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/network-policy/evaluate`](#post-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimenetworkpolicyevaluate) | Evaluate a synthetic network request against a sandbox policy without sending it |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/policy-simulation`](#get-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimepolicysimulation) | Inspect authored sandbox and plugin policies for OCE simulation |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/policy-simulation`](#post-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimepolicysimulation) | Simulate a network or plugin action under authored OCE policy |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}`
 
@@ -4221,6 +4225,326 @@ Read one bounded, redacted page of container output for one exact Agent revision
 **`200` response body:** `text/plain`
 
 Schema: `string`.
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/network-policy`
+
+<span id="get-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimenetworkpolicy"></span>
+
+Inspect effective sandbox network rules and exact runtime load evidence
+
+**Operation ID:** `getAgentDeploymentNetworkPolicy`
+
+**Permissions:** Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `read` | `agent` | `requested` |
+| `read` | `agent_revision` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `429` | Too Many Requests |
+| `500` | Internal Server Error |
+| `501` | Not Implemented |
+| `503` | Service Unavailable |
+| `504` | Gateway Timeout |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.admission` | `object` | Yes | — |
+| `data.admission.configRevision` | `string` | No | max length: 20; pattern: `^[0-9]+$` |
+| `data.admission.instanceId` | `string` | No | min length: 1; max length: 256 |
+| `data.admission.policyHash` | `string` | No | pattern: `^[a-f0-9]{64}$` |
+| `data.admission.providerEnvRevision` | `string` | No | max length: 20; pattern: `^[0-9]+$` |
+| `data.admission.state` | `"applied" or "pending" or "rejected" or "unknown"` | Yes | — |
+| `data.identity` | `object` | Yes | — |
+| `data.identity.configRevision` | `string` | Yes | max length: 20; pattern: `^[0-9]+$` |
+| `data.identity.globalVersion` | `integer` | No | minimum: 0 |
+| `data.identity.policyHash` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.identity.providerEnvRevision` | `string` | Yes | max length: 20; pattern: `^[0-9]+$` |
+| `data.identity.source` | `string` | Yes | min length: 1; max length: 256 |
+| `data.identity.version` | `integer` | Yes | minimum: 0 |
+| `data.observedAt` | `string (date-time)` | Yes | — |
+| `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.rules` | `array<object>` | Yes | max items: 1024 |
+| `data.rules[].binaries` | `array<string>` | Yes | max items: 256 |
+| `data.rules[].configuration` | `object<string, any>` | Yes | — |
+| `data.rules[].destinations` | `array<object>` | Yes | max items: 256 |
+| `data.rules[].destinations[].access` | `string` | No | max length: 4096 |
+| `data.rules[].destinations[].enforcement` | `string` | Yes | max length: 4096 |
+| `data.rules[].destinations[].host` | `string` | Yes | max length: 4096 |
+| `data.rules[].destinations[].ports` | `array<integer>` | Yes | max items: 256 |
+| `data.rules[].destinations[].protocol` | `string` | Yes | max length: 4096 |
+| `data.rules[].destinations[].tls` | `string` | Yes | max length: 4096 |
+| `data.rules[].id` | `string` | Yes | min length: 1; max length: 512 |
+| `data.rules[].name` | `string` | Yes | min length: 1; max length: 256 |
+| `data.rules[].origin` | `"configured" or "provider" or "builtin"` | Yes | — |
+| `data.sandbox` | `string` | Yes | min length: 1; max length: 256 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/network-policy/evaluate`
+
+<span id="post-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimenetworkpolicyevaluate"></span>
+
+Evaluate a synthetic network request against a sandbox policy without sending it
+
+**Operation ID:** `evaluateAgentDeploymentNetworkPolicy`
+
+**Permissions:** Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `read` | `agent` | `requested` |
+| `read` | `agent_revision` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `ancestors` | `array<string>` | No | max items: 64 |
+| `binaryPath` | `string` | Yes | max length: 4096; pattern: `^/` |
+| `binarySha256` | `string` | No | pattern: `^[a-f0-9]{64}$` |
+| `cmdlinePaths` | `array<string>` | No | max items: 64 |
+| `expectedPolicyHash` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `host` | `string` | Yes | min length: 1; max length: 253; pattern: `^[^\s/:?#]+$` |
+| `http` | `object` | No | — |
+| `http.method` | `string` | Yes | pattern: `^[A-Z]{1,16}$` |
+| `http.path` | `string` | Yes | max length: 4096; pattern: `^/` |
+| `http.query` | `object<string, array<string>>` | No | — |
+| `port` | `integer` | Yes | minimum: 1; maximum: 65535 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too Many Requests |
+| `500` | Internal Server Error |
+| `501` | Not Implemented |
+| `503` | Service Unavailable |
+| `504` | Gateway Timeout |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.applied` | `boolean` | Yes | — |
+| `data.decision` | `"allow" or "deny" or "audit" or "unknown"` | Yes | — |
+| `data.policyHash` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.reason` | `string` | Yes | max length: 4096 |
+| `data.revisionId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.rules` | `array<object>` | Yes | max items: 1024 |
+| `data.rules[].id` | `string` | Yes | min length: 1; max length: 512 |
+| `data.rules[].matched` | `boolean` | Yes | — |
+| `data.rules[].reason` | `string` | Yes | max length: 4096 |
+| `data.stages` | `array<object>` | Yes | max items: 32 |
+| `data.stages[].decision` | `"allow" or "deny" or "audit" or "unknown"` | Yes | — |
+| `data.stages[].id` | `string` | Yes | min length: 1; max length: 256 |
+| `data.stages[].reason` | `string` | Yes | max length: 4096 |
+| `data.unevaluatedChecks` | `array<string>` | Yes | max items: 32 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/policy-simulation`
+
+<span id="get-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimepolicysimulation"></span>
+
+Inspect authored sandbox and plugin policies for OCE simulation
+
+**Operation ID:** `getAgentDeploymentPolicySimulation`
+
+**Permissions:** Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `read` | `agent` | `requested` |
+| `read` | `agent_revision` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `429` | Too Many Requests |
+| `500` | Internal Server Error |
+| `501` | Not Implemented |
+| `503` | Service Unavailable |
+| `504` | Gateway Timeout |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.network` | `object` | No | — |
+| `data.network.policy` | `object` | Yes | — |
+| `data.network.policy.kind` | `"network"` | Yes | — |
+| `data.network.policy.rules` | `array<object>` | Yes | max items: 1024 |
+| `data.network.policy.rules[].binaries` | `array<string>` | Yes | max items: 256 |
+| `data.network.policy.rules[].destinations` | `array<object>` | Yes | max items: 256 |
+| `data.network.policy.rules[].destinations[].host` | `string` | Yes | max length: 4096 |
+| `data.network.policy.rules[].destinations[].http` | `object` | No | — |
+| `data.network.policy.rules[].destinations[].http.enforcement` | `"enforce" or "audit"` | Yes | — |
+| `data.network.policy.rules[].destinations[].http.methods` | `array<string>` | Yes | max items: 32 |
+| `data.network.policy.rules[].destinations[].ports` | `array<integer>` | Yes | max items: 256 |
+| `data.network.policy.rules[].destinations[].unsupportedReason` | `string` | No | max length: 4096 |
+| `data.network.policy.rules[].id` | `string` | Yes | min length: 1; max length: 512 |
+| `data.network.policy.rules[].name` | `string` | Yes | min length: 1; max length: 512 |
+| `data.network.policy.rules[].unsupportedReason` | `string` | No | max length: 4096 |
+| `data.network.policy.source` | `"driver_configuration" or "revision"` | No | — |
+| `data.network.policy.unevaluatedChecks` | `array<string>` | Yes | max items: 64 |
+| `data.network.simulationHash` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.plugins` | `object` | No | — |
+| `data.plugins.policy` | `object` | Yes | — |
+| `data.plugins.policy.capabilities` | `object` | Yes | — |
+| `data.plugins.policy.capabilities.approvers` | `object` | No | — |
+| `data.plugins.policy.capabilities.approvers.agent` | `boolean` | Yes | — |
+| `data.plugins.policy.capabilities.approvers.plugin` | `boolean` | Yes | — |
+| `data.plugins.policy.capabilities.approvers.tools` | `boolean` | Yes | — |
+| `data.plugins.policy.capabilities.driverPolicySchema` | `object<string, any>` | Yes | — |
+| `data.plugins.policy.capabilities.toolDefaults` | `object` | Yes | — |
+| `data.plugins.policy.capabilities.toolDefaults.approval` | `array<"provider_default" or "none" or "all_actions" or "write_actions">` | Yes | max items: 4 |
+| `data.plugins.policy.capabilities.toolDefaults.enabled` | `boolean` | Yes | — |
+| `data.plugins.policy.capabilities.toolDefaults.reviewer` | `array<"human" or "auto">` | Yes | max items: 2 |
+| `data.plugins.policy.capabilities.tools` | `object` | Yes | — |
+| `data.plugins.policy.capabilities.tools.approval` | `array<"provider_default" or "none" or "all_actions" or "write_actions">` | Yes | max items: 4 |
+| `data.plugins.policy.capabilities.tools.enabled` | `boolean` | Yes | — |
+| `data.plugins.policy.capabilities.tools.reviewer` | `array<"human" or "auto">` | Yes | max items: 2 |
+| `data.plugins.policy.kind` | `"plugin"` | Yes | — |
+| `data.plugins.policy.plugins` | `object<string, object>` | Yes | — |
+| `data.plugins.policy.toolIds` | `object<string, array<string> or null>` | Yes | — |
+| `data.plugins.policy.unevaluatedChecks` | `array<string>` | Yes | max items: 64 |
+| `data.plugins.simulationHash` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.revisionId` | `string` | Yes | min length: 1; max length: 512 |
+| `data.unsupported` | `array<object>` | Yes | max items: 2 |
+| `data.unsupported[].kind` | `"network" or "plugin"` | Yes | — |
+| `data.unsupported[].reason` | `string` | Yes | max length: 4096 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime/policy-simulation`
+
+<span id="post-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimepolicysimulation"></span>
+
+Simulate a network or plugin action under authored OCE policy
+
+**Operation ID:** `simulateAgentDeploymentPolicy`
+
+**Permissions:** Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `operate` | `agent` | `requested` |
+| `read` | `agent` | `requested` |
+| `read` | `agent_revision` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `deploymentId` | path | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+Schema: `object or object`.
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `413` | Payload Too Large |
+| `415` | Unsupported Media Type |
+| `429` | Too Many Requests |
+| `500` | Internal Server Error |
+| `501` | Not Implemented |
+| `503` | Service Unavailable |
+| `504` | Gateway Timeout |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.decision` | `"allow" or "deny" or "audit" or "approval_required" or "unknown"` | Yes | — |
+| `data.kind` | `"network" or "plugin"` | Yes | — |
+| `data.reason` | `string` | Yes | max length: 4096 |
+| `data.revisionId` | `string` | Yes | min length: 1; max length: 512 |
+| `data.rules` | `array<object>` | Yes | max items: 1026 |
+| `data.rules[].decision` | `"allow" or "deny" or "audit" or "approval_required" or "unknown"` | Yes | — |
+| `data.rules[].id` | `string` | Yes | min length: 1; max length: 1024 |
+| `data.rules[].matched` | `boolean` | Yes | — |
+| `data.rules[].name` | `string` | Yes | min length: 1; max length: 512 |
+| `data.rules[].reason` | `string` | Yes | max length: 4096 |
+| `data.simulationHash` | `string` | Yes | pattern: `^[a-f0-9]{64}$` |
+| `data.unevaluatedChecks` | `array<string>` | Yes | max items: 65 |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 <span id="agent-revisions"></span>
 

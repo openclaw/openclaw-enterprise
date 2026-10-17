@@ -275,6 +275,9 @@ Press Enter on **Deploy new version**. Focus moves to “Deploying…”, then:
 - **Deployment refused before admission:** back to Deploy, enabled and described by the refusal.
 - **Deployment outcome unknown:** to “Outcome unknown.” Deploy stays disabled; inspect the saved state before retrying.
 
+For **Policy tester** fixtures, see the
+[walkthrough](../../scripts/console-storybook/policy-tester-workflow.md).
+
 Open v7 Logs from **New version failed**, then go Back. At 390px, the selected
 tab and log rows stay visible. [Lose and regain log or Pod access](../../scripts/console-storybook/runtime-access-workflow.md)
 to check Follow, Download, and permission changes. These stories use simulated responses.

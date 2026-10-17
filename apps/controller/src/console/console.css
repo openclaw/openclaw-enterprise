@@ -2871,3 +2871,116 @@ summary:focus-visible {
     grid-column: 1 / -1;
   }
 }
+
+.network-policy-dialog {
+  width: min(1080px, calc(100vw - 32px));
+  max-height: calc(100dvh - 40px);
+  box-sizing: border-box;
+  padding: 24px;
+  overflow: auto;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.network-policy-dialog::backdrop {
+  background: #0008;
+}
+.network-policy-dialog h3 {
+  margin-bottom: 12px;
+}
+.policy-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 16px 0;
+}
+.policy-feedback {
+  margin: 0;
+}
+.policy-inventory,
+.policy-observed,
+.policy-test-form,
+.policy-result:not(:empty) {
+  padding-top: 16px;
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.policy-input-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(80px, 1fr) minmax(0, 3fr);
+  gap: 16px;
+  margin-bottom: 16px;
+}
+.policy-input-grid[hidden] {
+  display: none;
+}
+.policy-process-context {
+  margin: 16px 0;
+}
+.policy-process-context .form-field {
+  margin-top: 12px;
+}
+.policy-rule-detail {
+  margin: 12px 0;
+}
+.policy-rule-detail pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow: auto;
+}
+.policy-table-scroll {
+  overflow-x: auto;
+  margin-top: 16px;
+}
+.policy-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  text-align: left;
+}
+.policy-table caption {
+  text-align: left;
+  font-weight: 600;
+  padding-bottom: 8px;
+}
+.policy-table th,
+.policy-table td {
+  vertical-align: top;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.policy-table th {
+  color: var(--muted);
+}
+.policy-inspect {
+  margin: 8px 0 4px;
+  font-size: 12px;
+}
+.policy-inventory dd {
+  overflow-wrap: anywhere;
+}
+.policy-native {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.policy-hash,
+.policy-result .hint {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .network-policy-dialog {
+    width: calc(100vw - 16px);
+    padding: 16px;
+  }
+  .policy-input-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .policy-status-bar {
+    align-items: flex-start;
+  }
+}

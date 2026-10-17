@@ -15,6 +15,7 @@ import { renderChannels } from "../channels.mjs";
 import { carryDocument } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
 import { logTextDenied, renderAgentLogs } from "./logs.mjs";
+import { renderAgentPolicyTester } from "./network-policy.mjs";
 import {
   displayDate,
   shortId,
@@ -1042,7 +1043,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     "channels",
     ...(selected === "draft" ? ["repositories", "credentials"] : []),
     "workspace",
-    ...(selected === "draft" ? [] : ["logs"]),
+    ...(selected === "draft" ? [] : ["policy", "logs"]),
   ];
   let selectedTab = tabsForSelection.includes(tab) ? tab : "configuration";
   let deployInFlight = false;
@@ -1253,7 +1254,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         ]
       : []),
     ["workspace", "Workspace files"],
-    ...(selected === "draft" ? [] : [["logs", "Logs"]]),
+    ...(selected === "draft"
+      ? []
+      : [
+          ["policy", "Policy tester"],
+          ["logs", "Logs"],
+        ]),
   ]) {
     const control = button(
       label,
@@ -2755,7 +2761,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // page the heading stays in view instead.
     const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
-    versionEvidence.hidden = selectedTab === "workspace" || selectedTab === "logs";
+    versionEvidence.hidden = ["workspace", "policy", "logs"].includes(selectedTab);
     if (stripTop !== null) {
       const moved = tabs.getBoundingClientRect().top - stripTop;
       if (Math.abs(moved) >= 1) {
@@ -2809,6 +2815,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     content.replaceChildren();
     if (tab === "workspace") {
       content.append(renderWorkspaceFiles(tabContext, currentAgent, path));
+      state.loading = false;
+      content.style.minHeight = "";
+      return;
+    }
+    if (tab === "policy") {
+      details ??= loadDetails();
+      state.reusable = false;
+      content.append(renderAgentPolicyTester(tabContext, { agent, revisionId: selected }));
       state.loading = false;
       content.style.minHeight = "";
       return;

@@ -1,5 +1,17 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
+import { simulatePolicy } from "./policy-simulation.ts";
+
+export { simulatePolicy } from "./policy-simulation.ts";
+import {
+  isPolicySimulationRequest,
+  isNetworkSimulationPolicy,
+  isPluginSimulationPolicy,
+  type PolicySimulationDescription,
+  type PolicySimulationPolicy,
+  type PolicySimulationRequest,
+  type PolicySimulationResult,
+} from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import {
   accessBindingsTargeting,
@@ -95,6 +107,10 @@ import type {
   Role,
   SandboxDriver,
   SandboxHarnessLostCode,
+  SandboxLogContext,
+  SandboxNetworkPolicyDescription,
+  SandboxNetworkPolicyRequest,
+  SandboxNetworkPolicyEvaluation,
   Secret,
   SecretBindings,
   SecretReference,
@@ -131,6 +147,9 @@ import {
   isServiceAccountHarnessAuth,
   type ServiceAccountReference,
   freezeAgentRevision,
+  isSandboxNetworkPolicyDescription,
+  isSandboxNetworkPolicyRequest,
+  isSandboxNetworkPolicyEvaluation,
 } from "@openclaw-enterprise/contracts";
 import {
   asRecord,
@@ -356,6 +375,7 @@ export {
   createRuntimeLogCursorCodec,
   maskRuntimeEventText,
   redactRuntimeLogText,
+  sanitizeRuntimeLogText,
   RUNTIME_LOG_DEFAULT_TAIL_LINES,
   RUNTIME_LOG_LIMIT_BYTES,
   RUNTIME_LOG_MAX_TAIL_LINES,
@@ -3082,7 +3102,7 @@ export class OpenClawController {
     signal?: AbortSignal,
     admitRead: RuntimeLogReadAdmission = (read) => read(),
   ): Promise<Readonly<AgentRuntimeDescription>> {
-    const { binding, driver } = await this.runtimeLogTarget(
+    const { binding, driver } = await this.agentRuntimeTarget(
       principalId,
       namespaceId,
       agentId,
@@ -3097,6 +3117,304 @@ export class OpenClawController {
         ]);
         const description = this.withSandboxLogSource(described, driver, binding.revision);
         return harness === undefined ? description : Object.freeze({ ...description, harness });
+      }),
+    );
+  }
+
+  async describeAgentNetworkPolicy(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    signal?: AbortSignal,
+    admitRead: RuntimeLogReadAdmission = (read) => read(),
+  ): Promise<SandboxNetworkPolicyDescription & { readonly revisionId: string }> {
+    return this.readAgentNetworkPolicy(
+      principalId,
+      namespaceId,
+      agentId,
+      revisionId,
+      signal,
+      admitRead,
+      async (sandbox, context) => {
+        if (sandbox.describeNetworkPolicy === undefined) {
+          throw new NotImplementedError(
+            "describeNetworkPolicy",
+            "The Sandbox Driver does not expose network policies.",
+          );
+        }
+        const result = await sandbox.describeNetworkPolicy(context);
+        if (
+          !isSandboxNetworkPolicyDescription(result) ||
+          JSON.stringify(result).length > 512 * 1024
+        ) {
+          throw new DependencyUnavailableError("Sandbox network policy is unavailable.");
+        }
+        return immutableCopy({ ...result, revisionId: context.revision.id });
+      },
+    );
+  }
+
+  async describeAgentPolicySimulation(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    signal?: AbortSignal,
+    admitRead: RuntimeLogReadAdmission = (read) => read(),
+  ): Promise<PolicySimulationDescription> {
+    return this.readAgentPolicySimulation(
+      principalId,
+      namespaceId,
+      agentId,
+      revisionId,
+      signal,
+      admitRead,
+    );
+  }
+
+  private async readAgentPolicySimulation(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    signal: AbortSignal | undefined,
+    admitRead: RuntimeLogReadAdmission,
+    requestedKind?: PolicySimulationRequest["kind"],
+  ): Promise<PolicySimulationDescription> {
+    const { binding, driver } = await this.agentRuntimeTarget(
+      principalId,
+      namespaceId,
+      agentId,
+      revisionId,
+      "policy",
+    );
+    return admitRead(() =>
+      this.runtimeLogOperation(signal, async (deadline) => {
+        const unsupported: { kind: "network" | "plugin"; reason: string }[] = [];
+        const description: {
+          revisionId: string;
+          network?: NonNullable<PolicySimulationDescription["network"]>;
+          plugins?: NonNullable<PolicySimulationDescription["plugins"]>;
+          unsupported: typeof unsupported;
+        } = { revisionId: binding.revision.id, unsupported };
+        const snapshot = <T extends PolicySimulationPolicy>(policy: T) => ({
+          simulationHash: createHash("sha256")
+            .update("oce-policy-simulation-v2\n")
+            .update(JSON.stringify(policy))
+            .digest("hex"),
+          policy,
+        });
+        // A description can include the other kind when one Driver is unavailable. A simulation
+        // reads only its requested kind and preserves the difference between unavailable and unsupported.
+        let readFailure: string | undefined;
+        const unavailable = (kind: PolicySimulationRequest["kind"]) => {
+          if (deadline.aborted) {
+            throw new RuntimeLogsError("RUNTIME_LOGS_TIMEOUT");
+          }
+          const reason = `Could not read the ${kind} policy for this version. Reload to try again.`;
+          readFailure = reason;
+          unsupported.push({ kind, reason });
+        };
+        if (!requestedKind || requestedKind === "network") {
+          try {
+            const sandbox = this.revisionSandboxDriver(driver, binding.revision);
+            if (sandbox?.describePolicySimulation) {
+              const namespace = await driver.resolveSandboxNamespace!(binding.namespace);
+              const policy = await sandbox.describePolicySimulation({
+                namespace,
+                revision: binding.revision,
+                signal: deadline,
+              });
+              if (
+                !isNetworkSimulationPolicy(policy) ||
+                JSON.stringify(policy).length > 512 * 1024
+              ) {
+                throw new Error("Invalid network simulation policy");
+              }
+              description.network = snapshot(policy);
+            } else {
+              unsupported.push({
+                kind: "network",
+                reason: "The version's Sandbox Driver does not describe OCE simulation policy.",
+              });
+            }
+          } catch {
+            unavailable("network");
+          }
+        }
+        if (!requestedKind || requestedKind === "plugin") {
+          try {
+            if (binding.revision.plugins) {
+              const plugin = this.pluginDriver();
+              if (
+                plugin.id !== binding.revision.plugins.driver.id ||
+                plugin.implementation !== binding.revision.plugins.driver.implementation
+              ) {
+                throw new Error("Plugin Driver identity changed");
+              }
+              if (plugin.describePolicySimulation) {
+                const policy = await plugin.describePolicySimulation(binding.revision, deadline);
+                if (
+                  !isPluginSimulationPolicy(policy) ||
+                  JSON.stringify(policy).length > 512 * 1024
+                ) {
+                  throw new Error("Invalid plugin simulation policy");
+                }
+                description.plugins = snapshot(policy);
+              } else {
+                unsupported.push({
+                  kind: "plugin",
+                  reason: "The Plugin Driver does not describe OCE simulation policy.",
+                });
+              }
+            } else {
+              unsupported.push({
+                kind: "plugin",
+                reason: "This version has no recorded Plugin Driver.",
+              });
+            }
+          } catch {
+            unavailable("plugin");
+          }
+        }
+        if (readFailure && !description.network && !description.plugins) {
+          throw new DependencyUnavailableError(readFailure);
+        }
+        return immutableCopy(description);
+      }),
+    );
+  }
+
+  async simulateAgentPolicy(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    request: PolicySimulationRequest,
+    signal?: AbortSignal,
+    admitRead: RuntimeLogReadAdmission = (read) => read(),
+  ): Promise<
+    PolicySimulationResult & {
+      readonly revisionId: string;
+      readonly kind: "network" | "plugin";
+      readonly simulationHash: string;
+    }
+  > {
+    if (!isPolicySimulationRequest(request)) {
+      throw new ScopeViolationError("The policy simulation request is invalid.");
+    }
+    const description = await this.readAgentPolicySimulation(
+      principalId,
+      namespaceId,
+      agentId,
+      revisionId,
+      signal,
+      admitRead,
+      request.kind,
+    );
+    const snapshot = request.kind === "network" ? description.network : description.plugins;
+    if (!snapshot) {
+      throw new NotImplementedError(
+        "simulatePolicy",
+        "The selected Driver does not support this kind of policy simulation.",
+      );
+    }
+    if (snapshot.simulationHash !== request.expectedSimulationHash) {
+      throw new ResourceConflictError(
+        "The authored policy changed. Reload its simulation snapshot.",
+      );
+    }
+    return immutableCopy({
+      ...simulatePolicy(snapshot.policy, request),
+      revisionId: description.revisionId,
+      kind: request.kind,
+      simulationHash: snapshot.simulationHash,
+    });
+  }
+
+  async evaluateAgentNetworkPolicy(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    request: SandboxNetworkPolicyRequest,
+    signal?: AbortSignal,
+    admitRead: RuntimeLogReadAdmission = (read) => read(),
+  ): Promise<SandboxNetworkPolicyEvaluation & { readonly revisionId: string }> {
+    if (!isSandboxNetworkPolicyRequest(request)) {
+      throw new ScopeViolationError("The network policy evaluation request is invalid.");
+    }
+    return this.readAgentNetworkPolicy(
+      principalId,
+      namespaceId,
+      agentId,
+      revisionId,
+      signal,
+      admitRead,
+      async (sandbox, context) => {
+        if (sandbox.evaluateNetworkPolicy === undefined) {
+          throw new NotImplementedError(
+            "evaluateNetworkPolicy",
+            "The Sandbox Driver does not support network policy evaluation.",
+          );
+        }
+        const result = await sandbox.evaluateNetworkPolicy(context, request);
+        if (
+          !isSandboxNetworkPolicyEvaluation(result) ||
+          JSON.stringify(result).length > 512 * 1024
+        ) {
+          throw new DependencyUnavailableError("Sandbox network policy evaluation is unavailable.");
+        }
+        if (result.policyHash !== request.expectedPolicyHash) {
+          throw new ResourceConflictError(
+            "The network policy changed. Refresh it before evaluating again.",
+          );
+        }
+        return immutableCopy({ ...result, revisionId: context.revision.id });
+      },
+    );
+  }
+
+  private async readAgentNetworkPolicy<T>(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    revisionId: string,
+    signal: AbortSignal | undefined,
+    admitRead: RuntimeLogReadAdmission,
+    read: (sandbox: SandboxDriver, context: SandboxLogContext) => Promise<T>,
+  ): Promise<T> {
+    const { binding, driver } = await this.agentRuntimeTarget(
+      principalId,
+      namespaceId,
+      agentId,
+      revisionId,
+      "policy",
+    );
+    const sandbox = this.revisionSandboxDriver(driver, binding.revision);
+    if (sandbox === undefined) {
+      throw new NotImplementedError(
+        "describeNetworkPolicy",
+        "This version has no available Sandbox policy provider.",
+      );
+    }
+    return admitRead(() =>
+      this.runtimeLogOperation(signal, async (deadline) => {
+        try {
+          const namespace = await driver.resolveSandboxNamespace!(binding.namespace);
+          return await read(sandbox, { namespace, revision: binding.revision, signal: deadline });
+        } catch (error) {
+          if (error instanceof NotImplementedError || error instanceof ResourceConflictError) {
+            throw error;
+          }
+          if (deadline.aborted) {
+            throw new RuntimeLogsError("RUNTIME_LOGS_TIMEOUT");
+          }
+          throw new DependencyUnavailableError(
+            "Sandbox network policy is unavailable. Check the provider and its read permissions.",
+          );
+        }
       }),
     );
   }
@@ -3123,7 +3441,7 @@ export class OpenClawController {
       readonly admitRead?: RuntimeLogReadAdmission;
     },
   ): Promise<Readonly<RuntimeLogPage>> {
-    const { binding, driver, grant } = await this.runtimeLogTarget(
+    const { binding, driver, grant } = await this.agentRuntimeTarget(
       principalId,
       namespaceId,
       agentId,
@@ -3404,12 +3722,12 @@ export class OpenClawController {
     });
   }
 
-  private async runtimeLogTarget(
+  private async agentRuntimeTarget(
     principalId: string,
     namespaceId: string,
     agentId: string,
     deploymentId: string,
-    tier: "operate" | "logs",
+    tier: "operate" | "logs" | "policy",
   ): Promise<{
     binding: ComputeAgentRevisionBinding;
     driver: ComputeDriver;
@@ -3418,7 +3736,7 @@ export class OpenClawController {
     const agent: ResourceRef = { kind: "agent", id: agentId, namespaceId };
     let authorizedRevision: Readonly<AgentRevision> | undefined;
     let grant: RuntimeLogReadGrant | undefined;
-    if (tier === "operate") {
+    if (tier !== "logs") {
       authorizedRevision = await this.getRevision(principalId, namespaceId, agentId, deploymentId);
       await this.authorize(principalId, "operate", agent);
     } else {
@@ -3466,7 +3784,10 @@ export class OpenClawController {
       throw new RuntimeLogsError("RUNTIME_LOGS_UNAVAILABLE");
     }
     // The operator owns runtime logging for Drivers that declare it; OCC never reads it.
-    if (driver.runtimeLogging === "driver" || typeof driver.describeAgentRuntime !== "function") {
+    if (
+      tier !== "policy" &&
+      (driver.runtimeLogging === "driver" || typeof driver.describeAgentRuntime !== "function")
+    ) {
       throw new NotImplementedError(
         "describeAgentRuntime",
         "The selected Compute Driver does not expose runtime status or logs.",

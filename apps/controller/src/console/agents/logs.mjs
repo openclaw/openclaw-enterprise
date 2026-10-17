@@ -1,6 +1,7 @@
 import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
 import { displayDate, namespacePath } from "./list.mjs";
 import { SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
+import { createPolicyTester } from "./network-policy.mjs";
 
 const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
@@ -145,6 +146,7 @@ export function renderAgentLogs(
     markFirstView();
   }
   const firstViewTimer = setTimeout(showFirstView, FIRST_VIEW_WAIT_MS);
+  const policyTester = createPolicyTester(context, { base });
   const strip = element("div", { className: "runtime-strip", "aria-live": "polite" });
   // One line: a status region for loading and errors, and the observed time beside it. The
   // time changes on every 10 s poll, so it sits outside the status region, and aria-live=off
@@ -332,6 +334,7 @@ export function renderAgentLogs(
     restartPending = false;
     cursor = null;
     pane.replaceChildren();
+    policyTester.dismissObservedLog();
     rows = 0;
     logStatus.textContent = "";
     applyFilters();
@@ -387,6 +390,9 @@ export function renderAgentLogs(
       : (available?.id ?? description.sources[0]?.id ?? "");
     const source = selectedSource();
     const chosenPod = podSelect.value;
+    // Policy access is independent of log access; a runtime operator can test even
+    // when log denial disables the source picker or the Gateway source is selected.
+    policyTester.openButton.hidden = !description.sources.some(({ id }) => id === "sandbox");
     replaceChildrenIfChanged(
       podSelect,
       (source?.pods ?? []).map((pod) =>
@@ -577,7 +583,7 @@ export function renderAgentLogs(
   function appendRecords(records) {
     const atBottom = pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 24;
     for (const record of records) {
-      const row = recordRow(record);
+      const row = recordRow(record, { inspectPolicy: policyTester.open });
       row.hidden = !rowVisible(row);
       pane.append(row);
       rows += 1;
@@ -839,7 +845,14 @@ export function renderAgentLogs(
             element("label", { className: "log-option" }, previous, " Previous instance"),
             element("label", { className: "log-option" }, includeDebug, " Include debug"),
           ),
-          element("div", { className: "log-actions" }, followButton, refreshButton, downloadButton),
+          element(
+            "div",
+            { className: "log-actions" },
+            followButton,
+            refreshButton,
+            downloadButton,
+            policyTester.openButton,
+          ),
         ),
         element(
           "div",
@@ -865,6 +878,7 @@ export function renderAgentLogs(
       pane,
       retention,
     ),
+    policyTester.host,
   );
   if (logsDenied) {
     showLogError(runtimeErrorText({ status: 403 }, "logs"));

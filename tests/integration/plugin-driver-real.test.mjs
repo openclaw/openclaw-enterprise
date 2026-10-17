@@ -8,6 +8,22 @@ import {
   readCodexServiceAccountCredential,
 } from "../helpers/plugin-driver-real.mjs";
 
+async function assertPluginPrediction(fixture, agent, revision, action, expected) {
+  const path = `/namespaces/${fixture.namespaceId}/agents/${agent.id}/deployments/${revision.id}/runtime/policy-simulation`;
+  const described = await fixture.request("GET", path);
+  assert.equal(described.status, 200, JSON.stringify(described.error));
+  assert.ok(described.data.plugins, "The recorded Plugin Driver must describe authored policy.");
+  const predicted = await fixture.request("POST", path, {
+    kind: "plugin",
+    ...action,
+    expectedSimulationHash: described.data.plugins.simulationHash,
+  });
+  assert.equal(predicted.status, 200, JSON.stringify(predicted.error));
+  assert.equal(predicted.data.revisionId, revision.id);
+  assert.equal(predicted.data.decision, expected);
+  assert.match(predicted.data.unevaluatedChecks.join(" "), /Native tool policies/);
+}
+
 test(
   "a real official OpenClaw plugin installs, runs in a normal Agent turn, and stays scoped to one Agent",
   {
@@ -100,6 +116,14 @@ test(
       [],
       "the expected-success OpenClaw plugin proof requires a clean plugin install.",
     );
+    const simulationAction = { pluginId, toolId: toolName };
+    await assertPluginPrediction(
+      fixture,
+      primary,
+      deployedPrimary.revision,
+      simulationAction,
+      "allow",
+    );
     const deployedSibling = await fixture.deployAndWait(sibling);
     assert.equal(Object.keys(deployedSibling.revision.plugins?.plugins ?? {}).length, 0);
 
@@ -134,6 +158,13 @@ test(
       const redeployed = await fixture.deployAndWait(primary);
       assert.deepEqual(redeployed.revision.plugins.plugins[pluginId], policy);
       assert.deepEqual(redeployed.status.warnings, []);
+      await assertPluginPrediction(
+        fixture,
+        primary,
+        redeployed.revision,
+        simulationAction,
+        enabled ? "allow" : "deny",
+      );
       assert.deepEqual(await fixture.readOpenClawPluginPolicy(primary, nativePluginId), {
         plugins: { allow: allowedPlugins, enabled: true },
         tools: { allow: ["read", nativePluginId], deny: enabled ? ["exec"] : ["exec", toolName] },
@@ -166,6 +197,15 @@ test(
     assert.equal(toolDenied.status, 200, JSON.stringify(toolDenied.error));
     const operatorDenied = await fixture.deployAndWait(primary);
     assert.deepEqual(operatorDenied.status.warnings, []);
+    // The authored exception still predicts allow. The independent native turn
+    // below must retain the operator deny, a documented limit of OCE simulation.
+    await assertPluginPrediction(
+      fixture,
+      primary,
+      operatorDenied.revision,
+      simulationAction,
+      "allow",
+    );
     assert.deepEqual(await fixture.readOpenClawPluginPolicy(primary, nativePluginId), {
       plugins: { allow: allowedPlugins, enabled: true },
       tools: { allow: ["read", nativePluginId], deny: ["exec", toolName] },
@@ -198,6 +238,13 @@ test(
     assert.equal(denied.status, 200, JSON.stringify(denied.error));
     const disabledRevision = await fixture.deployAndWait(primary);
     assert.equal(disabledRevision.revision.plugins?.plugins[pluginId]?.enabled, false);
+    await assertPluginPrediction(
+      fixture,
+      primary,
+      disabledRevision.revision,
+      simulationAction,
+      "deny",
+    );
     assert.deepEqual(await fixture.readOpenClawPluginPolicy(primary, nativePluginId), {
       plugins: { allow: allowedPlugins, deny: [nativePluginId], enabled: false },
       tools: { allow: ["read"], deny: ["exec"] },
@@ -387,6 +434,15 @@ test(
     const deployed = await fixture.deployAndWait(agent);
     assert.ok(Object.hasOwn(deployed.revision.plugins?.plugins ?? {}, linear.id));
     assert.deepEqual(deployed.status.warnings, []);
+    // Catalog identity and a configured action name do not establish ownership
+    // inventory for OCE simulation. The actual tool result is separate evidence.
+    await assertPluginPrediction(
+      fixture,
+      agent,
+      deployed.revision,
+      { pluginId: linear.id, toolId: toolName },
+      "unknown",
+    );
     const [native] = await fixture.listCodexNativeCatalog(agent, [linear.id]);
     assert.equal(native?.remotePluginId, linear.remoteId);
     assert.ok(native.detailAvailable && native.appCount > 0);

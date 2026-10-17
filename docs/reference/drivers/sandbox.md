@@ -32,6 +32,25 @@ required `facets` and `cleanup` members, an optional `harnessHome`, and optional
 | `workspaceNodePeerLabels(context)`               | Optional. Exact Pod labels of the provider Pods that open the revision's workspace-node connection, or `undefined` before its Sandbox exists. Compute admits only these Pods to that Agent's Gateway port, plus the serving revision's while a successor prepares, so the labels must select that Sandbox alone. OpenShell returns the supervisor's `openshell.ai/sandbox-id`. |
 | `readSandboxLogs(context, request)`              | Optional read of the revision's Sandbox log: at most `lines` raw lines at or after `sinceTime`, plus how many lines the source examined. It must use a read-only interface and derive the Sandbox from the revision. OCC classifies and redacts every line. See [Agent logs](../../guides/topics/agent-logs.md#sandbox-source).                                                |
 
+`describePolicySimulation(context)` optionally describes authored network intent
+in OCE's portable simulation contract, including its source and unsupported
+conditions. OCE evaluates that model independently of native policy availability.
+It does not establish deployed enforcement or freeze current Driver configuration.
+
+`describeNetworkPolicy(context)` optionally returns the exact revision's effective
+network rule inventory, snapshot hash and configuration fingerprints, and observed
+runtime admission. The Driver derives the Sandbox from the revision and redacts
+credential-shaped rule literals. An applied state requires evidence for the exact
+effective snapshot; a base policy version alone is insufficient.
+
+`evaluateNetworkPolicy(context, request)` optionally evaluates supplied destination,
+executable, and HTTP facts through the provider's own evaluator without sending
+the request. The result names its policy hash, rules and stages, and unevaluated
+runtime checks. A stale `expectedPolicyHash` conflicts rather than silently testing
+different policy. OCC authorizes Agent `operate` and `read` plus revision `read`,
+audits access before provider reads, and bounds requests and responses. See
+[policy inspection and testing](../../guides/topics/agent-network-policy.md).
+
 Two optional methods serve a provider-owned Harness transport.
 `harnessEndpoint(context)` returns the transport for the provisioned Harness, and
 Compute routes the Agent Gateway through it instead of its own Harness Service.

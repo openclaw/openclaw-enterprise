@@ -1,4 +1,44 @@
 import type { WorkspaceSetup } from "./workspace-setup.ts";
+import type { NetworkSimulationPolicy, PluginSimulationPolicy } from "./policy-simulation.ts";
+
+export type {
+  NetworkSimulationPolicy,
+  PluginSimulationPolicy,
+  PolicySimulationPolicy,
+  PolicySimulationDescription,
+  PolicySimulationRequest,
+  PolicySimulationResult,
+  PolicySimulationDecision,
+} from "./policy-simulation.ts";
+export {
+  PolicySimulationRequestSchema,
+  PolicySimulationDescriptionSchema,
+  AgentPolicySimulationResultSchema,
+  isPolicySimulationRequest,
+  isNetworkSimulationPolicy,
+  isPluginSimulationPolicy,
+} from "./policy-simulation.ts";
+import type {
+  SandboxNetworkPolicyDescription,
+  SandboxNetworkPolicyRequest,
+  SandboxNetworkPolicyEvaluation,
+} from "./sandbox-policies.ts";
+
+export type {
+  SandboxNetworkPolicyRule,
+  SandboxNetworkPolicyDescription,
+  SandboxNetworkPolicyRequest,
+  SandboxNetworkPolicyEvaluation,
+  SandboxPolicyDecision,
+} from "./sandbox-policies.ts";
+export {
+  SandboxNetworkPolicyDescriptionSchema,
+  SandboxNetworkPolicyRequestSchema,
+  SandboxNetworkPolicyEvaluationSchema,
+  isSandboxNetworkPolicyRequest,
+  isSandboxNetworkPolicyDescription,
+  isSandboxNetworkPolicyEvaluation,
+} from "./sandbox-policies.ts";
 
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
 export { isComputePreparationFailureEvidence } from "./compute-preparation.ts";
@@ -1529,6 +1569,8 @@ export interface SandboxDriver extends Driver {
   readonly capability: "sandbox";
   /** One or more distinct containment facets implemented by this driver. */
   readonly facets: readonly SandboxFacet[];
+  /** Authored OCE intent, independent of mutable provider policy or native evaluator availability. */
+  describePolicySimulation?(context: SandboxLogContext): Promise<NetworkSimulationPolicy>;
   /**
    * Absolute HOME of the Harness user inside this provider's Sandbox. Compute places
    * Harness-local paths it renders into the Agent Gateway configuration, such as the native
@@ -1600,6 +1642,13 @@ export interface SandboxDriver extends Driver {
     context: SandboxLogContext,
     request: SandboxLogRequest,
   ): Promise<SandboxLogChunk>;
+  /** Read the exact revision's effective network policy and independently observed load state. */
+  describeNetworkPolicy?(context: SandboxLogContext): Promise<SandboxNetworkPolicyDescription>;
+  /** Evaluate supplied facts against one policy snapshot without sending the request. */
+  evaluateNetworkPolicy?(
+    context: SandboxLogContext,
+    request: SandboxNetworkPolicyRequest,
+  ): Promise<SandboxNetworkPolicyEvaluation>;
   /**
    * The provider's lifecycle record of the dedicated revision's Harness Sandbox, read-only.
    * `lost` means the Sandbox is not serving the revision and OCC will not restart it
@@ -1635,6 +1684,11 @@ export interface PluginDiscoveryAuthentication {
 export interface PluginDriver extends Driver {
   readonly capability: "plugin";
   readonly policyCapabilities: PluginPolicyCapabilities;
+  /** Describe immutable revision policy and verified tool identities for OCE simulation. */
+  describePolicySimulation?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<PluginSimulationPolicy>;
   /** Checks policy support without installing plugins or performing authenticated discovery. */
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;
   /**
