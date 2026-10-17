@@ -212,6 +212,13 @@ export async function waitForNativeRedeploy({
   while (Date.now() < deadline) {
     signal.throwIfAborted();
     deployment = await request("GET", `${agentPath}/deployments/${revisionId}`);
+    // Bind the response before interpreting status or collecting failure diagnostics.
+    assert.ok(
+      deployment?.namespaceId === namespaceId &&
+        deployment.agentId === agentId &&
+        deployment.deploymentId === revisionId,
+      "The native redeploy returned a mismatched deployment binding",
+    );
     await assertNativeRedeployNotFailed(
       deployment,
       "Redeployment with the retained native workspace must succeed",

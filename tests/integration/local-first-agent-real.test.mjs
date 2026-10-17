@@ -713,11 +713,45 @@ test("native terminal failures report only fixed failure codes", async (t) => {
       category: "unrecognized",
       deployment: { status: "failed", errorCode: "unrecognized", lastAttemptCode: "unknown" },
     });
-    // Only the replacement revision's own record and log page are reported.
-    assert.deepEqual(await redeploy([{ ...failed, deploymentId: revisionId }], [replacementPath]), {
-      category: "RUNTIME_AUTHENTICATION_FAILED",
-      deployment: "unavailable",
-    });
+    // A different binding is rejected before status, diagnostics or an agent read.
+    const otherBinding = {
+      namespaceId: `ns_${randomUUID()}`,
+      agentId: `agt_${randomUUID()}`,
+      deploymentId: revisionId,
+    };
+    for (const [field, otherId] of Object.entries(otherBinding)) {
+      for (const status of ["failed", "succeeded", "queued", "running"]) {
+        const mismatched = {
+          ...failed,
+          [field]: otherId,
+          status,
+          error: status === "failed" ? failed.error : null,
+        };
+        const calls = [];
+        await assert.rejects(
+          waitForNativeRedeploy({
+            request: async (method, path) => {
+              calls.push(path);
+              // Even an active replacement cannot legitimize the mismatched record.
+              return calls.length === 1 ? mismatched : { activeRevisionId: replacementId };
+            },
+            namespaceId,
+            agentId,
+            revisionId: replacementId,
+            signal: AbortSignal.timeout(30_000),
+            timeoutMs: 100,
+            pollMs: 1,
+          }),
+          {
+            name: "AssertionError",
+            message: "The native redeploy returned a mismatched deployment binding",
+          },
+          `${field} mismatch in a ${status} deployment must stop the poll`,
+        );
+        assert.deepEqual(calls, [replacementPath]);
+      }
+    }
+    // Only the replacement revision's own log page is reported.
     const firstPage = page(probeLog({ providerStatus: 401 }));
     const stale = await redeploy([failed, firstPage], [replacementPath, replacementLogPath]);
     assert.equal(stale.modelProbe, "unavailable");
