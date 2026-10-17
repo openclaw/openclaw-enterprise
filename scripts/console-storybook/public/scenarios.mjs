@@ -1602,6 +1602,24 @@ export const scenarios = {
       "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
+  createDeploymentPodQuotaFull: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment waits on a full Pod quota",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+      message:
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+    },
+    description:
+      "The first deployment cannot create its Pods because the Namespace's Pod quota is full, so the provisioning line names the quota instead of a bare wait.",
+    steps: [
+      "Click Create Agent and wait for the provisioning line to name the full Pod quota.",
+      "Open the Agent's version; confirm the deployment record shows the same reason.",
+    ],
+  },
   createDeploymentFailed: {
     group: "Pages/Create Agent",
     name: "Initial deployment failed",

@@ -757,10 +757,11 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
         body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
       }),
     );
-    // The job starts, hands off its first deployment, which waits on the quota for two
-    // reads and then on the runtime, and the job then fails.
+    // The job starts, creates its Agent, hands off its first deployment, which waits on the
+    // quota for two reads and then on the runtime, and the job then fails.
     const reads = [
       job("running"),
+      job("running", { phase: "transport", agentId }),
       job("running", handedOff),
       job("running", handedOff),
       job("running", handedOff),
@@ -855,7 +856,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     await page.getByText("Provisioning failed.", { exact: true }).waitFor();
     assert.equal(read, reads.length);
     // Only a running job that handed off its deployment reads it, once per job read.
-    assert.deepEqual(deploymentReads, [2, 3, 4]);
+    assert.deepEqual(deploymentReads, [3, 4, 5]);
     assert.equal(deploymentRequests.length, 3);
     assert.deepEqual(
       await page.evaluate(() => globalThis.provisioningWrites),

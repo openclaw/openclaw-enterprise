@@ -2231,12 +2231,16 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   assert.equal(
     await pendingReasonWith(agentName, [
       { type: "Available", status: "False", reason: "MinimumReplicasUnavailable" },
-      failure(refusal("pods=1,requests.cpu=500m", "pods=10,requests.cpu=4", "pods=10,requests.cpu=4")),
+      failure(
+        refusal("pods=1,requests.cpu=500m", "pods=10,requests.cpu=4", "pods=10,requests.cpu=4"),
+      ),
     ]),
     quota,
   );
   assert.equal(
-    await pendingReasonWith(agentName, [failure(refusal("count/pods=1", "count/pods=10", "count/pods=10"))]),
+    await pendingReasonWith(agentName, [
+      failure(refusal("count/pods=1", "count/pods=10", "count/pods=10")),
+    ]),
     quota,
   );
   // Only a refusal for want of Pods is a full Pod quota.
