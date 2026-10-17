@@ -154,7 +154,8 @@ function publishedByRoot(test) {
   const publisher = executionAsyncResource();
   return publisher !== null && typeof publisher === "object" && "parent" in publisher
     ? publisher.parent === null
-    : test.name === "<root>";
+    : // Only for a Node whose tests are not published from their Test.
+      test.name === "<root>";
 }
 tracingChannel("node.test").subscribe({
   start(test) {
@@ -256,7 +257,8 @@ export function boundedTeardown(
   let started = false;
   let finished = false;
   let exiting = false;
-  let late = Promise.resolve();
+  // Late cleanups waiting to run, drained newest-first like the teardown.
+  const late = [];
   const endProcess = (reason) => {
     log(`${label}: exiting once the file's tests settle for ${exitGraceMs} ms; ${reason}`);
     markActivity();
@@ -307,19 +309,28 @@ export function boundedTeardown(
     // by throwing to it, so it starts nothing more that no cleanup would undo.
     log(`${label}: cleanup ${step.site} came after the teardown ran; running it now`);
     lateCleanupsRunning += 1;
-    unsettledSetups.delete(after);
-    late = late.then(async () => {
-      try {
-        await run(step);
-      } finally {
-        lateCleanupsRunning -= 1;
-        markActivity();
-      }
-      failFile();
-      endProcess(`cleanup ${step.site} came after its test's teardown`);
-    });
-    // A cleanup may register another, as during the teardown; only setup is stopped.
+    late.push(step);
+    // Registrations in the same turn (a cleanup list) all queue before the first runs, and one
+    // a running cleanup makes runs next.
+    if (late.length === 1 && lateCleanupsRunning === 1) {
+      queueMicrotask(async () => {
+        while (late.length > 0) {
+          const next = late.pop();
+          try {
+            await run(next);
+          } finally {
+            lateCleanupsRunning -= 1;
+            markActivity();
+          }
+          failFile();
+          endProcess(`cleanup ${next.site} came after its test's teardown`);
+        }
+      });
+    }
+    // A cleanup may register another, as during the teardown; only setup is stopped. The flag
+    // also reaches listeners a cleanup triggers synchronously, so setup must not go on in one.
     if (runningCleanup.getStore() !== true) {
+      unsettledSetups.delete(after);
       throw new Error(
         `${label}: setup outlived its test; cleanup ${step.site} runs now and setup stops here`,
       );

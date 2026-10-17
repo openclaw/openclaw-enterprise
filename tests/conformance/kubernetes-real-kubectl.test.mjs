@@ -432,12 +432,14 @@ test(
       { message: stopsSetup },
     );
     await delay(300);
+    // Registered in one turn, they run newest-first like the teardown, and a cleanup's own
+    // registration runs next.
     assert.deepEqual(ran, [
       "early cleanup",
-      "worker stop",
-      "port-forward stop",
       "observer stop",
       "pool end",
+      "port-forward stop",
+      "worker stop",
     ]);
     assert.equal(events.filter((event) => event === "fail").length, 5);
     assert.equal(events.filter((event) => event === "exit").length, 1);
@@ -537,23 +539,23 @@ test(
         // Never settles, and its poll keeps the process alive.
         context.after(() => new Promise(() => setInterval(() => {}, 50)));
       });
-      describe("suite", () => {
-        let tests = 0;
-        beforeEach(async () => {
-          tests += 1;
-          if (tests === 2) {
-            await delay(500);
-          }
-        });
-        after(async () => {
+      // While this runs before the second test, no test is running at all.
+      let tests = 0;
+      beforeEach(async () => {
+        tests += 1;
+        if (tests === 2) {
           await delay(500);
-          process.stdout.write("attempted suite after\\n");
-        });
-        it("first", () => {});
-        it("second outlasts the grace", async (testContext) => {
-          const { context } = boundedTeardown(testContext);
-          context.after(() => process.stdout.write("attempted second cleanup\\n"));
-          await delay(1_000);
+        }
+      });
+      it("second outlasts the grace", async (testContext) => {
+        const { context } = boundedTeardown(testContext);
+        context.after(() => process.stdout.write("attempted second cleanup\\n"));
+        await describe("later suite", () => {
+          after(async () => {
+            await delay(500);
+            process.stdout.write("attempted suite after\\n");
+          });
+          it("child", () => {});
         });
       });
     `);
@@ -562,8 +564,8 @@ test(
     assert.equal(exited.code, 1);
     assert.match(exited.stdout, /^not ok 1 - <root>$/m);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
-      "attempted second cleanup",
       "attempted suite after",
+      "attempted second cleanup",
       "attempted file after",
     ]);
     assert.match(exited.stdout, /^\s*ok 2 - second outlasts the grace$/m);
@@ -692,26 +694,27 @@ test(
     assert.equal(exited.code, 0, exited.stderr);
     assert.deepEqual(exited.stdout.match(/^stopped: .+$/gm), ["stopped: true", "stopped: true"]);
     assert.doesNotMatch(exited.stdout, /^not stopped$/m);
+    // Newest-first, as the teardown would have run them.
     assert.deepEqual(
       exited.stdout.match(/^attempted .+$/gm),
       [
         ...[
-          "temporaryDirectory",
-          "placementNamespace",
-          "gatewayRuntimeNamespace",
-          "postgresNetwork",
-          "observerPool",
-          "productionApp",
-          "worker",
           "gatewayForward",
+          "worker",
+          "productionApp",
+          "observerPool",
+          "postgresNetwork",
+          "gatewayRuntimeNamespace",
+          "placementNamespace",
+          "temporaryDirectory",
         ],
         ...[
-          "temporaryDirectory",
-          "workloadNamespace",
-          "observerPool",
-          "productionApp",
-          "portForwards",
           "workerStop",
+          "portForwards",
+          "productionApp",
+          "observerPool",
+          "workloadNamespace",
+          "temporaryDirectory",
         ],
       ].map((name) => `attempted ${name}`),
     );
