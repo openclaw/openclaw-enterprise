@@ -1969,8 +1969,7 @@ test("helper, fixture and other test-tree changes select full", async (t) => {
       );
       await settled([f.expect("full"), shallow.expect("full", {}, "ineligible_change")]).catch(
         (error) => {
-          error.message = `${path}: ${error.message}`;
-          throw error;
+          throw new Error(`${path}: ${error.message}`, { cause: error });
         },
       );
     },
