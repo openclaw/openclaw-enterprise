@@ -2873,11 +2873,20 @@ test("Agent deployment status polls the admitted revision work with exact read a
     warnings: [],
     progress: { lastAttempt: null, nextAttemptAt: new Date(0).toISOString() },
   });
-  const runtimeFailure = {
-    component: "gateway",
-    check: "readyz",
+  // A provider-owned Harness serves its failure evidence from inside the Sandbox, so Agent code
+  // can answer in its place. Values outside the runtime's own vocabulary read back as
+  // UNRECOGNIZED, so the status and the Console never show what it wrote (finding 1660).
+  const servedRuntimeFailure = {
+    component: "sidecar",
+    check: "see.evil.example:443",
     checkedAt: "2026-09-19T20:30:00.000Z",
     code: "STARTUP_FAILED",
+  };
+  const runtimeFailure = {
+    ...servedRuntimeFailure,
+    component: "UNRECOGNIZED",
+    check: "UNRECOGNIZED",
+    code: "UNRECOGNIZED",
   };
   deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
     idempotencyKey: `agent_revision:${admitted.data.id}:reconcile`,
@@ -2890,7 +2899,7 @@ test("Agent deployment status polls the admitted revision work with exact read a
     attemptCount: 1,
     completedAt: new Date("2026-09-19T20:31:00.000Z"),
     reasonCode: "CONVERGENCE_DEADLINE_EXCEEDED",
-    resultData: { timeoutMs: 900_000, runtimeFailure },
+    resultData: { timeoutMs: 900_000, runtimeFailure: servedRuntimeFailure },
     createdAt: new Date(0),
     updatedAt: new Date("2026-09-19T20:31:00.000Z"),
   });
@@ -2947,6 +2956,21 @@ test("Agent deployment status polls the admitted revision work with exact read a
   assert.equal(readableDeployment.status, 200, JSON.stringify(readableDeployment.body));
   assert.equal(readableDeployment.data.status, "failed");
   assert.deepEqual(readableDeployment.data.error?.data?.runtimeFailure, runtimeFailure);
+  // Evidence in the runtime's own vocabulary reads back as recorded.
+  const knownRuntimeFailure = {
+    component: "agent",
+    check: "model-probe",
+    checkedAt: "2026-09-19T20:30:00.000Z",
+    code: "NOT_CONFIGURED",
+  };
+  const deploymentWork = deploymentWorks.get(`agent_revision:${admitted.data.id}:reconcile`);
+  deploymentWorks.set(`agent_revision:${admitted.data.id}:reconcile`, {
+    ...deploymentWork,
+    resultData: { timeoutMs: 900_000, runtimeFailure: knownRuntimeFailure },
+  });
+  const knownDeployment = await injectedRequest(readerApp, "GET", path);
+  assert.equal(knownDeployment.status, 200, JSON.stringify(knownDeployment.body));
+  assert.deepEqual(knownDeployment.data.error?.data?.runtimeFailure, knownRuntimeFailure);
 
   fixture.state.roles.find(
     (role) => role.id === "role-deployment-status-reader",

@@ -86,17 +86,17 @@ Deployment failure remains terminal. Terminal preparation errors retain bounded
 excluding raw output and credentials.
 
 Errors have fixed codes, messages, and allowlisted `error.data`.
-`CONVERGENCE_DEADLINE_EXCEEDED` data includes positive `timeoutMs` and optional
+`CONVERGENCE_DEADLINE_EXCEEDED` data includes `timeoutMs` and optional
 `runtimeFailure` (`component`, `check`, `checkedAt`, `code`) captured by Compute
-from that revision; missing evidence leaves the cause unspecified. Held runtime
-failures end deployment early: `RUNTIME_AUTHENTICATION_FAILED` (rejected
-credential), `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
+from that revision (unknown values read `UNRECOGNIZED`); missing evidence leaves
+the cause unspecified. Held runtime failures end deployment early:
+`RUNTIME_AUTHENTICATION_FAILED`, `RUNTIME_CPU_STARVED`, `RUNTIME_MODEL_PROBE_TIMEOUT`,
 `RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, or
 `RUNTIME_STARTUP_FAILED`; fix and redeploy. A dedicated gateway that refuses its
 own CLI fails with
 [`AGENT_GATEWAY_UNAUTHORIZED`](agents/deployment.md#pending-deployment-progress). `RUNTIME_MODEL_PROBE_FAILED` adds
 [`runtimeFailure`](agents/deployment.md#model-check-failure-cause). Success can include [plugin warnings](agent-plugins.md#lifecycle)
-with a closed code and admitted `pluginId`.
+with a closed code and `pluginId`.
 
 Polling reads only persisted state. Terminal results survive runtime deletion
 and controller restart; later deployments cannot rewrite them.

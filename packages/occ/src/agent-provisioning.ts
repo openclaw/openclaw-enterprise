@@ -19,7 +19,7 @@ import { asRecord, immutableCopy, isNonEmptyString } from "@openclaw-enterprise/
 
 import { ScopeViolationError, SecretBindingValidationError } from "./errors.ts";
 import type { AgentProvisioningRecord } from "./state/agent-provisioning.ts";
-import type { ControllerWork } from "./state/controller-work.ts";
+import type { ControllerWork, DeploymentStatusResult } from "./state/controller-work.ts";
 import { controllerWorkLeaseActive } from "./state/controller-work.ts";
 
 export type AgentProvisioningStatus = "queued" | "running" | "failed" | "succeeded";
@@ -46,6 +46,25 @@ export interface ProvisionAgentInput {
   readonly repositoryAccess?: RepositoryAccess;
 }
 
+/** The pending code a provisioning job records while its initial deployment has not finished. */
+export const PROVISIONING_DEPLOYMENT_PENDING = "PROVISIONING_DEPLOYMENT_PENDING";
+
+const PROVISIONING_DEPLOYMENT_PENDING_MESSAGE = "Waiting for the initial deployment to complete.";
+
+/**
+ * Why a job past handoff has not finished (finding 1634). The job defers without a lease and
+ * without spending attempts while its first deployment converges, so `status` and
+ * `attemptCount` alone read like a job that never ran.
+ */
+export interface AgentProvisioningDeploymentWait {
+  readonly phase: "deployment";
+  readonly lastAttempt: {
+    readonly at: string;
+    readonly code: string;
+    readonly message: string;
+  } | null;
+}
+
 export interface AgentProvisioningProgress {
   readonly workId: string;
   readonly status: AgentProvisioningStatus;
@@ -57,6 +76,7 @@ export interface AgentProvisioningProgress {
   readonly revisionId?: string;
   readonly url?: string;
   readonly error?: { readonly code: string; readonly message: string };
+  readonly progress?: AgentProvisioningDeploymentWait;
 }
 
 export interface ProvisionAgentResult {
@@ -149,10 +169,42 @@ export function normalizeProvisioningWorkspace(
   });
 }
 
+/**
+ * The wait a job past handoff reports. `deployment` is the initial deployment's own progress,
+ * given only when the caller may read that deployment; it names the wait when it knows one.
+ * Otherwise the job's own deferral code stands in, which the provisioning read already covers.
+ */
+function provisioningDeploymentWait(
+  record: Readonly<AgentProvisioningRecord>,
+  deployment: DeploymentStatusResult["progress"] | undefined,
+): AgentProvisioningDeploymentWait {
+  const named = deployment?.lastAttempt;
+  if (named != null && named.code !== "RECONCILIATION_PENDING") {
+    return Object.freeze({
+      phase: "deployment",
+      lastAttempt: Object.freeze({ at: named.at, code: named.code, message: named.message }),
+    });
+  }
+  const deferred =
+    asRecord(asRecord(record.progress)?.error)?.code === PROVISIONING_DEPLOYMENT_PENDING;
+  return Object.freeze({
+    phase: "deployment",
+    lastAttempt:
+      deferred && record.updatedAt instanceof Date && !Number.isNaN(record.updatedAt.getTime())
+        ? Object.freeze({
+            at: record.updatedAt.toISOString(),
+            code: PROVISIONING_DEPLOYMENT_PENDING,
+            message: PROVISIONING_DEPLOYMENT_PENDING_MESSAGE,
+          })
+        : null,
+  });
+}
+
 export function provisioningProgress(
   record: Readonly<AgentProvisioningRecord>,
   work?: Readonly<ControllerWork>,
   now: Date = new Date(),
+  deployment?: DeploymentStatusResult["progress"],
 ): Readonly<AgentProvisioningProgress> {
   const progress = asRecord(record.progress);
   const error = asRecord(progress?.error);
@@ -168,15 +220,16 @@ export function provisioningProgress(
       : work.attemptCount;
   const workReasonCode = work?.reasonCode;
   const failedCode = isNonEmptyString(workReasonCode) ? workReasonCode : "PROVISIONING_FAILED";
+  const status: AgentProvisioningStatus = failed
+    ? "failed"
+    : record.status === "succeeded"
+      ? "succeeded"
+      : work !== undefined && controllerWorkLeaseActive(work, now)
+        ? "running"
+        : "queued";
   return Object.freeze({
     workId: record.workId,
-    status: failed
-      ? "failed"
-      : record.status === "succeeded"
-        ? "succeeded"
-        : work !== undefined && controllerWorkLeaseActive(work, now)
-          ? "running"
-          : "queued",
+    status,
     phase: record.completedPhase,
     attemptCount,
     updatedAt,
@@ -205,6 +258,10 @@ export function provisioningProgress(
               },
             }
         : {}),
+    // Handoff recorded the first revision; the job now only waits for that deployment.
+    ...((status === "queued" || status === "running") && record.revisionId !== undefined
+      ? { progress: provisioningDeploymentWait(record, deployment) }
+      : {}),
   });
 }
 

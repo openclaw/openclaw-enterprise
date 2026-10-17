@@ -398,6 +398,50 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
   });
 }
 
+// The values runtime entrypoints publish with a held startup failure
+// (drivers/compute/kubernetes/runtime-entrypoints.ts and drivers/compute/runtime-startup.ts).
+// A provider-owned Harness serves that evidence from inside its Sandbox, where Agent code can
+// answer in its place, so a value outside these sets is recorded, and read back, as
+// UNRECOGNIZED rather than as served (finding 1660).
+const UNRECOGNIZED_RUNTIME_FAILURE_VALUE = "UNRECOGNIZED";
+const RUNTIME_FAILURE_COMPONENTS: ReadonlySet<string> = new Set(["agent", "gateway"]);
+const RUNTIME_FAILURE_CHECKS: ReadonlySet<string> = new Set([
+  "login",
+  "model-probe",
+  "peer-bridge-record",
+  "plugin-approvers",
+  "state-migration",
+]);
+const RUNTIME_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "AUTHENTICATION_FAILED",
+  "DISCONNECTED",
+  "INCOMPATIBLE_RESPONSE",
+  "LOGIN_FAILED",
+  "MODEL_PROBE_CPU_STARVED",
+  "MODEL_PROBE_FAILED",
+  "MODEL_PROBE_TIMEOUT",
+  "NOT_CONFIGURED",
+  "PROBE_FAILED",
+  "UNAVAILABLE",
+]);
+
+function recognizedRuntimeFailureValue(value: string, known: ReadonlySet<string>): string {
+  return known.has(value) ? value : UNRECOGNIZED_RUNTIME_FAILURE_VALUE;
+}
+
+function recordedRuntimeFailureEvidence(
+  evidence: Readonly<RuntimeFailureEvidence>,
+): RuntimeFailureEvidence {
+  return Object.freeze({
+    component: recognizedRuntimeFailureValue(evidence.component, RUNTIME_FAILURE_COMPONENTS),
+    check: recognizedRuntimeFailureValue(evidence.check, RUNTIME_FAILURE_CHECKS),
+    checkedAt: evidence.checkedAt,
+    code: recognizedRuntimeFailureValue(evidence.code, RUNTIME_FAILURE_CODES),
+    ...(evidence.cause === undefined ? {} : { cause: evidence.cause }),
+  });
+}
+
+/** Validates failure data before it is recorded, and again when it is read back. */
 export function validateFailureData(
   reasonCode: string,
   data: unknown,
@@ -448,7 +492,9 @@ export function validateFailureData(
     }
     return Object.freeze({
       timeoutMs,
-      ...(evidence === undefined ? {} : { runtimeFailure: evidence }),
+      ...(evidence === undefined
+        ? {}
+        : { runtimeFailure: recordedRuntimeFailureEvidence(evidence) }),
     });
   }
   if (reasonCode === "RUNTIME_MODEL_PROBE_FAILED") {
@@ -468,7 +514,7 @@ export function validateFailureData(
     if (evidence.code !== "MODEL_PROBE_FAILED") {
       throw new ScopeViolationError("Model probe failure data requires its runtime failure.");
     }
-    return Object.freeze({ runtimeFailure: evidence });
+    return Object.freeze({ runtimeFailure: recordedRuntimeFailureEvidence(evidence) });
   }
   throw new ScopeViolationError("Controller work failure data is not allowed for this code.");
 }

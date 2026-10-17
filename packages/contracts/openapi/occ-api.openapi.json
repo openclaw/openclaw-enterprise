@@ -14750,6 +14750,43 @@
                                 { "const": "handoff", "type": "string" }
                               ]
                             },
+                            "progress": {
+                              "additionalProperties": false,
+                              "description": "Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0.",
+                              "properties": {
+                                "lastAttempt": {
+                                  "anyOf": [
+                                    { "type": "null" },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "at": {
+                                          "format": "date-time",
+                                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                                          "type": "string"
+                                        },
+                                        "code": {
+                                          "maxLength": 64,
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "message": { "minLength": 1, "type": "string" }
+                                      },
+                                      "required": ["at", "code", "message"],
+                                      "type": "object"
+                                    }
+                                  ],
+                                  "description": "The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted."
+                                },
+                                "phase": {
+                                  "const": "deployment",
+                                  "description": "Handoff is done; the job waits for its initial deployment.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["phase", "lastAttempt"],
+                              "type": "object"
+                            },
                             "revisionId": {
                               "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -14940,6 +14977,39 @@
                             { "const": "transport", "type": "string" },
                             { "const": "handoff", "type": "string" }
                           ]
+                        },
+                        "progress": {
+                          "additionalProperties": false,
+                          "description": "Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0.",
+                          "properties": {
+                            "lastAttempt": {
+                              "anyOf": [
+                                { "type": "null" },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "at": {
+                                      "format": "date-time",
+                                      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                                      "type": "string"
+                                    },
+                                    "code": { "maxLength": 64, "minLength": 1, "type": "string" },
+                                    "message": { "minLength": 1, "type": "string" }
+                                  },
+                                  "required": ["at", "code", "message"],
+                                  "type": "object"
+                                }
+                              ],
+                              "description": "The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted."
+                            },
+                            "phase": {
+                              "const": "deployment",
+                              "description": "Handoff is done; the job waits for its initial deployment.",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["phase", "lastAttempt"],
+                          "type": "object"
                         },
                         "revisionId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -15138,6 +15208,39 @@
                             { "const": "transport", "type": "string" },
                             { "const": "handoff", "type": "string" }
                           ]
+                        },
+                        "progress": {
+                          "additionalProperties": false,
+                          "description": "Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0.",
+                          "properties": {
+                            "lastAttempt": {
+                              "anyOf": [
+                                { "type": "null" },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "at": {
+                                      "format": "date-time",
+                                      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                                      "type": "string"
+                                    },
+                                    "code": { "maxLength": 64, "minLength": 1, "type": "string" },
+                                    "message": { "minLength": 1, "type": "string" }
+                                  },
+                                  "required": ["at", "code", "message"],
+                                  "type": "object"
+                                }
+                              ],
+                              "description": "The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted."
+                            },
+                            "phase": {
+                              "const": "deployment",
+                              "description": "Handoff is done; the job waits for its initial deployment.",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["phase", "lastAttempt"],
+                          "type": "object"
                         },
                         "revisionId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -18050,7 +18153,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned."
+                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence; a component, check or code outside the runtime's own vocabulary reads UNRECOGNIZED. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned."
                         },
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",

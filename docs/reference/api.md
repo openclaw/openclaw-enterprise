@@ -2411,6 +2411,9 @@ Create a new Agent and queue first-time provisioning
 | `data.provisioning.error.code` | `string` | Yes | min length: 1; max length: 64 |
 | `data.provisioning.error.message` | `string` | Yes | min length: 1; max length: 256 |
 | `data.provisioning.phase` | `"admitted" or "configuration" or "transport" or "handoff"` | Yes | — |
+| `data.provisioning.progress` | `object` | No | Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0. |
+| `data.provisioning.progress.lastAttempt` | `null or object` | Yes | The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted. |
+| `data.provisioning.progress.phase` | `"deployment"` | Yes | Handoff is done; the job waits for its initial deployment. |
 | `data.provisioning.revisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.provisioning.status` | `"queued" or "running" or "succeeded" or "failed"` | Yes | — |
 | `data.provisioning.updatedAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
@@ -2474,6 +2477,9 @@ Get first-time provisioning status for one exact work item
 | `data.error.code` | `string` | Yes | min length: 1; max length: 64 |
 | `data.error.message` | `string` | Yes | min length: 1; max length: 256 |
 | `data.phase` | `"admitted" or "configuration" or "transport" or "handoff"` | Yes | — |
+| `data.progress` | `object` | No | Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0. |
+| `data.progress.lastAttempt` | `null or object` | Yes | The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted. |
+| `data.progress.phase` | `"deployment"` | Yes | Handoff is done; the job waits for its initial deployment. |
 | `data.revisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.status` | `"queued" or "running" or "succeeded" or "failed"` | Yes | — |
 | `data.updatedAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
@@ -2537,6 +2543,9 @@ Retry failed first-time provisioning for one exact work item
 | `data.error.code` | `string` | Yes | min length: 1; max length: 64 |
 | `data.error.message` | `string` | Yes | min length: 1; max length: 256 |
 | `data.phase` | `"admitted" or "configuration" or "transport" or "handoff"` | Yes | — |
+| `data.progress` | `object` | No | Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0. |
+| `data.progress.lastAttempt` | `null or object` | Yes | The deployment's named wait, such as `WORKSPACE_NODE_PENDING`, when the caller has `agent_revision:read` on it; otherwise the job's own `PROVISIONING_DEPLOYMENT_PENDING`. Codes and messages are allowlisted. |
+| `data.progress.phase` | `"deployment"` | Yes | Handoff is done; the job waits for its initial deployment. |
 | `data.revisionId` | `string` | No | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.status` | `"queued" or "running" or "succeeded" or "failed"` | Yes | — |
 | `data.updatedAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
@@ -4003,7 +4012,7 @@ Get the durable deployment status for one admitted Agent revision
 | `data.agentId` | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.cleanup` | `null or object` | Yes | Durable retirement of this exact revision, independent of its deployment outcome. Null means no retirement obligation was registered; succeeded confirms cleanup completed. |
 | `data.deploymentId` | `string` | Yes | pattern: `^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
-| `data.error` | `null or object` | Yes | Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned. |
+| `data.error` | `null or object` | Yes | Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence; a component, check or code outside the runtime's own vocabulary reads UNRECOGNIZED. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned. |
 | `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `data.progress` | `null or object` | Yes | Pending deployment progress. Null for terminal outcomes. A last attempt describes a recorded result, not current runtime health. |
 | `data.status` | `"queued" or "running" or "succeeded" or "failed"` | Yes | — |

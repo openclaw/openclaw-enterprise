@@ -1687,13 +1687,28 @@ revisionTest(
       [candidate.id],
     );
     assert.deepEqual(evidence.rows, [{ reason: "CONVERGENCE_DEADLINE_EXCEEDED" }]);
+    // The Harness served a check and code outside the runtime's vocabulary: they are recorded
+    // as UNRECOGNIZED, so neither the stored work nor its status carries them (finding 1660).
+    const recordedRuntimeFailure = {
+      ...runtimeFailure,
+      check: "UNRECOGNIZED",
+      code: "UNRECOGNIZED",
+    };
+    const recorded = await fixture.observerPool.query(
+      "SELECT result_data FROM occ.controller_work WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(recorded.rows[0].result_data, {
+      timeoutMs: 1,
+      runtimeFailure: recordedRuntimeFailure,
+    });
     const status = await fixture.deploymentStatus(owner, candidate);
     assert.equal(status.status, "failed");
     assert.deepEqual(status.error, {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
       message:
         "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
-      data: { timeoutMs: 1, runtimeFailure },
+      data: { timeoutMs: 1, runtimeFailure: recordedRuntimeFailure },
     });
     assert.deepEqual(status.warnings, []);
     // A runtime that failed by itself stays for diagnosis: nothing retires it.

@@ -62,6 +62,8 @@
     "tests/integration/ci-cleanup.test.mjs",
     "tests/integration/runtime-image-failure-output.test.mjs",
     "tests/conformance/runtime-model-probe-settlement.test.mjs",
+    "tests/conformance/agent-provisioning-progress.test.mjs",
+    "tests/conformance/runtime-failure-vocabulary.test.mjs",
     "tests/conformance/hosted-plugin-discovery.test.mjs",
     "tests/integration/plugin-driver-real-preflight.test.mjs",
     "tests/conformance/postgres-transaction-commit.test.mjs",
@@ -240,6 +242,12 @@
     },
     {
       "path": "tests/conformance/runtime-model-probe-settlement.test.mjs"
+    },
+    {
+      "path": "tests/conformance/agent-provisioning-progress.test.mjs"
+    },
+    {
+      "path": "tests/conformance/runtime-failure-vocabulary.test.mjs"
     },
     {
       "path": "tests/conformance/plugin-runtime-policy.test.mjs"

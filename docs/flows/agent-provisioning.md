@@ -113,12 +113,12 @@ freeing the serial worker.
 
 The job records its first revision ID. `packages/occ/src/index.ts:observeProvisioningDeployment`
 defers work without consuming retries until that revision activates or fails. The same handle reports
-success or the deployment’s safe error. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
+success or the deployment’s safe error; meanwhile `progress` names its wait. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
 before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
 
 Create Agent (`apps/controller/src/console/agents/create.mjs:waitForProvisioning`) waits one second
-between status reads, using that interval for details such as a full Namespace Pod quota. At the
-next poll it cancels any unfinished detail read. Leaving the page stops polling, not provisioning.
+between status reads, spending it on details such as a full Pod quota, cancelling unfinished reads
+at the next poll. Leaving the page stops polling, not provisioning.
 If the first deployment fails, open the existing Agent, correct the cause and deploy a new version.
 After an intentional Stop, deploy when ready. Reconciliation owns startup and activation;
 subsequent deployments use Deploy.
