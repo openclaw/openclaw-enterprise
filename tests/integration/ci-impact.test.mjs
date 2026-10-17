@@ -189,6 +189,8 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
   const dir = tempDir(t, "ci-impact-");
   const repo = join(dir, "repo");
   const template = await baseRepository(initial, initialModes);
+  // The copy's index keeps the template's stat data; Git re-hashes a file whose
+  // stat data differs, so status and diff still see the committed content.
   cpSync(template.repo, repo, { recursive: true, verbatimSymlinks: true });
   const { git, put, commit } = repository(repo);
   const { base } = template;
@@ -1965,7 +1967,12 @@ test("helper, fixture and other test-tree changes select full", async (t) => {
         t,
         postgresEdit(({ put }) => put(path, "// changed\n")),
       );
-      await settled([f.expect("full"), shallow.expect("full", {}, "ineligible_change")]);
+      await settled([f.expect("full"), shallow.expect("full", {}, "ineligible_change")]).catch(
+        (error) => {
+          error.message = `${path}: ${error.message}`;
+          throw error;
+        },
+      );
     },
   );
 });

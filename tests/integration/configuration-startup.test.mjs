@@ -37,16 +37,17 @@ function startupDiagnostic(stderr, event) {
   return diagnostic;
 }
 
-// The startup cases boot the real API and worker processes with an allowlisted environment.
-// They share the lane's Node compile cache only when it is passed explicitly; outside CI the
-// file keeps its own, so each boot after the first reuses compiled code.
+// The startup cases boot the real API and worker processes with an allowlisted environment,
+// which drops NODE_COMPILE_CACHE, so it is passed explicitly: the lane's cache in CI, otherwise
+// a temporary one owned by this file, so each boot after the first reuses compiled code.
 const compileCache =
   process.env.NODE_COMPILE_CACHE || (await mkdtemp(join(tmpdir(), "configuration-startup-cache-")));
 if (compileCache !== process.env.NODE_COMPILE_CACHE) {
   after(() => rm(compileCache, { recursive: true, force: true }));
 }
 
-// Boots run concurrently, at most one per CPU.
+// Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
+// the signal instead of reading as a wrong exit status.
 const slots = { free: Math.max(2, availableParallelism()), waiting: [] };
 async function boot(script, env, timeout = 10_000) {
   if (slots.free > 0) {
@@ -67,13 +68,20 @@ async function boot(script, env, timeout = 10_000) {
       child.stdout.on("data", (chunk) => stdout.push(chunk));
       child.stderr.on("data", (chunk) => stderr.push(chunk));
       child.on("error", reject);
-      child.on("close", (status) =>
-        resolve({
+      child.on("close", (status, signal) => {
+        const result = {
           status,
           stdout: Buffer.concat(stdout).toString("utf8"),
           stderr: Buffer.concat(stderr).toString("utf8"),
-        }),
-      );
+        };
+        if (signal) {
+          reject(
+            new Error(`${script} ended by ${signal} (timeout ${timeout} ms): ${result.stderr}`),
+          );
+        } else {
+          resolve(result);
+        }
+      });
     });
   } finally {
     const next = slots.waiting.shift();
@@ -244,12 +252,12 @@ test("API and worker refuse a bad observability host or runtime image before ope
     ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
   ];
   // Each case boots both processes on its own copy of the file, concurrently.
-  const refuses = async (path, code, label) =>
+  const refuses = async (file, code, label) =>
     settled(
       processes.map(async ([script, event, env]) => {
-        const result = await boot(script, { ...env, OCC_CONFIG_PATH: path }, 15_000);
+        const result = await boot(script, { ...env, OCC_CONFIG_PATH: file }, 15_000);
         assert.equal(result.status, 1, script);
-        assert.ok(!result.stderr.includes(path), result.stderr);
+        assert.ok(!result.stderr.includes(file), result.stderr);
         const diagnostic = startupDiagnostic(result.stderr, event);
         assert.equal(diagnostic.code, code, `${script} ${label}`);
         return diagnostic;
@@ -299,8 +307,11 @@ test("API and worker refuse a bad observability host or runtime image before ope
     images[role] = original;
   }
   configuration.observability = { url: "http://192.168.1.1" };
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  cases.push(refuses(path, "PERSISTENCE_UNAVAILABLE", "valid"));
+  cases.push(
+    writeFile(path, JSON.stringify(configuration), "utf8").then(() =>
+      refuses(path, "PERSISTENCE_UNAVAILABLE", "valid"),
+    ),
+  );
   await settled(cases);
   const corrected = JSON.parse(await readFile(path, "utf8"));
   assert.equal(corrected.occ.cluster, "production-west");
