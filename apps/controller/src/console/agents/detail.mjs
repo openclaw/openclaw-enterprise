@@ -866,6 +866,9 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
       if (!loading || !context.isCurrent()) {
         return;
       }
+      // Only a reader still on the button follows it to the waiting line; one who moved on, even
+      // to the page itself, stays where they are.
+      const onButton = document.activeElement === runButton;
       waitingShown = true;
       error = null;
       diagnostics = null;
@@ -874,7 +877,9 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
       // The button disables itself while it waits: move focus to the waiting line, as Deploy
       // does, so a keyboard reader is not dropped to the page (finding 1705).
       waitingLine = section.lastElementChild;
-      focusSaveOutcome(section, [], waitingLine);
+      if (onButton) {
+        focusSaveOutcome(section, [], waitingLine);
+      }
     }, DIAGNOSTICS_WAITING_DELAY_MS);
     let answer = null;
     let failure = null;

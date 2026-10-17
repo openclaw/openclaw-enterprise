@@ -465,6 +465,30 @@ test("A fast diagnostics answer neither shows the waiting line nor moves focus",
     assert.equal(await description(), await observed.textContent());
     assert.deepEqual((await seen()).sort(), slow ? ["focus button", "result"] : ["result"]);
   }
+
+  // A reader who leaves the button before the line shows stays where they went, even on the page
+  // itself after clicking text outside the panel (maintainer review).
+  const onPage = () =>
+    page.evaluate(() => globalThis.document.activeElement === globalThis.document.body);
+  const held = await holdRun("2026-09-30T12:00:08.000Z");
+  await run.focus();
+  await page.keyboard.press("Enter");
+  try {
+    await held.requested;
+    await page.getByRole("heading", { name: "Version v1" }).click();
+    assert.equal(await onPage(), true);
+    await page.clock.runFor(250);
+    await waiting.waitFor();
+    assert.equal(await onPage(), true);
+  } finally {
+    held.release();
+  }
+  const shown = await page.evaluate(
+    (value) => new Date(value).toLocaleString(),
+    "2026-09-30T12:00:08.000Z",
+  );
+  await observations.getByText(`Observed ${shown}`).waitFor();
+  assert.equal(await onPage(), true);
 });
 
 test("Diagnostics explain a missing Slack channel and keep the recorded failure in view", async (t) => {
