@@ -3,6 +3,7 @@ import type {
   RuntimeDiagnosticCheck,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError } from "./errors.ts";
+import { recognizedRuntimeDiagnosticValues } from "./runtime-failure-cause.ts";
 
 const RUNTIME_DIAGNOSTIC_IDENTIFIER = /^[A-Za-z0-9._~:@-]{1,64}$/u;
 const RUNTIME_DIAGNOSTIC_TIMESTAMP =
@@ -36,13 +37,17 @@ function validRuntimeDiagnosticCheck(value: RuntimeDiagnosticCheck): RuntimeDiag
       "The selected compute Driver returned invalid runtime diagnostic evidence.",
     );
   }
-  return Object.freeze({
-    component: value.component,
-    check: value.check,
-    state,
-    checkedAt: value.checkedAt,
-    ...(value.code === undefined ? {} : { code: value.code }),
-  });
+  // Compute reads these from the runtime, so a value outside the runtime's vocabulary is
+  // returned as UNRECOGNIZED rather than as served (finding 1673).
+  return Object.freeze(
+    recognizedRuntimeDiagnosticValues({
+      component: value.component,
+      check: value.check,
+      state,
+      checkedAt: value.checkedAt,
+      ...(value.code === undefined ? {} : { code: value.code }),
+    }),
+  );
 }
 
 export function deploymentDiagnostics(

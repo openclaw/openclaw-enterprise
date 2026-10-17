@@ -1,0 +1,184 @@
+// The closed vocabulary of runtime failure evidence and runtime diagnostic checks: the one
+// list the runtime entrypoints publish from (the Kubernetes runtime scripts get it injected
+// when they are rendered) and OCC records and reads back. A provider-owned Harness serves this
+// evidence from inside its Sandbox, where Agent code can answer in its place, so OCC records a
+// value outside it as UNRECOGNIZED rather than as served (findings 1660, 1673, 1674).
+
+/** What OCC records, and returns, in place of a value outside this vocabulary. */
+export const UNRECOGNIZED_RUNTIME_VALUE = "UNRECOGNIZED";
+
+/** The runtime containers Compute names as a check's component. */
+export const RUNTIME_COMPONENTS: readonly string[] = Object.freeze(["agent", "gateway"]);
+
+/** Codes a runtime entrypoint holds a startup failure with, or reports on a diagnostic check. */
+export const RUNTIME_DIAGNOSTIC_CODES: readonly string[] = Object.freeze([
+  "LOGIN_FAILED",
+  "MODEL_PROBE_FAILED",
+  "MODEL_PROBE_TIMEOUT",
+  "MODEL_PROBE_CPU_STARVED",
+  "UNAVAILABLE",
+  "NOT_CONFIGURED",
+  "AUTHENTICATION_FAILED",
+  "DISCONNECTED",
+  "INCOMPATIBLE_RESPONSE",
+  "PROBE_FAILED",
+]);
+
+/** The startup steps a runtime entrypoint holds a failure under. */
+export const RUNTIME_FAILURE_CHECKS: readonly string[] = Object.freeze([
+  "login",
+  "model-probe",
+  "peer-bridge-record",
+  "plugin-approvers",
+  "state-migration",
+]);
+
+/**
+ * The evidence Kubernetes Compute builds itself, from Pod status, for a failed
+ * initialize-workspace init container (finding 1675).
+ */
+export const WORKSPACE_SETUP_CHECK = "workspace-setup";
+export const WORKSPACE_SETUP_FAILED = "WORKSPACE_SETUP_FAILED";
+
+/**
+ * The checks a runtime diagnostics read reports besides a held startup failure: the Gateway's
+ * Slack channel checks, and Compute's own check for a runtime status it could not read.
+ */
+export const RUNTIME_DIAGNOSTIC_CHECKS: readonly string[] = Object.freeze([
+  "configuration",
+  "authentication",
+  "connectivity",
+  "runtime-status",
+]);
+
+/** The signals a `PROCESS_EXIT` cause may name, as `signal-<name>` (Linux, as Node names them). */
+export const PROCESS_EXIT_SIGNALS: readonly string[] = Object.freeze([
+  "SIGHUP",
+  "SIGINT",
+  "SIGQUIT",
+  "SIGILL",
+  "SIGTRAP",
+  "SIGABRT",
+  "SIGIOT",
+  "SIGBUS",
+  "SIGFPE",
+  "SIGKILL",
+  "SIGUSR1",
+  "SIGSEGV",
+  "SIGUSR2",
+  "SIGPIPE",
+  "SIGALRM",
+  "SIGTERM",
+  "SIGCHLD",
+  "SIGSTKFLT",
+  "SIGCONT",
+  "SIGSTOP",
+  "SIGTSTP",
+  "SIGTTIN",
+  "SIGTTOU",
+  "SIGURG",
+  "SIGXCPU",
+  "SIGXFSZ",
+  "SIGVTALRM",
+  "SIGPROF",
+  "SIGWINCH",
+  "SIGIO",
+  "SIGPOLL",
+  "SIGPWR",
+  "SIGSYS",
+]);
+
+/**
+ * The system error codes a `PROCESS_EXIT` cause may name, as `error-<code>`: the Linux errno
+ * names Node reports, plus the few libuv adds.
+ */
+export const PROCESS_EXIT_ERROR_CODES: readonly string[] = Object.freeze([
+  "E2BIG",
+  "EACCES",
+  "EADDRINUSE",
+  "EADDRNOTAVAIL",
+  "EAFNOSUPPORT",
+  "EAGAIN",
+  "EALREADY",
+  "EBADF",
+  "EBADMSG",
+  "EBUSY",
+  "ECANCELED",
+  "ECHARSET",
+  "ECHILD",
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EDEADLK",
+  "EDESTADDRREQ",
+  "EDOM",
+  "EDQUOT",
+  "EEXIST",
+  "EFAULT",
+  "EFBIG",
+  "EFTYPE",
+  "EHOSTUNREACH",
+  "EIDRM",
+  "EILSEQ",
+  "EINPROGRESS",
+  "EINTR",
+  "EINVAL",
+  "EIO",
+  "EISCONN",
+  "EISDIR",
+  "ELOOP",
+  "EMFILE",
+  "EMLINK",
+  "EMSGSIZE",
+  "EMULTIHOP",
+  "ENAMETOOLONG",
+  "ENETDOWN",
+  "ENETRESET",
+  "ENETUNREACH",
+  "ENFILE",
+  "ENOBUFS",
+  "ENODATA",
+  "ENODEV",
+  "ENOENT",
+  "ENOEXEC",
+  "ENOLCK",
+  "ENOLINK",
+  "ENOMEM",
+  "ENOMSG",
+  "ENONET",
+  "ENOPROTOOPT",
+  "ENOSPC",
+  "ENOSR",
+  "ENOSTR",
+  "ENOSYS",
+  "ENOTCONN",
+  "ENOTDIR",
+  "ENOTEMPTY",
+  "ENOTSOCK",
+  "ENOTSUP",
+  "ENOTTY",
+  "ENXIO",
+  "EOPNOTSUPP",
+  "EOVERFLOW",
+  "EPERM",
+  "EPIPE",
+  "EPROTO",
+  "EPROTONOSUPPORT",
+  "EPROTOTYPE",
+  "ERANGE",
+  "EROFS",
+  "ESHUTDOWN",
+  "ESOCKTNOSUPPORT",
+  "ESPIPE",
+  "ESRCH",
+  "ESTALE",
+  "ETIME",
+  "ETIMEDOUT",
+  "ETXTBSY",
+  "EUNATCH",
+  "EWOULDBLOCK",
+  "EXDEV",
+]);
+
+/** The highest process exit status a `PROCESS_EXIT` cause may name, as `exit-<status>`. */
+export const PROCESS_EXIT_MAX_STATUS = 255;

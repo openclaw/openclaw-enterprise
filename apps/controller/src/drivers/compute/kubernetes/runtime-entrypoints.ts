@@ -1,3 +1,9 @@
+import {
+  RUNTIME_DIAGNOSTIC_CHECKS,
+  RUNTIME_DIAGNOSTIC_CODES,
+  RUNTIME_FAILURE_CHECKS,
+} from "@openclaw-enterprise/contracts";
+
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
@@ -107,22 +113,14 @@ function startRuntimeReadinessServer(readiness) {
 `;
 
 // The status path Compute reads a held startup failure from, and the closed
-// vocabulary of codes a runtime may hold. Shared by the Codex Harness and the
+// vocabulary of checks and codes a runtime may report, injected from the contract
+// OCC records them by (finding 1674). Shared by the Codex Harness and the
 // dedicated OpenClaw worker programs.
 const RUNTIME_STATUS_CONSTANTS_HELPER = String.raw`
 const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
-const RUNTIME_DIAGNOSTIC_CODES = new Set([
-  "LOGIN_FAILED",
-  "MODEL_PROBE_FAILED",
-  "MODEL_PROBE_TIMEOUT",
-  "MODEL_PROBE_CPU_STARVED",
-  "UNAVAILABLE",
-  "NOT_CONFIGURED",
-  "AUTHENTICATION_FAILED",
-  "DISCONNECTED",
-  "INCOMPATIBLE_RESPONSE",
-  "PROBE_FAILED",
-]);
+const RUNTIME_DIAGNOSTIC_CODES = new Set(${JSON.stringify(RUNTIME_DIAGNOSTIC_CODES)});
+const RUNTIME_FAILURE_CHECKS = new Set(${JSON.stringify(RUNTIME_FAILURE_CHECKS)});
+const RUNTIME_DIAGNOSTIC_CHECKS = new Set(${JSON.stringify(RUNTIME_DIAGNOSTIC_CHECKS)});
 `;
 
 // A provider-owned Harness (a Codex app-server or a dedicated OpenClaw worker) gets
@@ -160,7 +158,9 @@ function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
   ) {
     return;
   }
-  requireNonEmptyString(check, "Runtime failure check");
+  if (!RUNTIME_FAILURE_CHECKS.has(check)) {
+    throw new Error("Runtime failure check is invalid.");
+  }
   if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
     throw new Error("Runtime failure code is invalid.");
   }
@@ -379,7 +379,9 @@ function publishPluginRuntimeStatus(report) {
 
 function publishRuntimeFailure(check, code, cause) {
   if (runtimeStatusPort() === undefined) return;
-  requireNonEmptyString(check, "Runtime failure check");
+  if (!RUNTIME_FAILURE_CHECKS.has(check)) {
+    throw new Error("Runtime failure check is invalid.");
+  }
   if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
     throw new Error("Runtime failure code is invalid.");
   }
@@ -398,7 +400,9 @@ function publishRuntimeReady() {
 }
 
 function runtimeDiagnosticCheck(check, state, checkedAt, code) {
-  requireNonEmptyString(check, "Runtime diagnostic check");
+  if (!RUNTIME_DIAGNOSTIC_CHECKS.has(check)) {
+    throw new Error("Runtime diagnostic check is invalid.");
+  }
   if (code !== undefined && !RUNTIME_DIAGNOSTIC_CODES.has(code)) {
     throw new Error("Runtime diagnostic code is invalid.");
   }

@@ -3,7 +3,7 @@ import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contra
 import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
 import { ScopeViolationError } from "../errors.ts";
-import { runtimeFailureCause } from "../runtime-failure-cause.ts";
+import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
 
 export { runtimeFailureCause };
 
@@ -398,51 +398,12 @@ export function validateRuntimeFailureEvidence(value: unknown): RuntimeFailureEv
   });
 }
 
-// The values runtime entrypoints publish with a held startup failure
-// (drivers/compute/kubernetes/runtime-entrypoints.ts and drivers/compute/runtime-startup.ts),
-// plus the evidence a Compute driver builds itself from what its platform reports: Kubernetes
-// Compute records a failed initialize-workspace init container as workspace-setup /
-// WORKSPACE_SETUP_FAILED (finding 1675). A provider-owned Harness serves runtime evidence from
-// inside its Sandbox, where Agent code can answer in its place, so a value outside these sets
-// is recorded, and read back, as UNRECOGNIZED rather than as served (finding 1660).
-const UNRECOGNIZED_RUNTIME_FAILURE_VALUE = "UNRECOGNIZED";
-const RUNTIME_FAILURE_COMPONENTS: ReadonlySet<string> = new Set(["agent", "gateway"]);
-const RUNTIME_FAILURE_CHECKS: ReadonlySet<string> = new Set([
-  "login",
-  "model-probe",
-  "peer-bridge-record",
-  "plugin-approvers",
-  "state-migration",
-  "workspace-setup",
-]);
-const RUNTIME_FAILURE_CODES: ReadonlySet<string> = new Set([
-  "AUTHENTICATION_FAILED",
-  "DISCONNECTED",
-  "INCOMPATIBLE_RESPONSE",
-  "LOGIN_FAILED",
-  "MODEL_PROBE_CPU_STARVED",
-  "MODEL_PROBE_FAILED",
-  "MODEL_PROBE_TIMEOUT",
-  "NOT_CONFIGURED",
-  "PROBE_FAILED",
-  "UNAVAILABLE",
-  "WORKSPACE_SETUP_FAILED",
-]);
-
-function recognizedRuntimeFailureValue(value: string, known: ReadonlySet<string>): string {
-  return known.has(value) ? value : UNRECOGNIZED_RUNTIME_FAILURE_VALUE;
-}
-
+// A value outside the runtime failure vocabulary (packages/contracts/src/runtime-failure.ts) is
+// recorded, and read back, as UNRECOGNIZED rather than as served (findings 1660, 1674).
 function recordedRuntimeFailureEvidence(
   evidence: Readonly<RuntimeFailureEvidence>,
 ): RuntimeFailureEvidence {
-  return Object.freeze({
-    component: recognizedRuntimeFailureValue(evidence.component, RUNTIME_FAILURE_COMPONENTS),
-    check: recognizedRuntimeFailureValue(evidence.check, RUNTIME_FAILURE_CHECKS),
-    checkedAt: evidence.checkedAt,
-    code: recognizedRuntimeFailureValue(evidence.code, RUNTIME_FAILURE_CODES),
-    ...(evidence.cause === undefined ? {} : { cause: evidence.cause }),
-  });
+  return Object.freeze(recognizedRuntimeFailureValues(evidence));
 }
 
 /** Validates failure data before it is recorded, and again when it is read back. */

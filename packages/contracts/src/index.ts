@@ -2098,6 +2098,19 @@ export {
   presetTemplateDefaultsWithPlaceholders,
 } from "./preset-variables.mjs";
 
+export {
+  PROCESS_EXIT_ERROR_CODES,
+  PROCESS_EXIT_MAX_STATUS,
+  PROCESS_EXIT_SIGNALS,
+  RUNTIME_COMPONENTS,
+  RUNTIME_DIAGNOSTIC_CHECKS,
+  RUNTIME_DIAGNOSTIC_CODES,
+  RUNTIME_FAILURE_CHECKS,
+  UNRECOGNIZED_RUNTIME_VALUE,
+  WORKSPACE_SETUP_CHECK,
+  WORKSPACE_SETUP_FAILED,
+} from "./runtime-failure.ts";
+
 export type { InitialWorkspaceFiles, WorkspaceSetup } from "./workspace-setup.ts";
 export { normalizeInitialWorkspaceFiles, normalizeWorkspaceDefaultsId } from "./workspace-setup.ts";
 export {
