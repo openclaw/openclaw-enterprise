@@ -197,6 +197,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   });
   // Run it from the keyboard: the button disables itself, so focus moves to the waiting line
   // and returns to the button with the result, instead of falling to the page (finding 1705).
+  const refreshRecord = versionRecord.getByRole("button", { name: "Refresh record" });
   const focused = (locator) =>
     locator.evaluate((node) => node === globalThis.document.activeElement);
   await runDiagnostics.focus();
@@ -210,7 +211,6 @@ test("Agent detail separates the current version, viewed version, and latest dep
     // keeps focus through it. A dispatched click leaves focus where it is.
     const recordPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${current.revision.id}`;
     const recordReads = pathRequests(requests, "GET", recordPath).length;
-    const refreshRecord = versionRecord.getByRole("button", { name: "Refresh record" });
     await refreshRecord.dispatchEvent("click");
     await refreshRecord.waitFor();
     assert.equal(pathRequests(requests, "GET", recordPath).length, recordReads + 1);
@@ -236,25 +236,42 @@ test("Agent detail separates the current version, viewed version, and latest dep
   assert.match(await description(), /^Observed /);
   assert.doesNotMatch(await description(), /authentication/);
   assert.equal(pathRequests(requests, "POST", diagnosticsPath).length, 1);
-  // A refused run returns focus the same way, described by its alert. This route answers every
-  // later diagnostics run in this test.
-  await page.route(`${fixture.origin}${diagnosticsPath}`, (route) =>
-    route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Diagnostics are unavailable." },
-        meta: { requestId: "req_test_diagnostics_unavailable" },
-      }),
+  // A refused run returns focus the same way, described by its alert. This route answers the
+  // later diagnostics runs in this test.
+  const unavailable = {
+    status: 503,
+    contentType: "application/json",
+    body: JSON.stringify({
+      error: { code: "DEPENDENCY_UNAVAILABLE", message: "Diagnostics are unavailable." },
+      meta: { requestId: "req_test_diagnostics_unavailable" },
     }),
-  );
-  await page.keyboard.press("Enter");
-  await observations
+  };
+  await page.route(`${fixture.origin}${diagnosticsPath}`, (route) => route.fulfill(unavailable));
+  const unavailableAlert = observations
     .getByRole("alert")
-    .getByText(/Current-runtime diagnostics are unavailable/)
-    .waitFor();
+    .getByText(/Current-runtime diagnostics are unavailable/);
+  await page.keyboard.press("Enter");
+  await unavailableAlert.waitFor();
   assert.equal(await focused(runDiagnostics), true);
   assert.match(await description(), /^Current-runtime diagnostics are unavailable/);
+  // A reader who moves on while the run waits keeps their place when the result arrives.
+  const movedOnRequest = await holdRequests(t, page, `${fixture.origin}${diagnosticsPath}`, {
+    method: "POST",
+    once: true,
+    fulfill: unavailable,
+  });
+  await page.keyboard.press("Enter");
+  try {
+    await movedOnRequest.requested;
+    await waiting.waitFor();
+    assert.equal(await focused(waiting), true);
+    await page.keyboard.press("Shift+Tab");
+    assert.equal(await focused(refreshRecord), true);
+  } finally {
+    movedOnRequest.release();
+  }
+  await unavailableAlert.waitFor();
+  assert.equal(await focused(refreshRecord), true);
   await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
   await activity.getByText("Recorded status: queued").waitFor();
   assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);
