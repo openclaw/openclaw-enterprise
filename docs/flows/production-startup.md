@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-13"
-last_updated_session: "authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93"
+updated: "2026-10-15"
+last_updated_session: "authoring-run/13774107-9c73-4561-8bb0-6e910588052a"
 ---
 
 # Production Startup Flow
@@ -62,22 +62,20 @@ graph TD
 
 ## Execution Trace
 
-The migration, shared bootstrap, API, and worker entrypoints use
-[`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts).
-See [connection authentication settings](../reference/settings/operations.md#postgresql-connection-authentication)
-for password and Azure workload-identity configuration. When PostgreSQL ends
-an idle pooled connection (failover, maintenance restart, `idle_session_timeout`
-or a proxy reset), the pool discards that client and writes one
-`database.idle-client-error` warning with only the error code to stderr; the
-process keeps running and the next query opens a new connection.
+Migration, bootstrap, API and worker use
+[`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts) with
+[password or Azure workload-identity authentication](../reference/settings/operations.md#postgresql-connection-authentication).
+A failover, maintenance restart, `idle_session_timeout` or proxy reset discards
+the idle client and logs `database.idle-client-error` with only its code to stderr.
+The process continues; the next query opens a new connection.
 
 ### 1. Prepare native production inputs
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Outside the checkout, the operator prepares production values, Installation
-YAML and bootstrap PVC. Helm selects controller images, API endpoint, Secrets,
-claim, client/node selectors and egress. `openclaw.validate` requires a DNS-1123
+The operator prepares values, Installation YAML and bootstrap PVC outside the
+checkout. Helm selects controller images, API endpoint, Secrets, claim,
+client/node selectors and egress. `openclaw.validate` requires a DNS-1123
 release Namespace label of at most 63 characters. Installation YAML selects IAM,
 Configuration, Compute, optional Backends, gateway/Agent images, projected
 workload identity and runtime networking/storage.
@@ -112,9 +110,18 @@ installs initialization isolation before the Job. It and later workload policies
 grant configured DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` validates routing ports and hostnames against Compute. `database.port`,
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` matches Compute routing validation. `database.port`,
 `cluster.port`, and `executionCluster.apiPort` must be 1–65535 without leading zeros.
-Empty hostnames retain Service DNS for Gateway listeners and Certificate SANs.
+Empty hosts retain Service DNS for listeners and Certificate SANs.
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:validateDnsHostname`
+refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persistence
+opens. Helm also refuses rendering. IPv4 admission does not establish TLS;
+`validateSandboxDomain` refuses numeric/hex suffixes, including canonical IPv4.
+Correct Helm values and Installation YAML per the
+[hostname correction procedure](../guides/deploy/breaking-changes.md#2026-10-14-gateway-hostnames-must-not-be-rewritten-ipv4),
+then upgrade/restart.
+
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
 refuses peer maps Kubernetes rejects, preserving null/empty semantics and accepted labels.
 
@@ -160,23 +167,19 @@ IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
 database TLS not pinned to the database CA.
 
-After initialization, separate API/worker Deployments start. Before readiness,
-the API validates production listener settings, Better Auth, database access,
-trusted Installation YAML, selected Drivers, Backend membership and Kubernetes
-Compute preflight. Private controller routes, `/healthz` and database-backed
-`/readyz` use the operator-managed endpoint. The `/healthz` startup probe runs
-every second for 120 failures: 2 minutes to listen, with readiness within a
-second of listening.
+API/worker Deployments start after initialization. Before readiness, the API
+validates its listener, Better Auth, database, Installation YAML, Drivers,
+Backend membership and Compute preflight. Private routes, `/healthz` and
+database-backed `/readyz` use the operator-managed endpoint. The startup probe
+allows 120 one-second failures: two minutes to listen, then readiness within a second.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-On `SIGTERM`, the API stops accepting connections and finishes admitted requests
-with `Connection: close`, avoiding the 72-second keep-alive wait. Its single
-`Recreate` replica has no peer or `preStop` hook; the default 30-second grace
-cuts off requests still running. Logs report `shutdown.started` with `signal`,
-then `shutdown.completed` with `durationMs`. A failed close logs `shutdown.failed`
-and exits `1`; a log ending at `shutdown.started` indicates the grace cut off
-the drain.
+On `SIGTERM`, the API stops accepting connections and drains requests with
+`Connection: close`, avoiding the 72-second keep-alive wait. Its single `Recreate`
+replica has no peer or `preStop`; the 30-second grace cuts off unfinished requests.
+Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
+or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
 
 Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
 on reviewed control-plane nodes; empty defaults omit it.
@@ -318,6 +321,10 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-15 22:24: Validate sandbox suffixes. (authoring-run/13774107-9c73-4561-8bb0-6e910588052a - 417cb2b7b57f)
+
+- 2026-10-14 21:02: Document hostname refusal and correction. (authoring-run/4a613194-6dc8-454f-9cf8-c2a6b46b25af - 44252f8544beb031bf9f9b4d5f9e8093d0b10176)
 
 - 2026-10-13: Trace OIDC CA assembly and the database trust preload.
 - 2026-10-11 18:29: Validate database URL Secret keys. (authoring-run/a5a228f3-a952-4e1f-bbba-1a113599bb93 - 19304cadb9a8b8c6473a22b183055ff7b5852e02)

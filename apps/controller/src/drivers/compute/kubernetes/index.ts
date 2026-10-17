@@ -1,3 +1,4 @@
+import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
 import {
   normalizeOpenAiBaseUrl,
   openAiBaseUrlRewritesIpv4,
@@ -1786,9 +1787,17 @@ function cidrSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): b
 function validateDnsHostname(value: string, description: string): void {
   if (
     value.length > 253 ||
-    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(value)
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
+      value,
+    ) ||
+    rewrittenIpv4Hostname(value)
   ) {
-    throw new ConfigurationFailure(`${description} must be a DNS hostname without a port or path.`);
+    const addressHint = /(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(value)
+      ? " A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers."
+      : "";
+    throw new ConfigurationFailure(
+      `${description} must be a DNS hostname without a port or path.${addressHint}`,
+    );
   }
 }
 
@@ -1797,6 +1806,12 @@ function validateDnsHostname(value: string, description: string): void {
 const SANDBOX_DOMAIN_MAX_LENGTH = 253 - "agent-.".length - 32;
 
 function validateSandboxDomain(value: string): void {
+  // This is a suffix: even canonical IPv4 is invalid after agent-<32 hex>.
+  if (/(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(value)) {
+    throw new ConfigurationFailure(
+      "Sandbox domain must be a DNS hostname usable after an Agent label; use a DNS suffix such as previews.example.com, not a numeric or 0x last label.",
+    );
+  }
   validateDnsHostname(value, "Sandbox domain");
   // Like the chart, require two labels: browsers and Node refuse a wildcard certificate
   // directly under a single label (*.localhost), so such a domain could never serve previews.

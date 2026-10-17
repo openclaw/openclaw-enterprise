@@ -520,6 +520,11 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $routing.hostname (or (gt (len $routing.hostname) 253) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$" $routing.hostname))) -}}
 {{- fail "gatewayRouting.hostname must be a DNS hostname without a port or path" -}}
 {{- end -}}
+{{- /* Shorthand, integer, hex, and leading-zero IPv4 are legal DNS labels, but a URL parser dials another address. Four decimal octets stay. */ -}}
+{{- /* A numeric or 0x last label is an address unless the host is four decimal octets from 0 to 255 with no leading zeros. A hex label that is not last, such as 0xdead.gateway.example.test, stays. */ -}}
+{{- if and $routing.hostname (and (regexMatch "(^|\\.)(?:0x[0-9a-f]*|[0-9]+)$" $routing.hostname) (not (regexMatch "^(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])(?:\\.(?:0|[1-9][0-9]?|1[0-9]{2}|2[0-4][0-9]|25[0-5])){3}$" $routing.hostname))) -}}
+{{- fail "gatewayRouting.hostname must be a DNS hostname without a port or path. A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers." -}}
+{{- end -}}
 
 {{- if not $routing.gatewayClassName -}}{{- fail "gatewayRouting.gatewayClassName must reference an operator-created GatewayClass" -}}{{- end -}}
 {{- include "openclaw.validateResourceName" (dict "label" "gatewayRouting.gatewayClassName" "value" $routing.gatewayClassName) -}}
@@ -577,6 +582,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if $routing.sandbox.enabled -}}
 {{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" $routing.sandbox.domain) -}}{{- fail "gatewayRouting.sandbox.domain must be a DNS hostname without wildcard, scheme, port or path" -}}{{- end -}}
+{{- /* Sandbox domain is a suffix: a direct IPv4 host cannot follow the Agent label. */ -}}
+{{- if regexMatch "(^|\\.)(?:0x[0-9a-f]*|[0-9]+)$" $routing.sandbox.domain -}}
+{{- fail "gatewayRouting.sandbox.domain must be a DNS hostname usable after an Agent label; use a DNS suffix such as previews.example.com, not a numeric or 0x last label." -}}
+{{- end -}}
 {{- /* Dedicated Agent routes use agent-<32 hex>.<domain>, which must fit the 253-character Gateway API hostname limit. */ -}}
 {{- if gt (len $routing.sandbox.domain) 214 -}}{{- fail "gatewayRouting.sandbox.domain must not exceed 214 characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames" -}}{{- end -}}
 {{- if not $routing.sandbox.tlsSecretName -}}{{- fail "gatewayRouting.sandbox.tlsSecretName must reference a wildcard certificate Secret" -}}{{- end -}}
