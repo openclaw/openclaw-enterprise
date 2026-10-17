@@ -99,7 +99,7 @@ Connections stay unverified. HTTPS logos omit referrers; initials are the defaul
 Optional `CodexPluginDriver.listCatalog` uses
 [`NativeCodexPluginCatalogReader`](../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts)
 with a configured executable and Codex home. It reads app-server JSON-RPC stdout.
-Invalid JSON or non-object envelopes reject with `NotImplementedError`;
+Malformed JSON-RPC or `plugin/list` results reject with `NotImplementedError`;
 bounded teardown stops the child. HTTP discovery does not call this reader.
 
 ### 1. Validate desired state under exact-Agent authority

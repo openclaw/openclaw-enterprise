@@ -60,6 +60,25 @@ function ensureAuthenticated(accountResponse: unknown): void {
   }
 }
 
+// A well-formed JSON-RPC envelope can still carry a malformed plugin/list result. Keep it
+// in the discovery failure path instead of reading it as an empty catalog or a plain Error.
+function catalogEntries(listResponse: unknown): readonly PluginCatalogEntry[] {
+  const invalid = () =>
+    new NotImplementedError(
+      "codex-plugin-catalog-discovery",
+      "Codex plugin catalog discovery returned an invalid plugin catalog.",
+    );
+  const response = asRecord(listResponse);
+  if (response === undefined) {
+    throw invalid();
+  }
+  try {
+    return codexCatalogEntries(response);
+  } catch {
+    throw invalid();
+  }
+}
+
 export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader {
   private readonly codexExecutable: string;
   private readonly codexHome: string;
@@ -92,7 +111,7 @@ export class NativeCodexPluginCatalogReader implements CodexPluginCatalogReader 
       signal,
     );
     ensureAuthenticated(account);
-    return codexCatalogEntries(plugins);
+    return catalogEntries(plugins);
   }
 
   private async requestSequence(
