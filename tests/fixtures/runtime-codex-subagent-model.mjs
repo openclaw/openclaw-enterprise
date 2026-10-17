@@ -28,7 +28,7 @@ server.on("connection", (socket, request) => {
     if (message.id === undefined) {
       return;
     }
-    requests.push(message);
+    requests.push({ ...message, receivedAt: Date.now() });
     const reply = (result) => socket.send(JSON.stringify({ id: message.id, result }));
     switch (message.method) {
       case "initialize":
@@ -112,6 +112,7 @@ try {
   });
   const configuration = JSON.parse(await readFile("/home/node/.openclaw/openclaw.json", "utf8"));
   const observed = [];
+  const boundaries = [];
   for (const scenario of cases) {
     assert.equal(
       configuration.agents.entries[scenario.agentId].workspace,
@@ -129,6 +130,8 @@ try {
       { key: parentKey, agentId: scenario.agentId },
     );
     const offset = requests.length;
+    const boundary = { agentId: scenario.agentId, spawnAt: Date.now() };
+    boundaries.push(boundary);
     const response = await fetch("http://127.0.0.1:8080/tools/invoke", {
       method: "POST",
       headers: {
@@ -147,7 +150,9 @@ try {
           // A completion handoff runs a requester turn on the requester's own model
           // (the parent route) about 1.5 s after this child fails, at the same remote
           // root. It would race the next case for the first native thread/start.
-          expectsCompletionMessage: false,
+          ...(process.env.OCC_TEST_SUBAGENT_HANDOFF === "default"
+            ? {}
+            : { expectsCompletionMessage: false }),
         },
       }),
     });
@@ -180,6 +185,7 @@ try {
       },
       { runId: receipt.runId, timeoutMs: 30000 },
     );
+    boundary.settledAt = Date.now();
     assert.equal(completed.runId, receipt.runId);
     assert.equal(completed.status, "error", JSON.stringify(completed));
     assert.notEqual(completed.pendingError, true);
@@ -193,7 +199,37 @@ try {
       terminalStatus: completed.status,
     });
   }
-  console.log(JSON.stringify({ commit: provenance.commit, observed }));
+  // PROOF ONLY (temporary): observe the native peer after the last child settles.
+  const lastSettled = requests.length;
+  const observeMs = Number(process.env.OCC_TEST_SUBAGENT_OBSERVE_MS ?? 0);
+  const observeUntil = Date.now() + observeMs;
+  while (Date.now() < observeUntil) {
+    await delay(100);
+  }
+  const start = boundaries[0]?.spawnAt ?? 0;
+  const timeline = requests
+    .filter(({ method }) => method === "thread/start")
+    .map(({ receivedAt, params }) => ({ t: receivedAt - start, model: params.model }));
+  const strays = requests
+    .slice(lastSettled)
+    .filter(({ method }) => method === "thread/start")
+    .map(({ params }) => params.model);
+  console.log(
+    JSON.stringify({
+      commit: provenance.commit,
+      observed,
+      proof: {
+        handoff: process.env.OCC_TEST_SUBAGENT_HANDOFF ?? "off",
+        boundaries: boundaries.map(({ agentId, spawnAt, settledAt }) => ({
+          agentId,
+          spawn: spawnAt - start,
+          settled: settledAt - start,
+        })),
+        timeline,
+        strays,
+      },
+    }),
+  );
 } finally {
   for (const socket of server.clients) {
     socket.terminate();
