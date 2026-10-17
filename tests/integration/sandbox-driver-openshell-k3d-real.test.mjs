@@ -4764,13 +4764,6 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
   assert.notEqual(escapedCommand.exitCode, 0, "OpenShell must deny writes outside the workspace.");
   assert.equal(approvedCommand.exitCode, 0, "OpenShell must allow the approved destination.");
   assert.notEqual(deniedCommand.exitCode, 0, "OpenShell must deny the unapproved destination.");
-  assert.match(result.assistant, new RegExp(nonce));
-  assert.match(result.assistant, /WORKSPACE_WRITABLE/);
-  assert.match(result.assistant, /APPROVED_PATH_READABLE/);
-  assert.match(result.assistant, /READONLY_DENIED/);
-  assert.match(result.assistant, /ESCAPE_DENIED/);
-  assert.match(result.assistant, /OPENCLAW_ALLOWED/);
-  assert.match(result.assistant, /ACME_DENIED/);
   if (modelSourceType === "codex-pat") {
     // The backend probe gets its own turn: as a seventh command in the turn above, the model
     // sometimes ended its turn after the sixth and never started it (finding 1682).
@@ -4878,6 +4871,13 @@ async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {
     );
     assert.match(backendTurn.assistant, new RegExp(backendNonce));
   }
+  assert.match(result.assistant, new RegExp(nonce));
+  assert.match(result.assistant, /WORKSPACE_WRITABLE/);
+  assert.match(result.assistant, /APPROVED_PATH_READABLE/);
+  assert.match(result.assistant, /READONLY_DENIED/);
+  assert.match(result.assistant, /ESCAPE_DENIED/);
+  assert.match(result.assistant, /OPENCLAW_ALLOWED/);
+  assert.match(result.assistant, /ACME_DENIED/);
 }
 
 // Prints NAME_EXIT and NAME_OUT for one probe command; stderr is dropped.
