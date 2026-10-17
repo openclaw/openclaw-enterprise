@@ -456,19 +456,22 @@ async function createFixture(context, options = {}) {
       await request("POST", `/namespaces/${namespaceId}/agents/${agentId}/stop`);
     }
     await stopWorker();
-    // Queued work stays in the database the file's later tests share; cancel it so no later
-    // worker picks it up (finding 1616), even when the test failed before its end.
-    for (const { workId, message } of teardownWorkCancellations) {
-      const claim = await claimProvisioningWork(pool, workId, { ifQueued: true });
-      if (claim !== undefined) {
-        const cancelled = await state.transact((unit) =>
-          unit.provisioning.cancel(claim, { code: "PROVISIONING_CANCELLED", message }),
-        );
-        assert.equal(cancelled.status, "cancelled", workId);
+    try {
+      // Queued work stays in the database the file's later tests share; cancel it so no later
+      // worker picks it up (finding 1616), even when the test failed before its end.
+      for (const { workId, message } of teardownWorkCancellations) {
+        const claim = await claimProvisioningWork(pool, workId, { ifQueued: true });
+        if (claim !== undefined) {
+          const cancelled = await state.transact((unit) =>
+            unit.provisioning.cancel(claim, { code: "PROVISIONING_CANCELLED", message }),
+          );
+          assert.equal(cancelled.status, "cancelled", workId);
+        }
       }
+    } finally {
+      await app.close?.();
+      await pool.end();
     }
-    await app.close?.();
-    await pool.end();
   });
 
   async function request(method, path, { body, session: selectedSession = session } = {}) {

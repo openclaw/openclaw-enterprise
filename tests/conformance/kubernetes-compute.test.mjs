@@ -2226,6 +2226,7 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
     gatewayName,
     agentName,
     objects,
+    clients,
     read,
     save,
     prepare,
@@ -2315,6 +2316,19 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
   setQuota({ pods: "11" }, { pods: "1e1" });
   assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
+  // Both Deployments refused by one quota read it once per pass.
+  const readQuota = clients.core.readNamespacedResourceQuota;
+  let quotaReads = 0;
+  clients.core.readNamespacedResourceQuota = (request) => {
+    quotaReads++;
+    return readQuota(request);
+  };
+  setQuota({ pods: "9" }, { pods: "10" });
+  setConditions(gatewayName, podRefusal);
+  assert.equal(await pendingReasonWith(agentName, podRefusal), undefined);
+  assert.equal(quotaReads, 1);
+  setConditions(gatewayName, []);
+  clients.core.readNamespacedResourceQuota = readQuota;
   // The quota the refusal names is read, an administrator's included.
   setQuota({ pods: "3" }, { pods: "10" });
   setQuota({ pods: "2" }, { pods: "2" }, "team-pods");
@@ -2364,6 +2378,26 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
   assert.equal(await driver.safePodQuotaObservation([foreign]), false);
   setConditions(gatewayName, []);
   assert.equal(await driver.safePodQuotaObservation([foreign, gateway]), false);
+  // A quota of the same name in another Namespace (a split-plane Gateway's) is its own quota.
+  const otherNamespace = `${namespace}-gateways`;
+  const elsewhere = read("Deployment", gatewayName);
+  elsewhere.metadata.namespace = otherNamespace;
+  elsewhere.status = { conditions: [failure(refusal("pods=1"))] };
+  save(elsewhere);
+  setQuota({ pods: "9" }, { pods: "10" });
+  save({
+    apiVersion: "v1",
+    kind: "ResourceQuota",
+    metadata: { name: "openclaw-quota", namespace: otherNamespace },
+    status: { hard: { pods: "10" }, used: { pods: "10" } },
+  });
+  const relocated = { ...gateway, namespace: { name: otherNamespace, plane: "execution" } };
+  assert.equal(await driver.safePodQuotaObservation([relocated]), true);
+  assert.equal(await driver.safePodQuotaObservation([gateway]), false);
+  setConditions(gatewayName, [failure(refusal("pods=1"))]);
+  assert.equal(await driver.safePodQuotaObservation([gateway, relocated]), true);
+  setConditions(gatewayName, []);
+  setQuota({ pods: "10" }, { pods: "10" });
   // A full quota names the wait before a Pod the scheduler cannot place.
   state.unschedulableRole = "gateway";
   assert.equal(await pendingReasonWith(agentName, [failure(refusal("pods=1"))]), quota);

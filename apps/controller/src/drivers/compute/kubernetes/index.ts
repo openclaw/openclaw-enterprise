@@ -9462,6 +9462,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }[],
   ): Promise<boolean> {
     const ownerSignal = currentComputeAbortSignal();
+    // Both Deployments usually name the same quota; read each quota once.
+    const checkedQuotas = new Set<string>();
     for (const { name, namespace, ownership } of deployments) {
       let conditions: unknown;
       try {
@@ -9488,6 +9490,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       for (const quotaName of quotaNames) {
+        const quotaKey = JSON.stringify([namespace.plane, namespace.name, quotaName]);
+        if (checkedQuotas.has(quotaKey)) {
+          continue;
+        }
+        checkedQuotas.add(quotaKey);
         try {
           // The quota may be an administrator's, so its ownership is not checked.
           if (podQuotaFull(await this.get("ResourceQuota", quotaName, namespace))) {

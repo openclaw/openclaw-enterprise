@@ -838,11 +838,11 @@ test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent 
 });
 
 const SANDBOX_DRIVER_OUTAGE =
-  "OpenClaw is unavailable right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
 
-test("During a Sandbox Driver outage, Create Agent says OpenClaw is unavailable for now, not that the driver cannot run it", async (t) => {
-  // Admission answers a retryable 503 in this state, so the copy must not ask an administrator to
-  // select another Sandbox Driver (finding 1624).
+test("During a Sandbox Driver outage, Create Agent says Agents are unavailable for now, not that the driver cannot run OpenClaw", async (t) => {
+  // Agent save and deploy answer a retryable 503 for every harness in this state, so the copy must
+  // not ask an administrator to select another Sandbox Driver or point to Codex (finding 1624).
   const sandboxDriver = nativeSandboxDriver();
   const fixture = await createConsoleAppFixture(t, {
     filesystemConfiguration: true,
@@ -858,20 +858,48 @@ test("During a Sandbox Driver outage, Create Agent says OpenClaw is unavailable 
     sandboxDriverUnavailable: true,
   });
   const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Outage");
-  const alert = page.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
-  await alert.waitFor();
-  assert.equal(await alert.textContent(), SANDBOX_DRIVER_OUTAGE);
-  assert.equal(
-    await page.locator("#agent-harness-hint").textContent(),
-    "OpenClaw is unavailable right now: this installation's Sandbox Driver is unavailable.",
+  const alert = page.getByRole("alert").filter({ hasText: /^Agents cannot be created / });
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  const outageHints = {
+    harness:
+      "Codex and OpenClaw are unavailable right now: this installation's Sandbox Driver is unavailable.",
+    mode: "Codex and OpenClaw are unavailable while this installation's Sandbox Driver is unavailable.",
+  };
+  for (const harness of ["openclaw", "codex"]) {
+    await page.getByLabel("Harness", { exact: true }).selectOption(harness);
+    await alert.waitFor();
+    assert.equal(await alert.textContent(), SANDBOX_DRIVER_OUTAGE, harness);
+    assert.equal(
+      await page
+        .getByRole("alert")
+        .filter({ hasText: /^OpenClaw is unavailable / })
+        .count(),
+      0,
+      harness,
+    );
+    assert.deepEqual(
+      {
+        harness: await page.locator("#agent-harness-hint").textContent(),
+        mode: await page.locator("#execution-mode-hint").textContent(),
+      },
+      outageHints,
+      harness,
+    );
+    assert.equal(await create.isDisabled(), true, harness);
+  }
+  // A submit that bypasses the disabled button is refused too, before any write.
+  const wrote = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      /\/namespaces\/[^/]+\/(configurations|agents)(\/provision)?$/.test(
+        new URL(request.url()).pathname,
+      ),
+    { timeout: 2_000 },
   );
-  assert.equal(
-    await page.locator("#execution-mode-hint").textContent(),
-    "Codex uses Dedicated execution. OpenClaw is unavailable while this installation's Sandbox Driver is unavailable. Slack requires Codex.",
-  );
-  assert.equal(
-    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
-    true,
+  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await wrote.then(
+    (request) => assert.fail(`Create Agent wrote ${request.url()}`),
+    () => {},
   );
   assert.deepEqual(writesSinceFill(), []);
 });
@@ -1071,7 +1099,7 @@ test("Operator-managed Preset credentials name the Preset when the Installation 
     await page.getByRole("button", { name: "Use Preset" }).click();
     const alert = page
       .getByRole("alert")
-      .filter({ hasText: /operator-managed credentials|^OpenClaw is unavailable / });
+      .filter({ hasText: /operator-managed credentials|^Agents cannot be created / });
     await alert.waitFor();
     assert.equal(await alert.textContent(), text, JSON.stringify(openclaw));
     assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");

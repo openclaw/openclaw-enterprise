@@ -198,9 +198,10 @@ async function cancelledAgentState(request, namespaceId, agentId) {
 // sentence replaces the bare provisioning line. The deployment read needs read access to the
 // Agent; a reader without it, or any other wait, keeps the bare line.
 const NAMED_DEPLOYMENT_WAITS = new Set(["NAMESPACE_POD_QUOTA_EXCEEDED"]);
-// An outage, unlike the Installation's shape, needs no administrator change (finding 1624).
-const OPENCLAW_SANDBOX_DRIVER_OUTAGE =
-  "OpenClaw is unavailable right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+// An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
+// save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
+const SANDBOX_DRIVER_OUTAGE =
+  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
 
 async function namedDeploymentWait(request, namespaceId, job) {
   if (
@@ -1137,9 +1138,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   // The OpenClaw execution modes the Installation admits, or undefined from a server that does
   // not report them; that keeps the earlier check, Dedicated from nativeWorkers only (#2670).
   let openclawExecutionModes;
-  // The Installation lists no OpenClaw mode because its Sandbox Driver is unavailable right now,
-  // not because of its shape (finding 1624).
-  let openclawSandboxDriverUnavailable = false;
+  // The Installation's selected Sandbox Driver is unavailable right now, so it lists no OpenClaw
+  // mode and refuses every Agent save (finding 1624).
+  let sandboxDriverUnavailable = false;
   // Whether the form chose the execution mode, rather than the Preset, the draft or the user.
   let modeDefaulted =
     agent.executionMode === undefined && !Object.hasOwn(draft.inputs ?? {}, "mode");
@@ -1684,23 +1685,24 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const embeddedRefused = capabilityDiscoveryDone && !openclawModeUsable("embedded");
     const openclawEmbeddedRefused = embeddedRefused && harness.value === "openclaw";
     const noOpenClawMode = nativeRefused && openclawEmbeddedRefused;
+    const sandboxDriverOutage = capabilityDiscoveryDone && sandboxDriverUnavailable;
     mode.querySelector('[value="dedicated"]').disabled = nativeRefused;
     mode.querySelector('[value="embedded"]').disabled = embeddedRefused;
     nativeWorkersUnavailable.hidden =
       !nativeRefused || noOpenClawMode || mode.value !== "dedicated";
-    const modeRefusal = noOpenClawMode
-      ? openclawSandboxDriverUnavailable
-        ? OPENCLAW_SANDBOX_DRIVER_OUTAGE
-        : binding?.method === "runtime"
+    const modeRefusal = sandboxDriverOutage
+      ? SANDBOX_DRIVER_OUTAGE
+      : noOpenClawMode
+        ? binding?.method === "runtime"
           ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset."
           : "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support."
-      : openclawEmbeddedRefused && mode.value === "embedded"
-        ? binding?.method === "runtime"
-          ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."
-          : nativeProvider.value === "anthropic"
-            ? "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution."
-            : "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details."
-        : "";
+        : openclawEmbeddedRefused && mode.value === "embedded"
+          ? binding?.method === "runtime"
+            ? "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset."
+            : nativeProvider.value === "anthropic"
+              ? "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution."
+              : "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details."
+          : "";
     if (openclawModeUnavailable.textContent !== modeRefusal) {
       openclawModeUnavailable.textContent = modeRefusal;
     }
@@ -1708,11 +1710,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     runtimeModeSummary.textContent = ` · ${mode.value === "dedicated" ? "Dedicated" : "Embedded"}`;
     const modeHint = form.querySelector("#execution-mode-hint");
     if (modeHint) {
-      modeHint.textContent =
-        embeddedRefused && dedicatedRefused
-          ? openclawSandboxDriverUnavailable
-            ? "Codex uses Dedicated execution. OpenClaw is unavailable while this installation's Sandbox Driver is unavailable. Slack requires Codex."
-            : "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Codex."
+      modeHint.textContent = sandboxDriverOutage
+        ? "Codex and OpenClaw are unavailable while this installation's Sandbox Driver is unavailable."
+        : embeddedRefused && dedicatedRefused
+          ? "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Codex."
           : nativeRefused
             ? "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex."
             : embeddedRefused
@@ -1737,17 +1738,17 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     harnessHint.textContent =
       harness.disabled && usesPat
         ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
-        : embeddedRefused && dedicatedRefused
-          ? openclawSandboxDriverUnavailable
-            ? "OpenClaw is unavailable right now: this installation's Sandbox Driver is unavailable."
-            : "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw."
-          : nativeRefused && nativeProvider.value === "anthropic"
-            ? "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver."
-            : nativeRefused
-              ? "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution."
-              : embeddedRefused
-                ? "OpenClaw is available for OpenAI with Dedicated execution. Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver."
-                : "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
+        : sandboxDriverOutage
+          ? "Codex and OpenClaw are unavailable right now: this installation's Sandbox Driver is unavailable."
+          : embeddedRefused && dedicatedRefused
+            ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw."
+            : nativeRefused && nativeProvider.value === "anthropic"
+              ? "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver."
+              : nativeRefused
+                ? "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution."
+                : embeddedRefused
+                  ? "OpenClaw is available for OpenAI with Dedicated execution. Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver."
+                  : "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
     if (binding?.method === "runtime") {
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
@@ -1931,7 +1932,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       nativeWorkersAvailable = installation.capabilities?.nativeWorkers !== undefined;
       const openclawModes = installation.capabilities?.openclaw?.executionModes;
       openclawExecutionModes = Array.isArray(openclawModes) ? new Set(openclawModes) : undefined;
-      openclawSandboxDriverUnavailable =
+      sandboxDriverUnavailable =
         installation.capabilities?.openclaw?.sandboxDriverUnavailable === true;
       credentialSourceTypes = installation.capabilities?.credentialSources?.types;
       provisionableExecutionModes.clear();

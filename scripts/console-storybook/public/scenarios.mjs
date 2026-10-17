@@ -1926,9 +1926,10 @@ export const scenarios = {
       { selector: ".launch-runtime summary", click: true },
     ],
     description:
-      "This simulated Installation's selected Sandbox Driver is unavailable right now, so it admits no OpenClaw execution mode until the driver returns. The alert says OpenClaw is unavailable for now and to reload, not that an administrator must select another Sandbox Driver. Create Agent stays disabled.",
+      "This simulated Installation's selected Sandbox Driver is unavailable right now, so Agent save answers 503 for every harness until the driver returns. The alert says Agents cannot be created for now and to reload, not that an administrator must select another Sandbox Driver. Create Agent stays disabled for OpenClaw and Codex.",
     steps: [
       "Confirm the alert says the Sandbox Driver is unavailable right now and Create Agent is disabled.",
+      "Select Codex and confirm the alert stays and Create Agent stays disabled.",
     ],
   },
   createOpenclawSandboxDedicated: {
