@@ -106,6 +106,108 @@ function startRuntimeReadinessServer(readiness) {
 }
 `;
 
+// The status path Compute reads a held startup failure from, and the closed
+// vocabulary of codes a runtime may hold. Shared by the Codex Harness and the
+// dedicated OpenClaw worker programs.
+const RUNTIME_STATUS_CONSTANTS_HELPER = String.raw`
+const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
+const RUNTIME_DIAGNOSTIC_CODES = new Set([
+  "LOGIN_FAILED",
+  "MODEL_PROBE_FAILED",
+  "MODEL_PROBE_TIMEOUT",
+  "MODEL_PROBE_CPU_STARVED",
+  "UNAVAILABLE",
+  "NOT_CONFIGURED",
+  "AUTHENTICATION_FAILED",
+  "DISCONNECTED",
+  "INCOMPATIBLE_RESPONSE",
+  "PROBE_FAILED",
+]);
+`;
+
+// A provider-owned Harness (a Codex app-server or a dedicated OpenClaw worker) gets
+// only the transport token's verifier and no Compute status port, and Compute cannot
+// reach it through a Pod proxy. While a startup failure is held nothing else listens
+// on the Harness port, so the failure is served there, through the provider's
+// bearer-passthrough exposure, to a caller presenting the token the verifier names.
+// Compute reads it and fails the revision with the code the status port would have
+// reported. The response carries codes and fixed text only, never provider output.
+const HELD_RUNTIME_FAILURE_TRANSPORT_HELPER = String.raw`
+function requireNonEmptyString(value, description) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(description + " is missing.");
+  }
+  return value;
+}
+
+function runtimeStatusPort() {
+  if (process.env.OPENCLAW_RUNTIME_STATUS_PORT === undefined) return undefined;
+  const port = Number(process.env.OPENCLAW_RUNTIME_STATUS_PORT);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Runtime status port is invalid.");
+  }
+  return port;
+}
+
+function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
+  const verifier = process.env.APP_TOKEN_SHA;
+  const port = Number(process.env.APP_SERVER_PORT);
+  if (
+    runtimeStatusPort() !== undefined ||
+    typeof verifier !== "string" ||
+    !/^[a-f0-9]{64}$/.test(verifier) ||
+    !Number.isSafeInteger(port) || port < 1 || port > 65535
+  ) {
+    return;
+  }
+  requireNonEmptyString(check, "Runtime failure check");
+  if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
+    throw new Error("Runtime failure code is invalid.");
+  }
+  const { createHash: heldFailureHash, timingSafeEqual: heldFailureEqual } = require("node:crypto");
+  const expected = Buffer.from(verifier, "hex");
+  const body = JSON.stringify({
+    runtimeFailure: {
+      component: "agent",
+      check,
+      checkedAt: new Date().toISOString(),
+      code,
+      ...(cause === undefined ? {} : { cause }),
+    },
+  });
+  const unavailable = JSON.stringify({ error: "runtime_failure_held", code });
+  const server = require("node:http").createServer((request, response) => {
+    const authorization = typeof request.headers.authorization === "string"
+      ? /^Bearer ([!-~]+)$/i.exec(request.headers.authorization)
+      : null;
+    const supplied = authorization === null
+      ? undefined
+      : heldFailureHash("sha256").update(authorization[1]).digest();
+    if (supplied === undefined || !heldFailureEqual(supplied, expected)) {
+      response.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    const pathname = runtimeRequestPathname(request, response);
+    if (pathname === undefined) return;
+    // Anything else, such as the Agent Gateway's app-server upgrade, is told the
+    // Harness is unavailable and why, by code only, not that the route is missing.
+    if (request.method !== "GET" || pathname !== RUNTIME_STATUS_PATH) {
+      response.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(unavailable);
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    response.end(body);
+  });
+  // Keep holding the failure even if it cannot be served; Compute then times out.
+  server.on("error", (error) => {
+    console.error("Held runtime failure server failed: " + (error?.code ?? "unknown"));
+  });
+  server.listen(port, "0.0.0.0");
+}
+`;
+
 export const PLUGIN_RUNTIME_HELPERS = String.raw`
 const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
 const {
@@ -134,27 +236,16 @@ const CODEX_PLUGIN_RUNTIME_REQUEST_TIMEOUT_MS = Number(process.env.OPENCLAW_PLUG
 const CODEX_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS = Number(process.env.OPENCLAW_PLUGIN_RUNTIME_INSTALL_DEADLINE_MS ?? "60000");
 const PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/status";
 const REMOTE_PLUGIN_STATUS_PATH = "/openclaw/plugin-runtime/remote-status";
-const RUNTIME_STATUS_PATH = "/openclaw/runtime/status";
+${RUNTIME_STATUS_CONSTANTS_HELPER}
 const RUNTIME_DIAGNOSTICS_PATH = "/openclaw/runtime/diagnostics";
 const RUNTIME_IMAGE_PATH = "/openclaw/runtime/image";
 const RUNTIME_READINESS_PATH = ${JSON.stringify(RUNTIME_READINESS_PATH)};
 const PLUGIN_DIAGNOSTIC_CODES = new Set(["PLUGIN_INSTALL_FAILED", "PLUGIN_AUTH_REQUIRED"]);
-const RUNTIME_DIAGNOSTIC_CODES = new Set([
-  "LOGIN_FAILED",
-  "MODEL_PROBE_FAILED",
-  "MODEL_PROBE_TIMEOUT",
-  "MODEL_PROBE_CPU_STARVED",
-  "UNAVAILABLE",
-  "NOT_CONFIGURED",
-  "AUTHENTICATION_FAILED",
-  "DISCONNECTED",
-  "INCOMPATIBLE_RESPONSE",
-  "PROBE_FAILED",
-]);
 const pluginBaseAppServerToken = process.env.APP_SERVER_TOKEN;
 
 ${PLUGIN_APP_SERVER_TOKEN_DERIVATION_HELPER}
 ${RUNTIME_READINESS_RESPONSE_HELPER}
+${HELD_RUNTIME_FAILURE_TRANSPORT_HELPER}
 
 class PluginTerminalDiagnosticError extends Error {
   constructor(diagnostic, message) {
@@ -246,15 +337,6 @@ function pluginRuntimeStatusPort() {
   return port;
 }
 
-function runtimeStatusPort() {
-  if (process.env.OPENCLAW_RUNTIME_STATUS_PORT === undefined) return undefined;
-  const port = Number(process.env.OPENCLAW_RUNTIME_STATUS_PORT);
-  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
-    throw new Error("Runtime status port is invalid.");
-  }
-  return port;
-}
-
 function runtimeStatusContainer() {
   return requireNonEmptyString(process.env.OPENCLAW_RUNTIME_STATUS_CONTAINER, "Runtime status container");
 }
@@ -308,70 +390,6 @@ function publishRuntimeFailure(check, code, cause) {
     code,
     ...(cause === undefined ? {} : { cause }),
   };
-}
-
-// A provider-owned Codex Harness gets only the transport token's verifier and
-// no Compute status port, and Compute cannot reach it through a Pod proxy. While
-// a startup failure is held nothing else listens on the app-server port, so the
-// failure is served there, through the provider's bearer-passthrough exposure,
-// to a caller presenting the token the verifier names. Compute reads it and
-// fails the revision with the code the status port would have reported.
-function serveHeldRuntimeFailureToTransportPeer(check, code, cause) {
-  const verifier = process.env.APP_TOKEN_SHA;
-  const port = Number(process.env.APP_SERVER_PORT);
-  if (
-    runtimeStatusPort() !== undefined ||
-    typeof verifier !== "string" ||
-    !/^[a-f0-9]{64}$/.test(verifier) ||
-    !Number.isSafeInteger(port) || port < 1 || port > 65535
-  ) {
-    return;
-  }
-  requireNonEmptyString(check, "Runtime failure check");
-  if (!RUNTIME_DIAGNOSTIC_CODES.has(code)) {
-    throw new Error("Runtime failure code is invalid.");
-  }
-  const { createHash: heldFailureHash } = require("node:crypto");
-  const expected = Buffer.from(verifier, "hex");
-  const body = JSON.stringify({
-    runtimeFailure: {
-      component: "agent",
-      check,
-      checkedAt: new Date().toISOString(),
-      code,
-      ...(cause === undefined ? {} : { cause }),
-    },
-  });
-  const unavailable = JSON.stringify({ error: "runtime_failure_held", code });
-  const server = pluginCreateServer((request, response) => {
-    const authorization = typeof request.headers.authorization === "string"
-      ? /^Bearer ([!-~]+)$/i.exec(request.headers.authorization)
-      : null;
-    const supplied = authorization === null
-      ? undefined
-      : heldFailureHash("sha256").update(authorization[1]).digest();
-    if (supplied === undefined || !pluginTimingSafeEqual(supplied, expected)) {
-      response.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(JSON.stringify({ error: "unauthorized" }));
-      return;
-    }
-    const pathname = runtimeRequestPathname(request, response);
-    if (pathname === undefined) return;
-    // Anything else, such as the Agent Gateway's app-server upgrade, is told the
-    // Harness is unavailable and why, by code only, not that the route is missing.
-    if (request.method !== "GET" || pathname !== RUNTIME_STATUS_PATH) {
-      response.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(unavailable);
-      return;
-    }
-    response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-    response.end(body);
-  });
-  // Keep holding the failure even if it cannot be served; Compute then times out.
-  server.on("error", (error) => {
-    console.error("Held runtime failure server failed: " + (error?.code ?? "unknown"));
-  });
-  server.listen(port, "0.0.0.0");
 }
 
 function publishRuntimeReady() {
@@ -1227,13 +1245,6 @@ function assertCodexPluginRuntime(runtime) {
   }
 }
 
-function requireNonEmptyString(value, description) {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(description + " is missing.");
-  }
-  return value;
-}
-
 function openClawPluginPackageSpec(plugin) {
   const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
   const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
@@ -2062,7 +2073,11 @@ function probeOpenClawAuthenticationFailure() {
 // endpoint differs from the provider's, or an Anthropic setup token, skips this
 // request. The request goes to the
 // path of the configured API: a key may be scoped to one endpoint, and OpenAI
-// answers 401 for a missing scope.
+// answers 401 for a missing scope. A 401 is classified from the provider's error
+// code and two fixed phrases into a closed vocabulary (the body itself is never
+// kept): "missing_api_key" means the request arrived without a credential, which
+// under a Sandbox provider points at the credential proxy rather than the key.
+const UPFRONT_REJECTION_CODES = { 4: "invalid_api_key", 5: "missing_api_key", 6: "insufficient_permissions" };
 const UPFRONT_ENDPOINTS = {
   openai: ["https://api.openai.com/v1", { "openai-responses": "/responses", "openai-completions": "/chat/completions" }, (key) => ({ authorization: "Bearer " + key })],
   anthropic: ["https://api.anthropic.com", { "anthropic-messages": "/v1/messages" }, (key) => !key.startsWith("sk-ant-oat") && { "x-api-key": key, "anthropic-version": "2023-06-01" }],
@@ -2079,12 +2094,15 @@ function credentialRejectedUpfront(provider, fragment, key, stage) {
     (Array.isArray(fragment.models) && fragment.models.some((model) => (model?.api !== undefined && model.api !== api) || model?.baseUrl !== undefined))) return false;
   const path = paths[api];
   stage("preflight");
-  return require("node:child_process").spawnSync(process.execPath, ["-e",
-    'fetch(process.env.U,{method:"POST",headers:JSON.parse(process.env.H),body:"{}",signal:AbortSignal.timeout(8000)}).then((r)=>process.exit(r.status===401?3:0),()=>process.exit(0))',
+  // Exit 3-6 is a 401 (3: unclassified); anything else proves nothing.
+  const status = require("node:child_process").spawnSync(process.execPath, ["-e",
+    'fetch(process.env.U,{method:"POST",headers:JSON.parse(process.env.H),body:"{}",signal:AbortSignal.timeout(8000)}).then(async(r)=>{if(r.status!==401)process.exit(0);let e;try{e=(await r.json())?.error}catch{}const c=e?.code,m=typeof e?.message==="string"?e.message:"";process.exit(c==="invalid_api_key"?4:/didn.t provide an api key|no api key provided/i.test(m)?5:c==="insufficient_permissions"||/insufficient permissions|missing scopes/i.test(m)?6:3)},()=>process.exit(0))',
   ], {
     env: { U: base + path, H: JSON.stringify({ ...headers, "content-type": "application/json" }), NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS, SSL_CERT_FILE: process.env.SSL_CERT_FILE },
     stdio: "ignore", timeout: 10000, killSignal: "SIGKILL",
-  }).status === 3;
+  }).status;
+  if (!(status >= 3 && status <= 6)) return false;
+  return { providerStatus: 401, ...(UPFRONT_REJECTION_CODES[status] === undefined ? {} : { providerCode: UPFRONT_REJECTION_CODES[status] }) };
 }
 
 function runOpenClawAuthenticationProbe(fs, capMs) {
@@ -2103,7 +2121,8 @@ function runOpenClawAuthenticationProbe(fs, capMs) {
       !process.env[credentialEnvironment]?.trim()) return "UNAVAILABLE";
     const configuration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG);
     if (configuration.agents?.defaults?.model !== model) return "UNAVAILABLE";
-    if (credentialRejectedUpfront(provider, configuration.models?.providers?.[provider], process.env[credentialEnvironment], stage)) return "AUTHENTICATION_FAILED";
+    const rejected = credentialRejectedUpfront(provider, configuration.models?.providers?.[provider], process.env[credentialEnvironment], stage);
+    if (rejected !== false) return { code: "AUTHENTICATION_FAILED", ...rejected };
     configuration.agents.defaults.workspace = directory + "/workspace";
     fs.mkdirSync(directory + "/workspace", { mode: 0o700 });
     const configPath = directory + "/openclaw.json";
@@ -4060,9 +4079,14 @@ const { execFile, spawn } = require("node:child_process");
 const { createServer: readinessCreateServer } = require("node:http");
 ${WORKSPACE_ASSET_HELPERS}
 ${RUNTIME_READINESS_SERVER_HELPER}
+${RUNTIME_STATUS_CONSTANTS_HELPER}
+${HELD_RUNTIME_FAILURE_TRANSPORT_HELPER}
 
+// The Compute-owned worker publishes readiness only; a provider-owned worker
+// (APP_TOKEN_SHA and APP_SERVER_PORT, no status port) serves a held model-check
+// failure on the Harness port, as the provider-owned Codex Harness does, so the
+// revision fails with that code instead of waiting for a node that never connects.
 function publishRuntimeFailure() {}
-function serveHeldRuntimeFailureToTransportPeer() {}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
 
 const inferenceConfig = process.env.OPENCLAW_NATIVE_INFERENCE_CONFIG;

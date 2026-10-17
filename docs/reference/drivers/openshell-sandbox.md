@@ -271,8 +271,8 @@ exact Sandbox and exposure. The client retains a normalized control URL and the
 original advertised workload URL, which the optional Harness endpoint capability
 returns as a WebSocket origin.
 
-Compute supplies only `APP_TOKEN_SHA`; the raw token remains in the Agent
-Gateway. Bearer passthrough lets Codex authenticate the forwarded header. Other
+Compute supplies only `APP_TOKEN_SHA`, never the raw token; bearer passthrough
+forwards the header Codex, or a native held failure, authenticates. Other
 exposures keep OpenShell's authorization-stripping default. A Sandbox without a
 replayable Create receipt must be removed, not mutated by `ExposeService`.
 

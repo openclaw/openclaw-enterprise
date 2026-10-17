@@ -245,13 +245,13 @@ qualification remains outstanding.
 The client sends Sandbox identity/spec, Workspace scope and one of 16 `request_id`
 values: revision UUID, then 15 derived IDs. After `REQUEST_OUTCOME_UNCERTAIN`,
 `REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE`, it advances only if
-`getSandbox` finds nothing. Unresolved IDs never expire; completed records expire
-after 24 hours. Workspace-unique names prevent duplicates. At 1,000 live/unresolved
+`getSandbox` finds nothing. Unresolved IDs never expire; completed records do
+after 24 hours. Names are Workspace-unique. At 1,000 live/unresolved
 records, `RESOURCE_EXHAUSTED` becomes transient `SANDBOX_ADMISSION_LIMIT_REACHED`:
 revision preparation waits without spending attempts until its convergence
-deadline; Namespace work retries normally. Codex requires one unnamed
-bearer-passthrough exposure for `APP_SERVER_PORT`; native OpenClaw requires no
-exposure or returned URL. The Driver reads before creating and adopts an existing
+deadline; Namespace work retries. Each Harness takes one unnamed
+bearer-passthrough `APP_SERVER_PORT` exposure (Codex transport, native held
+failure); only Codex returns a URL. The Driver reads before creating and adopts an existing
 or `ALREADY_EXISTS` Sandbox only with exact Workspace, labels, annotations and spec,
 neither stopped nor deleting. Workspace `sandbox:write` permits replacement and
 defines the trust boundary.
