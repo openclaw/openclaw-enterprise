@@ -30,6 +30,7 @@ import {
   openAdvancedSettings,
   watchForReload,
 } from "./console-agents-test-support.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Saves and reloads on the Agent page's tabs, and every Reload draft, re-navigated to the same
 // URL: the page collapsed to its summary, reread the session, versions, permissions and
@@ -109,9 +110,7 @@ const slackValues = () =>
   });
 
 async function slackAgent(t, name) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const app = await fixture.createSecret(namespace.id, `${name} app token`, "xapp-in-place");
   const bot = await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-in-place");
   const agent = await fixture.createAgent(namespace.id, name, slackValues(), {
@@ -289,9 +288,7 @@ for (const c of inPlaceCases) {
 // the saved Agent, and a second save checks against that saved state instead of the page's
 // first read. Reload authentication source keeps focus too (finding 1446).
 test("saving and reloading the authentication source update the Agent page in place", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Authentication in place", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Authentication in place");
   const first = await fixture.createSecret(namespace.id, "First harness Secret", "hidden-first");
   const second = await fixture.createSecret(namespace.id, "Second harness Secret", "hidden-second");
   const agent = await fixture.createAgent(
@@ -361,9 +358,9 @@ test("Refresh sharing, the Configuration editor and the Create Agent shortcuts k
   const preset = JSON.parse(
     await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
   );
-  const fixture = await createConsoleAppFixture(t, { defaultPresets: [preset] });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Kept focus", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Kept focus", {
+    defaultPresets: [preset],
+  });
   const agent = await fixture.createAgent(namespace.id, "Kept Focus", nativeValues("focus"));
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -1234,9 +1231,7 @@ test("the unsaved channel Secret gate names a way out for a member who cannot re
 // setup still says what is missing while another token is being changed (#2714 review). Saving
 // the choice alone would not make the draft deployable.
 test("the Deploy gate names a missing Slack binding before an unsaved Secret choice", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Missing and unsaved", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Missing and unsaved");
   const bot = await fixture.createSecret(namespace.id, "Missing and unsaved bot", "xoxb-gate");
   const secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-gate-2");
   // Slack names both tokens, but only the bot token is bound.
@@ -1495,9 +1490,7 @@ test("carried channel Secret choices survive the page load after a failed reread
 // metadata…" on two lines until the Secret was reread, then collapsed to its name and moved the
 // cards below (CLS 0.073, finding 1482). It now keeps the name it already showed.
 test("a saved Configuration's summary keeps the Secret name while it rereads it", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Summary Name", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Summary Name");
   const model = await fixture.createSecret(namespace.id, "Summary model key", "hidden-model");
   const agent = await fixture.createAgent(namespace.id, "Summary Name", nativeValues("before"), {
     harnessAuth: { method: "api_key", source: model.ref },
@@ -1590,9 +1583,7 @@ test("the other tabs stay locked while a saved channel draft refreshes", async (
 // 0.7 s after the click on a live cluster, past the input's 500 ms grace. Stop Agent then
 // moved up into view: CLS 0.074 (finding 1482).
 test("a Configuration save that lands late does not move the cards below the editor", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Late save", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Late save");
   const agent = await fixture.createAgent(namespace.id, "Late Save", nativeValues("before"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const page = await openTab(t, fixture, namespace, agent, "configuration", {
@@ -1637,9 +1628,7 @@ test("a Configuration save that lands late does not move the cards below the edi
 
 // A deployed Agent's Configuration tab with an unsaved edit in the JSON editor.
 async function editedConfiguration(t) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Team", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Team");
   const agent = await fixture.createAgent(namespace.id, "Field Guide", nativeValues("before"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const page = await openTab(t, fixture, namespace, agent, "configuration");

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   createDeviceCredentialDrivers,
   DEVICE_ACCESS_TOKEN,
@@ -14,6 +13,7 @@ import {
   nativeValues,
   newPage,
 } from "./console-agents-browser-helpers.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // The fixture's login asks the Console to poll every 5 s, and the API refuses an earlier poll.
 // Each ready login moves both clocks past that interval instead of waiting it out.
@@ -41,13 +41,11 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const advanceApiClock = (ms) => {
     apiClockAheadMs += ms;
   };
-  const fixture = await createConsoleAppFixture(t, {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth console", {
     provisionedPeople: [],
     agentProvisioning: true,
     now: () => new Date(Date.now() + apiClockAheadMs),
   });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("OAuth console", { ready: true });
   const installation = await fixture.request("GET", "/installation");
   assert.deepEqual(installation.data.capabilities.agentProvisioning.executionModes, ["dedicated"]);
   const driver = new CodexPluginDriver();
@@ -379,9 +377,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
 });
 
 test("saving ChatGPT OAuth before sign-in names the missing step and sends nothing", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("OAuth save guard", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth save guard");
   const agent = await fixture.createAgent(
     namespace.id,
     "OAuth save guard",
@@ -411,9 +407,7 @@ test("saving ChatGPT OAuth before sign-in names the missing step and sends nothi
 });
 
 test("sign-in unavailable at the credential service shows the API cause once", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("OAuth unavailable", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "OAuth unavailable");
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
