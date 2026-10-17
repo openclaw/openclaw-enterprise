@@ -449,7 +449,7 @@ for (const scenario of [
       skip: process.platform === "win32" && "POSIX process groups and executable fixtures",
     },
     async (t) => {
-      const { root, descendantPidPath } = await commandTreeFixture(t);
+      const { root, descendantPidPath, waitForTermination } = await commandTreeFixture(t);
       const heartbeat = join(root, "heartbeat");
       const descendantPath = join(root, "descendant.cjs");
       await writeFile(
@@ -495,39 +495,87 @@ for (const scenario of [
 
       // Apply the short command budget only to the hung drop. A separate test checks
       // that cleanup continues to Compose down after a deterministic failure.
-      const drop = `import { cleanupResourceIds } from ${JSON.stringify(pathToFileURL(cleanupPath).href)};
-        await cleanupResourceIds(process.argv[1], ["database-1"]);`;
+      // The deadline starts at fork, but the supervisor, wrapper and descendant are
+      // Node processes that handle TERM only once booted. Under CPU pressure a TERM
+      // during startup killed the descendant before its first heartbeat (finding
+      // 1652). The driver starts the drop's deadline once the heartbeat exists, when
+      // every process in the tree has its TERM handler, and records that start.
+      const budgetStartPath = join(root, "budget-start");
+      const drop = `import { existsSync, writeFileSync } from "node:fs";
+        import { cleanupResourceIds } from ${JSON.stringify(pathToFileURL(cleanupPath).href)};
+        const [statePath, readyPath, budgetStartPath] = process.argv.slice(1);
+        const budgetMs = Number(process.env.OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS);
+        const setTimer = globalThis.setTimeout;
+        let deadline;
+        let ready = false;
+        globalThis.setTimeout = (callback, ms, ...args) => {
+          if (deadline || ms !== budgetMs) return setTimer(callback, ms, ...args);
+          deadline = setTimer(() => ready && callback(...args), ms);
+          const poll = setInterval(check, 10);
+          poll.unref();
+          function check() {
+            if (ready || !existsSync(readyPath)) return;
+            ready = true;
+            clearInterval(poll);
+            writeFileSync(budgetStartPath, String(Date.now()));
+            deadline.refresh();
+          }
+          check();
+          return deadline;
+        };
+        process.on("exit", () => {
+          if (!ready) {
+            process.stderr.write(deadline ? "fixture never became ready\\n" : "no command deadline\\n");
+            process.exitCode = 2;
+          }
+        });
+        await cleanupResourceIds(statePath, ["database-1"]);`;
       const started = Date.now();
-      const result = spawnSync(process.execPath, ["--input-type=module", "-e", drop, statePath], {
-        cwd: repositoryRoot,
-        encoding: "utf8",
-        env: {
-          ...process.env,
-          OCC_DOCKER_BIN: join(root, "bin/docker"),
-          OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS: "500",
-          OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "200",
+      const result = spawnSync(
+        process.execPath,
+        ["--input-type=module", "-e", drop, statePath, heartbeat, budgetStartPath],
+        {
+          cwd: repositoryRoot,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            OCC_DOCKER_BIN: join(root, "bin/docker"),
+            OPENCLAW_CI_CLEANUP_COMMAND_TIMEOUT_MS: "500",
+            OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "200",
+          },
+          timeout: 6000,
+          killSignal: "SIGKILL",
         },
-        timeout: 6000,
-        killSignal: "SIGKILL",
-      });
-      t.diagnostic(`cleanup command completed in ${Date.now() - started} ms`);
+      );
       assert.equal(result.error, undefined, "cleanup waited for the inherited pipes");
-      assert.ok(Date.now() - started < 2500, "cleanup exceeded the command and pipe deadlines");
       assert.equal(result.status, 1, result.stderr);
+      const budgetStart = Number(await readFile(budgetStartPath, "utf8"));
+      const elapsed = Date.now() - budgetStart;
+      t.diagnostic(`command tree ready after ${budgetStart - started} ms`);
+      t.diagnostic(`cleanup command completed ${elapsed} ms after its deadline started`);
+      assert.ok(elapsed < 2500, "cleanup exceeded the command and pipe deadlines");
       assert.match(
         result.stderr,
         /Cleanup failed for postgres-database:openclaw_ci_failed_drop:.* psql .* timed out after 500 ms/,
       );
       assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
-      const ticks = await readFile(heartbeat, "utf8");
-      await delay(250);
-      const laterTicks = await readFile(heartbeat, "utf8");
+      // PID state, not heartbeat timing, is the evidence: a heartbeat can stall under
+      // CPU pressure, and the descendant's own four-second expiry runs from its boot.
       if (scenario === "escaped-group") {
-        // A separate group is outside the executor's signalling authority. Closing
-        // its inherited pipes must bound cleanup without killing that process.
-        assert.notEqual(laterTicks, ticks);
+        // A separate group is outside the executor's signalling authority. Cleanup
+        // must end without killing that process.
+        const pid = await readFile(descendantPidPath, "utf8");
+        const observation = spawnSync("ps", ["-p", pid, "-o", "stat="], {
+          encoding: "utf8",
+          timeout: 5000,
+        });
+        assert.equal(observation.error, undefined, "could not observe escaped descendant");
+        assert.equal(observation.status, 0, "escaped descendant stopped during cleanup");
+        assert.doesNotMatch(observation.stdout, /^Z/, "escaped descendant stopped during cleanup");
       } else {
-        assert.equal(laterTicks, ticks, "owned descendant survived cleanup");
+        // Every owned kill path fires before the driver exits; the limit only covers
+        // observing the reaped or zombie process.
+        await waitForTermination(1000);
       }
     },
   );

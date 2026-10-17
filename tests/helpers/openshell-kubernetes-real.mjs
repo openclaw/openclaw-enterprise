@@ -1184,12 +1184,13 @@ export function createOpenShellKubernetesFixture({
 
       // Timing of commands still running, so an unknown outcome says how long it waited.
       function pendingCommandTimes() {
-        const now = Date.now();
+        const now = performance.now();
         return [...pendingCommands.keys()].map((id) => {
           const { startedAt, deltas = 0, bytes = 0 } = commandTimes.get(id) ?? {};
           return {
-            startedBeforeTurnEndMs: startedAt && turnCompletedAt ? turnCompletedAt - startedAt : null,
-            runningMs: startedAt ? now - startedAt : null,
+            startedBeforeTurnEndMs: startedAt !== undefined && turnCompletedAt !== undefined
+              ? Math.floor(turnCompletedAt - startedAt) : null,
+            runningMs: startedAt === undefined ? null : Math.floor(now - startedAt),
             outputDeltas: deltas,
             outputBytes: bytes,
           };
@@ -1202,7 +1203,7 @@ export function createOpenShellKubernetesFixture({
         process.stderr.write("\nNative execution summary: " + JSON.stringify({
           failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
           commandGraceMs: ${codexCommandGraceMs},
-          sinceTurnEndMs: turnCompletedAt ? Date.now() - turnCompletedAt : null,
+          sinceTurnEndMs: turnCompletedAt === undefined ? null : Math.floor(performance.now() - turnCompletedAt),
           pendingCommands: pendingCommandTimes(),
         }));
         process.exit(1);
@@ -1210,6 +1211,13 @@ export function createOpenShellKubernetesFixture({
 
       function unknownCommandOutcome() {
         fail(new Error("Codex command outcome is unknown; not sending another turn"));
+      }
+
+      function waitForCommandDeadline() {
+        // A timer can wake early. Keep the deadline anchored to the end of the turn.
+        const remaining = turnCompletedAt + ${codexCommandGraceMs} - performance.now();
+        if (remaining <= 0) return unknownCommandOutcome();
+        commandDeadline = setTimeout(waitForCommandDeadline, Math.ceil(remaining));
       }
 
       function finish() {
@@ -1304,7 +1312,7 @@ export function createOpenShellKubernetesFixture({
         items.push(message);
         if (starting) {
           pendingCommands.set(item.id, item.command);
-          commandTimes.set(item.id, { startedAt: Date.now(), deltas: 0, bytes: 0 });
+          commandTimes.set(item.id, { startedAt: performance.now(), deltas: 0, bytes: 0 });
         }
         if (ending) {
           pendingCommands.delete(item.id);
@@ -1340,8 +1348,8 @@ export function createOpenShellKubernetesFixture({
           // may reply before it ends. Observe only its original socket until its completion
           // event or the fixture's bound; the overall turn deadline still applies. Never extend
           // either deadline on activity.
-          turnCompletedAt = Date.now();
-          if (pendingCommands.size) commandDeadline = setTimeout(unknownCommandOutcome, ${codexCommandGraceMs});
+          turnCompletedAt = performance.now();
+          if (pendingCommands.size) waitForCommandDeadline();
           else finish();
         } else if (message.method === "error" && message.params?.willRetry !== true) {
           // Codex reports retried model reconnects as errors; only a final error ends the turn,

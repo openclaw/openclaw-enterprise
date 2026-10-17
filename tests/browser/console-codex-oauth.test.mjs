@@ -113,12 +113,51 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Authentication method").selectOption("credential_source");
   assert.equal(await page.getByLabel("API key Secret", { exact: true }).isVisible(), false);
+  // The Console polls only after the interval the login asks for, and follows a longer one a
+  // poll answer asks for, as a provider's slow_down does (finding 1651). Each poll is held, so
+  // one sent early leaves the busy status shown when the clock stops short of the interval.
+  await page.clock.pauseAt(new Date((await page.evaluate(() => Date.now())) + 1_000));
+  let polls = 0;
+  let nextPoll = Promise.withResolvers();
+  await page.route("**/device-authorizations/*/poll", async (route) => {
+    polls += 1;
+    nextPoll.resolve(route);
+  });
+  const pollStatus = page.locator(".device-login [role='status']");
+  const waiting = "Waiting for you to complete sign-in in the other tab…";
+  const checking = "Checking Codex login…";
+  async function answerPoll(intervalSeconds) {
+    await page.getByText(checking, { exact: true }).waitFor();
+    const route = await nextPoll.promise;
+    nextPoll = Promise.withResolvers();
+    const response = await route.fetch();
+    const body = await response.json();
+    assert.equal(body.data.status, "pending");
+    assert.equal(body.data.intervalSeconds, 5);
+    body.data.intervalSeconds = intervalSeconds;
+    await route.fulfill({ response, json: body });
+    await page.getByText(waiting, { exact: true }).waitFor();
+  }
   await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).click();
   await page.getByText("CODE-12345", { exact: true }).waitFor();
   assert.equal(
     await page.getByRole("link", { name: "Open Codex sign-in" }).getAttribute("href"),
     "https://auth.openai.com/codex/device",
   );
+  await page.getByText(waiting, { exact: true }).waitFor();
+  await page.clock.fastForward(DEVICE_POLL_MS - 1);
+  assert.equal(await pollStatus.textContent(), waiting);
+  advanceApiClock(DEVICE_POLL_MS);
+  await page.clock.fastForward(1);
+  await answerPoll(10);
+  await page.clock.fastForward(10_000 - 1);
+  assert.equal(await pollStatus.textContent(), waiting);
+  advanceApiClock(10_000);
+  await page.clock.fastForward(1);
+  await answerPoll(5);
+  assert.equal(polls, 2);
+  await page.unroute("**/device-authorizations/*/poll");
+  await page.clock.resume();
   const cancelled = page.waitForResponse(
     (response) =>
       response.request().method() === "DELETE" &&

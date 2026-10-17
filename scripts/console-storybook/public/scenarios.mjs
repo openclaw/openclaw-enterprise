@@ -2996,7 +2996,7 @@ export const scenarios = {
       "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
     steps: [
       "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
-      "Change a draft setting, then choose Save Configuration.",
+      "Change a draft setting. Focus Save Configuration and press Enter; “Checking Configuration…” takes focus while Save is disabled.",
       "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
       "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
     ],
@@ -4737,6 +4737,19 @@ export const scenarios = {
     steps: [
       "Deploy new version is disabled. Choose the saved Slack app token again; Deploy becomes available without a save.",
       "Choose the Slack backup token, then Save channel Secrets. Deploy becomes available when the save succeeds; do not deploy.",
+    ],
+  },
+  credentialsDiscardSecretChoice: {
+    group: "Components/Credentials",
+    name: "Discard an unsaved Secret choice",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    unreadableSecretId: "sec_demo_slack_bot_token",
+    description:
+      "The saved Slack bot token is not readable. After choosing a different Secret, you can discard that unsaved choice without finding the original in the picker.",
+    steps: [
+      "Slack bot token shows “Bound Secret”. Choose “Slack backup token (simulated)”; Deploy is disabled until you save or reload.",
+      "Choose Reset story to reopen the saved configuration, as a page reload would. The bot token again shows “Bound Secret” and Deploy is available. Do not deploy.",
     ],
   },
   credentialsSaveProvisioningReserved: {

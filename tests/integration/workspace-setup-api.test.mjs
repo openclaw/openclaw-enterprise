@@ -96,36 +96,43 @@ test("omitted and empty workspace maps retain native setup while an explicit emp
 
 test("invalid workspace content and stale defaults reject the complete create without an Agent", async (t) => {
   const f = await setup(t);
-  const cases = [
-    [null, 400],
-    [[], 400],
-    [{ "BOOTSTRAP.md": "private-invalid-content" }, 400],
-    [{ "../USER.md": "private-invalid-content" }, 400],
-    [{ "USER.md": null }, 400],
-    [{ "USER.md": 12 }, 400],
-    [{ "USER.md": "private-invalid-content\u0000" }, 400],
-    [{ "USER.md": "private-invalid-content\ud800" }, 400],
-    [{ "SOUL.md": "valid partial", "USER.md": "😀".repeat(4097) }, 400],
+  const privateContent = "private-invalid-content";
+  async function assertRejectedCreate(name, fields, expectedStatus) {
+    const { status, body } = await f.create(name, fields);
+    assert.equal(status, expectedStatus, `${name}: unexpected response status`);
+    assert.equal(
+      JSON.stringify(body).includes(privateContent),
+      false,
+      `${name}: response exposed workspace content`,
+    );
+  }
+  const invalidFiles = [
+    null,
+    [],
+    { "BOOTSTRAP.md": privateContent },
+    { "../USER.md": privateContent },
+    { "USER.md": null },
+    { "USER.md": 12 },
+    { "USER.md": `${privateContent}\u0000` },
+    { "USER.md": `${privateContent}\ud800` },
+    { "SOUL.md": "valid partial", "USER.md": "😀".repeat(4097) },
   ];
-  for (const [index, [files, status]] of cases.entries()) {
-    const result = await f.create(`Invalid ${index}`, { initialWorkspaceFiles: files });
-    assert.equal(result.status, status, `invalid case ${index}: ${JSON.stringify(result.body)}`);
-    assert.equal(JSON.stringify(result.body).includes("private-invalid-content"), false);
+  for (const [index, files] of invalidFiles.entries()) {
+    await assertRejectedCreate(`Invalid ${index}`, { initialWorkspaceFiles: files }, 400);
   }
   for (const [defaultsId, status] of [
     ["0".repeat(64), 409],
     ["A".repeat(64), 400],
     [null, 400],
   ]) {
-    const result = await f.create("Wrong defaults", {
-      initialWorkspaceFiles: { "USER.md": "private-invalid-content" },
-      workspaceDefaultsId: defaultsId,
-    });
-    assert.equal(result.status, status, JSON.stringify(result.body));
-    assert.equal(JSON.stringify(result.body).includes("private-invalid-content"), false);
+    await assertRejectedCreate(
+      "Wrong defaults",
+      { initialWorkspaceFiles: { "USER.md": privateContent }, workspaceDefaultsId: defaultsId },
+      status,
+    );
   }
   assert.deepEqual((await f.request("GET", f.path)).data, []);
-  assert.equal(JSON.stringify(f.audit.events).includes("private-invalid-content"), false);
+  assert.equal(JSON.stringify(f.audit.events).includes(privateContent), false);
 });
 
 test("Agent create accepts four maximum UTF-8 files even when JSON escape expansion exceeds the ordinary body limit", async (t) => {
