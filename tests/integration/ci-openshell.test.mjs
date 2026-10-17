@@ -332,7 +332,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
       'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
       "shift",
       `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
-      `if [ -n "$EARLY_WAKE_GRACE_MS" ]; then export NODE_OPTIONS=--import=${pathToFileURL(earlyWake)}; fi`,
+      `if [ -n "$EARLY_WAKE_GRACE_MS" ]; then export NODE_OPTIONS="\${NODE_OPTIONS:+$NODE_OPTIONS }--import=${pathToFileURL(earlyWake)}"; fi`,
       'exec "$@"',
     ].join("\n"),
     { mode: 0o755 },
@@ -430,16 +430,21 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   const probeWithEarlyWake = async (codexCommandGraceMs) => {
     await rm(earlyWakeMarker, { force: true });
     process.env.EARLY_WAKE_GRACE_MS = String(codexCommandGraceMs);
-    try {
-      return await probe(codexCommandGraceMs);
-    } finally {
-      delete process.env.EARLY_WAKE_GRACE_MS;
-      assert.equal(
-        await readFile(earlyWakeMarker, "utf8"),
-        String(codexCommandGraceMs),
-        "the command-deadline timer must wake early",
-      );
+    const outcome = await probe(codexCommandGraceMs).then(
+      (result) => ({ result }),
+      (error) => ({ error }),
+    );
+    delete process.env.EARLY_WAKE_GRACE_MS;
+    // The deadline was armed for the grace less the moment since the turn ended.
+    const woke = Number(await readFile(earlyWakeMarker, "utf8").catch(() => NaN));
+    assert.ok(
+      woke > codexCommandGraceMs - 50 && woke <= codexCommandGraceMs,
+      "the command-deadline timer must wake early",
+    );
+    if (outcome.error) {
+      throw outcome.error;
     }
+    return outcome.result;
   };
   const early = await probeWithEarlyWake(lateMs * 4);
   assert.equal(early.run.exitCode, 28, "an early wake keeps waiting for the late command");
