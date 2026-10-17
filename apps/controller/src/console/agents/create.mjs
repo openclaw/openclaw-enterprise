@@ -130,15 +130,28 @@ function provisioningStatusText(status) {
   }
 }
 
-// The API's catch-all outage answer, which names nothing the caller can act on.
-const GENERIC_DEPENDENCY_UNAVAILABLE = "A required platform dependency is unavailable.";
+// The API's 503 answers that name no reason: the catch-all outage, and a commit whose outcome
+// the API itself could not confirm.
+const UNNAMED_DEPENDENCY_FAILURES = new Set([
+  "A required platform dependency is unavailable.",
+  "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
+]);
 
-// The server's own sentence, unless it is a catch-all answer (finding 1609).
+// The server's own sentence for a refused request, unless it is a catch-all answer (finding
+// 1609). Among 5xx answers only a named 503 DEPENDENCY_UNAVAILABLE refuses the request; any
+// other 5xx leaves its outcome unknown.
 function namedRefusal(error) {
-  return error.serverMessage !== undefined &&
-    error.serverMessage !== GENERIC_CONFLICT &&
-    error.serverMessage !== GENERIC_DEPENDENCY_UNAVAILABLE
-    ? error.serverMessage
+  const message = error.serverMessage;
+  if (message === undefined) {
+    return undefined;
+  }
+  if (error.status === 409) {
+    return message === GENERIC_CONFLICT ? undefined : message;
+  }
+  return error.status === 503 &&
+    error.code === "DEPENDENCY_UNAVAILABLE" &&
+    !UNNAMED_DEPENDENCY_FAILURES.has(message)
+    ? message
     : undefined;
 }
 
@@ -1883,7 +1896,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       // A refused request that names its reason is shown as sent. An outage keeps Retry, since
       // the same request ID cannot duplicate the job, but leads with the reason instead of
       // "Outcome unknown" (finding 1609).
-      const reason = error.status === 409 || error.status >= 500 ? namedRefusal(error) : undefined;
+      const reason = namedRefusal(error);
       // The API refuses to retry a job whose Namespace or Agent lifecycle changed, that was
       // cancelled or handed off, or whose Secret was deleted; that job can never finish. A
       // refusal that names its reason is shown as sent; a race in the store can still

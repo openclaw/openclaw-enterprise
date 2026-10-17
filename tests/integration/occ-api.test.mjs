@@ -689,10 +689,8 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
 
   const singleton = await controller.request("GET", "/installation");
   assert.equal(singleton.status, 200);
-  assert.deepEqual(singleton.data, {
-    ...installation,
-    capabilities: { nativeWorkers: { support: "pinned-runtime" } },
-  });
+  // No Sandbox Driver can provision dedicated OpenClaw, so no capability is reported.
+  assert.deepEqual(singleton.data, installation);
   const bootstrappedDefault = await defaultNamespace(controller);
 
   const namespace = await createNamespace(controller, "research");
@@ -828,10 +826,7 @@ test("OCC Fastify serves singleton, Namespace, Configuration, and Agent resource
   assert.equal(auditEndpoint.status, 404);
 
   const unchanged = await controller.request("GET", "/installation");
-  assert.deepEqual(unchanged.data, {
-    ...installation,
-    capabilities: { nativeWorkers: { support: "pinned-runtime" } },
-  });
+  assert.deepEqual(unchanged.data, installation);
 });
 
 test("Namespace IAM routes manage exact Role and AccessBinding policy through the selected Driver", async () => {
@@ -2832,10 +2827,8 @@ test("Installation API exposes Agent provisioning capabilities without configure
 
   const installation = await controller.request("GET", "/installation");
   assert.equal(installation.status, 200);
-  assert.deepEqual(installation.data.capabilities, {
-    ...bootstrapped.capabilities,
-    nativeWorkers: { support: "pinned-runtime" },
-  });
+  // Without a provisioning Sandbox Driver, dedicated OpenClaw cannot be admitted (finding 1608).
+  assert.deepEqual(installation.data.capabilities, bootstrapped.capabilities);
 
   const backends = await controller.request("GET", "/backends");
   assert.equal(backends.status, 200);

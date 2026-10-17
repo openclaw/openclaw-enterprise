@@ -7101,7 +7101,9 @@ export class OpenClawController {
         mode: lockedAgent.executionMode,
       });
       // Capability refusals precede Agent principal grants: a grant cannot make an unsupported
-      // topology deployable, so the refusal the operator can act on must surface first.
+      // topology deployable, so the refusal the operator can act on must surface first. A
+      // missing Sandbox Driver is a permanent 409 here; provisioning handoff reaches this only
+      // after fenceAgentProvisioning applied the stored-work check, which stays a retryable 503.
       requireDedicatedNativeSupport(revisionHarness, sandbox, this.nativeWorkers);
       const harnessAuth = await this.admitHarnessAuth(state, principalId, lockedAgent);
       const credentialSourceType = await this.admittedCredentialSourceType(harnessAuth, sandbox);

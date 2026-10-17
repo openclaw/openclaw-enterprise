@@ -669,6 +669,26 @@ test("Create Agent shows a provisioning refusal's own reason and keeps catch-all
       retry: true,
     },
     {
+      // The API could not confirm its own commit: the reason is that the outcome is unknown.
+      name: "unconfirmed commit",
+      status: 503,
+      error: {
+        code: "DEPENDENCY_UNAVAILABLE",
+        message:
+          "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
+      },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // Any other 5xx may have committed, so it names no refusal.
+      name: "internal error",
+      status: 500,
+      error: { code: "INTERNAL_ERROR", message: "The platform request could not be completed." },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
       // The API's answer to dedicated OpenClaw without a provisioning Sandbox Driver.
       name: "named conflict",
       status: 409,
