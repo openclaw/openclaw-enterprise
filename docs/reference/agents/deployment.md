@@ -161,16 +161,16 @@ the setting and what is accepted, never its value, before any revision is create
 
 While a revision is not ready, deployment `progress.lastAttempt.code` says why
 when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live
-revision Pod has `PodScheduled` `False` with reason `Unschedulable`,
+Pod has `PodScheduled` `False` with reason `Unschedulable`,
 `NAMESPACE_POD_QUOTA_EXCEEDED` when a revision Deployment's `ReplicaFailure`
-names a full Pod quota, and `WORKSPACE_NODE_PENDING` when the Harness and
-gateway are ready and only the workspace node's gateway connection is
-outstanding. Activation of a dedicated revision reports
+names a full Pod quota, `WORKSPACE_SETUP_RETRYING` while it restarts a failed
+workspace setup, and `WORKSPACE_NODE_PENDING` when only the workspace node's
+gateway connection is outstanding. Activation of a dedicated revision reports
 `WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
 workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
 not connected. Otherwise the code is `REVISION_INCOMPLETE`. The revision stays
-pending until it is ready, a held runtime failure ends it, or the convergence
-deadline passes. The worker rechecks an unready revision after 500 ms, growing
+pending until it is ready, a held failure (such as `WORKSPACE_SETUP_REFUSED`)
+ends it, or the convergence deadline passes. The worker rechecks an unready revision after 500 ms, growing
 with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
@@ -182,7 +182,7 @@ OpenClaw's refusal `reason`. A rate-limited or pairing refusal still waits.
 
 A dependency that fails while it converges is pending too.
 `AGENT_GATEWAY_UNAVAILABLE` means the worker could not reach the new gateway
-through its route yet (for example, the route answers 404 until the gateway
+through its route yet (the route answers 404 until the gateway
 proxy has the new route, or 503 until it has the ready Pod), and
 `KUBERNETES_API_UNAVAILABLE` means a Kubernetes API request timed out, could not
 connect, or got 429 or 5xx. Both apply in preparation and

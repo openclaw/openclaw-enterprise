@@ -18,7 +18,10 @@ import {
   stopYieldRecheckMs,
 } from "../../apps/controller/src/worker/stop-yields.ts";
 import { provisioningProgress } from "../../packages/occ/src/agent-provisioning.ts";
-import { deploymentProgressForWork } from "../../packages/occ/src/state/controller-work.ts";
+import {
+  deploymentErrorForWork,
+  deploymentProgressForWork,
+} from "../../packages/occ/src/state/controller-work.ts";
 
 // Findings 1093 and 1094: stops that yield during their Gateway drain (#2145) are rechecked on
 // a faster-growing cadence, do not count as due Work for another draining stop, and log their
@@ -281,6 +284,40 @@ test("a deployment whose stopped Agent's drain yielded says so in its progress",
     },
     nextAttemptAt: availableAt.toISOString(),
   });
+});
+
+// Finding 1677: the kubelet restarts a failed initialize-workspace init container, which can pass
+// after an I/O or native setup failure, so that deployment waits and names the wait. A refusal
+// fails every restart the same way, so it fails the deployment at once.
+test("a deployment whose workspace setup Kubernetes is retrying says so in its progress", () => {
+  const at = new Date("2026-10-17T10:00:00.000Z");
+  const availableAt = new Date("2026-10-17T10:00:05.000Z");
+  assert.deepEqual(
+    deploymentProgressForWork(
+      { state: "queued", availableAt },
+      { at, code: "WORKSPACE_SETUP_RETRYING" },
+    ),
+    {
+      lastAttempt: {
+        at: at.toISOString(),
+        code: "WORKSPACE_SETUP_RETRYING",
+        message:
+          "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, check this version's logs.",
+      },
+      nextAttemptAt: availableAt.toISOString(),
+    },
+  );
+});
+
+test("a refused workspace setup fails the deployment saying a retry cannot help", () => {
+  assert.deepEqual(
+    deploymentErrorForWork({ state: "failed_permanent", reasonCode: "WORKSPACE_SETUP_REFUSED" }),
+    {
+      code: "WORKSPACE_SETUP_REFUSED",
+      message:
+        "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.",
+    },
+  );
 });
 
 // Finding 1634: after handoff the job defers without a lease and without spending attempts while

@@ -165,6 +165,7 @@ const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKLOAD_UNSCHEDULABLE: "REVISION_UNSCHEDULABLE",
   NAMESPACE_POD_QUOTA_EXCEEDED: "NAMESPACE_POD_QUOTA_EXCEEDED",
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
+  WORKSPACE_SETUP_RETRYING: "WORKSPACE_SETUP_RETRYING",
   HARNESS_CREDENTIAL_BOOTSTRAP_PENDING: "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING",
 });
 const REVISION_READINESS_CODES: ReadonlySet<string> = new Set([
@@ -882,7 +883,9 @@ function runtimeFailureFromObservation(observation: unknown): RuntimeFailureEvid
 // invalid-key rejection; MODEL_PROBE_CPU_STARVED ran out of a CPU budget sized
 // for the container's CPU limit; the others are a probe timeout or failure, a
 // failed Codex login, a missing probe configuration, and an invalid plugin
-// approver configuration. Unknown codes stay pending until the deadline.
+// approver configuration. Kubernetes Compute reports a workspace setup refusal
+// that every init container restart repeats (finding 1677). Unknown codes stay
+// pending until the deadline.
 const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.freeze({
   AUTHENTICATION_FAILED: "RUNTIME_AUTHENTICATION_FAILED",
   MODEL_PROBE_CPU_STARVED: "RUNTIME_CPU_STARVED",
@@ -891,6 +894,7 @@ const HELD_RUNTIME_FAILURE_CODES: Readonly<Record<string, string>> = Object.free
   LOGIN_FAILED: "RUNTIME_LOGIN_FAILED",
   UNAVAILABLE: "RUNTIME_STARTUP_FAILED",
   INCOMPATIBLE_RESPONSE: "RUNTIME_STARTUP_FAILED",
+  WORKSPACE_SETUP_REFUSED: "WORKSPACE_SETUP_REFUSED",
 });
 
 function heldRuntimeFailureCode(code: string): string | undefined {
@@ -4664,7 +4668,8 @@ export class ControllerWorker {
     // end, and then hold the container unready until an explicit restart that
     // nothing performs: no liveness probe or controller restarts it. Waiting for
     // the convergence deadline therefore cannot change the result, so every held
-    // failure ends the deployment at once with a code naming its cause.
+    // failure ends the deployment at once with a code naming its cause. The kubelet
+    // does restart a refused workspace setup, but it refuses the same way each time.
     const heldFailureCode =
       runtimeFailure === undefined ? undefined : heldRuntimeFailureCode(runtimeFailure.code);
     let resolved: RevisionDispatchResult;

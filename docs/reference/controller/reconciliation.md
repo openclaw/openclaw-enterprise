@@ -204,15 +204,15 @@ pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
-measured from the original operation creation time on PostgreSQL's clock, so
+measured from operation creation on PostgreSQL's clock, so
 controller clock skew cannot move it. Exceeding it fails the operation with
-`CONVERGENCE_DEADLINE_EXCEEDED`. A runtime that reports a deterministic
-credential rejection fails the deployment earlier with
+`CONVERGENCE_DEADLINE_EXCEEDED`. A runtime reporting a deterministic
+credential rejection fails deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of
 CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures a runtime holds
 until restart fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
-`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, and
-`RUNTIME_STARTUP_FAILED`. A dedicated gateway that refuses its own in-Pod CLI as
+`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
+and a refused workspace setup (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
 unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
 the revision fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as

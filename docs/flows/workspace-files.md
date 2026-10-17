@@ -127,8 +127,9 @@ Missing or mismatched markers after recorded completion block startup, preservin
 later edits. Errors omit document contents.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:safeRuntimeFailureObservation`
-preserves valid SDK `Date` termination times in `checkedAt`; missing or invalid
-times still use observation time.
+reports a refusal (exit 2) as `WORKSPACE_SETUP_REFUSED`, failing deployment at
+once; Kubernetes restarts other failures (`WORKSPACE_SETUP_RETRYING`).
+`checkedAt` is the valid termination time or observation time.
 
 ### 3. Activation clears staged contents and keeps completion metadata
 
@@ -325,11 +326,10 @@ replays it. The native client closes in the operation's cleanup path.
 
 ## Debugging and Verification
 
-- For initial setup failure, check revision/work status and the selected Driver's
-  support, native release, defaults identity, and durable workspace placement.
-  `WORKSPACE_SETUP_FAILED` intentionally omits document bytes. Do not delete a
-  completion marker to force a replay; missing initialized storage needs operator
-  recovery, not reuse of the creation payload.
+- For setup failure, check revision/work status, the selected Driver's
+  support, native release, defaults identity and durable workspace placement.
+  Do not delete a completion marker to force a replay; missing initialized
+  storage needs operator recovery, not the creation payload.
 - A stale `workspaceDefaultsId` rejects creation with `409 RESOURCE_CONFLICT`;
   reload the Console create form and resubmit. A create response alone
   does not prove runtime initialization; verify active revision and live content.

@@ -35,10 +35,13 @@ export const RUNTIME_FAILURE_CHECKS = Object.freeze([
 
 /**
  * The evidence Kubernetes Compute builds itself, from Pod status, for a failed
- * initialize-workspace init container (finding 1675).
+ * initialize-workspace init container (finding 1675). The kubelet restarts a failed init
+ * container, so a failure it can retry is WORKSPACE_SETUP_FAILED, and a refusal no retry can
+ * change (the setup runner's exit status 2) is WORKSPACE_SETUP_REFUSED (finding 1677).
  */
 export const WORKSPACE_SETUP_CHECK = "workspace-setup";
 export const WORKSPACE_SETUP_FAILED = "WORKSPACE_SETUP_FAILED";
+export const WORKSPACE_SETUP_REFUSED = "WORKSPACE_SETUP_REFUSED";
 
 /**
  * The checks a runtime diagnostics read reports besides a held startup failure: the Gateway's

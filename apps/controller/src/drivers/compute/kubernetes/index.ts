@@ -138,6 +138,7 @@ import {
   HARNESS_WORKSPACE,
   MANAGED_WORKSPACE,
   requireWorkspaceSetupConfiguration,
+  WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
   WORKSPACE_SETUP_RUNTIME,
   workspaceSetupMainEntry,
   workspaceSetupVerifier,
@@ -5451,8 +5452,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         namespace,
         workspaceSetup !== undefined,
       );
+      // A setup the kubelet is retrying names that wait; a held failure needs none.
       const reason =
-        pendingReason ?? (runtimeFailure === undefined ? await observedPendingReason() : undefined);
+        pendingReason ??
+        (runtimeFailure === undefined
+          ? await observedPendingReason()
+          : runtimeFailure.code === "WORKSPACE_SETUP_FAILED"
+            ? "WORKSPACE_SETUP_RETRYING"
+            : undefined);
       return {
         ...result,
         ...(runtimeFailure === undefined ? {} : { runtimeFailure }),
@@ -9514,16 +9521,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
               ? undefined
               : asRecord(asRecord(initialized?.lastState)?.terminated));
           if (typeof terminated?.exitCode === "number" && terminated.exitCode !== 0) {
-            return {
-              component,
-              check: "workspace-setup",
-              code: "WORKSPACE_SETUP_FAILED",
-              checkedAt:
-                typeof terminated.finishedAt === "string" &&
-                this.validIsoTimestamp(terminated.finishedAt)
-                  ? terminated.finishedAt
-                  : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString()),
-            };
+            const checkedAt =
+              typeof terminated.finishedAt === "string" &&
+              this.validIsoTimestamp(terminated.finishedAt)
+                ? terminated.finishedAt
+                : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString());
+            // The kubelet restarts a failed init container (these Pods restart Always), which
+            // can pass after an I/O or native setup failure. A refusal fails every restart the
+            // same way (finding 1677).
+            return terminated.exitCode === WORKSPACE_SETUP_REFUSED_EXIT_STATUS
+              ? { component, check: "workspace-setup", code: "WORKSPACE_SETUP_REFUSED", checkedAt }
+              : { component, check: "workspace-setup", code: "WORKSPACE_SETUP_FAILED", checkedAt };
           }
         }
       }

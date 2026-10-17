@@ -81,6 +81,11 @@ export function deploymentProgressForWork(
       code = attempt.code;
       message = "Workloads are ready; waiting for the workspace node to connect to the Gateway.";
       break;
+    case "WORKSPACE_SETUP_RETRYING":
+      code = attempt.code;
+      message =
+        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, check this version's logs.";
+      break;
     case "WORKSPACE_NODE_BINDING_PENDING":
       code = attempt.code;
       message = "Workloads are ready; waiting for the Gateway to apply the workspace node.";
@@ -676,6 +681,8 @@ function deploymentErrorMessage(code: string): string {
       return "A Secret this revision binds is missing or no longer belongs to the selected Secret Driver. Bind available Secrets, then deploy again.";
     case "NAMESPACE_NOT_READY":
       return "The Agent's Namespace was not ready when the controller ran this deployment, for example while it is being deleted. Deploy again once the Namespace is ready.";
+    case "WORKSPACE_SETUP_REFUSED":
+      return "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.";
     case "WORKSPACE_SETUP_UNSUPPORTED":
       return "The Agent was created with initial workspace files, which the Installation's Compute Driver cannot set up. Ask an admin to select a Compute Driver that supports them, then deploy again, or create the Agent without initial workspace files.";
     case "DEPENDENCY_UNAVAILABLE":

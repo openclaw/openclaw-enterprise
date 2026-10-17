@@ -9,6 +9,7 @@ import {
   UNRECOGNIZED_RUNTIME_VALUE,
   WORKSPACE_SETUP_CHECK,
   WORKSPACE_SETUP_FAILED,
+  WORKSPACE_SETUP_REFUSED,
 } from "@openclaw-enterprise/contracts";
 import type {
   RuntimeDiagnosticCheck,
@@ -79,7 +80,7 @@ export function runtimeFailureCause(value: unknown): RuntimeFailureCause | undef
 
 const RUNTIME_COMPONENT_SET: ReadonlySet<string> = new Set(RUNTIME_COMPONENTS);
 // Runtime entrypoints hold a failure under these checks and codes, and Kubernetes Compute
-// builds workspace-setup / WORKSPACE_SETUP_FAILED itself from Pod status (finding 1675).
+// builds the workspace-setup record itself from Pod status (findings 1675, 1677).
 const RUNTIME_FAILURE_CHECK_SET: ReadonlySet<string> = new Set([
   ...RUNTIME_FAILURE_CHECKS,
   WORKSPACE_SETUP_CHECK,
@@ -87,6 +88,7 @@ const RUNTIME_FAILURE_CHECK_SET: ReadonlySet<string> = new Set([
 const RUNTIME_FAILURE_CODE_SET: ReadonlySet<string> = new Set([
   ...RUNTIME_DIAGNOSTIC_CODES,
   WORKSPACE_SETUP_FAILED,
+  WORKSPACE_SETUP_REFUSED,
 ]);
 // A diagnostics read reports a held startup failure first, then the runtime's own checks.
 const RUNTIME_DIAGNOSTIC_CHECK_SET: ReadonlySet<string> = new Set([
