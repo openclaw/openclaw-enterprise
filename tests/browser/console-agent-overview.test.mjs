@@ -633,23 +633,23 @@ test("opening the Logs tab by URL does not move the page", async (t) => {
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     // The runtime status read settles after the page has scrolled to the Logs tab, as on a
     // live cluster where it takes about a second.
-    const runtimeUrl = `${deploymentUrl(fixture, namespace, agent, active.revision)}/runtime`;
-    await page.route(runtimeUrl, async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      await route.continue().catch(() => {});
-    });
+    await page.route(
+      `${deploymentUrl(fixture, namespace, agent, active.revision)}/runtime`,
+      async (route) => {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        await route.continue().catch(() => {});
+      },
+    );
     await trackSettledFetches(page);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     await page.getByRole("link", { name: "Steady Logs Agent" }).waitFor();
     await page.addInitScript(recordLayoutShifts);
-    const statusRead = page.waitForResponse(runtimeUrl);
     // A full load, so no recent input excuses a shift.
     await page.goto(detailUrl(fixture, namespace.id, agent.id, active.revision.id, "logs").href);
     await page.getByText("startup line 29", { exact: false }).waitFor();
     await page.getByRole("heading", { name: "Version v1" }).waitFor();
     await page.evaluate(() => globalThis.document.fonts.ready);
     // The slow status read and every other read have landed and painted.
-    await statusRead;
     await waitForIdleFetches(page);
     await nextFrames(page);
     const { shift, shifts } = await takeLayoutShifts(page);
