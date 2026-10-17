@@ -252,3 +252,9 @@ Plan filenames and historical commit links retain their original names.
 | `39-sandbox-credential-injection.md`      | [RFC-0016](../../specs/rfcs/0016-sandbox-credential-injection/index.md) |
 | `40-agent-egress-0x`                      | [RFC-0017](../../specs/rfcs/0017-agent-egress-0x/index.md)              |
 | `2026-09-28-installation-profiles-design` | [RFC-0018](../../specs/rfcs/0018-installation-profiles-design/index.md) |
+
+The unmerged Egress Proxy proposal was renumbered after RFC-0019 was assigned:
+
+| Previous RFC path                         | Current RFC                                                                  |
+| ----------------------------------------- | ---------------------------------------------------------------------------- |
+| `0019-egress-proxy-credential-lifecycle/` | [RFC-0021](../../specs/rfcs/0021-egress-proxy-credential-lifecycle/index.md) |
