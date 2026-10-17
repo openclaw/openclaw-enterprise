@@ -73,7 +73,7 @@ async function failMethod(page, pattern, method, { status, error, requestId }) {
 }
 
 // Every case builds its own Console and browser context, so cases run a few at a time.
-describe("console Agent channels", { concurrency: 3 }, () => {
+describe("Agent channels", { concurrency: 3 }, () => {
   test("Channel drawer saves channel edits without exposing Secret values or dropping unrelated draft state", async (t) => {
     const secretValue = "super-secret-channel-value";
     const slackAppSecretValue = "super-secret-slack-app-value";

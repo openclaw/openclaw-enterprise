@@ -11,7 +11,8 @@ const checker = join(repositoryRoot, "scripts/verify-module-boundaries.mjs");
 const policyPath = join(repositoryRoot, "scripts/module-boundaries/policy.json");
 const exceptionsPath = join(repositoryRoot, "scripts/module-boundaries/exceptions.json");
 
-// Each check type-checks the whole source tree for seconds of CPU, so the checks run at once.
+// Each check builds a type-checked program over the whole source tree (seconds of CPU), so
+// independent checks run concurrently.
 async function check(root) {
   const { status, signal, stdout, stderr } = await new Promise((resolve, reject) => {
     const child = spawn(
@@ -49,6 +50,17 @@ async function sourceCopy(t, policy) {
   return root;
 }
 
+// Waits for every promise, so no copy or check is still running when cleanup starts, then
+// throws the first failure.
+async function settleAll(promises) {
+  const results = await Promise.allSettled(promises);
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) {
+    throw failed.reason;
+  }
+  return results.map((result) => result.value);
+}
+
 async function writeProbe(root, source, text) {
   const probe = join(root, source);
   await mkdir(dirname(probe), { recursive: true });
@@ -65,7 +77,7 @@ describe("module policy", { concurrency: true }, () => {
   test("repository policy allows a public root and rejects a new HTTP Driver import", async (t) => {
     const policy = JSON.parse(await readFile(policyPath, "utf8"));
     // One copy per probe, so the allowed and rejected checks run at once.
-    const [allowedRoot, rejectedRoot] = await Promise.all([
+    const [allowedRoot, rejectedRoot] = await settleAll([
       sourceCopy(t, policy),
       sourceCopy(t, policy),
     ]);
@@ -78,7 +90,7 @@ describe("module policy", { concurrency: true }, () => {
       source,
       allowedImport + 'import "../drivers/compute/docker/index.ts";\n',
     );
-    const [allowed, rejected] = await Promise.all([check(allowedRoot), check(rejectedRoot)]);
+    const [allowed, rejected] = await settleAll([check(allowedRoot), check(rejectedRoot)]);
     assert.equal(allowed.status, 0, JSON.stringify(allowed.report.violations));
     assert.ok(
       allowed.report.edges.some(
