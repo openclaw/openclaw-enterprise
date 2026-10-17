@@ -3054,6 +3054,10 @@ export const scenarios = {
     ],
     description:
       "Sharing remains disabled while the configured role catalog is unavailable; existing assignments can be removed.",
+    steps: [
+      "Open Namespaces, then use Back. Confirm role choices remain disabled and the existing assignment can still be removed.",
+      "Remove the binding and confirm Namespace discovery remains available.",
+    ],
   },
   agentSharingDenied: {
     group: "Pages/Agent detail",
