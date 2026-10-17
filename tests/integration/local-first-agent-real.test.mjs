@@ -1268,7 +1268,7 @@ test(
               baseUrl: provider.baseUrl,
               api: provider.api,
               models: provider.models,
-              apiKey: { source: "env", provider: "model", id: "OPENAI_API_KEY" },
+              apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
             };
             configuration.agents.defaults.model = `openai/${model}`;
             configuration.agents.defaults.models = {
