@@ -122,12 +122,15 @@
     {
       "path": "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
       "expectedTests": [
+        "repository service outage during Agent stop still stops Compute and retains durable closing work",
         "worker restart resumes repository maintenance and repairs only Compute's exact missing subset once"
       ]
     },
     {
       "path": "tests/integration/postgres-worker-agent-revision-stop.test.mjs",
       "expectedTests": [
+        "deployment inventory survives retained completed repository cleanup and preserves deployment guards",
+        "Agent deletion completes with unresolved repository sessions retained as evidence",
         "Agent stop clears only the exact active pointer after Compute shutdown and retries safely",
         "a stop admitted after the last running check waits for the claimed revision work, then stops the Agent",
         "Agent stop cleans a terminal candidate without an active revision",

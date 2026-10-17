@@ -131,6 +131,10 @@ unauthorized resource. JSON and YAML output include each Agent's desired runtime
 state, execution mode, active revision, and whether deployment work is queued or
 claimed.
 
+Deployment inventory reports Agent deployment work. It does not report whether
+repository cleanup has finished. Cleanup records remain in the work queue with
+their existing state, including after the Agent is deleted.
+
 ## Runtime status and logs
 
 `occ agent runtime AGENT_ID` and `occ agent logs AGENT_ID` read the

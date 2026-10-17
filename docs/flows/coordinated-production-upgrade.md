@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-12"
-last_updated_session: "authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031"
+updated: "2026-10-17"
+last_updated_session: "authoring-run/af74f35a-b377-4437-94ce-c5881f9cbb5a"
 ---
 
 # Production image upgrade flow
@@ -70,6 +70,12 @@ Image flags select images after this comparison.
 A runtime release also reads complete authorized inventory and records every running Agent's baseline
 revision. Nonterminal deployment work, a missing active revision, or an unready
 Namespace stops preparation. Stopped and deleting Agents are excluded.
+
+`packages/occ/src/state/postgres-state.ts:operations.list` excludes repository
+cleanup using the queue's exact `repositoryCleanupSql` predicate. Cleanup may
+remain queued after an Agent is deleted. It stays in the work queue with its
+existing state; inventory neither waits for it nor marks it complete. Genuine
+revision reconciliation work still determines `deploymentInProgress`.
 
 For repository-enabled releases, the helper requires explicit immutable
 controller and broker images. It inventories every node matching the control
@@ -249,6 +255,10 @@ checks the exported inventory before following the recovery procedure. Empty
 
 ## Debugging and Verification
 
+- The PostgreSQL revision-worker stop and teardown suites cover retained cleanup,
+  unknown session outcomes, and genuine queued/claimed deployments. Repository
+  and Compute boundary Drivers supply observations; this is not a live service
+  or deployed upgrade proof. See [PostgreSQL setup](../testing/postgresql.md).
 - Inspect `server-dry-run.txt` for chart or admission failures before mutation,
   and `preflight-<api|worker>.log` and `-status.json` for a rejected candidate.
 - For OCC rollout failures, inspect `helm-upgrade.txt`, initialization Job logs,
@@ -280,6 +290,8 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-17 19:01: Exclude repository cleanup in every state from deployment inventory while preserving genuine deployment guards. (authoring-run/af74f35a-b377-4437-94ce-c5881f9cbb5a - edb197e6976a5737742cf7ee7fad43e3b06d5810)
 
 - 2026-10-12 15:14: Record bootstrap Job grants required by the two-cluster upgrade preflight alongside the fixture correction. (authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031 - 9578f6f7aaff9b8545346f43043cbc5b9bcf674e)
 

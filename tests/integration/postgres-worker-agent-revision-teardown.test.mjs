@@ -1086,6 +1086,11 @@ test(
       );
       return deferred.rowCount === 1 ? true : undefined;
     });
+    // A provider outage leaves cleanup pending without making fleet inventory unavailable.
+    const inventory = await fixture.controller.getInstallationDeploymentInventory(fixture.actor.id);
+    const agents = inventory.namespaces.find(({ id }) => id === fixture.namespace.id).agents;
+    assert.ok(agents.some(({ id }) => id === owner.id));
+    assert.equal((await repositoryAttempts(fixture, candidate))[0].phase, "closing");
     unavailable = false;
     await advanceCleanupRetries(fixture, candidate);
     await waitFor(

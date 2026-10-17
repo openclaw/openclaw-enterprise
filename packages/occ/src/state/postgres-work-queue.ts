@@ -165,7 +165,7 @@ export function isRepositoryRuntimeRetirementWork(
   );
 }
 
-function repositoryCleanupSql(alias: string): string {
+export function repositoryCleanupSql(alias: string): string {
   return `(${alias}.namespace_target IS NULL AND ${alias}.agent_target IS NULL
     AND (
       (${alias}.agent_id IS NOT NULL
