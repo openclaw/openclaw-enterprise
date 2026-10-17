@@ -3870,6 +3870,28 @@ export const scenarios = {
     description:
       "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus while the request runs.",
   },
+  deployRefusedBeforeAdmission: {
+    group: "Pages/Agent detail",
+    name: "Deployment refused before admission",
+    path: draft,
+    rules: [
+      {
+        method: "POST",
+        suffix: "/deploy",
+        delayMs: 1_000,
+        status: 503,
+        code: "DEPENDENCY_UNAVAILABLE",
+        message:
+          "The selected Secret Driver does not own a Secret the Configuration binds. Bind only Secrets stored through the selected driver: update the Configuration's secretBindings, or assign the Agent another Configuration.",
+      },
+    ],
+    description:
+      "The Controller refuses this deployment because the Configuration binds a Secret from a different Secret Driver.",
+    steps: [
+      "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
+      "Read the refusal. Focus returns to Deploy new version, enabled and described by that message. No second request is sent.",
+    ],
+  },
   deployOutcomeUnknown: {
     group: "Pages/Agent detail",
     name: "Deployment outcome unknown",

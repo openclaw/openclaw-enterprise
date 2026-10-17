@@ -265,13 +265,14 @@ admitted revision** shows the frozen snapshot.
 
 ### Update
 
-In **New version in progress**, v7 deploys while v6 remains current. **Current
-version during deployment** shows v6 with v7 activity. Compare queued, failed,
-activated, and unavailable states. Resize **First version**: wrapped lines align
-under each step, not its number.
+Compare **New version in progress** (v7 deploying) with **Current version during
+deployment** (v6 current). Check queued, failed, activated, and unavailable states.
+In **First version**, wrapped lines align under each step, not its number.
 
-In **Deployment outcome unknown**, press Enter on **Deploy new version**.
-“Deploying…” clears, “Outcome unknown” takes focus, and Deploy stays disabled.
+Press Enter on **Deploy new version**. Focus moves to “Deploying…”, then:
+
+- **Deployment refused before admission:** back to Deploy, enabled and described by the refusal.
+- **Deployment outcome unknown:** to “Outcome unknown.” Deploy stays disabled; inspect the saved state before retrying.
 
 From **New version failed** or **Failed deployment logs from draft**, open v7
 Logs, check output or access denial, then go Back. In **Runtime status and logs

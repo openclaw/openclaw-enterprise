@@ -75,6 +75,10 @@ export const UnreadableRevisionConfiguration = story("unreadableRevisionConfigur
 export const RevisionError = { ...story("revisionError"), name: "Revision history unavailable" };
 export const DeployDenied = { ...story("deployDenied"), name: "Deployment denied" };
 export const DeployInProgress = { ...story("deployInProgress"), name: "Deployment in progress" };
+export const DeployRefusedBeforeAdmission = {
+  ...story("deployRefusedBeforeAdmission"),
+  name: "Deployment refused before admission",
+};
 export const DeployOutcomeUnknown = {
   ...story("deployOutcomeUnknown"),
   name: "Deployment outcome unknown",
