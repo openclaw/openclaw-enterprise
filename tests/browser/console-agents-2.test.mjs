@@ -800,6 +800,7 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     const deploymentReads = [];
     const deploymentRequests = [];
     const stalledRead = Promise.withResolvers();
+    let stalledCancelled = Promise.resolve(false);
     page.on("request", (request) => {
       if (new URL(request.url()).pathname.includes("/deployments/")) {
         deploymentRequests.push(new URL(request.url()).pathname);
@@ -812,9 +813,18 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
         deploymentReads.push(read);
         const lastAttempt = attempts[Math.min(deploymentReads.length - 1, attempts.length - 1)];
         if (lastAttempt === "stalled") {
-          // Outlast the next poll, which cancels this read.
+          // Hold this read until the next poll cancels it.
+          stalledCancelled = page
+            .waitForEvent("requestfailed", {
+              predicate: (failed) => failed === route.request(),
+              timeout: 10_000,
+            })
+            .then(
+              () => true,
+              () => false,
+            );
           stalledRead.resolve();
-          await new Promise((resolve) => setTimeout(resolve, 1_500));
+          await stalledCancelled;
           await route.abort().catch(() => {});
           return;
         }
@@ -884,8 +894,9 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
         }
       }).observe(globalThis.document.body, { childList: true, subtree: true });
     });
-    await page.clock.install({ time: 0 });
-    await page.clock.pauseAt(1_000);
+    const start = Date.now();
+    await page.clock.install({ time: start });
+    await page.clock.pauseAt(start + 1_000);
     await page.getByRole("button", { name: "Create Agent" }).click();
     // Each poll waits one second, spent on an optional deployment read. Advance the clock only
     // once the page has handled this poll's job read and its deployment read, so it waits on the
@@ -912,6 +923,11 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     // Only a running job that handed off its deployment reads it, once per job read.
     assert.deepEqual(deploymentReads, [3, 4, 5]);
     assert.equal(deploymentRequests.length, 3);
+    assert.equal(
+      await stalledCancelled,
+      mode === "interrupted",
+      "the next poll must cancel the stalled deployment read",
+    );
     assert.deepEqual(
       await page.evaluate(() => globalThis.provisioningWrites),
       {
