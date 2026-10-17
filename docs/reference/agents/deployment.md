@@ -163,9 +163,9 @@ While a revision is not ready, deployment `progress.lastAttempt.code` says why
 when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live
 revision Pod has `PodScheduled` `False` with reason `Unschedulable`,
 `NAMESPACE_POD_QUOTA_EXCEEDED` when a revision Deployment's `ReplicaFailure`
-names a Pod quota still full, and `WORKSPACE_NODE_PENDING` when the
-Harness and gateway are ready and only the workspace node's gateway connection
-is outstanding. Activation of a dedicated revision reports
+names a full Pod quota, and `WORKSPACE_NODE_PENDING` when the Harness and
+gateway are ready and only the workspace node's gateway connection is
+outstanding. Activation of a dedicated revision reports
 `WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
 workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
 not connected. Otherwise the code is `REVISION_INCOMPLETE`. The revision stays
@@ -185,13 +185,13 @@ A dependency that fails while it converges is pending too.
 through its route yet (for example, the route answers 404 until the gateway
 proxy has the new route, or 503 until it has the ready Pod), and
 `KUBERNETES_API_UNAVAILABLE` means a Kubernetes API request timed out, could not
-connect, or got 429 or 5xx. Both apply during preparation and
-activation. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway
-refuses new requests from the controller because it holds OpenShell's limit of
-durable request admissions; see the
-[OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting).
-The worker retries on the same cadence without spending its
-`OCC_WORKER_MAX_ATTEMPTS` budget. A dependency still failing at the convergence
+connect, or got 429 or 5xx. Both apply in preparation and
+activation. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway holds
+its limit of durable request admissions and refuses requests (see
+[OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting));
+`SANDBOX_GATEWAY_UNAVAILABLE`, that it left a Harness status read unanswered.
+The worker retries on the same cadence without spending
+`OCC_WORKER_MAX_ATTEMPTS`. A dependency still failing at the convergence
 deadline fails the deployment with its own code.
 
 `REFUSED_CANDIDATE_STOP_PENDING` means the worker refused the candidate but could

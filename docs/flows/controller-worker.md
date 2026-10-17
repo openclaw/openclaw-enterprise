@@ -374,12 +374,12 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 - For queued operations, compare API and worker database and Installation
   configuration, then inspect `worker.completed` and `worker.error`. Check
   current IAM state for `ACTOR_REVOKED` or `AUTHORIZATION_DENIED`; `DEPENDENCY_UNAVAILABLE`
-  is retryable within `OCC_WORKER_MAX_ATTEMPTS`; `CLAIM_LOST` ends publication ownership.
-  A revision pass [deferred](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-  on `AGENT_GATEWAY_UNAVAILABLE`, `KUBERNETES_API_UNAVAILABLE` or
-  `SANDBOX_ADMISSION_LIMIT_REACHED` logs `dependency` and `cause` (`unreachable`,
-  `timeout` or `unavailable`); other failures log their error class in `cause` and,
-  for HTTP errors, `status`.
+  retries within `OCC_WORKER_MAX_ATTEMPTS`; `CLAIM_LOST` ends publication ownership. A
+  revision pass [deferred](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
+  on `AGENT_GATEWAY_UNAVAILABLE`, `KUBERNETES_API_UNAVAILABLE`,
+  `SANDBOX_ADMISSION_LIMIT_REACHED` or `SANDBOX_GATEWAY_UNAVAILABLE` logs `dependency` and
+  `cause` (`unreachable`, `timeout` or `unavailable`); other failures log their error class in
+  `cause` and, for HTTP errors, `status`.
 - `worker.compute-prepare-failed` names the failed Driver stage without the raw
   exception; match its `workId` or `revisionId` to the next `worker.completed`.
 - [Revision](../../tests/integration/postgres-worker-agent-revision.test.mjs),

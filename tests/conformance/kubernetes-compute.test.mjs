@@ -1768,6 +1768,13 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
   assert.equal(withdrawals.length, 1);
   assert.deepEqual(observations, []);
+  // An enrolled node that is reconnecting is waited for, not read: the exposure is gone, and
+  // the worker is past the checks the read was for.
+  state.connected = false;
+  assert.equal((await prepare()).ready, false);
+  assert.equal(provisions.at(-1).workspaceNodeEnrolled, true);
+  assert.deepEqual(observations, []);
+  assert.equal(withdrawals.length, 1);
 });
 
 // Finding 1297: the projection covers every setting the Harness model rule checks, not only

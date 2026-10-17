@@ -197,8 +197,9 @@ failure that clears without a change to the revision is deferred like
 convergence instead: the Agent Gateway route refusing or dropping the worker's
 connection while it converges (`AGENT_GATEWAY_UNAVAILABLE`), a Kubernetes API
 request that timed out, never reached the API server, or got 429 or 5xx
-(`KUBERNETES_API_UNAVAILABLE`), or an OpenShell gateway refusing new requests at
-its durable request admission limit (`SANDBOX_ADMISSION_LIMIT_REACHED`). Each such
+(`KUBERNETES_API_UNAVAILABLE`), an OpenShell gateway refusing new requests at
+its durable request admission limit (`SANDBOX_ADMISSION_LIMIT_REACHED`), or not
+answering a Harness status read (`SANDBOX_GATEWAY_UNAVAILABLE`). Each such
 pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.

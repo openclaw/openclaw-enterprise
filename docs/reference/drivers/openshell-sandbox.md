@@ -267,9 +267,9 @@ For dedicated Codex, `CreateSandbox` includes one unnamed exposure for Compute's
 literal `APP_SERVER_PORT`. The revision UUID is the first `request_id`; bounded
 [request ID retries](../../flows/openshell-sandbox-provisioning.md#4-call-the-versioned-gateway-contract)
 handle unresolved refusals when no Sandbox exists. Reconciliation adopts only an
-exact Sandbox and exposure. The client retains a normalized control URL and the
-original advertised workload URL, which the optional Harness endpoint capability
-returns as a WebSocket origin.
+exact Sandbox. The client retains a normalized control URL and the
+original advertised workload URL, which the Harness endpoint capability returns
+as a WebSocket origin.
 
 Compute supplies only `APP_TOKEN_SHA`, never the raw token; bearer passthrough
 forwards the header Codex, or a native held failure, authenticates. Other
@@ -280,9 +280,10 @@ With that capability, Compute replaces the fail-closed Gateway target and omits
 the direct Agent Service and Compute-owned Harness route. Drivers without it
 retain the Kubernetes transport.
 
-Native OpenClaw does not accept inbound Harness traffic. Its enrolled node host
-opens the connection to the Agent Gateway, so the Driver sends an empty service
-exposure list and rejects any unexpected service URL returned by OpenShell.
+A native worker's node opens the Gateway connection itself. Its exposure serves
+only Compute's held-failure read before enrollment; OpenShell routes it
+unauthenticated, so once the node enrolls the Driver deletes it
+(`DeleteService`, fail closed) and adopts the Sandbox without one.
 
 ## Kubernetes and admission requirements
 

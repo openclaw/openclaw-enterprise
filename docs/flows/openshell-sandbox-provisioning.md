@@ -198,7 +198,7 @@ loader names it; startup instead logs `startup-error` / `STARTUP_FAILED` before
 Kubernetes calls. Duplicate names and reserved `workspace-node-enrollment` fail
 before Driver construction. Rename them, retaining binaries and endpoints.
 
-`provisionHarness` creates or adopts the provider with final setup. Expired setup renewal version-fences `UpdateProvider` to `node_setup_json`. For Codex, a bounded post-create delay precedes the exposed route; Compute rolls the Gateway before observing enrollment. Native OpenClaw has no inbound route.
+`provisionHarness` creates or adopts the provider with final setup. Expired setup renewal version-fences `UpdateProvider` to `node_setup_json`. For Codex, a bounded post-create delay precedes the exposed route; Compute rolls the Gateway before observing enrollment.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA`, no `APP_SERVER_TOKEN`,
 and two bounded plugin-free runtime inputs. Selected plugins, repository broker
@@ -209,8 +209,8 @@ Revision providers use `oce-codex-runtime` or `oce-openclaw-runtime`. Both suppl
 Before renewal, the Driver requires the same endpoint and TLS fingerprint, an
 expired stored envelope, a later live expiry, and unchanged runtime and CA
 configuration. The Sandbox network policy limits the connection to the exact
-Gateway endpoint and `/usr/local/bin/node`. Foreign ownership or other drift
-fails before Sandbox creation.
+Gateway endpoint and `/usr/local/bin/node`. Foreign ownership or drift fails
+before Sandbox creation.
 
 The Driver mounts revision state at `/sandbox/.openclaw-runtime` and persistent
 subpaths below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
@@ -218,17 +218,17 @@ the runtime home, declared as `harnessHome` for native hook credentials. Codex
 hooks trust the provider-file Gateway CA and require node-reachable routing.
 `OPENCLAW_NODE_STATE_DIR` uses a process-created `state` child to avoid atomic
 replacement through symlinks/root-owned mounts. Workspace, node identity, sessions
-and images stay separate. The supervisor probes `/tmp`; native `TMPDIR` uses a
+and images stay separate. The supervisor probes `/tmp`; native `TMPDIR` is a
 private runtime-home `tmp` child.
 
 `prepareNativeWorkspace` uses a restricted revision-owned Deployment to privatize
 writable PVC subpaths, preserving retained entries. Verification checks mode and
-process ownership before UID-fenced foreground deletion and writer Pod termination.
+process ownership before UID-fenced foreground deletion and writer termination.
 Preparation requires `userNamespaces: false` and the pinned Gateway's default
 identity. It adds no model credential, ServiceAccount token, capability or direct
 Pod creation.
 
-Initial document delivery remains separate from native subpath preparation.
+Initial document delivery stays separate from native subpath preparation.
 After Sandbox readiness, `initializeWorkspace` checks the private setup Secret's
 Namespace, Agent and setup identity, then sends the shared initializer and JSON
 stdin through authenticated `ExecSandbox`. A workspace `flock` serializes attempts;
@@ -236,7 +236,7 @@ the Harness waits for its completion marker. See [workspace initialization](work
 
 Credential attachments require OCC `oce-cs-` names without static-provider duplicates.
 Model profiles bind access to the selected Codex/Node executable. Production
-qualification remains outstanding.
+qualification is outstanding.
 
 ### 4. Call the versioned gateway contract
 
@@ -254,23 +254,25 @@ bearer-passthrough `APP_SERVER_PORT` exposure (Codex transport, native held
 failure); only Codex returns a URL. The Driver reads before creating and adopts an existing
 or `ALREADY_EXISTS` Sandbox only with exact Workspace, labels, annotations and spec,
 neither stopped nor deleting. Workspace `sandbox:write` permits replacement and
-defines the trust boundary.
+defines the trust boundary. Native exposure ends at enrollment:
+`withdrawHarnessExposure` and `workspaceNodeEnrolled` adoption delete it fail
+closed.
 
-The Backend reuses clients and retries setup. Cancellation is
+The Backend reuses clients, retrying setup. Cancellation is
 checked after setup/credential preparation, so stalled initialization/file reads
 remain unbounded. After dispatch, cancellation stops local gRPC; remote mutations
-may continue and require recovery.
+may continue, requiring recovery.
 
 `GetService` separates the control URL from advertised workload host/port.
 `harnessEndpoint` returns its WebSocket origin and configured
 `sandboxDataMount.mountPath` (default `/sandbox/enterprise`). Native-hook storage
-uses `harnessHome` with mode `0700`. Invalid or changed exposure fails closed.
+uses `harnessHome`, mode `0700`. Invalid or changed exposure fails closed.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` probes the
-authenticated WebSocket handshake before reading a held-failure document.
+authenticated WebSocket handshake before reading a held-failure document;
+unanswered reads are transient `SANDBOX_GATEWAY_UNAVAILABLE`.
 `apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
-destroys HTTP refusal responses immediately, so unfinished bodies cannot retain
-connections after the probe returns.
+destroys HTTP refusals at once, releasing their connections.
 
 Provider files use reported absolute paths; Gateway failure prevents
 readiness. Revision providers survive uncertain creates; cleanup deletes their

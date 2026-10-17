@@ -42,9 +42,12 @@ relay URL and authentication.
 `harnessStatus(context)` observes the Harness's exposed port with the Agent
 transport token. It answers `serving` only after an authenticated handshake, or
 `failed` with the Harness's held startup failure, which Compute validates and
-fails the revision with; anything else is `starting`. Compute activates only a
-`serving` Codex Harness, and reads a dedicated OpenClaw worker's status only
-while its node has not connected. An endpoint may select
+fails the revision with; anything else is `starting`. A read the provider does
+not answer is a transient dependency failure, not evidence. Compute activates
+only a `serving` Codex Harness, and reads a dedicated OpenClaw worker's status
+only before its node has enrolled (`workspaceNodeEnrolled` in the context); then
+it calls `withdrawHarnessExposure(context)`, which removes that worker's exposure
+and resolves only once the provider confirms it gone. An endpoint may select
 `codexPermissionProfile: ":danger-full-access"` when the provider supplies the
 sandbox boundary. Kubernetes Compute projects that selection to the Gateway;
 without it, the Codex bridge retains its configured sandbox behavior.
