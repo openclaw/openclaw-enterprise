@@ -10,6 +10,11 @@ panel with **Close** or Escape.
 Choose **Refresh people** after a new teammate connects or changes their profile.
 Initials replace a missing avatar.
 
+> **Trusted teammates only.** Profiles and roles do not give each person a separate
+> sandbox. Review the
+> [shared-Agent trust boundary](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication)
+> before inviting teammates.
+
 Viewing the roster requires administration permission for this Agent. It is
 read-only: manage Gateway access through your identity provider/ingress and roles
 in OpenClaw. A listed profile does not prove current access or an active connection.

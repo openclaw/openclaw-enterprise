@@ -150,6 +150,11 @@ writes or gateway Pod/exec access.
 
 ### Configure native gateway authentication
 
+> **Warning: shared human access is for trusted teammates only.** Review the
+> [shared-Agent trust boundary](../../reference/drivers/kubernetes-compute/networking-and-isolation.md#gateway-authentication)
+> before adding human identities. Removing login access is not an emergency stop
+> for work already accepted by the Agent.
+
 Set the actual Envoy socket source CIDRs in the trusted Installation YAML:
 
 ```yaml

@@ -63,6 +63,17 @@ All routing requires `gateway.auth.mode: trusted-proxy` and
 Human policies must retain machine entries.
 Empty allowlists and nonstring, blank, or untrimmed identities fail closed.
 
+> **Warning: trusted teammates only.** Enable shared human access only for
+> teammates trusted with the Agent's configured tools, credentials and workspace.
+> Individual profiles provide attribution, and Gateway roles restrict operations;
+> they do not create separate execution environments for each person. Participants
+> share the Agent's sandbox and its OpenShell policy when OpenShell is configured.
+>
+> Removing Gateway access is not confirmation that previously accepted work has
+> stopped. Use separate Agents and sandboxes when people must not share tools,
+> credentials or files. See OpenClaw's
+> [multi-user trust boundary](https://docs.openclaw.ai/concepts/multi-user#trust-boundary).
+
 Compute renders `gateway.trustedProxies` from `network.gatewayTrustedProxyCidrs`
 and `gateway.allowRealIpFallback: true`; CIDR order may differ.
 Conflicting/unsupported settings return `409 RESOURCE_CONFLICT` with setting/requirement,
