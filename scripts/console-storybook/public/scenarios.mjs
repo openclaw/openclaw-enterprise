@@ -11,6 +11,15 @@ const click = (text) => ({ click: text });
 const form = [click("Start with default Preset")];
 const oauthForm = [...form, { selector: "#agent-auth-method", value: "credential_source" }];
 const startOAuthLogin = [...oauthForm, click("Sign in with OAuth")];
+const reservedConfigurationWrite = {
+  path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+  method: "PATCH",
+  status: 409,
+  code: "RESOURCE_CONFLICT",
+  message:
+    "The Configuration is reserved for provisioning and is not available for this operation.",
+};
+
 const createModelSecret = (value) => [
   { selector: "#provider-credential-secret", value: "__openclaw_create_secret__" },
   { selector: "#create-provider-credential-secret-value", value },
@@ -1926,9 +1935,9 @@ export const scenarios = {
       { selector: ".launch-runtime summary", click: true },
     ],
     description:
-      "This simulated Installation selects a Sandbox Driver that cannot provision dedicated OpenClaw, so it admits no OpenClaw execution mode: the Sandbox Driver refuses Embedded and cannot run Dedicated. Both modes are disabled, an alert explains why, and Create Agent stays disabled before any Configuration or Agent is saved.",
+      "This Sandbox Driver refuses Embedded OpenClaw and cannot provision Dedicated OpenClaw. The form explains why neither mode is available, disables Create Agent, and does not promise to save a draft.",
     steps: [
-      "Confirm both execution modes are disabled for OpenClaw and Create Agent is disabled.",
+      "Look for “Execution mode unavailable” in Runtime details. Both modes and Create Agent are disabled; there is no “saved as drafts” message.",
       "Select Codex and confirm the alert clears and Dedicated remains available.",
     ],
   },
@@ -2956,13 +2965,20 @@ export const scenarios = {
     name: "Edit Configuration",
     path: draft,
     actions: [click("Edit Configuration")],
+    rules: [
+      {
+        method: "PATCH",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        delayMs: 1500,
+      },
+    ],
     description:
       "Save this draft without leaving the editor’s place on the page. Deployment is a separate action.",
     steps: [
       "Choose Edit Configuration with the keyboard. Focus moves to the Configuration JSON editor.",
       "Change a draft setting, then choose Save Configuration.",
-      "Look for “Configuration saved.” Focus returns to Edit Configuration, with that confirmation as its description.",
-      "Open the editor again and choose Cancel. Focus returns to Edit Configuration without saving.",
+      "If you stay in the editor, focus returns to Edit Configuration with “Configuration saved.” as its description.",
+      "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
     ],
   },
   gatewayPasswordAccess: {
@@ -3853,6 +3869,18 @@ export const scenarios = {
     description:
       "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus while the request runs.",
   },
+  deployOutcomeUnknown: {
+    group: "Pages/Agent detail",
+    name: "Deployment outcome unknown",
+    path: draft,
+    rules: [{ method: "POST", suffix: "/deploy", delayMs: 1_000, status: 503, once: true }],
+    description:
+      "The browser gets a 503 after submitting a deployment. It cannot tell whether the Controller accepted the request.",
+    steps: [
+      "Focus Deploy new version and press Enter. Focus moves to “Deploying…” while the request is pending.",
+      "When “Outcome unknown” takes focus, “Deploying…” is gone and Deploy is still disabled. Refresh and inspect the saved state before trying again.",
+    ],
+  },
   deployRefusedSetting: {
     group: "Pages/Agent detail",
     name: "Deployment refused by a Configuration setting",
@@ -4415,19 +4443,10 @@ export const scenarios = {
     name: "Save refused during provisioning",
     path: `${draft}&tab=channels`,
     slack: true,
-    rules: [
-      {
-        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
-        method: "PATCH",
-        status: 409,
-        code: "RESOURCE_CONFLICT",
-        message:
-          "The Configuration is reserved for provisioning and is not available for this operation.",
-      },
-    ],
+    rules: [reservedConfigurationWrite],
     actions: [click("Edit Slack"), click("Save configuration")],
     description:
-      "The API refuses the write because the Configuration is reserved for provisioning. That 409 has no stale-generation detail, so the editor stays open with the refusal instead of offering a Reload draft that would meet it again.",
+      "Save keeps the editor open and explains that this Configuration is reserved for provisioning. There is no Reload draft action: reloading would not release the reservation.",
   },
   channelSaveRejected: {
     group: "Components/Channels",
@@ -4600,6 +4619,20 @@ export const scenarios = {
     actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
     description:
       "The app token binding is staged to a different Secret while the bot token binding remains unchanged.",
+  },
+  credentialsSaveProvisioningReserved: {
+    group: "Components/Credentials",
+    name: "Secret choices after a refused save",
+    path: `${draft}&tab=credentials`,
+    slack: true,
+    rules: [reservedConfigurationWrite],
+    actions: [{ selector: "#runtime-slack-app-token", value: "sec_demo_slack_backup_token" }],
+    description:
+      "Provisioning has reserved the Configuration. The app token selection is an unsaved choice, not a new binding.",
+    steps: [
+      "Press Save channel Secrets. The Console explains why the Configuration cannot be saved.",
+      "The app token you chose stays selected. The Console does not retry or offer Reload draft.",
+    ],
   },
   credentialsSlackCarried: {
     group: "Components/Credentials",

@@ -692,6 +692,11 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
     "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
   );
   assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "dedicated");
+  assert.match(
+    await presetPage.locator(".launch-runtime summary").innerText(),
+    /Execution mode unavailable/,
+  );
+  assert.equal(await presetPage.locator("#create-agent-form > [role=status]").innerText(), "");
   assert.equal(
     await presetPage.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
     true,
@@ -814,6 +819,10 @@ test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent 
   const alert = page.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
   await alert.waitFor();
   assert.equal(await alert.textContent(), NO_OPENCLAW_MODE);
+  const runtimeSummary = page.locator(".launch-runtime summary");
+  const createStatus = page.locator("#create-agent-form > [role=status]");
+  assert.match(await runtimeSummary.innerText(), /Execution mode unavailable/);
+  assert.equal(await createStatus.innerText(), "");
   const create = page.getByRole("button", { name: "Create Agent", exact: true });
   assert.equal(await create.isDisabled(), true);
   // A submit that bypasses the disabled button is refused too, before any write. Without the
@@ -835,6 +844,8 @@ test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent 
   // Codex remains: choosing it clears the refusal.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   assert.equal(await alert.isHidden(), true);
+  assert.match(await runtimeSummary.innerText(), /Dedicated/);
+  assert.notEqual((await createStatus.innerText()).trim(), "");
 });
 
 const SANDBOX_DRIVER_OUTAGE =
@@ -914,6 +925,11 @@ test("Without a Sandbox Driver, the same Create Agent steps save an Embedded Ope
   const mode = page.getByLabel("Execution mode");
   assert.equal(await mode.inputValue(), "embedded");
   assert.equal(await mode.locator('option[value="embedded"]').isDisabled(), false);
+  assert.match(await page.locator(".launch-runtime summary").innerText(), /Embedded/);
+  assert.match(
+    await page.locator("#create-agent-form > [role=status]").innerText(),
+    /Embedded Agents are saved as drafts/,
+  );
   assert.equal(
     await page
       .getByRole("alert")

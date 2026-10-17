@@ -26,6 +26,7 @@ import {
   rejectionMessage,
   assertReadableConfiguration,
   isStaleGeneration,
+  configurationConflictMessage,
   GENERIC_CONFLICT,
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
@@ -2424,6 +2425,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           deployFeedback.textContent = deployFailureText(error, submitted);
           if (!submitted || clusterRbac || [400, 403, 404, 409, 429].includes(error.status)) {
             deployPending = false;
+          } else {
+            // The request ended, not necessarily the deployment. Keep Deploy disabled and let
+            // the alert explain the unknown outcome instead of leaving “Deploying…” beside it.
+            deployStatus.textContent = "";
           }
         } finally {
           if (context.isCurrent()) {
@@ -2678,8 +2683,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       status.tabIndex = -1;
       control = status;
     }
-    // Focus scrolls only if the control left the viewport.
-    control.focus();
+    // Disabling Save or replacing its editor can leave focus on the body. Restore it
+    // then, but don't take it back from a control the reader reached while saving.
+    if (!document.activeElement || document.activeElement === document.body) {
+      control.focus();
+    }
   }
 
   async function renderTab({ activated = false } = {}) {
@@ -2999,7 +3007,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               error.name === "TypeError"
             ) {
               if (!configurationSaved) {
-                error.message = rejectionMessage(error, mutationStarted);
+                error.message =
+                  configurationConflictMessage(error, mutationStarted) ??
+                  rejectionMessage(error, mutationStarted);
               }
             }
             error.outcomeUnknown =
@@ -3791,7 +3801,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           reloadRequired = true;
           return;
         }
-        feedback.textContent = rejectionMessage(error, mutationStarted);
+        feedback.textContent =
+          configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
+          rejectionMessage(error, mutationStarted);
         feedbackLocked = true;
         outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
       } finally {

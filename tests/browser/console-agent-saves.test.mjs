@@ -5,6 +5,7 @@ import test from "node:test";
 import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  accessBindingPostRequests,
   apiRequests,
   detailUrl,
   fileBrowser,
@@ -1053,8 +1054,6 @@ const reservedSaveCases = [
       await dialog.getByLabel("Direct-message policy").selectOption("disabled");
       await dialog.getByRole("button", { name: "Save configuration" }).click();
     },
-    message:
-      "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.",
   },
   {
     name: "Configuration editor",
@@ -1066,8 +1065,6 @@ const reservedSaveCases = [
       await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
       await page.getByRole("button", { name: "Save Configuration" }).click();
     },
-    message:
-      "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.",
   },
   {
     name: "channel Secrets",
@@ -1076,7 +1073,6 @@ const reservedSaveCases = [
       await selectNewSlackSecrets(page, c);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
     },
-    message: "Credential metadata conflicts with the saved Agent state or selected Secrets.",
   },
 ];
 
@@ -1086,6 +1082,9 @@ for (const c of reservedSaveCases) {
     const { fixture, namespace, agent } = context;
     context.secondApp = await fixture.createSecret(namespace.id, "Second app token", "xapp-2");
     context.secondBot = await fixture.createSecret(namespace.id, "Second bot token", "xoxb-2");
+    const refusal =
+      "The Configuration is reserved for provisioning and is not available for this operation.";
+    let writes = 0;
     const page = await openTab(t, fixture, namespace, agent, c.tab, {
       beforeLogin: (routed) =>
         routed.route(`**${configurationPath(context)}`, async (route) => {
@@ -1093,14 +1092,14 @@ for (const c of reservedSaveCases) {
             await route.continue().catch(() => {});
             return;
           }
+          writes += 1;
           await route.fulfill({
             status: 409,
             contentType: "application/json",
             body: JSON.stringify({
               error: {
                 code: "RESOURCE_CONFLICT",
-                message:
-                  "The Configuration is reserved for provisioning and is not available for this operation.",
+                message: refusal,
               },
               meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
             }),
@@ -1109,8 +1108,16 @@ for (const c of reservedSaveCases) {
     });
     await page.getByRole("heading", { name: `Reserved ${c.name}` }).waitFor();
     await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
+    const requests = apiRequests(page, fixture.origin);
     await c.act(page, context);
-    await page.getByText(c.message).first().waitFor();
+    await page.getByText(refusal).first().waitFor();
+    if (c.tab === "credentials") {
+      // The refused write did not bind these Secrets. Keep both choices in the rebuilt form.
+      await waitForInputValue(page.getByLabel("Slack app token"), context.secondApp.name);
+      await waitForInputValue(page.getByLabel("Slack bot token"), context.secondBot.name);
+      assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
+    }
+    assert.equal(writes, 1);
     assert.equal(await page.getByRole("button", { name: "Reload draft" }).count(), 0);
     assert.equal(
       await page.getByText("The saved Configuration changed while you were editing.").count(),
@@ -1491,6 +1498,39 @@ test("a Configuration save that lands late does not move the cards below the edi
     "Edit Configuration",
   );
   assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).isVisible(), true);
+});
+
+test("a late Configuration save leaves focus on the Agents link when the reader moved there", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Team", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Field Guide", nativeValues("before"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const page = await openTab(t, fixture, namespace, agent, "configuration");
+  const edit = page.getByRole("button", { name: "Edit Configuration" });
+  await edit.click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues("after"), null, 2));
+
+  const saved = await holdRequests(t, page, `**${configurationPath({ namespace, agent })}`, {
+    once: true,
+    method: "PATCH",
+    afterServer: true,
+  });
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await saved.requested;
+  await page.getByRole("link", { name: "← Agents", exact: true }).focus();
+  saved.release();
+
+  await edit.waitFor();
+  assert.equal(
+    await edit.evaluate(
+      (control) =>
+        control.ownerDocument.getElementById(control.getAttribute("aria-describedby"))?.textContent,
+    ),
+    "Configuration saved.",
+  );
+  assert.equal(await focusedText(page), "← Agents");
 });
 
 // A save from another browser that landed between a save's reread and its PATCH was silently
