@@ -22,7 +22,11 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settledFetches,
   takeLayoutShifts,
+  trackSettledFetches,
+  waitForIdleFetches,
+  waitForSettledFetches,
 } from "./console-agents-browser-helpers.mjs";
 import {
   openCreateSecretDialog,
@@ -879,6 +883,93 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
     );
   }
 });
+
+// A deployment read is optional. Even an unfinished response body gets only the time until
+// the next provisioning poll; a second full interval after cancelling it would also be wrong.
+for (const [name, leave] of [
+  [
+    "Create observes successful provisioning at the next poll despite stalled deployment details",
+    false,
+  ],
+  ["Leaving Create Agent during a stalled deployment detail read stops polling the old job", true],
+]) {
+  test(name, async (t) => {
+    const agentId = "agt_00000000-0000-4000-8000-00000000a681";
+    const revisionId = "rev_00000000-0000-4000-8000-00000000a681";
+    const detailPath = `/agents/${agentId}/deployments/${revisionId}`;
+    const bodyStarted = Promise.withResolvers();
+    const fixture = await createConsoleAppFixture(t, {
+      async onSend(request, reply, payload) {
+        if (!request.url.endsWith(detailPath)) {
+          return payload;
+        }
+        reply.hijack();
+        reply.raw.writeHead(200, { "content-type": "application/json" });
+        reply.raw.write('{"data":', bodyStarted.resolve);
+      },
+    });
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Slow deployment details", { ready: true });
+    const { page } = await newPage(t, fixture);
+    await routeDedicatedProvisioning(page, fixture, namespace);
+
+    const provision = `/namespaces/${namespace.id}/agents/provision`;
+    const url = `${provision}/work_slow_detail`;
+    const job = { url, agentId, revisionId, phase: "handoff", status: "running" };
+    await page.route(`**${provision}`, (route) =>
+      route.fulfill({ status: 202, json: { data: { provisioning: job } } }),
+    );
+    const finishPoll = Promise.withResolvers();
+    await page.route(`**${url}`, async (route) => {
+      // Let the browser report cancellation before navigation can cancel the detail read itself.
+      await finishPoll.promise;
+      await route.fulfill({ json: { data: { provisioning: { ...job, status: "succeeded" } } } });
+    });
+
+    await trackSettledFetches(page);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start without Preset" }).click();
+    await page.getByLabel("Agent name").fill("Slow deployment details");
+    await page.getByLabel("Authentication method").selectOption("codex_pat");
+    await createModelCredentialSecret(page, "model-secret-value");
+    await page.getByLabel("Model", { exact: true }).selectOption({ index: 1 });
+    await page.clock.install({ time: 0 });
+    await page.clock.pauseAt(1_000);
+    await page.getByRole("button", { name: "Create Agent" }).click();
+    await bodyStarted.promise;
+
+    const detailCancelled = page.waitForEvent("requestfailed", {
+      predicate: (request) => request.url().endsWith(detailPath),
+      timeout: 5_000,
+    });
+    if (leave) {
+      finishPoll.resolve();
+      await page.getByRole("link", { name: "Agents", exact: true }).click();
+      await detailCancelled;
+      await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+      await waitForSettledFetches(page, `/namespaces/${namespace.id}${detailPath}`, 1);
+      await page.clock.runFor(2_000);
+      await waitForIdleFetches(page);
+      assert.equal(
+        await settledFetches(page, url),
+        0,
+        "A departed view must not poll the old job.",
+      );
+      return;
+    }
+
+    try {
+      await Promise.all([
+        detailCancelled,
+        page.waitForRequest((request) => request.url().endsWith(url), { timeout: 5_000 }),
+        page.clock.runFor(1_000),
+      ]);
+    } finally {
+      finishPoll.resolve();
+    }
+    await page.waitForURL((location) => location.pathname.endsWith(`/agents/${agentId}`));
+  });
+}
 
 test("Agent creation rejects non-object native Configuration JSON before Configuration or Agent writes", async (t) => {
   const fixture = await createConsoleAppFixture(t);

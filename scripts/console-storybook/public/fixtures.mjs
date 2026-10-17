@@ -630,6 +630,7 @@ export function installFixture(scenario, evidence) {
         (rule.method ?? "GET") !== method ||
         (rule.path && rule.path !== path) ||
         (rule.prefix && !path.startsWith(rule.prefix)) ||
+        (rule.pathIncludes && !path.includes(rule.pathIncludes)) ||
         (rule.suffix && !path.endsWith(rule.suffix)) ||
         (rule.bodyHasIds !== undefined && rule.bodyHasIds !== Array.isArray(body.ids))
       ) {

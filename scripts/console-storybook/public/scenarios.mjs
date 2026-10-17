@@ -1607,6 +1607,7 @@ export const scenarios = {
     name: "Initial deployment waits on a full Pod quota",
     path: create,
     actions: readyForm,
+    rules: [{ pathIncludes: "/deployments/", hold: true, once: true }],
     provisionedDeploymentStatus: "running",
     provisionedDeploymentAttempt: {
       code: "NAMESPACE_POD_QUOTA_EXCEEDED",
@@ -1614,9 +1615,9 @@ export const scenarios = {
         "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
     },
     description:
-      "The first deployment cannot create its Pods because the Namespace's Pod quota is full, so the provisioning line names the quota instead of a bare wait.",
+      "The first deployment detail request stalls. Provisioning keeps polling, and the next detail response explains that the Namespace Pod quota is full.",
     steps: [
-      "Click Create Agent and wait for the provisioning line to name the full Pod quota.",
+      "Click Create Agent. The provisioning line stays visible through the stalled detail request, then names the full Pod quota.",
       "Open the Agent's version; confirm the deployment record shows the same reason.",
     ],
   },

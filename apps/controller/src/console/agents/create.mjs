@@ -199,7 +199,7 @@ async function cancelledAgentState(request, namespaceId, agentId) {
 // Agent; a reader without it, or any other wait, keeps the bare line.
 const NAMED_DEPLOYMENT_WAITS = new Set(["NAMESPACE_POD_QUOTA_EXCEEDED"]);
 
-async function namedDeploymentWait(request, namespaceId, job) {
+async function namedDeploymentWait(request, namespaceId, job, signal) {
   if (
     typeof job.agentId !== "string" ||
     !job.agentId ||
@@ -211,6 +211,7 @@ async function namedDeploymentWait(request, namespaceId, job) {
   try {
     const deployment = await request(
       `${namespacePath(namespaceId)}/agents/${encodeURIComponent(job.agentId)}/deployments/${encodeURIComponent(job.revisionId)}`,
+      { signal },
     );
     const attempt = deployment?.progress?.lastAttempt;
     return NAMED_DEPLOYMENT_WAITS.has(attempt?.code) &&
@@ -223,23 +224,30 @@ async function namedDeploymentWait(request, namespaceId, job) {
   }
 }
 
-async function waitForProvisioning({ request, status, first, namespaceId }) {
+async function waitForProvisioning({ request, status, first, namespaceId, isCurrent }) {
   let current = first.provisioning ?? first;
   const jobUrl = current?.url;
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
   while (current?.status === "queued" || current?.status === "running") {
-    started ||= current.status === "running";
-    setText(
-      status,
-      (await namedDeploymentWait(request, namespaceId, current)) ??
-        provisioningStatusText(started ? "running" : current.status),
-    );
     if (typeof current.url !== "string" || !current.url) {
       throw new Error("Provisioning status URL is unavailable.");
     }
-    await wait(1_000);
+    started ||= current.status === "running";
+    // Spend the interval between polls on optional detail. At the next poll, stop that read
+    // even if only its headers arrived; the provisioning job remains the source of truth.
+    const detail = new AbortController();
+    const nextPoll = wait(1_000).then(() => detail.abort());
+    setText(
+      status,
+      (await namedDeploymentWait(request, namespaceId, current, detail.signal)) ??
+        provisioningStatusText(started ? "running" : current.status),
+    );
+    await nextPoll;
+    if (!isCurrent()) {
+      throw new DOMException("View closed", "AbortError");
+    }
     const next = await request(current.url);
     current = next.provisioning ?? next;
   }
@@ -274,7 +282,7 @@ async function waitForProvisioning({ request, status, first, namespaceId }) {
   return { agentId: current.agentId, revisionId: current.revisionId };
 }
 
-async function finishProvisioningAttempt({ request, status, namespaceId, attempt }) {
+async function finishProvisioningAttempt({ request, status, namespaceId, attempt, isCurrent }) {
   status.textContent = "Submitting provisioning request…";
   const provisioned =
     attempt.retryUrl === undefined
@@ -296,6 +304,7 @@ async function finishProvisioningAttempt({ request, status, namespaceId, attempt
     status,
     first: provisioned,
     namespaceId,
+    isCurrent,
   });
 }
 
@@ -1980,6 +1989,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         status: savedStatus,
         namespaceId,
         attempt,
+        isCurrent: context.isCurrent,
       });
       focusFeedbackLine(savedStatus);
       const { agentId, revisionId } = await finishing;
