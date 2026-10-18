@@ -1255,7 +1255,7 @@ func (app *application) requiredNamespace() (string, error) {
 	if app.namespace == "" {
 		return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace")
 	}
-	if err := namespaceIDArg.check(app.namespace); err != nil {
+	if err := namespaceIDArg.check(app.namespace, ""); err != nil {
 		return "", fmt.Errorf("OCC_NAMESPACE or --namespace: %w", err)
 	}
 	return app.namespace, nil

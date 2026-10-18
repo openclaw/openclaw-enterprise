@@ -123,7 +123,7 @@ func (app *application) serviceKeyCommand() *cobra.Command {
 				return fmt.Errorf("--name must be 1 to 32 characters and contain a non-whitespace character")
 			}
 			if app.namespace != "" {
-				if err := namespaceIDArg.check(app.namespace); err != nil {
+				if err := namespaceIDArg.check(app.namespace, ""); err != nil {
 					return fmt.Errorf("OCC_NAMESPACE or --namespace: %w", err)
 				}
 			}

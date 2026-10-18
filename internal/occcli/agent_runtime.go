@@ -45,7 +45,7 @@ func (app *application) agentRevision(
 	namespace, agentID, revision string,
 ) (string, any, error) {
 	if revision != "" {
-		if err := revisionIDArg.check(revision); err != nil {
+		if err := revisionIDArg.check(revision, namespace); err != nil {
 			return "", nil, err
 		}
 		return revision, nil, nil
@@ -207,7 +207,7 @@ func (app *application) agentRuntimeCommand() *cobra.Command {
 			if app.output != "table" {
 				return app.printStructured(description)
 			}
-			return app.printRuntime(description)
+			return app.printRuntime(description, namespace, args[0], revisionID)
 		},
 	}
 	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision)")
