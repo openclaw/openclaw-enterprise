@@ -191,11 +191,15 @@ async function cancelledAgentState(request, namespaceId, agentId) {
   }
 }
 
-// First-deployment waits that someone must act on (finding 1617): the deployment's own fixed
-// sentence replaces the bare provisioning line. The deployment read needs read access to the
-// Agent. Clear the reason if the deployment is no longer readable or names a different wait;
-// keep it through a cancelled read or temporary outage (finding 1637).
-const NAMED_DEPLOYMENT_WAITS = new Set(["NAMESPACE_POD_QUOTA_EXCEEDED"]);
+// First-deployment waits that someone must act on: a full Pod quota (finding 1617) and an image
+// the nodes cannot pull (finding 1881). The deployment's own fixed sentence replaces the bare
+// provisioning line. The deployment read needs read access to the Agent. Clear the reason if the
+// deployment is no longer readable or names a different wait; keep it through a cancelled read
+// or temporary outage (finding 1637).
+const NAMED_DEPLOYMENT_WAITS = new Set([
+  "NAMESPACE_POD_QUOTA_EXCEEDED",
+  "REVISION_IMAGE_PULL_FAILED",
+]);
 // An outage, unlike the Installation's shape, needs no administrator change (finding 1624). Agent
 // save and deploy answer 503 for every harness until the selected Sandbox Driver returns.
 const SANDBOX_DRIVER_OUTAGE =
@@ -257,9 +261,9 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
   // A started job goes back to queued between retries. Keep one label once it has started,
   // and write it only when it changes, since this rereads every second (finding 1424).
   let started = false;
-  // The quota wait the last fresh deployment read named. It fills in when a later read is cut off
-  // or unavailable and the job names no wait, so the line doesn't flip back to the bare text
-  // (finding 1637); a fresh answer or a refusal replaces it.
+  // The actionable wait the last fresh deployment read named. It fills in when a later read is
+  // cut off or unavailable and the job names no wait, so the line doesn't flip back to the bare
+  // text (finding 1637); a fresh answer or a refusal replaces it.
   let named = null;
   while (current?.status === "queued" || current?.status === "running") {
     if (typeof current.url !== "string" || !current.url) {

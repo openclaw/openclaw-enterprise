@@ -1196,6 +1196,10 @@ function dedicatedFirstDeployFixture({
             namespace: requestedNamespace,
             uid: `${role}-uid`,
             labels,
+            // A Pod being deleted, as during a rollout or a scale-down.
+            ...(state.terminatingRole === role
+              ? { deletionTimestamp: "2026-08-25T00:00:00Z" }
+              : {}),
           },
           ...(state.unschedulableRole === role
             ? {
@@ -2825,7 +2829,8 @@ test("a pending dedicated deploy reports an unschedulable Pod or an unpaired nod
 });
 
 // A deploy whose container image the kubelet cannot pull names that wait instead of a
-// bare one (finding 1762); a Pod the scheduler cannot place still leads.
+// bare one (finding 1762); a Pod the scheduler cannot place still leads, and a Pod being
+// deleted names no wait (finding 1880).
 test("a pending dedicated deploy names a container image pull failure", async () => {
   const { state, prepare } = dedicatedFirstDeployFixture({ clock: { now: 0 } });
   for (const [role, statuses, reason, expected] of [
@@ -2847,7 +2852,19 @@ test("a pending dedicated deploy names a container image pull failure", async ()
     unschedulableRole: "gateway",
   });
   assert.equal((await prepare()).pendingReason, "WORKLOAD_UNSCHEDULABLE");
+  // A Pod being deleted names no wait: neither its placement nor its image pull.
+  state.terminatingRole = "gateway";
+  assert.equal((await prepare()).pendingReason, "WORKLOAD_IMAGE_PULL_FAILED");
   Object.assign(state, { waitingRole: undefined, unschedulableRole: undefined });
+  for (const [role, wait] of [
+    ["agent", { waitingRole: "agent" }],
+    ["gateway", { unschedulableRole: "gateway" }],
+  ]) {
+    Object.assign(state, { terminatingRole: role, ...wait });
+    assert.equal((await prepare()).pendingReason, undefined, `terminating ${role}`);
+    Object.assign(state, { waitingRole: undefined, unschedulableRole: undefined });
+  }
+  state.terminatingRole = undefined;
   assert.equal((await prepare()).pendingReason, undefined);
 });
 
@@ -2986,6 +3003,15 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
     undefined,
   );
   setQuota({ pods: "10" }, { pods: "10" });
+  // A full Pod quota leads a container that waits on an image pull (finding 1880).
+  Object.assign(state, {
+    waitingRole: "gateway",
+    waitingStatuses: "containerStatuses",
+    waitingReason: "ImagePullBackOff",
+  });
+  assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
+  assert.equal((await prepare()).pendingReason, "WORKLOAD_IMAGE_PULL_FAILED");
+  state.waitingRole = undefined;
   state.unreadableKind = "ResourceQuota";
   assert.equal(await pendingReasonWith(agentName, podRefusal), undefined);
   state.unreadableKind = undefined;

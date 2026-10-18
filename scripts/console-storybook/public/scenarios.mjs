@@ -1693,6 +1693,24 @@ export const scenarios = {
       "After the deployment read returns 404, the line changes to “Provisioning Agent…”. This does not say the quota cleared or the job stopped.",
     ],
   },
+  createDeploymentImagePullFailed: {
+    group: "Pages/Create Agent",
+    name: "Initial deployment cannot pull its image",
+    path: create,
+    actions: readyForm,
+    provisionedDeploymentStatus: "running",
+    provisionedDeploymentAttempt: {
+      code: "REVISION_IMAGE_PULL_FAILED",
+      message:
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
+    },
+    provisioningNamesDeploymentWait: true,
+    description:
+      "The first deployment waits on a container image the cluster's nodes cannot pull. Create Agent shows that sentence alone in place of the provisioning line, as it does for a full Pod quota.",
+    steps: [
+      "Click Create Agent. The line changes from “Provisioning Agent…” to the image pull sentence, which asks an administrator to check the runtime image reference and registry access.",
+    ],
+  },
   createDeploymentFailed: {
     group: "Pages/Create Agent",
     name: "Initial deployment failed",
