@@ -1,6 +1,6 @@
 ---
 created: 2026-08-21
-updated: 2026-10-16 13:47
+updated: 2026-10-18
 last_updated_session: authoring-run/6e734247-4639-4e34-8432-e2d0f546353f
 ---
 
@@ -116,7 +116,9 @@ packaged IAM receive the same controller-owned platform state. The bundled IAM
 Driver loads current policy for each identity lookup and authorization decision;
 packaged Drivers must do the same, which operator review verifies because the
 runtime cannot enforce package internals. Packaged factories must return their exact server-owned capability
-and identity.
+and identity. The Helm upgrade hook's `installation-check` also runs this loader
+with only `NODE_ENV`, `OCC_CONFIG_PATH` and the Installation and repository
+mounts, so factories must defer other environment and file reads past construction.
 
 Kubernetes-specific image and projected-credential requirements apply only to
 bundled Kubernetes Compute. SSH preflight verifies local SSH files and probes
@@ -179,6 +181,7 @@ their existing Harness-owned runtime topology.
 
 ## Changelog
 
+- 2026-10-18: Note the upgrade hook's Installation check runs this loader.
 - 2026-10-16 13:47: Preserve selected export URL query and fragment after realpath validation. (authoring-run/6e734247-4639-4e34-8432-e2d0f546353f - 591feb34bdbaaf7f316607347a02f7335ee816c0)
 
 - 2026-10-13 21:02: Keep valid in-package Driver entry filenames that begin with two dots while still refusing parent-directory escapes. (issue-2323 - 5fad4d023a8896ac6bc05a201e6733ee256845b9)

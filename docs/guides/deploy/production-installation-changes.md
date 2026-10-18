@@ -50,8 +50,8 @@ kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
 ```
 
 Undo a refused change right away, since a restarted API Pod reads the Secret.
-The check skips Kubernetes Compute preflight and database checks; if the new
-API logs `startup-error`, undo the change too.
+The check skips Kubernetes Compute preflight, database checks and the ChatGPT
+admin-key file; if the new API logs `startup-error`, undo the change too.
 
 The patch replaces only the Installation key and keeps the Secret's
 `openclaw.dev/installation-id` annotation. Do not re-create the Secret with
