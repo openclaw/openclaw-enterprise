@@ -3538,25 +3538,11 @@ async function assertRefreshCredentialSources(topology) {
   // issued after the update would mean the new epoch reached the old Sandbox.
   const epochDeadline = Date.now() + 420_000;
   let afterReconfigure;
-  let lostAt;
   for (;;) {
     afterReconfigure = await call();
     const presented = afterReconfigure.rt?.jwt;
     if (presented?.valid !== true) {
-      lostAt ??= Math.floor(Date.now() / 1000);
-      // The unchanged client-credentials source is checked on this same poll and deadline: one
-      // echo call that printed something other than JSON (finding 1883) is logged and polled
-      // again. A JSON answer, substituted or not, ends the poll and is checked below.
-      if (afterReconfigure.cc?.unparsed === undefined || Date.now() >= epochDeadline) {
-        break;
-      }
-      process.stderr.write(
-        `OpenShell integration: the client-credentials echo call printed ` +
-          `${JSON.stringify(afterReconfigure.cc.unparsed)} after the reconfigured source lost ` +
-          `its token; polling again.\n`,
-      );
-      await delay(15_000);
-      continue;
+      break;
     }
     assert.ok(
       presented.iat < reconfiguredAt - 2,
@@ -3570,7 +3556,7 @@ async function assertRefreshCredentialSources(topology) {
   }
   process.stdout.write(
     `OpenShell integration: the running Harness lost the reconfigured token after ` +
-      `${lostAt - reconfiguredAt} s.\n`,
+      `${Math.floor(Date.now() / 1000) - reconfiguredAt} s.\n`,
   );
   assertIssued(afterReconfigure.cc, clientCredentials);
 
@@ -4407,10 +4393,11 @@ async function openShellSupervisorPod(topology) {
 }
 
 // Finding 1882: the first Workspace read once answered 503 DEPENDENCY_UNAVAILABLE right after
-// the Sandbox was ready. The API keeps the cause out of its answer, and the read depends on the
-// Agent Gateway, so a failed read records that Gateway's Pods and log, then how a second read
-// answered after them (still failed, or a delay that passed). The test fails either way: a 503
-// right after "ready" may be a real readiness bug, so the read is not retried.
+// the Sandbox was ready. The API keeps the cause out of its answer. The read reaches the Agent
+// Gateway through the Envoy Gateway and the host relay; a failed read records the Agent Gateway
+// hop (its Pods, and its log including the Workspace identity's own connect lines), then how a
+// second read answered after them (still failed, or a delay that passed). The test fails either
+// way: a 503 right after "ready" may be a real readiness bug, so the read is not retried.
 async function workspaceReadFailureDiagnostic({
   request,
   path,
@@ -4456,7 +4443,6 @@ async function workspaceReadFailureDiagnostic({
       sections.push(
         `Agent Gateway ${pod.metadata.name} log:\n${newestMatchingLogLines(logs, secrets, {
           pattern: /error|warn|fail|workspace|ready|listen|start|connect|hello|auth|denied|close/iu,
-          exclude: turnDiagnosticNoise,
           budget: 4_000,
           lineChars: turnDiagnosticLineChars,
         })}`,
