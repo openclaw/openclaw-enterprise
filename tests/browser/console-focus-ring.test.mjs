@@ -1,11 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fileBrowser, login, nativeValues, newPage } from "./console-agents-browser-helpers.mjs";
+import {
+  detailUrl,
+  fileBrowser,
+  login,
+  nativeValues,
+  newPage,
+} from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
+const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 
 // The ring the design tokens describe: --focus-ring at --focus-offset, or at
 // --focus-offset-inset for rows and panes that opt in. Resolved through a probe so the test
@@ -78,11 +85,10 @@ async function tabStops(page) {
 
 test("every keyboard stop on Agents, Agent detail and Create Agent shows the token focus ring", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Focus ring");
-  await fixture.createAgent(namespace.id, "Ring Agent", nativeValues("v1"));
+  const agent = await fixture.createAgent(namespace.id, "Ring Agent", nativeValues("v1"));
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  const agentLink = page.getByRole("link", { name: "Ring Agent" });
-  await agentLink.waitFor();
+  await page.getByRole("link", { name: "Ring Agent" }).waitFor();
   await page.getByText("Reading deployment…").first().waitFor({ state: "detached" });
   const [ring, insetRing] = await tokenRings(page);
   assert.match(ring, /^solid 3px rgb\(189, 69, 49\) 2px$/, "the tokens resolve to a visible ring");
@@ -93,8 +99,10 @@ test("every keyboard stop on Agents, Agent detail and Create Agent shows the tok
       "Agent detail",
       "Edit Configuration",
       async () => {
-        await agentLink.click();
-        await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
+        // Tabbing past the last stop leaves the window, and coming back rechecks the session, so
+        // each page is opened by URL rather than by a click that could land on the held page.
+        await page.goto(detailUrl(fixture, namespace.id, agent.id).href);
+        await page.getByRole("button", { name: "Edit Configuration", exact: true }).waitFor();
       },
     ],
     [
@@ -109,6 +117,7 @@ test("every keyboard stop on Agents, Agent detail and Create Agent shows the tok
   ];
   for (const [label, landmark, open] of pages) {
     await open();
+    await page.locator(settledView).waitFor();
     const stops = await tabStops(page);
     assert.ok(
       stops.some(({ name }) => name.includes(landmark)),
