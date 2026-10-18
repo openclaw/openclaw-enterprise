@@ -1460,17 +1460,96 @@ select:not([multiple])[size="1"] {
   background: var(--danger-subtle);
   color: var(--danger);
 }
-.agent-delete-dialog,
-.agent-stop-dialog {
-  width: min(30rem, calc(100vw - 2rem));
-  padding: 24px;
-  border: 1px solid var(--danger-subtle);
+/* Dialog pattern (UX plan C6): every modal shares this chrome, backdrop, shadow and open motion.
+   `--wide` holds a workspace (plugins), `--drawer` sits at the right edge (channels), and under
+   760px each one is a bottom sheet. */
+.dialog {
+  width: min(32rem, calc(100vw - 2 * var(--space-4)));
+  max-width: calc(100vw - 2 * var(--space-4));
+  max-height: calc(100dvh - 2 * var(--space-4));
+  padding: var(--space-6);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-2);
 }
-.agent-delete-dialog::backdrop,
-.agent-stop-dialog::backdrop {
-  background: var(--overlay);
+.dialog--wide {
+  width: min(72rem, calc(100vw - 2 * var(--space-4)));
+  height: min(52rem, calc(100dvh - 2 * var(--space-4)));
+}
+.dialog--drawer {
+  width: min(42rem, calc(100vw - 2 * var(--space-4)));
+  height: calc(100dvh - 2 * var(--space-4));
+  margin: var(--space-4) var(--space-4) var(--space-4) auto;
+}
+.dialog[open] {
+  animation: dialog-open var(--duration-base) var(--ease);
+}
+.dialog--drawer[open] {
+  animation-name: dialog-drawer-open;
+}
+.dialog[open]::backdrop {
+  animation: dialog-backdrop-open var(--duration-base) var(--ease);
+}
+/* Cancel first (left), the confirming action last (right). */
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+@keyframes dialog-open {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-2));
+  }
+}
+@keyframes dialog-drawer-open {
+  from {
+    opacity: 0;
+    transform: translateX(var(--space-6));
+  }
+}
+@keyframes dialog-sheet-open {
+  from {
+    transform: translateY(100%);
+  }
+}
+@keyframes dialog-backdrop-open {
+  from {
+    opacity: 0;
+  }
+}
+@media (max-width: 760px) {
+  .dialog,
+  .dialog--wide,
+  .dialog--drawer {
+    width: 100%;
+    max-width: 100%;
+    height: auto;
+    max-height: calc(100dvh - var(--space-8));
+    margin: auto 0 0;
+    padding: var(--space-4);
+    border-bottom: 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+  .dialog--wide {
+    height: calc(100dvh - var(--space-8));
+  }
+  .dialog[open] {
+    animation-name: dialog-sheet-open;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dialog[open],
+  .dialog[open]::backdrop {
+    animation: none;
+  }
+}
+.dialog::backdrop {
+  background: var(--color-overlay);
 }
 select:focus-visible,
 summary:focus-visible {
@@ -1737,13 +1816,6 @@ summary:focus-visible {
 }
 .plugin-dialog {
   overflow: hidden;
-  width: min(72rem, calc(100vw - 2rem));
-  height: min(52rem, calc(100dvh - 2rem));
-  max-height: calc(100dvh - 2rem);
-  padding: 24px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: var(--shadow-2);
 }
 .plugin-dialog[open] {
   display: flex;
@@ -1788,9 +1860,6 @@ summary:focus-visible {
 }
 .plugin-access-instructions > .hint {
   margin-top: 0;
-}
-.plugin-dialog::backdrop {
-  background: var(--color-overlay);
 }
 .plugin-dialog-header,
 .plugin-detail-header,

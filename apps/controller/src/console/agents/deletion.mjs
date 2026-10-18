@@ -281,7 +281,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     }
     const retry = state.deleting;
     const dialog = element("dialog", {
-      className: "agent-delete-dialog",
+      className: "dialog agent-delete-dialog",
       "aria-labelledby": "agent-delete-confirm-title",
       "aria-describedby": "agent-delete-confirm-description agent-delete-confirm-kept",
     });
