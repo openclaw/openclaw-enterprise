@@ -276,10 +276,10 @@ read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path i
 `sessionStorage` for the session owner; later views show **Configuration unavailable**
 without asking again, and **Retry** forgets the path and rereads. Logout clears it.
 
-The tab strip is a tablist with one Tab stop; arrows move focus, Enter opens.
-`agents/detail.mjs:renderTab` scrolls a clipped focused, else selected, tab into view
-without vertical scroll; a strip ResizeObserver repeats this, disconnecting inactive
-views, re-arming on resume.
+`agents/detail.mjs:renderTab` brings a clipped selected tab into the horizontal
+strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
+this on viewport changes, disconnects for inactive or detached views, and re-arms
+through the retained view's resume hook.
 Completed tabs retain their DOM and draft capture callbacks within the detail view.
 Returning restores loaded controls and expanded disclosures. Pending or failed
 reads, password values, and mutations invalidate tab reuse. Each tab checks it
@@ -307,13 +307,13 @@ rejected cursors clear rows.
 
 After full-page navigation settles, `loadPage` focuses the destination heading if
 focus fell to the body, using `preventScroll` to preserve return position. An Agent
-opened from the list focuses its heading when the title renders. Tabs and
-focused controls keep focus. Navigation, Namespace changes, and logout invalidate
+opened from the list focuses its heading when the title renders. Tabs (one Tab
+stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events. Agent detail
 rechecks access in place, preserving controls, input, and saves; failures clear it.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
-Returning to the tab restores focus after the unchanged view is admitted, if the control is still
-present and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
+Returning to the tab restores focus after the unchanged view is admitted, if the control
+remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
 
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state. `pagehide` clears
