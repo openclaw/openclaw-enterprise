@@ -6364,6 +6364,35 @@ test("Agent provisioning API validates inline configuration with existing Secret
     await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
     [],
   );
+  // The OpenClaw Plugin Driver refuses a selection whose every tool the inline Configuration
+  // denies (finding 508) before anything durable is written.
+  const openClawDriver = new OCCPluginDriver();
+  fixture.controller.registerDriver(openClawDriver);
+  fixture.controller.selectDriver("plugin", openClawDriver.id);
+  const deniedTools = provisioningRequestBody(namespace.data.id, secrets, {
+    plugins: { [diffsPluginId]: pluginPolicy() },
+  });
+  deniedTools.configuration.values = {
+    ...deniedTools.configuration.values,
+    tools: { deny: ["*"] },
+  };
+  const refusedDenial = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/agents/provision`,
+    { body: deniedTools },
+  );
+  assert.equal(refusedDenial.status, 400, JSON.stringify(refusedDenial.body));
+  assert.equal(refusedDenial.body.error.code, "INVALID_REQUEST");
+  assert.equal(
+    refusedDenial.body.error.message,
+    `Configuration setting tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
+  );
+  assert.deepEqual(
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    [],
+  );
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
 
   const durableOnly = await injectedRequest(
     fixture.app,
