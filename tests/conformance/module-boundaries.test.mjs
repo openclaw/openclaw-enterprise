@@ -109,6 +109,16 @@ async function workspace(t, overrides = {}) {
     check,
     native,
     observe,
+    // Reviews the source's unknown loader and keeps its exception valid across a line shift.
+    reviewLoader: async (path, report) => {
+      const item = violation(report ?? (await check()), path);
+      assert.ok(item);
+      const exceptions = exceptionsFor(item);
+      assert.equal((await check({ exceptions })).ok, true);
+      await write(path, "\n\n" + (await readFile(join(root, path), "utf8")));
+      assert.equal((await check({ exceptions })).ok, true, "line shifts retain the identity");
+      return { item, exceptions };
+    },
     cli: (extra = [], options) => node([cli, ...args, ...extra], options),
     // Installs a workspace package directory at `at`, as a package manager would.
     link: async (path = "packages/library", at = "node_modules/@fixture/library") => {
@@ -1979,7 +1989,7 @@ describe("module boundaries", { concurrency: true }, () => {
 
   test("does not reuse one unknown-loader exception for a distinct loader", async (t) => {
     const source = "apps/app/src/public/load.mjs";
-    const { write, check, native, decoys, anchors } = await workspace(t, {
+    const { write, check, native, decoys, anchors, reviewLoader } = await workspace(t, {
       boundaries: [noPrivate(source, { kinds: ["require"] })],
     });
     await decoys("secret.cjs");
@@ -1994,11 +2004,7 @@ b = createRequire(new URL("../private/anchor.cjs", import.meta.url));
 console.log(b("./secret.cjs"));
 `;
     await write(source, first);
-    const unresolved = violation(await check(), source);
-    const exceptions = exceptionsFor(unresolved);
-    assert.equal((await check({ exceptions })).ok, true);
-    await write(source, "\n\n" + first);
-    assert.equal((await check({ exceptions })).ok, true, "line changes retain the identity");
+    const { item: unresolved, exceptions } = await reviewLoader(source);
     const count = (report) =>
       report.violations.filter((item) => item.from === source && item.rule === dynamic).length;
     await write(source, first + 'console.log(a("./secret.cjs"));');
@@ -2027,7 +2033,9 @@ console.log(b("./secret.cjs"));
 
   test("does not reuse unknown-anchor exceptions across distinct loaders", async (t) => {
     const source = "apps/app/src/public/unknown-loads.mjs";
-    const { root, write, check, native, decoys, anchors } = await workspace(t, { boundaries: [] });
+    const { root, write, check, native, decoys, anchors, reviewLoader } = await workspace(t, {
+      boundaries: [],
+    });
     await decoys("secret.cjs");
     await anchors("public", "private");
     const env = {
@@ -2043,12 +2051,7 @@ console.log(a("./secret.cjs"));
 console.log(b("./secret.cjs"));
 `;
     await write(source, requireFirst);
-    const item = violation(await check(), source);
-    assert.ok(item);
-    const exceptions = exceptionsFor(item);
-    assert.equal((await check({ exceptions })).ok, true);
-    await write(source, "\n\n" + requireFirst);
-    assert.equal((await check({ exceptions })).ok, true);
+    const { exceptions } = await reviewLoader(source);
     await write(source, requireFirst + requireSecond);
     assert.equal(await native(source, { env }), "PUBLIC\nPRIVATE");
     const distinct = await check({ exceptions });
@@ -2058,7 +2061,9 @@ console.log(b("./secret.cjs"));
 
   test("does not reuse an unknown-path exception for a different lexical binding", async (t) => {
     const source = "apps/app/src/public/dynamic-loads.mjs";
-    const { write, check, native, decoys } = await workspace(t, { boundaries: [] });
+    const { write, check, native, decoys, reviewLoader } = await workspace(t, {
+      boundaries: [],
+    });
     await decoys("secret.mjs");
     const env = {
       ...process.env,
@@ -2073,10 +2078,7 @@ await ${name}();
 `;
     const first = loader("publicLoad", "PUBLIC_PATH");
     await write(source, first);
-    const exceptions = exceptionsFor(violation(await check(), source));
-    assert.equal((await check({ exceptions })).ok, true);
-    await write(source, "\n\n" + first);
-    assert.equal((await check({ exceptions })).ok, true);
+    const { exceptions } = await reviewLoader(source);
     await write(source, first.replace("PUBLIC_PATH", "PRIVATE_PATH"));
     assert.equal(await native(source, { env }), "PRIVATE");
     const changedBinding = await check({ exceptions });
@@ -2217,17 +2219,13 @@ console.log((await import(select())).default);
     await settle(
       Object.entries(forms).map(([name, makeSource]) =>
         t.test(name, async (st) => {
-          const { write, check, native, observe, decoys } = await workspace(st, {
+          const { write, check, native, observe, decoys, reviewLoader } = await workspace(st, {
             boundaries: [noPrivate(source)],
           });
           await decoys("secret.mjs");
           const publicSource = makeSource("./secret.mjs");
-          const item = violation(await observe(source, publicSource, "PUBLIC"), source);
-          assert.ok(item);
-          const exceptions = exceptionsFor(item);
-          assert.equal((await check({ exceptions })).ok, true);
-          await write(source, "\n\n" + publicSource);
-          assert.equal((await check({ exceptions })).ok, true, "line shifts retain the identity");
+          const observed = await observe(source, publicSource, "PUBLIC");
+          const { item, exceptions } = await reviewLoader(source, observed);
           await write(source, makeSource("../private/secret.mjs"));
           assert.equal(await native(source), "PRIVATE");
           const changed = await check({ exceptions });
@@ -2263,18 +2261,14 @@ console.log((await import(select())).default);
     // Dot and computed deletes use separate workspaces and run concurrently.
     await settle(
       [false, true].map(async (computed) => {
-        const { write, check, native, observe, decoys } = await workspace(t);
+        const { write, check, native, observe, decoys, reviewLoader } = await workspace(t);
         await decoys("secret.mjs");
         const makeSource = (property) =>
           `delete process.env${computed ? `["${property}"]` : `.${property}`};
          console.log((await import(process.env.BOUNDARY_SELECTED ?? "../private/secret.mjs")).default);`;
         const publicSource = makeSource("BOUNDARY_UNRELATED");
-        const before = violation(await observe(source, publicSource, "PUBLIC", { env }), source);
-        assert.ok(before);
-        const exceptions = exceptionsFor(before);
-        assert.equal((await check({ exceptions })).ok, true);
-        await write(source, "\n\n" + publicSource);
-        assert.equal((await check({ exceptions })).ok, true);
+        const observed = await observe(source, publicSource, "PUBLIC", { env });
+        const { exceptions } = await reviewLoader(source, observed);
         await write(source, makeSource("BOUNDARY_SELECTED"));
         assert.equal(await native(source, { env }), "PRIVATE");
         const changed = await check({ exceptions });
