@@ -380,6 +380,56 @@ export function createPluginFields({
       : null;
   }
 
+  function toolPolicyFields(name, policy, scope, reviewers, writePolicy) {
+    const defaults = scope === "toolDefaults";
+    const canSelectReviewer = reviewers.length > 0 || policy.reviewer !== undefined;
+    const reviewer =
+      defaults || canSelectReviewer
+        ? select(
+            defaults ? `${name} default reviewer` : `${name} reviewer`,
+            policy.reviewer ?? "",
+            [
+              ["", defaults ? "Inherit Harness reviewer" : "Inherit plugin or Harness reviewer"],
+              ...reviewers,
+            ],
+            (value) => writePolicy("reviewer", value || undefined),
+            Boolean(capabilities) && canSelectReviewer,
+          )
+        : null;
+    return {
+      controls: element(
+        "div",
+        { className: "plugin-controls" },
+        select(
+          defaults ? `${name} tools enabled by default` : `Enable ${name}`,
+          policy.enabled === undefined ? "" : String(policy.enabled),
+          [
+            ["", defaults ? "Inherit default policy" : "Inherit plugin policy"],
+            ["true", "Enabled"],
+            ["false", "Disabled"],
+          ],
+          (value) => writePolicy("enabled", value === "" ? undefined : value === "true"),
+          capabilities?.[scope].enabled === true,
+        ),
+        approvalSelect(name, policy.approval, scope, (value) =>
+          writePolicy("approval", value || undefined),
+        ),
+        reviewer,
+      ),
+      hint: approvalHint(policy.approval, scope),
+      reviewer,
+    };
+  }
+
+  function updateDetailDisabled(invalidSelection) {
+    for (const node of detail.querySelectorAll("input, select, button")) {
+      node.disabled =
+        disabled ||
+        (invalidSelection && node.dataset.discovery !== "true") ||
+        node.dataset.policyUnsupported === "true";
+    }
+  }
+
   function render() {
     rememberExpandedTools();
     const focused = document.activeElement?.getAttribute("aria-label");
@@ -607,14 +657,14 @@ export function createPluginFields({
           const defaults = selected.toolDefaults ?? {};
           const writeDefault = (key, value) =>
             writeToolPolicy(entry.id, "toolDefaults", key, value);
-          defaultReviewer = select(
-            `${entry.name} default reviewer`,
-            defaults.reviewer ?? "",
-            [["", "Inherit Harness reviewer"], ...defaultReviewers],
-            (value) => writeDefault("reviewer", value || undefined),
-            Boolean(capabilities) &&
-              (defaultReviewers.length > 0 || defaults.reviewer !== undefined),
+          const fields = toolPolicyFields(
+            entry.name,
+            defaults,
+            "toolDefaults",
+            defaultReviewers,
+            writeDefault,
           );
+          defaultReviewer = fields.reviewer;
           details.append(
             element(
               "fieldset",
@@ -625,26 +675,8 @@ export function createPluginFields({
                 { className: "hint" },
                 "Approval applies to current and future actions unless a tool overrides it. Reviewer selects who reviews; automatic review may deny a call.",
               ),
-              element(
-                "div",
-                { className: "plugin-controls" },
-                select(
-                  `${entry.name} tools enabled by default`,
-                  defaults.enabled === undefined ? "" : String(defaults.enabled),
-                  [
-                    ["", "Inherit default policy"],
-                    ["true", "Enabled"],
-                    ["false", "Disabled"],
-                  ],
-                  (value) => writeDefault("enabled", value === "" ? undefined : value === "true"),
-                  capabilities?.toolDefaults.enabled === true,
-                ),
-                approvalSelect(entry.name, defaults.approval, "toolDefaults", (value) =>
-                  writeDefault("approval", value || undefined),
-                ),
-                defaultReviewer,
-              ),
-              approvalHint(defaults.approval, "toolDefaults"),
+              fields.controls,
+              fields.hint,
             ),
           );
           if (createApproverField && capabilities?.approvers?.plugin === true) {
@@ -817,6 +849,14 @@ export function createPluginFields({
         for (const tool of tools.values()) {
           const policy = selected?.tools?.[tool.id] ?? {};
           const writeTool = (key, value) => writeToolPolicy(entry.id, "tools", key, value, tool.id);
+          const fields = toolPolicyFields(tool.name, policy, "tools", toolReviewers, writeTool);
+          if (!fields.reviewer && selected && defaultReviewers.length > 0) {
+            fields.controls.append(
+              button("Set reviewer for all tools", () =>
+                defaultReviewer.querySelector("select")?.focus(),
+              ),
+            );
+          }
           const row = element(
             "fieldset",
             {
@@ -836,38 +876,8 @@ export function createPluginFields({
             tool.ownerId
               ? element("p", { className: "hint" }, `Provided by ${tool.ownerId}`)
               : null,
-            element(
-              "div",
-              { className: "plugin-controls" },
-              select(
-                `Enable ${tool.name}`,
-                policy.enabled === undefined ? "" : String(policy.enabled),
-                [
-                  ["", "Inherit plugin policy"],
-                  ["true", "Enabled"],
-                  ["false", "Disabled"],
-                ],
-                (value) => writeTool("enabled", value === "" ? undefined : value === "true"),
-                capabilities?.tools.enabled === true,
-              ),
-              approvalSelect(tool.name, policy.approval, "tools", (value) =>
-                writeTool("approval", value || undefined),
-              ),
-              toolReviewers.length > 0 || policy.reviewer !== undefined
-                ? select(
-                    `${tool.name} reviewer`,
-                    policy.reviewer ?? "",
-                    [["", "Inherit plugin or Harness reviewer"], ...toolReviewers],
-                    (value) => writeTool("reviewer", value || undefined),
-                    Boolean(capabilities),
-                  )
-                : selected && defaultReviewers.length > 0
-                  ? button("Set reviewer for all tools", () =>
-                      defaultReviewer.querySelector("select")?.focus(),
-                    )
-                  : null,
-            ),
-            approvalHint(policy.approval, "tools"),
+            fields.controls,
+            fields.hint,
           );
           const toolApprovers =
             createApproverField && capabilities?.approvers?.tools === true
@@ -985,12 +995,7 @@ export function createPluginFields({
         ),
       );
     }
-    for (const node of detail.querySelectorAll("input, select, button")) {
-      node.disabled =
-        disabled ||
-        (values === null && node.dataset.discovery !== "true") ||
-        node.dataset.policyUnsupported === "true";
-    }
+    updateDetailDisabled(values === null);
     // Detail refreshes replace focused controls; keep the search caret in place.
     if (focusedHeading && focusedPlugin === tabState().activeId) {
       detail.querySelector("h3")?.focus();
@@ -1034,13 +1039,7 @@ export function createPluginFields({
         value || !catalog?.canLoad || !catalog?.hasPrevious || catalog?.status === "loading";
       next.disabled =
         value || !catalog?.canLoad || !catalog?.nextCursor || catalog?.status === "loading";
-      const invalid = selections() === null;
-      for (const node of detail.querySelectorAll("input, select, button")) {
-        node.disabled =
-          value ||
-          (invalid && node.dataset.discovery !== "true") ||
-          node.dataset.policyUnsupported === "true";
-      }
+      updateDetailDisabled(selections() === null);
     },
     resetSearch() {
       // Discovery calls this when credentials or the provider change.
