@@ -457,6 +457,43 @@ test(
   },
 );
 
+test(
+  "two teardowns' late cleanups both run when one starts while the other's runs",
+  { timeout: 5_000 },
+  async () => {
+    // Each teardown drains its own late queue; a file-wide count of running late cleanups once
+    // decided whether one was drained, so the second teardown's cleanup was queued and never ran.
+    const options = {
+      log: () => {},
+      exit: () => {},
+      failFile: () => {},
+      settled: (quietMs) => delay(quietMs),
+    };
+    const first = new RecordingContext();
+    const second = new RecordingContext();
+    const { context: firstContext } = boundedTeardown(first, options);
+    const { context: secondContext } = boundedTeardown(second, options);
+    await first.hooks[0]();
+    await second.hooks[0]();
+    const ran = [];
+    let release;
+    assert.throws(() =>
+      firstContext.after(async () => {
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+        ran.push("first late cleanup");
+      }),
+    );
+    await delay(20);
+    assert.throws(() => secondContext.after(() => ran.push("second late cleanup")));
+    await delay(20);
+    release();
+    await delay(50);
+    assert.deepEqual(ran.sort(), ["first late cleanup", "second late cleanup"]);
+  },
+);
+
 const kubernetesHelperUrl = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
 
 // Runs a script as its own node:test root, not as a child reporting to this runner, with a TAP

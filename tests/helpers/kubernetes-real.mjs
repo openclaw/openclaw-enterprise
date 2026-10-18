@@ -259,6 +259,8 @@ export function boundedTeardown(
   let exiting = false;
   // Late cleanups waiting to run, drained newest-first like the teardown.
   const late = [];
+  // Whether this teardown's queue has a drainer; the file-wide count only decides the exit.
+  let drainingLate = false;
   const endProcess = (reason) => {
     log(`${label}: exiting once the file's tests settle for ${exitGraceMs} ms; ${reason}`);
     markActivity();
@@ -312,7 +314,8 @@ export function boundedTeardown(
     late.push(step);
     // Registrations in the same turn (a cleanup list) all queue before the first runs, and one
     // a running cleanup makes runs next.
-    if (late.length === 1 && lateCleanupsRunning === 1) {
+    if (!drainingLate) {
+      drainingLate = true;
       queueMicrotask(async () => {
         while (late.length > 0) {
           const next = late.pop();
@@ -325,6 +328,7 @@ export function boundedTeardown(
           failFile();
           endProcess(`cleanup ${next.site} came after its test's teardown`);
         }
+        drainingLate = false;
       });
     }
     // A cleanup may register another, as during the teardown; only setup is stopped. The flag
