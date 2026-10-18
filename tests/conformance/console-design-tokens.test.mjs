@@ -26,13 +26,16 @@ const root = declarations(consoleCss.slice(rootStart, consoleCss.indexOf("}", ro
 // Design-language token families. Everything else in :root is an older name kept for existing rules.
 const tokenName =
   /^--(color|font|text|weight|tracking|space|radius|shadow|duration|ease|focus|control|touch|content|form|prose|sidebar)(-|$)/;
+// Older names that the family pattern above also matches.
+const olderInFamily = new Set(["--text", "--text-strong", "--shadow", "--radius"]);
+const isToken = (name) => tokenName.test(name) && !olderInFamily.has(name);
 
 test("older console custom properties are aliases of design tokens, not separate values", () => {
-  const older = [...root].filter(([name]) => !tokenName.test(name));
+  const older = [...root].filter(([name]) => !isToken(name));
   assert.ok(older.length > 0, "older names are still defined for existing rules");
   for (const [name, value] of older) {
     const token = value.match(/^var\((--[\w-]+)\)$/)?.[1];
-    assert.ok(token && tokenName.test(token), `${name}: ${value} should be var(--<token>)`);
+    assert.ok(token && isToken(token), `${name}: ${value} should be var(--<token>)`);
     assert.ok(root.has(token), `${name} aliases undefined ${token}`);
   }
 });

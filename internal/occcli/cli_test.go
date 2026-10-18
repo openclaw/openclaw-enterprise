@@ -880,7 +880,7 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 		// A crash-looping Harness is told apart from a first start (finding 1043).
 		{
 			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(1), "restarts": float64(3)},
-			"Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 3). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ agent logs AGENT_ID --source sandbox).\n\n",
+			"Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 3). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace ns_1 agent logs agt_1 --source sandbox --revision rev_1).\n\n",
 		},
 		{
 			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(-1), "restarts": float64(1)},
@@ -905,11 +905,33 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 		if test.harness != nil {
 			description["harness"] = test.harness
 		}
-		if err := app.printRuntime(description); err != nil {
+		if err := app.printRuntime(description, "ns_1", "agt_1", "rev_1"); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.HasPrefix(out.String(), test.want) {
 			t.Errorf("harness %v: output = %q, want prefix %q", test.harness, out.String(), test.want)
+		}
+	}
+}
+
+func TestAgentRuntimeNamesTheExactSandboxLogsCommandForARestartingHarness(t *testing.T) {
+	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
+	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
+	restarting := map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(1), "restarts": float64(2)}
+	for _, args := range [][]string{
+		{"agent", "runtime", "agt_1", "--revision", "rev_2"},
+		// The default selection reads the newer revision, so the hint pins it.
+		{"agent", "runtime", "agt_1"},
+	} {
+		stub := &runtimeLogStub{t: t, activeID: "rev_1", revisions: `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`, podless: []string{"rev_2"}, harness: restarting}
+		out, _, err := runLogsCommand(t, context.Background(), stub, args...)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		want := "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; " +
+			"if this persists, read its Sandbox logs (occ --namespace ns_1 agent logs agt_1 --source sandbox --revision rev_2).\n\n"
+		if !strings.HasPrefix(out, want) {
+			t.Errorf("%v: output = %q, want prefix %q", args, out, want)
 		}
 	}
 }
