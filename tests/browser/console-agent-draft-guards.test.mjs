@@ -916,6 +916,33 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
     if (mutation === "channel Secrets") {
       const configurationPath = `/namespaces/${namespace.id}/configurations/${configuration.id}`;
+      const refusalText =
+        "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
+      // A refused check before the save keeps its own text: nothing was written (finding 1839).
+      const refusedCheck = (route) =>
+        route.request().method() === "GET"
+          ? route.fulfill({
+              status: 403,
+              contentType: "application/json",
+              body: JSON.stringify({
+                error: { code: "FORBIDDEN", message: "denied" },
+                meta: { requestId: "req_00000000-0000-4000-8000-000000000434" },
+              }),
+            })
+          : route.continue();
+      await page.route(`${fixture.origin}${configurationPath}`, refusedCheck);
+      const writesBeforeCheck = pathRequests(requests, "PATCH", configurationPath).length;
+      await selectSecret(page, "Slack app token", appSecret);
+      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+      const checkRefusal = credentialsPanel.getByText(
+        "Could not check the saved Configuration. Try again before saving channel Secrets. Request ID: req_00000000-0000-4000-8000-000000000434",
+        { exact: true },
+      );
+      await checkRefusal.first().waitFor();
+      assert.equal(await checkRefusal.count(), 1);
+      assert.equal(await credentialsPanel.getByText(refusalText).count(), 0);
+      assert.equal(pathRequests(requests, "PATCH", configurationPath).length, writesBeforeCheck);
+      await page.unroute(`${fixture.origin}${configurationPath}`, refusedCheck);
       const previousConfigurationWrites = pathRequests(requests, "PATCH", configurationPath).length;
       await page.route(`${fixture.origin}${configurationPath}`, (route) =>
         route.request().method() === "PATCH"
@@ -933,7 +960,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
       const denial = credentialsPanel.getByText(
         // The refused Configuration update names its grants (finding 1839).
-        "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds. Request ID: req_00000000-0000-4000-8000-000000000433",
+        `${refusalText} Request ID: req_00000000-0000-4000-8000-000000000433`,
         { exact: true },
       );
       await denial.first().waitFor();
