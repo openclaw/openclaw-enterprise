@@ -260,6 +260,12 @@ function draftChanges(draft) {
   return { fields: Object.fromEntries(fields.map((id) => [id, draft.fields[id]])), secrets };
 }
 
+// Whether the editor holds a change a reload or tab close would lose (finding 1902).
+function unsavedChannelDraft(draft) {
+  const changes = draftChanges(draft);
+  return Object.keys(changes.fields).length > 0 || changes.secrets.length > 0;
+}
+
 // A save conflict keeps the editor's changes: Reload draft reopens them over the reread
 // settings instead of dropping them with the closed editor (finding 1504).
 function carryDraft(state, dialog, provider) {
@@ -276,6 +282,7 @@ function carryDraft(state, dialog, provider) {
   const carried = { ...draft, carried: true, unresolved: false };
   state.carriedDraft = carried;
   state.drawerContext.drafts?.track("channels", () => carried);
+  state.drawerContext.drafts?.unsavedWhen("channels", unsavedChannelDraft);
 }
 
 function carriedNotice(draft, provider) {
@@ -651,6 +658,7 @@ function openDrawer(section, state, provider, retained) {
   state.captureDraft = captureDraft;
   state.carriedDraft = null;
   state.drawerContext.drafts?.track("channels", captureDraft);
+  state.drawerContext.drafts?.unsavedWhen("channels", unsavedChannelDraft);
   if (stale || unresolved) {
     submit.disabled = true;
     feedback.append(
