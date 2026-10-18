@@ -2125,7 +2125,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
 
   // Another version's tabs have no reason to read the Configuration, so recovery reads it once
   // before offering Deploy again. A denial is remembered like the draft's; any other failure
-  // leaves the link hidden until the page reloads. The draft's own read decides there.
+  // leaves the link hidden for this page view. The draft's own read decides there.
   function checkConfigurationReadable(configurationId) {
     if (selected === "draft" || configurationCheckId === configurationId) {
       return;
@@ -2134,7 +2134,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const configurationPath = `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(configurationId)}`;
     void request(configurationPath).then(
       () => {
-        if (!context.isCurrent() || deleting) {
+        // A late answer for a Configuration the Agent has since replaced decides nothing.
+        if (!context.isCurrent() || deleting || configurationCheckId !== configurationId) {
           return;
         }
         readableConfigurationId = configurationId;
@@ -2146,6 +2147,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           if (context.isCurrent() && !deleting) {
             renderLatestDeployment();
           }
+        } else if (!context.isCurrent() && configurationCheckId === configurationId) {
+          // Cut short by leaving the page: a view Back restores asks again.
+          configurationCheckId = null;
         }
       },
     );

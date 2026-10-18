@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
+  apiRequests,
   detailUrl,
   fileBrowser,
   holdRequests,
@@ -35,10 +38,11 @@ const nextFrames = (page) =>
   );
 
 // An Agent whose v1 keeps serving while its v2 redeploy failed with DEPENDENCY_UNAVAILABLE.
-async function failedRedeploy(t, name, viewport) {
+async function failedRedeploy(t, name, { viewport, auditSink } = {}) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name, {
     computeDriver: createRuntimeLogComputeDriver(),
     agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
+    ...(auditSink ? { auditSink } : {}),
   });
   const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -91,34 +95,61 @@ function watchDeployAgain() {
   });
 }
 
+// The failed deployment's own message says to deploy again; the page's 503 answer for a read.
+const unavailable = {
+  status: 503,
+  contentType: "application/json",
+  body: JSON.stringify({
+    error: { code: "DEPENDENCY_UNAVAILABLE", message: "Try again later." },
+    meta: { requestId: "req_test_deploy_again_unavailable" },
+  }),
+};
+
+// A Namespace member whose role grants Agent deploy and log reading but no Configuration read.
+function deployerWithoutConfiguration(fixture, namespace) {
+  return fixture.createAccountWithPolicy("deployer-without-configuration", (principal) => {
+    grantRole(fixture.policy, principal.id, {
+      id: "role-deployer-without-configuration",
+      namespaceId: namespace.id,
+      permissions: {
+        namespace: ["read"],
+        agent: ["read", "deploy", "read_logs"],
+        agent_revision: ["read"],
+      },
+    });
+  });
+}
+
 // A deployer who cannot read the Configuration lands on the serving version's tabs, where the page
 // has no other reason to read it. Recovery used to treat "not yet denied" as readable and offered
 // Deploy again as its primary action; the draft it opened then had no Deploy new version (finding
-// 1931). The page now reads the Configuration first, and the 403 keeps Logs as the primary action.
+// 1931). The page now reads the Configuration first; the API's 403 keeps Logs as the primary action,
+// and the tab remembers the denial, so it is audited once.
 for (const tab of ["configuration", "logs", "channels"]) {
-  test(`Recovery on v1's ${tab} tab offers no Deploy again when the Configuration read is denied`, async (t) => {
+  test(`A deployer who cannot read the Configuration gets no Deploy again on v1's ${tab} tab`, async (t) => {
+    const auditSink = new InMemoryAuditSink();
     const { fixture, namespace, agent, active, page, configurationUrl } = await failedRedeploy(
       t,
       `Deploy again denied ${tab}`,
+      { auditSink },
     );
-    await page.route(configurationUrl, (route) =>
-      route.request().method() === "GET"
-        ? route.fulfill({
-            status: 403,
-            contentType: "application/json",
-            body: JSON.stringify({
-              error: { code: "FORBIDDEN", message: "Access denied." },
-              meta: { requestId: "req_test_deploy_again_configuration_denied" },
-            }),
-          })
-        : route.fallback(),
-    );
+    const deployer = await deployerWithoutConfiguration(fixture, namespace);
     await page.addInitScript(watchDeployAgain);
+    const permissions = page.waitForResponse((response) =>
+      response.url().endsWith(`/agents/${agent.id}/permissions`),
+    );
     const denied = page.waitForResponse(
       (response) => response.url() === configurationUrl && response.status() === 403,
     );
 
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, active.revision.id, tab));
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, tab),
+      deployer.credentials,
+    );
+    // The API's own answer: this caller may deploy.
+    assert.equal((await (await permissions).json()).data.deploy, true);
     const recovery = recoveryOf(page);
     await recovery
       .getByText(persistedDeploymentError("DEPENDENCY_UNAVAILABLE").message, { exact: false })
@@ -131,8 +162,84 @@ for (const tab of ["configuration", "logs", "channels"]) {
     assert.equal(await logs.getAttribute("class"), "overview-primary");
     assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
     assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
+    const configurationDenials = auditSink
+      .list()
+      .filter(
+        (event) =>
+          event.kind === "authorization_denial" && event.action === "openclaw.configurations.read",
+      );
+    assert.equal(configurationDenials.length, 1);
   });
 }
+
+// A read that fails for another reason proves nothing either. The page asks once: switching tabs
+// renders recovery again in place without repeating the read.
+test("A failed Configuration read leaves Deploy again hidden and is not repeated", async (t) => {
+  const { fixture, namespace, agent, active, page, configurationUrl } = await failedRedeploy(
+    t,
+    "Deploy again unavailable",
+  );
+  await page.route(configurationUrl, (route) =>
+    route.request().method() === "GET" ? route.fulfill(unavailable) : route.fallback(),
+  );
+  await page.addInitScript(watchDeployAgain);
+  const requests = apiRequests(page, fixture.origin);
+  const failed = page.waitForResponse(
+    (response) => response.url() === configurationUrl && response.status() === 503,
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const recovery = recoveryOf(page);
+  const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
+  await logs.waitFor();
+  await failed;
+  await nextFrames(page);
+  assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
+
+  await page.locator(".agent-tabs").getByRole("button", { name: "Channels" }).click();
+  await page.waitForURL((next) => next.searchParams.get("tab") === "channels");
+  await nextFrames(page);
+  await nextFrames(page);
+  const configurationPath = new URL(configurationUrl).pathname;
+  assert.equal(
+    requests.filter((request) => request.method === "GET" && request.path === configurationPath)
+      .length,
+    1,
+  );
+  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
+});
+
+// On the draft, its own Configuration read decides: a read that fails for another reason than a
+// denial leaves no Deploy again either.
+test("The draft offers no Deploy again when its Configuration read fails", async (t) => {
+  const { fixture, namespace, agent, page, configurationUrl } = await failedRedeploy(
+    t,
+    "Deploy again draft unavailable",
+  );
+  await page.route(configurationUrl, (route) =>
+    route.request().method() === "GET" ? route.fulfill(unavailable) : route.fallback(),
+  );
+  await page.addInitScript(watchDeployAgain);
+  const failed = page.waitForResponse(
+    (response) => response.url() === configurationUrl && response.status() === 503,
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const recovery = recoveryOf(page);
+  const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
+  await logs.waitFor();
+  await failed;
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  await nextFrames(page);
+  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
+  assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
+});
 
 // Deploy again waits for that read: while it is held the banner offers Logs, and only its success
 // adds Deploy again as the primary action.
@@ -166,7 +273,7 @@ test("Recovery on another version offers Deploy again only after the Configurati
 // waits until the draft page shows while that read is still out: its Deploy new version card does
 // not exist yet, so the link's focus waits for it.
 async function deployAgainWithHeldDraft(t, name) {
-  const setup = await failedRedeploy(t, name, { width: 390, height: 844 });
+  const setup = await failedRedeploy(t, name, { viewport: { width: 390, height: 844 } });
   const { fixture, namespace, agent, active, page, configurationUrl } = setup;
   await login(
     page,
