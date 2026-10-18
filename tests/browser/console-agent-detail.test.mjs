@@ -440,7 +440,7 @@ for (const unreadable of ["draft", "revision"]) {
       ...(unreadable === "draft" ? ["Credentials"] : []),
     ];
     for (const tab of tabs) {
-      await page.getByRole("button", { name: tab, exact: true }).click();
+      await page.getByRole("tab", { name: tab, exact: true }).click();
       await page
         .getByRole("heading", { name: "Saved configuration unreadable", exact: true })
         .waitFor();

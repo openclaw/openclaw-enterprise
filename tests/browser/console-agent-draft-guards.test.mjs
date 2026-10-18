@@ -845,7 +845,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       );
       for (const label of ["Configuration", "Repositories", "Channels", "Workspace files"]) {
         assert.equal(
-          await page.getByRole("button", { name: label, exact: true }).isDisabled(),
+          await page.getByRole("tab", { name: label, exact: true }).isDisabled(),
           true,
           `${label} must not be available while credentials are saving`,
         );

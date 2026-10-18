@@ -2176,8 +2176,8 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
   );
   await page.getByRole("heading", { name: "Destination Agent", exact: true }).waitFor();
   assert.equal(
-    await page.getByRole("tab", { name: "Credentials", exact: true }).getAttribute("aria-current"),
-    "page",
+    await page.getByRole("tab", { name: "Credentials", exact: true }).getAttribute("aria-selected"),
+    "true",
   );
   assert.equal(await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")), null);
   assert.equal(new URL(page.url()).searchParams.has("token"), false);

@@ -263,7 +263,7 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
     assert.equal(await selected.textContent(), name);
     await page.waitForFunction(() => {
       const button = globalThis.document.querySelector('.agent-tabs button[aria-selected="true"]');
-      const strip = button.closest("nav").getBoundingClientRect();
+      const strip = button.closest(".agent-tabs").getBoundingClientRect();
       const bounds = button.getBoundingClientRect();
       // Scroll extents are integer CSS pixels; DOMRects retain subpixels.
       // Keep the visibility check strict beyond that rounding uncertainty.

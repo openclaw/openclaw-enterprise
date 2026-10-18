@@ -717,7 +717,7 @@ test("Back between an Agent's tabs before its overview reveals loads the tab in 
   record.release();
   await agentShown(page);
   assert.equal(
-    await page.locator('.content [aria-current="page"]', { hasText: "Configuration" }).count(),
+    await page.locator('.content [aria-selected="true"]', { hasText: "Configuration" }).count(),
     1,
   );
   assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
