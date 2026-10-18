@@ -433,7 +433,7 @@ func developmentKeycloakTLSMirror(source []byte) (map[string]any, []byte, error)
 
 func developmentKeycloakRedirectURI(cluster string, browserPort int) string {
 	console, _, _ := developmentBrowserHosts(cluster)
-	return fmt.Sprintf("https://%s:%d/api/auth/providers/oidc/callback", console, browserPort)
+	return developmentBrowserOrigin(console, browserPort) + "/api/auth/providers/oidc/callback"
 }
 
 // installDevelopmentKeycloak runs after the chart, whose routing CA Issuer
@@ -793,7 +793,7 @@ func (r *runner) signInDevelopmentKeycloak(ctx context.Context, state *developme
 		return err
 	}
 	consoleHost, _, _ := developmentBrowserHosts(state.Cluster)
-	origin := fmt.Sprintf("https://%s:%d", consoleHost, state.BrowserPort)
+	origin := developmentBrowserOrigin(consoleHost, state.BrowserPort)
 	address := fmt.Sprintf("127.0.0.1:%d", state.BrowserPort)
 
 	// The password-only first pass: read the administrator's user ID.
