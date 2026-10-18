@@ -59,6 +59,21 @@
 {{- end -}}
 {{- end -}}
 {{- /* An operator-named Secret or ConfigMap: a Kubernetes resource name (DNS subdomain) of at most 253 characters, as the profile renderer's resourceNameRule checks. */ -}}
+{{- /* Resolves a mount destination as the container runtime does inside the controller image: one component at a time, following the image's top-level symlinks. The runtime stage of the root Dockerfile is node:24-bookworm-slim, where Debian base-files links /var/run and /var/lock into /run and merged /usr links /bin, /lib, /lib64 and /sbin. */ -}}
+{{- define "openclaw.runtimeMountDestination" -}}
+{{- $links := dict "/var/run" "/run" "/var/lock" "/run/lock" "/bin" "/usr/bin" "/lib" "/usr/lib" "/lib64" "/usr/lib64" "/sbin" "/usr/sbin" -}}
+{{- $resolved := "/" -}}
+{{- range $part := splitList "/" (toString .) -}}
+{{- if eq $part ".." -}}
+{{- $resolved = dir $resolved -}}
+{{- else if and $part (ne $part ".") -}}
+{{- $resolved = clean (printf "%s/%s" $resolved $part) -}}
+{{- $resolved = get $links $resolved | default $resolved -}}
+{{- end -}}
+{{- end -}}
+{{- $resolved -}}
+{{- end -}}
+
 {{- define "openclaw.validateResourceName" -}}
 {{- $value := toString .value -}}
 {{- if or (gt (len $value) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $value)) -}}
@@ -412,10 +427,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and .Values.auth.oidc .Values.auth.oidc.enabled .Values.auth.oidc.caSecretName -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/api-extra-ca" -}}
 {{- end -}}
-{{- /* Linux kubelet makes relative mounts absolute; the runtime resolves dot segments and trailing slashes. Compare destinations without changing the emitted operator path. */ -}}
-{{- $caDestination := clean (printf "/%s" .Values.database.caMountPath) -}}
+{{- /* Linux kubelet makes relative mounts absolute; the runtime resolves dot segments, trailing slashes and image symlinks. Compare destinations without changing the emitted operator path. */ -}}
+{{- $caDestination := include "openclaw.runtimeMountDestination" .Values.database.caMountPath -}}
 {{- range $mount := $reservedCaMounts -}}
-{{- if eq $caDestination (clean (printf "/%s" $mount)) -}}
+{{- if eq $caDestination (include "openclaw.runtimeMountDestination" $mount) -}}
 {{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
 {{- end -}}
 {{- end -}}

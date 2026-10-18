@@ -3092,6 +3092,9 @@ test("database CA mounts stay distinct from active production volume mounts", to
         `${mountPath}/`,
         `${mountPath}/.`,
         `${mountPath}/../${mountPath.split("/").at(-1)}`,
+        // The controller image links /var/run to /run, and the runtime follows it.
+        ...(mountPath.startsWith("/run/") ? [`/var${mountPath}`] : []),
+        ...(mountPath.startsWith("/var/run/") ? [mountPath.slice("/var".length)] : []),
       ]) {
         await assert.rejects(
           render({ ...features, ...databaseCaValues, "database.caMountPath": alias }),
@@ -3107,7 +3110,9 @@ test("database CA mounts stay distinct from active production volume mounts", to
     "/etc/openclaw/repository-registry",
     "/etc/openclaw/repository-ca",
     "/var/run/secrets/kubernetes.io/serviceaccount",
+    "/run/secrets/kubernetes.io/serviceaccount",
     "/run/openclaw/repository-control",
+    "/var/run/openclaw/repository-control",
     "/etc/openclaw/gateway-api-key",
     "/etc/openclaw/gateway-ca",
     "/etc/openclaw/chatgpt",
