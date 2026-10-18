@@ -134,6 +134,7 @@ export async function fixtureImageCommands(
   const run = (script, args) =>
     spawnResult(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], { env });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
+  const cleanup = () => run("cleanup.mjs", ["--state", statePath]);
   return {
     statePath,
     githubEnv,
@@ -142,7 +143,12 @@ export async function fixtureImageCommands(
       run("prepare.mjs", ["--warm-image-cache", "--state", statePath, ...args]),
     prepareFile: (file) =>
       run("prepare.mjs", ["--lane", lane, "--file", file, "--state", statePath]),
-    cleanup: () => run("cleanup.mjs", ["--state", statePath]),
+    cleanup,
+    cleanupSuccessfully: async () => {
+      const result = await cleanup();
+      assert.equal(result.status, 0, result.stderr);
+    },
+    readState: async () => JSON.parse(await readFile(statePath, "utf8")),
     commands: async () =>
       (await readFile(join(root, "commands.jsonl"), "utf8")).trim().split("\n").map(JSON.parse),
   };
