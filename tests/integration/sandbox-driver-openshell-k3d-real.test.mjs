@@ -36,6 +36,7 @@ import {
   openShellAgentName,
   openShellGatewayName,
   openshellHash as hash,
+  outageAttemptRead,
   registerOpenShellInstallationCleanups,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import {
@@ -5882,21 +5883,30 @@ async function assertOpenShellGatewayOutage(topology) {
     // A claim marks the work `claimed` and counts an attempt; a failed attempt returns it to
     // `queued`. Waiting for that while the gateway is still at zero replicas proves the worker
     // tried the revision against the stopped gateway and did not activate it.
-    const work = await waitFor(
+    const deploymentStatuses = new Set();
+    const { work, status } = await waitFor(
       `deployment ${redeployed.data.id} to fail an attempt while the gateway is down`,
-      async () => {
-        const { rows } = await observerPool.query(
-          "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
-          [`agent_revision:${redeployed.data.id}:reconcile`],
-        );
-        return rows[0]?.state === "queued" && rows[0].attempt_count >= 1 ? rows[0] : undefined;
-      },
+      outageAttemptRead({
+        readWork: async () =>
+          (
+            await observerPool.query(
+              "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+              [`agent_revision:${redeployed.data.id}:reconcile`],
+            )
+          ).rows[0],
+        readStatus: async () => {
+          const deployment = await request("GET", `${agentPath}/deployments/${redeployed.data.id}`);
+          const read = deployment.data?.status ?? null;
+          deploymentStatuses.add(read);
+          return read;
+        },
+      }),
       180_000,
     );
-    const deployment = await request("GET", `${agentPath}/deployments/${redeployed.data.id}`);
     const during = await request("GET", agentPath);
     observed.redeployDuringOutage = {
-      status: deployment.data?.status ?? null,
+      status,
+      deploymentStatuses: [...deploymentStatuses],
       work,
       activeRevisionUnchanged: during.data?.activeRevisionId === activeRevisionId,
       gatewayStopped: (await gatewayPods()).length === 0,

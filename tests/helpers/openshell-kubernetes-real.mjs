@@ -72,6 +72,22 @@ export function registerOpenShellInstallationCleanups(context, operations) {
   }
 }
 
+// One poll of the gateway-outage proof: the revision's work back in `queued` after at least one
+// attempt, then the deployment's status. The worker can claim the work again between the two
+// reads, and a live lease reads as `running`, so that pair is read again; any other status ends
+// the wait for the proof to assert on, so a revision that failed or activated during the outage
+// still fails it (finding 1846).
+export function outageAttemptRead({ readWork, readStatus }) {
+  return async () => {
+    const work = await readWork();
+    if (work?.state !== "queued" || work.attempt_count < 1) {
+      return undefined;
+    }
+    const status = await readStatus();
+    return status === "running" ? undefined : { work, status };
+  };
+}
+
 export function openshellHash(value, length = 12) {
   return sha256Hex(value, length);
 }

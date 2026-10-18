@@ -21,6 +21,7 @@ import {
   createOpenShellServiceLoopbackLookup,
   openShellChartImageValues,
   openShellGatewayNetworkPolicies,
+  outageAttemptRead,
 } from "../helpers/openshell-kubernetes-real.mjs";
 
 async function fixture(t, prefix = "ci-openshell-test") {
@@ -75,6 +76,45 @@ test("OpenShell Helm chart image values use the v0.1.4 registry and digest contr
     () => openShellChartImageValues("gateway.image", "localhost/example/gateway:local"),
     /immutable OpenShell image digest/,
   );
+});
+
+// Finding 1846: the worker claimed the work again between the queued read and the deployment read,
+// so the proof saw `running` while nothing had activated. Each poll replays one interleaving.
+test("OpenShell outage proof rereads a deployment the worker claimed again between reads", async () => {
+  const queued = (attempt) => ({ state: "queued", reason_code: null, attempt_count: attempt });
+  const claimed = (attempt) => ({ state: "claimed", reason_code: null, attempt_count: attempt });
+  const polls = [
+    [queued(0), undefined],
+    [queued(3), "running"],
+    [claimed(4), undefined],
+    [queued(4), "queued"],
+  ];
+  let reads = 0;
+  const poll = outageAttemptRead({
+    readWork: async () => polls[reads][0],
+    readStatus: async () => {
+      assert.notEqual(polls[reads][1], undefined, "status is read only for failed attempts");
+      return polls[reads][1];
+    },
+  });
+  const results = [];
+  for (; reads < polls.length; reads += 1) {
+    results.push(await poll());
+  }
+  assert.deepEqual(results, [
+    undefined,
+    undefined,
+    undefined,
+    { work: queued(4), status: "queued" },
+  ]);
+  // A revision that failed or activated during the outage ends the wait, so the proof fails on it.
+  for (const status of ["failed", "succeeded", null]) {
+    const ended = await outageAttemptRead({
+      readWork: async () => queued(1),
+      readStatus: async () => status,
+    })();
+    assert.deepEqual(ended, { work: queued(1), status });
+  }
 });
 
 test("OpenShell host probes retain the exposed hostname while connecting to loopback", async (t) => {
