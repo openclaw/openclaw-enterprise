@@ -430,6 +430,104 @@ export function createPluginFields({
     }
   }
 
+  function renderPluginList(values, entries, catalogLoading) {
+    list.setAttribute("aria-busy", String(catalogLoading));
+    const query = configuredOnly || !onLoadPlugins ? search.value.trim().toLowerCase() : "";
+    const candidates = configuredOnly
+      ? Object.keys(values ?? {}).map((id) => entries.get(id))
+      : (catalog?.entries ?? []);
+    const visible = candidates
+      .filter((entry) =>
+        [entry.name, entry.id, entry.description ?? ""].some((text) =>
+          text.toLowerCase().includes(query),
+        ),
+      )
+      .sort(
+        (a, b) =>
+          Number(a.available === false) - Number(b.available === false) ||
+          a.name.localeCompare(b.name),
+      );
+    const rows = visible.map((entry, index) => {
+      const selected = values?.[entry.id];
+      const item = button(pluginIdentity(entry), () => showPlugin(entry), {
+        className: "plugin-list-item",
+        "aria-label": entry.name,
+        "aria-current": String(tabState().activeId === entry.id),
+      });
+      item.append(
+        element(
+          "span",
+          { className: "badge" },
+          entry.available === false
+            ? "Unavailable"
+            : selected
+              ? selected.enabled
+                ? "Enabled"
+                : "Disabled"
+              : "Not selected",
+        ),
+      );
+      const reasonId = `${input.id}-plugin-unavailable-${index}`;
+      if (entry.available === false) {
+        item.setAttribute("aria-describedby", reasonId);
+      }
+      return element(
+        "div",
+        { className: "plugin-list-row", "data-plugin-id": entry.id },
+        item,
+        entry.available === false
+          ? element(
+              "button",
+              {
+                type: "button",
+                className: "plugin-unavailable-trigger",
+                "aria-label": `Why ${entry.name} is unavailable`,
+                popovertarget: reasonId,
+              },
+              element("span", { "aria-hidden": "true" }, "i"),
+            )
+          : null,
+        entry.available === false
+          ? element(
+              "div",
+              { id: reasonId, className: "plugin-unavailable-popover", popover: "auto" },
+              unavailableMessage(entry),
+            )
+          : null,
+      );
+    });
+    const focused = document.activeElement;
+    const focusedRow = focused?.closest(".plugin-list-row");
+    const focusedSelector = [".plugin-list-item", ".plugin-unavailable-trigger"].find((selector) =>
+      focused?.matches(selector),
+    );
+    const focusedId = focusedRow?.parentElement === list ? focusedRow.dataset.pluginId : null;
+    list.replaceChildren(...rows);
+    if (focusedId !== null && focusedSelector) {
+      rows
+        .find((row) => row.dataset.pluginId === focusedId)
+        ?.querySelector(focusedSelector)
+        ?.focus({ preventScroll: true });
+    }
+    if (!visible.length && !catalogLoading) {
+      list.append(
+        element(
+          "p",
+          { className: "muted" },
+          query
+            ? "No matching plugins on this page."
+            : configuredOnly
+              ? "No plugins configured. Choose Available plugins to add one."
+              : catalog?.status === "ready"
+                ? "No plugins were returned."
+                : !catalog?.canLoad
+                  ? "To add a plugin by ID, choose Done and edit Plugin selections JSON."
+                  : "Load plugins to browse available choices.",
+        ),
+      );
+    }
+  }
+
   function render() {
     rememberExpandedTools();
     const focused = document.activeElement?.getAttribute("aria-label");
@@ -518,74 +616,8 @@ export function createPluginFields({
     if (configuredOnly) {
       status.textContent = `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
-    list.setAttribute("aria-busy", String(catalogLoading));
     workspace.dataset.showDetails = String(tabState().activeId !== null);
-    const query = configuredOnly || !onLoadPlugins ? search.value.trim().toLowerCase() : "";
-    const candidates = configuredOnly
-      ? Object.keys(values ?? {}).map((id) => entries.get(id))
-      : (catalog?.entries ?? []);
-    const visible = candidates
-      .filter((entry) =>
-        [entry.name, entry.id, entry.description ?? ""].some((text) =>
-          text.toLowerCase().includes(query),
-        ),
-      )
-      .sort(
-        (a, b) =>
-          Number(a.available === false) - Number(b.available === false) ||
-          a.name.localeCompare(b.name),
-      );
-    list.replaceChildren(
-      ...visible.map((entry, index) => {
-        const selected = values?.[entry.id];
-        const item = button(pluginIdentity(entry), () => showPlugin(entry), {
-          className: "plugin-list-item",
-          "aria-label": entry.name,
-          "aria-current": String(tabState().activeId === entry.id),
-        });
-        item.append(
-          element(
-            "span",
-            { className: "badge" },
-            entry.available === false
-              ? "Unavailable"
-              : selected
-                ? selected.enabled
-                  ? "Enabled"
-                  : "Disabled"
-                : "Not selected",
-          ),
-        );
-        const reasonId = `${input.id}-plugin-unavailable-${index}`;
-        if (entry.available === false) {
-          item.setAttribute("aria-describedby", reasonId);
-        }
-        return element(
-          "div",
-          { className: "plugin-list-row" },
-          item,
-          entry.available === false
-            ? element(
-                "button",
-                {
-                  type: "button",
-                  className: "plugin-unavailable-trigger",
-                  "aria-label": `Why ${entry.name} is unavailable`,
-                  popovertarget: reasonId,
-                },
-                element("span", { "aria-hidden": "true" }, "i"),
-              )
-            : null,
-          entry.available === false
-            ? element(
-                "div",
-                { id: reasonId, className: "plugin-unavailable-popover", popover: "auto" },
-                unavailableMessage(entry),
-              )
-            : null,
-        );
-      }),
-    );
+    renderPluginList(values, entries, catalogLoading);
     detail.replaceChildren(
       ...[entries.get(tabState().activeId)].filter(Boolean).map((entry) => {
         const selected = values?.[entry.id];
@@ -969,23 +1001,6 @@ export function createPluginFields({
         return details;
       }),
     );
-    if (!visible.length && !catalogLoading) {
-      list.append(
-        element(
-          "p",
-          { className: "muted" },
-          query
-            ? "No matching plugins on this page."
-            : configuredOnly
-              ? "No plugins configured. Choose Available plugins to add one."
-              : catalog?.status === "ready"
-                ? "No plugins were returned."
-                : !catalog?.canLoad
-                  ? "To add a plugin by ID, choose Done and edit Plugin selections JSON."
-                  : "Load plugins to browse available choices.",
-        ),
-      );
-    }
     if (!tabState().activeId) {
       detail.append(
         element(

@@ -24,6 +24,61 @@ import { enterManualModel, openAdvancedSettings } from "./console-agents-test-su
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
 
+test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  for (const destination of ["Beta", "Search plugins"]) {
+    const { page } = await newPage(t, fixture, { browser });
+    const requested = Promise.withResolvers();
+    const released = Promise.withResolvers();
+    t.after(() => released.resolve());
+    await page.exposeFunction("waitForPluginDetails", () => {
+      requested.resolve();
+      return released.promise;
+    });
+    await login(page, fixture, "/console");
+    // Exercise the served Console component with a held synthetic catalog update.
+    await page.evaluate(async () => {
+      const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
+      const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
+      const beta = { id: "beta", name: "Beta", tools: [] };
+      const catalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
+      const input = globalThis.document.createElement("textarea");
+      input.id = "plugin-focus-selections";
+      input.value = "{}";
+      const fields = createPluginFields({
+        input,
+        catalog,
+        async onLoadTools() {
+          await globalThis.waitForPluginDetails();
+          fields.setCatalog({ ...catalog, entries: [{ ...alpha, tools: [] }, beta] });
+        },
+      });
+      globalThis.document.body.append(fields.section);
+    });
+    await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+    const alpha = dialog.getByRole("button", { name: "Alpha", exact: true });
+    const beta = dialog.getByRole("button", { name: "Beta", exact: true });
+    const search = dialog.getByLabel("Search plugins");
+    await alpha.click();
+    await requested.promise;
+    await alpha.focus();
+    await page.keyboard.press("Tab");
+    const isFocused = (node) => node === node.ownerDocument.activeElement;
+    assert.equal(await beta.evaluate(isFocused), true);
+    if (destination === "Search plugins") {
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Shift+Tab");
+    }
+    const expected = destination === "Beta" ? beta : search;
+    assert.equal(await expected.evaluate(isFocused), true);
+    released.resolve();
+    await dialog.getByText("No tools listed for this plugin.").waitFor();
+    assert.equal(await expected.evaluate(isFocused), true);
+  }
+});
+
 test("Create Agent searches approvers with a search-only Slack Secret", async (t) => {
   const preset = JSON.parse(
     await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
