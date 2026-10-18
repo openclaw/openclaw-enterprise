@@ -56,12 +56,6 @@ function hasSlackBindings(configuration) {
   );
 }
 
-function slackBindingState(configuration, binding) {
-  return secretIdForBinding(configuration?.secretBindings?.[binding.key]) === null
-    ? "missing"
-    : "bound";
-}
-
 export function channelCredentialBlockReason(values) {
   return teamsEnabled(values)
     ? "Microsoft Teams credentials and readiness are operator-managed and cannot be confirmed by this Credentials tab. Use the operator deployment workflow for Teams, or disable Teams through the Configuration API to deploy here."
@@ -415,6 +409,12 @@ export function createChannelSecretsPanel({
       pickers.push({ binding, picker });
       return picker.field;
     }
+    const canSaveChannelSecrets = () =>
+      canEnterChannelCredentials() &&
+      SLACK_SECRET_BINDINGS.every(
+        (binding) => secretIdForBinding(draft.secretBindings[binding.key]) !== null,
+      ) &&
+      (Object.values(draft.changedSecrets).length > 0 || pendingSecretGrants().length > 0);
     const updateControls = () => {
       // Deploy delivers the saved bindings, so a choice shown here but not saved blocks it, as
       // an unsaved authentication source does.
@@ -423,22 +423,11 @@ export function createChannelSecretsPanel({
           secretIdForBinding(draft.secretBindings[binding.key]) !==
           secretIdForBinding(state.configuration.secretBindings?.[binding.key]),
       );
-      const changedSecrets = Object.values(draft.changedSecrets);
-      const pendingSecrets = pendingSecretGrants();
-      const missing = SLACK_SECRET_BINDINGS.filter(
-        (binding) =>
-          slackBindingState({ secretBindings: draft.secretBindings }, binding) === "missing",
-      );
       for (const { picker } of pickers) {
         picker.setDisabled(state.saving || !canEnterChannelCredentials());
         picker.setRequired(true);
       }
-      save.disabled =
-        state.saving ||
-        !canEnterChannelCredentials() ||
-        state.outcomeUnknown ||
-        missing.length > 0 ||
-        (changedSecrets.length === 0 && pendingSecrets.length === 0);
+      save.disabled = !canSaveChannelSecrets();
     };
     const form = element(
       "form",
@@ -449,19 +438,13 @@ export function createChannelSecretsPanel({
     );
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (state.saving || !canEnterChannelCredentials() || state.outcomeUnknown) {
+      if (!canEnterChannelCredentials()) {
         return;
       }
       if (!form.reportValidity()) {
         return;
       }
-      const missing = SLACK_SECRET_BINDINGS.filter(
-        (binding) =>
-          slackBindingState({ secretBindings: draft.secretBindings }, binding) === "missing",
-      );
-      const changedSecrets = Object.values(draft.changedSecrets);
-      const pendingSecrets = pendingSecretGrants();
-      if (missing.length > 0 || (changedSecrets.length === 0 && pendingSecrets.length === 0)) {
+      if (!canSaveChannelSecrets()) {
         return;
       }
       state.saving = true;
