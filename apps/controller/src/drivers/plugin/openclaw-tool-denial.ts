@@ -28,6 +28,8 @@ export type DeniedOpenClawSelection =
       readonly kind: "alsoAllow";
       /** The sole roster entry whose `tools.alsoAllow` drops the plugin's grant. */
       readonly entry: string;
+      /** The deny lists that block the plugin tools that list does name, if any. */
+      readonly lists?: readonly OpenClawToolPolicySetting[];
     };
 
 type CatalogTool = NonNullable<PluginCatalogEntry["tools"]>[number];
@@ -76,8 +78,9 @@ const RESTRICTIVE_PROFILES = new Set(["minimal", "coding", "messaging"]);
  * built-in profile that lists core tools only, an entry's own `tools.alsoAllow` replaces the
  * top-level list at the profile step (resolveEffectiveToolPolicy), so with one entry none of
  * the plugin's tools reach any turn unless that list names them (finding 1857). A list meant to
- * add tools then removes the plugin, so it is refused; an entry `tools.allow` that leaves the
- * plugin out is a deliberate restriction and is not.
+ * add tools then removes the plugin, so it is refused, also when the deny lists block every
+ * plugin tool it names: no tool survives both. An entry `tools.allow` that leaves the plugin out
+ * is a deliberate restriction and is not refused.
  */
 export function deniedOpenClawSelection(
   catalog: readonly PluginCatalogEntry[],
@@ -138,11 +141,21 @@ export function deniedOpenClawSelection(
     if (global !== undefined) {
       return { pluginId, kind: "deny", lists: global.lists.map(setting) };
     }
-    if (
-      shadowingEntry !== undefined &&
-      !tools.some((tool) => matches(shadowingEntry.patterns, tool))
-    ) {
-      return { pluginId, kind: "alsoAllow", entry: shadowingEntry.key };
+    if (shadowingEntry !== undefined) {
+      // Only the tools the entry's list names pass the profile step; refused when the deny
+      // lists, which then all apply, block each of them too.
+      const named = tools.filter((tool) => matches(shadowingEntry.patterns, tool));
+      const lists = [...globalLists, ...(entries[0]?.lists ?? [])].filter(({ patterns }) =>
+        named.some((tool) => matches(patterns, tool)),
+      );
+      if (named.every((tool) => lists.some(({ patterns }) => matches(patterns, tool)))) {
+        return {
+          pluginId,
+          kind: "alsoAllow",
+          entry: shadowingEntry.key,
+          ...(lists.length === 0 ? {} : { lists: lists.map(setting) }),
+        };
+      }
     }
   }
   return undefined;
@@ -152,10 +165,18 @@ export function deniedOpenClawSelection(
 export function openClawToolDenialMessage(denied: DeniedOpenClawSelection): string {
   const { pluginId } = denied;
   if (denied.kind === "alsoAllow") {
+    const alsoAllow = { entry: denied.entry, suffix: "alsoAllow" };
+    if (denied.lists === undefined || denied.lists.length === 0) {
+      return fitted(
+        [alsoAllow],
+        (path) =>
+          `Configuration setting ${path} overrides the plugin's tool grant under a tool profile, which hides every tool of plugin ${pluginId}; add the plugin to that list or deselect the plugin.`,
+      );
+    }
     return fitted(
-      [{ entry: denied.entry, suffix: "alsoAllow" }],
-      (path) =>
-        `Configuration setting ${path} overrides the plugin's tool grant under a tool profile, which hides every tool of plugin ${pluginId}; add the plugin to that list or deselect the plugin.`,
+      [alsoAllow, ...denied.lists.map((list) => ({ ...list, suffix: "deny" }))],
+      (paths) =>
+        `Configuration settings ${paths} together hide every tool of plugin ${pluginId}; name its tools in alsoAllow, remove the deny entries, or deselect the plugin.`,
     );
   }
   const several = denied.lists.length > 1;
@@ -212,7 +233,9 @@ function fitted(settings: readonly NamedSetting[], render: (paths: string) => st
       high = middle - 1;
     }
   }
-  return message(cutTo(low));
+  // Several long keys can leave no length that fits: cut the end, as the HTTP layer would.
+  const cut = Array.from(message(cutTo(low)));
+  return cut.length <= MESSAGE_CAP ? cut.join("") : `${cut.slice(0, MESSAGE_CAP - 1).join("")}…`;
 }
 
 /**

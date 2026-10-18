@@ -679,6 +679,15 @@ test("OpenClaw Plugin Driver refuses a selection the primary model's tools.byPro
     hidden,
     /^Configuration setting agents\.entries\["k+…"\]\.tools\.alsoAllow overrides/,
   );
+  // With several long keys nothing fits even cut to …, so the end is cut instead.
+  const crowded = openClawToolDenialMessage({
+    pluginId: "occ-plugin:diffs",
+    kind: "alsoAllow",
+    entry: long,
+    lists: [{ provider: long }, { entry: long, provider: long }],
+  });
+  assert.equal(Array.from(crowded).length, 256);
+  assert.match(crowded, /^Configuration settings agents\.entries\["…"\]\.tools\.alsoAllow, .*…$/);
 });
 
 test("OpenClaw Plugin Driver refuses a sole entry's tools.alsoAllow that drops the plugin grant under a tool profile", () => {
@@ -726,6 +735,38 @@ test("OpenClaw Plugin Driver refuses a sole entry's tools.alsoAllow that drops t
     { "occ-plugin:diffs": { enabled: false } },
     entry({ alsoAllow: ["browser"] }, { profile: "coding" }),
   );
+  // One survivor check: the plugin tools the entry's list names must outlive every deny list
+  // that applies. Each setting alone leaves a tool here; together they leave none.
+  const catalog = [
+    {
+      id: "occ-plugin:pair",
+      name: "Pair",
+      tools: [
+        { id: "pair_read", name: "pair_read", ownerId: "pair" },
+        { id: "pair_write", name: "pair_write", ownerId: "pair" },
+      ],
+    },
+  ];
+  const pair = { "occ-plugin:pair": { enabled: true } };
+  const restricted = (deny) => ({
+    tools: { profile: "coding", byProvider: { openai: { deny } } },
+    agents: {
+      defaults: { model: "openai/gpt-5.1" },
+      entries: { main: { tools: { alsoAllow: ["pair_read"] } } },
+    },
+  });
+  assert.deepEqual(deniedOpenClawSelection(catalog, pair, restricted(["pair_read"])), {
+    pluginId: "occ-plugin:pair",
+    kind: "alsoAllow",
+    entry: "main",
+    lists: [{ provider: "openai" }],
+  });
+  assert.equal(
+    openClawToolDenialMessage(deniedOpenClawSelection(catalog, pair, restricted(["pair_read"]))),
+    "Configuration settings agents.entries.main.tools.alsoAllow and tools.byProvider.openai.deny together hide every tool of plugin occ-plugin:pair; name its tools in alsoAllow, remove the deny entries, or deselect the plugin.",
+  );
+  assert.equal(deniedOpenClawSelection(catalog, pair, restricted(["pair_write"])), undefined);
+  assert.equal(deniedOpenClawSelection(catalog, pair, restricted([])), undefined);
 });
 
 test("Hardcoded OpenAI catalog returns curated details without provider requests", async (t) => {
