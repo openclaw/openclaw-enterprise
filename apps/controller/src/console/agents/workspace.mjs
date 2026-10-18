@@ -296,8 +296,8 @@ export function renderWorkspaceFiles(context, agent, path) {
         }
         if (missing && confirmsMissingFile(cause)) {
           // Still missing, and nothing new failed (finding 1878). After a Reload the status, not
-          // the error, says the file is missing, so a failed reread's status gives way to that
-          // notice again rather than to nothing (finding 1885).
+          // the error, says the file is missing, so unless an error is shown, a failed reread's
+          // status gives way to that notice again rather than to nothing (finding 1885).
           if (rereadFailed) {
             rereadFailed = false;
             status.textContent = error.textContent ? "" : `${name} is missing. Save to create it.`;
