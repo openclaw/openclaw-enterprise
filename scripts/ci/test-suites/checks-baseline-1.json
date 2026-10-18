@@ -89,6 +89,7 @@
     "tests/conformance/utils.test.mjs",
     "tests/conformance/console-api-client.test.mjs",
     "tests/conformance/console-carry.test.mjs",
+    "tests/conformance/console-json-errors.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
     "tests/conformance/grafana-overview-dashboard.test.mjs",
@@ -117,6 +118,9 @@
     },
     {
       "path": "tests/conformance/console-carry.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-json-errors.test.mjs"
     },
     {
       "path": "tests/conformance/console-design-tokens.test.mjs"

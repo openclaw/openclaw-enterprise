@@ -157,49 +157,180 @@ export function focusSaveOutcome(root, controls, message) {
 }
 
 // Why `text` is not a JSON object, or undefined when it is one. A parse error names the line and
-// column the browser's parser stopped at, so a long Configuration can be fixed in place
-// (finding 1903).
+// column where the text stops being JSON, so a long Configuration can be fixed in place
+// (findings 1903, 1939).
 export function jsonObjectProblem(text) {
   let parsed;
   try {
     parsed = JSON.parse(text);
-  } catch (error) {
+  } catch {
     if (!text.trim()) {
       return "Enter a valid JSON object.";
     }
-    const where = jsonErrorPosition(text, error);
-    return where
-      ? `Invalid JSON at line ${where.line}, column ${where.column}. Enter a valid JSON object.`
-      : "Invalid JSON. Enter a valid JSON object.";
+    const offset = jsonErrorOffset(text);
+    if (offset === undefined) {
+      return "Invalid JSON. Enter a valid JSON object.";
+    }
+    // A byte order mark from a pasted file is invisible, so a bare position points at nothing.
+    if (offset === 0 && text.charCodeAt(0) === 0xfeff) {
+      return "Invalid JSON: remove the invisible byte order mark at the start. Enter a valid JSON object.";
+    }
+    const lines = text.slice(0, offset).split(/\r\n?|\n/);
+    return `Invalid JSON at line ${lines.length}, column ${visibleLength(lines.at(-1)) + 1}. Enter a valid JSON object.`;
   }
   return parsed === null || Array.isArray(parsed) || typeof parsed !== "object"
     ? "Enter a valid JSON object, not an array or a single value."
     : undefined;
 }
 
-// Chromium names an offset (and newer builds its line and column), Firefox a line and column;
-// an early end may have neither. The patterns are anchored to the message's own wording, so JSON
-// the reader typed, which Chromium quotes in "Unexpected token" messages, is never read as one.
-function jsonErrorPosition(text, error) {
-  const message = String(error?.message ?? "");
-  const chromium = / in JSON at position (\d+)(?: \(line (\d+) column (\d+)\))?$/.exec(message);
-  const firefox = / at line (\d+) column (\d+) of the JSON data$/.exec(message);
-  if (chromium?.[2]) {
-    return { line: Number(chromium[2]), column: Number(chromium[3]) };
+// The offset of the first character that breaks the JSON grammar (RFC 8259), `text.length` when
+// the text ends early, or undefined when the scan finds no error. Engines word their messages
+// differently and some name no position (V8 for a bare word or a byte order mark, Safari for
+// any error), so the position comes from this scan, not from the message (finding 1939). It
+// keeps its own stack of open containers, so deep nesting cannot overflow the call stack.
+export function jsonErrorOffset(text) {
+  const end = text.length;
+  const containers = [];
+  let i = 0;
+  // "value", "key", "value-or-close" just after "[", "key-or-close" just after "{", or "after" a
+  // complete value.
+  let expect = "value";
+  const skipWhitespace = () => {
+    while (i < end && " \t\n\r".includes(text[i])) {
+      i += 1;
+    }
+  };
+  const digits = () => {
+    const start = i;
+    while (i < end && text[i] >= "0" && text[i] <= "9") {
+      i += 1;
+    }
+    return i > start;
+  };
+  // Each part fails with `i` on the first character that breaks it.
+  const string = () => {
+    i += 1;
+    while (i < end) {
+      const code = text.charCodeAt(i);
+      if (code === 0x22) {
+        i += 1;
+        return true;
+      }
+      if (code < 0x20) {
+        return false;
+      }
+      i += 1;
+      if (code === 0x5c) {
+        if (text[i] === "u") {
+          i += 1;
+          for (const stop = i + 4; i < stop; i += 1) {
+            if (!/^[0-9a-fA-F]$/.test(text[i] ?? "")) {
+              return false;
+            }
+          }
+        } else if (i < end && '"\\/bfnrt'.includes(text[i])) {
+          i += 1;
+        } else {
+          return false;
+        }
+      }
+    }
+    return false;
+  };
+  const number = () => {
+    if (text[i] === "-") {
+      i += 1;
+    }
+    if (text[i] === "0") {
+      i += 1;
+    } else if (!digits()) {
+      return false;
+    }
+    if (text[i] === ".") {
+      i += 1;
+      if (!digits()) {
+        return false;
+      }
+    }
+    if (text[i] === "e" || text[i] === "E") {
+      i += 1;
+      if (text[i] === "+" || text[i] === "-") {
+        i += 1;
+      }
+      return digits();
+    }
+    return true;
+  };
+  // Matched character by character, so "tr}" fails at the "}".
+  const literal = (word) => {
+    for (const character of word) {
+      if (text[i] !== character) {
+        return false;
+      }
+      i += 1;
+    }
+    return true;
+  };
+  for (;;) {
+    skipWhitespace();
+    const character = text[i];
+    const container = containers.at(-1);
+    if (
+      (expect === "value-or-close" && character === "]") ||
+      (expect === "key-or-close" && character === "}")
+    ) {
+      containers.pop();
+      i += 1;
+      expect = "after";
+    } else if (expect === "key" || expect === "key-or-close") {
+      if (character !== '"' || !string()) {
+        return i;
+      }
+      skipWhitespace();
+      if (text[i] !== ":") {
+        return i;
+      }
+      i += 1;
+      expect = "value";
+    } else if (expect !== "after") {
+      if (character === "{" || character === "[") {
+        containers.push(character);
+        i += 1;
+        expect = character === "{" ? "key-or-close" : "value-or-close";
+        continue;
+      }
+      const word = { t: "true", f: "false", n: "null" }[character];
+      const valid =
+        character === '"'
+          ? string()
+          : character === "-" || (character >= "0" && character <= "9")
+            ? number()
+            : word !== undefined && literal(word);
+      if (!valid) {
+        return i;
+      }
+      expect = "after";
+    } else if (container === undefined) {
+      // Text after the top-level value fails at its first character.
+      return i < end ? i : undefined;
+    } else if (character === ",") {
+      i += 1;
+      expect = container === "{" ? "key" : "value";
+    } else if (character === (container === "{" ? "}" : "]")) {
+      containers.pop();
+      i += 1;
+    } else {
+      return i;
+    }
   }
-  if (firefox) {
-    return { line: Number(firefox[1]), column: Number(firefox[2]) };
-  }
-  const offset = chromium
-    ? Number(chromium[1])
-    : /^(Unexpected end of JSON input|JSON\.parse: (unexpected )?end of data)/.test(message)
-      ? text.length
-      : undefined;
-  if (offset === undefined) {
-    return undefined;
-  }
-  const lines = text.slice(0, offset).split("\n");
-  return { line: lines.length, column: lines.at(-1).length + 1 };
+}
+
+// Columns count characters as the reader sees them: an emoji, or a letter with a combining
+// accent, is one column, not the two UTF-16 units the engine's own column counts.
+function visibleLength(line) {
+  return typeof Intl.Segmenter === "function"
+    ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(line)].length
+    : Array.from(line).length;
 }
 
 // A persistent error under a form control, linked to it with aria-describedby and aria-invalid,
