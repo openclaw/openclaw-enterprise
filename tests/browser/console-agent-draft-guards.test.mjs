@@ -880,7 +880,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
         await page
           .getByRole("button", { name: "Save authentication source" })
           .evaluate((node) => node.ownerDocument.defaultView.getComputedStyle(node).opacity),
-        "0.55",
+        "0.6",
       );
     }
     assert.equal(
