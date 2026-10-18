@@ -1029,6 +1029,18 @@ export const scenarios = {
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
   },
+  createInvalidConfiguration: {
+    group: "Pages/Create Agent",
+    name: "Invalid Configuration JSON",
+    path: create,
+    actions: [
+      ...readyForm,
+      { selector: "#configuration-json", value: '{\n  "agents": {\n    "defaults": {,\n  }\n}' },
+      click("Create Agent"),
+    ],
+    description:
+      "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
+  },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
     name: "Plugin discovery needs a service account credential",
@@ -3346,7 +3358,8 @@ export const scenarios = {
       { selector: "#configuration-json", value: "{ invalid" },
       click("Save Configuration"),
     ],
-    description: "Invalid JSON retains editor contents and sends no Configuration write.",
+    description:
+      "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
   },
   configurationChangedElsewhereMerged: {
     group: "Pages/Agent detail",
