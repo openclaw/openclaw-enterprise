@@ -1479,8 +1479,8 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
 
   let releaseSession;
@@ -1533,14 +1533,14 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
   // Late reads (for example the sharing policy) change the page height; measure after them.
   await waitForIdleFetches(page);
-  await page.getByRole("button", { name: "Channels", exact: true }).scrollIntoViewIfNeeded();
+  await page.getByRole("tab", { name: "Channels", exact: true }).scrollIntoViewIfNeeded();
   const panels = await page
     .locator("h1, .agent-toolbar, .native-admin-access, .revision-selector, .agent-tabs")
     .elementHandles();
   const top = await page.evaluate(() => globalThis.scrollY);
   requests.length = 0;
 
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Configure Slack", exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("tab"), "channels");
   // The surrounding DOM must stay mounted; a fast full-page rerender still loses focus and scroll.
@@ -1548,13 +1548,13 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
     assert.equal(await panel.evaluate((node) => node.isConnected), true);
   }
   assert.ok(Math.abs((await page.evaluate(() => globalThis.scrollY)) - top) < 2);
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   const secret = page.getByLabel("API key Secret");
   await secret.waitFor();
   // A tab is kept for Back only if its reads (here the Secret list) finished before leaving it.
   await waitForIdleFetches(page);
   const secretElement = await secret.elementHandle();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await page
     .getByText(
       "Workspace files require a deployed Agent with a current version and a reachable gateway.",
@@ -1635,9 +1635,9 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
     await gate;
     await route.fulfill({ response });
   });
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await held;
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
   const delivered = page.waitForResponse(`${fixture.origin}${configurationPath}`);
   release();
@@ -1650,7 +1650,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   );
   assert.equal(await page.getByRole("button", { name: "Configure Slack", exact: true }).count(), 0);
   assert.equal(await tabs.evaluate((node) => node.isConnected), true);
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Configure Slack", exact: true }).waitFor();
   assert.equal(requests.filter((request) => request.path === configurationPath).length, 1);
 });
@@ -2450,20 +2450,20 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   await file.fill("# Unsaved instructions\n");
   await page.getByLabel("USER.md", { exact: true }).fill("");
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
   assert.equal(await file.inputValue(), "# Unsaved instructions\n");
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("link", { name: "Other workspace Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   assert.equal(await file.inputValue(), "# Saved AGENTS.md\n");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByLabel("Search Agents").fill("Workspace draft owner");
   await page.getByRole("link", { name: "Workspace draft owner", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await waitForWorkspaceEditors(page, ["AGENTS.md"]);
   assert.equal(await file.inputValue(), "# Unsaved instructions\n");
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -3260,7 +3260,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page.getByRole("link", { name: "Auth Bound Secrets", exact: true }).waitFor();
   assert.equal(await page.getByText("Draft model", { exact: true }).count(), 0);
   await page.screenshot({ path: join(artifacts, "bound-harness-revision.png"), fullPage: true });
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("link", { name: "Revision Slack app", exact: true }).waitFor();
   await page
     .getByText(`Bound Secret · ${bot.id} · Metadata unavailable (access denied)`, { exact: true })
@@ -3291,10 +3291,10 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
     .getByText(`Bound Secret · ${app.id} · Metadata unavailable`, { exact: true })
     .waitFor();
   await page.getByRole("button", { name: "Open version draft", exact: true }).last().click();
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByText("No Secret bound", { exact: true }).first().waitFor();
   assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("link", { name: "Draft model", exact: true }).waitFor();
 });
 

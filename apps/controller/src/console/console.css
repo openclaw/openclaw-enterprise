@@ -1391,10 +1391,28 @@ select:not([multiple])[size="1"] {
   border-radius: 0;
   background: transparent;
 }
-.agent-tabs [aria-current] {
+.agent-tabs [aria-selected="true"] {
   border-bottom: 2px solid var(--accent);
   color: var(--accent);
   font-weight: 600;
+}
+/* An edge with more tabs past it fades (detail.mjs sets the attributes as the strip scrolls).
+   A mask reads only alpha, so the opaque stop may be any opaque colour. */
+.agent-tabs[data-more-before] {
+  --agent-tabs-fade-before: var(--space-8);
+}
+.agent-tabs[data-more-after] {
+  --agent-tabs-fade-after: var(--space-8);
+}
+.agent-tabs[data-more-before],
+.agent-tabs[data-more-after] {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    var(--color-text) var(--agent-tabs-fade-before, 0px),
+    var(--color-text) calc(100% - var(--agent-tabs-fade-after, 0px)),
+    transparent
+  );
 }
 .notice {
   color: var(--warning);

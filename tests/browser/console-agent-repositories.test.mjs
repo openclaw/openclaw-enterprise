@@ -186,7 +186,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     { repositoryRef: "application", profile: "git-full" },
     { repositoryRef: "documentation", profile: "git-read" },
   ]);
-  await page.getByRole("button", { name: "Repositories", exact: true }).click();
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   await page.getByText("Contributor · Custom", { exact: true }).waitFor();
   // Reversing an edit restores the saved intent, including explicit overrides.
   await page.getByRole("button", { name: "Remove example/documentation" }).click();
@@ -202,7 +202,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     await page.getByRole("button", { name: "Save repository access" }).isDisabled(),
     true,
   );
-  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
   await page.locator("#repository-default-git-full").check();
   await page.locator("#repository-default-git-read").check();
   assert.equal(
@@ -212,10 +212,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   await page.getByText("Read-only · Custom", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Access for example/application" }).click();
   await page.locator("#repository-inherit-application").check();
-  assert.equal(
-    await page.getByRole("button", { name: "Channels", exact: true }).isDisabled(),
-    true,
-  );
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isDisabled(), true);
   const savedResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/agents/${created.data.id}`) &&
@@ -608,10 +605,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
     await page.getByRole("button", { name: "Remove example/application" }).isDisabled(),
     true,
   );
-  assert.equal(
-    await page.getByRole("button", { name: "Channels", exact: true }).isDisabled(),
-    true,
-  );
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isDisabled(), true);
   release.resolve();
   await page
     .getByText(
@@ -629,7 +623,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isEnabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
   assert.equal(pathRequests(requests, "PATCH", path).length, 2);
 });
 

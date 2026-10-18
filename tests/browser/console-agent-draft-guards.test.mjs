@@ -403,7 +403,7 @@ for (const [scenario, heldRead, heldMs, reader] of [
         globalThis.document.activeElement?.tagName === "H1" &&
         globalThis.document.activeElement.isConnected &&
         !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
-        globalThis.document.querySelector(".agent-tabs [aria-current=page]") !== null,
+        globalThis.document.querySelector(".agent-tabs [aria-selected=true]") !== null,
     );
     const { trail, loadingShown } = await page.evaluate(() => {
       globalThis.focusFrames.stopped = true;
@@ -831,7 +831,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     );
     if (mutation === "authentication") {
       assert.equal(
-        await page.getByRole("button", { name: "Configuration", exact: true }).isDisabled(),
+        await page.getByRole("tab", { name: "Configuration", exact: true }).isDisabled(),
         true,
       );
       // Without Slack there is no channel Secret panel to lock.
@@ -892,8 +892,8 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     if (mutation === "channel Secrets") {
       assert.equal(await page.locator("#revision-selector").isEnabled(), true);
     }
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
-    await page.getByRole("button", { name: "Credentials", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     assert.equal(await deploy.isDisabled(), true);
     if (mutation === "authentication") {
       await page.getByRole("button", { name: "Reload authentication source" }).click();
@@ -1089,9 +1089,9 @@ for (const changed of ["generation", "identity"]) {
       await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
       true,
     );
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     assert.equal(await deploy.isDisabled(), true);
-    await page.getByRole("button", { name: "Credentials", exact: true }).click();
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     await page.getByRole("button", { name: "Reload draft", exact: true }).click();
     if (changed === "generation") {
       // Reload draft reapplies the chosen Secret, still unsaved, so Deploy waits for its save
@@ -1204,7 +1204,7 @@ for (const action of ["disable", "drawer"]) {
     try {
       assert.equal(await deploy.isDisabled(), true);
       assert.equal(
-        await page.getByRole("button", { name: "Configuration", exact: true }).isDisabled(),
+        await page.getByRole("tab", { name: "Configuration", exact: true }).isDisabled(),
         true,
       );
       assert.equal(
@@ -1274,7 +1274,7 @@ test("Channel save with a lost response blocks deployment until the draft is rel
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.equal(
-    await page.getByRole("button", { name: "Configuration", exact: true }).isDisabled(),
+    await page.getByRole("tab", { name: "Configuration", exact: true }).isDisabled(),
     true,
   );
   await page.getByRole("button", { name: "Reload draft" }).click();
@@ -1344,7 +1344,7 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
   await selectSecret(page, "Slack bot token", slackBotSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await patchPersisted;
-  const channelsTab = page.getByRole("button", { name: "Channels", exact: true });
+  const channelsTab = page.getByRole("tab", { name: "Channels", exact: true });
   assert.equal(await channelsTab.isDisabled(), true);
   releasePatch();
   await waitForCondition(

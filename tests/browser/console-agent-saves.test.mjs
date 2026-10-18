@@ -341,11 +341,11 @@ test("saving and reloading the authentication source update the Agent page in pl
   const read = await holdRequests(t, page, agentPath);
   await reload.click();
   await read.requested;
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
   read.release();
   await page.unroute(agentPath);
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await waitForInputValue(secretField, secretOptionLabel(first));
   await saveAuthentication.waitFor();
   assert.equal(await saveAuthentication.isDisabled(), false);
@@ -479,7 +479,7 @@ test("saving and reloading plugin selections update the Agent page in place", as
   assert.deepEqual(JSON.parse(await json.inputValue()), elsewhere);
   assert.equal(await save.isDisabled(), true);
   // The rebuilt editor is clean, so the tabs are free to leave again.
-  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
 });
 
 const repositoryAccess = (defaultProfile) => ({
@@ -564,7 +564,7 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
     .waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isEnabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
   assert.equal(pathRequests(place.requests, "PATCH", agentPath).length, 1);
 });
 
@@ -1029,7 +1029,7 @@ for (const c of declinedCarryCases) {
     await page.getByRole("link", { name: "← Agents", exact: true }).click();
     await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
     await page.getByRole("link", { name: "Declined Carry", exact: true }).click();
-    await page.getByRole("button", { name: "Channels", exact: true }).click();
+    await page.getByRole("tab", { name: "Channels", exact: true }).click();
     await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
     assert.equal(await page.getByRole("status").filter({ hasText: c.note }).count(), 0);
     assert.equal(await dialog.count(), 0);
@@ -1566,13 +1566,13 @@ test("the other tabs stay locked while a saved channel draft refreshes", async (
   });
   await page.getByRole("heading", { name: "Refresh Lock" }).waitFor();
   await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
-  const plugins = page.getByRole("button", { name: "Plugins", exact: true });
+  const plugins = page.getByRole("tab", { name: "Plugins", exact: true });
   assert.equal(await plugins.isEnabled(), true);
   await page.getByRole("button", { name: "Disable Slack" }).click();
   await refreshing;
   assert.equal(await plugins.isDisabled(), true);
   assert.equal(
-    await page.getByRole("button", { name: "Credentials", exact: true }).isDisabled(),
+    await page.getByRole("tab", { name: "Credentials", exact: true }).isDisabled(),
     true,
   );
   release();

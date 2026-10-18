@@ -81,7 +81,7 @@ test("A reader who leaves the held heading during an admitted deployment is not 
       globalThis.document.activeElement?.tagName === "H1" &&
       globalThis.document.activeElement.isConnected &&
       !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
-      globalThis.document.querySelector(".agent-tabs [aria-current=page]") !== null,
+      globalThis.document.querySelector(".agent-tabs [aria-selected=true]") !== null,
   );
   const { trail } = await page.evaluate(() => {
     globalThis.focusFrames.stopped = true;

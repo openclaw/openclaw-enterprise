@@ -716,7 +716,7 @@ test("console keeps loaded route families visible while return reads refresh", a
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByRole("link", { name: "Retained route Agent", exact: true }).click();
   await page.getByRole("heading", { name: "Retained route Agent", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   const workspaceNotice =
     "Workspace files require a deployed Agent with a current version and a reachable gateway.";
   await page.getByText(workspaceNotice, { exact: true }).waitFor();
@@ -929,7 +929,7 @@ test("an Agent tab chosen while the detail is still loading is the one Back rest
   t.after(() => configurationHold.release());
   await page.getByRole("link", { name: "Early tab Agent", exact: true }).click();
   await configurationHold.waitForRelease();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   const workspaceNotice = page.getByText(
     "Workspace files require a deployed Agent with a current version and a reachable gateway.",
     { exact: true },
@@ -2176,9 +2176,7 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
   );
   await page.getByRole("heading", { name: "Destination Agent", exact: true }).waitFor();
   assert.equal(
-    await page
-      .getByRole("button", { name: "Credentials", exact: true })
-      .getAttribute("aria-current"),
+    await page.getByRole("tab", { name: "Credentials", exact: true }).getAttribute("aria-current"),
     "page",
   );
   assert.equal(await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")), null);

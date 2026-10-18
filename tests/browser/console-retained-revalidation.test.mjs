@@ -699,7 +699,7 @@ test("Back between an Agent's tabs before its overview reveals loads the tab in 
     deploy: true,
   });
   await openAgent(page, "Tab Agent");
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.waitForURL(/tab=plugins/);
   await showNamespaces(page);
   const record = await holdOverview(t, page, namespace, agent);
