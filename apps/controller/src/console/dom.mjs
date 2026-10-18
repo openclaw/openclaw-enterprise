@@ -155,3 +155,83 @@ export function focusSaveOutcome(root, controls, message) {
   }
   control?.focus();
 }
+
+// Why `text` is not a JSON object, or undefined when it is one. A parse error names the line and
+// column the browser's parser stopped at, so a long Configuration can be fixed in place
+// (finding 1903).
+export function jsonObjectProblem(text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    if (!text.trim()) {
+      return "Enter a valid JSON object.";
+    }
+    const where = jsonErrorPosition(text, error);
+    return where
+      ? `Invalid JSON at line ${where.line}, column ${where.column}. Enter a valid JSON object.`
+      : "Invalid JSON. Enter a valid JSON object.";
+  }
+  return parsed === null || Array.isArray(parsed) || typeof parsed !== "object"
+    ? "Enter a valid JSON object, not an array or a single value."
+    : undefined;
+}
+
+// Chromium names an offset (and newer builds its line and column), Firefox a line and column;
+// an early end may have neither. The patterns are anchored to the message's own wording, so JSON
+// the reader typed, which Chromium quotes in "Unexpected token" messages, is never read as one.
+function jsonErrorPosition(text, error) {
+  const message = String(error?.message ?? "");
+  const chromium = / in JSON at position (\d+)(?: \(line (\d+) column (\d+)\))?$/.exec(message);
+  const firefox = / at line (\d+) column (\d+) of the JSON data$/.exec(message);
+  if (chromium?.[2]) {
+    return { line: Number(chromium[2]), column: Number(chromium[3]) };
+  }
+  if (firefox) {
+    return { line: Number(firefox[1]), column: Number(firefox[2]) };
+  }
+  const offset = chromium
+    ? Number(chromium[1])
+    : /^(Unexpected end of JSON input|JSON\.parse: (unexpected )?end of data)/.test(message)
+      ? text.length
+      : undefined;
+  if (offset === undefined) {
+    return undefined;
+  }
+  const lines = text.slice(0, offset).split("\n");
+  return { line: lines.length, column: lines.at(-1).length + 1 };
+}
+
+// A persistent error under a form control, linked to it with aria-describedby and aria-invalid,
+// in place of the browser's transient validation bubble (finding 1903).
+export function fieldError(input) {
+  const id = `${input.id}-error`;
+  const node = element("p", { className: "error field-error", id, hidden: true });
+  const others = () =>
+    (input.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .filter((value) => value && value !== id);
+  return {
+    node,
+    show(text) {
+      node.textContent = text;
+      node.hidden = false;
+      input.setAttribute("aria-invalid", "true");
+      input.setAttribute("aria-describedby", [id, ...others()].join(" "));
+    },
+    clear() {
+      if (node.hidden) {
+        return;
+      }
+      node.textContent = "";
+      node.hidden = true;
+      input.removeAttribute("aria-invalid");
+      const describedBy = others().join(" ");
+      if (describedBy) {
+        input.setAttribute("aria-describedby", describedBy);
+      } else {
+        input.removeAttribute("aria-describedby");
+      }
+    },
+  };
+}

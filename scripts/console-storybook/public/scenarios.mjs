@@ -957,7 +957,7 @@ export const scenarios = {
     name: "Ready and provisioning",
     path: "/console/namespaces",
     description:
-      "Installation-wide Namespace identity and status cards, without a Namespace selector.",
+      "Installation-wide Namespace identity and status cards, without a Namespace selector. Each card opens that Namespace's Agents; status badges read Ready or Provisioning with a tone.",
   },
   namespacesUnavailable: {
     group: "Pages/Namespaces",
@@ -1028,6 +1028,18 @@ export const scenarios = {
       "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
+  },
+  createInvalidConfiguration: {
+    group: "Pages/Create Agent",
+    name: "Invalid Configuration JSON",
+    path: create,
+    actions: [
+      ...readyForm,
+      { selector: "#configuration-json", value: '{\n  "agents": {\n    "defaults": {,\n  }\n}' },
+      click("Create Agent"),
+    ],
+    description:
+      "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
@@ -3346,7 +3358,8 @@ export const scenarios = {
       { selector: "#configuration-json", value: "{ invalid" },
       click("Save Configuration"),
     ],
-    description: "Invalid JSON retains editor contents and sends no Configuration write.",
+    description:
+      "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
   },
   configurationChangedElsewhereMerged: {
     group: "Pages/Agent detail",
@@ -5611,13 +5624,14 @@ export const scenarios = {
   },
   createExitFlow: {
     group: "Flows",
-    name: "Restart Agent creation",
+    name: "Keep an Agent draft",
     path: create,
-    description: "Leave a default starter Agent form and return to the initial creation choices.",
+    description:
+      "Leave a default starter Agent form and return to it, then discard it with Cancel.",
     steps: [
       "Choose Start with default Preset and enter an Agent name.",
-      "Select Cancel or the Agents link, then choose Create Agent again.",
-      "Confirm the initial choices are shown. Start with default Preset again and check that the name is empty.",
+      "Select the Agents link, then choose Create Agent again: the form returns with the name.",
+      "Select Cancel and confirm Discard this draft. Choose Create Agent: the initial choices are shown.",
     ],
     gap: "The fixture demonstrates simulated console state; it does not verify a live backend or deployment.",
   },
@@ -5887,7 +5901,7 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the card offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
   },
   stopRepeatConfirm: {
     group: "Components/Stop Agent",
@@ -5914,7 +5928,7 @@ export const scenarios = {
     name: "Never deployed",
     path: draft,
     description:
-      "An Agent created without a deploy is stopped with no version, so Stop offers no controls; the panel says to deploy a new version to start it.",
+      "An Agent created without a deploy is stopped with no version, so the page has no Stop card and the overview reports no stop request.",
   },
   stopRepeatUnknown: {
     group: "Components/Stop Agent",
@@ -5927,7 +5941,8 @@ export const scenarios = {
       click("Request Stop again"),
       { selector: ".agent-stop-dialog button.danger", click: true },
     ],
-    description: "An uncertain repeated Stop disables retry until a successful status refresh.",
+    description:
+      "An uncertain repeated Stop offers only Refresh stop status until a successful readback.",
   },
   stopDenied: {
     group: "Components/Stop Agent",

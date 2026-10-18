@@ -913,14 +913,28 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await openAdvancedSettings(page);
   const editor = page.getByLabel("Configuration JSON");
   assert.match(await editor.inputValue(), /"marker": "draft-current"/);
-  for (const invalidJson of ["{ invalid", "[]"]) {
+  const editorError = page.locator("#configuration-json-error");
+  for (const [invalidJson, message] of [
+    ["{ invalid", "Invalid JSON at line 1, column 3. Enter a valid JSON object."],
+    ["[]", "Enter a valid JSON object, not an array or a single value."],
+  ]) {
     await editor.fill(invalidJson);
     await page.getByRole("button", { name: "Save Configuration" }).click();
-    await page.getByText("Enter a valid Configuration JSON object.").waitFor();
+    // One persistent message under the editor, linked to it; no browser bubble (finding 1903).
+    await editorError.getByText(message, { exact: true }).waitFor();
+    assert.equal(await editor.getAttribute("aria-invalid"), "true");
+    assert.match(await editor.getAttribute("aria-describedby"), /\bconfiguration-json-error\b/);
+    assert.equal(await editor.evaluate((node) => node.validationMessage), "");
+    assert.equal(
+      await page.evaluate(() => globalThis.document.activeElement?.id),
+      "configuration-json",
+    );
   }
   assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
 
   await editor.fill(JSON.stringify(nativeValues("stale-client"), null, 2));
+  assert.equal(await editorError.isHidden(), true);
+  assert.equal(await editor.getAttribute("aria-invalid"), null);
   const stale = await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
@@ -934,6 +948,8 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.match(await editor.inputValue(), /stale-client/);
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByText("The saved Configuration changed while you were editing.").waitFor();
+  // A conflict is an error, not a hint (finding 1903).
+  assert.equal(await page.locator("#configuration-editor-feedback").getAttribute("class"), "error");
   assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
 
   await page.reload();
@@ -2271,15 +2287,27 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   requests.length = 0;
 
   await page.getByRole("button", { name: "Stop Agent" }).click();
-  let dialog = page.getByRole("dialog", { name: "Stop Stop Candidate?" });
+  let dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
   await dialog
     .getByText(/Configuration, versions, Credentials, and workspace data are retained/i)
     .waitFor();
+  // The dialog names its target Agent as text, and in its accessible description.
+  await dialog.getByText("Stop Candidate", { exact: true }).waitFor();
+  assert.match(
+    await dialog.evaluate((node) =>
+      node
+        .getAttribute("aria-describedby")
+        .split(" ")
+        .map((id) => node.ownerDocument.getElementById(id)?.textContent)
+        .join(" "),
+    ),
+    /^Agent: Stop Candidate This interrupts the current runtime gateway/,
+  );
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
   await page.getByRole("button", { name: "Stop Agent" }).click();
-  dialog = page.getByRole("dialog", { name: "Stop Stop Candidate?" });
+  dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
   await dialog
     .getByText(/Configuration, versions, Credentials, and workspace data are retained/i)
     .waitFor();
@@ -2297,10 +2325,23 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
 
   await page.getByRole("status").getByText("Stop requested.").waitFor();
   await page.getByText(/Runtime shutdown completion is not exposed in Console/).waitFor();
-  await page
-    .getByText(`Version ${active.revision.id.slice(0, 12)}…${active.revision.id.slice(-6)}`)
+  // The card names the version as the page does, and the overview reports the request
+  // (finding 1899).
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion.getByText("v1", { exact: true }).waitFor();
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  await summary.getByText("Stop requested", { exact: true }).waitFor();
+  await summary
+    .getByText(
+      "Shutdown completion is not shown here. Deploy a new version to start this Agent again.",
+    )
     .waitFor();
-  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
+  // Only Request Stop again and Refresh remain; no disabled Stop beside them.
+  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).count(), 0);
+  assert.deepEqual(await stopRegion.getByRole("button").allTextContents(), [
+    "Request Stop again",
+    "Refresh stop status",
+  ]);
   assert.deepEqual(
     agentStopRequests(requests, namespace.id, agent.id).map((request) => [
       request.method,
@@ -2414,7 +2455,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
 
   await stop.click();
   await page
-    .getByRole("dialog", { name: "Stop In Place Stop?" })
+    .getByRole("dialog", { name: "Stop this Agent?" })
     .getByRole("button", { name: "Stop Agent" })
     .click();
   await stopRegion.getByRole("status").getByText("Stop requested.").waitFor();
@@ -2440,10 +2481,13 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   );
   await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
   await stopRegion.getByText("No current version", { exact: true }).waitFor();
-  await page
-    .getByRole("region", { name: "Agent state at a glance" })
-    .getByText("None", { exact: true })
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  await summary.getByText("None", { exact: true }).waitFor();
+  // The overview still reports the stop request once no version is selected.
+  await summary
+    .getByText("Deploy a new version to start this Agent again.", { exact: true })
     .waitFor();
+  assert.equal(await summary.getByText("Stop requested", { exact: true }).isVisible(), true);
   assert.deepEqual(await keptInPlace(), { marker: "kept", reloadedText: [] });
   assert.equal(await focusedText(), "Refresh stop status");
   // The viewed version is no longer current, and tabs built from the old state are rebuilt.
@@ -2478,9 +2522,9 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
 });
 
 // An Agent created through the API starts with desiredRuntimeState stopped and no version,
-// so no stop was ever requested and nothing runs to stop (finding 1394). The panel says how
-// to start it and offers no stop controls until a deploy creates a version.
-test("Agent stop offers no controls for an Agent that was never deployed", async (t) => {
+// so no stop was ever requested and nothing runs to stop (finding 1394). The page shows no
+// Stop card and reports no stop request until a deploy creates a version (finding 1899).
+test("Agent detail has no Stop card for an Agent that was never deployed", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Never deployed");
   const agent = await fixture.createAgent(namespace.id, "Never Deployed", nativeValues("never"), {
     harnessAuth: { method: "runtime" },
@@ -2493,10 +2537,11 @@ test("Agent stop offers no controls for an Agent that was never deployed", async
   // The version list loaded empty, so the console knows there is no version to stop.
   await page.getByText(/^No readable versions\. Creating an Agent alone does not create/).waitFor();
   const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
-  await stopRegion
-    .getByText("No version is selected. Deploy a new version to start this Agent.")
-    .waitFor();
-  assert.equal(await stopRegion.getByRole("button").count(), 0);
+  await page.locator("section.stop-note").waitFor({ state: "hidden" });
+  assert.equal(await stopRegion.count(), 0);
+  assert.equal(await page.getByText("Requested runtime state").isVisible(), false);
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  assert.equal(await summary.getByText("Stop requested").isVisible(), false);
 
   // The first deploy creates a version and requests the Agent running, so Stop returns.
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -2504,6 +2549,65 @@ test("Agent stop offers no controls for an Agent that was never deployed", async
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).waitFor();
   assert.equal(await stopRegion.getByText("No version is selected.").count(), 0);
+});
+
+// A viewer who reads no version of a deployed Agent sees the Stop card while a version is
+// selected. Once the worker clears it, that viewer cannot tell the Agent from a never-deployed
+// one, but a card they just used stays in place with focus on its heading (finding 1899).
+test("Agent stop keeps a used card for a viewer who reads no version", async (t) => {
+  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Stop unreadable");
+  const agent = await fixture.createAgent(namespace.id, "Unreadable Stop", nativeValues("unread"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const operator = await fixture.createAccountWithPolicy("agent-stop-unreadable", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-console-agent-stop-unreadable",
+      namespaceId: namespace.id,
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+        { action: "read", resourceKind: "configuration" },
+        { action: "operate", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-console-agent-stop-unreadable",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-console-agent-stop-unreadable",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}`,
+    operator.credentials,
+  );
+  await page.getByRole("heading", { name: "Unreadable Stop" }).waitFor();
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  await stopRegion.getByRole("status").getByText("Stop requested.").waitFor();
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  await summary.getByText("Stop requested", { exact: true }).waitFor();
+
+  await state.transact((unit) =>
+    unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
+  );
+  await stopRegion.getByRole("button", { name: "Refresh stop status" }).click();
+  await stopRegion.getByText("No current version", { exact: true }).waitFor();
+  assert.equal(await stopRegion.getByRole("button").count(), 0);
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "agent-stop-title",
+  );
+  assert.equal(await summary.getByText("Stop requested", { exact: true }).count(), 0);
 });
 
 test("Agent stop uncertainty requires refresh before another stop request", async (t) => {
@@ -2548,11 +2652,18 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
 
   await page.getByRole("button", { name: "Stop Agent" }).click();
   await page
-    .getByRole("dialog", { name: "Stop Uncertain Stop Candidate?" })
+    .getByRole("dialog", { name: "Stop this Agent?" })
     .getByRole("button", { name: "Stop Agent" })
     .click();
   await page.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
+  // Only Refresh is offered until a readback settles the outcome.
+  assert.deepEqual(
+    await page
+      .getByRole("region", { name: "Stop Agent", exact: true })
+      .getByRole("button")
+      .allTextContents(),
+    ["Refresh stop status"],
+  );
   assert.equal(interceptedStops, 1);
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
@@ -2570,6 +2681,43 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   // Readback permits an explicit new intent; it never resends the masked request.
   assert.equal(await page.getByRole("button", { name: "Request Stop again" }).isEnabled(), true);
+});
+
+test("An uncertain repeated Stop offers only Refresh stop status", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Repeat uncertainty");
+  const agent = await fixture.createAgent(namespace.id, "Repeat Unknown", nativeValues("rep-unk"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const stopPath = `/namespaces/${namespace.id}/agents/${agent.id}/stop`;
+  assert.equal((await fixture.request("POST", stopPath)).status, 202);
+  const { page } = await newPage(t, fixture);
+  await page.route(`**${stopPath}`, (route, request) =>
+    request.method() === "POST"
+      ? route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked stop response" },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+          }),
+        })
+      : route.continue(),
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion.getByRole("button", { name: "Request Stop again", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  await stopRegion.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
+  // No disabled Request Stop again beside Refresh (finding 1899).
+  assert.deepEqual(await stopRegion.getByRole("button").allTextContents(), ["Refresh stop status"]);
 });
 
 test("Agent stop denial keeps the Agent running with permission feedback", async (t) => {
@@ -2622,7 +2770,7 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
       response.request().method() === "POST",
   );
   await page
-    .getByRole("dialog", { name: "Stop Denied Stop Candidate?" })
+    .getByRole("dialog", { name: "Stop this Agent?" })
     .getByRole("button", { name: "Stop Agent" })
     .click();
   assert.equal((await denied).status(), 403);
