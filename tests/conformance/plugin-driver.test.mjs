@@ -15,6 +15,10 @@ import {
   openClawRuntimeArtifact,
   validatePolicies,
 } from "../../apps/controller/src/drivers/plugin/runtime-translator.ts";
+import {
+  deniedOpenClawSelection,
+  openClawToolDenialMessage,
+} from "../../apps/controller/src/drivers/plugin/openclaw-tool-denial.ts";
 import { NativeCodexPluginCatalogReader } from "../../apps/controller/src/drivers/plugin/stdio-catalog-reader.ts";
 import { requestFailure } from "../../apps/controller/src/http/errors.ts";
 import { NotImplementedError } from "../../packages/occ/src/index.ts";
@@ -423,6 +427,92 @@ test("OpenClaw tool enablement overrides tool defaults without enabling a disabl
   assert.deepEqual(openClawRuntimeArtifact(selections).configuration, {
     plugins: { entries: { diffs: { enabled: false } } },
   });
+});
+
+test("OpenClaw Plugin Driver refuses a selection the served roster entry's tools.deny blocks", () => {
+  const driver = new OCCPluginDriver();
+  const plugins = occSelection();
+  const refusal = (setting, verb = "blocks", entries = "entry") =>
+    `Configuration ${setting} ${verb} every tool of plugin occ-plugin:diffs; remove the matching deny ${entries} or deselect the plugin.`;
+  const check = (configuration) => () => driver.validateAgentConfiguration(plugins, configuration);
+  // The pinned Gateway resolves a session's tool policy from its Agent's own entry, and with
+  // one entry every session runs as it, whatever its key (finding 1848).
+  for (const [key, deny] of [
+    ["main", ["*"]],
+    ["Ops", [" GROUP:PLUGINS "]],
+    ["helper_1", ["exec", "dif*"]],
+  ]) {
+    const configuration = { agents: { entries: { [key]: { tools: { deny } } } } };
+    assert.throws(check(configuration), {
+      name: "ConfigurationHarnessError",
+      message: refusal(`setting agents.entries.${key}.tools.deny`),
+    });
+  }
+  // An entry key that is not a plain ID is quoted, as other roster refusals quote it.
+  assert.throws(check({ agents: { entries: { "a.b": { tools: { deny: ["diffs"] } } } } }), {
+    message: refusal('setting agents.entries["a.b"].tools.deny'),
+  });
+  // Top-level tools.deny alone keeps #2803's text, also when the entry blocks the plugin too.
+  assert.throws(
+    check({ tools: { deny: ["*"] }, agents: { entries: { main: { tools: { deny: ["*"] } } } } }),
+    { message: refusal("setting tools.deny") },
+  );
+  // A disabled selection adds nothing to the allowlist; an entry denying other tools leaves
+  // the plugin callable; agents.defaults carries no tool policy in the pinned Gateway.
+  driver.validateAgentConfiguration(
+    { "occ-plugin:diffs": { enabled: false } },
+    { agents: { entries: { main: { tools: { deny: ["*"] } } } } },
+  );
+  for (const configuration of [
+    { agents: { entries: { main: { tools: { deny: ["exec", "diffs-*", 7] } } } } },
+    { agents: { entries: { main: { tools: { allow: ["exec"] } } } } },
+    { agents: { defaults: { tools: { deny: ["*"] } } } },
+    { agents: { entries: { main: {} } } },
+  ]) {
+    driver.validateAgentConfiguration(plugins, configuration);
+  }
+  // With more than one entry each session names its Agent, so no entry is the served one and
+  // only top-level tools.deny is checked.
+  const roster = {
+    ownership: "explicit",
+    entries: { main: { tools: { deny: ["*"] } }, ops: { tools: { deny: ["*"] } } },
+  };
+  driver.validateAgentConfiguration(plugins, { agents: roster });
+  assert.throws(check({ tools: { deny: ["diffs"] }, agents: roster }), {
+    message: refusal("setting tools.deny"),
+  });
+  // A plugin with several tools is refused when the two lists together block all of them,
+  // and the refusal names both.
+  const catalog = [
+    {
+      id: "occ-plugin:pair",
+      name: "Pair",
+      tools: [
+        { id: "pair_read", name: "pair_read", ownerId: "pair" },
+        { id: "pair_write", name: "pair_write", ownerId: "pair" },
+      ],
+    },
+  ];
+  const pair = { "occ-plugin:pair": { enabled: true } };
+  const split = (entryDeny) => ({
+    tools: { deny: ["pair_read"] },
+    agents: { entries: { main: { tools: { deny: entryDeny } } } },
+  });
+  assert.deepEqual(deniedOpenClawSelection(catalog, pair, split(["pair_write"])), {
+    pluginId: "occ-plugin:pair",
+    global: true,
+    entry: "main",
+  });
+  assert.deepEqual(deniedOpenClawSelection(catalog, pair, split(["pair"])), {
+    pluginId: "occ-plugin:pair",
+    global: false,
+    entry: "main",
+  });
+  assert.equal(deniedOpenClawSelection(catalog, pair, split(["pair_read"])), undefined);
+  assert.equal(
+    openClawToolDenialMessage(deniedOpenClawSelection(catalog, pair, split(["pair_write"]))),
+    "Configuration settings tools.deny and agents.entries.main.tools.deny block every tool of plugin occ-plugin:pair; remove the matching deny entries or deselect the plugin.",
+  );
 });
 
 test("Hardcoded OpenAI catalog returns curated details without provider requests", async (t) => {

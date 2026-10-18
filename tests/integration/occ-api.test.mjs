@@ -3944,6 +3944,18 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
     });
     assertRefused(refused, `create with ${JSON.stringify(denials[index])}`);
   }
+  // Every session runs as a sole roster entry, so its tools.deny counts too (finding 1848).
+  const entryDenying = await createConfiguration(controller, namespace.id, {
+    agents: { entries: { main: { tools: { deny: ["*"] } } } },
+  });
+  const refusedEntry = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "tool-deny-agent", configurationId: entryDenying.id, plugins },
+  });
+  assert.equal(refusedEntry.status, 400, JSON.stringify(refusedEntry.body));
+  assert.equal(
+    refusedEntry.body.error.message,
+    `Configuration setting agents.entries.main.tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
+  );
   assert.deepEqual(
     (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,
     [],
