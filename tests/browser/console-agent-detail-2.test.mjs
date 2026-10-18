@@ -2686,7 +2686,7 @@ test("a Workspace reread keeps a missing file's error and clears a failed reread
   let failOnce = new Set();
   let identityContent;
   const saved = new Map();
-  const { page, filePath, form, makeCurrent } = await openWorkspaceVersions(
+  const { fixture, page, filePath, form, makeCurrent } = await openWorkspaceVersions(
     t,
     "Workspace missing reread",
     {
@@ -2706,7 +2706,7 @@ test("a Workspace reread keeps a missing file's error and clears a failed reread
         return { status: "ok", file: { name: filename, size: Buffer.byteLength(content) } };
       },
     },
-    5,
+    6,
   );
   // Settled reads and writes per file, so each step waits for every reread to be applied.
   const settled = { "AGENTS.md": 1, "SOUL.md": 1, "IDENTITY.md": 1, "USER.md": 1 };
@@ -2760,15 +2760,41 @@ test("a Workspace reread keeps a missing file's error and clears a failed reread
   await waitForSettledFetches(page, filePath("USER.md"), settled["USER.md"]);
   await user.getByText("USER.md saved.", { exact: true }).waitFor();
 
+  // The reader reloads IDENTITY.md, which the API confirms is missing.
+  await page.getByRole("button", { name: "Reload IDENTITY.md", exact: true }).click();
+  settled["IDENTITY.md"] += 1;
+  await waitForSettledFetches(page, filePath("IDENTITY.md"), settled["IDENTITY.md"]);
+  await identity.getByText("IDENTITY.md is missing. Save to create it.", { exact: true }).waitFor();
+  assert.equal(await identityError.textContent(), "");
+
   // The next version answers SOUL.md and USER.md unchanged, so the reader's statuses stay.
-  // IDENTITY.md now exists, empty, so its missing error goes.
-  identityContent = "";
+  // IDENTITY.md is answered by a resource 404, which does not confirm the file is still
+  // missing, so the reader learns the reread failed.
+  await page.route(
+    `${fixture.origin}${filePath("IDENTITY.md")}`,
+    (route) =>
+      route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "NOT_FOUND", message: "The requested platform resource was not found." },
+          meta: { requestId: "req_test_workspace_resource_404" },
+        }),
+      }),
+    { times: 1 },
+  );
   await nextVersion([]);
   assert.equal(await workspaceStatus(soul), "SOUL.md loaded.");
   assert.equal(await workspaceStatus(user), "USER.md saved.");
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
+  assert.equal(await workspaceStatus(identity), rereadFailed("IDENTITY.md"));
+
+  // IDENTITY.md now exists, empty, so the failure and any missing error go.
+  identityContent = "";
+  await nextVersion([]);
   assert.equal(await identityError.textContent(), "");
   assert.equal(await workspaceStatus(identity), "IDENTITY.md reloaded with its current contents.");
+  assert.equal(await workspaceStatus(soul), "SOUL.md loaded.");
 });
 
 test("a Workspace reread answered after a Reload keeps the Reload's answer", async (t) => {

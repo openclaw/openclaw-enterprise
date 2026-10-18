@@ -24,6 +24,16 @@ function fileError(error, writing) {
   return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
 }
 
+// Only this answer confirms the file itself is absent. A resource or scope 404 does not establish
+// the native file's current state.
+function confirmsMissingFile(error) {
+  return (
+    error.status === 404 &&
+    error.code === "NOT_FOUND" &&
+    error.serverMessage === "The requested workspace file was not found."
+  );
+}
+
 // Returns the section and `refresh`, which rereads the files in place after another version
 // becomes current.
 export function renderWorkspaceFiles(context, agent, path) {
@@ -156,12 +166,7 @@ export function renderWorkspaceFiles(context, agent, path) {
           return;
         }
         // Explicit Reload can settle an unknown write only when the API confirms file absence.
-        // A resource/scope 404 does not establish the native file's current state.
-        const missingReadback =
-          discard &&
-          cause.status === 404 &&
-          cause.code === "NOT_FOUND" &&
-          cause.serverMessage === "The requested workspace file was not found.";
+        const missingReadback = discard && confirmsMissingFile(cause);
         // A missing file can be created through PUT. Other read failures never enable a blank overwrite.
         if (cause.status === 404 && (!outcomeUnknown || missingReadback)) {
           editor.value = !discard && retained ? retained.text : "";
@@ -288,7 +293,7 @@ export function renderWorkspaceFiles(context, agent, path) {
           context.onExpired();
           return;
         }
-        if (missing && cause.status === 404) {
+        if (missing && confirmsMissingFile(cause)) {
           // Still missing: its error already says so, and nothing new failed (finding 1878).
           clearRereadFailure();
           return;
