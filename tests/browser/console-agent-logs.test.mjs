@@ -230,24 +230,28 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
     .getByText("phone-width output")
     .waitFor();
 
-  // An emulated resize can apply without rendering a frame. A check at 1440 px lays the page out
-  // at that width, which scrolls the strip back to 0. A 390 px resize applied before the next
+  // An emulated resize applies without waiting for a frame, so script can lay the page out at a
+  // size that never renders. A visibility check at 1440 px forces a layout at that width, where
+  // every tab fits, which clamps the strip's scroll to 0. A 390 px resize applied before the next
   // frame then leaves the strip's ResizeObserver, which reveals the selected tab, nothing to
-  // report: 390 px is the last width it saw (finding 1727). A real window renders each size, so
-  // each resize here waits for the frame in which the console's observer sees the new width.
+  // report: the strip's width at 390 px is the last size it reported (finding 1727). A browser
+  // window's resize reaches the page with a rendered frame, so each resize here waits for the
+  // frame in which the console's observer sees the new width.
   async function resize(width, height) {
     await page.setViewportSize({ width, height });
-    await page.evaluate(
+    const rendered = await page.evaluate(
       () =>
         new Promise((resolve) => {
-          // Observers report in creation order, so this one reports after the console's.
+          // Observers report in creation order, so in the same frame this one reports after the
+          // console's.
           const observer = new globalThis.ResizeObserver(() => {
             observer.disconnect();
-            resolve();
+            resolve(globalThis.innerWidth);
           });
           observer.observe(globalThis.document.querySelector(".agent-tabs"));
         }),
     );
+    assert.equal(rendered, width);
   }
 
   async function assertSelectedTabVisible(name) {
