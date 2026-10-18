@@ -168,9 +168,10 @@ revision Deployment's `ReplicaFailure` names a full Pod quota,
 `WORKSPACE_NODE_PENDING` when only the workspace node's gateway connection is
 outstanding. Activation of a dedicated revision reports
 `WORKSPACE_NODE_BINDING_PENDING` until the gateway applies the workspace node it
-was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise the code is `REVISION_INCOMPLETE`. The revision stays
-pending until it is ready, a held failure (such as `WORKSPACE_SETUP_REFUSED`)
-ends it, or the convergence deadline passes. The worker rechecks an unready
+was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise
+the code is `REVISION_INCOMPLETE`. The revision stays pending until it is ready,
+a held failure (such as `WORKSPACE_SETUP_REFUSED`) ends it, or the convergence
+deadline passes. The worker rechecks an unready
 revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
