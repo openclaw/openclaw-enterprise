@@ -508,7 +508,11 @@ async function returnWithHeldRows(t, name) {
       const ended = await page.evaluate(() => {
         const document = globalThis.document;
         globalThis.__readingShown = 0;
-        document.addEventListener("animationend", () => (globalThis.__readingShown += 1));
+        document.addEventListener("animationend", (event) => {
+          if (event.target.closest(".agent-deployment")) {
+            globalThis.__readingShown += 1;
+          }
+        });
         const animations = [
           ...document.querySelectorAll(
             '.content [aria-live="polite"]:not([inert]) .agent-deployment :is(.delayed-status, .delayed-text)',
@@ -558,7 +562,7 @@ for (const [shownAt, landsAt, fillsAt] of [
   test(`Rows shown at ${shownAt ?? "no"} ms whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
     const { page, readingCells, reveal, land } = await returnWithHeldRows(
       t,
-      `Steady rows ${shownAt} ${landsAt}`,
+      `Steady rows ${shownAt ?? "hidden"} ${landsAt}`,
     );
     if (shownAt === undefined) {
       await land(landsAt);

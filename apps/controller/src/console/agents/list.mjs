@@ -299,13 +299,9 @@ export function renderAgentList(context) {
     // the text painted (finding 1716).
     const reading = deployment.firstElementChild;
     let shownAt;
-    reading.addEventListener(
-      "animationend",
-      () => {
-        shownAt = performance.now();
-      },
-      { once: true },
-    );
+    reading.addEventListener("animationend", () => {
+      shownAt = performance.now();
+    });
     // A read that lands before the text shows, or after it has shown long enough, fills the cell
     // now; otherwise once it has. A later resume or render replaces the text, and its own read
     // fills the cell instead.
