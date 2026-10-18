@@ -1,13 +1,13 @@
 {
   "version": 1,
-  "source": "Median wallDurationMs of each shared file in the checks-baseline and checks-browser lanes over five green main CI runs (c08598210 and the four before it, from #2736 on; provisioning-400 from b6bda8ee5 and the four before it; console-agent-logs, console-agents-2 and kubernetes-real-kubectl from 7e2000970 and the four before it), rounded to 100 ms, from the ci-results-<lane> artifacts. Refresh rows when a lane's longest files change (a PR that edits this table runs full CI); a file without a row starts first.",
+  "source": "Median wallDurationMs of each shared file in the checks-baseline and checks-browser lanes over five green main CI runs (c08598210 and the four before it, from #2736 on; provisioning-400 from b6bda8ee5 and the four before it; console-agents-2 and kubernetes-real-kubectl from 7e2000970 and the four before it; console-agent-logs from bef197b8a and the four before it, less the 4.1 s that #2841 took off its UTC-offset test, 10.96 s median there and 6.88 s on #2841's CI), rounded to 100 ms, from the ci-results-<lane> artifacts. Refresh rows when a lane's longest files change (a PR that edits this table runs full CI); a file without a row starts first.",
   "files": {
     "tests/browser/console-agent-channels.test.mjs": 11000,
     "tests/browser/console-agent-deploy-focus.test.mjs": 3800,
     "tests/browser/console-agent-detail-2.test.mjs": 65000,
     "tests/browser/console-agent-detail.test.mjs": 50100,
     "tests/browser/console-agent-draft-guards.test.mjs": 44500,
-    "tests/browser/console-agent-logs.test.mjs": 74000,
+    "tests/browser/console-agent-logs.test.mjs": 78200,
     "tests/browser/console-agent-overview.test.mjs": 45800,
     "tests/browser/console-agent-plugin-approvers.test.mjs": 14000,
     "tests/browser/console-agent-presets.test.mjs": 59500,
