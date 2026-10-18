@@ -274,7 +274,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       if (outcomeUnknown || shown !== (baseline ?? "")) {
         return;
       }
-      // A file read as missing or unavailable shows that error and has no baseline.
+      // Only a file read as missing (404) is loaded without a baseline; it shows that error.
       const missing = baseline === undefined;
       const started = (operations += 1);
       let file;

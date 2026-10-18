@@ -2627,20 +2627,19 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   );
 });
 
-// Opens the Workspace tab while the first of three versions serves. Each makeCurrent() selects
+// Opens the Workspace tab while the first of `count` versions serves. Each makeCurrent() selects
 // the next version for service and presses Refresh deployment, whose Agent read rereads the
 // Workspace files in place (finding 1836).
-async function openWorkspaceVersions(t, name, workspaceFilesAccess) {
+async function openWorkspaceVersions(t, name, workspaceFilesAccess, count = 2) {
   const fixture = await createConsoleAppFixture(t, { publicOrigin: true, workspaceFilesAccess });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace(name, { ready: true });
   const agent = await fixture.createAgent(namespace.id, name, nativeValues("reread"));
   const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const versions = [
-    first.revision,
-    await fixture.deployAgent(namespace.id, agent.id),
-    await fixture.deployAgent(namespace.id, agent.id),
-  ];
+  const versions = [first.revision];
+  while (versions.length < count) {
+    versions.push(await fixture.deployAgent(namespace.id, agent.id));
+  }
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
   const requests = apiRequests(page, fixture.origin);
@@ -2659,8 +2658,7 @@ async function openWorkspaceVersions(t, name, workspaceFilesAccess) {
     agentPath,
     versions,
     filePath: (file) => `${agentPath}/workspace/files/${file}`,
-    form: (file) =>
-      page.locator("form").filter({ has: page.getByLabel(file, { exact: true }) }),
+    form: (file) => page.locator("form").filter({ has: page.getByLabel(file, { exact: true }) }),
     async makeCurrent() {
       await fixture.activateRevision(
         namespace.id,
@@ -2684,54 +2682,93 @@ function workspaceStatus(form) {
 // A missing file already shows its error; rereading it for another version must not add a
 // "could not be reread" status, and a reread that answers clears an earlier one (finding 1878).
 test("a Workspace reread keeps a missing file's error and clears a failed reread once a file reads again", async (t) => {
-  let soulUnavailable = false;
+  // Files whose next read fails; IDENTITY.md is missing until it is given content.
+  let failOnce = new Set();
+  let identityContent;
+  const saved = new Map();
   const { page, filePath, form, makeCurrent } = await openWorkspaceVersions(
     t,
     "Workspace missing reread",
     {
       async read({ filename }) {
-        if (filename === "IDENTITY.md") {
-          return { status: "missing" };
-        }
-        if (filename === "SOUL.md" && soulUnavailable) {
+        if (failOnce.delete(filename)) {
           return { status: "unavailable" };
         }
-        return { status: "ok", file: { name: filename, content: `# ${filename}\n` } };
+        if (filename === "IDENTITY.md" && identityContent === undefined) {
+          return { status: "missing" };
+        }
+        const content =
+          saved.get(filename) ?? (filename === "IDENTITY.md" ? identityContent : `# ${filename}\n`);
+        return { status: "ok", file: { name: filename, content } };
       },
-      async write() {
-        throw new Error("no Workspace file may be written");
+      async write({ filename, content }) {
+        saved.set(filename, content);
+        return { status: "ok", file: { name: filename, size: Buffer.byteLength(content) } };
       },
     },
+    5,
   );
+  // Settled reads and writes per file, so each step waits for every reread to be applied.
+  const settled = { "AGENTS.md": 1, "SOUL.md": 1, "IDENTITY.md": 1, "USER.md": 1 };
+  const nextVersion = async (failing) => {
+    failOnce = new Set(failing);
+    await makeCurrent();
+    for (const file of Object.keys(settled)) {
+      settled[file] += 1;
+      await waitForSettledFetches(page, filePath(file), settled[file]);
+    }
+  };
   const missingError = "File unavailable or missing. Check Agent access before creating it.";
+  const rereadFailed = (file) =>
+    `${file} could not be reread. Reload to check its current contents.`;
   const identity = form("IDENTITY.md");
-  const soul = form("SOUL.md");
   const identityError = identity.locator('[role="alert"]');
+  const soul = form("SOUL.md");
+  const user = form("USER.md");
   await identity.getByText(missingError).waitFor();
-  // The reread keeps the error as the first read left it, Request ID included.
+  // Rereads keep the error as the first read left it, Request ID included.
   const firstError = await identityError.textContent();
 
-  // The next version's gateway cannot read SOUL.md; IDENTITY.md is still missing.
-  soulUnavailable = true;
-  await makeCurrent();
-  await soul
-    .getByText("SOUL.md could not be reread. Reload to check its current contents.", {
-      exact: true,
-    })
-    .waitFor();
-  await waitForSettledFetches(page, filePath("IDENTITY.md"), 2);
+  // The gateway cannot read SOUL.md; IDENTITY.md is still missing and says nothing new.
+  await nextVersion(["SOUL.md"]);
+  assert.equal(await workspaceStatus(soul), rereadFailed("SOUL.md"));
   assert.equal(await workspaceStatus(identity), "");
   assert.equal(await identityError.textContent(), firstError);
 
-  // The version after it reads SOUL.md again, unchanged, so the failure no longer applies.
-  soulUnavailable = false;
-  await makeCurrent();
-  await waitForSettledFetches(page, filePath("SOUL.md"), 3);
-  await waitForSettledFetches(page, filePath("IDENTITY.md"), 3);
+  // SOUL.md reads again, unchanged, so its failure no longer applies. IDENTITY.md cannot be
+  // read, which may mean it now exists.
+  await nextVersion(["IDENTITY.md"]);
   assert.equal(await workspaceStatus(soul), "");
   assert.equal(await page.getByLabel("SOUL.md", { exact: true }).inputValue(), "# SOUL.md\n");
+  assert.equal(await workspaceStatus(identity), rereadFailed("IDENTITY.md"));
+  assert.equal(await identityError.textContent(), firstError);
+
+  // IDENTITY.md reads as missing again, which clears its failure. SOUL.md and USER.md fail;
+  // the reader reloads one and saves the other, and their own status replaces the failure.
+  await nextVersion(["SOUL.md", "USER.md"]);
   assert.equal(await workspaceStatus(identity), "");
   assert.equal(await identityError.textContent(), firstError);
+  assert.equal(await workspaceStatus(soul), rereadFailed("SOUL.md"));
+  assert.equal(await workspaceStatus(user), rereadFailed("USER.md"));
+  await page.getByRole("button", { name: "Reload SOUL.md", exact: true }).click();
+  settled["SOUL.md"] += 1;
+  await waitForSettledFetches(page, filePath("SOUL.md"), settled["SOUL.md"]);
+  await soul.getByText("SOUL.md loaded.", { exact: true }).waitFor();
+  await page.getByLabel("USER.md", { exact: true }).fill("# Saved USER.md\n");
+  await page.getByRole("button", { name: "Save USER.md", exact: true }).click();
+  settled["USER.md"] += 1;
+  await waitForSettledFetches(page, filePath("USER.md"), settled["USER.md"]);
+  await user.getByText("USER.md saved.", { exact: true }).waitFor();
+
+  // The next version answers SOUL.md and USER.md unchanged, so the reader's statuses stay.
+  // IDENTITY.md now exists, empty, so its missing error goes.
+  identityContent = "";
+  await nextVersion([]);
+  assert.equal(await workspaceStatus(soul), "SOUL.md loaded.");
+  assert.equal(await workspaceStatus(user), "USER.md saved.");
+  assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
+  assert.equal(await identityError.textContent(), "");
+  assert.equal(await workspaceStatus(identity), "IDENTITY.md reloaded with its current contents.");
 });
 
 test("a Workspace reread answered after a Reload keeps the Reload's answer", async (t) => {
@@ -2763,6 +2800,7 @@ test("a Workspace reread answered after a Reload keeps the Reload's answer", asy
   soul = before;
   await page.getByRole("button", { name: "Reload SOUL.md", exact: true }).click();
   await form("SOUL.md").getByText("SOUL.md loaded.", { exact: true }).waitFor();
+  await waitForSettledFetches(page, filePath("SOUL.md"), 2);
   reread.release();
   await waitForSettledFetches(page, filePath("SOUL.md"), 3);
   assert.equal(await editor.inputValue(), before);
@@ -2825,21 +2863,17 @@ test("a Workspace version change during a Reload or Save rereads the file once i
 // Deletion replaces the page; an Agent read that answers afterwards has nothing to update.
 test("an Agent read answered after deletion was requested leaves the Workspace files alone", async (t) => {
   const name = "Workspace deletion read";
-  const { fixture, page, requests, agentPath, makeCurrent } = await openWorkspaceVersions(
-    t,
-    name,
-    {
-      async read({ revision, filename }) {
-        return {
-          status: "ok",
-          file: { name: filename, content: `# ${filename} served by ${revision.id}\n` },
-        };
-      },
-      async write() {
-        throw new Error("no Workspace file may be written");
-      },
+  const { fixture, page, requests, agentPath, makeCurrent } = await openWorkspaceVersions(t, name, {
+    async read({ revision, filename }) {
+      return {
+        status: "ok",
+        file: { name: filename, content: `# ${filename} served by ${revision.id}\n` },
+      };
     },
-  );
+    async write() {
+      throw new Error("no Workspace file may be written");
+    },
+  });
   // Refresh deployment reads the Agent with the next version current; the answer is held.
   const agentRead = await holdRequests(t, page, `${fixture.origin}${agentPath}`, {
     once: true,
