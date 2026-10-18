@@ -200,7 +200,8 @@ test("A failed Configuration read leaves Deploy again hidden and is not repeated
   await nextFrames(page);
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
 
-  await page.locator(".agent-tabs").getByRole("button", { name: "Channels" }).click();
+  // Role-agnostic: the tab strip's controls are buttons today and may become tabs.
+  await page.locator(".agent-tabs").getByText("Channels", { exact: true }).click();
   await page.waitForURL((next) => next.searchParams.get("tab") === "channels");
   await nextFrames(page);
   await nextFrames(page);
