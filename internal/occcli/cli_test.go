@@ -394,7 +394,7 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		}
 	}
 	// --follow exits cleanly only when the lookup failed because of cancellation.
-	t.Setenv("OCC_NAMESPACE", "ns_stale")
+	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
 	for _, follow := range []bool{false, true} {
 		args := []string{"agent", "logs", "agt_1", "--source", "gateway"}
 		if follow {
@@ -916,7 +916,7 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 
 func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
-	t.Setenv("OCC_NAMESPACE", "ns_stale")
+	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
 	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
