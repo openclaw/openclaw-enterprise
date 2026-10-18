@@ -118,9 +118,13 @@ export async function retryModelAtCapacity(
         throw error;
       }
       if (attempt >= attempts) {
-        throw new Error(
-          `The real model was at capacity on all ${attempts} turn attempts ("Selected model is at capacity").\n${error.message}`,
-          { cause: error },
+        // Keeps kubectl's stderr and exit code for callers that read them.
+        throw Object.assign(
+          new Error(
+            `The real model was at capacity on all ${attempts} turn attempts ("Selected model is at capacity").\n${error.message}`,
+            { cause: error },
+          ),
+          { stderr: error.stderr, code: error.code },
         );
       }
       log(

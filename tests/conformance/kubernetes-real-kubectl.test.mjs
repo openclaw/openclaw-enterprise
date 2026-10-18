@@ -196,9 +196,10 @@ async function gatewayTurnWithFakeKubectl(t, atCapacity) {
   await writeFile(calls, "");
   await writeFile(
     join(directory, "kubectl"),
+    // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
     `#!${process.execPath}
-const { appendFileSync, readFileSync } = require("node:fs");
-appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2, 10)) + "\\n");
+const { appendFileSync, readFileSync } = process.getBuiltinModule("node:fs");
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <= ${atCapacity}) {
   process.stderr.write(${JSON.stringify(modelAtCapacityStderr)});
   process.exit(1);
@@ -242,6 +243,7 @@ test("a real-model turn the model answered at capacity runs again and returns it
   assert.equal(error, undefined);
   assert.deepEqual(turn, { assistant: "OCC-TURN-OK", items: [] });
   assert.equal(kubectlCalls.length, 2);
+  // The whole command, the turn's script included.
   assert.deepEqual(kubectlCalls[1], kubectlCalls[0], "the same turn runs again");
   assert.deepEqual(kubectlCalls[0].slice(4, 8), [
     "exec",
@@ -268,6 +270,9 @@ test("a real-model turn at capacity on every attempt says so on its failure's fi
   // The kubectl failure follows, for the diagnostics, and stays the cause.
   assert.match(rest.join("\n"), /^Command failed: kubectl /);
   assert.equal(isModelAtCapacity(error.cause), true);
+  // Callers that read kubectl's result still find it on the error.
+  assert.equal(error.stderr, modelAtCapacityStderr);
+  assert.equal(error.code, 1);
 });
 
 test("only the model's at-capacity answer retries a real-model turn", async () => {
