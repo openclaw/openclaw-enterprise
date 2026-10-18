@@ -1568,6 +1568,18 @@ test("Namespaces rows open their Agents and status badges use words with a tone"
   await page.waitForURL(`**/console/agents?namespace=${ready.id}`);
   await page.getByText("Linked Agent", { exact: true }).waitFor();
   assert.equal(await page.locator("#namespace-selector").inputValue(), ready.id);
+  // From the keyboard, Back returns focus to the row that was opened.
+  await page.goBack();
+  const provisioningLink = list.getByRole("link", { name: provisioning.name, exact: true });
+  await provisioningLink.focus();
+  await page.keyboard.press("Enter");
+  await page.waitForURL(`**/console/agents?namespace=${provisioning.id}`);
+  await page.goBack();
+  await page.waitForURL(`**/console/namespaces?namespace=${provisioning.id}`);
+  await page.waitForFunction(
+    (name) => globalThis.document.activeElement?.textContent === name,
+    provisioning.name,
+  );
 
   // Backend types are names, not states: human-cased and neutral.
   await page.goto(`${fixture.origin}/console/backends?namespace=${ready.id}`);
