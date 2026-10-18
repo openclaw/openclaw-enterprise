@@ -289,6 +289,15 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     assert.equal(await heading(page, "Agents").count(), 0);
     assert.equal(await deploy.isDisabled(), true);
     await note.waitFor();
+    // On a phone the refusal closes the navigation drawer, which would hide the reason.
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.locator(".mobile-toggle").click();
+    await page.locator(".shell.drawer-open").waitFor();
+    await sidebarLink(page, "Agents").click();
+    assert.equal(await page.locator(".shell.drawer-open").count(), 0);
+    assert.equal(page.url(), pageUrl);
+    assert.equal(await note.isVisible(), true);
+    await page.setViewportSize({ width: 1280, height: 720 });
   } finally {
     held.release();
   }
