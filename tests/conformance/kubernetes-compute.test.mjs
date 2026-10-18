@@ -4627,6 +4627,40 @@ test("sandbox routing keeps generated HTML off the administrative origin and bac
   );
 });
 
+test("two-cluster Compute refuses a harness routing hostname that parses as another address", () => {
+  const twoCluster = twoClusterOptions();
+  const harness = (hostname) => () =>
+    createKubernetesComputeDriver({
+      ...twoCluster,
+      executionCluster: {
+        ...twoCluster.executionCluster,
+        harnessRouting: { ...twoCluster.executionCluster.harnessRouting, hostname },
+      },
+    });
+  // A URL parser reads these as IPv4 (127.0.0.1, 127.0.0.1, 0.0.0.123), so a Harness would
+  // connect somewhere other than the name the operator wrote (finding 1856). The refusal names
+  // the harness setting, not the Gateway routing the execution plane reuses it as.
+  for (const hostname of ["127.1", "0x7f.1", "api.123", "harness.0x10"]) {
+    assert.throws(harness(hostname), {
+      message:
+        "Harness routing hostname must be a DNS hostname without a port or path. A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers.",
+    });
+  }
+  for (const hostname of ["Harness.example.test", "harness.example.test:443", "harness_1.test"]) {
+    assert.throws(harness(hostname), {
+      message: "Harness routing hostname must be a DNS hostname without a port or path.",
+    });
+  }
+  for (const hostname of ["", undefined]) {
+    assert.throws(harness(hostname), {
+      message: "Harness routing hostname must be explicitly configured.",
+    });
+  }
+  for (const hostname of ["harness.example.test", "1password.example.test", "0x.example.test"]) {
+    assert.doesNotThrow(harness(hostname), hostname);
+  }
+});
+
 test("sandbox routing caps the domain length and requires two labels", () => {
   const label = "a".repeat(63);
   const sandboxDriver = (domain) =>
@@ -4713,40 +4747,6 @@ test("gateway routing caps the Gateway name at a label value's 63 characters", (
         "Gateway routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
     },
   );
-});
-
-test("two-cluster Compute refuses a harness routing hostname that parses as another address", () => {
-  const twoCluster = twoClusterOptions();
-  const harness = (hostname) => () =>
-    createKubernetesComputeDriver({
-      ...twoCluster,
-      executionCluster: {
-        ...twoCluster.executionCluster,
-        harnessRouting: { ...twoCluster.executionCluster.harnessRouting, hostname },
-      },
-    });
-  // A URL parser reads these as IPv4 (127.0.0.1, 127.0.0.1, 0.0.0.123), so a Harness would
-  // connect somewhere other than the name the operator wrote (finding 1856). The refusal names
-  // the harness setting, not the Gateway routing the execution plane reuses it as.
-  for (const hostname of ["127.1", "0x7f.1", "api.123", "harness.0x10"]) {
-    assert.throws(harness(hostname), {
-      message:
-        "Harness routing hostname must be a DNS hostname without a port or path. A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers.",
-    });
-  }
-  for (const hostname of ["Harness.example.test", "harness.example.test:443", "harness_1.test"]) {
-    assert.throws(harness(hostname), {
-      message: "Harness routing hostname must be a DNS hostname without a port or path.",
-    });
-  }
-  for (const hostname of ["", undefined]) {
-    assert.throws(harness(hostname), {
-      message: "Harness routing hostname must be explicitly configured.",
-    });
-  }
-  for (const hostname of ["harness.example.test", "1password.example.test", "0x.example.test"]) {
-    assert.doesNotThrow(harness(hostname), hostname);
-  }
 });
 
 test("gateway routing derives stable endpoints and exact Envoy HTTPRoutes", async () => {
