@@ -73,9 +73,11 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   own `tools.deny` counts too, and the error names it. With several, the error
   names an Agent whose `tools.deny` denies all tools with `"*"`, because all of
   its turns would fail. Denying only Diffs to some Agents is allowed. The
-  `deny` list under `tools.byProvider` that matches the primary model (its
-  `provider/model` key, else its provider key) counts the same way, at the top
-  level and under an Agent entry.
+  `deny` list under `tools.byProvider.<provider>` for the primary model's
+  provider counts the same way, at the top level and under an Agent entry. A
+  `tools.byProvider` object that also has a `<provider>/<model>` key for that
+  provider is not checked, because OpenClaw may rewrite the model ID it
+  matches.
 - With one Agent under `agents.entries` and a `minimal`, `coding` or
   `messaging` tool profile, the Agent's own `tools.alsoAllow` replaces the
   top-level list that grants Diffs, so the request returns `400` unless that

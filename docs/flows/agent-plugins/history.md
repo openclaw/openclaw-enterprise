@@ -12,9 +12,9 @@ This record preserves the dated changes to the Agent plugin deployment flow. See
 
 - 2026-10-10 00:30: Keep the earlier Codex `config.toml` of revisions prepared before an upgrade. (fix-982)
 
-- 2026-10-09 15:02: Preserve the configured Codex session approval policy during startup. (authoring-run/72c276e8-6db5-44e5-aac1-f9e3fdc34ff2 - 504bf89a0707b66e1612d26e3d67ed6f6b16232f)
-
 - 2026-10-09 17:01: Clarify that CredentialGateway retrieval may refresh before authorized plugin discovery in the accompanying change. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 4f902e2ab7738568fc8bb278296e54255355b8b7)
+
+- 2026-10-09 15:02: Preserve the configured Codex session approval policy during startup. (authoring-run/72c276e8-6db5-44e5-aac1-f9e3fdc34ff2 - 504bf89a0707b66e1612d26e3d67ed6f6b16232f)
 
 - 2026-10-08 22:00: Integrate validated plugin default-off grants before native install, with final app-policy verification and skill-only selections. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - 65911984b3f6d9ee398aed913a0b8dd08e2ae094)
 

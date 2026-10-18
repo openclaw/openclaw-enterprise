@@ -37,7 +37,9 @@ interface DenyList extends OpenClawToolPolicySetting {
 }
 
 // The pinned Gateway's built-in profiles whose allowlist names core tools only; `full` allows
-// `*`, and an unknown profile adds no profile step (resolveCoreToolProfilePolicy).
+// `*`, and an unknown profile adds no profile step (resolveCoreToolProfilePolicy). A plugin's
+// manifest can add its tools to a profile (toolMetadata profiles); no catalog plugin does, so a
+// catalog plugin that starts to must update this check.
 const RESTRICTIVE_PROFILES = new Set(["minimal", "coding", "messaging"]);
 
 /**
@@ -56,8 +58,11 @@ const RESTRICTIVE_PROFILES = new Set(["minimal", "coding", "messaging"]);
  * Provider: a `byProvider` key is a provider (`openai`) or a provider and model
  * (`openai/gpt-5.1`), trimmed and lowercased; the model key wins over the provider key, and only
  * one of them applies (resolveProviderToolPolicyEntry). Every Agent of a Configuration shares
- * the primary model (resolveConfiguredHarnessId), so the check uses it. A fallback model may
- * match another key; it runs only when the primary fails, so it is not checked.
+ * the primary model (resolveConfiguredHarnessId), so the check uses its provider. The Gateway
+ * matches a model key against the model ID as provider manifests and plugins rewrite it
+ * (normalizeModelRef: aliases, prefixes), which admission cannot know, so a `byProvider` object
+ * with a model key for that provider is not checked at all: either key may apply. A fallback
+ * runs only when the primary fails, so it is not checked.
  *
  * Roster: the pinned Gateway resolves an Agent's tool policy from its own entry's `tools` only
  * (resolveAgentConfig), never merged with `agents.defaults`, whose schema has no `tools`;
@@ -80,13 +85,13 @@ export function deniedOpenClawSelection(
   configuration: Readonly<OpenClawConfigurationDocument>,
 ): DeniedOpenClawSelection | undefined {
   const document = asRecord(configuration);
-  const model = primaryModel(document);
+  const provider = primaryProvider(document);
   const globalTools = asRecord(document?.tools);
-  const globalLists = toolDenyLists(globalTools, model, {});
+  const globalLists = toolDenyLists(globalTools, provider, {});
   const rosterEntries = Object.entries(asRecord(asRecord(document?.agents)?.entries) ?? {});
   const roster = rosterEntries.map(([key, entry]) => ({
     key,
-    lists: toolDenyLists(asRecord(asRecord(entry)?.tools), model, { entry: key }),
+    lists: toolDenyLists(asRecord(asRecord(entry)?.tools), provider, { entry: key }),
   }));
   const entries =
     roster.length === 1
@@ -148,63 +153,81 @@ export function openClawToolDenialMessage(denied: DeniedOpenClawSelection): stri
   const { pluginId } = denied;
   if (denied.kind === "alsoAllow") {
     return fitted(
-      [`${keyedSettingPath("agents.entries", denied.entry)}.tools.alsoAllow`],
+      [{ entry: denied.entry, suffix: "alsoAllow" }],
       (path) =>
-        `Configuration setting ${path} replaces tools.alsoAllow under a tool profile, which hides every tool of plugin ${pluginId}; add the plugin to that list or deselect the plugin.`,
+        `Configuration setting ${path} overrides the plugin's tool grant under a tool profile, which hides every tool of plugin ${pluginId}; add the plugin to that list or deselect the plugin.`,
     );
   }
   const several = denied.lists.length > 1;
   return fitted(
-    denied.lists.map(({ entry, provider }) => `${toolsPath(entry, provider)}.deny`),
+    denied.lists.map((list) => ({ ...list, suffix: "deny" })),
     (paths) =>
       `Configuration ${several ? "settings" : "setting"} ${paths} ${several ? "block" : "blocks"} every tool of plugin ${pluginId}; remove the matching deny ${several ? "entries" : "entry"} or deselect the plugin.`,
   );
 }
 
-function toolsPath(entry: string | undefined, provider: string | undefined): string {
-  const tools =
-    entry === undefined ? "tools" : `${keyedSettingPath("agents.entries", entry)}.tools`;
-  return provider === undefined ? tools : keyedSettingPath(`${tools}.byProvider`, provider);
+interface NamedSetting extends OpenClawToolPolicySetting {
+  readonly suffix: string;
 }
 
-// The HTTP error contract caps messages at 256 characters. Paths share what the text leaves,
-// shortest first, so a long key is cut with … and a short path stays whole.
+// The HTTP error contract caps messages at 256 characters. When the paths do not fit, every
+// submitted key is cut with … to the longest length that fits, so each path keeps the setting
+// it names (`.tools.deny`, `.byProvider[...].deny`, `.tools.alsoAllow`).
 const MESSAGE_CAP = 256;
 
-function fitted(paths: readonly string[], render: (paths: string) => string): string {
-  const join = (shown: readonly string[]) =>
-    shown.length === 1 ? shown[0]! : `${shown.slice(0, -1).join(", ")} and ${shown.at(-1)!}`;
-  const full = render(join(paths));
-  if (Array.from(full).length <= MESSAGE_CAP) {
+function fitted(settings: readonly NamedSetting[], render: (paths: string) => string): string {
+  const message = (cut: (key: string) => string) => {
+    const paths = settings.map(({ entry, provider, suffix }) => {
+      const tools =
+        entry === undefined ? "tools" : `${keyedSettingPath("agents.entries", cut(entry))}.tools`;
+      const policy =
+        provider === undefined ? tools : keyedSettingPath(`${tools}.byProvider`, cut(provider));
+      return `${policy}.${suffix}`;
+    });
+    return render(
+      paths.length === 1 ? paths[0]! : `${paths.slice(0, -1).join(", ")} and ${paths.at(-1)!}`,
+    );
+  };
+  const fits = (text: string) => Array.from(text).length <= MESSAGE_CAP;
+  const full = message((key) => key);
+  if (fits(full)) {
     return full;
   }
-  let budget = MESSAGE_CAP - Array.from(render(join(paths.map(() => "")))).length;
-  const shown = [...paths];
-  const order = paths
-    .map((path, index) => ({ index, characters: Array.from(path) }))
-    .sort((left, right) => left.characters.length - right.characters.length);
-  order.forEach(({ index, characters }, position) => {
-    const share = Math.max(1, Math.floor(budget / (order.length - position)));
-    shown[index] =
-      characters.length <= share ? paths[index]! : `${characters.slice(0, share - 1).join("")}…`;
-    budget -= Math.min(characters.length, share);
-  });
-  return render(join(shown));
+  const cutTo = (limit: number) => (key: string) => {
+    const characters = Array.from(key);
+    return characters.length <= limit ? key : `${characters.slice(0, limit - 1).join("")}…`;
+  };
+  // The longest key length that fits, by bisection; 1 keeps only the … of each long key.
+  let low = 1;
+  let high = Math.max(
+    ...settings.flatMap(({ entry, provider }) =>
+      [entry, provider].filter((key) => key !== undefined).map((key) => Array.from(key).length),
+    ),
+  );
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (fits(message(cutTo(middle)))) {
+      low = middle;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return message(cutTo(low));
 }
 
 /**
  * The deny lists of one `tools` object that hold an entry: its own `deny`, then the `deny` of
- * the `byProvider` policy the primary model selects.
+ * the `byProvider` policy the primary model's provider selects.
  */
 function toolDenyLists(
   tools: Readonly<Record<string, unknown>> | undefined,
-  model: PrimaryModel | undefined,
+  provider: string | undefined,
   at: { readonly entry?: string },
 ): DenyList[] {
   const lists: DenyList[] = [{ ...at, patterns: policyPatterns(tools?.deny) }];
-  const provider = providerPolicy(tools?.byProvider, model);
-  if (provider !== undefined) {
-    lists.push({ ...at, provider: provider.key, patterns: policyPatterns(provider.policy.deny) });
+  const selected = providerPolicy(tools?.byProvider, provider);
+  if (selected !== undefined) {
+    lists.push({ ...at, provider: selected.key, patterns: policyPatterns(selected.policy.deny) });
   }
   return lists.filter(({ patterns }) => patterns.length > 0);
 }
@@ -261,19 +284,14 @@ function soleEntryShadowingGrant(
   return { key, patterns: policyPatterns(tools.alsoAllow) };
 }
 
-interface PrimaryModel {
-  readonly provider: string;
-  readonly id: string;
-}
-
 /**
- * The provider and model ID OpenClaw resolves from the primary model reference (parseModelRef):
- * agents.defaults.model, else the first agents.entries model, which admission requires to match.
- * Both parts are lowercased, as the `byProvider` lookup compares them.
+ * The provider OpenClaw resolves from the primary model reference (parseModelRef, trimmed and
+ * lowercased by normalizeProviderId): agents.defaults.model, else the first agents.entries
+ * model, which admission requires to match.
  */
-function primaryModel(
+function primaryProvider(
   document: Readonly<Record<string, unknown>> | undefined,
-): PrimaryModel | undefined {
+): string | undefined {
   const agents = asRecord(document?.agents);
   const selection =
     asRecord(agents?.defaults)?.model ??
@@ -286,15 +304,13 @@ function primaryModel(
   }
   const trimmed = reference.trim();
   if (trimmed.toLowerCase() === "openrouter:auto") {
-    return { provider: "openrouter", id: "auto" };
+    return "openrouter";
   }
   const slash = trimmed.indexOf("/");
   const provider = trimmed.slice(0, Math.max(slash, 0)).trim().toLowerCase();
-  const id = trimmed
-    .slice(slash + 1)
-    .trim()
-    .toLowerCase();
-  return slash < 0 || provider.length === 0 || id.length === 0 ? undefined : { provider, id };
+  return slash < 0 || provider.length === 0 || trimmed.slice(slash + 1).trim().length === 0
+    ? undefined
+    : provider;
 }
 
 /** OpenClaw's normalizeToolProviderPolicyKey: trimmed, lowercased, `provider[/model]`. */
@@ -310,16 +326,16 @@ function providerPolicyKey(key: string): string {
 }
 
 /**
- * The `byProvider` policy the primary model selects (resolveProviderToolPolicyEntry): the
- * `provider/model` key, else the `provider` key. Keys that normalize alike keep the first one
- * written in normalized form, else the first one.
+ * The `byProvider` policy the primary model's provider selects (resolveProviderToolPolicyEntry),
+ * when no model key for that provider can take its place. Keys that normalize alike keep the
+ * first one written in normalized form, else the first one.
  */
 function providerPolicy(
   byProvider: unknown,
-  model: PrimaryModel | undefined,
+  primary: string | undefined,
 ): { readonly key: string; readonly policy: Readonly<Record<string, unknown>> } | undefined {
   const entries = asRecord(byProvider);
-  if (entries === undefined || model === undefined) {
+  if (entries === undefined || primary === undefined) {
     return undefined;
   }
   const lookup = new Map<
@@ -338,9 +354,13 @@ function providerPolicy(
       lookup.set(normalized, { key, policy, canonical });
     }
   }
-  const match =
-    lookup.get(`${providerPolicyKey(model.provider)}/${model.id}`) ??
-    lookup.get(providerPolicyKey(model.provider));
+  // Which model key the Gateway matches depends on how it rewrites the model ID, so a
+  // `byProvider` object with any model key for this provider decides nothing here.
+  const provider = providerPolicyKey(primary);
+  if ([...lookup.keys()].some((key) => key.startsWith(`${provider}/`))) {
+    return undefined;
+  }
+  const match = lookup.get(provider);
   return match === undefined ? undefined : { key: match.key, policy: match.policy };
 }
 

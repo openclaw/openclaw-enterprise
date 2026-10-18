@@ -113,7 +113,7 @@ stores the `plugins` map. Shared validators check the nested selection shape.
 `validatePolicies` before Agent create/update and provisioning writes. Its optional
 `validateAgentConfiguration` checks selections against Configuration values here and at
 deployment. The OpenClaw Driver refuses a selection whose tools `tools.deny`, the sole
-`agents.entries` entry's list, the primary model's `byProvider` lists, or these together block,
+`agents.entries` entry's list, the primary provider's `byProvider` lists, or these together block,
 any selection beside an entry denying `*`, or one a sole entry's `alsoAllow` hides under a profile. Unsupported
 controls, reviewer scopes, and combinations return `400 INVALID_REQUEST`;
 a missing selected Driver returns `501 NOT_IMPLEMENTED`. Validation is static: native app mapping,
