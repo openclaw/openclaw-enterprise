@@ -22,8 +22,7 @@ export function link(label, target, context) {
 export const NAMESPACE_NOT_READY_MESSAGE =
   "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
 
-// Why a Namespace that is not ready can't take new Agents, by status. Only a provisioning one
-// becomes ready by waiting.
+// Why a Namespace can't take new Agents, by status. Neither becomes ready by waiting.
 const NOT_READY_REASONS = {
   failed:
     "Provisioning this Namespace failed, so it cannot hold new Agents. Ask an operator to check it on the Namespaces page, or choose another Namespace.",
@@ -31,13 +30,28 @@ const NOT_READY_REASONS = {
     "This Namespace is being deleted, so it cannot hold new Agents. Choose another Namespace.",
 };
 
-// Shown where Agent creation starts when the selected Namespace is not ready: its status, then
-// why nothing can be created (finding 1895). An unknown status keeps creation, and the API
-// still decides.
-export function namespaceNotReady(status) {
-  return typeof status === "string" && status !== "" && status !== "ready"
-    ? `Namespace status: ${status[0].toUpperCase()}${status.slice(1)}. ${NOT_READY_REASONS[status] ?? NAMESPACE_NOT_READY_MESSAGE}`
-    : null;
+// What the selected Namespace's status means where Agent creation starts (finding 1895): null
+// when it is ready or its status is unknown, otherwise the status and its consequence, and
+// whether the API refuses every new Agent there (`blocked`). A provisioning Namespace still
+// accepts Agent drafts, but no Secret, sign-in or deployment until it is ready; one that adopts
+// an existing Kubernetes namespace takes no Configuration until then; a failed or deleting one
+// takes no new Agent. The API still decides.
+export function namespaceCreation(namespace) {
+  const status = namespace?.status;
+  if (typeof status !== "string" || status === "" || status === "ready") {
+    return null;
+  }
+  const label = `Namespace status: ${status[0].toUpperCase()}${status.slice(1)}.`;
+  if (status === "provisioning" && namespace.existingNamespace === undefined) {
+    return {
+      blocked: false,
+      note: `${label} ${NAMESPACE_NOT_READY_MESSAGE} Until then, Agents can be saved as drafts that need no new Secret or sign-in, but none can be deployed.`,
+    };
+  }
+  return {
+    blocked: Object.hasOwn(NOT_READY_REASONS, status) || status === "provisioning",
+    note: `${label} ${NOT_READY_REASONS[status] ?? NAMESPACE_NOT_READY_MESSAGE}`,
+  };
 }
 
 // The API's catch-all answers: a caller's own denial and an untyped conflict. They name nothing
@@ -257,20 +271,26 @@ export function renderAgentList(context) {
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.agents?.create === false;
-  // A Namespace that is not ready refuses creation, so the page names its status instead of
-  // inviting it, and the first sign is never a refused Secret or submit (finding 1895).
-  const notReady = namespaceNotReady(context.namespaceStatus);
+  // A Namespace that is not ready names its status here, so the first sign is never a refused
+  // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
+  const notReady = namespaceCreation(context.namespace);
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     className: "primary",
   });
-  create.disabled = createDenied || notReady !== null;
-  if (notReady) {
+  create.disabled = createDenied || notReady?.blocked === true;
+  if (notReady?.blocked) {
     create.setAttribute("aria-describedby", "namespace-not-ready");
   }
   view.replaceChildren(
     element("div", { className: "agent-toolbar" }, search, create),
     ...(notReady
-      ? [element("p", { className: "muted", role: "status", id: "namespace-not-ready" }, notReady)]
+      ? [
+          element(
+            "p",
+            { className: "muted", role: "status", id: "namespace-not-ready" },
+            notReady.note,
+          ),
+        ]
       : []),
     ...(createDenied
       ? [
@@ -406,8 +426,8 @@ export function renderAgentList(context) {
                 ? // Under the note above: say what the reader can expect, not invite creating
                   // (finding 1521).
                   "Agents in this Namespace that are shared with you appear here."
-                : notReady
-                  ? context.namespaceStatus === "provisioning"
+                : notReady?.blocked
+                  ? context.namespace.status === "provisioning"
                     ? "You can create Agents here once this Namespace is ready."
                     : "Agents cannot be created in this Namespace."
                   : "Create an Agent in this Namespace using an editable Configuration template.",

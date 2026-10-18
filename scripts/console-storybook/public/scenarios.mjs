@@ -892,7 +892,7 @@ export const scenarios = {
     emptyAgents: true,
     namespaceStatus: "provisioning",
     description:
-      "A first run's Namespace is still provisioning: the page names its status and keeps Create Agent unavailable instead of inviting creation.",
+      "A first run's Namespace is still provisioning: the page names its status and what waits for it, and Create Agent stays available for drafts.",
   },
   agentsDenied: {
     group: "Pages/Agents",
@@ -1023,7 +1023,7 @@ export const scenarios = {
     path: create,
     namespaceStatus: "provisioning",
     description:
-      "Create Agent in a Namespace that is still provisioning repeats its status instead of offering a start that would be refused.",
+      "Create Agent in a Namespace that is still provisioning names its status above the starting points, before any Secret is asked for.",
   },
   createStart: {
     group: "Pages/Create Agent",

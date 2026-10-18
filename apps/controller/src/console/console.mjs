@@ -1715,9 +1715,9 @@ async function loadPage({
       suspendDrafts: () => drafts.suspend(),
       view: shell.view,
       namespaceId,
-      // The selected Namespace's status: one that is not ready refuses Agent creation, so the
-      // Agents list and Create Agent say so up front (finding 1895).
-      namespaceStatus: namespaces.find((item) => item.id === namespaceId)?.status,
+      // The selected Namespace: the Agents list and Create Agent name its status when it is not
+      // ready (finding 1895).
+      namespace: namespaces.find((item) => item.id === namespaceId),
       request: viewRequest,
       mutationVersion: () => viewState.mutations,
       navigate,
@@ -1774,7 +1774,7 @@ async function loadPage({
       // The Agents list and Create Agent show the selected Namespace's status (finding 1895), so a
       // return rebuilds them when it changed. Other Namespaces' changes keep the view.
       const shownNamespace = namespaceId;
-      const shownStatus = agentContext.namespaceStatus;
+      const shownStatus = agentContext.namespace?.status;
       viewState.revalidators.add(async () => {
         if (namespaces.find((item) => item.id === shownNamespace)?.status !== shownStatus) {
           throw new Error("Namespace status changed");
