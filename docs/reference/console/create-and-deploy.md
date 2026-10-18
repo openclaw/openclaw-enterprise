@@ -196,10 +196,11 @@ navigation in explicitly selected Preset forms.
 current policy.
 
 Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` with no selected repositories permits
-saving a draft; provisioning requires successful discovery.
+saving a draft, without retry; provisioning requires successful discovery.
 Other failures, including generic `503`, throttling and connection errors, block
 both writes and offer retry. Denial and Namespace lifecycle conflict remain
-distinct. Each subsequent write rechecks authorization.
+distinct. Each subsequent write rechecks authorization. On an existing Agent's
+**Repositories** tab, that `503` blocks saving and offers no retry.
 
 If Agent creation is rejected after the Configuration saves, correct an ordinary
 zero-binding Agent's editable fields and retry directly. The

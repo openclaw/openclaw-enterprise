@@ -91,15 +91,22 @@ function repositoryResults(options, recent, { query: queryText, browsing, page: 
   return { small, query, matches, count, page, visible };
 }
 
-function discoveryFailure(error, { allowDraft }) {
+function discoveryFailure(error, { allowDraft, agentScoped }) {
   if (error.status === 403) {
     return "denied";
   }
   if (error.status === 409) {
     return "conflict";
   }
-  if (allowDraft && error.status === 503 && error.code === "REPOSITORY_OPTIONS_UNAVAILABLE") {
-    return "draft-only";
+  // The API answers this code only for the Installation's fixed composition (no Repo Driver
+  // or no compatible Compute Driver), so retrying cannot succeed until an operator changes it.
+  if (error.status === 503 && error.code === "REPOSITORY_OPTIONS_UNAVAILABLE") {
+    if (allowDraft) {
+      return "draft-only";
+    }
+    if (agentScoped) {
+      return "not-configured";
+    }
   }
   return "unavailable";
 }
@@ -711,7 +718,9 @@ export function createRepositoryFields(context, onChange, initial = {}) {
               ? "This repository is no longer available. Remove it or retry discovery."
               : state.discovery === "loading"
                 ? "Checking repository availability…"
-                : "Repository availability cannot be verified. Retry repository choices.",
+                : state.discovery === "not-configured"
+                  ? "Repository availability cannot be verified because no repository access is configured for this Installation."
+                  : "Repository availability cannot be verified. Retry repository choices.",
           ),
         );
       } else {
@@ -1043,6 +1052,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
       choices.setAttribute("aria-busy", "false");
       state.discovery = discoveryFailure(error, {
         allowDraft: !clearSelections && !initial.agentId && state.selected.size === 0,
+        agentScoped: !clearSelections && Boolean(initial.agentId),
       });
       if (state.discovery === "denied") {
         status.className = "error";
@@ -1057,10 +1067,10 @@ export function createRepositoryFields(context, onChange, initial = {}) {
       } else if (clearSelections) {
         status.className = "error";
         status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
-      } else if (state.discovery === "draft-only") {
+      } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
         status.className = "hint";
         status.replaceChildren(
-          "Repository choices are unavailable. ",
+          "No repository access is configured for this Installation. ",
           element(
             "a",
             {
@@ -1070,17 +1080,23 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             },
             "Set up repository access",
           ),
-          ". You can continue without repository access.",
+          state.discovery === "draft-only"
+            ? ". You can continue without repository access."
+            : ". Repository access for this Agent cannot be changed until then.",
         );
       } else {
         status.className = "error";
         status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
       }
-      retry.hidden = clearSelections;
+      retry.hidden = clearSelections || ["draft-only", "not-configured"].includes(state.discovery);
       revealInvalidSelections();
       render();
       onChange(false);
-      return { kind: state.discovery === "draft-only" ? "unavailable" : state.discovery };
+      return {
+        kind: ["draft-only", "not-configured"].includes(state.discovery)
+          ? "unavailable"
+          : state.discovery,
+      };
     }
   }
 

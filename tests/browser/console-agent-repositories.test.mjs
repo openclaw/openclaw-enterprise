@@ -283,7 +283,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
       status: 503,
       contentType: "application/json",
       body: JSON.stringify({
-        error: { code: "REPOSITORY_OPTIONS_UNAVAILABLE", message: "Discovery unavailable" },
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Discovery unavailable" },
       }),
     }),
   );
@@ -315,6 +315,45 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   await page
     .getByText("This repository is no longer available. Remove it or retry discovery.")
     .waitFor();
+});
+
+test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {
+  // The default console fixture selects no Repo Driver: discovery answers a permanent 503.
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No Repo Driver", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Repository-less Agent",
+    nativeValues("rd"),
+  );
+  const { page } = await newPage(t, fixture);
+  const options = page.waitForResponse((response) =>
+    response.url().endsWith(`/agents/${agent.id}/repository-options`),
+  );
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
+  );
+  const response = await options;
+  assert.equal(response.status(), 503);
+  assert.equal((await response.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
+  const status = page
+    .getByRole("status")
+    .filter({ hasText: "No repository access is configured for this Installation." });
+  await status.waitFor();
+  assert.match(await status.innerText(), /cannot be changed until then/);
+  assert.equal(
+    await status.getByRole("link", { name: "Set up repository access" }).getAttribute("href"),
+    "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
+  );
+  assert.doesNotMatch(await status.innerText(), /Retry|Try again/);
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Save repository access" }).isDisabled(),
+    true,
+  );
 });
 
 test("Preset repository access and plugin policies remain independent during Agent creation", async (t) => {
