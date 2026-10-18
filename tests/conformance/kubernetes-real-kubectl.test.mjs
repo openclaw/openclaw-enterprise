@@ -300,7 +300,7 @@ test(
     const kubernetesHelper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
     const openShellHelper = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
       .href;
-    const script = `
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelper)};
       import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelper)};
@@ -323,21 +323,7 @@ test(
         poll = setInterval(() => {}, 50);
         throw new Error("replacement timed out");
       });
-    `;
-    // Run it as its own node:test root, not as a child reporting to this runner.
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    const started = Date.now();
-    const exited = await execute(process.execPath, ["--input-type=module", "-e", script], {
-      env,
-      timeout: 15_000,
-    }).then(
-      () => ({ code: 0, stdout: "", stderr: "" }),
-      (error) => error,
-    );
-    assert.ok(Date.now() - started < 10_000, "the file exited soon after its teardown");
-    assert.notEqual(exited.killed, true, "the file exited on its own");
-    assert.equal(exited.code, 1);
+    `);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted worker stop",
       "attempted port-forwards",
@@ -513,6 +499,14 @@ async function runTestScript(script, { env: overrides = {}, timeout = 15_000 } =
   return { ...exited, elapsedMs: Date.now() - started };
 }
 
+async function runFailingTestScript(script, options) {
+  const exited = await runTestScript(script, options);
+  assert.equal(exited.killed, false, "the file exited on its own");
+  assert.ok(exited.elapsedMs < 10_000, "the file exited promptly");
+  assert.equal(exited.code, 1);
+  return exited;
+}
+
 test(
   "setup that outlives its test's timeout has its late worker stop run, and the file ends",
   { timeout: 20_000 },
@@ -520,7 +514,7 @@ test(
     // Finding 1722: a node:test timeout runs the test's hooks but does not stop its body. Setup
     // that started a worker after that registered its stop too late: the stop never ran, and the
     // worker's poll held the file until the runner's 5,400 s file timeout.
-    const exited = await runTestScript(`
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
@@ -535,9 +529,6 @@ test(
         });
       });
     `);
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after the late cleanup");
-    assert.equal(exited.code, 1);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted early cleanup",
       "attempted worker stop",
@@ -558,7 +549,7 @@ test(
     // test was killed mid-run, missing from the report, and its cleanups never ran. Suite and file
     // hooks run outside any test, so the exit also waits for the file's root to finish; a test
     // named like the root is not it.
-    const exited = await runTestScript(`
+    const exited = await runFailingTestScript(`
       import { after, beforeEach, describe, it } from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
@@ -596,9 +587,6 @@ test(
         });
       });
     `);
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after its last test");
-    assert.equal(exited.code, 1);
     assert.match(exited.stdout, /^not ok 1 - <root>$/m);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted suite after",
@@ -621,7 +609,7 @@ test(
     t.after(() => rm(directory, { recursive: true, force: true }));
     const first = join(directory, "first-resource");
     const second = join(directory, "second-resource");
-    const exited = await runTestScript(
+    const exited = await runFailingTestScript(
       `
       import test from "node:test";
       import { rm, writeFile } from "node:fs/promises";
@@ -648,9 +636,6 @@ test(
     `,
       { env: { FIRST_RESOURCE: first, SECOND_RESOURCE: second } },
     );
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after the setup stopped");
-    assert.equal(exited.code, 1);
     assert.deepEqual(exited.stdout.match(/^acquired .+$/gm), [`acquired ${first}`]);
     assert.match(exited.stderr, /cleanup registered at \[eval1\]:\d+ came after the teardown ran/);
     await assert.rejects(readFile(first), { code: "ENOENT" }, "the first resource was released");
@@ -665,7 +650,7 @@ test(
     // Setup still running after its test timed out, holding a handle and never registering
     // again, kept the file alive until the runner's file timeout. The timeout now arms the exit,
     // which waits for that setup only to its limit.
-    const exited = await runTestScript(`
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
       test("never stops", { timeout: 200 }, async (testContext) => {
@@ -673,9 +658,6 @@ test(
         await new Promise(() => setInterval(() => {}, 50));
       });
     `);
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after the setup's limit");
-    assert.equal(exited.code, 1);
     assert.match(
       exited.stderr,
       /^setup: exiting once the file's tests settle for 200 ms; its test timed out or was cancelled with setup that may still run$/m,
@@ -815,7 +797,7 @@ test(
     const topologyHelper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url)
       .href;
     const kubernetesHelper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
-    const script = `
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { withBoundedTeardown } from ${JSON.stringify(kubernetesHelper)};
       import {
@@ -839,21 +821,7 @@ test(
         };
         registerProductionTopologyCleanups(context, operations);
       });
-    `;
-    // Run it as its own node:test root, not as a child reporting to this runner.
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    const started = Date.now();
-    const exited = await execute(process.execPath, ["--input-type=module", "-e", script], {
-      env,
-      timeout: 15_000,
-    }).then(
-      () => ({ code: 0, stdout: "", stderr: "" }),
-      (error) => error,
-    );
-    assert.ok(Date.now() - started < 10_000, "the file exited soon after its teardown");
-    assert.notEqual(exited.killed, true, "the file exited on its own");
-    assert.equal(exited.code, 1);
+    `);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted gatewayForward",
       "attempted worker",
