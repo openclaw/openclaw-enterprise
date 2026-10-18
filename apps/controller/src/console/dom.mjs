@@ -177,17 +177,22 @@ export function jsonObjectProblem(text) {
     : undefined;
 }
 
-// Chromium and Firefox name a line and column, or Chromium an offset; an early end has neither.
+// Chromium names an offset (and newer builds its line and column), Firefox a line and column;
+// an early end may have neither. The patterns are anchored to the message's own wording, so JSON
+// the reader typed, which Chromium quotes in "Unexpected token" messages, is never read as one.
 function jsonErrorPosition(text, error) {
   const message = String(error?.message ?? "");
-  const lineColumn = /line (\d+) column (\d+)/.exec(message);
-  if (lineColumn) {
-    return { line: Number(lineColumn[1]), column: Number(lineColumn[2]) };
+  const chromium = / in JSON at position (\d+)(?: \(line (\d+) column (\d+)\))?$/.exec(message);
+  const firefox = / at line (\d+) column (\d+) of the JSON data$/.exec(message);
+  if (chromium?.[2]) {
+    return { line: Number(chromium[2]), column: Number(chromium[3]) };
   }
-  const position = /position (\d+)/.exec(message);
-  const offset = position
-    ? Number(position[1])
-    : /end of (JSON )?(input|data)/i.test(message)
+  if (firefox) {
+    return { line: Number(firefox[1]), column: Number(firefox[2]) };
+  }
+  const offset = chromium
+    ? Number(chromium[1])
+    : /^(Unexpected end of JSON input|JSON\.parse: (unexpected )?end of data)/.test(message)
       ? text.length
       : undefined;
   if (offset === undefined) {
@@ -221,7 +226,12 @@ export function fieldError(input) {
       node.textContent = "";
       node.hidden = true;
       input.removeAttribute("aria-invalid");
-      input.setAttribute("aria-describedby", others().join(" "));
+      const describedBy = others().join(" ");
+      if (describedBy) {
+        input.setAttribute("aria-describedby", describedBy);
+      } else {
+        input.removeAttribute("aria-describedby");
+      }
     },
   };
 }

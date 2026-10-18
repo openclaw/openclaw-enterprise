@@ -1287,6 +1287,10 @@ test("Agent creation rejects non-object native Configuration JSON before Configu
   await json.fill('{\n  "model": 1,\n}');
   assert.equal(await jsonError.isHidden(), true);
   assert.equal(await json.getAttribute("aria-invalid"), null);
+  assert.doesNotMatch(
+    (await json.getAttribute("aria-describedby")) ?? "",
+    /\bconfiguration-json-error\b/,
+  );
   await page.getByRole("button", { name: "Create Agent" }).click();
   await jsonError
     .getByText("Invalid JSON at line 3, column 1. Enter a valid JSON object.", { exact: true })

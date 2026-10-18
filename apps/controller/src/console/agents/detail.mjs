@@ -3835,6 +3835,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       } else if (reloadRequired) {
         if (!feedbackLocked) {
           feedback.textContent = "Reload this draft before saving again.";
+          feedback.className = "error";
         }
         feedbackLocked = true;
       } else if (pending) {

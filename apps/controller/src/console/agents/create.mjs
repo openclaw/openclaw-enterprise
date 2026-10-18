@@ -2204,6 +2204,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       return;
     }
     const values = parseObject(configuration, true);
+    // Stop at the Configuration JSON message so the plugin field's bubble cannot take its focus.
+    if (values === undefined) {
+      return;
+    }
     const desiredPlugins = parseObject(plugins, true);
     const bindings = configurationSecretBindings;
     if (values === undefined || desiredPlugins === undefined) {
