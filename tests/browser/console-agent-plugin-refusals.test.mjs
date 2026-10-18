@@ -174,7 +174,7 @@ test("Create Agent adds no plugin guidance to a refusal that names no selected p
   await alert.waitFor();
   const text = await alert.textContent();
   assert.ok(text.startsWith(reason), text);
-  assert.doesNotMatch(text, /deselect|cannot change saved Configuration/);
+  assert.doesNotMatch(text, /deselect plugin|cannot edit saved Configuration/i);
 });
 
 // The Plugins tab showed a refusal in the muted status line and dropped focus to the page

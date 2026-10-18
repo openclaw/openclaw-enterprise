@@ -155,6 +155,9 @@ export function renderAgentPlugins(
         ...options,
       }),
   });
+  // Refusals read as errors, as on Configuration saves, not in the muted status (finding 1864).
+  // Declared before the approver field, whose edits clear it.
+  const saveError = element("p", { className: "error", role: "alert" });
   const defaultApprovers = createSlackApproverField({
     context,
     label: "Default plugin approvers",
@@ -163,6 +166,7 @@ export function renderAgentPlugins(
     getValue: () => pluginApprovers,
     onChange: (value) => {
       pluginApprovers = value;
+      saveError.textContent = "";
       updateState();
     },
     inheritedLabel: "Existing OpenClaw approval routing (no Agent default set)",
@@ -175,8 +179,6 @@ export function renderAgentPlugins(
     discovery.fields.section.querySelector(".plugin-json"),
   );
   const feedback = element("p", { className: "hint", role: "status" });
-  // Refusals read as errors, as on Configuration saves, not in the muted status (finding 1864).
-  const saveError = element("p", { className: "error", role: "alert" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
   const updateNote = element("p", { className: "muted", role: "status", hidden: true });
   const save = button("Save plugin selections", () => void savePlugins(), {
@@ -360,6 +362,10 @@ export function renderAgentPlugins(
       if (context.isCurrent() && !saved) {
         pending = false;
         updateState();
+        if (outcomeUnknown) {
+          // updateState shows the outcome and its Reload, which takes focus.
+          focusSaveOutcome(section, [reload], feedback);
+        }
       }
     }
   }

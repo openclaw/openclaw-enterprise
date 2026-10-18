@@ -69,9 +69,9 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   `"*"`, `"diffs"` or `"group:plugins"`, Agent create, update, provisioning
   and deployment return `400` naming `tools.deny` and the plugin. A deny-all list
   would leave no callable tool, so every turn would fail. Remove the matching
-  deny item before selecting Diffs. Create Agent saves the Configuration
-  before the Agent and cannot edit it after a refusal, so the console names the
-  fix it allows: deselect the plugin and create the Agent, then fix the setting
+  deny item before selecting Diffs. When Create Agent has already saved the
+  Configuration (its step-by-step path), it cannot edit it after a refusal, so
+  the console names the fix it allows: deselect the plugin and create the Agent, then fix the setting
   on the Agent's Configuration tab and select the plugin again. With one Agent under `agents.entries`, its
   own `tools.deny` counts too, and the error names it. With several, the error
   names an Agent whose `tools.deny` denies all tools with `"*"`, because all of
