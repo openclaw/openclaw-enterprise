@@ -183,7 +183,9 @@ a.primary {
 button:not(:disabled):hover {
   background: var(--hover);
 }
-/* One disabled style and one busy cursor: disabled means "not now", busy means "working". */
+/* One disabled style and one busy cursor: disabled means "not now", busy means "working". The busy
+   cursor is for buttons only: a whole page or list marked busy keeps its cursor, so a load that
+   settles quickly never flashes it (findings 1444, 1447). */
 button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
@@ -192,7 +194,6 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
 }
-[aria-busy="true"],
 [aria-busy="true"] button:disabled,
 button[aria-busy="true"] {
   cursor: progress;
@@ -213,9 +214,9 @@ button[aria-busy="true"] {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset-inset);
 }
-.slack-directory-input:focus-within,
-.repository-option:focus-within,
-.repository-profile:focus-within {
+.slack-directory-input:has(input:focus-visible),
+.repository-option:has(:focus-visible),
+.repository-profile:has(:focus-visible) {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
 }
