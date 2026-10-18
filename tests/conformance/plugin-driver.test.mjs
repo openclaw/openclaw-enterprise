@@ -429,7 +429,7 @@ test("OpenClaw tool enablement overrides tool defaults without enabling a disabl
   });
 });
 
-test("OpenClaw Plugin Driver refuses a selection the served roster entry's tools.deny blocks", () => {
+test("OpenClaw Plugin Driver refuses a selection a roster entry's tools.deny blocks", () => {
   const driver = new OCCPluginDriver();
   const plugins = occSelection();
   const refusal = (setting, verb = "blocks", entries = "entry") =>
@@ -452,17 +452,29 @@ test("OpenClaw Plugin Driver refuses a selection the served roster entry's tools
   assert.throws(check({ agents: { entries: { "a.b": { tools: { deny: ["diffs"] } } } } }), {
     message: refusal('setting agents.entries["a.b"].tools.deny'),
   });
-  // Top-level tools.deny alone keeps #2803's text, also when the entry blocks the plugin too.
+  // Each list that blocks the plugin on its own is named, so one fix clears the refusal.
   assert.throws(
     check({ tools: { deny: ["*"] }, agents: { entries: { main: { tools: { deny: ["*"] } } } } }),
+    {
+      message: refusal(
+        "settings tools.deny and agents.entries.main.tools.deny",
+        "block",
+        "entries",
+      ),
+    },
+  );
+  assert.throws(
+    check({ tools: { deny: ["*"] }, agents: { entries: { main: { tools: { deny: ["exec"] } } } } }),
     { message: refusal("setting tools.deny") },
   );
-  // A disabled selection adds nothing to the allowlist; an entry denying other tools leaves
-  // the plugin callable; agents.defaults carries no tool policy in the pinned Gateway.
+  // A disabled selection adds nothing to the allowlist, and agents.defaults carries no tool
+  // policy in the pinned Gateway.
   driver.validateAgentConfiguration(
     { "occ-plugin:diffs": { enabled: false } },
     { agents: { entries: { main: { tools: { deny: ["*"] } } } } },
   );
+  // Only deny lists are checked: an entry allowlist that leaves the plugin out still leaves
+  // other tools callable, so turns run.
   for (const configuration of [
     { agents: { entries: { main: { tools: { deny: ["exec", "diffs-*", 7] } } } } },
     { agents: { entries: { main: { tools: { allow: ["exec"] } } } } },
@@ -471,14 +483,17 @@ test("OpenClaw Plugin Driver refuses a selection the served roster entry's tools
   ]) {
     driver.validateAgentConfiguration(plugins, configuration);
   }
-  // With more than one entry each session names its Agent, so no entry is the served one and
-  // only top-level tools.deny is checked.
-  const roster = {
+  // With several entries each session names its Agent. Denying the plugin to one of them is
+  // a valid setup, but an entry denying every tool fails each of its sessions' turns.
+  const roster = (ops) => ({
     ownership: "explicit",
-    entries: { main: { tools: { deny: ["*"] } }, ops: { tools: { deny: ["*"] } } },
-  };
-  driver.validateAgentConfiguration(plugins, { agents: roster });
-  assert.throws(check({ tools: { deny: ["diffs"] }, agents: roster }), {
+    entries: { main: { tools: { deny: ["diffs"] } }, ops: { tools: { deny: ops } } },
+  });
+  driver.validateAgentConfiguration(plugins, { agents: roster(["group:plugins"]) });
+  assert.throws(check({ agents: roster(["exec", " ** "]) }), {
+    message: refusal("setting agents.entries.ops.tools.deny"),
+  });
+  assert.throws(check({ tools: { deny: ["diffs"] }, agents: roster(["exec"]) }), {
     message: refusal("setting tools.deny"),
   });
   // A plugin with several tools is refused when the two lists together block all of them,

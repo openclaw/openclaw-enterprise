@@ -11,16 +11,16 @@ export interface DeniedOpenClawSelection {
   readonly pluginId: string;
   /** Whether the refusal names top-level `tools.deny`. */
   readonly global: boolean;
-  /** The served `agents.entries` key whose `tools.deny` the refusal names, if any. */
+  /** The `agents.entries` key whose `tools.deny` the refusal names, if any. */
   readonly entry?: string;
 }
 
-type Denied = (tool: string, owner: string) => boolean;
+type CatalogTool = NonNullable<PluginCatalogEntry["tools"]>[number];
 
 /**
- * Returns the first enabled OpenClaw plugin selection whose every tool the Configuration's
- * effective deny list blocks: top-level `tools.deny` together with the `tools.deny` of the
- * roster entry the Gateway serves. OpenClaw applies each deny list before any allowlist, and
+ * Returns the first enabled OpenClaw plugin selection whose every tool the Configuration
+ * denies to an Agent the Gateway serves: top-level `tools.deny` together with that Agent's
+ * `agents.entries.<id>.tools.deny`. OpenClaw applies each deny list before any allowlist, and
  * an entry matches a tool by `*`, a `*` glob, the tool's name, its plugin's ID, or
  * `group:plugins`. Such a selection leaves the plugin nothing to offer. With a deny-all list,
  * the allowlist entry the translator adds for the plugin leaves no callable tool, so every
@@ -31,9 +31,10 @@ type Denied = (tool: string, owner: string) => boolean;
  * The pinned OpenClaw Gateway resolves an Agent's tool policy from its own entry's `tools`
  * only (resolveAgentConfig), never merged with `agents.defaults`, whose schema has no `tools`;
  * Configuration saves refuse `agents.list`. With no roster, or an empty one, the implicit main
- * Agent has no entry policy. With one entry, every session runs as that entry. With more than
- * one (agents.ownership "explicit"), each session names its Agent, so no single entry is
- * served and only `tools.deny` is checked.
+ * Agent has no entry policy. With one entry, every session runs as that entry, so its list
+ * counts like `tools.deny`. With several (agents.ownership "explicit"), each session names its
+ * Agent: denying a plugin to some of them is a valid setup, but an entry whose list denies
+ * every tool (`*`) fails every turn of its sessions once a plugin is selected.
  */
 export function deniedOpenClawSelection(
   catalog: readonly PluginCatalogEntry[],
@@ -41,10 +42,15 @@ export function deniedOpenClawSelection(
   configuration: Readonly<OpenClawConfigurationDocument>,
 ): DeniedOpenClawSelection | undefined {
   const document = asRecord(configuration);
-  const globalDenied = denyMatcher(asRecord(document?.tools)?.deny);
-  const served = servedEntry(document?.agents);
-  const entryDenied = denyMatcher(asRecord(asRecord(served?.[1])?.tools)?.deny);
-  if (globalDenied === undefined && entryDenied === undefined) {
+  const globalPatterns = denyPatterns(asRecord(document?.tools)?.deny);
+  const roster = Object.entries(asRecord(asRecord(document?.agents)?.entries) ?? {}).map(
+    ([key, entry]) => ({ key, patterns: denyPatterns(asRecord(asRecord(entry)?.tools)?.deny) }),
+  );
+  const entries =
+    roster.length === 1
+      ? roster
+      : roster.filter(({ patterns }) => patterns.some((pattern) => /^\*+$/.test(pattern)));
+  if (globalPatterns.length === 0 && entries.every(({ patterns }) => patterns.length === 0)) {
     return undefined;
   }
   for (const [pluginId, selection] of Object.entries(selections)) {
@@ -58,18 +64,20 @@ export function deniedOpenClawSelection(
     if (!Array.isArray(tools) || tools.length === 0) {
       continue;
     }
-    const byGlobal = (tool: (typeof tools)[number]) =>
-      globalDenied?.(tool.id, tool.ownerId) === true;
-    const byEntry = (tool: (typeof tools)[number]) => entryDenied?.(tool.id, tool.ownerId) === true;
-    // Name the one list that blocks every tool on its own, else both.
-    if (tools.every(byGlobal)) {
+    const byGlobal = (tool: CatalogTool) => denies(globalPatterns, tool);
+    const globalBlocks = tools.every(byGlobal);
+    // Name each list that blocks every tool on its own, or both when only together they do.
+    for (const { key, patterns } of entries) {
+      const byEntry = (tool: CatalogTool) => denies(patterns, tool);
+      if (tools.every(byEntry)) {
+        return { pluginId, global: globalBlocks, entry: key };
+      }
+      if (!globalBlocks && tools.every((tool) => byGlobal(tool) || byEntry(tool))) {
+        return { pluginId, global: true, entry: key };
+      }
+    }
+    if (globalBlocks) {
       return { pluginId, global: true };
-    }
-    if (tools.every(byEntry)) {
-      return { pluginId, global: false, entry: served![0] };
-    }
-    if (tools.every((tool) => byGlobal(tool) || byEntry(tool))) {
-      return { pluginId, global: true, entry: served![0] };
     }
   }
   return undefined;
@@ -93,32 +101,24 @@ export function openClawToolDenialMessage({
   );
 }
 
-// The sole `agents.entries` entry, or undefined when the roster has none or several.
-function servedEntry(agents: unknown): readonly [string, unknown] | undefined {
-  const entries = Object.entries(asRecord(asRecord(agents)?.entries) ?? {});
-  return entries.length === 1 ? entries[0] : undefined;
+function denyPatterns(deny: unknown): readonly string[] {
+  return Array.isArray(deny)
+    ? deny
+        .filter((entry): entry is string => typeof entry === "string")
+        .map((entry) => entry.trim().toLowerCase())
+        .filter((entry) => entry.length > 0)
+    : [];
 }
 
-function denyMatcher(deny: unknown): Denied | undefined {
-  if (!Array.isArray(deny)) {
-    return undefined;
-  }
-  const patterns = deny
-    .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter((entry) => entry.length > 0);
-  if (patterns.length === 0) {
-    return undefined;
-  }
-  return (tool, owner) =>
-    patterns.some(
-      (pattern) =>
-        pattern === tool ||
-        pattern === owner ||
-        pattern === "group:plugins" ||
-        (pattern.includes("*") &&
-          new RegExp(
-            `^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`,
-          ).test(tool)),
-    );
+function denies(patterns: readonly string[], tool: CatalogTool): boolean {
+  return patterns.some(
+    (pattern) =>
+      pattern === tool.id ||
+      pattern === tool.ownerId ||
+      pattern === "group:plugins" ||
+      (pattern.includes("*") &&
+        new RegExp(`^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`).test(
+          tool.id,
+        )),
+  );
 }
