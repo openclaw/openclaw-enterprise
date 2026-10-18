@@ -1396,9 +1396,16 @@ async function loadPage({
       installationAdmin = observability.admin;
       observabilityOwner = observability.settled ? owner : null;
     }
+    // The default pick prefers a ready Namespace and never a deleting one while another remains
+    // (finding 1895); with only deleting Namespaces it shows the first, whose status the Agents
+    // page then names.
     namespaceId =
       current.namespace ??
-      (namespaces.find((item) => item.status === "ready") ?? namespaces[0])?.id ??
+      (
+        namespaces.find((item) => item.status === "ready") ??
+        namespaces.find((item) => item.status !== "deleting") ??
+        namespaces[0]
+      )?.id ??
       null;
     navigation.restoreHistory();
     history.replaceState(
@@ -1708,6 +1715,9 @@ async function loadPage({
       suspendDrafts: () => drafts.suspend(),
       view: shell.view,
       namespaceId,
+      // The selected Namespace's status: one that is not ready refuses Agent creation, so the
+      // Agents list and Create Agent say so up front (finding 1895).
+      namespaceStatus: namespaces.find((item) => item.id === namespaceId)?.status,
       request: viewRequest,
       mutationVersion: () => viewState.mutations,
       navigate,
@@ -1897,6 +1907,8 @@ async function loadPage({
       JSON.stringify(items),
     );
     if (current.feature === "agents") {
+      // The list shows the selected Namespace's status, so a return rebuilds it when that changed.
+      viewState.reads.set("/namespaces", readSignature(namespaces));
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });
       showChatLinkFailure(shell.view, chatLinkFailure);
     } else {

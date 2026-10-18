@@ -13,6 +13,10 @@ export const CreateRestrictedEmpty = {
   ...story("agentsCreateRestrictedEmpty"),
   name: "Empty, Create Agent unavailable",
 };
+export const NamespaceProvisioning = {
+  ...story("agentsNamespaceProvisioning"),
+  name: "Empty, Namespace still provisioning",
+};
 export const AgentsDenied = { ...story("agentsDenied"), name: "Access denied" };
 export const AgentsError = { ...story("agentsError"), name: "Read failure" };
 export const AgentsInterruptedResponse = {

@@ -886,6 +886,14 @@ export const scenarios = {
     description:
       "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
   },
+  agentsNamespaceProvisioning: {
+    group: "Pages/Agents",
+    name: "Empty, Namespace still provisioning",
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    description:
+      "A first run's Namespace is still provisioning: the page names its status and keeps Create Agent unavailable instead of inviting creation.",
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
@@ -1014,6 +1022,14 @@ export const scenarios = {
     name: "Choose a starting point",
     path: create,
     description: "Choose a Preset or start with standard defaults.",
+  },
+  createNamespaceProvisioning: {
+    group: "Pages/Create Agent",
+    name: "Namespace still provisioning",
+    path: create,
+    namespaceStatus: "provisioning",
+    description:
+      "Create Agent in a Namespace that is still provisioning repeats its status instead of offering a start that would be refused.",
   },
   createForm: {
     group: "Pages/Create Agent",

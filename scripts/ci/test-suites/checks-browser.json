@@ -53,6 +53,9 @@
     },
     {
       "path": "tests/browser/console-agent-overview.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-namespace-not-ready.test.mjs"
     }
   ]
 }

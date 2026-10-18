@@ -14,6 +14,7 @@ import {
   GENERIC_CONFLICT,
   link,
   message,
+  namespaceNotReady,
   namespacePath,
   preAdmissionRefusal,
   rejectionMessage,
@@ -361,20 +362,21 @@ export function renderCreateAgent(context, draft) {
   }
   context.setDiscardOnExit(false);
   context.setDraftCapture(null);
-  // The permission answer refuses up front what the API would refuse at submit (finding 1521).
-  // Gating only: an unknown answer keeps the start page, and the API still decides.
-  if (context.permissions?.agents?.create === false) {
+  // The permission answer refuses up front what the API would refuse at submit (finding 1521),
+  // and so does a Namespace that is not ready, whose status shows here instead of the start page
+  // (finding 1895). Gating only: an unknown answer keeps the start page, and the API still decides.
+  const unavailable =
+    context.permissions?.agents?.create === false
+      ? "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace."
+      : namespaceNotReady(context.namespaceStatus);
+  if (unavailable) {
     context.view.replaceChildren(
       link("← Agents", "agents", context),
       element(
         "section",
         { className: "state-panel" },
         element("h2", {}, "Creating Agents is not available"),
-        element(
-          "p",
-          { role: "status" },
-          "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace.",
-        ),
+        element("p", { role: "status" }, unavailable),
       ),
     );
     // Start over re-enters here from the form; keep focus on the page, not the document.

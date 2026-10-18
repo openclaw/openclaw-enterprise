@@ -22,6 +22,15 @@ export function link(label, target, context) {
 export const NAMESPACE_NOT_READY_MESSAGE =
   "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
 
+// Shown where Agent creation starts when the selected Namespace is not ready: its status, then
+// why nothing can be created yet (finding 1895). An unknown status keeps creation, and the API
+// still decides.
+export function namespaceNotReady(status) {
+  return typeof status === "string" && status !== "" && status !== "ready"
+    ? `Namespace status: ${status[0].toUpperCase()}${status.slice(1)}. ${NAMESPACE_NOT_READY_MESSAGE}`
+    : null;
+}
+
 // The API's catch-all answers: a caller's own denial and an untyped conflict. They name nothing
 // the caller can act on, so views keep their own guidance instead of showing them.
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
@@ -239,12 +248,16 @@ export function renderAgentList(context) {
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.agents?.create === false;
+  // A Namespace that is not ready refuses creation, so the page names its status instead of
+  // inviting it, and the first sign is never a refused Secret or submit (finding 1895).
+  const notReady = namespaceNotReady(context.namespaceStatus);
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     className: "primary",
   });
-  create.disabled = createDenied;
+  create.disabled = createDenied || notReady !== null;
   view.replaceChildren(
     element("div", { className: "agent-toolbar" }, search, create),
+    ...(notReady ? [element("p", { className: "muted", role: "status" }, notReady)] : []),
     ...(createDenied
       ? [
           element(
@@ -379,7 +392,9 @@ export function renderAgentList(context) {
                 ? // Under the note above: say what the reader can expect, not invite creating
                   // (finding 1521).
                   "Agents in this Namespace that are shared with you appear here."
-                : "Create an Agent in this Namespace using an editable Configuration template.",
+                : notReady
+                  ? "You can create Agents here once this Namespace is ready."
+                  : "Create an Agent in this Namespace using an editable Configuration template.",
           ),
         ),
       );

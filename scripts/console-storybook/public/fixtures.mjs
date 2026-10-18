@@ -228,7 +228,7 @@ export function installFixture(scenario, evidence) {
         {
           id: namespaceId,
           name: scenario.namespaceName ?? "Engineering",
-          status: "ready",
+          status: scenario.namespaceStatus ?? "ready",
           createdAt,
         },
         {
