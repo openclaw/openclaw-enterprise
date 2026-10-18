@@ -923,7 +923,7 @@ select:not([multiple])[size="1"] {
 }
 .deployment-recovery {
   background: var(--color-warning-subtle);
-  border-color: var(--color-border);
+  border-color: var(--color-border-strong);
 }
 .recovery-label {
   color: var(--color-warning);
