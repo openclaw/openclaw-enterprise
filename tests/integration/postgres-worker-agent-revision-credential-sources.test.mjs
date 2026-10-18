@@ -749,26 +749,42 @@ test(
   },
 );
 
-test(
-  "a withdrawal Compute refuses as misconfigured fails once and queues no later series",
-  requiresPostgres,
-  async (context) => {
+for (const { name, fixtureName, createRefusal, expectedReason } of [
+  {
+    name: "a withdrawal Compute refuses as misconfigured fails once and queues no later series",
+    fixtureName: "withdraw-refused",
+    // Simulate a SandboxDriver that cannot name the revision's Sandbox.
+    createRefusal: () =>
+      new CredentialWithdrawalRefusedError(
+        "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+        "Credential withdrawal requires a SandboxDriver that identifies the revision's Harness.",
+      ),
+    expectedReason: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+  },
+  {
+    name: "a withdrawal the Sandbox gateway refuses to confirm fails once with SANDBOX_GATEWAY_UNAUTHORIZED",
+    fixtureName: "withdraw-unauthorized",
+    // Simulate OpenShell refusing the controller identity, making a missing Sandbox
+    // indistinguishable from a hidden one (finding 1676).
+    createRefusal: () =>
+      new SandboxGatewayUnauthorizedError(
+        "OpenShell refused the controller gateway identity in Workspace oce-test, so the credential of Sandbox sb-test cannot be confirmed withdrawn.",
+      ),
+    expectedReason: "SANDBOX_GATEWAY_UNAUTHORIZED",
+  },
+]) {
+  test(name, requiresPostgres, async (context) => {
     const fixture = await setup(context, { maxAttempts: 2 });
     const { owner, candidate: active } = await admitInitialRevisionWithHarnessSource(
       fixture,
-      "withdraw-refused",
+      fixtureName,
     );
     let calls = 0;
     await startWithGateway(fixture, {
       ...fixture.compute,
-      // What the Kubernetes Compute Driver throws for a SandboxDriver that cannot name the
-      // revision's Sandbox.
       async withdrawCredentialSource() {
         calls += 1;
-        throw new CredentialWithdrawalRefusedError(
-          "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
-          "Credential withdrawal requires a SandboxDriver that identifies the revision's Harness.",
-        );
+        throw createRefusal();
       },
     });
     await fixture.work(active, "succeeded");
@@ -780,76 +796,24 @@ test(
     );
     const [first] = await withdrawalAttempts(fixture, active);
 
-    // One attempt, no retry series: retrying cannot change a refusal.
+    // A terminal refusal cannot be fixed by retrying, and withdrawal remains unconfirmed.
     const failed = await fixture.work(first, "failed_permanent");
     assert.equal(failed.attempt_count, 1);
     assert.equal(calls, 1);
-    assert.equal(
-      (await fixture.workResult(first)).rows[0].reason_code,
-      "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
-    );
+    assert.equal((await fixture.workResult(first)).rows[0].reason_code, expectedReason);
     assert.deepEqual(
       (await withdrawalAttempts(fixture, active)).map(({ state }) => state),
       ["failed_permanent"],
     );
     const read = await withdrawal.read(fixture.actor.id);
     assert.equal(read.state, "pending");
-    assert.equal(read.lastReason, "CREDENTIAL_WITHDRAWAL_MISCONFIGURED");
+    assert.equal(read.lastReason, expectedReason);
     assert.equal(read.withdrawalInProgress, false);
     assert.deepEqual(await withdrawalAudit(fixture, "outcome", "reason_code"), [
-      { outcome: "failure", reason_code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED" },
+      { outcome: "failure", reason_code: expectedReason },
     ]);
-  },
-);
-
-test(
-  "a withdrawal the Sandbox gateway refuses to confirm fails once with SANDBOX_GATEWAY_UNAUTHORIZED",
-  requiresPostgres,
-  async (context) => {
-    const fixture = await setup(context, { maxAttempts: 2 });
-    const { owner, candidate: active } = await admitInitialRevisionWithHarnessSource(
-      fixture,
-      "withdraw-unauthorized",
-    );
-    let calls = 0;
-    await startWithGateway(fixture, {
-      ...fixture.compute,
-      // What the Credential Gateway throws when OpenShell refuses the controller's identity
-      // in the Workspace, so a missing Sandbox cannot be told from a hidden one (finding 1676).
-      async withdrawCredentialSource() {
-        calls += 1;
-        throw new SandboxGatewayUnauthorizedError(
-          "OpenShell refused the controller gateway identity in Workspace oce-test, so the credential of Sandbox sb-test cannot be confirmed withdrawn.",
-        );
-      },
-    });
-    await fixture.work(active, "succeeded");
-    const withdrawal = await requestWithdrawal(
-      fixture,
-      owner,
-      owner.harnessAuth.sourceId,
-      fixture.actor.id,
-    );
-    const [first] = await withdrawalAttempts(fixture, active);
-
-    // One attempt with the code as its reason: retrying cannot restore the identity's role,
-    // and nothing is recorded revoked.
-    const failed = await fixture.work(first, "failed_permanent");
-    assert.equal(failed.attempt_count, 1);
-    assert.equal(calls, 1);
-    assert.equal(
-      (await fixture.workResult(first)).rows[0].reason_code,
-      "SANDBOX_GATEWAY_UNAUTHORIZED",
-    );
-    const read = await withdrawal.read(fixture.actor.id);
-    assert.equal(read.state, "pending");
-    assert.equal(read.lastReason, "SANDBOX_GATEWAY_UNAUTHORIZED");
-    assert.equal(read.withdrawalInProgress, false);
-    assert.deepEqual(await withdrawalAudit(fixture, "outcome", "reason_code"), [
-      { outcome: "failure", reason_code: "SANDBOX_GATEWAY_UNAUTHORIZED" },
-    ]);
-  },
-);
+  });
+}
 
 // Finding 1694: OpenShell also answers UNAUTHENTICATED while the controller's token file or
 // the gateway's signing keys are between refreshes. That refusal keeps its reason but retries
