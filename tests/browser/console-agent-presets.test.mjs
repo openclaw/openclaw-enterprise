@@ -2392,14 +2392,12 @@ test("a default starter creation form survives every exit but a confirmed Cancel
   const savedAgent = await fixture.createAgent(namespace.id, "Saved Agent");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  // Answers the next browser dialog and reports its kind and text.
-  const answerDialog = (accept) =>
-    new Promise((resolve) => {
-      page.once("dialog", async (dialog) => {
-        resolve(`${dialog.type()}: ${dialog.message()}`);
-        await (accept ? dialog.accept() : dialog.dismiss());
-      });
-    });
+  const dialogs = [];
+  let acceptDialogs = false;
+  page.on("dialog", async (dialog) => {
+    dialogs.push(`${dialog.type()}: ${dialog.message()}`);
+    await (acceptDialogs ? dialog.accept() : dialog.dismiss());
+  });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
 
   for (const exit of ["breadcrumb", "sidebar", "history", "namespace"]) {
@@ -2444,14 +2442,14 @@ test("a default starter creation form survives every exit but a confirmed Cancel
     );
 
     // Cancel is the explicit discard, and it asks first.
-    let asked = answerDialog(false);
+    acceptDialogs = false;
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
-    assert.equal(await asked, "confirm: Discard this draft?", exit);
+    assert.deepEqual(dialogs.splice(0), ["confirm: Discard this draft?"], exit);
     assert.equal(await name.inputValue(), `Kept ${exit}`, exit);
-    asked = answerDialog(true);
+    acceptDialogs = true;
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
-    assert.equal(await asked, "confirm: Discard this draft?", exit);
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    assert.deepEqual(dialogs.splice(0), ["confirm: Discard this draft?"], exit);
     await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
     await page.getByLabel("Preset template").waitFor();
     assert.equal(await name.count(), 0, exit);
@@ -2459,13 +2457,12 @@ test("a default starter creation form survives every exit but a confirmed Cancel
   }
 
   // An untouched form has nothing to lose: Cancel leaves without asking.
-  page.once("dialog", (dialog) => assert.fail(`Unexpected dialog: ${dialog.message()}`));
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
-  page.removeAllListeners("dialog");
+  assert.deepEqual(dialogs, []);
 
   // Exiting an unsaved form must not mutate or delete an Agent already saved by the user.
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -2602,15 +2599,16 @@ test("invalid Preset application retains chooser edits and the applied form for 
       origin,
     );
     // The variables typed in the chooser are the form's changes: Cancel asks before discarding.
-    const asked = new Promise((resolve) => {
-      page.once("dialog", async (dialog) => {
-        resolve(dialog.message());
-        await dialog.accept();
-      });
-    });
+    const asked = [];
+    const answer = async (dialog) => {
+      asked.push(dialog.message());
+      await dialog.accept();
+    };
+    page.once("dialog", answer);
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
-    assert.equal(await asked, "Discard this draft?", origin);
     await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+    page.off("dialog", answer);
+    assert.deepEqual(asked, ["Discard this draft?"], origin);
   }
 });
 
@@ -2736,14 +2734,15 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   // The browser asks first while the draft holds changes.
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Reload-only draft");
-  const leaving = new Promise((resolve) => {
-    page.once("dialog", async (dialog) => {
-      resolve(dialog.type());
-      await dialog.accept();
-    });
-  });
+  const leaving = [];
+  const answer = async (dialog) => {
+    leaving.push(dialog.type());
+    await dialog.accept();
+  };
+  page.once("dialog", answer);
   await page.reload();
-  assert.equal(await leaving, "beforeunload");
+  page.off("dialog", answer);
+  assert.deepEqual(leaving, ["beforeunload"]);
   await page.getByLabel("Preset template").waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
 
@@ -2778,11 +2777,11 @@ test("an empty Namespace can create an Agent without a Preset", async (t) => {
   );
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
-  await page.getByLabel("Agent name", { exact: true }).fill("Abandoned draft");
+  await page.getByLabel("Agent name", { exact: true }).fill("Kept draft");
+  // A form started without a Preset is kept across navigation, as a Preset form is.
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Start without Preset" }).click();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Kept draft");
   await page.getByLabel("Agent name", { exact: true }).fill("Agent without Preset");
   await enterManualModel(page, "no-preset-model-key", "gpt-4.1");
   const saved = page.waitForResponse(
@@ -2955,7 +2954,8 @@ test("denied Preset reads do not automatically start an Agent form", async (t) =
   await page.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
   // A later list filters the now-unreadable Preset; the independent action remains available.
-  await page.getByRole("link", { name: "← Agents" }).click();
+  // Cancel discards the untouched form without asking.
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByText(/^No Presets available to you in this Namespace\./).waitFor();
   await page.getByRole("button", { name: "Start without Preset" }).click();

@@ -5596,13 +5596,14 @@ export const scenarios = {
   },
   createExitFlow: {
     group: "Flows",
-    name: "Restart Agent creation",
+    name: "Keep an Agent draft",
     path: create,
-    description: "Leave a default starter Agent form and return to the initial creation choices.",
+    description:
+      "Leave a default starter Agent form and return to it, then discard it with Cancel.",
     steps: [
       "Choose Start with default Preset and enter an Agent name.",
-      "Select Cancel or the Agents link, then choose Create Agent again.",
-      "Confirm the initial choices are shown. Start with default Preset again and check that the name is empty.",
+      "Select the Agents link, then choose Create Agent again: the form returns with the name.",
+      "Select Cancel and confirm Discard this draft. Choose Create Agent: the initial choices are shown.",
     ],
     gap: "The fixture demonstrates simulated console state; it does not verify a live backend or deployment.",
   },

@@ -151,8 +151,8 @@ path records mutations and denials without template or variable contents.
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
 lists readable Preset summaries, requiring Namespace read, then reads the selection
 once. **Start with default Preset** reads the listed `default-codex` resource.
-Variable-free templates apply immediately; customized variables keep the chooser
-and its shortcut origin. Missing defaults or failed reads do not open a hardcoded
+Variable-free templates apply immediately; customized variables keep the chooser.
+Missing defaults or failed reads do not open a hardcoded
 starter; other readable Presets remain selectable. **Start without Preset** opens
 the form without a Preset read, not as a fallback for a denied selection. Normal
 creation authorization applies.
@@ -187,10 +187,10 @@ and uses ordinary creation recovery.
 
 Before resetting views, `loadPage` captures unsaved JSON, model controls, workspace
 files, repositories and staged Secret references per user and Namespace. Explicit
-Preset forms return from this copy with fresh capability and repository discovery;
-default-shortcut and bare forms discard on exit. Flushing removes creation and
-channel snapshots and the retained view on exit or Namespace change; re-entry
-opens the chooser and preserves saved resources. Invalid JSON stays text; passwords
+Preset, default-shortcut and bare forms all return from this copy with fresh
+capability and repository discovery. A confirmed **Cancel** removes creation and
+channel snapshots and the retained view; re-entry opens the chooser and preserves
+saved resources. `beforeunload` asks first while any capture holds changes. Invalid JSON stays text; passwords
 and discovery results are excluded. Start over, session loss, logout, user change,
 page exit, or starting save clears captures. Partial-save recovery stays local.
 

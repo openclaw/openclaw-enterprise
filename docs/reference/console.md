@@ -99,8 +99,8 @@ or policy choices.
 Agent tabs change only their panel; Back/Forward restores the selected tab.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
 Preset variables, and Agent search survive in-document navigation as drafts
-scoped to user, Namespace, and Agent. Passwords clear; reload and sign-out
-clear drafts.
+scoped to user, Namespace, and Agent. Passwords clear; reload warns; sign-out
+clears drafts.
 
 **Cancel**, **Start over**, and **Reload** discard edits; **Refresh** retains them.
 Saving clears drafts. Concurrent changes require reload; unsaved edits block

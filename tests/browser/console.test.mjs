@@ -759,14 +759,15 @@ test("console keeps loaded route families visible while return reads refresh", a
   t.after(() => createSessionHold.release());
   await page.goBack();
   await createSessionHold.waitForRelease();
-  // The abandoned default starter form must not appear as an inert cached preview.
-  assert.equal(await page.locator("#agent-name").count(), 0);
   createSessionHold.release();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   await createSessionHold.waitForCompletion();
   await page.unroute(sessionPattern);
-  await page.getByLabel("Preset template").waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  // A default starter form is kept like any other draft and returns editable (finding 1902).
+  await page.waitForFunction(() => {
+    const name = globalThis.document.querySelector("#agent-name");
+    return name?.value === "Retained draft Agent" && !name.closest("[inert]");
+  });
+  assert.equal(await page.getByLabel("Preset template").count(), 0);
 });
 
 test("the account menu stays open and focused while the page under it finishes loading", async (t) => {
