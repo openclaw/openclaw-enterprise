@@ -518,13 +518,13 @@ test("OpenClaw Plugin Driver refuses a selection a roster entry's tools.deny blo
   });
   assert.deepEqual(deniedOpenClawSelection(catalog, pair, split(["pair_write"])), {
     pluginId: "occ-plugin:pair",
-    global: true,
-    entry: "main",
+    kind: "deny",
+    lists: [{}, { entry: "main" }],
   });
   assert.deepEqual(deniedOpenClawSelection(catalog, pair, split(["pair"])), {
     pluginId: "occ-plugin:pair",
-    global: false,
-    entry: "main",
+    kind: "deny",
+    lists: [{ entry: "main" }],
   });
   assert.equal(deniedOpenClawSelection(catalog, pair, split(["pair_read"])), undefined);
   // With several entries only a deny-all entry is refused, never a union of lists.
@@ -534,6 +534,181 @@ test("OpenClaw Plugin Driver refuses a selection a roster entry's tools.deny blo
   assert.equal(
     openClawToolDenialMessage(deniedOpenClawSelection(catalog, pair, split(["pair_write"]))),
     "Configuration settings tools.deny and agents.entries.main.tools.deny block every tool of plugin occ-plugin:pair; remove the matching deny entries or deselect the plugin.",
+  );
+});
+
+test("OpenClaw Plugin Driver refuses a selection the primary model's tools.byProvider deny lists block", () => {
+  const driver = new OCCPluginDriver();
+  const plugins = occSelection();
+  const refusal = (setting, verb = "blocks", entries = "entry") =>
+    `Configuration ${setting} ${verb} every tool of plugin occ-plugin:diffs; remove the matching deny ${entries} or deselect the plugin.`;
+  const check = (configuration) => () => driver.validateAgentConfiguration(plugins, configuration);
+  const model = (primary, rest = {}) => ({ agents: { defaults: { model: primary } }, ...rest });
+  // OpenClaw applies the byProvider policy of the running model as its own deny-wins step
+  // (finding 1855). Every Agent shares the primary model, so admission resolves it from there.
+  // The refusal names the key as written, quoted when it is not a plain ID.
+  for (const [primary, key, deny, path] of [
+    ["openai/gpt-5.1", "openai", ["*"], ".openai"],
+    [{ primary: "OpenAI/GPT-5.1" }, " OPENAI ", ["group:plugins"], '[" OPENAI "]'],
+    ["openai/gpt-5.1", "openai/gpt-5.1", ["diffs"], '["openai/gpt-5.1"]'],
+    [" openrouter:auto ", "openrouter/auto", ["dif*"], '["openrouter/auto"]'],
+  ]) {
+    assert.throws(check(model(primary, { tools: { byProvider: { [key]: { deny } } } })), {
+      name: "ConfigurationHarnessError",
+      message: refusal(`setting tools.byProvider${path}.deny`),
+    });
+  }
+  // The model key wins over the provider key, and only one of them applies.
+  driver.validateAgentConfiguration(
+    plugins,
+    model("openai/gpt-5.1", {
+      tools: { byProvider: { openai: { deny: ["*"] }, "openai/gpt-5.1": { deny: ["exec"] } } },
+    }),
+  );
+  assert.throws(
+    check(
+      model("openai/gpt-5.1", {
+        tools: { byProvider: { openai: { deny: ["exec"] }, "openai/gpt-5.1": { deny: ["*"] } } },
+      }),
+    ),
+    { message: refusal('setting tools.byProvider["openai/gpt-5.1"].deny') },
+  );
+  // Another provider's or model's policy, a fallback's, or one without a primary model never
+  // applies to the primary model's turns.
+  for (const configuration of [
+    model("openai/gpt-5.1", { tools: { byProvider: { openrouter: { deny: ["*"] } } } }),
+    model("openai/gpt-5.1", { tools: { byProvider: { "openai/gpt-5.1-mini": { deny: ["*"] } } } }),
+    model(
+      { primary: "openai/gpt-5.1", fallbacks: ["openai/gpt-5.1-mini"] },
+      { tools: { byProvider: { "openai/gpt-5.1-mini": { deny: ["*"] } } } },
+    ),
+    { tools: { byProvider: { openai: { deny: ["*"] } } } },
+    model("openai/gpt-5.1", { tools: { byProvider: { openai: { deny: ["exec", "diffs-*"] } } } }),
+  ]) {
+    driver.validateAgentConfiguration(plugins, configuration);
+  }
+  // A sole entry's byProvider list counts like its tools.deny, and an entry without its own
+  // model runs the defaults' primary.
+  const entry = (tools, entryModel) => ({
+    agents: {
+      ...(entryModel === undefined ? { defaults: { model: "openai/gpt-5.1" } } : {}),
+      entries: { main: { ...(entryModel === undefined ? {} : { model: entryModel }), tools } },
+    },
+  });
+  for (const configuration of [
+    entry({ byProvider: { openai: { deny: ["diffs"] } } }),
+    entry({ byProvider: { openai: { deny: ["*"] } } }, "openai/gpt-5.1"),
+  ]) {
+    assert.throws(check(configuration), {
+      message: refusal("setting agents.entries.main.tools.byProvider.openai.deny"),
+    });
+  }
+  // With several entries only an entry's deny-all list is refused.
+  const roster = (ops) => ({
+    defaults: { model: "openai/gpt-5.1" },
+    ownership: "explicit",
+    entries: { main: {}, ops: { tools: { byProvider: { openai: { deny: ops } } } } },
+  });
+  driver.validateAgentConfiguration(plugins, { agents: roster(["diffs"]) });
+  assert.throws(check({ agents: roster(["*"]) }), {
+    message: refusal("setting agents.entries.ops.tools.byProvider.openai.deny"),
+  });
+  // A top-level provider list applies to every Agent, whatever the roster.
+  assert.throws(
+    check({ agents: roster(["exec"]), tools: { byProvider: { openai: { deny: ["diffs"] } } } }),
+    { message: refusal("setting tools.byProvider.openai.deny") },
+  );
+  // Lists that only together block every tool of a plugin are all named.
+  const catalog = [
+    {
+      id: "occ-plugin:pair",
+      name: "Pair",
+      tools: [
+        { id: "pair_read", name: "pair_read", ownerId: "pair" },
+        { id: "pair_write", name: "pair_write", ownerId: "pair" },
+      ],
+    },
+  ];
+  const pair = { "occ-plugin:pair": { enabled: true } };
+  const together = {
+    tools: { deny: ["pair_read"], byProvider: { openai: { deny: ["exec"] } } },
+    agents: {
+      defaults: { model: "openai/gpt-5.1" },
+      entries: { main: { tools: { byProvider: { "openai/gpt-5.1": { deny: ["pair_write"] } } } } },
+    },
+  };
+  assert.deepEqual(deniedOpenClawSelection(catalog, pair, together), {
+    pluginId: "occ-plugin:pair",
+    kind: "deny",
+    lists: [{}, { entry: "main", provider: "openai/gpt-5.1" }],
+  });
+  assert.equal(
+    openClawToolDenialMessage(deniedOpenClawSelection(catalog, pair, together)),
+    'Configuration settings tools.deny and agents.entries.main.tools.byProvider["openai/gpt-5.1"].deny block every tool of plugin occ-plugin:pair; remove the matching deny entries or deselect the plugin.',
+  );
+  // When the top-level lists already block every tool together, an entry list is not named.
+  together.tools.byProvider.openai.deny = ["pair_write"];
+  together.agents.entries.main.tools.byProvider["openai/gpt-5.1"].deny = ["pair_read"];
+  assert.deepEqual(deniedOpenClawSelection(catalog, pair, together).lists, [
+    {},
+    { provider: "openai" },
+  ]);
+  // A long key is cut so the message keeps the 256-character cap.
+  const long = "k".repeat(300);
+  const message = openClawToolDenialMessage({
+    pluginId: "occ-plugin:diffs",
+    kind: "deny",
+    lists: [{}, { entry: long, provider: long }],
+  });
+  assert.equal(Array.from(message).length, 256);
+  assert.match(message, /^Configuration settings tools\.deny and agents\.entries\.k+…/);
+});
+
+test("OpenClaw Plugin Driver refuses a sole entry's tools.alsoAllow that drops the plugin grant under a tool profile", () => {
+  const driver = new OCCPluginDriver();
+  const plugins = occSelection();
+  const check = (configuration) => () => driver.validateAgentConfiguration(plugins, configuration);
+  // The translator grants the plugin through top-level tools.alsoAllow. Under a profile that
+  // lists core tools only, an entry's own alsoAllow replaces it at the profile step, so no
+  // turn sees the plugin (finding 1857).
+  const entry = (tools, top = {}) => ({ tools: top, agents: { entries: { main: { tools } } } });
+  for (const configuration of [
+    entry({ alsoAllow: ["browser"] }, { profile: "coding" }),
+    entry({ profile: "minimal", alsoAllow: [] }),
+    entry({ profile: "messaging", alsoAllow: ["exec", "diffs-*"] }, { profile: "full" }),
+  ]) {
+    assert.throws(check(configuration), {
+      name: "ConfigurationHarnessError",
+      message:
+        "Configuration setting agents.entries.main.tools.alsoAllow replaces tools.alsoAllow under a tool profile, which hides every tool of plugin occ-plugin:diffs; add the plugin to that list or deselect the plugin.",
+    });
+  }
+  for (const configuration of [
+    // The list names the plugin, its tool, plugin tools, or everything.
+    ...[["diffs"], [" Diffs "], ["group:plugins"], ["*"], ["dif*"]].map((alsoAllow) =>
+      entry({ alsoAllow }, { profile: "coding" }),
+    ),
+    // No profile, the full profile, or an unknown one adds no profile step.
+    entry({ alsoAllow: ["browser"] }),
+    entry({ alsoAllow: ["browser"] }, { profile: "full" }),
+    entry({ profile: "full", alsoAllow: ["browser"] }, { profile: "coding" }),
+    entry({ alsoAllow: ["browser"] }, { profile: "Coding" }),
+    // Without its own alsoAllow the entry keeps the top-level grant.
+    entry({ profile: "coding" }, { profile: "minimal" }),
+    // With several entries, hiding a plugin from one Agent is a valid setup.
+    {
+      tools: { profile: "coding" },
+      agents: {
+        ownership: "explicit",
+        entries: { main: { tools: { alsoAllow: ["browser"] } }, ops: {} },
+      },
+    },
+  ]) {
+    driver.validateAgentConfiguration(plugins, configuration);
+  }
+  driver.validateAgentConfiguration(
+    { "occ-plugin:diffs": { enabled: false } },
+    entry({ alsoAllow: ["browser"] }, { profile: "coding" }),
   );
 });
 

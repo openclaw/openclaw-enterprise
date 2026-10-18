@@ -3956,6 +3956,19 @@ test("the OpenClaw Plugin Driver refuses a selection whose every tool the Config
     refusedEntry.body.error.message,
     `Configuration setting agents.entries.main.tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
   );
+  // The primary model's tools.byProvider deny list is its own deny step (finding 1855).
+  const providerDenying = await createConfiguration(controller, namespace.id, {
+    agents: { defaults: { model: "openai/gpt-5.1" } },
+    tools: { byProvider: { openai: { deny: ["*"] } } },
+  });
+  const refusedProvider = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "tool-deny-agent", configurationId: providerDenying.id, plugins },
+  });
+  assert.equal(refusedProvider.status, 400, JSON.stringify(refusedProvider.body));
+  assert.equal(
+    refusedProvider.body.error.message,
+    `Configuration setting tools.byProvider.openai.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
+  );
   assert.deepEqual(
     (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,
     [],
