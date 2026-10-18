@@ -186,7 +186,16 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
     assert.notEqual(state.bottomRadius, "0px 0px", `${name} is not a sheet at 1440`);
   }
   for (const [name, state] of desktop) {
-    assert.match(state.animation, /^dialog-\S+ 0\.2s$/, `${name} opens with --duration-base`);
+    assert.equal(state.animation, "dialog-open 0.2s", `${name} opens with --duration-base`);
+    const { box, viewport } = state;
+    const gaps = [box.left, viewport.width - box.right, box.top, viewport.height - box.bottom];
+    if (name === "slack") {
+      // The drawer floats --space-4 from the right, top and bottom edges.
+      assert.deepEqual(gaps.slice(1).map(Math.round), [16, 16, 16], "the drawer is full height");
+      assert.ok(gaps[0] > 16, "the drawer sits at the right edge");
+    } else {
+      assert.ok(Math.abs(gaps[0] - gaps[1]) <= 1, `${name} is centred`);
+    }
   }
   for (const { name } of cases) {
     const { box, viewport, chrome, bottomRadius } = seen[`${name} 390`];
@@ -202,6 +211,17 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
     assert.equal(chrome.radius, first.chrome.radius, `${name} keeps rounded top corners at 390`);
     assert.equal(bottomRadius, "0px 0px", `${name} has square bottom corners at 390`);
   }
+
+  // A breakpoint change while a dialog is open does not replay its open animation.
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await cases[2].open();
+  await openDialog(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const replayed = await page.evaluate(
+    () => globalThis.document.querySelector("dialog:modal").getAnimations({ subtree: true }).length,
+  );
+  assert.equal(replayed, 0, "resizing an open dialog to a phone does not restart its animation");
+  await page.keyboard.press("Escape");
 
   // Reduced motion turns the open animation off.
   await page.emulateMedia({ reducedMotion: "reduce" });

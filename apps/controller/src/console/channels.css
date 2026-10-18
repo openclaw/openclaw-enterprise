@@ -47,12 +47,6 @@
   gap: 1rem;
 }
 
-/* The form's grid gap spaces the Secret dialog's fields; their page margins would add to it. */
-.credential-secret-dialog .form-field,
-.credential-secret-dialog .error:empty {
-  margin: 0;
-}
-
 .channel-drawer-head {
   display: flex;
   justify-content: space-between;

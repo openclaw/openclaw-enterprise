@@ -1461,12 +1461,14 @@ select:not([multiple])[size="1"] {
   color: var(--danger);
 }
 /* Dialog pattern (UX plan C6): every modal shares this chrome, backdrop, shadow and open motion.
-   `--wide` holds a workspace (plugins), `--drawer` sits at the right edge (channels), and under
-   760px each one is a bottom sheet. */
+   `--wide` holds a workspace (plugins), `--drawer` sits at the right edge (channels), and at
+   760px and below each one is a bottom sheet. Sizes use % of the viewport box a modal dialog
+   sits in, which excludes a classic scrollbar's gutter (finding 1520); 100vw would not. */
 .dialog {
-  width: min(32rem, calc(100vw - 2 * var(--space-4)));
-  max-width: calc(100vw - 2 * var(--space-4));
-  max-height: calc(100dvh - 2 * var(--space-4));
+  --dialog-open-from: translateY(var(--space-2));
+  width: min(32rem, calc(100% - 2 * var(--space-4)));
+  max-width: calc(100% - 2 * var(--space-4));
+  max-height: calc(100% - 2 * var(--space-4));
   padding: var(--space-6);
   overflow: auto;
   overscroll-behavior: contain;
@@ -1475,46 +1477,41 @@ select:not([multiple])[size="1"] {
   box-shadow: var(--shadow-2);
 }
 .dialog--wide {
-  width: min(72rem, calc(100vw - 2 * var(--space-4)));
-  height: min(52rem, calc(100dvh - 2 * var(--space-4)));
+  width: min(72rem, calc(100% - 2 * var(--space-4)));
+  height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
 .dialog--drawer {
-  width: min(42rem, calc(100vw - 2 * var(--space-4)));
-  height: calc(100dvh - 2 * var(--space-4));
+  --dialog-open-from: translateX(var(--space-6));
+  width: min(42rem, calc(100% - 2 * var(--space-4)));
+  height: calc(100% - 2 * var(--space-4));
   margin: var(--space-4) var(--space-4) var(--space-4) auto;
 }
+/* One animation name for every variant: a breakpoint change while a dialog is open changes only
+   the starting offset, so it does not replay the animation. */
 .dialog[open] {
   animation: dialog-open var(--duration-base) var(--ease);
-}
-.dialog--drawer[open] {
-  animation-name: dialog-drawer-open;
 }
 .dialog[open]::backdrop {
   animation: dialog-backdrop-open var(--duration-base) var(--ease);
 }
 /* Cancel first (left), the confirming action last (right). */
-.dialog-actions {
+.dialog-actions,
+.dialog > .form-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: var(--space-2);
   margin-top: var(--space-5);
 }
+/* The Secret dialog's grid gap spaces its fields; their page margins would add to it. */
+.credential-secret-dialog .form-field,
+.credential-secret-dialog .error:empty {
+  margin: 0;
+}
 @keyframes dialog-open {
   from {
     opacity: 0;
-    transform: translateY(var(--space-2));
-  }
-}
-@keyframes dialog-drawer-open {
-  from {
-    opacity: 0;
-    transform: translateX(var(--space-6));
-  }
-}
-@keyframes dialog-sheet-open {
-  from {
-    transform: translateY(100%);
+    transform: var(--dialog-open-from);
   }
 }
 @keyframes dialog-backdrop-open {
@@ -1526,20 +1523,18 @@ select:not([multiple])[size="1"] {
   .dialog,
   .dialog--wide,
   .dialog--drawer {
+    --dialog-open-from: translateY(var(--space-8));
     width: 100%;
     max-width: 100%;
     height: fit-content;
-    max-height: calc(100dvh - var(--space-8));
+    max-height: calc(100% - var(--space-8));
     margin: auto 0 0;
     padding: var(--space-4);
     border-bottom: 0;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
   .dialog--wide {
-    height: calc(100dvh - var(--space-8));
-  }
-  .dialog[open] {
-    animation-name: dialog-sheet-open;
+    height: calc(100% - var(--space-8));
   }
 }
 @media (prefers-reduced-motion: reduce) {
