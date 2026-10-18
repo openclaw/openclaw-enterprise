@@ -43,6 +43,9 @@
       "path": "tests/browser/console-retained-revalidation.test.mjs"
     },
     {
+      "path": "tests/browser/console-namespace-not-ready.test.mjs"
+    },
+    {
       "path": "tests/browser/docs-compute-matrix.test.mjs"
     },
     {
@@ -53,9 +56,6 @@
     },
     {
       "path": "tests/browser/console-agent-overview.test.mjs"
-    },
-    {
-      "path": "tests/browser/console-namespace-not-ready.test.mjs"
     }
   ]
 }

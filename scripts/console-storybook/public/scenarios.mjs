@@ -1017,12 +1017,6 @@ export const scenarios = {
     path: "/console/missing",
     description: "An unknown console route offers a return to Agents.",
   },
-  createStart: {
-    group: "Pages/Create Agent",
-    name: "Choose a starting point",
-    path: create,
-    description: "Choose a Preset or start with standard defaults.",
-  },
   createNamespaceProvisioning: {
     group: "Pages/Create Agent",
     name: "Namespace still provisioning",
@@ -1030,6 +1024,12 @@ export const scenarios = {
     namespaceStatus: "provisioning",
     description:
       "Create Agent in a Namespace that is still provisioning repeats its status instead of offering a start that would be refused.",
+  },
+  createStart: {
+    group: "Pages/Create Agent",
+    name: "Choose a starting point",
+    path: create,
+    description: "Choose a Preset or start with standard defaults.",
   },
   createForm: {
     group: "Pages/Create Agent",
