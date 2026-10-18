@@ -4667,6 +4667,53 @@ test("two-cluster Compute refuses a harness routing hostname that parses as anot
   }
 });
 
+test("two-cluster Compute names the harness routing field it refuses", () => {
+  const twoCluster = twoClusterOptions();
+  const harness = (field, value) => () =>
+    createKubernetesComputeDriver({
+      ...twoCluster,
+      executionCluster: {
+        ...twoCluster.executionCluster,
+        harnessRouting: { ...twoCluster.executionCluster.harnessRouting, [field]: value },
+      },
+    });
+  // The execution plane's own check reads the harness routing as its Gateway routing, so
+  // without the harness check these refusals name a gatewayRouting setting (finding 1858).
+  for (const [field, value, message] of [
+    [
+      "gatewayName",
+      "Bad_Name",
+      "Harness routing Gateway name must be a DNS-safe Kubernetes resource name.",
+    ],
+    [
+      "gatewayName",
+      "a".repeat(64),
+      "Harness routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
+    ],
+    ["gatewayName", undefined, "Harness routing Gateway name must be explicitly configured."],
+    [
+      "gatewayNamespace",
+      "Bad_Namespace",
+      "Harness routing Gateway namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.",
+    ],
+    ["gatewayNamespace", "", "Harness routing Gateway namespace must be explicitly configured."],
+    [
+      "envoyNamespace",
+      "envoy.system",
+      "Harness routing Envoy namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.",
+    ],
+    ["envoyNamespace", undefined, "Harness routing Envoy namespace must be explicitly configured."],
+    ...[0, 65536, 443.5, "10443"].map((port) => [
+      "envoyHttpsTargetPort",
+      port,
+      "Harness routing Envoy HTTPS target port must be a valid port.",
+    ]),
+  ]) {
+    assert.throws(harness(field, value), { message }, `${field}: ${String(value)}`);
+  }
+  assert.doesNotThrow(harness("envoyHttpsTargetPort", 8443));
+});
+
 test("sandbox routing caps the domain length and requires two labels", () => {
   const label = "a".repeat(63);
   const sandboxDriver = (domain) =>
@@ -4750,7 +4797,7 @@ test("gateway routing caps the Gateway name at a label value's 63 characters", (
       }),
     {
       message:
-        "Gateway routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
+        "Harness routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
     },
   );
 });

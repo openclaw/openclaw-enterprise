@@ -1851,13 +1851,40 @@ function validateKubernetesNamespaceName(value: string, description: string): vo
 // label. A label value stops at 63 characters, so a longer name could never be applied.
 const GATEWAY_NAME_MAX_LENGTH = 63;
 
-function validateGatewayName(value: string): void {
-  validateKubernetesResourceName(value, "Gateway routing Gateway name");
+type GatewayRoutingSetting = "Gateway routing" | "Harness routing";
+
+function validateGatewayName(value: string, setting: GatewayRoutingSetting): void {
+  validateKubernetesResourceName(value, `${setting} Gateway name`);
   if (value.length > GATEWAY_NAME_MAX_LENGTH) {
     throw new ConfigurationFailure(
-      `Gateway routing Gateway name must not exceed ${GATEWAY_NAME_MAX_LENGTH} characters, because it is also a Kubernetes label value.`,
+      `${setting} Gateway name must not exceed ${GATEWAY_NAME_MAX_LENGTH} characters, because it is also a Kubernetes label value.`,
     );
   }
+}
+
+/**
+ * Checks the Gateway and Envoy fields that the top-level gatewayRouting and a two-cluster
+ * executionCluster.harnessRouting share. `setting` is the block a refusal names.
+ */
+function validateGatewayRoutingTarget(
+  routing: Partial<KubernetesGatewayRoutingOptions>,
+  setting: GatewayRoutingSetting,
+): void {
+  validateGatewayName(required(routing.gatewayName, `${setting} Gateway name`), setting);
+  validateKubernetesNamespaceName(
+    required(routing.gatewayNamespace, `${setting} Gateway namespace`),
+    `${setting} Gateway namespace`,
+  );
+  validateKubernetesNamespaceName(
+    required(routing.envoyNamespace, `${setting} Envoy namespace`),
+    `${setting} Envoy namespace`,
+  );
+  validatePort(
+    routing.envoyHttpsTargetPort ?? 10443,
+    setting === "Harness routing"
+      ? "Harness routing Envoy HTTPS target port"
+      : "Envoy HTTPS target port",
+  );
 }
 
 function validateCodexSeccompProfile(value: unknown): string {
@@ -3376,6 +3403,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         required(harnessHostname, "Harness routing hostname"),
         "Harness routing hostname",
       );
+      validateGatewayRoutingTarget(execution.harnessRouting, "Harness routing");
       const { executionCluster: _executionCluster, ...control } = options;
       const { gatewayClients: _gatewayClients, ...network } = options.network;
       KubernetesComputeDriver.validateConfiguration({
@@ -3431,16 +3459,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       validatePort(routing.endpointPort ?? 443, "Gateway routing endpoint port");
-      validateGatewayName(required(routing.gatewayName, "Gateway routing Gateway name"));
-      validateKubernetesNamespaceName(
-        required(routing.gatewayNamespace, "Gateway routing Gateway namespace"),
-        "Gateway routing Gateway namespace",
-      );
-      validateKubernetesNamespaceName(
-        required(routing.envoyNamespace, "Gateway routing Envoy namespace"),
-        "Gateway routing Envoy namespace",
-      );
-      validatePort(routing.envoyHttpsTargetPort ?? 10443, "Envoy HTTPS target port");
+      validateGatewayRoutingTarget(routing, "Gateway routing");
       if (routing.sandbox !== undefined) {
         validateSandboxDomain(required(routing.sandbox.domain, "Sandbox domain"));
         validatePort(routing.sandbox.publicPort ?? 443, "Public sandbox port");
