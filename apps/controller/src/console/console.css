@@ -1531,6 +1531,7 @@ summary:focus-visible {
     display: grid;
     grid-template-columns: subgrid;
     align-items: baseline;
+    row-gap: var(--space-1);
   }
   .agent-table td[data-label]::before {
     content: attr(data-label);
@@ -1543,13 +1544,24 @@ summary:focus-visible {
      landing read does not grow the row (finding 1488). */
   .agent-table .agent-deployment {
     grid-template-rows: auto calc(var(--text-sm) * var(--text-sm--line-height));
-    row-gap: var(--space-1);
   }
   .agent-table .agent-deployment::before {
     grid-row: span 2;
   }
   .agent-table .agent-deployment-note {
     margin-top: 0;
+  }
+}
+/* Narrow phones put each column's name above its value, so values keep the row's full width. */
+@media (max-width: 520px) {
+  .agent-table td[data-label] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-table .agent-deployment {
+    grid-template-rows: auto auto calc(var(--text-sm) * var(--text-sm--line-height));
+  }
+  .agent-table .agent-deployment::before {
+    grid-row: auto;
   }
 }
 
