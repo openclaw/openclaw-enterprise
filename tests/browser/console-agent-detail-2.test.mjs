@@ -2659,7 +2659,8 @@ async function openWorkspaceVersions(t, name, workspaceFilesAccess, count = 2) {
     versions,
     filePath: (file) => `${agentPath}/workspace/files/${file}`,
     form: (file) => page.locator("form").filter({ has: page.getByLabel(file, { exact: true }) }),
-    async makeCurrent() {
+    // keepFocus presses the button without moving focus to it, as the deployment poll reads.
+    async makeCurrent({ keepFocus = false } = {}) {
       await fixture.activateRevision(
         namespace.id,
         agent.id,
@@ -2667,10 +2668,10 @@ async function openWorkspaceVersions(t, name, workspaceFilesAccess, count = 2) {
         versions[current].id,
       );
       current += 1;
-      await page
+      const refresh = page
         .locator(".deployment-status")
-        .getByRole("button", { name: "Refresh deployment" })
-        .click();
+        .getByRole("button", { name: "Refresh deployment" });
+      await (keepFocus ? refresh.evaluate((button) => button.click()) : refresh.click());
     },
   };
 }
@@ -2910,6 +2911,65 @@ test("a Workspace reread answered after a Reload keeps the Reload's answer", asy
   await waitForSettledFetches(page, filePath("SOUL.md"), 3);
   assert.equal(await editor.inputValue(), before);
   assert.equal(await workspaceStatus(form("SOUL.md")), "SOUL.md loaded.");
+});
+
+// A reader who clicked into a file without editing keeps caret, selection and scroll when the
+// file is reread with different contents; assigning the new value alone moved the caret to the
+// end, where the next key landed and the editor jumped (finding 1889).
+test("a Workspace reread keeps the caret and scroll of a focused, unedited editor", async (t) => {
+  const content = (revision) =>
+    `# SOUL.md served by ${revision}\n` +
+    Array.from({ length: 60 }, (_, line) => `line ${line} of SOUL.md for ${revision}\n`).join("");
+  const { page, filePath, form, makeCurrent, versions } = await openWorkspaceVersions(
+    t,
+    "Workspace focused reread",
+    {
+      async read({ revision, filename }) {
+        const text = filename === "SOUL.md" ? content(revision.id) : `# ${filename}\n`;
+        return { status: "ok", file: { name: filename, content: text } };
+      },
+      async write() {
+        throw new Error("no Workspace file may be written");
+      },
+    },
+  );
+  const soul = page.getByLabel("SOUL.md", { exact: true });
+  const before = content(versions[0].id);
+  const after = content(versions[1].id);
+  const start = before.indexOf("line 30 ");
+  assert.equal(after.indexOf("line 30 "), start);
+  await waitForInputValue(soul, before);
+  // The reader clicks into line 30 and selects a word; the editor scrolls to show it.
+  await soul.evaluate((node, offset) => {
+    node.focus();
+    node.scrollTop = node.scrollHeight;
+    node.setSelectionRange(offset, offset + 4, "backward");
+    node.scrollTop = node.scrollHeight / 2 - node.clientHeight / 2;
+  }, start);
+  const editorState = () =>
+    soul.evaluate((node) => ({
+      focused: node.ownerDocument.activeElement === node,
+      selection: [node.selectionStart, node.selectionEnd, node.selectionDirection],
+      scrollTop: node.scrollTop,
+    }));
+  const shown = await editorState();
+  assert.ok(shown.scrollTop > 0, "SOUL.md must scroll for this test");
+  assert.deepEqual(shown.selection, [start, start + 4, "backward"]);
+
+  // The next version serves different contents; the Agent read that rereads the file is started
+  // without moving focus, as the deployment poll does.
+  await makeCurrent({ keepFocus: true });
+  await waitForInputValue(soul, after);
+  await form("SOUL.md")
+    .getByText("SOUL.md reloaded with its current contents.", { exact: true })
+    .waitFor();
+  await waitForSettledFetches(page, filePath("SOUL.md"), 2);
+  assert.deepEqual(await editorState(), { ...shown, focused: true });
+
+  // The next key replaces the selection where the reader left it, and the editor stays put.
+  await page.keyboard.type("Q");
+  assert.equal(await soul.inputValue(), `${after.slice(0, start)}Q${after.slice(start + 4)}`);
+  assert.equal((await editorState()).scrollTop, shown.scrollTop);
 });
 
 test("a Workspace version change during a Reload or Save rereads the file once it settles", async (t) => {

@@ -1,4 +1,4 @@
-import { element, button, dismissOnBackdrop } from "../dom.mjs";
+import { element, button, dismissOnBackdrop, setText } from "../dom.mjs";
 
 const approvalOptions = [
   ["provider_default", "Provider default"],
@@ -540,19 +540,26 @@ export function createPluginFields({
     const focusedHeading = document.activeElement?.matches(".plugin-detail h3");
     const values = selections();
     const catalogLoading = !configuredOnly && catalog?.status === "loading";
-    policyStatus.textContent = capabilities
-      ? ""
-      : "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.";
+    // Live regions are written only when their text changes, so a redraw (tool details arriving)
+    // does not make screen readers announce the same words again (finding 1890).
+    setText(
+      policyStatus,
+      capabilities
+        ? ""
+        : "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.",
+    );
     const defaultReviewers = reviewerOptions.filter(([mode]) =>
       capabilities?.toolDefaults.reviewer?.includes(mode),
     );
     const toolReviewers = reviewerOptions.filter(([mode]) =>
       capabilities?.tools.reviewer?.includes(mode),
     );
-    feedback.textContent =
+    setText(
+      feedback,
       values === null
         ? "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept."
-        : "";
+        : "",
+    );
     if (values === null) {
       json.open = true;
     }
@@ -579,18 +586,16 @@ export function createPluginFields({
     renderedTab = tabState();
     renderedPlugin = renderedTab.activeId;
     const open = renderedTab.expanded;
-    status.textContent =
+    let statusText =
       catalog?.message ??
       "Enter a service account token with the Codex harness to discover plugins. Existing selections remain in JSON.";
     status.classList.toggle("plugin-loading", catalogLoading);
     if (catalogLoading) {
-      status.textContent = tabs[0].query.trim()
-        ? "Searching plugins…"
-        : "Loading available plugins…";
+      statusText = tabs[0].query.trim() ? "Searching plugins…" : "Loading available plugins…";
     } else if (catalog?.status === "error") {
-      status.textContent = catalog.message;
+      statusText = catalog.message;
     } else if (catalog?.status === "ready") {
-      status.textContent = `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
+      statusText = `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
     }
     loadPlugins.textContent = catalog?.status === "loading" ? "Loading plugins…" : "Load plugins";
     loadPlugins.disabled = disabled || !catalog?.canLoad || catalog?.status === "loading";
@@ -614,8 +619,9 @@ export function createPluginFields({
     searchLabel.textContent = configuredOnly ? "Filter configured plugins" : "Search plugins";
     search.placeholder = searchLabel.textContent;
     if (configuredOnly) {
-      status.textContent = `${count} configured plugin${count === 1 ? "" : "s"}`;
+      statusText = `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
+    setText(status, statusText);
     workspace.dataset.showDetails = String(tabState().activeId !== null);
     renderPluginList(values, entries, catalogLoading);
     detail.replaceChildren(

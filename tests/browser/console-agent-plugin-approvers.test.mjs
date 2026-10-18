@@ -79,6 +79,77 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
   }
 });
 
+// Each redraw (tool details arriving, for one) used to rewrite the dialog's status lines with the
+// same words, so screen readers could announce "Page 1 · 2 plugins" again (finding 1890). Live
+// regions change only when their text does.
+test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console");
+  await page.evaluate(async () => {
+    const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
+    const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
+    const beta = { id: "beta", name: "Beta", tools: [] };
+    const catalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
+    const input = globalThis.document.createElement("textarea");
+    input.id = "plugin-live-selections";
+    input.value = "{}";
+    const fields = createPluginFields({
+      input,
+      catalog,
+      async onLoadTools() {
+        fields.setCatalog({ ...catalog, entries: [{ ...alpha, tools: [] }, beta] });
+      },
+    });
+    // Shows the second catalog page with the given Plugin selections JSON.
+    globalThis.showPluginPage2 = (selections = "{}") => {
+      input.value = selections;
+      fields.setCatalog({ ...catalog, pageNumber: 2, entries: [{ ...alpha, tools: [] }, beta] });
+    };
+    globalThis.document.body.append(fields.section);
+  });
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await dialog.getByText("Page 1 · 2 plugins", { exact: true }).waitFor();
+  // Every text change inside the dialog's live regions, as region text after the change.
+  await dialog.evaluate((node) => {
+    globalThis.liveWrites = [];
+    const regions = [...node.querySelectorAll('[role="status"], [role="alert"], [aria-live]')];
+    const observer = new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+        globalThis.liveWrites.push(target.textContent);
+      }
+    });
+    for (const region of regions) {
+      observer.observe(region, { childList: true, characterData: true, subtree: true });
+    }
+    globalThis.liveRegions = regions.map((region) => region.textContent);
+  });
+  const liveWrites = () => page.evaluate(() => globalThis.liveWrites.splice(0));
+  assert.ok(
+    (await page.evaluate(() => globalThis.liveRegions)).includes(
+      "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.",
+    ),
+  );
+
+  // Opening Alpha loads its tools; the dialog redraws twice with the same status lines.
+  await dialog.getByRole("button", { name: "Alpha", exact: true }).click();
+  await dialog.getByText("No tools listed for this plugin.").waitFor();
+  assert.deepEqual(await liveWrites(), []);
+  // A real change is written once, and a redraw after it writes nothing.
+  await page.evaluate(() => globalThis.showPluginPage2());
+  await dialog.getByText("Page 2 · 2 plugins", { exact: true }).waitFor();
+  assert.deepEqual(await liveWrites(), ["Page 2 · 2 plugins"]);
+  const invalid = "Fix Plugin selections JSON to use the controls.";
+  await page.evaluate(() => globalThis.showPluginPage2("["));
+  await dialog.getByText(invalid, { exact: false }).waitFor();
+  assert.equal((await liveWrites()).filter((text) => text.startsWith(invalid)).length, 1);
+  await page.evaluate(() => globalThis.showPluginPage2("["));
+  assert.deepEqual(await liveWrites(), []);
+});
+
 test("Create Agent searches approvers with a search-only Slack Secret", async (t) => {
   const preset = JSON.parse(
     await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
