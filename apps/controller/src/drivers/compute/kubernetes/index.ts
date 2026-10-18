@@ -3364,6 +3364,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "Two-cluster execution requires runtime storage and an explicit CP routing hostname.",
         );
       }
+      // Checked before the execution plane's own check below, which reads the harness routing
+      // as its Gateway routing, so a refusal names the setting the operator wrote.
+      validateDnsHostname(
+        required(execution.harnessRouting?.hostname, "Harness routing hostname"),
+        "Harness routing hostname",
+      );
       const { executionCluster: _executionCluster, ...control } = options;
       const { gatewayClients: _gatewayClients, ...network } = options.network;
       KubernetesComputeDriver.validateConfiguration({
@@ -3372,10 +3378,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         gatewayRouting: execution.harnessRouting,
         network: { ...network, dns: execution.network?.dns },
       });
-      validateDnsHostname(
-        required(execution.harnessRouting?.hostname, "Harness routing hostname"),
-        "Harness routing hostname",
-      );
       for (const [description, cidrs] of [
         ["Harness endpoint CIDR", execution.network?.harnessEndpointCidrs],
         ["Gateway endpoint CIDR", execution.network?.gatewayEndpointCidrs],
