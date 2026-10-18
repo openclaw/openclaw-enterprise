@@ -192,6 +192,18 @@ func TestIDHintsKeepTheSelectedNamespace(t *testing.T) {
 	}
 }
 
+func TestIDHintsNameTheEnvironmentNamespaceWhenNoFlagIsPassed(t *testing.T) {
+	t.Setenv("OCC_NAMESPACE", testNamespaceID)
+	_, requested, err := runOCC(t, map[string]string{}, "agent", "get", "dogfood-agent")
+	want := `"dogfood-agent" is not a valid Agent ID: OCC accepts IDs that start with "agt_", not names; run "occ --namespace ` + testNamespaceID + ` agent list" to find the ID`
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want %q", err, want)
+	}
+	if len(requested) != 0 {
+		t.Errorf("expected no request, got %v", requested)
+	}
+}
+
 func TestSecretListShowsNamespaceSecrets(t *testing.T) {
 	out, _, err := runOCC(t, map[string]string{
 		"GET /namespaces/" + testNamespaceID + "/secrets": `[{"id":"sec_55555555-5555-4555-8555-555555555555","name":"model-key","namespaceId":"` + testNamespaceID + `","ref":{}}]`,
