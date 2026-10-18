@@ -273,11 +273,11 @@ reload it after the Agent is deployed again. **Cancel** closes it without a
 write. Confirming requires `operate` permission on this Agent, regardless of the
 viewed revision or tab.
 
-An accepted stop requests shutdown; it does not prove the runtime
-finished. **Refresh stop status** reads the desired state and selected revision.
-An uncertain result blocks another stop until a successful refresh. The
-overview shows **Runtime: Stop requested**. With no selected version and none
-you can read, as before a first deploy, there is no Stop card. To resume,
+An accepted stop shows **Runtime: Stop requested** in the overview; it does not
+prove the runtime finished. **Refresh stop status** reads desired state and
+selected revision. An uncertain result blocks another stop until a refresh.
+With no selected or readable version, as before a first deploy, there is no Stop
+card. To resume,
 open **Create new version** and select **Deploy new version**, which creates a new
 revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 
