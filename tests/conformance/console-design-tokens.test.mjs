@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const css = await readFile(
-  new URL("../../apps/controller/src/console/console.css", import.meta.url),
-  "utf8",
-);
-const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
+const stripComments = (text) => text.replace(/\/\*[\s\S]*?\*\//g, "");
+const read = async (name) =>
+  stripComments(
+    await readFile(new URL(`../../apps/controller/src/console/${name}`, import.meta.url), "utf8"),
+  );
+const withoutComments = await read("console.css");
+const channels = await read("channels.css");
 
 function declarations(block) {
   return new Map(
@@ -17,7 +19,8 @@ function declarations(block) {
   );
 }
 
-const rootStart = withoutComments.indexOf(":root {");
+// The top-level rule, not the indented :root inside @media blocks.
+const rootStart = withoutComments.search(/^:root \{/m);
 const root = declarations(
   withoutComments.slice(rootStart, withoutComments.indexOf("}", rootStart)),
 );
@@ -123,10 +126,12 @@ test("console :root defines every design token with the current look's value", (
   for (const [name, value] of Object.entries(tokens)) {
     assert.equal(root.get(name), value, name);
   }
-  for (const size of ["xs", "sm", "md", "base", "lg", "xl", "2xl", "display"]) {
-    assert.match(
-      root.get(`--text-${size}--line-height`) ?? "",
-      /^\d(\.\d+)?$/,
+  const lineHeights = { xs: "1.4", sm: "1.5", md: "1.5", base: "1.5", lg: "1.4", xl: "1.3" };
+  Object.assign(lineHeights, { "2xl": "1.2", display: "1.12" });
+  for (const [size, lineHeight] of Object.entries(lineHeights)) {
+    assert.equal(
+      root.get(`--text-${size}--line-height`),
+      lineHeight,
       `--text-${size}--line-height`,
     );
   }
@@ -139,13 +144,15 @@ test("older console custom properties alias the tokens instead of repeating valu
   }
 });
 
-test("every custom property console.css reads is defined", () => {
+test("every custom property console.css and channels.css read is defined", () => {
   const defined = new Set(declarations(withoutComments).keys());
   // Set at runtime on the log pane (agents/logs-view.mjs).
   defined.add("--log-time-width").add("--log-time-ems");
-  const read = new Set([...withoutComments.matchAll(/var\((--[\w-]+)/g)].map(([, name]) => name));
+  const reads = new Set(
+    [...(withoutComments + channels).matchAll(/var\((--[\w-]+)/g)].map(([, name]) => name),
+  );
   assert.deepEqual(
-    [...read].filter((name) => !defined.has(name)),
+    [...reads].filter((name) => !defined.has(name)),
     [],
   );
 });
