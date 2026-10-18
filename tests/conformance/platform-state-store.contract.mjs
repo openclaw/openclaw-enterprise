@@ -337,6 +337,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     "An AgentRevision cannot claim another service principal.",
   );
 
+  const configurationOwnershipRefusal = storeRefusal(
+    "ScopeViolationError",
+    "The Configuration kind or generation is invalid.",
+    postgresOwnershipViolation,
+  );
   for (const [description, invalidOwnership] of [
     ["missing consumer kind", { kind: undefined }],
     ["unsupported consumer kind", { kind: "gateway" }],
@@ -347,11 +352,6 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ["unsafe generation", { generation: Number.MAX_SAFE_INTEGER + 1 }],
   ]) {
     // Both persistence adapters reject ownership metadata PostgreSQL cannot safely represent.
-    const configurationOwnershipRefusal = storeRefusal(
-      "ScopeViolationError",
-      "The Configuration kind or generation is invalid.",
-      postgresOwnershipViolation,
-    );
     await assert.rejects(
       store.transact((transaction) =>
         transaction.configurations.createConfiguration({
@@ -362,7 +362,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       ),
       (error) =>
         configurationOwnershipRefusal(error) ||
-        // PostgreSQL's bigint cast refuses a fractional generation before its own check.
+        // PostgreSQL's bigint cast refuses a fractional generation first (finding 1887).
         (invalidOwnership.generation === 1.5 && error.code === "22P02"),
       description,
     );

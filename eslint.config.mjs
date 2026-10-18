@@ -43,16 +43,17 @@ export default defineConfig(
   },
   {
     // A matcher-less assert.rejects/throws passes on any error, a TypeError from a broken
-    // fixture included, so a test can report a failure as a pass (finding 1845).
+    // fixture included, so a test can report a failure as a pass (finding 1845). Lint can't
+    // tell a message variable from a matcher variable, so `assert.rejects(p, label)` still passes.
     files: ["tests/**/*.{js,mjs,cjs,ts}"],
     rules: {
       "no-restricted-syntax": [
         "error",
         {
           selector:
-            "CallExpression[callee.object.name='assert'][callee.property.name=/^(rejects|throws)$/]:matches([arguments.length<2], [arguments.1.type='TemplateLiteral'], [arguments.1.value=type(string)], [arguments.1.type='Identifier'][arguments.1.name='undefined'])",
+            "CallExpression[callee.object.name='assert'][callee.property.name=/^(rejects|throws)$/]:matches([arguments.length<2], [arguments.1.type='TemplateLiteral'], [arguments.1.value=type(string)], [arguments.1.type='Identifier'][arguments.1.name='undefined'], [arguments.1.type='UnaryExpression'][arguments.1.operator='void'], [arguments.1.type='BinaryExpression'][arguments.1.operator='+'])",
           message:
-            "Name the expected error: pass an error class, a { name, message, code } object, a RegExp or a validation function as the second argument, not nothing or only a message.",
+            'Name the expected error as the second argument: an error class, a { name, message, code } object (a RegExp value there tests that property), or a validation function; not nothing or only a message. A bare RegExp is tested against String(error), "Name: message".',
         },
       ],
     },

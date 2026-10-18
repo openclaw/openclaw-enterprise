@@ -498,7 +498,7 @@ test(
     try {
       stopped = true;
       await docker("stop", "--time", "10", executionContainerId);
-      // kubectl's own unreachable-server refusals, not a refused or failed request.
+      // kubectl could not reach the API server (not an API-level refusal such as Forbidden).
       await assert.rejects(dp.kubectl("get", "namespace", "kube-system", "--request-timeout=5s"), {
         code: 1,
         stderr: /Unable to connect to the server|The connection to the server \S+ was refused/,
