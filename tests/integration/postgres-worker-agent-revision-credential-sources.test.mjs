@@ -436,15 +436,8 @@ test(
     const { gateway, compute } = gatewayOutage(fixture);
     const calls = () => gateway.withdrawn.length;
     await startWithGateway(fixture, compute);
-    await fixture.work(active, "succeeded");
-    const withdrawal = await requestWithdrawal(
-      fixture,
-      owner,
-      owner.harnessAuth.sourceId,
-      fixture.actor.id,
-    );
-    const [first] = await withdrawalAttempts(fixture, active);
-    await fixture.work(first, "failed_permanent");
+    const { withdrawal, firstAttempt } = await startHarnessWithdrawal(fixture, owner, active);
+    await fixture.work(firstAttempt, "failed_permanent");
 
     // A scheduled retry does not run before it is due, so a gateway that stays down is not
     // called in a loop.
@@ -454,7 +447,7 @@ test(
     const delays = [30_000, 60_000, 120_000, 240_000, ...Array(11).fill(300_000)];
     for (const [index, delayMs] of delays.entries()) {
       const retry = await queuedWithdrawal(fixture, active);
-      assert.equal(retry.idempotencyKey, `${first.idempotencyKey}:recovery:${index + 1}`);
+      assert.equal(retry.idempotencyKey, `${firstAttempt.idempotencyKey}:recovery:${index + 1}`);
       assertRetryDelay(retry, delayMs);
       assert.equal(calls(), index + 1);
       await runScheduledRetryNow(fixture, retry);
@@ -491,7 +484,7 @@ test(
     const replayed = await withdrawal.replay(fixture.actor.id);
     assert.equal(replayed.withdrawalInProgress, true);
     const replay = await queuedWithdrawal(fixture, active);
-    assert.ok(!replay.idempotencyKey.startsWith(first.idempotencyKey));
+    assert.ok(!replay.idempotencyKey.startsWith(firstAttempt.idempotencyKey));
     await startWithGateway(fixture, compute);
     await fixture.work(replay, "succeeded");
     const revoked = await withdrawal.read(fixture.actor.id);
@@ -580,24 +573,17 @@ test(
       }
     });
     await startWithGateway(fixture, compute);
-    await fixture.work(active, "succeeded");
-    const withdrawal = await requestWithdrawal(
-      fixture,
-      owner,
-      owner.harnessAuth.sourceId,
-      fixture.actor.id,
-    );
-    const [first] = await withdrawalAttempts(fixture, active);
+    const { withdrawal, firstAttempt } = await startHarnessWithdrawal(fixture, owner, active);
 
     // The lease runs out during the last attempt, so stale-claim recovery fails the work, not
     // the worker's final pass. It still queues the next series.
     await lastAttempt.promise;
-    const claimed = await fixture.work(first, "claimed");
+    const claimed = await fixture.work(firstAttempt, "claimed");
     assert.equal(claimed.attempt_count, 2);
-    assert.equal((await fixture.expireClaim(first, claimed.claim_token)).rowCount, 1);
+    assert.equal((await fixture.expireClaim(firstAttempt, claimed.claim_token)).rowCount, 1);
     lastAttemptReleased.resolve();
-    await fixture.work(first, "failed_permanent");
-    assert.equal((await fixture.workResult(first)).rows[0].reason_code, "LEASE_EXPIRED");
+    await fixture.work(firstAttempt, "failed_permanent");
+    assert.equal((await fixture.workResult(firstAttempt)).rows[0].reason_code, "LEASE_EXPIRED");
     const retry = await waitFor("the next series after a lost lease", async () => {
       const { rowCount } = await fixture.observerPool.query(
         `SELECT 1 FROM occ.controller_work
@@ -606,7 +592,7 @@ test(
       );
       return rowCount === 1 ? queuedWithdrawal(fixture, active) : undefined;
     });
-    assert.equal(retry.idempotencyKey, `${first.idempotencyKey}:recovery:1`);
+    assert.equal(retry.idempotencyKey, `${firstAttempt.idempotencyKey}:recovery:1`);
     assertRetryDelay(retry, 30_000);
     const waiting = await withdrawal.read(fixture.actor.id);
     assert.equal(waiting.state, "pending");
@@ -787,20 +773,13 @@ for (const { name, fixtureName, createRefusal, expectedReason } of [
         throw createRefusal();
       },
     });
-    await fixture.work(active, "succeeded");
-    const withdrawal = await requestWithdrawal(
-      fixture,
-      owner,
-      owner.harnessAuth.sourceId,
-      fixture.actor.id,
-    );
-    const [first] = await withdrawalAttempts(fixture, active);
+    const { withdrawal, firstAttempt } = await startHarnessWithdrawal(fixture, owner, active);
 
     // A terminal refusal cannot be fixed by retrying, and withdrawal remains unconfirmed.
-    const failed = await fixture.work(first, "failed_permanent");
+    const failed = await fixture.work(firstAttempt, "failed_permanent");
     assert.equal(failed.attempt_count, 1);
     assert.equal(calls, 1);
-    assert.equal((await fixture.workResult(first)).rows[0].reason_code, expectedReason);
+    assert.equal((await fixture.workResult(firstAttempt)).rows[0].reason_code, expectedReason);
     assert.deepEqual(
       (await withdrawalAttempts(fixture, active)).map(({ state }) => state),
       ["failed_permanent"],
@@ -852,16 +831,9 @@ test(
       },
     );
     gateway.down = false;
-    await fixture.work(active, "succeeded");
-    const withdrawal = await requestWithdrawal(
-      fixture,
-      owner,
-      owner.harnessAuth.sourceId,
-      fixture.actor.id,
-    );
-    const [first] = await withdrawalAttempts(fixture, active);
+    const { withdrawal, firstAttempt } = await startHarnessWithdrawal(fixture, owner, active);
     // The first attempt is refused and retried with its reason; the second revokes.
-    const settled = await fixture.work(first, "succeeded");
+    const settled = await fixture.work(firstAttempt, "succeeded");
     assert.equal(settled.attempt_count, 2);
     assert.equal(gateway.withdrawn.length, 1);
     const revoked = await withdrawal.read(fixture.actor.id);
@@ -882,14 +854,11 @@ test(
       "withdraw-unauthenticated-persistent",
     );
     refusals = Number.POSITIVE_INFINITY;
-    await fixture.work(other.candidate, "succeeded");
-    const otherWithdrawal = await requestWithdrawal(
+    const { withdrawal: otherWithdrawal, firstAttempt: persistent } = await startHarnessWithdrawal(
       fixture,
       other.owner,
-      other.owner.harnessAuth.sourceId,
-      fixture.actor.id,
+      other.candidate,
     );
-    const [persistent] = await withdrawalAttempts(fixture, other.candidate);
     const failed = await fixture.work(persistent, "failed_permanent");
     assert.equal(failed.attempt_count, 2);
     assert.equal(
@@ -1377,6 +1346,18 @@ async function requestWithdrawal(fixture, owner, credentialSourceId, requester) 
     read: (reader) => fixture.controller.readAgentCredentialWithdrawal(reader, target),
     replay: (requester) => fixture.controller.withdrawAgentCredentialSource(requester, target),
   };
+}
+
+async function startHarnessWithdrawal(fixture, owner, active) {
+  await fixture.work(active, "succeeded");
+  const withdrawal = await requestWithdrawal(
+    fixture,
+    owner,
+    owner.harnessAuth.sourceId,
+    fixture.actor.id,
+  );
+  const [firstAttempt] = await withdrawalAttempts(fixture, active);
+  return { withdrawal, firstAttempt };
 }
 
 // The revision's withdrawal work rows, oldest first, each ready for fixture.work. Each row is
