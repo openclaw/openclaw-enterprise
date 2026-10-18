@@ -537,6 +537,41 @@ p {
   font-size: 12px;
   white-space: nowrap;
 }
+.badge[data-tone="success"] {
+  background: var(--success-subtle);
+  color: var(--success);
+}
+.badge[data-tone="warning"] {
+  background: var(--warning-subtle);
+  color: var(--warning);
+}
+.badge[data-tone="danger"] {
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+/* The whole Namespace row opens its Agents; the ID stays selectable above the link's area. */
+.resource-linked {
+  position: relative;
+}
+@media (hover: hover) {
+  .resource-linked:hover {
+    background: var(--hover);
+  }
+}
+.resource-linked .resource-name a {
+  color: var(--text-strong);
+  text-decoration: none;
+}
+.resource-linked .resource-name a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.resource-linked .resource-id {
+  position: relative;
+  z-index: 1;
+}
 .state-panel {
   padding: 36px;
   border: 1px solid var(--line);

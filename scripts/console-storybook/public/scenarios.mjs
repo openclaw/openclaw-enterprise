@@ -957,7 +957,7 @@ export const scenarios = {
     name: "Ready and provisioning",
     path: "/console/namespaces",
     description:
-      "Installation-wide Namespace identity and status cards, without a Namespace selector.",
+      "Installation-wide Namespace identity and status cards, without a Namespace selector. Each card opens that Namespace's Agents; status badges read Ready or Provisioning with a tone.",
   },
   namespacesUnavailable: {
     group: "Pages/Namespaces",

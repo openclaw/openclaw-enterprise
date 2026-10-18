@@ -382,7 +382,8 @@ test("console shows the external observability link only to Installation adminis
     }
   });
   await login(page, fixture, "/console/");
-  const link = page.getByRole("link", { name: "Observability" });
+  // Exact: the Namespace row "Observability access" is a link too.
+  const link = page.getByRole("link", { name: "Observability", exact: true });
   await link.waitFor();
   assert.equal(await link.getAttribute("href"), url);
   assert.equal(await link.getAttribute("target"), "_blank");
@@ -1526,6 +1527,51 @@ test("known Namespace revocation invalidates a cached global collection with ano
   await releaseHeldRoute(page, "**/api/auth/session", pending);
   await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
   await expectNoText(page, /Removed from access/);
+});
+
+// Namespace rows were inert and their status badges showed raw lowercase enum values in one grey
+// (finding 1897). Each row now opens its Namespace's Agents, and statuses read as words with a tone.
+test("Namespaces rows open their Agents and status badges use words with a tone", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const ready = await fixture.createNamespace("Linked ready", { ready: true });
+  const provisioning = await fixture.createNamespace("Linked provisioning");
+  const retiring = await fixture.createNamespace("Linked retiring", { ready: true });
+  assert.equal((await fixture.request("DELETE", `/namespaces/${retiring.id}`)).status, 202);
+  await fixture.createAgent(ready.id, "Linked Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/namespaces?namespace=${provisioning.id}`);
+  const list = page.getByRole("list", { name: "Namespaces", exact: true });
+  await list.waitFor();
+  for (const [namespace, label, tone] of [
+    [ready, "Ready", "success"],
+    [provisioning, "Provisioning", "warning"],
+    [retiring, "Deleting", "warning"],
+  ]) {
+    const row = list.getByRole("listitem").filter({ hasText: namespace.id });
+    const link = row.getByRole("link", { name: namespace.name, exact: true });
+    assert.equal(
+      await link.getAttribute("href"),
+      `/console/agents?namespace=${encodeURIComponent(namespace.id)}`,
+    );
+    const badge = row.locator(".badge");
+    assert.equal(await badge.textContent(), label);
+    assert.equal(await badge.getAttribute("data-tone"), tone);
+  }
+  // Selecting anywhere on the row opens that Namespace's Agents in place.
+  const row = list.getByRole("listitem").filter({ hasText: ready.id });
+  const box = await row.boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height - 6);
+  await page.waitForURL(`**/console/agents?namespace=${ready.id}`);
+  await page.getByText("Linked Agent", { exact: true }).waitFor();
+  assert.equal(await page.locator("#namespace-selector").inputValue(), ready.id);
+
+  // Backend types are names, not states: human-cased and neutral.
+  await page.goto(`${fixture.origin}/console/backends?namespace=${ready.id}`);
+  const backend = page.getByRole("list", { name: "Backends", exact: true }).getByRole("listitem");
+  await backend.getByText("openai-primary", { exact: true }).waitFor();
+  assert.equal(await backend.locator(".badge").textContent(), "ChatGPT");
+  assert.equal(await backend.locator(".badge").getAttribute("data-tone"), null);
 });
 
 test("known Backend denial invalidates previews across Namespace selections", async (t) => {
