@@ -157,6 +157,40 @@ const logTimeFormat = new Intl.DateTimeFormat(undefined, {
   timeZoneName: "shortOffset",
 });
 
+// Sizes the pane's time column to the widest timestamp this locale and time zone can show, so
+// every timestamp stays on one line and every row's columns line up (finding 1861: ko-KR, and
+// es-MX or ar-EG with a long UTC offset, overflowed a column sized for en-US). The widest form
+// has a two-digit month and day and the longest hour and day period; October and December
+// cover the daylight saving offsets of both hemispheres. Measured once, in the pane's font.
+// Returns whether the column is sized; a pane that is not laid out yet measures nothing.
+export function fitLogTimeColumn(pane) {
+  if (pane.style.getPropertyValue("--log-time-width") !== "") {
+    return true;
+  }
+  if (!pane.isConnected || pane.clientWidth === 0) {
+    return false;
+  }
+  const probe = element("span", { className: "log-time-probe", "aria-hidden": "true" });
+  pane.append(probe);
+  const year = new Date().getFullYear();
+  let widest = 0;
+  for (const month of [9, 11]) {
+    for (let hour = 0; hour < 24; hour += 1) {
+      probe.textContent = logTimeFormat.format(new Date(year, month, 31, hour, 59, 59));
+      widest = Math.max(widest, probe.getBoundingClientRect().width);
+    }
+  }
+  probe.remove();
+  if (widest === 0) {
+    return false;
+  }
+  // One pixel of slack absorbs rounding.
+  const width = Math.ceil(widest) + 1;
+  pane.style.setProperty("--log-time-width", `${width}px`);
+  pane.style.setProperty("--log-time-ems", String(width / 11));
+  return true;
+}
+
 function formatLogTime(time) {
   if (!time) {
     return "—";
@@ -199,7 +233,11 @@ export function recordRow(record) {
   const summary = element(
     "span",
     { className: "log-line" },
-    element("span", { className: "log-time" }, formatLogTime(record.time)),
+    element(
+      "span",
+      { className: "log-time" },
+      element("span", { className: "log-time-text" }, formatLogTime(record.time)),
+    ),
     element("span", { className: `log-level log-level-${record.level}` }, record.level),
     element(
       "span",

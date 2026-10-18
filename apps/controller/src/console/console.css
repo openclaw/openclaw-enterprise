@@ -2708,9 +2708,15 @@ summary:focus-visible {
   /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned, even when
      the row is short of room. */
   --log-level-column: minmax(6.5em, max-content);
-  /* Fit a whole en-US timestamp with its UTC offset on one line (finding 1681): 33 characters of
-     the 11px time, as in "12/31/2026, 12:59:59 PM GMT+10:30". ch is the row's 12px character. */
-  --log-time-column: calc(33ch * 11 / 12);
+  /* Fit a whole timestamp with its UTC offset on one line (findings 1681, 1861). The console
+     measures the widest one its locale and time zone can show and sets --log-time-width (px) and
+     --log-time-ems (that width in 11px ems) on the pane. Until then: 33 characters of the 11px
+     time, as in en-US "12/31/2026, 12:59:59 PM GMT+10:30". ch is the row's 12px character. */
+  --log-time-column: var(--log-time-width, calc(33ch * 11 / 12));
+  /* Where the message moves below: the time takes the room the level (6.5em), the narrowest
+     origin (60px) and two 10px gaps leave, up to its width, and any room beyond. In a card too
+     narrow for a long timestamp its text shrinks to fit (.log-time-text). */
+  --log-time-track: minmax(min(var(--log-time-column), 100% - 6.5em - 80px), 1fr);
   display: grid;
   grid-template-columns:
     var(--log-time-column) var(--log-level-column) minmax(72px, 112px)
@@ -2719,9 +2725,23 @@ summary:focus-visible {
   gap: 12px;
 }
 .log-time {
+  /* A size container, so the text below can shrink to a cell narrower than the measured width
+     (a phone layout with a long timestamp, such as ko-KR "2026. 12. 31. 오후 12시 59분 59초
+     GMT+10:30") instead of wrapping. Each row's cell is the same width, so columns stay aligned. */
+  container-type: inline-size;
   color: var(--muted);
   font-size: 11px;
-  white-space: normal;
+}
+.log-time-text {
+  font-size: min(11px, 100cqi / var(--log-time-ems, 19.8));
+  white-space: nowrap;
+}
+.log-time-probe {
+  position: absolute;
+  visibility: hidden;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 .log-level {
   width: fit-content;
@@ -2835,7 +2855,7 @@ summary:focus-visible {
 @container log-viewer (width < 662px) {
   .log-line {
     grid-template-columns:
-      minmax(var(--log-time-column), 1fr) var(--log-level-column)
+      var(--log-time-track) var(--log-level-column)
       minmax(60px, 112px);
     gap: 4px 10px;
   }
@@ -2869,7 +2889,7 @@ summary:focus-visible {
   }
   .log-line {
     grid-template-columns:
-      minmax(var(--log-time-column), 1fr) var(--log-level-column)
+      var(--log-time-track) var(--log-level-column)
       minmax(60px, 112px);
     gap: 4px 10px;
   }

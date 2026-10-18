@@ -1,6 +1,6 @@
 import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
 import { displayDate, namespacePath } from "./list.mjs";
-import { SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
+import { SOURCE_LABELS, fitLogTimeColumn, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
 const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
@@ -229,6 +229,13 @@ export function renderAgentLogs(
     tabindex: "0",
     "aria-label": "Runtime log output",
   });
+  // The view is built before it is shown: size the time column once the pane is laid out.
+  const timeColumn = new ResizeObserver(() => {
+    if (fitLogTimeColumn(pane)) {
+      timeColumn.disconnect();
+    }
+  });
+  timeColumn.observe(pane);
   // Detaching the view for Back's cache resets the pane to the top; resume restores the
   // reader's last position so follow neither stalls as "scrolled up" nor jumps. A reader
   // at the bottom returns to the bottom, even if a late scroll event or resize moved it.

@@ -418,36 +418,65 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
 // In a Logs card under 662 px (a 1000 px window and below, or about 1101-1280 px beside the
 // version list) the message moves below the time instead of shrinking to a sliver. At 521-527 px
 // the phone layout squeezed the time column, and under about 400 px the level beside it did
-// (finding 1844): there the time takes its own line, down to a 320 px window.
+// (finding 1844): there the time takes its own line, down to a 320 px window. The column was
+// sized for en-US, so ko-KR wrapped at every width, and es-MX and ar-EG with a long UTC offset
+// (finding 1861): the console now measures the widest timestamp of the locale and time zone,
+// and a cell too narrow for it shrinks the text rather than wrapping it.
 test("log timestamps with their UTC offset stay on one line", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
-  // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30.
-  computeDriver.state.lines = [{ time: "2026-12-31T02:29:59Z", raw: "longest timestamp" }];
+  // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30. The second line
+  // has a shorter timestamp in every locale, and its columns line up with the first.
+  computeDriver.state.lines = [
+    { time: "2026-12-31T02:29:59Z", raw: "longest timestamp" },
+    { time: "2026-01-01T20:00:00Z", raw: "shorter timestamp" },
+  ];
   for (const [locale, timezoneId, shown] of [
     ["en-US", "Australia/Adelaide", /^12\/31\/2026, 12:59:59\sPM\sGMT\+10:30$/u],
     ["en-US", "Asia/Kolkata", /^12\/31\/2026, 7:59:59\sAM\sGMT\+5:30$/u],
     ["en-US", "America/New_York", /^12\/30\/2026, 9:29:59\sPM\sGMT-5$/u],
     ["fr-FR", "Europe/Paris", /^31\/12\/2026\s03:29:59\sUTC\+1$/u],
     ["de-DE", "Europe/Berlin", /^31\.12\.2026,\s03:29:59\sGMT\+1$/u],
+    ["ko-KR", "Asia/Seoul", /^2026\.\s12\.\s31\.\s오전\s11시\s29분\s59초\sGMT\+9$/u],
+    ["ko-KR", "Australia/Adelaide", /^2026\.\s12\.\s31\.\s오후\s12시\s59분\s59초\sGMT\+10:30$/u],
+    ["ar-EG", "Australia/Adelaide", /^٣١\S*\/١٢\S*\/٢٠٢٦،\s١٢:٥٩:٥٩\sم\sغرينتش\+١٠:٣٠$/u],
+    ["es-MX", "Australia/Adelaide", /^31\/12\/2026, 12:59:59\sp\.\s?m\.\sGMT\+10:30$/u],
   ]) {
     const { page } = await newPage(t, fixture, { context: { locale, timezoneId } });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
-    const time = page
-      .getByRole("log", { name: "Runtime log output" })
-      .locator(".log-row", { hasText: "longest timestamp" })
-      .locator(".log-time");
+    const log = page.getByRole("log", { name: "Runtime log output" });
+    const time = log.locator(".log-row", { hasText: "longest timestamp" }).locator(".log-time");
     assert.match(await time.innerText(), shown);
+    await log.getByText("shorter timestamp").waitFor();
     for (const width of [
       1440, 1300, 1200, 1101, 1100, 1001, 1000, 761, 760, 662, 600, 527, 524, 521, 520, 480, 404,
       402, 397, 390, 360, 320,
     ]) {
       await page.setViewportSize({ width, height: 900 });
-      const lines = await time.evaluate((cell) => {
+      const where = `${locale} ${timezoneId} at ${width}px`;
+      const text = await time.evaluate((cell) => {
         const range = cell.ownerDocument.createRange();
         range.selectNodeContents(cell);
-        return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+        const rects = [...range.getClientRects()];
+        const box = cell.getBoundingClientRect();
+        return {
+          lines: new Set(rects.map((rect) => Math.round(rect.top))).size,
+          left: Math.min(...rects.map((rect) => rect.left)) - box.left,
+          right: box.right - Math.max(...rects.map((rect) => rect.right)),
+        };
       });
-      assert.equal(lines, 1, `one ${locale} ${timezoneId} timestamp line at ${width}px`);
+      assert.equal(text.lines, 1, `one timestamp line, ${where}`);
+      // The text stays inside its cell, so it never runs into the level beside it.
+      assert.ok(text.left >= -0.5 && text.right >= -0.5, `timestamp inside its cell, ${where}`);
+      for (const column of [".log-time", ".log-level", ".log-origin"]) {
+        const starts = await log
+          .locator(column)
+          .evaluateAll((cells) => cells.map((cell) => cell.getBoundingClientRect().left));
+        assert.equal(new Set(starts).size, 1, `${column} aligned, ${where}`);
+      }
+      assert.ok(
+        await log.evaluate((pane) => pane.scrollWidth <= pane.clientWidth),
+        `no horizontal log overflow, ${where}`,
+      );
     }
   }
 });
