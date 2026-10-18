@@ -88,6 +88,50 @@ export function outageAttemptRead({ readWork, readStatus }) {
   };
 }
 
+// The real model's final answer when its provider has no capacity for the selected model; the
+// turn script prints it as its error, and kubectl's failure carries it on stderr (finding 1946).
+const modelAtCapacity = /^Error: Selected model is at capacity\./m;
+
+export function isModelAtCapacity(error) {
+  return modelAtCapacity.test(String(error?.stderr ?? ""));
+}
+
+// Runs a real-model Codex turn, and runs it again, a bounded number of times, when the model
+// answered only that it is at capacity: an upstream condition, not the product's. Any other
+// failure is thrown at once. If every attempt is at capacity, the failure's first line says so,
+// since the kubectl failure itself starts with the command line (finding 1946).
+export async function retryModelAtCapacity(
+  turn,
+  {
+    attempts = 3,
+    firstDelayMs = 15_000,
+    sleep = delay,
+    log = (message) => process.stderr.write(`${message}\n`),
+  } = {},
+) {
+  let delayMs = firstDelayMs;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await turn();
+    } catch (error) {
+      if (!isModelAtCapacity(error)) {
+        throw error;
+      }
+      if (attempt >= attempts) {
+        throw new Error(
+          `The real model was at capacity on all ${attempts} turn attempts ("Selected model is at capacity").\n${error.message}`,
+          { cause: error },
+        );
+      }
+      log(
+        `The real model was at capacity; retrying the turn in ${delayMs} ms (attempt ${attempt + 1}/${attempts})`,
+      );
+      await sleep(delayMs);
+      delayMs *= 2;
+    }
+  }
+}
+
 export function openshellHash(value, length = 12) {
   return sha256Hex(value, length);
 }
@@ -523,6 +567,8 @@ export function createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion = "0.1.4",
+  // Options for retryModelAtCapacity: a test's fake model reply passes a short delay.
+  modelAtCapacityRetry = {},
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
@@ -1417,16 +1463,20 @@ export function createOpenShellKubernetesFixture({
     `;
     const containerArguments = container === undefined ? [] : ["--container", container];
     return JSON.parse(
-      await kubectl(
-        "exec",
-        pod,
-        "--namespace",
-        namespace,
-        ...containerArguments,
-        "--",
-        "node",
-        "-e",
-        script,
+      await retryModelAtCapacity(
+        () =>
+          kubectl(
+            "exec",
+            pod,
+            "--namespace",
+            namespace,
+            ...containerArguments,
+            "--",
+            "node",
+            "-e",
+            script,
+          ),
+        modelAtCapacityRetry,
       ),
     );
   }
