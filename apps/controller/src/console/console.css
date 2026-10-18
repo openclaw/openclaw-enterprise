@@ -1490,10 +1490,6 @@ summary:focus-visible {
   .configuration-summary dd {
     margin-bottom: 12px;
   }
-  .agent-table th,
-  .agent-table td {
-    padding: 14px 8px;
-  }
 }
 /* Phone: each Agent is a stacked row, its name and ID first, then each cell beside its column's
    name (`data-label`), so nothing scrolls sideways. The header row stays for screen readers. */
@@ -1535,6 +1531,8 @@ summary:focus-visible {
   }
   .agent-table td[data-label]::before {
     content: attr(data-label);
+    /* The hidden header row already names the column for screen readers. */
+    content: attr(data-label) / "";
     width: auto;
     color: var(--color-text-muted);
     font-size: var(--text-sm);
@@ -1547,6 +1545,10 @@ summary:focus-visible {
   }
   .agent-table .agent-deployment::before {
     grid-row: span 2;
+  }
+  .agent-table .resource-id {
+    margin-top: var(--space-2);
+    max-width: none;
   }
   .agent-table .agent-deployment-note {
     margin-top: 0;

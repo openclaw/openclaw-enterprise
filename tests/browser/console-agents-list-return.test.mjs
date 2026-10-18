@@ -757,7 +757,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
               shown:
                 before.display !== "none" &&
                 before.visibility === "visible" &&
-                before.content === JSON.stringify(cell.dataset.label),
+                before.content.startsWith(JSON.stringify(cell.dataset.label)),
               // The value starts beside its label (760 px and under) or below it (520 and under).
               beside: content.left - box.left > 40,
               below: content.top - box.top >= 12,
@@ -765,12 +765,16 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
           }),
           breaks,
           display: globalThis.getComputedStyle(row).display,
+          revision: (({ fontFamily, color }) => ({ fontFamily, color }))(
+            globalThis.getComputedStyle(cells[2].querySelector("a") ?? cells[2]),
+          ),
         };
       });
       return {
         pageFits: view.scrollWidth <= view.clientWidth,
         tableFits: scroll.scrollWidth <= scroll.clientWidth,
         headerShown: node.tHead.getBoundingClientRect().height > 1,
+        text: globalThis.getComputedStyle(document.querySelector("h1")).color,
         rows,
       };
     });
@@ -799,6 +803,14 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       }
       for (const character of row.breaks) {
         assert.match(character, /[-_]/, `${width}: row ${index} ID breaks inside a segment`);
+      }
+      if (width === 360) {
+        assert.ok(row.breaks.length > 0, `${width}: row ${index} ID fits one line`);
+      }
+      // A current version's revision ID reads as an ID: mono, in the text colour.
+      if (index % 2 === 1) {
+        assert.match(row.revision.fontFamily, /monospace/, `${width}: row ${index} revision`);
+        assert.equal(row.revision.color, layout.text, `${width}: row ${index} revision colour`);
       }
       assert.equal(row.display, width === 1440 ? "table-row" : "grid", `${width}: row display`);
     }
