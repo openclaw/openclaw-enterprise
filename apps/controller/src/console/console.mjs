@@ -1071,7 +1071,11 @@ async function loadPage({
   namespaceId = current.namespace;
   const active = resetReads({
     retainView: knownPrivateState,
-    returnLink: openingAgent ? document.activeElement : null,
+    // A Namespaces row link marks itself too, so Back returns focus to that row.
+    returnLink:
+      openingAgent || document.activeElement?.matches?.("a[data-return-focus-href]")
+        ? document.activeElement
+        : null,
   });
   if (abandonedCreation) {
     const creationDrafts = drafts.scope(discardCreationOnExit.namespaceId, "create");

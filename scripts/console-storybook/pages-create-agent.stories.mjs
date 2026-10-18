@@ -8,6 +8,10 @@ export const NamespaceProvisioning = {
   name: "Namespace still provisioning",
 };
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
+export const CreateInvalidConfiguration = {
+  ...story("createInvalidConfiguration"),
+  name: "Invalid Configuration JSON",
+};
 export const PluginsUnavailable = {
   ...story("createPluginsUnavailable"),
   name: "Plugin discovery needs a service account credential",
