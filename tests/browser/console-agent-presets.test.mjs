@@ -20,7 +20,6 @@ import {
   consoleStorage,
   detailUrl,
   login,
-  slackSelectionValue,
   nativeValues,
   newPage,
   nonAuthWriteRequests,
@@ -2385,7 +2384,7 @@ test("Preset picker ignores stale Preset responses after switching selection", a
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "Current Agent");
 });
 
-test("leaving a default starter creation form discards its in-progress state", async (t) => {
+test("a default starter creation form survives every exit but a confirmed Cancel", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Creation exit", { ready: true });
@@ -2393,18 +2392,24 @@ test("leaving a default starter creation form discards its in-progress state", a
   const savedAgent = await fixture.createAgent(namespace.id, "Saved Agent");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  // Answers the next browser dialog and reports its kind and text.
+  const answerDialog = (accept) =>
+    new Promise((resolve) => {
+      page.once("dialog", async (dialog) => {
+        resolve(`${dialog.type()}: ${dialog.message()}`);
+        await (accept ? dialog.accept() : dialog.dismiss());
+      });
+    });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
 
-  for (const exit of ["cancel", "breadcrumb", "sidebar", "history", "namespace"]) {
+  for (const exit of ["breadcrumb", "sidebar", "history", "namespace"]) {
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
-    await page.getByLabel("Agent name", { exact: true }).fill(`Abandoned ${exit}`);
+    await page.getByLabel("Agent name", { exact: true }).fill(`Kept ${exit}`);
     await openAdvancedSettings(page);
-    await page.getByLabel("USER.md", { exact: true }).fill(`Abandoned workspace ${exit}`);
+    await page.getByLabel("USER.md", { exact: true }).fill(`Kept workspace ${exit}`);
 
-    if (exit === "cancel") {
-      await page.getByRole("button", { name: "Cancel", exact: true }).click();
-    } else if (exit === "breadcrumb") {
+    if (exit === "breadcrumb") {
       await page.getByRole("link", { name: "← Agents" }).click();
     } else if (exit === "sidebar") {
       await page
@@ -2412,46 +2417,55 @@ test("leaving a default starter creation form discards its in-progress state", a
         .getByRole("link", { name: "Agents", exact: true })
         .click();
     } else if (exit === "history") {
-      // Leave with an un-applied channel drawer open; its draft must not reopen later.
-      await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
-      await page
-        .getByRole("dialog", { name: "Configure Slack" })
-        .getByRole("combobox", { name: "Channels", exact: true })
-        .fill("C12345");
       await page.goBack();
     } else {
       await page.getByLabel("Namespace", { exact: true }).selectOption(otherNamespace.id);
+      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+      // Drafts belong to their Namespace: the other one starts from the choices.
+      await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+      assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
       await page.getByLabel("Namespace", { exact: true }).selectOption(namespace.id);
     }
 
-    // History re-entry and the normal Create button must both return to the choice page.
+    // History re-entry and the normal Create button both return to the kept form.
     if (exit === "history") {
       await page.goForward();
     } else {
       await page.getByRole("button", { name: "Create Agent", exact: true }).click();
     }
-    await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-    await page.getByLabel("Preset template").waitFor();
-    assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0, exit);
-    await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
-    assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "", exit);
-    assert.notEqual(
+    const name = page.getByLabel("Agent name", { exact: true });
+    await name.waitFor();
+    assert.equal(await name.inputValue(), `Kept ${exit}`, exit);
+    await openAdvancedSettings(page);
+    assert.equal(
       await page.getByLabel("USER.md", { exact: true }).inputValue(),
-      `Abandoned workspace ${exit}`,
+      `Kept workspace ${exit}`,
       exit,
     );
-    if (exit === "history") {
-      assert.equal(await page.getByRole("dialog", { name: "Configure Slack" }).count(), 0);
-      await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
-      const dialog = page.getByRole("dialog", { name: "Configure Slack" });
-      assert.equal(
-        await slackSelectionValue(dialog.getByRole("combobox", { name: "Channels", exact: true })),
-        "",
-      );
-      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    }
+
+    // Cancel is the explicit discard, and it asks first.
+    let asked = answerDialog(false);
     await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await asked, "confirm: Discard this draft?", exit);
+    assert.equal(await name.inputValue(), `Kept ${exit}`, exit);
+    asked = answerDialog(true);
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await asked, "confirm: Discard this draft?", exit);
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+    await page.getByLabel("Preset template").waitFor();
+    assert.equal(await name.count(), 0, exit);
+    await page.getByRole("link", { name: "← Agents" }).click();
   }
+
+  // An untouched form has nothing to lose: Cancel leaves without asking.
+  page.once("dialog", (dialog) => assert.fail(`Unexpected dialog: ${dialog.message()}`));
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
+  page.removeAllListeners("dialog");
 
   // Exiting an unsaved form must not mutate or delete an Agent already saved by the user.
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -2463,7 +2477,7 @@ test("leaving a default starter creation form discards its in-progress state", a
   assert.equal(result.data.name, "Saved Agent");
 });
 
-test("a restored default starter chooser still discards its applied form on exit", async (t) => {
+test("a restored default starter chooser keeps its applied form across navigation", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Customized starter", { ready: true });
@@ -2493,22 +2507,13 @@ test("a restored default starter chooser still discards its applied form on exit
   );
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
-
-  // Explicit selection of the same Preset retains its form across navigation.
-  await page.getByLabel("Preset template").selectOption(starter.id);
-  await page.getByLabel("Name", { exact: true }).fill("Explicit starter");
-  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
-  await page.getByRole("link", { name: "← Agents" }).click();
-  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   assert.equal(
     await page.getByLabel("Agent name", { exact: true }).inputValue(),
-    "Explicit starter",
+    "Restored starter",
   );
 });
 
-test("a default shortcut restored after a pending Preset read discards its form", async (t) => {
+test("a default shortcut restored after a pending Preset read keeps its form", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Pending starter", { ready: true });
@@ -2541,11 +2546,13 @@ test("a default shortcut restored after a pending Preset read discards its form"
   await page.getByLabel("Agent name", { exact: true }).fill("Pending read draft");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  assert.equal(
+    await page.getByLabel("Agent name", { exact: true }).inputValue(),
+    "Pending read draft",
+  );
 });
 
-test("invalid Preset application retains chooser edits and preserves the selected origin", async (t) => {
+test("invalid Preset application retains chooser edits and the applied form for both origins", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Invalid starter", { ready: true });
@@ -2589,16 +2596,21 @@ test("invalid Preset application retains chooser edits and preserves the selecte
     await page.getByLabel("Agent name", { exact: true }).waitFor();
     await page.getByRole("link", { name: "← Agents" }).click();
     await page.getByRole("button", { name: "Create Agent", exact: true }).click();
-    if (origin === "shortcut") {
-      await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-      assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
-      await page.getByRole("link", { name: "← Agents" }).click();
-    } else {
-      assert.equal(
-        await page.getByLabel("Agent name", { exact: true }).inputValue(),
-        "Preset draft",
-      );
-    }
+    assert.equal(
+      await page.getByLabel("Agent name", { exact: true }).inputValue(),
+      "Preset draft",
+      origin,
+    );
+    // The variables typed in the chooser are the form's changes: Cancel asks before discarding.
+    const asked = new Promise((resolve) => {
+      page.once("dialog", async (dialog) => {
+        resolve(dialog.message());
+        await dialog.accept();
+      });
+    });
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    assert.equal(await asked, "Discard this draft?", origin);
+    await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
   }
 });
 
@@ -2721,9 +2733,17 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
 
   // Reload ends the SPA session; a new form must not recover discarded or browser-stored inputs.
+  // The browser asks first while the draft holds changes.
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Reload-only draft");
+  const leaving = new Promise((resolve) => {
+    page.once("dialog", async (dialog) => {
+      resolve(dialog.type());
+      await dialog.accept();
+    });
+  });
   await page.reload();
+  assert.equal(await leaving, "beforeunload");
   await page.getByLabel("Preset template").waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
 
