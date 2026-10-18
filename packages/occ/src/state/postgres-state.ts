@@ -2341,6 +2341,15 @@ export class PostgresPlatformState implements PlatformStateStore {
       findConfiguration,
       createConfiguration: async (configuration) => {
         await this.requireInitialized(context);
+        // The memory adapter's rule, checked before the INSERT: a fractional generation would
+        // otherwise fail PostgreSQL's bigint cast with a raw 22P02 instead of this refusal.
+        if (
+          configuration.kind !== "agent" ||
+          !Number.isSafeInteger(configuration.generation) ||
+          configuration.generation <= 0
+        ) {
+          throw new ScopeViolationError("The Configuration kind or generation is invalid.");
+        }
         const namespace = await namespaces.lockNamespace(configuration.namespaceId);
         if (
           namespace === undefined ||
