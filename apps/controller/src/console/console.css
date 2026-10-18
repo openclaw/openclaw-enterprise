@@ -383,6 +383,14 @@ p {
   /* Refusals name long setting paths and request IDs; wrap them in a phone-width card. */
   overflow-wrap: anywhere;
 }
+/* A field's own error sits under it, like its hint, not after the form (finding 1903). */
+.error.field-error {
+  margin-top: var(--space-2);
+  font-size: var(--text-md);
+}
+.form-field [aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
 /* An Agent stopped by its owner during creation: guidance, not an error (finding 1375). */
 .error .provisioning-stopped {
   color: var(--text);
