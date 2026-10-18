@@ -4685,11 +4685,7 @@ test("two-cluster Compute names the harness routing field it refuses", () => {
       "Bad_Name",
       "Harness routing Gateway name must be a DNS-safe Kubernetes resource name.",
     ],
-    [
-      "gatewayName",
-      "a".repeat(64),
-      "Harness routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
-    ],
+    // The 63-character cap is covered by the Gateway name test below.
     ["gatewayName", undefined, "Harness routing Gateway name must be explicitly configured."],
     [
       "gatewayNamespace",
