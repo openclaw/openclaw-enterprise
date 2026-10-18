@@ -433,7 +433,7 @@ export function createSecretReferenceField({
 
   function openCreateSecretDialog() {
     const dialog = element("dialog", {
-      className: "channel-dialog credential-secret-dialog",
+      className: "dialog credential-secret-dialog",
       "aria-label": createDialogTitle ?? `Create ${label} Secret`,
     });
     const name = element("input", {
@@ -498,7 +498,7 @@ export function createSecretReferenceField({
         ),
       ),
       feedback,
-      element("div", { className: "form-actions" }, cancel, submit),
+      element("div", { className: "dialog-actions" }, cancel, submit),
     );
     const dismiss = () => {
       suppressFocusOpen = true;

@@ -155,7 +155,7 @@ export function createPluginFields({
   );
   const workspace = element("div", { className: "plugin-workspace" }, browser, detail);
   const dialog = element("dialog", {
-    className: "plugin-dialog",
+    className: "dialog dialog--wide plugin-dialog",
     "aria-labelledby": "plugin-dialog-title",
   });
   dismissOnBackdrop(dialog);
