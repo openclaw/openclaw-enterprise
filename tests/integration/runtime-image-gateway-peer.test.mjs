@@ -116,19 +116,25 @@ for (const writableConfig of [false, true]) {
         // CI truncates error messages; preserve complete container logs separately.
         t.diagnostic(commandOutput(logs));
         // CI also keeps only 1,000 characters of each output line, which the log above spends
-        // on the Gateway's first lines. The wrapper's phases and each stream's last lines get
-        // lines of their own, so a peer change with no respawn shows where the wrapper stopped
+        // on the Gateway's first lines. Each wrapper phase and each stream's last lines get a
+        // line of their own, so a peer change with no respawn shows where the wrapper stopped
         // (finding 1875).
-        const phases = jsonLogEntries(commandOutput(logs))
-          .filter((entry) => entry.event === "runtime.startup_phase")
-          .map((entry) => `${entry.phase}:${entry.outcome} ${entry.ms}/${entry.sinceStartMs} ms`);
-        t.diagnostic(`wrapper phases at failure (duration/since start): ${phases.join(", ")}`);
+        for (const entry of jsonLogEntries(commandOutput(logs))) {
+          if (entry?.event === "runtime.startup_phase") {
+            t.diagnostic(
+              `wrapper phase at failure: ${entry.phase}:${entry.outcome}${entry.code ? ` ${entry.code}` : ""} ${entry.ms}/${entry.sinceStartMs} ms (duration/since start)`,
+            );
+          }
+        }
+        // Its own read: a log over runDocker's 1 MB buffer would keep only its beginning.
+        const tail = await runDocker(["logs", "--tail", "20", containerName]).catch(
+          (tailError) => tailError,
+        );
         for (const stream of ["stdout", "stderr"]) {
-          for (const line of String(logs[stream] ?? "")
-            .trimEnd()
-            .split("\n")
-            .slice(-20)) {
-            t.diagnostic(`container ${stream} tail: ${line}`);
+          for (const line of String(tail[stream] ?? "").split("\n")) {
+            if (line.trim() !== "") {
+              t.diagnostic(`container ${stream} tail: ${line}`);
+            }
           }
         }
         const runtimeErrors = jsonLogEntries(commandOutput(logs))
