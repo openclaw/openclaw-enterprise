@@ -163,7 +163,10 @@ const logTimeFormat = new Intl.DateTimeFormat(undefined, {
 // each month at every hour covers two-digit days and months, each hour and day period, and
 // every UTC offset of the year (daylight saving, Lord Howe's half hour, GMT vs GMT+1). Measured
 // once, in the pane's font: the probe is as wide as its widest line. Returns whether the column
-// is sized; a pane that is not laid out yet measures nothing.
+// is sized; a pane that is not laid out yet measures nothing. The result depends only on the
+// locale, the time zone and the pane's system monospace font, which hold for the page, so later
+// panes (another version, source or Agent) reuse it instead of probing again (finding 1867).
+let measuredLogTimeWidth;
 export function fitLogTimeColumn(pane) {
   if (pane.style.getPropertyValue("--log-time-width") !== "") {
     return true;
@@ -171,6 +174,23 @@ export function fitLogTimeColumn(pane) {
   if (!pane.isConnected || pane.clientWidth === 0) {
     return false;
   }
+  measuredLogTimeWidth ??= measureLogTimeWidth(pane);
+  if (measuredLogTimeWidth === undefined) {
+    return false;
+  }
+  // Shrunk text does not scale exactly with its font size (CJK glyph advances round), so the
+  // column keeps 4 px of slack, which the shrinking text leaves free (console.css .log-time-text).
+  const natural = measuredLogTimeWidth;
+  pane.style.setProperty("--log-time-width", `${natural + 4}px`);
+  pane.style.setProperty("--log-time-ems", String(natural / 11));
+  // Wider than en-US's longest form (about 218 px): the message moves below the time in a
+  // wider card, so it keeps 200 px (console.css data-long-time).
+  pane.toggleAttribute("data-long-time", natural > 220);
+  return true;
+}
+
+// The widest timestamp's whole-pixel width, measured in `pane`, or undefined when it has no width.
+function measureLogTimeWidth(pane) {
   const year = new Date().getFullYear();
   const shown = new Set();
   for (let month = 0; month < 12; month += 1) {
@@ -187,18 +207,7 @@ export function fitLogTimeColumn(pane) {
   pane.append(probe);
   const widest = probe.getBoundingClientRect().width;
   probe.remove();
-  if (widest === 0) {
-    return false;
-  }
-  // Shrunk text does not scale exactly with its font size (CJK glyph advances round), so the
-  // column keeps 4 px of slack, which the shrinking text leaves free (console.css .log-time-text).
-  const natural = Math.ceil(widest);
-  pane.style.setProperty("--log-time-width", `${natural + 4}px`);
-  pane.style.setProperty("--log-time-ems", String(natural / 11));
-  // Wider than en-US's longest form (about 218 px): the message moves below the time in a
-  // wider card, so it keeps 200 px (console.css data-long-time).
-  pane.toggleAttribute("data-long-time", natural > 220);
-  return true;
+  return widest === 0 ? undefined : Math.ceil(widest);
 }
 
 function formatLogTime(time) {

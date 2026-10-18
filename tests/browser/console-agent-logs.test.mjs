@@ -515,6 +515,56 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
   }
 });
 
+// Each Logs pane probed 288 timestamps to size its time column, although the width depends
+// only on the locale, time zone and font: 2-9 ms per pane, a 78 ms long task in ar-EG without an
+// Arabic font (finding 1867). Later panes reuse the first measurement.
+test("later Logs panes reuse the measured time column width", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [{ time: "2026-12-31T02:29:59Z", raw: "longest timestamp" }];
+  const { page } = await newPage(t, fixture, {
+    context: { locale: "ko-KR", timezoneId: "Australia/Adelaide" },
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  await log.getByText("longest timestamp").waitFor();
+  const reused = await log.evaluate(async (shown) => {
+    // The module instance the page runs, not a second copy.
+    const url = globalThis.performance
+      .getEntriesByType("resource")
+      .find((entry) => new URL(entry.name).pathname.endsWith("/agents/logs-view.mjs")).name;
+    const { fitLogTimeColumn } = await import(url);
+    let probes = 0;
+    const observer = new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          probes += node.classList?.contains("log-time-probe") ? 1 : 0;
+        }
+      }
+    });
+    observer.observe(globalThis.document.body, { childList: true, subtree: true });
+    const widths = [];
+    for (let index = 0; index < 2; index += 1) {
+      const pane = globalThis.document.createElement("div");
+      pane.className = "log-pane";
+      shown.after(pane);
+      widths.push([fitLogTimeColumn(pane), pane.style.getPropertyValue("--log-time-width")]);
+      pane.remove();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    observer.disconnect();
+    return { probes, widths, shown: shown.style.getPropertyValue("--log-time-width") };
+  });
+  assert.notEqual(reused.shown, "");
+  assert.deepEqual(reused, {
+    probes: 0,
+    widths: [
+      [true, reused.shown],
+      [true, reused.shown],
+    ],
+    shown: reused.shown,
+  });
+});
+
 // Above 1100 px the Logs card sits beside the version list, narrower than at 1001-1100 px.
 // Breakpoints on the window squeezed the message column to 0 px at 1101 px, one character per
 // line (finding 1713); the rows now follow the card's width. The test above keeps timestamps whole.
