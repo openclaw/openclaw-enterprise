@@ -279,7 +279,8 @@ export function renderWorkspaceFiles(context, agent, path) {
       if (outcomeUnknown || shown !== (baseline ?? "")) {
         return;
       }
-      // Only a file read as missing (404) is loaded without a baseline; it shows that error.
+      // Only a file read as missing (404) is loaded without a baseline; its error says so, or after
+      // a Reload that confirmed the absence, its status.
       const missing = baseline === undefined;
       const started = (operations += 1);
       let file;
@@ -294,8 +295,13 @@ export function renderWorkspaceFiles(context, agent, path) {
           return;
         }
         if (missing && confirmsMissingFile(cause)) {
-          // Still missing: its error already says so, and nothing new failed (finding 1878).
-          clearRereadFailure();
+          // Still missing, and nothing new failed (finding 1878). After a Reload the status, not
+          // the error, says the file is missing, so a failed reread's status gives way to that
+          // notice again rather than to nothing (finding 1885).
+          if (rereadFailed) {
+            rereadFailed = false;
+            status.textContent = error.textContent ? "" : `${name} is missing. Save to create it.`;
+          }
           return;
         }
         // The file stays as last read, and the reader learns it may be out of date.

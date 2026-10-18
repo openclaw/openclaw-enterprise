@@ -2797,6 +2797,85 @@ test("a Workspace reread keeps a missing file's error and clears a failed reread
   assert.equal(await workspaceStatus(soul), "SOUL.md loaded.");
 });
 
+// After a Reload confirms a file missing, its status is the only missing notice: a failed reread
+// replaces it until a reread confirms the file still missing (finding 1885). Only a file last
+// read as missing is quiet about a missing answer; one read with content that is then deleted
+// reports the failed reread and keeps its last text (finding 1886).
+test("a Workspace reread restores a reloaded missing file's notice and reports a deleted file", async (t) => {
+  // Files whose next read fails; a file without content is missing.
+  let failOnce = new Set();
+  const contents = new Map([
+    ["AGENTS.md", "# AGENTS.md\n"],
+    ["SOUL.md", "# SOUL.md\n"],
+    ["USER.md", "# USER.md\n"],
+  ]);
+  const { page, filePath, form, makeCurrent } = await openWorkspaceVersions(
+    t,
+    "Workspace reloaded missing reread",
+    {
+      async read({ filename }) {
+        if (failOnce.delete(filename)) {
+          return { status: "unavailable" };
+        }
+        if (!contents.has(filename)) {
+          return { status: "missing" };
+        }
+        return { status: "ok", file: { name: filename, content: contents.get(filename) } };
+      },
+      async write() {
+        throw new Error("no Workspace file may be written");
+      },
+    },
+    4,
+  );
+  const settled = { "AGENTS.md": 1, "SOUL.md": 1, "IDENTITY.md": 1, "USER.md": 1 };
+  const nextVersion = async (failing) => {
+    failOnce = new Set(failing);
+    await makeCurrent();
+    for (const file of Object.keys(settled)) {
+      settled[file] += 1;
+      await waitForSettledFetches(page, filePath(file), settled[file]);
+    }
+  };
+  const rereadFailed = (file) =>
+    `${file} could not be reread. Reload to check its current contents.`;
+  const missingNotice = "IDENTITY.md is missing. Save to create it.";
+  const identity = form("IDENTITY.md");
+  const identityError = identity.locator('[role="alert"]');
+  const soul = form("SOUL.md");
+  const soulEditor = page.getByLabel("SOUL.md", { exact: true });
+  await soul.getByText("SOUL.md loaded.", { exact: true }).waitFor();
+
+  // The reader reloads IDENTITY.md, which the API confirms is missing.
+  await page.getByRole("button", { name: "Reload IDENTITY.md", exact: true }).click();
+  settled["IDENTITY.md"] += 1;
+  await waitForSettledFetches(page, filePath("IDENTITY.md"), settled["IDENTITY.md"]);
+  await identity.getByText(missingNotice, { exact: true }).waitFor();
+  assert.equal(await identityError.textContent(), "");
+
+  // IDENTITY.md cannot be reread. SOUL.md is deleted, and its missing answer is reported as a
+  // failed reread, since the editor still shows its last text.
+  contents.delete("SOUL.md");
+  await nextVersion(["IDENTITY.md"]);
+  assert.equal(await workspaceStatus(identity), rereadFailed("IDENTITY.md"));
+  assert.equal(await workspaceStatus(soul), rereadFailed("SOUL.md"));
+  assert.equal(await soulEditor.inputValue(), "# SOUL.md\n");
+
+  // IDENTITY.md is confirmed missing again, so its notice returns; SOUL.md still reports that
+  // its text may be out of date.
+  await nextVersion([]);
+  assert.equal(await workspaceStatus(identity), missingNotice);
+  assert.equal(await identityError.textContent(), "");
+  assert.equal(await page.getByLabel("IDENTITY.md", { exact: true }).inputValue(), "");
+  assert.equal(await workspaceStatus(soul), rereadFailed("SOUL.md"));
+  assert.equal(await soulEditor.inputValue(), "# SOUL.md\n");
+
+  // A further confirmed-missing reread leaves the notice as it is.
+  await nextVersion([]);
+  assert.equal(await workspaceStatus(identity), missingNotice);
+  assert.equal(await identityError.textContent(), "");
+});
+
 test("a Workspace reread answered after a Reload keeps the Reload's answer", async (t) => {
   const before = "# SOUL.md before the deployment\n";
   let soul = before;
