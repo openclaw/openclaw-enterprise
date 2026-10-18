@@ -491,7 +491,7 @@ test("log levels stay on one line and keep log columns aligned", async (t) => {
   await page.getByLabel("Include debug").check();
   await pane.getByText("debug message", { exact: true }).waitFor();
 
-  for (const width of [320, 390, 700, 900, 1280]) {
+  for (const width of [320, 390, 524, 700, 900, 1280]) {
     await page.setViewportSize({ width, height: 844 });
     const fittingLevels = await pane.locator(".log-level").evaluateAll((badges) =>
       badges.flatMap((badge) => {

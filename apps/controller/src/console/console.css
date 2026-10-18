@@ -2850,7 +2850,9 @@ summary:focus-visible {
     margin-left: 0;
   }
   .log-line {
-    grid-template-columns: minmax(var(--log-time-column), 1fr) max-content minmax(60px, 112px);
+    grid-template-columns:
+      minmax(var(--log-time-column), 1fr) var(--log-level-column)
+      minmax(60px, 112px);
     gap: 4px 10px;
   }
   .log-content {
