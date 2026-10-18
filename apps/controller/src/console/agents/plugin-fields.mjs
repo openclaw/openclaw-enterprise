@@ -306,6 +306,28 @@ export function createPluginFields({
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  function writeToolPolicy(pluginId, scope, key, value, toolId) {
+    update((all) => {
+      const selection = all[pluginId];
+      const policy = {
+        ...(scope === "toolDefaults" ? selection.toolDefaults : selection.tools?.[toolId]),
+        [key]: value,
+      };
+      if (value === undefined) {
+        delete policy[key];
+      }
+      const updated = scope === "toolDefaults" ? policy : { ...selection.tools, [toolId]: policy };
+      if (scope === "tools" && Object.keys(policy).length === 0) {
+        delete updated[toolId];
+      }
+      if (Object.keys(updated).length === 0) {
+        delete selection[scope];
+      } else {
+        selection[scope] = updated;
+      }
+    });
+  }
+
   function select(label, value, options, onChange, supported = true) {
     const control = element(
       "select",
@@ -584,16 +606,7 @@ export function createPluginFields({
           );
           const defaults = selected.toolDefaults ?? {};
           const writeDefault = (key, value) =>
-            update((all) => {
-              const selection = all[entry.id];
-              selection.toolDefaults = { ...selection.toolDefaults, [key]: value };
-              if (value === undefined) {
-                delete selection.toolDefaults[key];
-              }
-              if (!Object.keys(selection.toolDefaults).length) {
-                delete selection.toolDefaults;
-              }
-            });
+            writeToolPolicy(entry.id, "toolDefaults", key, value);
           defaultReviewer = select(
             `${entry.name} default reviewer`,
             defaults.reviewer ?? "",
@@ -803,21 +816,7 @@ export function createPluginFields({
         }
         for (const tool of tools.values()) {
           const policy = selected?.tools?.[tool.id] ?? {};
-          const writeTool = (key, value) =>
-            update((all) => {
-              const selection = all[entry.id];
-              const next = { ...selection.tools?.[tool.id], [key]: value };
-              if (value === undefined) {
-                delete next[key];
-              }
-              selection.tools = { ...selection.tools, [tool.id]: next };
-              if (Object.keys(next).length === 0) {
-                delete selection.tools[tool.id];
-              }
-              if (Object.keys(selection.tools).length === 0) {
-                delete selection.tools;
-              }
-            });
+          const writeTool = (key, value) => writeToolPolicy(entry.id, "tools", key, value, tool.id);
           const row = element(
             "fieldset",
             {
