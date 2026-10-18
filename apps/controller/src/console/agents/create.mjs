@@ -2298,15 +2298,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         if (!context.isCurrent()) {
           return;
         }
-        pending = false;
-        updateControls();
         if (error.status === 401) {
           context.onExpired();
-          return;
+        } else {
+          feedback.textContent =
+            rejectionMessage(error) + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+          // While the pressed control is still disabled, as after a save.
+          focusFeedbackLine(feedback);
         }
-        feedback.textContent =
-          rejectionMessage(error) + (error.requestId ? ` Request ID: ${error.requestId}` : "");
-        focusFeedbackLine(feedback);
+        pending = false;
+        updateControls();
         return;
       }
       if (!context.isCurrent()) {
