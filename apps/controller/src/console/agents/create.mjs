@@ -584,30 +584,6 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   });
   const selectedModeUnavailable = () =>
     !nativeWorkersUnavailable.hidden || !openclawModeUnavailable.hidden;
-  // The harness hint states what this Agent will run; Runtime details keep the installation's
-  // conditions (finding 1904).
-  const harnessOutcome = ({ noOpenClawMode, nativeRefused, modeUnavailable }) => {
-    if (harness.value === "codex") {
-      return "This Agent will run Codex with Dedicated execution.";
-    }
-    if (!capabilityDiscoveryDone) {
-      return "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
-    }
-    if (noOpenClawMode) {
-      return "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
-    }
-    const runtime = `${mode.value === "dedicated" ? "Dedicated" : "Embedded"} execution`;
-    if (modeUnavailable) {
-      return `This Agent cannot run OpenClaw with ${runtime} on this installation.`;
-    }
-    const reason =
-      nativeProvider.value === "anthropic"
-        ? " Anthropic requires Embedded OpenClaw."
-        : nativeRefused
-          ? " Choose Codex for Dedicated execution."
-          : "";
-    return `This Agent will run OpenClaw with ${runtime}.${reason}`;
-  };
   const configuration = element("textarea", {
     id: "configuration-json",
     name: "configuration",
@@ -1812,6 +1788,30 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         capabilityStatus.textContent = nextStatus;
       }
     }
+    // The harness hint states what this Agent will run; Runtime details keep the installation's
+    // conditions (finding 1904).
+    const harnessOutcome = () => {
+      if (harness.value === "codex") {
+        return "This Agent will run Codex with Dedicated execution.";
+      }
+      if (!capabilityDiscoveryDone) {
+        return "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
+      }
+      if (noOpenClawMode) {
+        return "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
+      }
+      const runtime = `${mode.value === "dedicated" ? "Dedicated" : "Embedded"} execution`;
+      if (modeUnavailable) {
+        return `This Agent cannot run OpenClaw with ${runtime} on this installation.`;
+      }
+      const reason =
+        nativeProvider.value === "anthropic"
+          ? " Anthropic requires Embedded OpenClaw."
+          : nativeRefused
+            ? " Choose Codex for Dedicated execution."
+            : "";
+      return `This Agent will run OpenClaw with ${runtime}.${reason}`;
+    };
     nativeHarnessWarning.hidden =
       harness.value !== "openclaw" || mode.value !== "dedicated" || nativeRefused;
     const codexOption = harness.querySelector('[value="codex"]');
@@ -1822,7 +1822,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
         : sandboxDriverOutage
           ? "Codex and OpenClaw are unavailable right now: this installation's Sandbox Driver is unavailable."
-          : harnessOutcome({ noOpenClawMode, nativeRefused, modeUnavailable });
+          : harnessOutcome();
     if (binding?.method === "runtime") {
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";
