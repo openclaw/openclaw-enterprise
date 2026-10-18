@@ -735,9 +735,12 @@ test(
   },
 );
 
-for (const { name, fixtureName, createRefusal, expectedReason } of [
+// The two refusals differ once the attempt fails: an operator must correct a misconfiguration
+// and then replay, so maintenance leaves it; a gateway refusal ends once the controller
+// identity's Workspace role is restored, so maintenance queues it again (finding 1874).
+for (const { name, fixtureName, createRefusal, expectedReason, maintenanceRequeues } of [
   {
-    name: "a withdrawal Compute refuses as misconfigured fails once and queues no later series",
+    name: "a withdrawal Compute refuses as misconfigured fails once, queues no later series and waits for a replay",
     fixtureName: "withdraw-refused",
     // Simulate a SandboxDriver that cannot name the revision's Sandbox.
     createRefusal: () =>
@@ -746,9 +749,10 @@ for (const { name, fixtureName, createRefusal, expectedReason } of [
         "Credential withdrawal requires a SandboxDriver that identifies the revision's Harness.",
       ),
     expectedReason: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+    maintenanceRequeues: false,
   },
   {
-    name: "a withdrawal the Sandbox gateway refuses to confirm fails once with SANDBOX_GATEWAY_UNAUTHORIZED",
+    name: "a withdrawal the Sandbox gateway refuses to confirm fails once with SANDBOX_GATEWAY_UNAUTHORIZED and maintenance queues it again",
     fixtureName: "withdraw-unauthorized",
     // Simulate OpenShell refusing the controller identity, making a missing Sandbox
     // indistinguishable from a hidden one (finding 1676).
@@ -757,6 +761,7 @@ for (const { name, fixtureName, createRefusal, expectedReason } of [
         "OpenShell refused the controller gateway identity in Workspace oce-test, so the credential of Sandbox sb-test cannot be confirmed withdrawn.",
       ),
     expectedReason: "SANDBOX_GATEWAY_UNAUTHORIZED",
+    maintenanceRequeues: true,
   },
 ]) {
   test(name, requiresPostgres, async (context) => {
@@ -768,6 +773,7 @@ for (const { name, fixtureName, createRefusal, expectedReason } of [
     let calls = 0;
     await startWithGateway(fixture, {
       ...fixture.compute,
+      maintenanceIntervalMs: 3_600_000,
       async withdrawCredentialSource() {
         calls += 1;
         throw createRefusal();
@@ -791,6 +797,25 @@ for (const { name, fixtureName, createRefusal, expectedReason } of [
     assert.deepEqual(await withdrawalAudit(fixture, "outcome", "reason_code"), [
       { outcome: "failure", reason_code: expectedReason },
     ]);
+
+    // The revision's next maintenance pass decides whether the refusal is attempted again.
+    await runMaintenancePass(fixture, active, "the revision's maintenance chain must continue");
+    const attempts = await withdrawalAttempts(fixture, active);
+    if (maintenanceRequeues) {
+      assert.equal(attempts.length, 2, "maintenance must queue the refused withdrawal again");
+      assert.equal(attempts[1].actorId, fixture.actor.id);
+      await fixture.work(attempts[1], "failed_permanent");
+      assert.equal(calls, 2);
+      assert.equal((await fixture.workResult(attempts[1])).rows[0].reason_code, expectedReason);
+    } else {
+      assert.deepEqual(
+        attempts.map(({ state }) => state),
+        ["failed_permanent"],
+        "maintenance must leave the refused withdrawal for a replay",
+      );
+      assert.equal(calls, 1);
+      assert.equal((await withdrawal.read(fixture.actor.id)).lastReason, expectedReason);
+    }
   });
 }
 
