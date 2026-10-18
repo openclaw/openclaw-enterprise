@@ -4637,16 +4637,22 @@ test("two-cluster Compute refuses a harness routing hostname that parses as anot
         harnessRouting: { ...twoCluster.executionCluster.harnessRouting, hostname },
       },
     });
-  // A URL parser reads these as IPv4 (127.0.0.1, 127.0.0.1, 0.0.0.123), so a Harness would
-  // connect somewhere other than the name the operator wrote (finding 1856). The refusal names
-  // the harness setting, not the Gateway routing the execution plane reuses it as.
+  // A URL parser reads 127.1 and 0x7f.1 as 127.0.0.1 and refuses api.123 and harness.0x10 as
+  // malformed IPv4, so a Harness would not reach the name the operator wrote (finding 1856).
+  // The refusal names the harness setting, not the Gateway routing the execution plane reuses
+  // it as.
   for (const hostname of ["127.1", "0x7f.1", "api.123", "harness.0x10"]) {
     assert.throws(harness(hostname), {
       message:
         "Harness routing hostname must be a DNS hostname without a port or path. A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers.",
     });
   }
-  for (const hostname of ["Harness.example.test", "harness.example.test:443", "harness_1.test"]) {
+  for (const hostname of [
+    "Harness.example.test",
+    "harness.example.test:443",
+    "harness_1.test",
+    7,
+  ]) {
     assert.throws(harness(hostname), {
       message: "Harness routing hostname must be a DNS hostname without a port or path.",
     });

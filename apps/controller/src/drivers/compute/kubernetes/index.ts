@@ -3366,8 +3366,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       // Checked before the execution plane's own check below, which reads the harness routing
       // as its Gateway routing, so a refusal names the setting the operator wrote.
+      const harnessHostname: unknown = execution.harnessRouting?.hostname;
+      if (harnessHostname !== undefined && typeof harnessHostname !== "string") {
+        throw new ConfigurationFailure(
+          "Harness routing hostname must be a DNS hostname without a port or path.",
+        );
+      }
       validateDnsHostname(
-        required(execution.harnessRouting?.hostname, "Harness routing hostname"),
+        required(harnessHostname, "Harness routing hostname"),
         "Harness routing hostname",
       );
       const { executionCluster: _executionCluster, ...control } = options;
