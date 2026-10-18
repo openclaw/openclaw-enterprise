@@ -70,7 +70,7 @@ const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/s
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
-  'Configuration setting agents.entries.research_assistant_planning.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
+  'Configuration setting agents.entries.research_assistant.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
   approvers: { agent: true, plugin: false, tools: false },
@@ -2894,7 +2894,8 @@ export const scenarios = {
       ...readyForm,
       { selector: ".plugin-json > summary", click: true },
       { selector: "#agent-plugins", value: pluginSelections },
-      click("Create Agent"),
+      // Pressed as a person would, so focus starts on the button that disables.
+      { ...click("Create Agent"), focus: true },
     ],
     description:
       "The form saved its Configuration, then the API refused the Agent because the Configuration denies every tool of the selected plugin. The refusal leads the saved-resources line, scrolls into view with focus, wraps its setting path at phone widths, and names the fix this form allows: deselect the plugin.",
@@ -3122,6 +3123,8 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "Plugin selections refused by the Configuration",
     path: `${draft}&tab=plugins`,
+    // Keep the scroll the refusal's focus gives, rather than jump back to the tabs.
+    scrollToTabs: false,
     deployed: true,
     auth: "codex_pat",
     pluginCapabilities,
@@ -3138,7 +3141,7 @@ export const scenarios = {
     actions: [
       { selector: ".plugin-json > summary", click: true },
       { selector: "#agent-plugins", value: pluginSelections },
-      click("Save plugin selections"),
+      { ...click("Save plugin selections"), focus: true },
     ],
     description:
       "The Configuration denies every tool of the selected plugin, so the API refuses the save. The refusal shows as an error and takes focus; editing the selections clears it.",
