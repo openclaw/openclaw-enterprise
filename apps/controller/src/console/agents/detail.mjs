@@ -1,4 +1,13 @@
-import { button, element, focusSaveOutcome, patchChildren, setHidden, setText } from "../dom.mjs";
+import {
+  button,
+  element,
+  fieldError,
+  focusSaveOutcome,
+  jsonObjectProblem,
+  patchChildren,
+  setHidden,
+  setText,
+} from "../dom.mjs";
 import {
   configuredHarnessId,
   createHarnessAuthFields,
@@ -156,10 +165,6 @@ function nativeDocument(values, label) {
     element("summary", {}, label),
     element("pre", { tabindex: "0" }, JSON.stringify(values, null, 2)),
   );
-}
-
-function isPlainObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
@@ -3690,6 +3695,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       spellcheck: "false",
       "aria-describedby": "configuration-json-hint",
     });
+    // Invalid JSON is reported under the editor, never by the browser's bubble (finding 1903).
+    const editorError = fieldError(editor);
     editor.value = retained?.text ?? initialText;
     context.drafts.track("configuration", () =>
       editing
@@ -3756,8 +3763,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       initialText = JSON.stringify(values, null, 2);
       editing = false;
       editor.value = initialText;
-      editor.setCustomValidity("");
+      editorError.clear();
       feedback.textContent = "";
+      feedback.className = "hint";
       reloadRequired = false;
       setDraftEditorState({
         dirty: false,
@@ -3792,21 +3800,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
 
     function parseEditor(reportInvalid = false) {
-      try {
-        const parsed = JSON.parse(editor.value);
-        if (!isPlainObject(parsed)) {
-          throw new Error();
-        }
-        return parsed;
-      } catch {
-        if (reportInvalid) {
-          editor.setCustomValidity("Enter a valid JSON object.");
-          editor.reportValidity();
-          feedback.textContent = "Enter a valid Configuration JSON object.";
-          feedbackLocked = true;
-        }
-        return undefined;
+      const problem = jsonObjectProblem(editor.value);
+      if (problem === undefined) {
+        return JSON.parse(editor.value);
       }
+      if (reportInvalid) {
+        // One message, under the editor, which keeps focus so the JSON can be fixed in place.
+        editorError.show(problem);
+        feedback.textContent = "";
+        feedbackLocked = true;
+        editor.focus();
+      }
+      return undefined;
     }
 
     function updateState() {
@@ -3825,6 +3830,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       if (outcomeUnknown) {
         feedback.textContent =
           "Outcome unknown. Configuration may have been saved. Reload this draft before saving again.";
+        feedback.className = "error";
         feedbackLocked = true;
       } else if (reloadRequired) {
         if (!feedbackLocked) {
@@ -3847,8 +3853,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
 
     editor.addEventListener("input", () => {
-      editor.setCustomValidity("");
+      editorError.clear();
       feedback.textContent = "";
+      feedback.className = "hint";
       feedbackLocked = false;
       reloadRequired = false;
       updateState();
@@ -3856,6 +3863,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     showDraftEditorNavigationBlock = () => {
       if (draftEditorNavigationBlock) {
         feedback.textContent = draftEditorNavigationBlock;
+        feedback.className = "hint";
         feedbackLocked = true;
       }
     };
@@ -3871,6 +3879,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       pending = true;
       feedback.textContent = "Checking Configuration…";
+      feedback.className = "hint";
       feedbackLocked = true;
       const saveFocused = document.activeElement === save;
       updateState();
@@ -3897,6 +3906,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           freshConfig.generation !== baseline.generation
         ) {
           feedback.textContent = CONFIGURATION_CHANGED;
+          feedback.className = "error";
           feedbackLocked = true;
           reloadRequired = true;
           return;
@@ -3931,6 +3941,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         }
         if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
           feedback.textContent = CONFIGURATION_CHANGED;
+          feedback.className = "error";
           feedbackLocked = true;
           reloadRequired = true;
           return;
@@ -3938,6 +3949,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         feedback.textContent =
           configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
           rejectionMessage(error, mutationStarted);
+        feedback.className = "error";
         feedbackLocked = true;
         outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
       } finally {
@@ -3984,6 +3996,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           { className: "form-field" },
           element("label", { for: "configuration-json" }, "Configuration JSON"),
           editor,
+          editorError.node,
           element(
             "p",
             { className: "hint", id: "configuration-json-hint" },

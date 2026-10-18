@@ -1264,15 +1264,37 @@ test("Agent creation rejects non-object native Configuration JSON before Configu
   await enterManualModel(page, "unused-invalid-config-key", "gpt-4.1");
   await page.getByLabel("Agent name").fill("Broken Agent");
   await openAdvancedSettings(page);
-  await page.getByLabel("Configuration JSON").fill("[]");
+  const json = page.getByLabel("Configuration JSON");
+  const jsonError = page.locator("#configuration-json-error");
+  await json.fill("[]");
   await page.getByText("Advanced settings", { exact: true }).click();
   await page.getByRole("button", { name: "Create Agent" }).click();
 
-  const validation = await page
-    .getByLabel("Configuration JSON")
-    .evaluate((node) => node.validationMessage);
-  assert.equal(validation, "Enter a valid JSON object.");
-  assert.equal(await page.getByLabel("Configuration JSON").isVisible(), true);
+  // One persistent message under the field, linked to it; no browser bubble (finding 1903).
+  await jsonError
+    .getByText("Enter a valid JSON object, not an array or a single value.", { exact: true })
+    .waitFor();
+  assert.equal(await json.evaluate((node) => node.validationMessage), "");
+  assert.equal(await json.getAttribute("aria-invalid"), "true");
+  assert.match(await json.getAttribute("aria-describedby"), /\bconfiguration-json-error\b/);
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "configuration-json",
+  );
+  assert.equal(await json.isVisible(), true);
+
+  // Editing clears the message; a parse error names its line and column.
+  await json.fill('{\n  "model": 1,\n}');
+  assert.equal(await jsonError.isHidden(), true);
+  assert.equal(await json.getAttribute("aria-invalid"), null);
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await jsonError
+    .getByText("Invalid JSON at line 3, column 1. Enter a valid JSON object.", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "configuration-json",
+  );
   assert.equal(secretPostRequests(requests, namespace.id).length, 1);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);

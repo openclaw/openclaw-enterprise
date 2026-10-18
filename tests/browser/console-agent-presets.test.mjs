@@ -1286,6 +1286,11 @@ test("API-key Presets keep their credential provider fixed while allowing model 
     .getByRole("alert")
     .filter({ hasText: "Configuration must use the selected provider" })
     .waitFor();
+  // The JSON is what to fix, so it takes focus (finding 1903).
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "configuration-json",
+  );
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   const provider = page.getByLabel("Provider", { exact: true });
   assert.equal(await provider.inputValue(), "openai");
