@@ -392,6 +392,10 @@ test("two helpers given one node:test context share its bounded teardown, newest
   assert.equal(helpersContext.hooks.length, 1);
 });
 
+// A cleanup registered after its teardown ran also stops the setup that made it, by throwing to it.
+const stopsSetup =
+  /^teardown: setup outlived its test; cleanup registered at kubernetes-real-kubectl\.test\.mjs:\d+ runs now and setup stops here$/;
+
 test(
   "a cleanup registered after the teardown ran runs at once, bounded, and fails the file",
   { timeout: 5_000 },
@@ -414,8 +418,6 @@ test(
     await testContext.hooks[0]();
     assert.deepEqual(events, [], "nothing was abandoned or late");
     // Each late registration also stops the setup that made it, by throwing to it.
-    const stopsSetup =
-      /^teardown: setup outlived its test; cleanup registered at kubernetes-real-kubectl\.test\.mjs:\d+ runs now and setup stops here$/;
     assert.throws(() => context.after(() => ran.push("worker stop")), { message: stopsSetup });
     // A late cleanup that never settles is abandoned like any other.
     assert.throws(() => context.after(() => new Promise(() => {})), { message: stopsSetup });
@@ -476,21 +478,33 @@ test(
     await first.hooks[0]();
     await second.hooks[0]();
     const ran = [];
-    let release;
-    assert.throws(() =>
-      firstContext.after(async () => {
-        await new Promise((resolve) => {
-          release = resolve;
-        });
-        ran.push("first late cleanup");
-      }),
+    const firstHeld = Promise.withResolvers();
+    const firstRan = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    assert.throws(
+      () =>
+        firstContext.after(async () => {
+          firstHeld.resolve();
+          await release.promise;
+          ran.push("first late cleanup");
+          firstRan.resolve();
+        }),
+      { message: stopsSetup },
     );
-    await delay(20);
-    assert.throws(() => secondContext.after(() => ran.push("second late cleanup")));
-    await delay(20);
-    release();
-    await delay(50);
-    assert.deepEqual(ran.sort(), ["first late cleanup", "second late cleanup"]);
+    await firstHeld.promise;
+    assert.throws(() => secondContext.after(() => ran.push("second late cleanup")), {
+      message: stopsSetup,
+    });
+    try {
+      // Late cleanups drain in microtasks, so one event-loop turn runs the second while the
+      // first teardown's is still running.
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(ran, ["second late cleanup"]);
+    } finally {
+      release.resolve();
+    }
+    await firstRan.promise;
+    assert.deepEqual(ran, ["second late cleanup", "first late cleanup"]);
   },
 );
 

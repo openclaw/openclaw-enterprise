@@ -524,11 +524,9 @@ async function returnWithHeldRows(t, name) {
         return animations.length;
       });
       assert.equal(ended, agents.length);
-      const deadline = Date.now() + 5_000;
-      while ((await page.evaluate(() => globalThis.__readingShown)) < ended) {
-        assert.ok(Date.now() < deadline, "every row's delay animation ends");
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+      await page.waitForFunction((count) => globalThis.__readingShown >= count, ended, {
+        timeout: 5_000,
+      });
     },
     // Lets the held rereads land `ms` after the last step and waits until the page has handled
     // them.
@@ -602,6 +600,38 @@ test("A list resumed while its rows wait to fill shows only the new rereads", as
   rereads.release();
   await page.getByText(READING).first().waitFor({ state: "detached" });
   assert.equal(await viewTag(page), "kept");
+});
+
+// Until the resume's list read revalidates, the refocus holds the same list on screen, inert,
+// with its rows' text still connected but the view no longer current: a landed reread waiting
+// out those 150 ms must not fill a row of the held page either (finding 1877).
+test("A list held by a refocus while its rows wait to fill paints no earlier answer", async (t) => {
+  const { namespace, page, reveal, land } = await returnWithHeldRows(t, "Steady held resume");
+  await reveal(250);
+  await land(50);
+  const listRead = `/namespaces/${namespace.id}/agents`;
+  const list = await holdRequests(t, page, (url) => url.pathname.endsWith(listRead), {
+    once: true,
+  });
+  const rereads = await holdRowReads(t, page, namespace);
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await list.requested;
+  await page.clock.runFor(200);
+  const held = await page.evaluate((reading) => {
+    const view = globalThis.document.querySelector('.content [aria-live="polite"]');
+    const cells = [...view.querySelectorAll(".agent-deployment")];
+    return {
+      inert: view.inert,
+      reading: cells.filter((cell) => cell.textContent === reading).length,
+    };
+  }, READING);
+  assert.deepEqual(held, { inert: true, reading: 3 }, "the held rows stay unfilled");
+  list.release();
+  await rereads.revisions.requested;
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  assert.equal(await viewTag(page), "kept");
+  rereads.release();
+  await page.getByText(READING).first().waitFor({ state: "detached" });
 });
 
 // A list left again before its rows' rereads land is reused on the next return too: rows read
