@@ -80,8 +80,9 @@ block direct Secret-backed model and environment projection.
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
    update API; see [workspace recovery](../../guides/topics/workspace-files.md#set-files-when-creating-an-agent).
 
-Before saving, selected Preset forms retain variables across Back/Forward; passwords clear. Leaving a default or no-Preset form discards unsaved state. Saved Agents and Secrets remain. **Start over** confirms discard.
-Reload, page exit, and sign-out clear local drafts. Once saving begins, navigation
+Before saving, forms and Preset variables survive navigation; passwords clear.
+**Cancel** and **Start over** discard the draft, confirming once changed. Saved Agents
+and Secrets remain. Sign-out clears drafts; a reload asks first. Once saving begins, navigation
 does not retain partial-save or uncertain-outcome state; follow save recovery below.
 
 For Codex plugins, open **Configure plugins**. With the

@@ -3084,11 +3084,21 @@ test("database CA mounts stay distinct from active production volume mounts", to
     );
     assert.ok(paths.size > 0);
     for (const mountPath of paths) {
-      await assert.rejects(
-        render({ ...features, ...databaseCaValues, "database.caMountPath": mountPath }),
-        /database.caMountPath.*distinct/,
+      // Linux kubelet/runtime destinations alias these spellings. The CA must not
+      // hide an active volume after admission accepts the distinct raw strings.
+      for (const alias of [
         mountPath,
-      );
+        mountPath.slice(1),
+        `${mountPath}/`,
+        `${mountPath}/.`,
+        `${mountPath}/../${mountPath.split("/").at(-1)}`,
+      ]) {
+        await assert.rejects(
+          render({ ...features, ...databaseCaValues, "database.caMountPath": alias }),
+          /database.caMountPath.*distinct/,
+          alias,
+        );
+      }
     }
   }
   // Paths reserved by optional features remain available when those features are disabled.
@@ -3102,6 +3112,8 @@ test("database CA mounts stay distinct from active production volume mounts", to
     "/etc/openclaw/gateway-ca",
     "/etc/openclaw/chatgpt",
     "/custom/database-ca",
+    "custom/database-ca",
+    "/custom/./database-ca",
   ]) {
     await render({ ...databaseCaValues, "database.caMountPath": mountPath });
   }

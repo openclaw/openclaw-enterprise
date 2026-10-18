@@ -223,6 +223,29 @@ function runtimeFailureCauseText(cause) {
   return retried ? `${label} (${detail}).${retry}` : `${label} (${detail})`;
 }
 
+// The API's message for a failure that deploying the same Agent again can clear (an outage
+// that outlasted every attempt, a lost worker claim, an approval or driver that changed since
+// admission) starts a sentence with "Deploy again". The recovery offers Deploy again for those
+// messages only, so it never contradicts the step the message names. A message that names no
+// step at all (a deadline that passed, a Driver that cannot run this Harness) mentions none of
+// deploy, ask or check, and the banner adds the generic advice to it.
+const DEPLOY_AGAIN_STEP = /(?:^|[.;]\s)Deploy again\b/u;
+const NAMED_STEP = /\b(?:deploy|ask|check)\b/iu;
+
+/**
+ * The next step a failed deployment's API message names: "deploy-again" when it says to deploy
+ * again, "named" for any other step, and null for none.
+ */
+export function deploymentFailureStep(message) {
+  if (typeof message !== "string" || message.length === 0) {
+    return null;
+  }
+  if (DEPLOY_AGAIN_STEP.test(message)) {
+    return "deploy-again";
+  }
+  return NAMED_STEP.test(message) ? "named" : null;
+}
+
 const DEPLOYMENT_FAILURE_LINK_LABELS = {
   credentials: "Open Credentials",
   configuration: "Open Configuration",
@@ -408,8 +431,9 @@ export function noteConsoleLoad() {
   }
 }
 
+/** The link request for this page, if one names it: `{ deploy }` says how to open it. */
 function takeLinkedVersionView(key) {
-  const linked = linkedVersionView?.key === key;
+  const linked = linkedVersionView?.key === key ? linkedVersionView : null;
   if (linked) {
     linkedVersionView = null;
   }
@@ -1136,7 +1160,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   const linkedKey = (revision = selected, tab = selectedTab) =>
     JSON.stringify([namespaceId, target(revision, tab)]);
   // A link to one of this Agent's version tabs that brings the tab into view once it opens.
-  function versionLink(label, revision, tab) {
+  // With `deploy`, a draft link brings that draft's Deploy new version into view instead.
+  function versionLink(label, revision, tab, { deploy = false } = {}) {
     const node = element("a", { href: context.pageUrl(target(revision, tab)) }, label);
     node.addEventListener("click", (event) => {
       if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
@@ -1145,11 +1170,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       event.preventDefault();
       if (revision === selected && tab === selectedTab) {
         // Already open below: rebuilding it would only discard the reader's edits.
-        openVersionDetail({ animate: true });
+        openVersionDetail({ animate: true, deploy });
         return;
       }
       // The load this navigation starts is the next one.
-      linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1 };
+      linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1, deploy };
       context.navigate(target(revision, tab));
     });
     return node;
@@ -1166,13 +1191,40 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       ? button("Create new version", () => change("draft", "configuration"))
       : null;
   const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
+  // The note that holds the tabs also holds ← Agents and the Namespace selector (finding 1902).
+  const refuseLeave = () => {
+    if (!draftEditorBlocksNavigation()) {
+      return false;
+    }
+    showDraftEditorNavigationBlock();
+    return true;
+  };
+  const agentsLink = link("← Agents", "agents", context);
+  agentsLink.addEventListener(
+    "click",
+    (event) => {
+      if (
+        !event.button &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey &&
+        refuseLeave()
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    { capture: true },
+  );
+  context.setLeaveGuard?.(refuseLeave);
   const header = element(
     "div",
     { className: "agent-toolbar agent-overview-toolbar" },
     element(
       "div",
       { className: "agent-overview-identity" },
-      link("← Agents", "agents", context),
+      agentsLink,
       element("span", { className: "resource-id", title: "Agent ID" }, agent.id),
     ),
     headerActions,
@@ -1401,28 +1453,59 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // Brings the version's detail (heading, tab strip and open tab) to the top of the window. A
   // click in the shown page scrolls smoothly unless the reader asked for reduced motion; a page
   // about to show scrolls at once, so it never paints at the top first (findings 1552, 1586).
-  function scrollToVersionDetail({ animate = false } = {}) {
+  function scrollToVersionDetail({ animate = false } = {}, node = detailPane) {
     const smooth = animate && !globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    detailPane.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "instant" });
+    node.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "instant" });
   }
-  function openVersionDetail(options) {
-    tabControls.get(selectedTab)?.focus({ preventScroll: true });
-    scrollToVersionDetail(options);
+  function openVersionDetail({ deploy = false, ...options } = {}) {
+    // Deploy again opens the draft at its deploy step, whose card can end below a phone's
+    // fold when the version detail is at the top: the card is brought to the top, with its
+    // Deploy new version focused when the reader can press it (finding 1898).
+    const actions = deploy ? detailPane.querySelector(":scope > .agent-draft-actions") : null;
+    if (deploy && !actions && !detailLoadFinished) {
+      // The card is built once the draft's own reads land: open it then, unless the reader has
+      // moved on (another tab, or focus taken elsewhere) in the meantime.
+      const tab = selectedTab;
+      void Promise.resolve(details).then(
+        () => {
+          const focused = document.activeElement;
+          if (
+            context.isCurrent() &&
+            !deleting &&
+            selectedTab === tab &&
+            (!focused || focused === document.body || focused === tabControls.get(tab)) &&
+            detailPane.querySelector(":scope > .agent-draft-actions")
+          ) {
+            openVersionDetail({ ...options, deploy });
+          }
+        },
+        () => {},
+      );
+    }
+    const deployButton = actions?.querySelector("button.primary");
+    if (deployButton && !deployButton.disabled) {
+      deployButton.focus({ preventScroll: true });
+    } else {
+      tabControls.get(selectedTab)?.focus({ preventScroll: true });
+    }
+    scrollToVersionDetail(options, actions ?? detailPane);
   }
   // Opened by a recovery link: show its tab once this page shows. Logs waits for its output
   // first and scrolls itself.
-  if (takeLinkedVersionView(linkedKey()) && selectedTab !== "logs") {
+  const linkedOnLoad = takeLinkedVersionView(linkedKey());
+  if (linkedOnLoad && selectedTab !== "logs") {
     scrollOnReveal = () => {
       scrollOnReveal = null;
       if (context.isCurrent() && !deleting) {
-        openVersionDetail();
+        openVersionDetail({ deploy: linkedOnLoad.deploy });
       }
     };
   }
   // A page restored for Back mounts at its old scroll position.
   context.onResume?.(() => {
-    if (takeLinkedVersionView(linkedKey()) && !deleting) {
-      openVersionDetail();
+    const linked = takeLinkedVersionView(linkedKey());
+    if (linked && !deleting) {
+      openVersionDetail({ deploy: linked.deploy });
     }
   });
   function showDetail() {
@@ -1492,6 +1575,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let latestDeploymentStatus = null;
   let latestDeploymentError = false;
   let latestDeploymentErrorCode = null;
+  let latestDeploymentErrorMessage = null;
   let latestDeploymentRecord = null;
   let versionRecord = null;
   const revisionsPromise = readRevisionPage(request, path);
@@ -1948,19 +2032,29 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         !context.deniedReads?.has(
           `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(configurationId)}`,
         );
-      let impact = logsAllowed
+      // The API's message states this failure's own next step (finding 1393); the banner leads
+      // with it, so that step is in view rather than only in Deployment details below the fold
+      // (finding 1898). The generic advice stays for a record without one.
+      const errorMessage = latestDeploymentErrorMessage;
+      const step = deploymentFailureStep(errorMessage);
+      const generic = logsAllowed
         ? "Check the failed version’s logs before deploying a new version."
         : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
+      let impact = errorMessage ? (step ? errorMessage : `${errorMessage} ${generic}`) : generic;
       if (replacementFailed) {
-        impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.`;
+        impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${errorMessage ? ` ${errorMessage}` : ""}`;
       } else if (selectedFailed) {
-        impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.`;
+        impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${errorMessage ? ` ${errorMessage}` : ""}`;
       }
-      if ((replacementFailed || selectedFailed) && !logsAllowed) {
-        // Without the Logs link this is the reader's only next step (finding 1484).
+      if ((replacementFailed || selectedFailed || step) && !logsAllowed) {
+        // Without the Logs link this is the reader's only way to the logs (finding 1484).
         impact += " Ask someone with log access to check the failed version’s logs.";
       }
       setText(recoveryMessage, `${failure} ${impact}`);
+      // Deploying again is the whole next step only where the API's message says so. The draft
+      // it opens builds Deploy new version only from a readable Configuration.
+      const deployAgain =
+        step === "deploy-again" && callerPermissions?.deploy === true && configurationAvailable;
       const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : null;
@@ -1977,12 +2071,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         canOpenConfiguration && callerPermissions?.update !== true
           ? "Open version draft"
           : DEPLOYMENT_FAILURE_LINK_LABELS[tab];
-      const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}`;
+      const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;
       if (recoveryTarget !== actionsFor) {
         recoveryTarget = actionsFor;
+        const again = deployAgain
+          ? versionLink("Deploy again", "draft", "configuration", { deploy: true })
+          : null;
         const logs = logsAllowed ? versionLink(`Open ${version} Logs`, latest.id, "logs") : null;
         const next = tab ? versionLink(nextLabel, "draft", tab) : null;
-        const actions = [logs, next].filter(Boolean);
+        const actions = [again, logs, next].filter(Boolean);
         if (actions.length) {
           actions[0].className = "overview-primary";
         }
@@ -2080,6 +2177,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       latestDeploymentRecord = null;
       latestDeploymentError = false;
       latestDeploymentErrorCode = null;
+      latestDeploymentErrorMessage = null;
       // On first load the newest version's panel replaces the loading placeholder once its
       // first status read settles, in the same frame as the summary and status line, so the
       // page below moves once instead of once for an empty panel and again for the status.
@@ -2115,6 +2213,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               latestDeploymentStatus = status;
               latestDeploymentError = unavailable;
               latestDeploymentErrorCode = errorCode;
+              latestDeploymentErrorMessage = record?.error?.message || null;
               if (errorCode === "RUNTIME_AUTHENTICATION_FAILED") {
                 void readLatestRevisionDetail(mostRecent);
               }
@@ -2316,6 +2415,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               carriedChannelSecrets = carried;
               if (carried) {
                 context.drafts.track("channelSecrets", () => carried);
+                // Saved Secrets the reloaded draft references: nothing a reload would lose.
+                context.drafts.unsavedWhen("channelSecrets", () => false);
               } else {
                 context.drafts.forget("channelSecrets");
               }
@@ -3709,6 +3810,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
         : undefined,
     );
+    // An open but unchanged editor is no unsaved work.
+    context.drafts.unsavedWhen(
+      "configuration",
+      (draft) => draft !== undefined && (draft.text !== draft.initialText || draft.outcomeUnknown),
+    );
     const feedback = element(
       "p",
       { className: "hint", role: "status", id: "configuration-editor-feedback" },
@@ -4059,7 +4165,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     void renderTab({ activated: true });
     // Logs scrolls to its output once that has loaded.
     if (linked && nextTab !== "logs") {
-      openVersionDetail({ animate: true });
+      openVersionDetail({ animate: true, deploy: linked.deploy });
     }
     return true;
   });

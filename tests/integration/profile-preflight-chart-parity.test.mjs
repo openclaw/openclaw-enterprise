@@ -1310,6 +1310,11 @@ test(
       for (const mountPath of [
         undefined,
         "/etc/company/postgres-ca",
+        "etc/company/postgres-ca",
+        "/etc/openclaw/./installation",
+        "/etc/openclaw/database-ca/../installation",
+        "/etc/openclaw/installation/",
+        "etc/openclaw/installation",
         "/etc/openclaw/execution", // Profiles do not enable executionCluster mounts.
         "/etc/openclaw/installation",
         "/run/openclaw-worker",
@@ -1330,7 +1335,11 @@ test(
           values: { database: { caSecretName: "occ-db-ca", caMountPath: mountPath } },
           accepted:
             mountPath === undefined ||
-            ["/etc/company/postgres-ca", "/etc/openclaw/execution"].includes(mountPath),
+            [
+              "/etc/company/postgres-ca",
+              "etc/company/postgres-ca",
+              "/etc/openclaw/execution",
+            ].includes(mountPath),
           chartError,
         });
       }

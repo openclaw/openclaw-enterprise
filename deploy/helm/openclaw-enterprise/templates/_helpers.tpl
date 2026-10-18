@@ -412,8 +412,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and .Values.auth.oidc .Values.auth.oidc.enabled .Values.auth.oidc.caSecretName -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/api-extra-ca" -}}
 {{- end -}}
-{{- if has (toString .Values.database.caMountPath) $reservedCaMounts -}}
+{{- /* Linux kubelet makes relative mounts absolute; the runtime resolves dot segments and trailing slashes. Compare destinations without changing the emitted operator path. */ -}}
+{{- $caDestination := clean (printf "/%s" .Values.database.caMountPath) -}}
+{{- range $mount := $reservedCaMounts -}}
+{{- if eq $caDestination (clean (printf "/%s" $mount)) -}}
 {{- fail "database.caMountPath must be distinct from other active mounts in the production database clients" -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if .Values.executionCluster.enabled -}}
