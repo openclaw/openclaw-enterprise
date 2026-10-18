@@ -808,7 +808,7 @@ for (const { name, maintenanceName, fixtureName, createRefusal, expectedReason, 
       }
 
       // The revision's next maintenance pass decides whether the refusal is attempted again.
-      await runMaintenancePass(fixture, active, "the revision's maintenance chain must continue");
+      await runMaintenancePass(fixture, active);
       const attempts = await withdrawalAttempts(fixture, active);
       if (requeued) {
         assert.equal(attempts.length, 2, "maintenance must queue the refused withdrawal again");
@@ -1448,12 +1448,27 @@ function recordPendingWithdrawal(fixture, owner, revision, credentialSourceId) {
   );
 }
 
-// Makes the revision's one queued maintenance pass due and waits for it to succeed.
-async function runMaintenancePass(fixture, revision, message) {
+// Makes the revision's one queued maintenance pass due without waiting for it to run.
+async function makeMaintenancePassDue(fixture, revision) {
   const due = await fixture.advanceMaintenance(revision);
-  assert.equal(due.rowCount, 1, message);
-  const pass = { id: revision.id, idempotencyKey: due.rows[0].idempotency_key };
-  await fixture.work(pass, "succeeded");
+  assert.equal(due.rowCount, 1, "one maintenance pass is queued");
+  return { id: revision.id, idempotencyKey: due.rows[0].idempotency_key };
+}
+
+function waitForMaintenancePass(fixture, pass) {
+  return waitFor("the maintenance pass to settle", async () => {
+    const { rows } = await fixture.observerPool.query(
+      `SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1`,
+      [pass.idempotencyKey],
+    );
+    return ["succeeded", "failed_permanent"].includes(rows[0]?.state) ? rows[0] : undefined;
+  });
+}
+
+async function runMaintenancePass(fixture, revision) {
+  const pass = await makeMaintenancePassDue(fixture, revision);
+  const settled = await waitForMaintenancePass(fixture, pass);
+  assert.equal(settled.state, "succeeded", `maintenance ended ${settled.reason_code}`);
   return pass;
 }
 
@@ -1587,11 +1602,9 @@ for (const harness of [false, true]) {
       assert.equal(exhausted.state, "pending");
       assert.equal(exhausted.withdrawalInProgress, false);
 
-      const runMaintenance = () =>
-        runMaintenancePass(fixture, first, "the active revision's maintenance chain must continue");
       // The next maintenance pass of the active revision queues the successor's attempt again.
       revoke = true;
-      await runMaintenance();
+      await runMaintenancePass(fixture, first);
       const work = await withdrawalAttempts(fixture, second);
       assert.equal(work.length, 2, "maintenance must queue the successor's withdrawal again");
       assert.equal((await withdrawalAttempts(fixture, first)).length, 1);
@@ -1602,7 +1615,7 @@ for (const harness of [false, true]) {
 
       // Revoked everywhere: nothing is queued again. A Harness-withdrawn revision's maintenance
       // then ends; a tool withdrawal leaves it running.
-      await runMaintenance();
+      await runMaintenancePass(fixture, first);
       if (harness) {
         assert.equal(
           (await fixture.advanceMaintenance(first)).rowCount,
@@ -1693,8 +1706,6 @@ for (const successor of [false, true]) {
           )
         ).rows[0].count;
       assert.equal(await denials(), withdrawing.length);
-      const runMaintenance = () =>
-        runMaintenancePass(fixture, first, "the active revision's maintenance chain must continue");
       const attemptCounts = () =>
         Promise.all(
           withdrawing.map(async (revision) => (await withdrawalAttempts(fixture, revision)).length),
@@ -1704,7 +1715,7 @@ for (const successor of [false, true]) {
       // queues no further denied attempt and audits no further denial, pass after pass, and
       // the read reports a withdrawal that needs a replay.
       for (let pass = 0; pass < 3; pass += 1) {
-        await runMaintenance();
+        await runMaintenancePass(fixture, first);
       }
       assert.deepEqual(
         await attemptCounts(),
@@ -1735,7 +1746,7 @@ for (const successor of [false, true]) {
       assert.equal(iamOutage.lastReason, "DEPENDENCY_UNAVAILABLE");
       assert.equal(iamOutage.withdrawalInProgress, false);
       iamUnavailable = false;
-      await runMaintenance();
+      await runMaintenancePass(fixture, first);
       assert.deepEqual(
         await attemptCounts(),
         withdrawing.map(() => 3),
@@ -1747,7 +1758,7 @@ for (const successor of [false, true]) {
       assert.equal(gatewayOutage.lastReason, "CREDENTIAL_WITHDRAWAL_PENDING");
       assert.equal(gatewayOutage.withdrawalInProgress, false);
       revoke = true;
-      await runMaintenance();
+      await runMaintenancePass(fixture, first);
       assert.deepEqual(
         await attemptCounts(),
         withdrawing.map(() => 4),
@@ -1801,7 +1812,7 @@ test(
 
     // Retrying cannot help, so maintenance queues no further attempt, pass after pass.
     for (let pass = 0; pass < 2; pass += 1) {
-      await runMaintenancePass(fixture, active, "the revision's maintenance chain must continue");
+      await runMaintenancePass(fixture, active);
     }
     assert.equal((await withdrawalAttempts(fixture, active)).length, 1);
     assert.equal(calls, 1);
@@ -2180,10 +2191,9 @@ revisionTest(
     // A pending tool-source withdrawal with no attempt outstanding, as an outage that
     // exhausted every attempt leaves it.
     await recordPendingWithdrawal(fixture, owner, active, toolSourceId);
-    const runMaintenance = () => runMaintenancePass(fixture, active);
 
     // Maintenance queues a withdrawal attempt and still repairs the revision, without the tool.
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     const [queued] = await withdrawalAttempts(fixture, active);
     assert.ok(queued, "maintenance must queue the pending withdrawal again");
     assert.deepEqual(dispatched.at(-1), [remainingToolSourceId]);
@@ -2193,7 +2203,7 @@ revisionTest(
     await fixture.work(queued, "succeeded");
     const recorded = await findWithdrawal(fixture, active, toolSourceId);
     assert.equal(recorded.state, "revoked");
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     assert.equal(
       (await withdrawalAttempts(fixture, active)).length,
       1,
@@ -2228,7 +2238,7 @@ revisionTest(
         return { sourceId: source.id, state: revoke ? "revoked" : "pending" };
       },
     });
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     const recovered = (await withdrawalAttempts(fixture, active)).at(-1);
     assert.equal(
       (await withdrawalAttempts(fixture, active)).length,
@@ -2242,7 +2252,7 @@ revisionTest(
     );
     revoke = true;
     await fixture.work(recovered, "succeeded");
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     assert.equal(
       (await withdrawalAttempts(fixture, active)).length,
       3,
@@ -2319,11 +2329,9 @@ test(
       [denied, outage],
     );
     await fixture.start(compute, options);
-    const runMaintenance = () =>
-      runMaintenancePass(fixture, active, "the active revision's maintenance chain must continue");
 
     // While an attempt is outstanding, maintenance queues no other.
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     assert.equal(
       (await withdrawalAttempts(fixture, active)).length,
       1,
@@ -2339,7 +2347,7 @@ test(
       "AUTHORIZATION_DENIED",
     );
     revoke = true;
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     const attempts = await withdrawalAttempts(fixture, active);
     assert.equal(
       attempts.length,
@@ -2426,9 +2434,7 @@ test(
     // The Sandbox is lost; the maintenance repair's create is accepted but its claim then lapses.
     sandbox = undefined;
     holdCreate = true;
-    const due = await fixture.advanceMaintenance(active);
-    assert.equal(due.rowCount, 1);
-    const repair = { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
+    const repair = await makeMaintenancePassDue(fixture, active);
     await waitFor("the repair's create to be accepted", async () => accepted);
     assert.deepEqual(accepted, [toolSourceId]);
     const claimed = await fixture.work(repair, "claimed");
@@ -2459,7 +2465,8 @@ test(
       { sourceId: toolSourceId, recheck: false },
       { sourceId: toolSourceId, recheck: true, listed: true },
     ]);
-    await fixture.work(repair, "succeeded");
+    const settled = await waitForMaintenancePass(fixture, repair);
+    assert.equal(settled.state, "succeeded", `maintenance ended ${settled.reason_code}`);
     // The row stays revoked and no new withdrawal attempt is queued.
     assert.equal((await findWithdrawal(fixture, active, toolSourceId)).state, "revoked");
     assert.deepEqual(
@@ -2518,9 +2525,7 @@ revisionTest(
     // instead of stopping with a revoked source maybe still attached.
     recheckFailure = new DependencyUnavailableError("The Credential Gateway did not answer.");
     rechecked.length = 0;
-    const due = await fixture.advanceMaintenance(active);
-    assert.equal(due.rowCount, 1, "one maintenance pass is queued");
-    const failed = { id: active.id, idempotencyKey: due.rows[0].idempotency_key };
+    const failed = await makeMaintenancePassDue(fixture, active);
     const pending = await completion(
       events,
       "the failed recheck's pass to end pending",
@@ -2536,7 +2541,7 @@ revisionTest(
     // all withdrawals are revoked.
     recheckFailure = undefined;
     rechecked.length = 0;
-    await runMaintenancePass(fixture, active, "one maintenance pass is queued");
+    await runMaintenancePass(fixture, active);
     assert.deepEqual(rechecked, [
       [active.id, modelSourceId],
       [active.id, toolSourceId],
@@ -2575,26 +2580,12 @@ revisionTest(
       await recordPendingWithdrawal(fixture, owner, active, credentialSourceId);
       await removeSourceGrant(fixture, owner, credentialSourceId);
     };
-    const runMaintenance = async () => {
-      const due = await fixture.advanceMaintenance(active);
-      assert.equal(due.rowCount, 1, "the maintenance chain must continue");
-      const settled = await waitFor("the maintenance pass to settle", async () => {
-        const rows = await fixture.observerPool.query(
-          `SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1`,
-          [due.rows[0].idempotency_key],
-        );
-        return ["succeeded", "failed_permanent"].includes(rows.rows[0]?.state)
-          ? rows.rows[0]
-          : undefined;
-      });
-      assert.equal(settled.state, "succeeded", `maintenance ended ${settled.reason_code}`);
-    };
     const withdrawalState = async (credentialSourceId) =>
       (await findWithdrawal(fixture, active, credentialSourceId)).state;
 
     // A tool source: maintenance re-queues its withdrawal and repairs the revision without it.
     await strandWithdrawal(toolSourceId);
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     const [toolWithdrawal, ...extra] = await withdrawalAttempts(fixture, active);
     assert.ok(toolWithdrawal, "maintenance must queue the pending tool withdrawal again");
     assert.deepEqual(extra, []);
@@ -2605,13 +2596,13 @@ revisionTest(
     // The model source: maintenance re-queues its withdrawal without preparing the revision.
     await strandWithdrawal(modelSourceId);
     const prepared = dispatched.length;
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     const work = await withdrawalAttempts(fixture, active);
     assert.equal(work.length, 2, "maintenance must queue the pending model withdrawal again");
     const modelWithdrawal = work[1];
     await fixture.work(modelWithdrawal, "succeeded");
     assert.equal(await withdrawalState(modelSourceId), "revoked");
-    await runMaintenance();
+    await runMaintenancePass(fixture, active);
     assert.equal(dispatched.length, prepared, "a model-withdrawn revision must not be prepared");
   },
 );
@@ -2663,17 +2654,8 @@ revisionTest(
     // model source, which is not withdrawn and still attaches, so maintenance must refuse.
     await recordPendingWithdrawal(fixture, owner, active, toolSourceId);
     await removeSourceGrant(fixture, owner, modelSourceId);
-    const due = await fixture.advanceMaintenance(active);
-    assert.equal(due.rowCount, 1);
-    const settled = await waitFor("the maintenance pass to settle", async () => {
-      const rows = await fixture.observerPool.query(
-        `SELECT state, reason_code FROM occ.controller_work WHERE idempotency_key = $1`,
-        [due.rows[0].idempotency_key],
-      );
-      return ["succeeded", "failed_permanent"].includes(rows.rows[0]?.state)
-        ? rows.rows[0]
-        : undefined;
-    });
+    const pass = await makeMaintenancePassDue(fixture, active);
+    const settled = await waitForMaintenancePass(fixture, pass);
     assert.deepEqual(settled, { state: "failed_permanent", reason_code: "AUTHORIZATION_DENIED" });
   },
 );
