@@ -71,6 +71,9 @@ const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Reposit
 // A plugin tool-deny refusal as the API words it, naming the selected plugin.
 const pluginToolRefusal =
   'Configuration setting agents.entries.research_assistant.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
+// The same refusal from Create Agent's preflight, worded as the OpenClaw Plugin Driver words it.
+const pluginPreflightRefusal =
+  "Configuration setting tools.deny blocks every tool of plugin codex-plugin:calendar@openai-curated-remote; remove the matching deny entry or deselect the plugin.";
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
   approvers: { agent: true, plugin: false, tools: false },
@@ -2874,6 +2877,37 @@ export const scenarios = {
       "Choose Codex, or Embedded execution if the installation selects no Sandbox Driver, then create the Agent again.",
     ],
   },
+  createPluginPreflightRefusal: {
+    group: "Pages/Create Agent",
+    name: "Plugin refusal before anything is saved",
+    path: create,
+    unsupportedProvisioning: true,
+    pluginCapabilities,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/validate",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message: pluginPreflightRefusal,
+        once: true,
+      },
+    ],
+    actions: [
+      ...readyForm,
+      { selector: ".plugin-json > summary", click: true },
+      { selector: "#agent-plugins", value: pluginSelections },
+      // Pressed as a person would, so focus starts on the button that disables.
+      { ...click("Create Agent"), focus: true },
+    ],
+    description:
+      "Create Agent asks the API first whether it would refuse the plugin selections with this Configuration. The API refuses: the Configuration denies every tool of the selected plugin. Nothing is saved, so the refusal is the only line, takes focus in view, and every field stays editable, the Configuration JSON included.",
+    steps: [
+      "At 360-390 px, confirm the focused refusal is on screen with no Secret or Configuration saved line and no sideways scroll.",
+      "Open Configuration JSON under Advanced settings and confirm it is editable, then select Create Agent again; the Agent is created.",
+    ],
+    gap: "The refusal is simulated; the in-memory API's preflight is covered by tests/browser/console-agent-plugin-refusals.test.mjs and tests/integration/agent-create-validate-api.test.mjs.",
+  },
   createPluginRefusal: {
     group: "Pages/Create Agent",
     name: "Plugin refusal after the Configuration is saved",
@@ -2898,7 +2932,7 @@ export const scenarios = {
       { ...click("Create Agent"), focus: true },
     ],
     description:
-      "The form saved its Configuration, then the API refused the Agent because the Configuration denies every tool of the selected plugin. The refusal leads the saved-resources line, scrolls into view with focus, wraps its setting path at phone widths, and names the fix this form allows: deselect the plugin.",
+      "The preflight accepted, the form saved its Configuration, then the API refused the Agent because the Configuration denies every tool of the selected plugin. The refusal leads the saved-resources line, scrolls into view with focus, wraps its setting path at phone widths, and names the fix this form allows: deselect the plugin.",
     steps: [
       "At 360-390 px, confirm the focused refusal is on screen above the Secret and Configuration saved line, with no sideways scroll.",
       "Clear Plugin selections JSON to {} and select Create Agent again; the Agent is created.",

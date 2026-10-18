@@ -364,6 +364,8 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     [
       ["POST", `/namespaces/${namespace.id}/secrets`],
       ["POST", `/namespaces/${namespace.id}/secrets`],
+      // The preflight checks the pair before the form saves its Configuration.
+      ["POST", `/namespaces/${namespace.id}/agents/validate`],
       ["POST", `/namespaces/${namespace.id}/configurations`],
       ["POST", `/namespaces/${namespace.id}/agents`],
       ["POST", `/namespaces/${namespace.id}/iam/roles`],
@@ -901,13 +903,23 @@ test("Agent creation recovers from stale authoritative admission without replaci
   await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Recovered Repository Agent");
 
-  fixture.policy.restrictions.push({
-    id: "stale-agent-create-authorization",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  // Agent create is denied once the form's preflight passes, so the save is refused after the
+  // Configuration is saved.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
+    async (route) => {
+      const response = await route.fetch();
+      fixture.policy.restrictions.push({
+        id: "stale-agent-create-authorization",
+        namespaceId: namespace.id,
+        resourceKind: "agent",
+        action: "create",
+        effect: "deny",
+      });
+      await route.fulfill({ response });
+    },
+    { times: 1 },
+  );
   const savedConfigurationResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
@@ -1137,13 +1149,23 @@ test("Agent repository recovery with empty current policy requires an explicit n
   await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
   const modelSecret = await enterManualModel(page, "repository-fixture-model-key", "gpt-5.1");
   await page.getByLabel("Agent name").fill("Repository policy removed");
-  fixture.policy.restrictions.push({
-    id: "reject-before-policy-refresh",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  // Agent create is denied once the form's preflight passes, so the save is refused after the
+  // Configuration is saved.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
+    async (route) => {
+      const response = await route.fetch();
+      fixture.policy.restrictions.push({
+        id: "reject-before-policy-refresh",
+        namespaceId: namespace.id,
+        resourceKind: "agent",
+        action: "create",
+        effect: "deny",
+      });
+      await route.fulfill({ response });
+    },
+    { times: 1 },
+  );
   const savedResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/configurations`) &&

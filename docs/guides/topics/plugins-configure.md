@@ -69,8 +69,9 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   `"*"`, `"diffs"` or `"group:plugins"`, Agent create, update, provisioning
   and deployment return `400` naming `tools.deny` and the plugin. A deny-all list
   would leave no callable tool, so every turn would fail. Remove the matching
-  deny item before selecting Diffs. When Create Agent has already saved the
-  Configuration (its step-by-step path), it cannot edit it after a refusal, so
+  deny item before selecting Diffs. Create Agent checks the pair before it saves
+  anything, so after this refusal every field stays editable, the Configuration
+  included. If Agent create refuses after the console saved the Configuration,
   the console names the fix it allows: deselect the plugin and create the Agent, then fix the setting
   on the Agent's Configuration tab and select the plugin again. With one Agent under `agents.entries`, its
   own `tools.deny` counts too, and the error names it. With several, the error

@@ -2273,10 +2273,47 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         : "Choose a model credential Secret before creating the Agent.";
       return;
     }
-    context.setDraftCapture(null);
     pending = true;
     updateControls();
     feedback.textContent = "";
+    // Before anything is saved, ask the API whether Agent create would refuse these plugin
+    // selections or initial workspace files with this Configuration. A refusal then leaves the
+    // whole form editable, the Configuration included, instead of a saved Configuration this
+    // form can no longer change (finding 1863). Provisioning admits its plan in one request
+    // before it saves a Configuration, with its own rules, so it needs no preflight.
+    if (!shouldProvision() && !savedConfiguration && !savedAgent) {
+      try {
+        await request(`${namespacePath(namespaceId)}/agents/validate`, {
+          method: "POST",
+          expectedStatus: 204,
+          body: {
+            configuration: { kind: "agent", values },
+            executionMode: body.executionMode,
+            initialWorkspaceFiles: body.initialWorkspaceFiles,
+            ...(body.plugins ? { plugins: body.plugins } : {}),
+            ...(body.pluginApprovers ? { pluginApprovers: body.pluginApprovers } : {}),
+          },
+        });
+      } catch (error) {
+        if (!context.isCurrent()) {
+          return;
+        }
+        pending = false;
+        updateControls();
+        if (error.status === 401) {
+          context.onExpired();
+          return;
+        }
+        feedback.textContent =
+          rejectionMessage(error) + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+        focusFeedbackLine(feedback);
+        return;
+      }
+      if (!context.isCurrent()) {
+        return;
+      }
+    }
+    context.setDraftCapture(null);
     let mutationStarted = false;
     let creatingSecret = false;
     try {

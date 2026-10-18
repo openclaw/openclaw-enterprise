@@ -429,13 +429,23 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
   await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), initialPlugins);
 
-  fixture.policy.restrictions.push({
-    id: "deny-repository-plugin-create",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  // Agent create is denied once the form's preflight passes, so the save is refused after the
+  // Configuration is saved.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
+    async (route) => {
+      const response = await route.fetch();
+      fixture.policy.restrictions.push({
+        id: "deny-repository-plugin-create",
+        namespaceId: namespace.id,
+        resourceKind: "agent",
+        action: "create",
+        effect: "deny",
+      });
+      await route.fulfill({ response });
+    },
+    { times: 1 },
+  );
   const savedConfigurationResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&

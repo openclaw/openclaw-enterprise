@@ -1052,6 +1052,10 @@ export function installFixture(scenario, evidence) {
           return response(saved, 201);
         }
       }
+      // Create Agent's preflight accepts unless a scenario rule refuses it.
+      if (resource === "agents/validate" && method === "POST") {
+        return new Response(null, { status: 204 });
+      }
       if (resource === "agents/provision" && method === "POST") {
         const {
           configuration,
