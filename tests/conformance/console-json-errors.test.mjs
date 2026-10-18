@@ -22,18 +22,33 @@ test("a bare word or a partial literal names the character that breaks it (findi
 
 test("a leading byte order mark is named, not given an invisible position (finding 1939)", () => {
   assert.equal(
-    jsonObjectProblem('﻿{"a": 1}'),
+    jsonObjectProblem('\uFEFF{"a": 1}'),
     "Invalid JSON: remove the invisible byte order mark at the start. Enter a valid JSON object.",
   );
   // Inside a string it is ordinary text.
-  assert.equal(jsonObjectProblem('{"a": "﻿"}'), undefined);
+  assert.equal(jsonObjectProblem('{"a": "\uFEFF"}'), undefined);
+});
+
+test("an invisible or space-like character elsewhere is named at its position", () => {
+  assert.equal(
+    jsonObjectProblem('\n  \uFEFF{"a": 1}'),
+    "Invalid JSON at line 2, column 3: remove the invisible byte order mark there. Enter a valid JSON object.",
+  );
+  assert.equal(
+    jsonObjectProblem('{"a":\u00A01}'),
+    "Invalid JSON at line 1, column 6: remove the non-breaking space there. Enter a valid JSON object.",
+  );
+  assert.equal(
+    jsonObjectProblem('{"a": 1,\u200B"b": 2}'),
+    "Invalid JSON at line 1, column 9: remove the invisible zero-width space there. Enter a valid JSON object.",
+  );
 });
 
 test("columns count characters as the reader sees them, not UTF-16 units (finding 1939)", () => {
   // V8 says "column 18" here; the stray x is the 16th visible character.
   assert.equal(jsonObjectProblem('{"name": "\u{1F600}\u{1F680}", x}'), at(1, 16));
   // An "e" with a combining acute accent is one column.
-  assert.equal(jsonObjectProblem('{"name": "é", x}'), at(1, 15));
+  assert.equal(jsonObjectProblem('{"name": "e\u0301", x}'), at(1, 15));
   assert.equal(jsonObjectProblem('{\n  "\u{1F600}": 1,\n  x\n}'), at(3, 3));
 });
 
@@ -75,7 +90,7 @@ test("the scan agrees with the engine wherever the engine names a position", () 
   // offset whenever V8's message names one.
   const base =
     '{\n  "a": [1, -2.5e+3, 0, true, false, null, "x\\n\\u00e9\\"y"],\n  "b": {"c": {}, "d": []}\n}';
-  const characters = [...'"{}[],:x01-.e\\ \t\nt', "\u0001", "﻿"];
+  const characters = [...'"{}[],:x01-.e\\ \t\nt', "\u0001", "\uFEFF"];
   const variants = new Set();
   for (let index = 0; index <= base.length; index += 1) {
     variants.add(base.slice(0, index));

@@ -171,12 +171,17 @@ export function jsonObjectProblem(text) {
     if (offset === undefined) {
       return "Invalid JSON. Enter a valid JSON object.";
     }
-    // A byte order mark from a pasted file is invisible, so a bare position points at nothing.
-    if (offset === 0 && text.charCodeAt(0) === 0xfeff) {
-      return "Invalid JSON: remove the invisible byte order mark at the start. Enter a valid JSON object.";
+    // A character pasted from a file or a document can be invisible, or look like a space, so a
+    // bare position would point at nothing wrong; the message names it.
+    const unseen = UNSEEN_CHARACTERS[text[offset]];
+    if (offset === 0 && unseen) {
+      return `Invalid JSON: remove the ${unseen} at the start. Enter a valid JSON object.`;
     }
     const lines = text.slice(0, offset).split(/\r\n?|\n/);
-    return `Invalid JSON at line ${lines.length}, column ${visibleLength(lines.at(-1)) + 1}. Enter a valid JSON object.`;
+    const where = `line ${lines.length}, column ${visibleLength(lines.at(-1)) + 1}`;
+    return unseen
+      ? `Invalid JSON at ${where}: remove the ${unseen} there. Enter a valid JSON object.`
+      : `Invalid JSON at ${where}. Enter a valid JSON object.`;
   }
   return parsed === null || Array.isArray(parsed) || typeof parsed !== "object"
     ? "Enter a valid JSON object, not an array or a single value."
@@ -325,12 +330,32 @@ export function jsonErrorOffset(text) {
   }
 }
 
+const UNSEEN_CHARACTERS = {
+  "\uFEFF": "invisible byte order mark",
+  "\u200B": "invisible zero-width space",
+  "\u00A0": "non-breaking space",
+};
+
+const graphemes =
+  typeof Intl.Segmenter === "function"
+    ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
+    : undefined;
+
 // Columns count characters as the reader sees them: an emoji, or a letter with a combining
-// accent, is one column, not the two UTF-16 units the engine's own column counts.
+// accent, is one column, not the two UTF-16 units the engine's own column counts. Create Agent
+// checks the JSON on every keystroke, so a plain ASCII line skips the segmenter.
 function visibleLength(line) {
-  return typeof Intl.Segmenter === "function"
-    ? [...new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(line)].length
-    : Array.from(line).length;
+  if (/^[\t -~]*$/.test(line)) {
+    return line.length;
+  }
+  if (!graphemes) {
+    return Array.from(line).length;
+  }
+  let length = 0;
+  for (const _ of graphemes.segment(line)) {
+    length += 1;
+  }
+  return length;
 }
 
 // A persistent error under a form control, linked to it with aria-describedby and aria-invalid,

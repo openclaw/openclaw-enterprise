@@ -116,13 +116,19 @@ test("an unknown Configuration save outcome stays an error when the editor is re
       }),
     });
   });
+  const outcomeUnknown = page
+    .locator("#configuration-editor-feedback")
+    .getByText(
+      "Outcome unknown. Configuration may have been saved. Reload this draft before saving again.",
+      { exact: true },
+    );
   await openEditor(page, fixture, namespace, agent, "unknown");
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
-  await page.getByText("Outcome unknown. Configuration may have been saved.").waitFor();
+  await outcomeUnknown.waitFor();
   assert.equal(await feedbackClass(page), "error");
 
   await leaveAndReturn(page);
-  await page.getByText("Outcome unknown. Configuration may have been saved.").waitFor();
+  await outcomeUnknown.waitFor();
   assert.equal(await feedbackClass(page), "error");
 });
 
