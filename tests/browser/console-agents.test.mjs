@@ -325,10 +325,9 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await page.getByRole("button", { name: "Create new version" }).waitFor();
   await page.getByRole("heading", { name: "Create new version" }).waitFor();
   await page.getByText("No version is currently selected for service.").waitFor();
-  await page
-    .getByText("No version is selected. Deploy a new version to start this Agent.")
-    .waitFor();
-  assert.equal(await page.getByText(/Stop requested\./).count(), 0);
+  // A never-deployed Agent has no Stop card and reports no stop request (finding 1899).
+  await page.locator("section.stop-note").waitFor({ state: "hidden" });
+  assert.equal(await page.getByText(/Stop requested/).count(), 0);
   await page.getByRole("button", { name: "Configuration", exact: true }).waitFor();
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "create"').waitFor();

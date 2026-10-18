@@ -1187,6 +1187,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
   const liveServingValue = element("strong", {}, "Not verified");
   const liveServingNote = element("p", { className: "muted" });
+  // A requested stop belongs in the summary, not only in the Stop card at the bottom (finding
+  // 1899). It is attached only once the Agent has a version: an Agent is created stopped.
+  const runtimeNote = element("p", { className: "muted" });
+  const runtimeFact = element(
+    "div",
+    {},
+    element("span", { className: "overview-fact-label" }, "Runtime"),
+    element("strong", {}, "Stop requested"),
+    runtimeNote,
+  );
   const currentSummary = element(
     "section",
     { className: "agent-current-summary", "aria-label": "Agent state at a glance" },
@@ -1244,6 +1254,20 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         : revisionHidden(currentRevisionId)
           ? "Selected for service · you cannot read this version"
           : "",
+    );
+    const stopRequested =
+      currentRuntimeState === "stopped" &&
+      (Boolean(currentRevisionId) || visibleRevisions.length > 0);
+    if (!stopRequested) {
+      runtimeFact.remove();
+    } else if (runtimeFact.parentNode !== currentSummary) {
+      currentSummary.append(runtimeFact);
+    }
+    setText(
+      runtimeNote,
+      currentRevisionId
+        ? "Shutdown completion is not shown here. Deploy a new version to start this Agent again."
+        : "Deploy a new version to start this Agent again.",
     );
   }
   renderCurrentVersion();
@@ -2061,6 +2085,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     visibleRevisions = revisions;
     visibleRevisionsLoaded = revisionResult.status === "fulfilled";
     stopPanel.setNoReadableVersions(visibleRevisionsLoaded ? revisions.length === 0 : null);
+    const labels = new Map(revisions.map((revision) => [revision.id, `v${revision.revision}`]));
+    stopPanel.setVersionLabel((id) => labels.get(id));
     renderCurrentVersion();
     renderVersions(
       revisions,

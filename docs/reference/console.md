@@ -220,7 +220,7 @@ An accepted request means shutdown was queued. **Refresh stop status** rereads
 the Agent's desired state and selected revision without probing the runtime.
 Refresh before retrying an uncertain result. Denials remain visible; the console
 never repeats a stop automatically. After Stop, **Request Stop again** confirms
-a new stop intent, even without a selected version, but not when you can read no version, as before a first deploy. That does not prove cleanup
+a new stop intent, even without a selected version. With no selected or readable version, as before a first deploy, there is no Stop card. That does not prove cleanup
 finished.
 
 To resume, open **Create new version** and select **Deploy new version**, which

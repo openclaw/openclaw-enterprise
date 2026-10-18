@@ -1,4 +1,4 @@
-import { button, element } from "../dom.mjs";
+import { button, element, setHidden } from "../dom.mjs";
 import { message, shortId } from "./list.mjs";
 
 export function createAgentStop(
@@ -30,6 +30,10 @@ export function createAgentStop(
     // Whether the version list loaded with no version this viewer can read: undefined while it
     // loads, null when it failed.
     noReadableVersions: undefined,
+    // The page's "vN" label for a version id, once its version list loads.
+    versionLabel: () => undefined,
+    // Set once this viewer refreshes or stops here, so the card never vanishes under them.
+    used: false,
   };
 
   // Focus lands here when the control that would take it is not rendered.
@@ -58,7 +62,8 @@ export function createAgentStop(
           "dd",
           {},
           state.agent.activeRevisionId
-            ? `Version ${shortId(state.agent.activeRevisionId)}`
+            ? (state.versionLabel(state.agent.activeRevisionId) ??
+                `Version ${shortId(state.agent.activeRevisionId)}`)
             : "No current version",
         ),
       ),
@@ -98,19 +103,23 @@ export function createAgentStop(
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
     // An Agent created through the API starts stopped and has no version until its first
-    // deploy, so there is nothing to stop or to check (finding 1394). Only what this viewer
-    // can read decides it: a member who reads no version of a deployed Agent sees the same.
-    // While the version list loads, no controls flash in only to disappear.
+    // deploy, so there is nothing to stop or to check (finding 1394), and the card is hidden
+    // (finding 1899). Only what this viewer can read decides it: a member who reads no version
+    // of a deployed Agent sees the same. While the version list loads, the card stays hidden.
     const neverStarted =
       requested &&
       !state.agent.activeRevisionId &&
       (state.noReadableVersions === true || state.noReadableVersions === undefined) &&
       !state.pending &&
       !state.needsRefresh;
+    setHidden(section, neverStarted && !state.used);
+    // After a request, a disabled Stop beside Request Stop again only adds noise (finding 1899).
     if (neverStarted) {
       actions.replaceChildren();
-    } else if (requested || state.needsRefresh) {
-      actions.replaceChildren(stop, ...(requested ? [repeat] : []), refresh);
+    } else if (requested) {
+      actions.replaceChildren(repeat, refresh);
+    } else if (state.needsRefresh) {
+      actions.replaceChildren(refresh);
     } else {
       actions.replaceChildren(stop);
     }
@@ -145,6 +154,7 @@ export function createAgentStop(
       returnFocus = false;
     };
     state.pending = true;
+    state.used = true;
     state.error = null;
     render();
     document.addEventListener("focusin", focusMoved, { once: true });
@@ -193,6 +203,7 @@ export function createAgentStop(
       return;
     }
     state.pending = true;
+    state.used = true;
     state.error = null;
     state.notice = "";
     cancel.disabled = true;
@@ -291,7 +302,7 @@ export function createAgentStop(
     };
     restrictConfirmation = showRestriction;
     dialog.append(
-      element("h2", { id: "agent-stop-confirm-title" }, `Stop ${state.agent.name}?`),
+      element("h2", { id: "agent-stop-confirm-title" }, "Stop this Agent?"),
       description,
       element("div", { className: "form-actions" }, cancel, confirm),
     );
@@ -340,6 +351,16 @@ export function createAgentStop(
       }
       state.noReadableVersions = value;
       render();
+    },
+    // `label(id)` names a version as the page does ("v3"), or is undefined when unlisted. Only a
+    // changed label rerenders, so polls do not rewrite the status region.
+    setVersionLabel(label) {
+      const id = state.agent.activeRevisionId;
+      const before = id ? state.versionLabel(id) : undefined;
+      state.versionLabel = label;
+      if (id && label(id) !== before) {
+        render();
+      }
     },
     updateAgent(next) {
       if (state.pending) {

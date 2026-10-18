@@ -5872,7 +5872,7 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the card offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
   },
   stopRepeatConfirm: {
     group: "Components/Stop Agent",
@@ -5899,7 +5899,7 @@ export const scenarios = {
     name: "Never deployed",
     path: draft,
     description:
-      "An Agent created without a deploy is stopped with no version, so Stop offers no controls; the panel says to deploy a new version to start it.",
+      "An Agent created without a deploy is stopped with no version, so the page has no Stop card and the overview reports no stop request.",
   },
   stopRepeatUnknown: {
     group: "Components/Stop Agent",

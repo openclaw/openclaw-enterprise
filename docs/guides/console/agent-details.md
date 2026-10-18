@@ -275,9 +275,9 @@ viewed revision or tab.
 
 An accepted stop requests shutdown; it does not prove the runtime
 finished. **Refresh stop status** reads the desired state and selected revision.
-An uncertain result blocks another stop until a successful refresh. With no
-selected version and none you can read, as before a first deploy, it shows no
-stop controls. To resume,
+An uncertain result blocks another stop until a successful refresh. The
+overview shows **Runtime: Stop requested**. With no selected version and none
+you can read, as before a first deploy, there is no Stop card. To resume,
 open **Create new version** and select **Deploy new version**, which creates a new
 revision. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 
