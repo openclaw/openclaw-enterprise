@@ -487,11 +487,14 @@ test("OpenClaw Plugin Driver refuses a selection a roster entry's tools.deny blo
   // a valid setup, but an entry denying every tool fails each of its sessions' turns.
   const roster = (ops) => ({
     ownership: "explicit",
-    entries: { main: { tools: { deny: ["diffs"] } }, ops: { tools: { deny: ops } } },
+    entries: { main: { tools: { deny: ["exec"] } }, ops: { tools: { deny: ops } } },
   });
   driver.validateAgentConfiguration(plugins, { agents: roster(["group:plugins"]) });
   assert.throws(check({ agents: roster(["exec", " ** "]) }), {
     message: refusal("setting agents.entries.ops.tools.deny"),
+  });
+  assert.throws(check({ tools: { deny: ["*"] }, agents: roster(["*"]) }), {
+    message: refusal("settings tools.deny and agents.entries.ops.tools.deny", "block", "entries"),
   });
   assert.throws(check({ tools: { deny: ["diffs"] }, agents: roster(["exec"]) }), {
     message: refusal("setting tools.deny"),
@@ -524,6 +527,10 @@ test("OpenClaw Plugin Driver refuses a selection a roster entry's tools.deny blo
     entry: "main",
   });
   assert.equal(deniedOpenClawSelection(catalog, pair, split(["pair_read"])), undefined);
+  // With several entries only a deny-all entry is refused, never a union of lists.
+  const several = split(["pair_write"]);
+  several.agents = { ownership: "explicit", entries: { ...several.agents.entries, ops: {} } };
+  assert.equal(deniedOpenClawSelection(catalog, pair, several), undefined);
   assert.equal(
     openClawToolDenialMessage(deniedOpenClawSelection(catalog, pair, split(["pair_write"]))),
     "Configuration settings tools.deny and agents.entries.main.tools.deny block every tool of plugin occ-plugin:pair; remove the matching deny entries or deselect the plugin.",

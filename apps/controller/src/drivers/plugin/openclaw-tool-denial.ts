@@ -18,9 +18,9 @@ export interface DeniedOpenClawSelection {
 type CatalogTool = NonNullable<PluginCatalogEntry["tools"]>[number];
 
 /**
- * Returns the first enabled OpenClaw plugin selection whose every tool the Configuration
- * denies to an Agent the Gateway serves: top-level `tools.deny` together with that Agent's
- * `agents.entries.<id>.tools.deny`. OpenClaw applies each deny list before any allowlist, and
+ * Returns the first enabled OpenClaw plugin selection whose every tool top-level `tools.deny`,
+ * the sole roster entry's `agents.entries.<id>.tools.deny`, or both together block, or that a
+ * roster entry's deny-all list leaves without any tool. OpenClaw applies each deny list before any allowlist, and
  * an entry matches a tool by `*`, a `*` glob, the tool's name, its plugin's ID, or
  * `group:plugins`. Such a selection leaves the plugin nothing to offer. With a deny-all list,
  * the allowlist entry the translator adds for the plugin leaves no callable tool, so every
