@@ -935,7 +935,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
     }
     configuration.value = JSON.stringify(values, null, 2);
-    configurationError.clear();
+    configuration.setCustomValidity("");
     feedback.textContent = "";
     renderChannelEditor();
   }
