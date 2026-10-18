@@ -416,7 +416,9 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
 // The UTC offset made timestamps wrap onto a second line in the fixed 170 px (150 px at 1100 px
 // and below) time column above 760 px, so every log row took two lines (findings 1681, 1697).
 // In a Logs card under 662 px (a 1000 px window and below, or about 1101-1280 px beside the
-// version list) the message moves below the time instead of shrinking to a sliver.
+// version list) the message moves below the time instead of shrinking to a sliver. At 521-527 px
+// the phone layout squeezed the time column, and under about 400 px the level beside it did
+// (finding 1844): there the time takes its own line, down to a 320 px window.
 test("log timestamps with their UTC offset stay on one line", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
   // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30.
@@ -435,7 +437,10 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
       .locator(".log-row", { hasText: "longest timestamp" })
       .locator(".log-time");
     assert.match(await time.innerText(), shown);
-    for (const width of [1440, 1300, 1200, 1101, 1100, 1001, 1000, 761]) {
+    for (const width of [
+      1440, 1300, 1200, 1101, 1100, 1001, 1000, 761, 760, 662, 600, 527, 524, 521, 520, 480, 404,
+      402, 397, 390, 360, 320,
+    ]) {
       await page.setViewportSize({ width, height: 900 });
       const lines = await time.evaluate((cell) => {
         const range = cell.ownerDocument.createRange();
@@ -486,7 +491,7 @@ test("log levels stay on one line and keep log columns aligned", async (t) => {
   await page.getByLabel("Include debug").check();
   await pane.getByText("debug message", { exact: true }).waitFor();
 
-  for (const width of [390, 700, 900, 1280]) {
+  for (const width of [320, 390, 700, 900, 1280]) {
     await page.setViewportSize({ width, height: 844 });
     const fittingLevels = await pane.locator(".log-level").evaluateAll((badges) =>
       badges.flatMap((badge) => {
