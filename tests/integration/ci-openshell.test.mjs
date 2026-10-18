@@ -93,7 +93,11 @@ test("OpenShell outage proof rereads a deployment the worker claimed again betwe
   const poll = outageAttemptRead({
     readWork: async () => polls[reads][0],
     readStatus: async () => {
-      assert.notEqual(polls[reads][1], undefined, "status is read only for failed attempts");
+      assert.notEqual(
+        polls[reads][1],
+        undefined,
+        "status is read only once the work is queued after an attempt",
+      );
       return polls[reads][1];
     },
   });

@@ -5883,7 +5883,9 @@ async function assertOpenShellGatewayOutage(topology) {
     // A claim marks the work `claimed` and counts an attempt; a failed attempt returns it to
     // `queued`. Waiting for that while the gateway is still at zero replicas proves the worker
     // tried the revision against the stopped gateway and did not activate it.
-    const deploymentStatuses = new Set();
+    // Recorded as they are read, so a timed-out wait still shows what the poll saw.
+    const deploymentStatuses = [];
+    observed.redeployDuringOutage = { deploymentStatuses };
     const { work, status } = await waitFor(
       `deployment ${redeployed.data.id} to fail an attempt while the gateway is down`,
       outageAttemptRead({
@@ -5897,7 +5899,9 @@ async function assertOpenShellGatewayOutage(topology) {
         readStatus: async () => {
           const deployment = await request("GET", `${agentPath}/deployments/${redeployed.data.id}`);
           const read = deployment.data?.status ?? null;
-          deploymentStatuses.add(read);
+          if (deploymentStatuses.at(-1) !== read) {
+            deploymentStatuses.push(read);
+          }
           return read;
         },
       }),
@@ -5906,7 +5910,7 @@ async function assertOpenShellGatewayOutage(topology) {
     const during = await request("GET", agentPath);
     observed.redeployDuringOutage = {
       status,
-      deploymentStatuses: [...deploymentStatuses],
+      deploymentStatuses,
       work,
       activeRevisionUnchanged: during.data?.activeRevisionId === activeRevisionId,
       gatewayStopped: (await gatewayPods()).length === 0,
