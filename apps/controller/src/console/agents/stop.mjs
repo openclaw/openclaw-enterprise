@@ -32,7 +32,7 @@ export function createAgentStop(
     noReadableVersions: undefined,
     // The page's "vN" label for a version id, once its version list loads.
     versionLabel: () => undefined,
-    // Set once this viewer refreshes or stops here, so the card never vanishes under them.
+    // Set once this viewer opens Stop or refreshes here, so the card never vanishes under them.
     used: false,
   };
 
@@ -113,13 +113,14 @@ export function createAgentStop(
       !state.pending &&
       !state.needsRefresh;
     setHidden(section, neverStarted && !state.used);
-    // After a request, a disabled Stop beside Request Stop again only adds noise (finding 1899).
+    // After a request, a disabled Stop beside Request Stop again only adds noise, and an
+    // uncertain outcome offers only Refresh (finding 1899).
     if (neverStarted) {
       actions.replaceChildren();
-    } else if (requested) {
-      actions.replaceChildren(repeat, refresh);
     } else if (state.needsRefresh) {
       actions.replaceChildren(refresh);
+    } else if (requested) {
+      actions.replaceChildren(repeat, refresh);
     } else {
       actions.replaceChildren(stop);
     }
@@ -268,6 +269,8 @@ export function createAgentStop(
       return;
     }
     const invoker = event.currentTarget;
+    // The dialog lives in this card, so the card must not hide while it is open.
+    state.used = true;
     let submitted = false;
     const dialog = element("dialog", {
       className: "agent-stop-dialog",

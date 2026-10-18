@@ -289,7 +289,8 @@ not that Compute has shut down. Cancel restores focus to the invoking button; su
 
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
 revision; the Console cannot inspect history or candidate cleanup. With no selected revision
-and no readable versions yet (`setNoReadableVersions`), the Stop card is hidden.
+and no readable versions yet (`setNoReadableVersions`), the Stop card is hidden unless the viewer
+just used it. The overview's **Runtime** row reports a requested stop.
 
 Refresh reads desired state and selected revision, not live health. Denial stays inline; changed
 state updates panels in place. An uncertain write blocks another Stop until readback succeeds.

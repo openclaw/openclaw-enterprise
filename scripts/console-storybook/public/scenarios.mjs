@@ -5912,7 +5912,8 @@ export const scenarios = {
       click("Request Stop again"),
       { selector: ".agent-stop-dialog button.danger", click: true },
     ],
-    description: "An uncertain repeated Stop disables retry until a successful status refresh.",
+    description:
+      "An uncertain repeated Stop offers only Refresh stop status until a successful readback.",
   },
   stopDenied: {
     group: "Components/Stop Agent",
