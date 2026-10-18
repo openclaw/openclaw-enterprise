@@ -34,6 +34,8 @@ const deniedReadsStorageKey = "occ.console.deniedReads";
 const deniedReadsLimit = 200;
 let loggingOut = false;
 let navigateAgentTab = null;
+// The shown page's refusal to leave through the Namespace selector, while a save is unsettled.
+let leaveGuard = null;
 let discardCreationOnExit = null;
 const drafts = createDraftStore();
 let draftUserId = null;
@@ -451,6 +453,7 @@ function takeNativeFragment(current) {
 }
 
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
+shellUI.setLeaveGuard(() => Boolean(leaveGuard?.()));
 const { publicPanel, renderRows, switchNamespace } = shellUI;
 const request = createApiClient({
   lifetime,
@@ -732,6 +735,7 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
     mountedViewState.active = null;
   }
   navigateAgentTab = null;
+  leaveGuard = null;
   mountedAgent = null;
   clearPasswordInputs();
   shellUI.reset();
@@ -1559,6 +1563,7 @@ async function loadPage({
         resume();
       }
       navigateAgentTab = retainedState.tabNavigation;
+      leaveGuard = retainedState.leaveGuard ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
       restoreRefocus = () => restoreFocus?.restore(shell.view);
@@ -1763,6 +1768,13 @@ async function loadPage({
           navigateAgentTab = navigateTab;
         }
       },
+      setLeaveGuard(guard) {
+        if (lifetime.isCurrent(viewState.active)) {
+          const refuse = () => shownStandIn === null && guard();
+          viewState.leaveGuard = refuse;
+          leaveGuard = refuse;
+        }
+      },
     };
     if (firstPermissions !== null) {
       viewState.reads.set(permissionsPath, readSignature(firstPermissions));
@@ -1789,10 +1801,11 @@ async function loadPage({
           setDiscardOnExit(discard) {
             discardCreationOnExit = discard ? { namespaceId } : null;
           },
-          setDraftCapture(capture) {
+          setDraftCapture(capture, unsaved) {
             agentContext.drafts.forget("create");
             if (capture) {
               agentContext.drafts.track("create", capture);
+              agentContext.drafts.unsavedWhen("create", unsaved);
             }
           },
         },
@@ -2373,6 +2386,14 @@ window.addEventListener("popstate", () => {
 window.addEventListener("focus", resumePage);
 document.addEventListener("visibilitychange", () => {
   resumePage();
+});
+// Drafts live only in this document, so a reload or tab close would lose unsaved editor work
+// (finding 1902).
+window.addEventListener("beforeunload", (event) => {
+  if (!loggingOut && drafts.hasUnsaved()) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
 });
 window.addEventListener("pagehide", () => {
   clearDrafts();

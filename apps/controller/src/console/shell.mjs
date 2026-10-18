@@ -71,6 +71,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   let drawerControls = null;
   let namespaceSelect = null;
   let namespaceAdmissionPending = true;
+  // Whether the shown page refuses to be left yet; it then says why (finding 1902).
+  let refuseLeave = () => false;
   const mobileLayout = window.matchMedia("(max-width: 760px)");
 
   mobileLayout.addEventListener("change", (event) => {
@@ -219,6 +221,11 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         event.currentTarget !== namespaceSelect ||
         !namespaces.some((item) => item.id === event.target.value)
       ) {
+        return;
+      }
+      // A page that cannot be left yet keeps its Namespace and says why (finding 1902).
+      if (refuseLeave()) {
+        event.target.value = namespaceId;
         return;
       }
       navigate(route().feature, event.target.value);
@@ -597,6 +604,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);
+    },
+    setLeaveGuard(guard) {
+      refuseLeave = guard;
     },
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());

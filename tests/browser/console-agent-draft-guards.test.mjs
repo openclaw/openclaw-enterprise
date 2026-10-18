@@ -1147,6 +1147,7 @@ for (const action of ["disable", "drawer"]) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace(`Pending channel ${action}`, { ready: true });
+    const otherNamespace = await fixture.createNamespace(`Other ${action}`, { ready: true });
     const agent = await createSlackBoundAgent(
       fixture,
       namespace,
@@ -1218,6 +1219,21 @@ for (const action of ["disable", "drawer"]) {
         globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
       });
       assert.equal(new URL(page.url()).searchParams.get("tab"), "channels");
+      // The same note holds ← Agents and the Namespace selector (finding 1902). The open
+      // drawer is modal, so only the disable path can reach them.
+      if (action === "disable") {
+        const pageUrl = page.url();
+        await page.getByRole("link", { name: "← Agents" }).click();
+        await page
+          .getByText("Wait for channel settings save to finish before leaving the editor.")
+          .waitFor();
+        assert.equal(page.url(), pageUrl);
+        const selector = page.getByLabel("Namespace", { exact: true });
+        await selector.selectOption(otherNamespace.id);
+        assert.equal(await selector.inputValue(), namespace.id);
+        assert.equal(page.url(), pageUrl);
+        assert.equal(await page.getByRole("heading", { name: "Agents", exact: true }).count(), 0);
+      }
     } finally {
       release.resolve();
     }
@@ -1463,4 +1479,39 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   // The saved binding differs from the rejected version's, so the warning clears.
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();
   assert.equal(await deploy.isEnabled(), true);
+});
+
+test("a reload asks first while an Agent editor holds unsaved work", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unsaved reload", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unsaved reload Agent",
+    nativeValues("unsaved-reload"),
+  );
+  const { page } = await newPage(t, fixture);
+  const dialogs = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(dialog.type());
+    await dialog.accept();
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const edit = page.getByRole("button", { name: "Edit Configuration" });
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  await edit.click();
+  await editor.waitFor();
+  // An open but unchanged editor has nothing to lose (finding 1902).
+  await page.reload();
+  await edit.waitFor();
+  assert.deepEqual(dialogs, []);
+
+  await edit.click();
+  await editor.fill('{"edited": true}');
+  // The edit stays a draft while another page is shown; a reload would still lose it.
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  await page.reload();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  assert.deepEqual(dialogs, ["beforeunload"]);
 });

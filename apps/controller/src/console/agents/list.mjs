@@ -265,6 +265,7 @@ export function renderAgentList(context) {
   });
   search.value = context.drafts.get("agent-search") ?? "";
   context.drafts.track("agent-search", () => search.value || undefined);
+  context.drafts.unsavedWhen("agent-search", () => false);
   const rows = element("div");
   const deployments = new Map();
   // The page renders with the caller's permission answer, so Create Agent is never painted
