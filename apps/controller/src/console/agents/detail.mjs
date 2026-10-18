@@ -1594,6 +1594,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let activityPanel = deploymentStatus;
   let activityRevisionId;
   let viewedSnapshot = null;
+  // The Configuration ID this page has read successfully, and the one recovery is checking. Deploy
+  // again opens a draft that builds Deploy new version only from a readable Configuration, and
+  // "not yet denied" is not readable (finding 1931).
+  let readableConfigurationId = null;
+  let configurationCheckId = null;
   let detailLoadFinished = false;
   let latestRevisionResult = null;
   let latestDeploymentStatus = null;
@@ -2076,9 +2081,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       setText(recoveryMessage, `${failure} ${impact}`);
       // Deploying again is the whole next step only where the API's message says so. The draft
-      // it opens builds Deploy new version only from a readable Configuration.
-      const deployAgain =
+      // it opens builds Deploy new version only from a readable Configuration, so the link waits
+      // for a successful read of it (finding 1931).
+      const deployAgainAllowed =
         step === "deploy-again" && callerPermissions?.deploy === true && configurationAvailable;
+      if (deployAgainAllowed && readableConfigurationId !== configurationId) {
+        checkConfigurationReadable(configurationId);
+      }
+      const deployAgain = deployAgainAllowed && readableConfigurationId === configurationId;
       const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : null;
@@ -2111,6 +2121,34 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         recoveryActions.hidden = actions.length === 0;
       }
     }
+  }
+
+  // Another version's tabs have no reason to read the Configuration, so recovery reads it once
+  // before offering Deploy again. A denial is remembered like the draft's; any other failure
+  // leaves the link hidden until the page reloads. The draft's own read decides there.
+  function checkConfigurationReadable(configurationId) {
+    if (selected === "draft" || configurationCheckId === configurationId) {
+      return;
+    }
+    configurationCheckId = configurationId;
+    const configurationPath = `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(configurationId)}`;
+    void request(configurationPath).then(
+      () => {
+        if (!context.isCurrent() || deleting) {
+          return;
+        }
+        readableConfigurationId = configurationId;
+        renderLatestDeployment();
+      },
+      (error) => {
+        if (error.status === 403) {
+          context.deniedReads?.remember(configurationPath);
+          if (context.isCurrent() && !deleting) {
+            renderLatestDeployment();
+          }
+        }
+      },
+    );
   }
 
   // List summaries omit the credential binding a revision was admitted with, so the
@@ -2353,6 +2391,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     const revisionResult = latestRevisionResult ?? results[0];
     let snapshot = results[1].status === "fulfilled" ? results[1].value : null;
+    if (selected === "draft") {
+      // The draft's own read is the Configuration read; recovery waits for it.
+      readableConfigurationId = snapshot?.id ?? null;
+    }
     detailLoadFinished = true;
     viewedSnapshot = snapshot;
     renderOverview(revisionResult, snapshot);
