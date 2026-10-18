@@ -117,21 +117,45 @@ async function submitWithKeyboard(page) {
   await page.keyboard.press("Enter");
 }
 
-// The form above with the preflight answering 204, as if it missed the refusal: Agent create
-// then refuses after the form saved its Secret and Configuration. Returns the page and the
+// The form above, refused by Agent create after it saved its Secret and Configuration. The
+// first attempt, without the plugin, passes the preflight and is then denied Agent create,
+// which leaves the Configuration saved. The retry selects the plugin; with the Configuration
+// saved there is no preflight, and Agent create refuses the pair. Returns the page and the
 // POST /agents matcher.
 async function refusedCreateForm(t, name, entries, width = 1280) {
-  const form = await filledCreateForm(t, name, entries, { width });
-  const { page, configuration, agentsUrl, isAgentPost } = form;
-  await page.route(`${agentsUrl}/validate`, (route) => route.fulfill({ status: 204 }));
+  const form = await filledCreateForm(t, name, entries, { width, selected: "{}" });
+  const { fixture, namespace, page, configuration, pluginJson, agentsUrl, isAgentPost } = form;
+  const denied = {
+    id: "deny-first-agent-create",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    action: "create",
+    effect: "deny",
+  };
+  await page.route(
+    `${agentsUrl}/validate`,
+    async (route) => {
+      const response = await route.fetch();
+      fixture.policy.restrictions.push(denied);
+      await route.fulfill({ response });
+    },
+    { times: 1 },
+  );
+  const deniedCreate = page.waitForResponse(isAgentPost);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await deniedCreate).status(), 403);
+  fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(denied), 1);
+  await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
+  // The Configuration is saved now, and its editor with it.
+  assert.equal(await configuration.isDisabled(), true);
+  await pluginJson.fill(selections);
+  await pluginJson.press("Tab");
   const refused = page.waitForResponse(isAgentPost);
   await submitWithKeyboard(page);
   assert.equal((await refused).status(), 400);
   await page.getByRole("alert").filter({ hasText: "every tool" }).waitFor();
   await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
-  // The Configuration is saved now, and its editor with it.
-  assert.equal(await configuration.isDisabled(), true);
-  return { page, pluginJson: form.pluginJson, isAgentPost };
+  return { page, pluginJson, isAgentPost };
 }
 
 // Nothing reached the API but the preflight: no Secret, Configuration or Agent exists.
@@ -154,13 +178,17 @@ const inPlaceFix = new RegExp(
 
 // Create Agent saved its Secret and Configuration before Agent create refused the plugin pair,
 // and the saved Configuration locked its editor, so the refusal's own fix (edit the setting)
-// was out of reach (finding 1863). The form now asks the API first and saves nothing.
+// was out of reach (finding 1863). The form now asks the API first and saves nothing. A long
+// setting path must still wrap at phone width (finding 1868).
 test("Create Agent refuses a plugin pair before saving anything and keeps the form editable", async (t) => {
   const form = await filledCreateForm(
     t,
     "Plugin preflight",
-    { entries: { main: { tools: { deny: ["diffs"] } } } },
-    { width: 390 },
+    {
+      ownership: "explicit",
+      entries: { main: {}, research_assistant_planning: { tools: { deny: ["*"] } } },
+    },
+    { width: 360 },
   );
   const { page, configuration, values, isPreflight, isAgentPost } = form;
   const refused = page.waitForResponse(isPreflight);
@@ -173,18 +201,18 @@ test("Create Agent refuses a plugin pair before saving anything and keeps the fo
   assert.equal(view.focused, true);
   assert.equal(view.inView, true, "the focused refusal is on screen");
   assert.ok(view.sideways <= 0, `page scrolls ${view.sideways} px sideways`);
-  assert.ok(
-    view.text.startsWith(
-      `Configuration setting agents.entries.main.tools.deny blocks every tool of plugin ${pluginId}; remove the matching deny entry or deselect the plugin.`,
-    ),
+  assert.match(
     view.text,
+    /^Configuration setting agents\.entries\.research_assistant_planning\.tools\.deny denies every tool/,
   );
   assert.doesNotMatch(view.text, /cannot edit saved Configuration/);
   await assertNothingSaved(form);
   assert.equal(await configuration.isDisabled(), false, "the Configuration stays editable");
   assert.equal(await form.pluginJson.isDisabled(), false);
-  // The refusal's first fix now works in the form: drop the deny entry and keep the plugin.
-  values.agents.entries.main = {};
+  // The Configuration can be fixed in place and the plugin kept: a sole main entry, which
+  // initial workspace files need too.
+  delete values.agents.ownership;
+  values.agents.entries = { main: {} };
   await configuration.fill(JSON.stringify(values, null, 2));
   const created = page.waitForResponse(isAgentPost);
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
@@ -227,20 +255,15 @@ test("Create Agent refuses a roster that initial workspace files cannot reach be
   assert.equal(response.status(), 201, await response.text());
 });
 
-// The rest covers a refusal the preflight missed, which Agent create reports after the form
-// saved its Configuration (the preflight is stubbed to accept).
-// A plugin refusal after Create Agent saved its Configuration landed under the fold, below a
-// "Configuration saved" line that read as progress (finding 1862). Its own fixes edit the
-// Configuration, which the form no longer can, and the fix left there went unnamed (finding
-// 1863). A long setting path scrolled the phone-width page sideways (finding 1868).
+// A plugin refusal after Create Agent saved its Configuration (a retry, which has no
+// preflight) landed under the fold, below a "Configuration saved" line that read as progress
+// (finding 1862). Its own fixes edit the Configuration, which the form no longer can, and the
+// fix left there went unnamed (finding 1863).
 test("Create Agent shows a plugin refusal in view, first and wrapped, with the fix it allows", async (t) => {
   const { page } = await refusedCreateForm(
     t,
     "Plugin refusal phone",
-    {
-      ownership: "explicit",
-      entries: { main: {}, research_assistant_planning: { tools: { deny: ["*"] } } },
-    },
+    { entries: { main: { tools: { deny: ["diffs"] } } } },
     360,
   );
   const view = await refusalView(page);
@@ -249,7 +272,7 @@ test("Create Agent shows a plugin refusal in view, first and wrapped, with the f
   assert.equal(view.inView, true, "the focused refusal is on screen");
   assert.equal(view.beforeSavedStatus, true, "the refusal leads the saved-resources line");
   assert.ok(view.sideways <= 0, `page scrolls ${view.sideways} px sideways`);
-  assert.match(view.text, /agents\.entries\.research_assistant_planning\.tools\.deny denies/);
+  assert.match(view.text, /agents\.entries\.main\.tools\.deny blocks every tool/);
   assert.match(view.text, inPlaceFix);
 });
 

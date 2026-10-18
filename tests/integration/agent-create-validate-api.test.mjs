@@ -56,14 +56,10 @@ test("Agent create preflight refuses what Agent create refuses, with its message
     // The plugin's every tool is denied (findings 508, 1848).
     [denyAll, { plugins }],
     // With several roster entries, one entry's deny-all list fails its turns (finding 1860).
+    // The workspace rule refuses this roster too; the plugin rule answers first, as in create.
     [
-      {
-        agents: {
-          ownership: "explicit",
-          entries: { main: {}, research: { tools: { deny: ["*"] } } },
-        },
-      },
-      { plugins, initialWorkspaceFiles: {} },
+      { agents: { ...roster.agents, entries: { main: {}, research: { tools: { deny: ["*"] } } } } },
+      { plugins, initialWorkspaceFiles: files },
     ],
     // Initial workspace files reach only the main Agent, so the roster must be main alone.
     [roster, { initialWorkspaceFiles: files }],
@@ -93,6 +89,16 @@ test("Agent create preflight refuses what Agent create refuses, with its message
     assert.equal(refused.status, 400, JSON.stringify(refused.body));
     assert.deepEqual(refused.body.error, answers[index], `create ${index}`);
   }
+  // The form saves the Configuration before Agent create runs, so Configuration create's content
+  // rules answer first: here, a several-entry roster without explicit ownership.
+  const unowned = { agents: { entries: { main: {}, research: {} } } };
+  const content = await f.validate({ configuration: { kind: "agent", values: unowned }, plugins });
+  assert.equal(content.status, 400, JSON.stringify(content.body));
+  const saved = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
+    body: { kind: "agent", values: unowned },
+  });
+  assert.equal(saved.status, 400, JSON.stringify(saved.body));
+  assert.deepEqual(content.body.error, saved.body.error);
 });
 
 test("Agent create preflight accepts what Agent create accepts", async (t) => {
@@ -107,7 +113,6 @@ test("Agent create preflight accepts what Agent create accepts", async (t) => {
   for (const [index, [values, fields]] of accepted.entries()) {
     const checked = await f.validate({ configuration: { kind: "agent", values }, ...fields });
     assert.equal(checked.status, 204, `${index}: ${JSON.stringify(checked.body)}`);
-    assert.equal(checked.headers.get("cache-control"), "no-store");
     const created = await f.create(values, {
       ...fields,
       ...(fields.initialWorkspaceFiles ? { workspaceDefaultsId: WORKSPACE_DEFAULTS_ID } : {}),

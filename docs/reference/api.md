@@ -1776,7 +1776,7 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | [`GET /namespaces/{namespaceId}/agents/provision/{workId}`](#get-namespacesnamespaceidagentsprovisionworkid) | Get first-time provisioning status for one exact work item |
 | [`POST /namespaces/{namespaceId}/agents/provision/{workId}/retry`](#post-namespacesnamespaceidagentsprovisionworkidretry) | Retry failed first-time provisioning for one exact work item |
 | [`GET /namespaces/{namespaceId}/agents/repository-options`](#get-namespacesnamespaceidagentsrepositoryoptions) | List approved repository choices for Agent creation in one Namespace |
-| [`POST /namespaces/{namespaceId}/agents/validate`](#post-namespacesnamespaceidagentsvalidate) | Check plugin selections and initial workspace files against an unsaved Agent Configuration, as Agent create would, without saving anything |
+| [`POST /namespaces/{namespaceId}/agents/validate`](#post-namespacesnamespaceidagentsvalidate) | Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything |
 | [`DELETE /namespaces/{namespaceId}/agents/{agentId}`](#delete-namespacesnamespaceidagentsagentid) | Begin or retry deletion of an exact Namespace-owned Agent and its AgentRevisions |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}`](#get-namespacesnamespaceidagentsagentid) | Get an exact Namespace-owned Agent |
 | [`PATCH /namespaces/{namespaceId}/agents/{agentId}`](#patch-namespacesnamespaceidagentsagentid) | Replace an exact Namespace-owned Agent's editable draft |
@@ -2606,7 +2606,7 @@ List approved repository choices for Agent creation in one Namespace
 
 <span id="post-namespacesnamespaceidagentsvalidate"></span>
 
-Check plugin selections and initial workspace files against an unsaved Agent Configuration, as Agent create would, without saving anything
+Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything
 
 **Operation ID:** `validateAgentCreate`
 

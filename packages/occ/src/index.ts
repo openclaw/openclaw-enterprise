@@ -6878,11 +6878,12 @@ export class OpenClawController {
   }
 
   /**
-   * Create Agent's preflight: createAgent's checks of plugin selections and initial workspace
-   * files against a Configuration the caller has not saved yet, with the same authorization and
-   * messages, so a refused pair is reported before the caller saves its Secret or Configuration.
-   * It writes nothing. Checks that need saved resources (Secret bindings, Harness authentication
-   * and credential sources) or live repository policy stay with createAgent.
+   * Create Agent's preflight, for a Configuration the caller has not saved yet: createConfiguration's
+   * content rules, then createAgent's checks of plugin selections and initial workspace files
+   * against those values, with their messages, under createAgent's `agent:create` check. A
+   * refusal is reported before the caller saves its Secret or Configuration. It writes nothing.
+   * Checks that need saved resources (Secret bindings, Harness authentication and credential
+   * sources) or live repository policy stay with those writes.
    * `resolveHarness` as in createAgent.
    */
   async validateAgentCreate(
@@ -6914,11 +6915,13 @@ export class OpenClawController {
         throw new ResourceStateConflictError("The Namespace does not accept new Agents.");
       }
       if (input.configuration?.kind !== "agent") {
-        throw new ScopeViolationError(
-          "The Agent Configuration must belong to the exact Namespace and configure an Agent.",
-        );
+        throw new ScopeViolationError("The Configuration kind must identify an Agent.");
       }
       const values = frozenValues(input.configuration.values);
+      // The form saves the Configuration first, so its content rules answer first, in
+      // createConfiguration's order.
+      await this.configurationDriver().validateSize?.(values);
+      this.validateConfigurationContent(values);
       this.validatePluginPolicies(plugins, pluginApprovers);
       // Shaped like the saved Configuration createAgent reads; only its values are checked.
       const configuration: () => Promise<Readonly<Configuration>> = async () =>

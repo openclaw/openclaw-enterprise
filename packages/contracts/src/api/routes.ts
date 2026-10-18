@@ -1317,7 +1317,7 @@ export const occApiRoutes = [
     resourceKind: "agent",
     authorizationTarget: "namespace_collection",
     summary:
-      "Check plugin selections and initial workspace files against an unsaved Agent Configuration, as Agent create would, without saving anything",
+      "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,

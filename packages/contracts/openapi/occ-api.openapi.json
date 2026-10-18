@@ -15652,7 +15652,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Check plugin selections and initial workspace files against an unsaved Agent Configuration, as Agent create would, without saving anything",
+        "summary": "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "create", "resourceKind": "agent", "scope": "namespace" }

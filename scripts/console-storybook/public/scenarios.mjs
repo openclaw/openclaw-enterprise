@@ -2932,7 +2932,7 @@ export const scenarios = {
       { ...click("Create Agent"), focus: true },
     ],
     description:
-      "The preflight accepted, the form saved its Configuration, then the API refused the Agent because the Configuration denies every tool of the selected plugin. The refusal leads the saved-resources line, scrolls into view with focus, wraps its setting path at phone widths, and names the fix this form allows: deselect the plugin.",
+      "Agent create refuses after the form saved its Configuration, as on a retry, which has no preflight: the Configuration denies every tool of the selected plugin. The refusal leads the saved-resources line, scrolls into view with focus, wraps its setting path at phone widths, and names the fix this form allows: deselect the plugin.",
     steps: [
       "At 360-390 px, confirm the focused refusal is on screen above the Secret and Configuration saved line, with no sideways scroll.",
       "Clear Plugin selections JSON to {} and select Create Agent again; the Agent is created.",
