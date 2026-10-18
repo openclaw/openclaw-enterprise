@@ -219,10 +219,9 @@ export function assertReadableConfiguration(resource) {
 // focusable holder wraps stays readable to a screen reader meanwhile.
 const readingDeployment = (className = "delayed-status") =>
   element("span", { className }, "Reading deployment…");
-// The 250 ms rule's delay (console.css .delayed-status and .delayed-text). With a dozen rows, reads
-// that landed just after it replaced the text a frame or a few after it showed (16-133 ms,
-// finding 1683), so once shown it stays at least READING_SHOWN_MS.
-const READING_DELAY_MS = 250;
+// With a dozen rows, reads that landed just after the 250 ms rule's delay (console.css
+// .delayed-status and .delayed-text) replaced the text a frame or a few after it showed (16-133
+// ms, finding 1683), so once shown it stays at least READING_SHOWN_MS.
 const READING_SHOWN_MS = 150;
 
 export function renderAgentList(context) {
@@ -293,15 +292,26 @@ export function renderAgentList(context) {
     if (!deployments.has(item.id)) {
       deployments.set(item.id, readDeployment(item));
     }
-    // The cell's "Reading deployment…" (or its focusable holder) and when its text shows.
+    // The cell's "Reading deployment…" (or its focusable holder) and when its text shows: the
+    // frame its delay animation ends in, not render time plus the delay. The animation starts
+    // with the frame that first styles the text, which can be a frame or two either side of the
+    // render, so that estimate let a read landing between the two fill the cell one frame after
+    // the text painted (finding 1716).
     const reading = deployment.firstElementChild;
-    const shownAt = performance.now() + READING_DELAY_MS;
+    let shownAt;
+    reading.addEventListener(
+      "animationend",
+      () => {
+        shownAt = performance.now();
+      },
+      { once: true },
+    );
     // A read that lands before the text shows, or after it has shown long enough, fills the cell
     // now; otherwise once it has. A later resume or render replaces the text, and its own read
     // fills the cell instead.
     const fill = (...content) => {
-      const wait = shownAt + READING_SHOWN_MS - performance.now();
-      if (wait <= 0 || wait > READING_SHOWN_MS) {
+      const wait = shownAt === undefined ? 0 : shownAt + READING_SHOWN_MS - performance.now();
+      if (wait <= 0) {
         fillDeployment(deployment, ...content);
         return;
       }

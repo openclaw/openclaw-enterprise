@@ -451,7 +451,8 @@ for (const visit of ["a first visit", "a return"]) {
 }
 
 // Opens a list of three Agents, leaves it for an Agent, and goes Back with every row's reread
-// held and the page clock paused, so the test decides when the rereads land.
+// held, the page clock paused and the rows' 250 ms delay animations paused, so the test decides
+// when the rereads land and when "Reading deployment…" shows.
 async function returnWithHeldRows(t, name) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agents = [];
@@ -477,6 +478,15 @@ async function returnWithHeldRows(t, name) {
       landed += 1;
     }
   });
+  // The page clock does not drive CSS animations: hold the delay until the test ends it. The
+  // console's CSP refuses an inline style, not a constructed sheet.
+  await page.evaluate(() => {
+    const sheet = new globalThis.CSSStyleSheet();
+    sheet.replaceSync(
+      ".agent-deployment :is(.delayed-status, .delayed-text) { animation-play-state: paused; }",
+    );
+    globalThis.document.adoptedStyleSheets = [...globalThis.document.adoptedStyleSheets, sheet];
+  });
   const start = Date.now();
   await page.clock.install({ time: start });
   await page.clock.pauseAt(start + 1_000);
@@ -491,7 +501,33 @@ async function returnWithHeldRows(t, name) {
     namespace,
     page,
     readingCells,
-    // Lets the held rereads land after `ms` and waits until the page has handled them.
+    // Ends every row's delay animation `ms` after the last step, so "Reading deployment…" shows,
+    // and waits until the page has handled the animations' end.
+    async reveal(ms) {
+      await page.clock.runFor(ms);
+      const ended = await page.evaluate(() => {
+        const document = globalThis.document;
+        globalThis.__readingShown = 0;
+        document.addEventListener("animationend", () => (globalThis.__readingShown += 1));
+        const animations = [
+          ...document.querySelectorAll(
+            '.content [aria-live="polite"]:not([inert]) .agent-deployment :is(.delayed-status, .delayed-text)',
+          ),
+        ].flatMap((label) => label.getAnimations());
+        for (const animation of animations) {
+          animation.finish();
+        }
+        return animations.length;
+      });
+      assert.equal(ended, agents.length);
+      const deadline = Date.now() + 5_000;
+      while ((await page.evaluate(() => globalThis.__readingShown)) < ended) {
+        assert.ok(Date.now() < deadline, "every row's delay animation ends");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    },
+    // Lets the held rereads land `ms` after the last step and waits until the page has handled
+    // them.
     async land(ms) {
       await page.clock.runFor(ms);
       const before = landed;
@@ -508,15 +544,28 @@ async function returnWithHeldRows(t, name) {
 // With a dozen rows, rereads that landed just past the 250 ms delay replaced "Reading
 // deployment…" a frame or a few after it showed (16-133 ms on oce-dogfood-b, finding 1683). Once
 // shown, it now stays 150 ms; reads that land before it shows, or after that, fill the rows at
-// once. The page clock decides when each read lands and when the rows fill.
-for (const [landsAt, fillsAt] of [
-  [100, 100],
-  [300, 400],
-  [450, 450],
+// once. The 150 ms count from the frame the text shows in, which can be a frame or two either
+// side of render time plus 250 ms: counted from that estimate, a reread landing between the two
+// filled a row one frame after its text painted, or after 117-133 ms (finding 1716). The page
+// clock decides when each read lands and when the rows fill; the test ends the delay animations.
+for (const [shownAt, landsAt, fillsAt] of [
+  [undefined, 100, 100],
+  [250, 300, 400],
+  [250, 450, 450],
+  [230, 240, 380],
+  [280, 300, 430],
 ]) {
-  test(`Rows whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
-    const { page, readingCells, land } = await returnWithHeldRows(t, `Steady rows ${landsAt}`);
-    await land(landsAt);
+  test(`Rows shown at ${shownAt ?? "no"} ms whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
+    const { page, readingCells, reveal, land } = await returnWithHeldRows(
+      t,
+      `Steady rows ${shownAt} ${landsAt}`,
+    );
+    if (shownAt === undefined) {
+      await land(landsAt);
+    } else {
+      await reveal(shownAt);
+      await land(landsAt - shownAt);
+    }
     if (fillsAt > landsAt) {
       assert.equal(await readingCells(), 3, "the shown text stays");
       await page.clock.runFor(fillsAt - landsAt - 1);
@@ -533,8 +582,12 @@ for (const [landsAt, fillsAt] of [
 // A refocus that resumes the list while a landed reread waits out those 150 ms starts the rows
 // reading again; the earlier answer never fills a row that reads again.
 test("A list resumed while its rows wait to fill shows only the new rereads", async (t) => {
-  const { namespace, page, readingCells, land } = await returnWithHeldRows(t, "Steady resume");
-  await land(300);
+  const { namespace, page, readingCells, reveal, land } = await returnWithHeldRows(
+    t,
+    "Steady resume",
+  );
+  await reveal(250);
+  await land(50);
   assert.equal(await readingCells(), 3);
   const rereads = await holdRowReads(t, page, namespace);
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
