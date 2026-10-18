@@ -9,6 +9,7 @@ import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   detailUrl,
+  fileBrowser,
   holdRequests,
   login,
   nativeValues,
@@ -65,6 +66,9 @@ function succeededDeployment(namespace, agent, revisionId) {
     }),
   };
 }
+
+// The locale cases open one context each in a single Chromium instead of launching ten.
+const browser = fileBrowser();
 
 const atBottom = (node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 24;
 
@@ -423,7 +427,7 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
 // (finding 1861): the console now measures the widest timestamp of the locale and time zone,
 // and a cell too narrow for it shrinks the text rather than wrapping it.
 test("log timestamps with their UTC offset stay on one line", async (t) => {
-  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  const { fixture, computeDriver, namespace } = await logsFixture(t);
   // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30. The other lines
   // have another level or a shorter timestamp, and their columns line up with the first.
   computeDriver.state.lines = [
@@ -435,7 +439,9 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
     // Lord Howe's GMT+10:30 applies only in the southern winter.
     { time: "2026-07-31T02:29:59Z", raw: "winter timestamp" },
   ];
-  for (const [locale, timezoneId, shown] of [
+  // The first case signs in; later contexts start with its session cookie.
+  let signedIn;
+  for (const [index, [locale, timezoneId, shown]] of [
     ["en-US", "Australia/Adelaide", /^12\/31\/2026, 12:59:59\sPM\sGMT\+10:30$/u],
     ["en-US", "Asia/Kolkata", /^12\/31\/2026, 7:59:59\sAM\sGMT\+5:30$/u],
     ["en-US", "America/New_York", /^12\/30\/2026, 9:29:59\sPM\sGMT-5$/u],
@@ -446,9 +452,30 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
     ["ar-EG", "Australia/Adelaide", /^٣١\S*\/١٢\S*\/٢٠٢٦،?\s١٢:٥٩:٥٩\sم\sغرينتش\+١٠:٣٠$/u],
     ["en-AU", "Australia/Lord_Howe", /^31\/12\/2026, 1:29:59\spm\sGMT\+11$/u],
     ["es-MX", "Australia/Adelaide", /^31\/12\/2026, 12:59:59\sp\.\s?m\.\sGMT\+10:30$/u],
-  ]) {
-    const { page } = await newPage(t, fixture, { context: { locale, timezoneId } });
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  ].entries()) {
+    // Each case reads its own Agent's logs: one Agent's reads are rate limited per principal
+    // (burst 10, then 2 a second), and ten cases in one Chromium read faster than that.
+    const agent = await fixture.createAgent(
+      namespace.id,
+      `Logs Agent ${index}`,
+      nativeValues("v1"),
+    );
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, {
+      browser,
+      context: {
+        locale,
+        timezoneId,
+        ...(signedIn === undefined ? {} : { storageState: signedIn }),
+      },
+    });
+    const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "logs");
+    if (signedIn === undefined) {
+      await login(page, fixture, url);
+      signedIn = await page.context().storageState();
+    } else {
+      await page.goto(url.href);
+    }
     const log = page.getByRole("log", { name: "Runtime log output" });
     const time = log.locator(".log-row", { hasText: "longest timestamp" }).locator(".log-time");
     assert.match(await time.innerText(), shown);
@@ -459,22 +486,47 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
     ]) {
       await page.setViewportSize({ width, height: 900 });
       const where = `${locale} ${timezoneId} at ${width}px`;
-      const cells = await log.locator(".log-time").evaluateAll((all) =>
-        all.map((cell) => {
-          const range = cell.ownerDocument.createRange();
-          range.selectNodeContents(cell);
-          const rects = [...range.getClientRects()];
-          const box = cell.getBoundingClientRect();
-          return {
-            text: cell.textContent,
-            lines: new Set(rects.map((rect) => Math.round(rect.top))).size,
-            left: Math.min(...rects.map((rect) => rect.left)) - box.left,
-            right: box.right - Math.max(...rects.map((rect) => rect.right)),
-          };
-        }),
-      );
-      assert.equal(cells.length, 3);
-      for (const cell of cells) {
+      // One read of the laid-out pane per width: 220 cases, so round trips set the test's time.
+      const seen = await log.evaluate((pane) => {
+        const all = (selector) => [...pane.querySelectorAll(selector)];
+        const cells = all(".log-time");
+        const longest = all(".log-row")
+          .find((row) => row.textContent.includes("longest timestamp"))
+          .querySelector(".log-time");
+        const content = longest.closest(".log-line").querySelector(".log-content");
+        const box = content.getBoundingClientRect();
+        return {
+          cells: cells.map((cell) => {
+            const range = cell.ownerDocument.createRange();
+            range.selectNodeContents(cell);
+            const rects = [...range.getClientRects()];
+            const box = cell.getBoundingClientRect();
+            return {
+              text: cell.textContent,
+              lines: new Set(rects.map((rect) => Math.round(rect.top))).size,
+              left: Math.min(...rects.map((rect) => rect.left)) - box.left,
+              right: box.right - Math.max(...rects.map((rect) => rect.right)),
+            };
+          }),
+          starts: Object.fromEntries(
+            [".log-time", ".log-level", ".log-origin"].map((column) => [
+              column,
+              all(column).map((cell) => cell.getBoundingClientRect().left),
+            ]),
+          ),
+          times: cells.map((cell) => {
+            const { width } = cell.getBoundingClientRect();
+            return `${width} ${cell.ownerDocument.defaultView.getComputedStyle(cell.firstElementChild).fontSize}`;
+          }),
+          overflow: pane.scrollWidth > pane.clientWidth,
+          message: {
+            beside: box.top < longest.getBoundingClientRect().bottom,
+            width: box.width,
+          },
+        };
+      });
+      assert.equal(seen.cells.length, 3);
+      for (const cell of seen.cells) {
         assert.equal(cell.lines, 1, `one line for ${cell.text}, ${where}`);
         // The text stays inside its cell, so it never runs into the level beside it.
         assert.ok(
@@ -483,33 +535,16 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
         );
       }
       // Rows with different levels and timestamp lengths keep one time width and font size.
-      for (const column of [".log-time", ".log-level", ".log-origin"]) {
-        const starts = await log
-          .locator(column)
-          .evaluateAll((cells) => cells.map((cell) => cell.getBoundingClientRect().left));
+      for (const [column, starts] of Object.entries(seen.starts)) {
         assert.equal(new Set(starts).size, 1, `${column} aligned, ${where}`);
       }
-      const times = await log.locator(".log-time").evaluateAll((cells) =>
-        cells.map((cell) => {
-          const { width } = cell.getBoundingClientRect();
-          return `${width} ${cell.ownerDocument.defaultView.getComputedStyle(cell.firstElementChild).fontSize}`;
-        }),
-      );
-      assert.equal(new Set(times).size, 1, `one time width and size, ${where}: ${times}`);
-      assert.ok(
-        await log.evaluate((pane) => pane.scrollWidth <= pane.clientWidth),
-        `no horizontal log overflow, ${where}`,
-      );
+      assert.equal(new Set(seen.times).size, 1, `one time width and size, ${where}: ${seen.times}`);
+      assert.ok(!seen.overflow, `no horizontal log overflow, ${where}`);
       // A message beside the time keeps about 200 px (196 px beside en-US's at a 662 px card);
       // beside a longer timestamp, in a card up to 762 px, it moves below.
-      const message = await time.evaluate((cell) => {
-        const content = cell.closest(".log-line").querySelector(".log-content");
-        const box = content.getBoundingClientRect();
-        return { beside: box.top < cell.getBoundingClientRect().bottom, width: box.width };
-      });
       assert.ok(
-        !message.beside || message.width >= 195,
-        `message ${message.width}px wide beside the time, ${where}`,
+        !seen.message.beside || seen.message.width >= 195,
+        `message ${seen.message.width}px wide beside the time, ${where}`,
       );
     }
   }
