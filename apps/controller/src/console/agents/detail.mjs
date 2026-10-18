@@ -1161,13 +1161,40 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       ? button("Create new version", () => change("draft", "configuration"))
       : null;
   const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
+  // The note that holds the tabs also holds ← Agents and the Namespace selector (finding 1902).
+  const refuseLeave = () => {
+    if (!draftEditorBlocksNavigation()) {
+      return false;
+    }
+    showDraftEditorNavigationBlock();
+    return true;
+  };
+  const agentsLink = link("← Agents", "agents", context);
+  agentsLink.addEventListener(
+    "click",
+    (event) => {
+      if (
+        !event.button &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey &&
+        refuseLeave()
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    { capture: true },
+  );
+  context.setLeaveGuard?.(refuseLeave);
   const header = element(
     "div",
     { className: "agent-toolbar agent-overview-toolbar" },
     element(
       "div",
       { className: "agent-overview-identity" },
-      link("← Agents", "agents", context),
+      agentsLink,
       element("span", { className: "resource-id", title: "Agent ID" }, agent.id),
     ),
     headerActions,
@@ -2311,6 +2338,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               carriedChannelSecrets = carried;
               if (carried) {
                 context.drafts.track("channelSecrets", () => carried);
+                // Saved Secrets the reloaded draft references: nothing a reload would lose.
+                context.drafts.unsavedWhen("channelSecrets", () => false);
               } else {
                 context.drafts.forget("channelSecrets");
               }
@@ -3701,6 +3730,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             reloadRequired,
           }
         : undefined,
+    );
+    // An open but unchanged editor is no unsaved work.
+    context.drafts.unsavedWhen(
+      "configuration",
+      (draft) => draft !== undefined && (draft.text !== draft.initialText || draft.outcomeUnknown),
     );
     const feedback = element(
       "p",

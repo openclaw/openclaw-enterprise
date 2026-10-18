@@ -407,7 +407,7 @@ export function renderCreateAgent(context, draft) {
         "div",
         { className: "launch-actions" },
         presets.startDefault,
-        button("Start without Preset", () => startForm({}, {}, { discardOnExit: true })),
+        button("Start without Preset", () => startForm({}, {})),
       ),
     ),
     element(
@@ -1403,7 +1403,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const actions = element(
     "div",
     { className: "form-actions" },
-    button("Cancel", () => context.navigate("agents")),
+    // Cancel is the explicit discard; other exits keep the draft (finding 1902).
+    button("Cancel", () => {
+      if (!touched || window.confirm("Discard this draft?")) {
+        context.setDiscardOnExit(true);
+        context.navigate("agents");
+      }
+    }),
     startOver,
     retryProvisioning,
     checkCredentialRegistration,
@@ -1507,8 +1513,18 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
   }
   manualModel = draft.manualModel ?? manualModel;
+  // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
+  // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.
+  let touched = Boolean(draft.touched);
+  const markTouched = (event) => {
+    touched ||= event.isTrusted;
+  };
+  for (const node of [form, channelEditor]) {
+    node.addEventListener("input", markTouched);
+    node.addEventListener("change", markTouched);
+  }
   const captureDraft = () => ({
-    discardOnExit: Boolean(draft.discardOnExit),
+    touched,
     rendered,
     presetOptions,
     // Keep raw editor text, including invalid JSON. Password controls are deliberately excluded.
@@ -2519,7 +2535,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     recovery,
     actions,
   );
-  context.setDraftCapture(captureDraft);
+  context.setDraftCapture(captureDraft, (captured) => Boolean(captured?.touched));
   context.drafts.forget("preset");
-  context.setDiscardOnExit(Boolean(draft.discardOnExit));
+  context.setDiscardOnExit(false);
 }

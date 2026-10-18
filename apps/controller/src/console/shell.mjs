@@ -62,7 +62,16 @@ export function sorted(items) {
   );
 }
 
-export function createShell({ app, pages, route, pageUrl, navigate, loadPage, logout }) {
+export function createShell({
+  app,
+  pages,
+  route,
+  pageUrl,
+  navigate,
+  loadPage,
+  logout,
+  refuseLeave,
+}) {
   let session = null;
   let namespaces = [];
   let namespaceId = null;
@@ -219,6 +228,11 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         event.currentTarget !== namespaceSelect ||
         !namespaces.some((item) => item.id === event.target.value)
       ) {
+        return;
+      }
+      // A page that cannot be left yet keeps its Namespace and says why (finding 1902).
+      if (refuseLeave?.()) {
+        event.target.value = namespaceId;
         return;
       }
       navigate(route().feature, event.target.value);
