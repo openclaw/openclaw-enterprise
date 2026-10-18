@@ -18,6 +18,7 @@ import {
   apiRequests,
   detailUrl,
   expectNoText,
+  holdRequests,
   login,
   setSlackSelection,
   slackSelectionValue,
@@ -2501,7 +2502,9 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
     workspaceFilesAccess: {
       async read({ revision, filename }) {
         const content =
-          filename === "SOUL.md" ? `# Soul served by ${revision.id}\n` : `# Saved ${filename}\n`;
+          filename === "AGENTS.md"
+            ? `# Saved ${filename}\n`
+            : `# ${filename} served by ${revision.id}\n`;
         return { status: "ok", file: { name: filename, content } };
       },
       async write() {
@@ -2543,9 +2546,15 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
     fixture,
     detailUrl(fixture, namespace.id, agent.id, first.revision.id, "workspace"),
   );
-  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md"]);
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md", "USER.md"]);
   const soul = page.getByLabel("SOUL.md", { exact: true });
-  assert.equal(await soul.inputValue(), `# Soul served by ${first.revision.id}\n`);
+  const user = page.getByLabel("USER.md", { exact: true });
+  assert.equal(await soul.inputValue(), `# SOUL.md served by ${first.revision.id}\n`);
+  assert.equal(await user.inputValue(), `# USER.md served by ${first.revision.id}\n`);
+  const soulEditor = await soul.elementHandle();
+  // The reread of USER.md is held until the reader has typed in it.
+  const userPath = `/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/USER.md`;
+  const userReread = await holdRequests(t, page, `${fixture.origin}${userPath}`, { once: true });
   await page
     .locator(".deployment-status")
     .getByText("Recorded status: running")
@@ -2577,7 +2586,8 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
     .locator(".deployment-status")
     .getByText("Recorded status: succeeded")
     .waitFor({ state: "attached" });
-  await waitForInputValue(soul, `# Soul served by ${second.id}\n`);
+  await waitForInputValue(soul, `# SOUL.md served by ${second.id}\n`);
+  await userReread.requested;
 
   assert.deepEqual(
     await editor.evaluate((node) => ({
@@ -2598,10 +2608,19 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
     },
   );
   await page.getByText("SOUL.md reloaded with its current contents.", { exact: true }).waitFor();
+  assert.equal(await soulEditor.evaluate((node) => node.isConnected), true);
   await expectNoText(page, "Unsaved edits restored. Reload replaces them with the current file.");
   // Typing goes on at the caret, and nothing was written for the reader.
   await page.keyboard.type("Workspace");
   assert.equal(await file.inputValue(), "# Draft Workspace\n# Second line\n");
+
+  // An edit made while a reread is in flight is kept; the late answer is dropped.
+  await user.fill("# Typed during the reread\n");
+  const answered = page.waitForResponse((response) => response.url().endsWith(userPath));
+  userReread.release();
+  await answered;
+  await expectNoText(page, "USER.md reloaded with its current contents.");
+  assert.equal(await user.inputValue(), "# Typed during the reread\n");
   assert.equal(
     requests.filter((r) => r.method === "PUT" && r.path.includes("/workspace/files/")).length,
     0,

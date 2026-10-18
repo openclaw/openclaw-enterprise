@@ -72,6 +72,7 @@ export function renderWorkspaceFiles(context, agent, path) {
     let initialized = false;
     // Counts reads and saves, so an in-place reread never overwrites a later answer.
     let operations = 0;
+    let refreshAfterPending = false;
     context.drafts.track(draftKey, () => {
       if (!loaded && !initialized) {
         return retained;
@@ -178,6 +179,11 @@ export function renderWorkspaceFiles(context, agent, path) {
           pending = false;
           writing = false;
           updateControls();
+          // A version change during this request may have been answered by the old version.
+          if (refreshAfterPending) {
+            refreshAfterPending = false;
+            void refresh();
+          }
         }
       }
     }
@@ -234,17 +240,30 @@ export function renderWorkspaceFiles(context, agent, path) {
           pending = false;
           writing = false;
           updateControls();
+          // A version change during this request may have been answered by the old version.
+          if (refreshAfterPending) {
+            refreshAfterPending = false;
+            void refresh();
+          }
         }
       }
     });
     // Rereads a file the reader has not changed without disabling its editor, so focus and caret
     // stay; unsaved edits and an unknown save outcome are kept as they are (finding 1836).
-    refreshers.push(async () => {
-      if (pending || !context.isCurrent()) {
+    async function refresh() {
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (pending) {
+        refreshAfterPending = true;
         return;
       }
       if (!loaded) {
-        await load();
+        // A first read that failed is retried. After an explicit Reload failed, an unknown save
+        // outcome still waits for the reader's next Reload.
+        if (!initialized) {
+          await load();
+        }
         return;
       }
       const shown = editor.value;
@@ -256,10 +275,15 @@ export function renderWorkspaceFiles(context, agent, path) {
       try {
         file = await context.request(endpoint);
       } catch (cause) {
-        if (cause.status === 401 && context.isCurrent()) {
-          context.onExpired();
+        if (!context.isCurrent() || operations !== started) {
+          return;
         }
-        // The file stays as last read; Reload shows the failure.
+        if (cause.status === 401) {
+          context.onExpired();
+          return;
+        }
+        // The file stays as last read, and the reader learns it may be out of date.
+        status.textContent = `${name} could not be reread. Reload to check its current contents.`;
         return;
       }
       if (!context.isCurrent() || operations !== started || pending || editor.value !== shown) {
@@ -273,7 +297,8 @@ export function renderWorkspaceFiles(context, agent, path) {
         status.textContent = `${name} reloaded with its current contents.`;
         updateControls();
       }
-    });
+    }
+    refreshers.push(refresh);
     section.append(form);
     void load();
   }
