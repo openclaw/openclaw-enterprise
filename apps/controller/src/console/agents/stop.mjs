@@ -275,7 +275,7 @@ export function createAgentStop(
     const dialog = element("dialog", {
       className: "agent-stop-dialog",
       "aria-labelledby": "agent-stop-confirm-title",
-      "aria-describedby": "agent-stop-confirm-description",
+      "aria-describedby": "agent-stop-confirm-target agent-stop-confirm-description",
     });
     const cancel = button("Cancel", () => dialog.close());
     const confirm = button(
@@ -306,6 +306,13 @@ export function createAgentStop(
     restrictConfirmation = showRestriction;
     dialog.append(
       element("h2", { id: "agent-stop-confirm-title" }, "Stop this Agent?"),
+      // The short title no longer names the Agent, so the dialog does, as text.
+      element(
+        "p",
+        { id: "agent-stop-confirm-target" },
+        "Agent: ",
+        element("strong", {}, state.agent.name),
+      ),
       description,
       element("div", { className: "form-actions" }, cancel, confirm),
     );

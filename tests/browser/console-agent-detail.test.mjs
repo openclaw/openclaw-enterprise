@@ -2275,6 +2275,18 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   await dialog
     .getByText(/Configuration, versions, Credentials, and workspace data are retained/i)
     .waitFor();
+  // The dialog names its target Agent as text, and in its accessible description.
+  await dialog.getByText("Stop Candidate", { exact: true }).waitFor();
+  assert.match(
+    await dialog.evaluate((node) =>
+      node
+        .getAttribute("aria-describedby")
+        .split(" ")
+        .map((id) => node.ownerDocument.getElementById(id)?.textContent)
+        .join(" "),
+    ),
+    /^Agent: Stop Candidate This interrupts the current runtime gateway/,
+  );
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await dialog.waitFor({ state: "hidden" });
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 0);
