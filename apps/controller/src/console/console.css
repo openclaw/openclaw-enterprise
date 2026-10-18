@@ -183,21 +183,43 @@ a.primary {
 button:not(:disabled):hover {
   background: var(--hover);
 }
+/* One disabled style and one busy cursor: disabled means "not now", busy means "working". The busy
+   cursor is for buttons only: a whole page or list marked busy keeps its cursor, so a load that
+   settles quickly never flashes it (findings 1444, 1447). */
 button:disabled {
-  cursor: wait;
-  opacity: 0.55;
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 .agent-card[inert] button {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.6;
 }
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 3px;
+[aria-busy="true"] button:disabled,
+button[aria-busy="true"] {
+  cursor: progress;
+}
+/* One focus ring for every control. Rows and panes that sit against an edge use the inset offset
+   (.focus-inset, or listed here); wrappers that draw the ring for a borderless child use the
+   normal one. */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+.focus-inset:focus-visible,
+.focus-inset:has(input:focus-visible),
+.log-pane:focus-visible,
+.repository-card-toggle:focus-visible,
+.repository-result:has(input:focus-visible),
+.slack-directory-result.active {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset-inset);
+}
+.slack-directory-input:has(input:focus-visible),
+.resource-linked:has(.resource-name a:focus-visible),
+.repository-option:has(:focus-visible),
+.repository-profile:has(:focus-visible) {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
 }
 a {
   color: var(--accent);
@@ -661,11 +683,8 @@ p {
   position: relative;
   z-index: 1;
 }
-/* The focus ring outlines the card, matching the link's hit area in every browser. */
-.resource-linked:has(.resource-name a:focus-visible) {
-  outline: 3px solid var(--accent);
-  outline-offset: 3px;
-}
+/* The card draws the focus ring (see the wrapper rule), matching the link's hit area in every
+   browser. */
 .resource-linked .resource-name a:focus-visible {
   outline: none;
 }
@@ -1480,11 +1499,6 @@ select:not([multiple])[size="1"] {
 .agent-stop-dialog::backdrop {
   background: var(--overlay);
 }
-select:focus-visible,
-summary:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 3px;
-}
 @media (max-width: 760px) {
   .agent-card {
     padding: 18px;
@@ -1735,10 +1749,6 @@ summary:focus-visible {
   border-radius: 8px;
   background: var(--surface);
 }
-.slack-directory-input:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
 .slack-directory-input input {
   flex: 1 1 15rem;
   width: auto;
@@ -1801,8 +1811,6 @@ summary:focus-visible {
 }
 .slack-directory-result.active {
   background: var(--surface-muted);
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }
 .slack-directory-result span {
   display: flex;
@@ -2140,12 +2148,8 @@ summary:focus-visible {
   background: var(--accent);
 }
 .plugin-tool-switch:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.plugin-tool-switch:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .plugin-tool-description {
   display: -webkit-box;
@@ -2262,11 +2266,6 @@ summary:focus-visible {
 .repository-profile > span {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.repository-option:focus-within,
-.repository-profile:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
 }
 .launch-advanced[open] > .form-field:first-of-type {
   margin-top: 20px;
@@ -2402,8 +2401,6 @@ summary:focus-visible {
 .repository-result:has(input:focus-visible) {
   position: relative;
   z-index: 1;
-  outline: 2px solid var(--accent);
-  outline-offset: -3px;
 }
 .repository-result:has(input:disabled) {
   cursor: not-allowed;
@@ -2492,9 +2489,6 @@ summary:focus-visible {
 .repository-card-toggle:hover,
 .repository-remove:hover {
   background: var(--surface-muted);
-}
-.repository-card-toggle:focus-visible {
-  outline-offset: -3px;
 }
 .repository-chevron {
   display: inline-block;
@@ -2891,10 +2885,6 @@ summary:focus-visible {
     Menlo,
     monospace;
 }
-.log-pane:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
 .log-row {
   padding: 8px 16px 8px 32px;
   border-bottom: 1px solid var(--line);
@@ -2924,10 +2914,6 @@ summary:focus-visible {
 }
 .log-row[open] summary::before {
   content: "▾";
-}
-.log-row summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
 }
 .log-line {
   /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned, even when
