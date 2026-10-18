@@ -20,7 +20,8 @@
     "tests/browser/console-create-agent-provisioning-400.test.mjs",
     "tests/browser/console-agent-deploy-focus.test.mjs",
     "tests/browser/console-agents-list-return.test.mjs",
-    "tests/browser/console-refocus-focus.test.mjs"
+    "tests/browser/console-refocus-focus.test.mjs",
+    "tests/browser/console-focus-ring.test.mjs"
   ],
   "files": [
     {
@@ -73,6 +74,9 @@
     },
     {
       "path": "tests/browser/console-refocus-focus.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-focus-ring.test.mjs"
     }
   ]
 }
