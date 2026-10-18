@@ -1767,8 +1767,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       harness.value === "codex" ||
       nativeProvider.value === "anthropic" ||
       binding?.method === "runtime";
-    harness.disabled ||=
-      binding?.method === "runtime" || (usesPat && Boolean(binding || savedSecret));
+    // Why the harness choice is locked, without the request in flight: the hint must not change
+    // while Create is pending, or it shifts the refusal the form just scrolled into view.
+    const harnessChoiceLocked =
+      saved ||
+      outcomeUnknown ||
+      requestAdmitted ||
+      binding?.method === "runtime" ||
+      (usesPat && Boolean(binding || savedSecret));
+    harness.disabled ||= pending || harnessChoiceLocked;
     const dedicatedRefused = capabilityDiscoveryDone && !openclawModeUsable("dedicated");
     const nativeRefused = dedicatedRefused && harness.value === "openclaw";
     const embeddedRefused = capabilityDiscoveryDone && !openclawModeUsable("embedded");
@@ -1825,25 +1832,50 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         capabilityStatus.textContent = nextStatus;
       }
     }
+    // The harness hint states what this Agent will run; Runtime details keep the installation's
+    // conditions (finding 1904).
+    const harnessOutcome = () => {
+      const anthropic = nativeProvider.value === "anthropic";
+      if (harness.value === "codex") {
+        // "Will run" only once the Installation's capabilities are known.
+        return anthropic
+          ? "This Agent cannot run Codex: Codex requires OpenAI."
+          : capabilityDiscoveryDone
+            ? "This Agent will run Codex with Dedicated execution."
+            : "Codex requires OpenAI and Dedicated execution.";
+      }
+      if (!capabilityDiscoveryDone) {
+        return "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
+      }
+      if (noOpenClawMode) {
+        return "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
+      }
+      const runtime = `${mode.value === "dedicated" ? "Dedicated" : "Embedded"} execution`;
+      if (anthropic && mode.value !== "embedded") {
+        return `This Agent cannot run OpenClaw with ${runtime}: Anthropic requires Embedded OpenClaw.`;
+      }
+      if (modeUnavailable) {
+        return `This Agent cannot run OpenClaw with ${runtime} on this installation.`;
+      }
+      // Name Codex only when the reader can still choose it.
+      const reason = anthropic
+        ? " Anthropic requires Embedded OpenClaw."
+        : nativeRefused && !harnessChoiceLocked
+          ? " Choose Codex for Dedicated execution."
+          : "";
+      return `This Agent will run OpenClaw with ${runtime}.${reason}`;
+    };
     nativeHarnessWarning.hidden =
       harness.value !== "openclaw" || mode.value !== "dedicated" || nativeRefused;
     const codexOption = harness.querySelector('[value="codex"]');
     codexOption.hidden = nativeProvider.value === "anthropic";
     codexOption.disabled = nativeProvider.value === "anthropic";
     harnessHint.textContent =
-      harness.disabled && usesPat
+      harnessChoiceLocked && usesPat
         ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
         : sandboxDriverOutage
           ? "Codex and OpenClaw are unavailable right now: this installation's Sandbox Driver is unavailable."
-          : embeddedRefused && dedicatedRefused
-            ? "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw."
-            : nativeRefused && nativeProvider.value === "anthropic"
-              ? "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver."
-              : nativeRefused
-                ? "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution."
-                : embeddedRefused
-                  ? "OpenClaw is available for OpenAI with Dedicated execution. Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver."
-                  : "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
+          : harnessOutcome();
     if (binding?.method === "runtime") {
       harnessHint.textContent =
         "This Preset's operator-managed credentials require the OpenClaw harness.";

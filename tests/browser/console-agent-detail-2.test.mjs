@@ -2818,9 +2818,10 @@ function workspaceStatus(form) {
   return form.locator('[role="status"]').textContent();
 }
 
-// A missing file already shows its error; rereading it for another version must not add a
-// "could not be reread" status, and a reread that answers clears an earlier one (finding 1878).
-test("a Workspace reread keeps a missing file's error and clears a failed reread once a file reads again", async (t) => {
+// A missing file already says so; rereading it for another version must not add a "could not be
+// reread" status, and a reread that answers clears an earlier one (finding 1878). The first load
+// of a file the API confirms missing says so plainly, without an error (finding 1909).
+test("a Workspace reread keeps a missing file's notice and clears a failed reread once a file reads again", async (t) => {
   // Files whose next read fails; IDENTITY.md is missing until it is given content.
   let failOnce = new Set();
   let identityContent;
@@ -2857,22 +2858,25 @@ test("a Workspace reread keeps a missing file's error and clears a failed reread
       await waitForSettledFetches(page, filePath(file), settled[file]);
     }
   };
-  const missingError = "File unavailable or missing. Check Agent access before creating it.";
+  const missingNotice = "IDENTITY.md is missing. Save to create it.";
   const rereadFailed = (file) =>
     `${file} could not be reread. Reload to check its current contents.`;
   const identity = form("IDENTITY.md");
   const identityError = identity.locator('[role="alert"]');
   const soul = form("SOUL.md");
   const user = form("USER.md");
-  await identity.getByText(missingError).waitFor();
-  // Rereads keep the error as the first read left it, Request ID included.
-  const firstError = await identityError.textContent();
+  await identity.getByText(missingNotice, { exact: true }).waitFor();
+  assert.equal(await identityError.textContent(), "");
+  assert.equal(
+    await page.getByRole("button", { name: "Save IDENTITY.md", exact: true }).isEnabled(),
+    true,
+  );
 
   // The gateway cannot read SOUL.md; IDENTITY.md is still missing and says nothing new.
   await nextVersion(["SOUL.md"]);
   assert.equal(await workspaceStatus(soul), rereadFailed("SOUL.md"));
-  assert.equal(await workspaceStatus(identity), "");
-  assert.equal(await identityError.textContent(), firstError);
+  assert.equal(await workspaceStatus(identity), missingNotice);
+  assert.equal(await identityError.textContent(), "");
 
   // SOUL.md reads again, unchanged, so its failure no longer applies. IDENTITY.md cannot be
   // read, which may mean it now exists.
@@ -2880,13 +2884,13 @@ test("a Workspace reread keeps a missing file's error and clears a failed reread
   assert.equal(await workspaceStatus(soul), "");
   assert.equal(await page.getByLabel("SOUL.md", { exact: true }).inputValue(), "# SOUL.md\n");
   assert.equal(await workspaceStatus(identity), rereadFailed("IDENTITY.md"));
-  assert.equal(await identityError.textContent(), firstError);
+  assert.equal(await identityError.textContent(), "");
 
-  // IDENTITY.md reads as missing again, which clears its failure. SOUL.md and USER.md fail;
+  // IDENTITY.md reads as missing again, which restores its notice. SOUL.md and USER.md fail;
   // the reader reloads one and saves the other, and their own status replaces the failure.
   await nextVersion(["SOUL.md", "USER.md"]);
-  assert.equal(await workspaceStatus(identity), "");
-  assert.equal(await identityError.textContent(), firstError);
+  assert.equal(await workspaceStatus(identity), missingNotice);
+  assert.equal(await identityError.textContent(), "");
   assert.equal(await workspaceStatus(soul), rereadFailed("SOUL.md"));
   assert.equal(await workspaceStatus(user), rereadFailed("USER.md"));
   await page.getByRole("button", { name: "Reload SOUL.md", exact: true }).click();

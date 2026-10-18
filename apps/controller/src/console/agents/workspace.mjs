@@ -180,8 +180,11 @@ export function renderWorkspaceFiles(context, agent, path) {
         } else {
           loaded = false;
         }
-        status.textContent = missingReadback ? `${name} is missing. Save to create it.` : "";
-        error.textContent = missingReadback ? "" : fileError(cause, false);
+        // Any read the API confirms as file absence, first load included, says so plainly once
+        // the file is editable (finding 1909).
+        const missingFile = loaded && confirmsMissingFile(cause);
+        status.textContent = missingFile ? `${name} is missing. Save to create it.` : "";
+        error.textContent = missingFile ? "" : fileError(cause, false);
       } finally {
         if (context.isCurrent()) {
           pending = false;
@@ -279,8 +282,8 @@ export function renderWorkspaceFiles(context, agent, path) {
       if (outcomeUnknown || shown !== (baseline ?? "")) {
         return;
       }
-      // Only a file read as missing (404) is loaded without a baseline; its error says so, or after
-      // a Reload that confirmed the absence, its status.
+      // Only a file read as missing (404) is loaded without a baseline; its status says so when the
+      // API confirmed the absence, otherwise its error.
       const missing = baseline === undefined;
       const started = (operations += 1);
       let file;

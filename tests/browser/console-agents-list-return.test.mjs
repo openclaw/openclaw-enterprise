@@ -673,3 +673,155 @@ test("A list left again during its rows' rereads is reused on the next return an
     assert.match(text, /^v1 · succeeded/);
   }
 });
+
+// On a phone the Agents table scrolled sideways: 5 columns, the deployment one a fixed 14 rem, so
+// 2.5 columns showed and IDs broke after every character (UX plan C5). Under 760 px each Agent is
+// a stacked row: name and ID, then each cell beside its column's name. A dozen Agents with
+// 60-character names fit 390 and 360 px, every column name shows, IDs break only after a hyphen
+// or underscore, and the row still opens its Agent. At 1440 the table is unchanged.
+test("On a phone the Agents list stacks each row, fits the screen and still opens the Agent", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Phone Agents list");
+  const agents = [];
+  for (let index = 1; index <= AGENTS; index += 1) {
+    const name =
+      `Phone Agent ${String(index).padStart(2, "0")} coordinating the quarterly release review and sign-off`.slice(
+        0,
+        60,
+      );
+    const agent = await fixture.createAgent(namespace.id, name, nativeValues(name));
+    // Half the Agents have a current version, so both forms of that cell are shown.
+    if (index % 2 === 0) {
+      await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    }
+    agents.push({ ...agent, name });
+  }
+  assert.equal(agents[0].name.length, 60);
+  const columns = ["Agent", "Execution mode", "Current version", "Latest deployment", "Created"];
+  for (const width of [390, 360, 600, 1440]) {
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: width === 1440 ? 900 : 844 } },
+    });
+    // Each row keeps its height when its deployment read lands (finding 1488).
+    const rows = await holdRowReads(t, page, namespace);
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    const table = page.locator(settledView).getByRole("table", { name: "Agents" });
+    await table.getByRole("link", { name: agents[0].name }).waitFor();
+    await rows.revisions.requested;
+    const heights = () =>
+      table.evaluate((node) =>
+        [...node.querySelectorAll("tbody tr")].map((row) => row.getBoundingClientRect().height),
+      );
+    const reading = await heights();
+    assert.equal(await table.getByText(READING).count(), AGENTS);
+    rows.release();
+    await page.getByText(READING).first().waitFor({ state: "detached" });
+    assert.deepEqual(await heights(), reading, `${width}: a row grew when its read landed`);
+    // Every row is still a table row with its cells, for screen readers.
+    assert.equal(await table.getByRole("row").count(), AGENTS + 1, `${width}: rows`);
+    assert.equal(await table.getByRole("columnheader").count(), columns.length, `${width}`);
+    const layout = await table.evaluate((node) => {
+      const document = globalThis.document;
+      const view = document.documentElement;
+      const scroll = node.closest(".table-scroll");
+      const tableBox = node.getBoundingClientRect();
+      const rows = [...node.querySelectorAll("tbody tr")].map((row) => {
+        const cells = [...row.cells];
+        const id = cells[0].querySelector(".resource-id");
+        // Where each line of the ID starts: the character before it ends the previous line.
+        const breaks = [];
+        const text = id.firstChild;
+        let top = null;
+        for (let index = 0; index < text.length; index += 1) {
+          const range = document.createRange();
+          range.setStart(text, index);
+          range.setEnd(text, index + 1);
+          const rect = range.getBoundingClientRect();
+          if (top !== null && rect.top > top + 1) {
+            breaks.push(text.data[index - 1]);
+          }
+          top = rect.top;
+        }
+        return {
+          overflows: cells.some((cell) => {
+            const box = cell.getBoundingClientRect();
+            return box.left < tableBox.left - 0.5 || box.right > tableBox.right + 0.5;
+          }),
+          labels: cells.slice(1).map((cell) => {
+            const before = globalThis.getComputedStyle(cell, "::before");
+            const range = document.createRange();
+            range.selectNodeContents(cell);
+            const content = range.getBoundingClientRect();
+            const box = cell.getBoundingClientRect();
+            return {
+              label: cell.dataset.label,
+              shown:
+                before.display !== "none" &&
+                before.visibility === "visible" &&
+                before.content.startsWith(JSON.stringify(cell.dataset.label)),
+              // The value starts beside its label (760 px and under) or below it (520 and under).
+              beside: content.left - box.left > 40,
+              below: content.top - box.top >= 12,
+            };
+          }),
+          breaks,
+          display: globalThis.getComputedStyle(row).display,
+          revision: (({ fontFamily, color }) => ({ fontFamily, color }))(
+            globalThis.getComputedStyle(cells[2].querySelector("a") ?? cells[2]),
+          ),
+        };
+      });
+      return {
+        pageFits: view.scrollWidth <= view.clientWidth,
+        tableFits: scroll.scrollWidth <= scroll.clientWidth,
+        headerShown: node.tHead.getBoundingClientRect().height > 1,
+        text: globalThis.getComputedStyle(document.querySelector("h1")).color,
+        rows,
+      };
+    });
+    assert.equal(layout.pageFits, true, `${width}: the page scrolls sideways`);
+    assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
+    assert.equal(layout.rows.length, AGENTS);
+    for (const [index, row] of layout.rows.entries()) {
+      assert.equal(row.overflows, false, `${width}: row ${index} overflows the table`);
+      assert.deepEqual(
+        row.labels.map(({ label }) => label),
+        columns.slice(1),
+        `${width}: row ${index} labels`,
+      );
+      for (const { label, shown, beside, below } of row.labels) {
+        if (width === 1440) {
+          // The desktop table names its columns in the header row instead.
+          assert.equal(shown, false, `${width}: ${label} labelled in the cell`);
+        } else {
+          assert.equal(shown, true, `${width}: row ${index} hides ${label}`);
+          assert.deepEqual(
+            { beside, below },
+            width > 520 ? { beside: true, below: false } : { beside: false, below: true },
+            `${width}: row ${index} ${label} value overlaps its label`,
+          );
+        }
+      }
+      for (const character of row.breaks) {
+        assert.match(character, /[-_]/, `${width}: row ${index} ID breaks inside a segment`);
+      }
+      if (width === 360) {
+        assert.ok(row.breaks.length > 0, `${width}: row ${index} ID fits one line`);
+      }
+      // A current version's revision ID reads as an ID: mono, in the text colour.
+      if (index % 2 === 1) {
+        assert.match(row.revision.fontFamily, /monospace/, `${width}: row ${index} revision`);
+        assert.equal(row.revision.color, layout.text, `${width}: row ${index} revision colour`);
+      }
+      assert.equal(row.display, width === 1440 ? "table-row" : "grid", `${width}: row display`);
+    }
+    assert.equal(layout.headerShown, width === 1440, `${width}: header row`);
+    // The row's name still opens its Agent.
+    const target = agents[1];
+    await table.getByRole("link", { name: target.name, exact: true }).click();
+    await page.waitForURL(`**/console/agents/${target.id}**`);
+    await page
+      .locator(settledView)
+      .getByRole("region", { name: "Agent state at a glance" })
+      .waitFor();
+  }
+});

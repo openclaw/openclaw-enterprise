@@ -453,9 +453,21 @@ export function renderAgentList(context) {
     );
     const body = element("tbody");
     for (const item of matches) {
+      const revision = item.activeRevisionId
+        ? link(
+            shortId(item.activeRevisionId),
+            `agents/${item.id}?revision=${item.activeRevisionId}`,
+            context,
+          )
+        : null;
+      revision?.classList.add("agent-revision-link");
       // The cell keeps its column's width once its read lands, and its outcome link and one
       // note line fit the two lines the Agent cell already gives the row (finding 1488).
-      const deployment = element("td", { className: "agent-deployment" }, readingDeployment());
+      const deployment = element(
+        "td",
+        { className: "agent-deployment", "data-label": "Latest deployment" },
+        readingDeployment(),
+      );
       cells.set(deployment, item);
       showDeployment(item, deployment);
       body.append(
@@ -472,24 +484,32 @@ export function renderAgentList(context) {
               ? element("span", { className: "badge" }, "Saved configuration unreadable")
               : null,
           ),
-          element("td", {}, item.executionMode === "dedicated" ? "Dedicated" : "Embedded"),
+          // On a phone each cell shows its column's name (console.css, `data-label`).
           element(
             "td",
-            {},
-            item.activeRevisionId
-              ? link(
-                  shortId(item.activeRevisionId),
-                  `agents/${item.id}?revision=${item.activeRevisionId}`,
-                  context,
-                )
-              : "No current version",
+            { "data-label": "Execution mode" },
+            item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
           ),
+          element("td", { "data-label": "Current version" }, revision ?? "No current version"),
           deployment,
-          element("td", {}, displayDate(item.createdAt)),
+          element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
         ),
       );
     }
     table.append(body);
+    // On a phone the rows stack (console.css), and a table part whose CSS display changes can
+    // lose its table role in some browsers. Explicit roles keep the table for screen readers.
+    table.setAttribute("role", "table");
+    for (const [parts, role] of [
+      ["thead, tbody", "rowgroup"],
+      ["tr", "row"],
+      ["th", "columnheader"],
+      ["td", "cell"],
+    ]) {
+      for (const part of table.querySelectorAll(parts)) {
+        part.setAttribute("role", role);
+      }
+    }
     rows.replaceChildren(element("div", { className: "table-scroll" }, table));
   }
   // A retained list is mounted without rereading its rows' deployments, so what they showed is
