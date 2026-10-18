@@ -452,16 +452,8 @@ function takeNativeFragment(current) {
   return match ? { kind: "native", key: match[1] } : null;
 }
 
-const shellUI = createShell({
-  app,
-  pages,
-  route,
-  pageUrl,
-  navigate,
-  loadPage,
-  logout,
-  refuseLeave: () => Boolean(leaveGuard?.()),
-});
+const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
+shellUI.setLeaveGuard(() => Boolean(leaveGuard?.()));
 const { publicPanel, renderRows, switchNamespace } = shellUI;
 const request = createApiClient({
   lifetime,

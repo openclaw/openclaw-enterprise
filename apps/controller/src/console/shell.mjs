@@ -62,16 +62,7 @@ export function sorted(items) {
   );
 }
 
-export function createShell({
-  app,
-  pages,
-  route,
-  pageUrl,
-  navigate,
-  loadPage,
-  logout,
-  refuseLeave,
-}) {
+export function createShell({ app, pages, route, pageUrl, navigate, loadPage, logout }) {
   let session = null;
   let namespaces = [];
   let namespaceId = null;
@@ -80,6 +71,8 @@ export function createShell({
   let drawerControls = null;
   let namespaceSelect = null;
   let namespaceAdmissionPending = true;
+  // Whether the shown page refuses to be left yet; it then says why (finding 1902).
+  let refuseLeave = () => false;
   const mobileLayout = window.matchMedia("(max-width: 760px)");
 
   mobileLayout.addEventListener("change", (event) => {
@@ -231,7 +224,7 @@ export function createShell({
         return;
       }
       // A page that cannot be left yet keeps its Namespace and says why (finding 1902).
-      if (refuseLeave?.()) {
+      if (refuseLeave()) {
         event.target.value = namespaceId;
         return;
       }
@@ -611,6 +604,9 @@ export function createShell({
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);
+    },
+    setLeaveGuard(guard) {
+      refuseLeave = guard;
     },
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());

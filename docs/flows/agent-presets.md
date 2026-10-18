@@ -151,8 +151,8 @@ path records mutations and denials without template or variable contents.
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
 lists readable Preset summaries, requiring Namespace read, then reads the selection
 once. **Start with default Preset** reads the listed `default-codex` resource.
-Variable-free templates apply immediately; customized variables keep the chooser.
-Missing defaults or failed reads do not open a hardcoded
+Variable-free templates apply immediately; customized variables keep the chooser
+and its shortcut origin. Missing defaults or failed reads do not open a hardcoded
 starter; other readable Presets remain selectable. **Start without Preset** opens
 the form without a Preset read, not as a fallback for a denied selection. Normal
 creation authorization applies.
