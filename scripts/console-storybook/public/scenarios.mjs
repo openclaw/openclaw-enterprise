@@ -5371,6 +5371,69 @@ export const scenarios = {
     description:
       "Simulated uncertain creation stays guarded until explicit Reload confirms file absence. Reload opens an empty editor; creation still requires Save.",
   },
+  workspaceVersionReread: {
+    group: "Components/Workspace",
+    name: "Reread after a version change",
+    path: `${currentVersion}&tab=workspace`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    rules: [
+      // IDENTITY.md stays missing: the file-specific 404 answers the first read and the reread.
+      {
+        suffix: "/IDENTITY.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+      },
+      // The new version's gateway cannot answer the SOUL.md reread.
+      { suffix: "/SOUL.md", method: "GET", skip: 1, once: true, status: 503 },
+    ],
+    description:
+      "v7 finishes deploying while Workspace files are open. Unedited files are reread in place from it.",
+    steps: [
+      "Wait about 5 seconds for Deployment activity to record v7 as succeeded, or click Refresh deployment.",
+      "IDENTITY.md keeps its missing-file error and adds no reread warning.",
+      "SOUL.md says it could not be reread. Click Reload SOUL.md: the warning is replaced by SOUL.md loaded.",
+    ],
+    gap: "Simulated API results demonstrate presentation only. Browser tests cover reread ordering and later rereads clearing a failure.",
+  },
+  workspaceVersionRereadUnconfirmed: {
+    group: "Components/Workspace",
+    name: "Reread cannot confirm a missing file",
+    path: `${currentVersion}&tab=workspace`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    rules: [
+      {
+        suffix: "/IDENTITY.md",
+        method: "GET",
+        once: true,
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+      },
+      // A resource 404 does not confirm the file is still missing.
+      {
+        suffix: "/IDENTITY.md",
+        method: "GET",
+        once: true,
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested platform resource was not found.",
+      },
+    ],
+    description:
+      "IDENTITY.md was read as missing; the reread for v7 gets a resource 404, which does not confirm that.",
+    steps: [
+      "IDENTITY.md shows its missing-file error.",
+      "Wait about 5 seconds for Deployment activity to record v7 as succeeded, or click Refresh deployment.",
+      "IDENTITY.md says it could not be reread. Click Reload IDENTITY.md: the file now reads, and IDENTITY.md loaded. replaces the warning and the error.",
+    ],
+    gap: "Simulated API results demonstrate presentation only; the resource 404 is controlled.",
+  },
   deletionPermissionDuringConfirmation: {
     group: "Components/Deletion",
     name: "Permission arrives while confirmation is open",

@@ -19,3 +19,11 @@ export const WorkspaceMissingReadback = {
   name: "Missing file after uncertain create",
 };
 export const WorkspaceCleanCRLF = story("workspaceCleanCRLF");
+export const WorkspaceVersionReread = {
+  ...story("workspaceVersionReread"),
+  name: "Reread after a version change",
+};
+export const WorkspaceVersionRereadUnconfirmed = {
+  ...story("workspaceVersionRereadUnconfirmed"),
+  name: "Reread cannot confirm a missing file",
+};

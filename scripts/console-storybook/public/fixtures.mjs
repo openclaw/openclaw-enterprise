@@ -458,6 +458,8 @@ export function installFixture(scenario, evidence) {
             ? candidateDeploymentError(scenario, candidate.createdAt)
             : null,
         warnings: scenario.candidateDeploymentWarnings ?? [],
+        // The next status poll records success and selects v7 for service.
+        ...(scenario.candidateActivates ? { reads: 0 } : {}),
       });
     }
   }
