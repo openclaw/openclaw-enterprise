@@ -407,7 +407,9 @@ test("concurrent legacy password delivery accepts only an identical owned source
         delivery(),
         {
           different: ResourceConflictError,
-          foreign: /^Refusing unowned Kubernetes Secret gateway-password-[a-f0-9]{12}\.$/,
+          foreign: {
+            message: /^Refusing unowned Kubernetes Secret gateway-password-[a-f0-9]{12}\.$/,
+          },
           disappeared: { message: "HTTP 409", statusCode: 409 },
           unavailable: { message: "HTTP 503", statusCode: 503 },
         }[outcome],

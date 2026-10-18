@@ -602,10 +602,9 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   );
   // A single worker Pod is the Deployment read: no per-Pod copies.
   platformPods.splice(0, 1);
-  await assert.rejects(
-    stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, timing),
-    /^Timed out: ordinary Agent stop removes every runtime Pod; last observation: /,
-  );
+  await assert.rejects(stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, timing), {
+    message: /^Timed out: ordinary Agent stop removes every runtime Pod; last observation: /,
+  });
   assert.equal(records.get("agent-3-stop-timeout-platform-logs").logs.workerPods, undefined);
 
   // A Compose control plane keeps the observation but has no in-cluster platform logs.
