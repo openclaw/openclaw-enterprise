@@ -2456,8 +2456,12 @@ test("a default starter creation form survives every exit but a confirmed Cancel
     await page.getByRole("link", { name: "← Agents" }).click();
   }
 
-  // An untouched form has nothing to lose: Cancel leaves without asking.
+  // An untouched form has nothing to lose: Start over and Cancel leave without asking.
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
+  await page.getByLabel("Agent name", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Start over", exact: true }).click();
+  await page.getByLabel("Preset template").waitFor();
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   await page.getByLabel("Agent name", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Cancel", exact: true }).click();

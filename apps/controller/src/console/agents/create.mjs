@@ -1234,7 +1234,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     "Create Agent",
   );
   const startOver = button("Start over", () => {
-    if (window.confirm("Discard this draft and start again?")) {
+    if (!isTouched() || window.confirm("Discard this draft and start again?")) {
       context.drafts.forget("channels");
       renderCreateAgent(context);
     }
@@ -1405,7 +1405,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     { className: "form-actions" },
     // Cancel is the explicit discard; other exits keep the draft (finding 1902).
     button("Cancel", () => {
-      if (!touched || window.confirm("Discard this draft?")) {
+      if (!isTouched() || window.confirm("Discard this draft?")) {
         context.setDiscardOnExit(true);
         context.navigate("agents");
       }
@@ -1523,8 +1523,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     node.addEventListener("input", markTouched);
     node.addEventListener("change", markTouched);
   }
+  toggleModel.addEventListener("click", markTouched);
+  // Repository edits and other button-only changes set `edited`.
+  const isTouched = () => touched || edited;
   const captureDraft = () => ({
-    touched,
+    touched: isTouched(),
     rendered,
     presetOptions,
     // Keep raw editor text, including invalid JSON. Password controls are deliberately excluded.
