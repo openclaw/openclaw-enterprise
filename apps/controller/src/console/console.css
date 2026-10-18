@@ -2709,9 +2709,10 @@ summary:focus-visible {
      the row is short of room. */
   --log-level-column: minmax(6.5em, max-content);
   /* Fit a whole timestamp with its UTC offset on one line (findings 1681, 1861). The console
-     measures the widest one its locale and time zone can show and sets --log-time-width (px) and
-     --log-time-ems (that width in 11px ems) on the pane. Until then: 33 characters of the 11px
-     time, as in en-US "12/31/2026, 12:59:59 PM GMT+10:30". ch is the row's 12px character. */
+     measures the widest one its locale and time zone can show and sets --log-time-width (px,
+     with 4 px of slack) and --log-time-ems (the text in 11px ems) on the pane. Until then: 33
+     characters of the 11px time, as in en-US "12/31/2026, 12:59:59 PM GMT+10:30". ch is the
+     row's 12px character. */
   --log-time-column: var(--log-time-width, calc(33ch * 11 / 12));
   /* Where the message moves below: the time takes the room the level (6.5em), the narrowest
      origin (60px) and two 10px gaps leave, up to its width, and any room beyond. In a card too
@@ -2733,7 +2734,7 @@ summary:focus-visible {
   font-size: 11px;
 }
 .log-time-text {
-  font-size: min(11px, 100cqi / var(--log-time-ems, 19.8));
+  font-size: min(11px, (100cqi - 4px) / var(--log-time-ems, 19.4));
   white-space: nowrap;
 }
 .log-time-probe {

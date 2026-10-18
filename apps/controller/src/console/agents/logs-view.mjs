@@ -184,10 +184,11 @@ export function fitLogTimeColumn(pane) {
   if (widest === 0) {
     return false;
   }
-  // One pixel of slack absorbs rounding.
-  const width = Math.ceil(widest) + 1;
-  pane.style.setProperty("--log-time-width", `${width}px`);
-  pane.style.setProperty("--log-time-ems", String(width / 11));
+  // Shrunk text does not scale exactly with its font size (CJK glyph advances round), so the
+  // column keeps 4 px of slack, which the shrinking text leaves free (console.css .log-time-text).
+  const natural = Math.ceil(widest);
+  pane.style.setProperty("--log-time-width", `${natural + 4}px`);
+  pane.style.setProperty("--log-time-ems", String(natural / 11));
   return true;
 }
 
