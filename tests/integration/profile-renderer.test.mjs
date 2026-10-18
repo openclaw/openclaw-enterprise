@@ -2770,7 +2770,7 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
           ...compute,
           runtime: { ...compute.runtime, codexModelBaseUrl: value },
         }),
-      undefined,
+      { message: `Codex model endpoint ${message}` },
       JSON.stringify(value),
     );
   }

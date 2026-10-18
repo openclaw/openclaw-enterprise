@@ -1256,6 +1256,7 @@ test(
         fixture.namespace.id,
         owner.id,
       ),
+      { name: "AuthorizationDeniedError" },
     );
     assert.deepEqual(await observe(), exhausted);
 
@@ -1380,6 +1381,7 @@ test(
         fixture.namespace.id,
         owner.id,
       ),
+      { name: "AuthorizationDeniedError" },
     );
     assert.deepEqual(await observe(), exhausted);
 
@@ -1465,6 +1467,7 @@ revisionTest(
     // A rejected caller cannot replenish the worker's attempt budget.
     await assert.rejects(
       fixture.controller.deleteNamespace(`unprivileged-${randomUUID()}`, namespace.id),
+      { name: "AuthorizationDeniedError" },
     );
     assert.deepEqual(await observe(), exhausted);
 
@@ -1810,6 +1813,7 @@ revisionTest(
     // A caller without delete permission still cannot take over.
     await assert.rejects(
       fixture.controller.deleteNamespace(`unprivileged-${randomUUID()}`, namespace.id),
+      { name: "AuthorizationDeniedError" },
     );
     assert.deepEqual(await observe(), exhausted);
 

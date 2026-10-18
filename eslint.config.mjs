@@ -42,6 +42,22 @@ export default defineConfig(
     },
   },
   {
+    // A matcher-less assert.rejects/throws passes on any error, a TypeError from a broken
+    // fixture included, so a test can report a failure as a pass (finding 1845).
+    files: ["tests/**/*.{js,mjs,cjs,ts}"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector:
+            "CallExpression[callee.object.name='assert'][callee.property.name=/^(rejects|throws)$/]:matches([arguments.length<2], [arguments.1.type='TemplateLiteral'], [arguments.1.value=type(string)], [arguments.1.type='Identifier'][arguments.1.name='undefined'])",
+          message:
+            "Name the expected error: pass an error class, a { name, message, code } object, a RegExp or a validation function as the second argument, not nothing or only a message.",
+        },
+      ],
+    },
+  },
+  {
     files: ["**/*.ts"],
     extends: [tseslint.configs.recommended],
     rules: {

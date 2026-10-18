@@ -7312,6 +7312,7 @@ test("a ServiceAccount credential rollback deletes only the Secret holding its o
     await stored(fixture);
     await assert.rejects(
       fixture.driver.deleteServiceAccountCredential(input(fixture, "at-request-fixture")),
+      { message: "delete failed", statusCode: 409 },
     );
     assert.equal(fixture.storedToken(), "at-request-fixture");
   });
@@ -7339,7 +7340,10 @@ test("a ServiceAccount credential rollback deletes only the Secret holding its o
     assert.equal(fixture.storedToken(), "at-request-fixture");
     assert.deepEqual(fixture.deletes, []);
     // Account deletion still refuses it instead of passing over it silently.
-    await assert.rejects(fixture.driver.deleteServiceAccountCredential(input(fixture)));
+    await assert.rejects(
+      fixture.driver.deleteServiceAccountCredential(input(fixture)),
+      /^Refusing unowned Kubernetes Secret service-account-[a-f0-9]{32}\.$/,
+    );
     assert.deepEqual(fixture.deletes, []);
   });
 

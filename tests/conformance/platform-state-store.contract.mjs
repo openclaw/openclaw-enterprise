@@ -347,6 +347,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     ["unsafe generation", { generation: Number.MAX_SAFE_INTEGER + 1 }],
   ]) {
     // Both persistence adapters reject ownership metadata PostgreSQL cannot safely represent.
+    const configurationOwnershipRefusal = storeRefusal(
+      "ScopeViolationError",
+      "The Configuration kind or generation is invalid.",
+      postgresOwnershipViolation,
+    );
     await assert.rejects(
       store.transact((transaction) =>
         transaction.configurations.createConfiguration({
@@ -355,6 +360,10 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
           ...invalidOwnership,
         }),
       ),
+      (error) =>
+        configurationOwnershipRefusal(error) ||
+        // PostgreSQL's bigint cast refuses a fractional generation before its own check.
+        (invalidOwnership.generation === 1.5 && error.code === "22P02"),
       description,
     );
   }
@@ -484,6 +493,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
           revision: 2,
           ...malformed,
         }),
+      ),
+      storeRefusal(
+        "ScopeViolationError",
+        "An AgentRevision requires valid Configuration metadata, a native document, and pinned Harness and Compute descriptors.",
+        postgresOwnershipViolation,
       ),
       description,
     );
@@ -1107,6 +1121,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
           account.id,
           invalidCredential,
         ),
+      ),
+      storeRefusal(
+        "ScopeViolationError",
+        "The ServiceAccount credential reference is invalid.",
+        postgresOwnershipViolation,
       ),
       description,
     );
@@ -2512,12 +2531,17 @@ async function verifyCredentialSourceContract(
     store.transact((transaction) =>
       transaction.revisions.createRevision({ ...toolRevision, credentialSources: undefined }),
     ),
+    { name: "ScopeViolationError", message: "The AgentRevision belongs to an unavailable Agent." },
     "A revision must freeze the Agent's non-model sources.",
   );
   await assert.rejects(
     store.transact((transaction) =>
       transaction.credentialSources.deleteCredentialSource(sourceNamespace.id, tokenSource.id),
     ),
+    {
+      name: "ScopeViolationError",
+      message: "The credential source is referenced by active platform state.",
+    },
     "An Agent draft's non-model source cannot be deleted.",
   );
   await store.transact(async (transaction) => {

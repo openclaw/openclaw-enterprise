@@ -289,7 +289,10 @@ test(
 
     // The binding reread after the Secret read runs on the ended session, so this request fails
     // before it can revoke the later issuance's credential or delete its Secret.
-    await assert.rejects(issue());
+    await assert.rejects(issue(), {
+      name: "DependencyUnavailableError",
+      message: "The selected ServiceAccount Driver is unavailable.",
+    });
     assert.equal(intercept, false);
     assert.deepEqual(provider.revoked, []);
     assert.deepEqual([...provider.live], ["cred-1"]);
