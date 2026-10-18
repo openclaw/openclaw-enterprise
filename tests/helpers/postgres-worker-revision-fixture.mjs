@@ -701,7 +701,10 @@ export function createWorkerRevisionFixtures(
 
     // Provisions actorId with the fixture actor's direct bindings. withoutActions binds each
     // scope to a copy of its role minus those actions instead, so the identity is provisioned
-    // and keeps its other grants but lacks exactly those permissions.
+    // and keeps its other grants but lacks exactly those permissions. An action is dropped for
+    // every resource kind (["delete"] also drops delete secret). The copied roles keep the
+    // source role's scope, usually Installation-wide, so Namespace teardown never removes them;
+    // like the copied identity they live until the per-file database is dropped.
     async function copyActorGrants(actorId, { withoutActions = [] } = {}) {
       await observerPool.query(
         `INSERT INTO occ.iam_identities (id, kind, issuer, subject)
