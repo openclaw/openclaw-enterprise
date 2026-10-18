@@ -542,24 +542,36 @@ test("later Logs panes reuse the measured time column width", async (t) => {
       }
     });
     observer.observe(globalThis.document.body, { childList: true, subtree: true });
-    const widths = [];
+    // What sizes the column: its width, the text in 11px ems, and the long-time layout.
+    const sizing = (pane) => [
+      pane.style.getPropertyValue("--log-time-width"),
+      pane.style.getPropertyValue("--log-time-ems"),
+      pane.hasAttribute("data-long-time"),
+    ];
+    const panes = [];
     for (let index = 0; index < 2; index += 1) {
       const pane = globalThis.document.createElement("div");
       pane.className = "log-pane";
       shown.after(pane);
-      widths.push([fitLogTimeColumn(pane), pane.style.getPropertyValue("--log-time-width")]);
+      panes.push([fitLogTimeColumn(pane), ...sizing(pane)]);
       pane.remove();
     }
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const missed = observer.takeRecords();
     observer.disconnect();
-    return { probes, widths, shown: shown.style.getPropertyValue("--log-time-width") };
+    for (const record of missed) {
+      for (const node of record.addedNodes) {
+        probes += node.classList?.contains("log-time-probe") ? 1 : 0;
+      }
+    }
+    return { probes, panes, shown: sizing(shown) };
   });
-  assert.notEqual(reused.shown, "");
+  // ko-KR with GMT+10:30 is wider than en-US, so the long-time layout applies too.
+  assert.equal(reused.shown[2], true);
   assert.deepEqual(reused, {
     probes: 0,
-    widths: [
-      [true, reused.shown],
-      [true, reused.shown],
+    panes: [
+      [true, ...reused.shown],
+      [true, ...reused.shown],
     ],
     shown: reused.shown,
   });

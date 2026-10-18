@@ -164,8 +164,10 @@ const logTimeFormat = new Intl.DateTimeFormat(undefined, {
 // every UTC offset of the year (daylight saving, Lord Howe's half hour, GMT vs GMT+1). Measured
 // once, in the pane's font: the probe is as wide as its widest line. Returns whether the column
 // is sized; a pane that is not laid out yet measures nothing. The result depends only on the
-// locale, the time zone and the pane's system monospace font, which hold for the page, so later
-// panes (another version, source or Agent) reuse it instead of probing again (finding 1867).
+// locale, the time zone and the pane's system monospace font (no web font to load), which hold
+// for the page, so later panes (another visit, version or Agent) reuse it instead of probing
+// again (finding 1867). A text-only zoom or a year change after the first measurement is not
+// followed; panes already sized never followed one either.
 let measuredLogTimeWidth;
 export function fitLogTimeColumn(pane) {
   if (pane.style.getPropertyValue("--log-time-width") !== "") {
