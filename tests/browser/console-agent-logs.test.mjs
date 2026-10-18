@@ -424,11 +424,16 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
 // and a cell too narrow for it shrinks the text rather than wrapping it.
 test("log timestamps with their UTC offset stay on one line", async (t) => {
   const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
-  // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30. The second line
-  // has a shorter timestamp in every locale, and its columns line up with the first.
+  // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30. The other lines
+  // have another level or a shorter timestamp, and their columns line up with the first.
   computeDriver.state.lines = [
     { time: "2026-12-31T02:29:59Z", raw: "longest timestamp" },
-    { time: "2026-01-01T20:00:00Z", raw: "shorter timestamp" },
+    {
+      time: "2026-01-01T20:00:00Z",
+      raw: JSON.stringify({ level: "error", message: "shorter timestamp" }),
+    },
+    // Lord Howe's GMT+10:30 applies only in the southern winter.
+    { time: "2026-07-31T02:29:59Z", raw: "winter timestamp" },
   ];
   for (const [locale, timezoneId, shown] of [
     ["en-US", "Australia/Adelaide", /^12\/31\/2026, 12:59:59\sPM\sGMT\+10:30$/u],
@@ -438,7 +443,8 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
     ["de-DE", "Europe/Berlin", /^31\.12\.2026,\s03:29:59\sGMT\+1$/u],
     ["ko-KR", "Asia/Seoul", /^2026\.\s12\.\s31\.\s오전\s11시\s29분\s59초\sGMT\+9$/u],
     ["ko-KR", "Australia/Adelaide", /^2026\.\s12\.\s31\.\s오후\s12시\s59분\s59초\sGMT\+10:30$/u],
-    ["ar-EG", "Australia/Adelaide", /^٣١\S*\/١٢\S*\/٢٠٢٦،\s١٢:٥٩:٥٩\sم\sغرينتش\+١٠:٣٠$/u],
+    ["ar-EG", "Australia/Adelaide", /^٣١\S*\/١٢\S*\/٢٠٢٦،?\s١٢:٥٩:٥٩\sم\sغرينتش\+١٠:٣٠$/u],
+    ["en-AU", "Australia/Lord_Howe", /^31\/12\/2026, 1:29:59\spm\sGMT\+11$/u],
     ["es-MX", "Australia/Adelaide", /^31\/12\/2026, 12:59:59\sp\.\s?m\.\sGMT\+10:30$/u],
   ]) {
     const { page } = await newPage(t, fixture, { context: { locale, timezoneId } });
@@ -446,36 +452,64 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
     const log = page.getByRole("log", { name: "Runtime log output" });
     const time = log.locator(".log-row", { hasText: "longest timestamp" }).locator(".log-time");
     assert.match(await time.innerText(), shown);
-    await log.getByText("shorter timestamp").waitFor();
+    await log.getByText("winter timestamp").waitFor();
     for (const width of [
       1440, 1300, 1200, 1101, 1100, 1001, 1000, 761, 760, 662, 600, 527, 524, 521, 520, 480, 404,
       402, 397, 390, 360, 320,
     ]) {
       await page.setViewportSize({ width, height: 900 });
       const where = `${locale} ${timezoneId} at ${width}px`;
-      const text = await time.evaluate((cell) => {
-        const range = cell.ownerDocument.createRange();
-        range.selectNodeContents(cell);
-        const rects = [...range.getClientRects()];
-        const box = cell.getBoundingClientRect();
-        return {
-          lines: new Set(rects.map((rect) => Math.round(rect.top))).size,
-          left: Math.min(...rects.map((rect) => rect.left)) - box.left,
-          right: box.right - Math.max(...rects.map((rect) => rect.right)),
-        };
-      });
-      assert.equal(text.lines, 1, `one timestamp line, ${where}`);
-      // The text stays inside its cell, so it never runs into the level beside it.
-      assert.ok(text.left >= -0.5 && text.right >= -0.5, `timestamp inside its cell, ${where}`);
+      const cells = await log.locator(".log-time").evaluateAll((all) =>
+        all.map((cell) => {
+          const range = cell.ownerDocument.createRange();
+          range.selectNodeContents(cell);
+          const rects = [...range.getClientRects()];
+          const box = cell.getBoundingClientRect();
+          return {
+            text: cell.textContent,
+            lines: new Set(rects.map((rect) => Math.round(rect.top))).size,
+            left: Math.min(...rects.map((rect) => rect.left)) - box.left,
+            right: box.right - Math.max(...rects.map((rect) => rect.right)),
+          };
+        }),
+      );
+      assert.equal(cells.length, 3);
+      for (const cell of cells) {
+        assert.equal(cell.lines, 1, `one line for ${cell.text}, ${where}`);
+        // The text stays inside its cell, so it never runs into the level beside it.
+        assert.ok(
+          cell.left >= -0.5 && cell.right >= -0.5,
+          `${cell.text} inside its cell, ${where}`,
+        );
+      }
+      // Rows with different levels and timestamp lengths keep one time width and font size.
       for (const column of [".log-time", ".log-level", ".log-origin"]) {
         const starts = await log
           .locator(column)
           .evaluateAll((cells) => cells.map((cell) => cell.getBoundingClientRect().left));
         assert.equal(new Set(starts).size, 1, `${column} aligned, ${where}`);
       }
+      const times = await log.locator(".log-time").evaluateAll((cells) =>
+        cells.map((cell) => {
+          const { width } = cell.getBoundingClientRect();
+          return `${width} ${cell.ownerDocument.defaultView.getComputedStyle(cell.firstElementChild).fontSize}`;
+        }),
+      );
+      assert.equal(new Set(times).size, 1, `one time width and size, ${where}: ${times}`);
       assert.ok(
         await log.evaluate((pane) => pane.scrollWidth <= pane.clientWidth),
         `no horizontal log overflow, ${where}`,
+      );
+      // A message beside the time keeps about 200 px (196 px beside en-US's at a 662 px card);
+      // beside a longer timestamp, in a card up to 762 px, it moves below.
+      const message = await time.evaluate((cell) => {
+        const content = cell.closest(".log-line").querySelector(".log-content");
+        const box = content.getBoundingClientRect();
+        return { beside: box.top < cell.getBoundingClientRect().bottom, width: box.width };
+      });
+      assert.ok(
+        !message.beside || message.width >= 195,
+        `message ${message.width}px wide beside the time, ${where}`,
       );
     }
   }
