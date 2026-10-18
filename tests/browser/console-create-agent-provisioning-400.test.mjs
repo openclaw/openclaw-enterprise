@@ -733,6 +733,10 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
     await presetPage.locator(".launch-runtime summary").innerText(),
     /Execution mode unavailable/,
   );
+  assert.equal(
+    await presetPage.locator("#agent-harness-hint").textContent(),
+    "This Agent cannot run OpenClaw with Dedicated execution on this installation.",
+  );
   assert.equal(await presetPage.locator("#create-agent-form > [role=status]").innerText(), "");
   assert.equal(
     await presetPage.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),

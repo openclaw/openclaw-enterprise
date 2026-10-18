@@ -1791,8 +1791,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     // The harness hint states what this Agent will run; Runtime details keep the installation's
     // conditions (finding 1904).
     const harnessOutcome = () => {
+      const anthropic = nativeProvider.value === "anthropic";
       if (harness.value === "codex") {
-        return "This Agent will run Codex with Dedicated execution.";
+        return anthropic
+          ? "This Agent cannot run Codex: Codex requires OpenAI."
+          : "This Agent will run Codex with Dedicated execution.";
       }
       if (!capabilityDiscoveryDone) {
         return "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
@@ -1801,15 +1804,18 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         return "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
       }
       const runtime = `${mode.value === "dedicated" ? "Dedicated" : "Embedded"} execution`;
+      if (anthropic && mode.value !== "embedded") {
+        return `This Agent cannot run OpenClaw with ${runtime}: Anthropic requires Embedded OpenClaw.`;
+      }
       if (modeUnavailable) {
         return `This Agent cannot run OpenClaw with ${runtime} on this installation.`;
       }
-      const reason =
-        nativeProvider.value === "anthropic"
-          ? " Anthropic requires Embedded OpenClaw."
-          : nativeRefused
-            ? " Choose Codex for Dedicated execution."
-            : "";
+      // Name Codex only when the reader can still choose it.
+      const reason = anthropic
+        ? " Anthropic requires Embedded OpenClaw."
+        : nativeRefused && !harness.disabled
+          ? " Choose Codex for Dedicated execution."
+          : "";
       return `This Agent will run OpenClaw with ${runtime}.${reason}`;
     };
     nativeHarnessWarning.hidden =
