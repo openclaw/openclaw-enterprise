@@ -317,6 +317,70 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     .waitFor();
 });
 
+test("Agent repository tab keeps Save disabled for an existing binding while repository options are unavailable", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "789",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-full"] }],
+    },
+  ]);
+  const configured = await fixture.createAgent(namespace.id, "Configured", nativeValues("bound"));
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Bound Agent",
+      configurationId: configured.configurationId,
+      repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
+    },
+  });
+  assert.equal(created.status, 201);
+  const agent = created.data;
+  const { page } = await newPage(t, fixture);
+  // The API answers this code when the Installation's composition offers no repository options,
+  // for example after a Compute Driver without repository support is selected.
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agent.id}/repository-options*`,
+    (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "REPOSITORY_OPTIONS_UNAVAILABLE",
+            message: "Repository options are unavailable.",
+          },
+        }),
+      }),
+  );
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
+  );
+  await page
+    .getByText(
+      "You can’t save repository changes on this page until an operator sets up repository access.",
+      { exact: false },
+    )
+    .waitFor();
+  await page
+    .getByText(
+      "Repository availability cannot be verified because repository access is not available in this Installation's configuration.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  const save = page.getByRole("button", { name: "Save repository access" });
+  assert.equal(await save.isDisabled(), true);
+  // Removing the binding makes the form dirty, and Save still stays disabled on this page.
+  const remove = page.getByRole("button", { name: /^Remove / });
+  assert.equal(await remove.count(), 1);
+  await remove.click();
+  assert.equal(await remove.count(), 0);
+  assert.equal(await save.isDisabled(), true);
+});
+
 test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {
   // The default console fixture selects no Repo Driver: discovery answers a permanent 503.
   const fixture = await createConsoleAppFixture(t);
@@ -343,7 +407,10 @@ test("Agent repository tab without a Repo Driver names the setup step and offers
     hasText: "Repository access is not available in this Installation's configuration.",
   });
   await status.waitFor();
-  assert.match(await status.innerText(), /cannot be changed until an operator sets it up/);
+  assert.match(
+    await status.innerText(),
+    /You can’t save repository changes on this page until an operator sets up repository access\./,
+  );
   assert.equal(
     await status.getByRole("link", { name: "Set up repository access" }).getAttribute("href"),
     "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",

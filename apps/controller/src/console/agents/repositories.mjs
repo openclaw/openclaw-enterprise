@@ -1082,7 +1082,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           ),
           state.discovery === "draft-only"
             ? ". You can continue without repository access."
-            : ". Repository access for this Agent cannot be changed until an operator sets it up.",
+            : ". You can’t save repository changes on this page until an operator sets up repository access.",
         );
       } else {
         status.className = "error";
