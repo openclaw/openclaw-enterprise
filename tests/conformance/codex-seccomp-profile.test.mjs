@@ -579,7 +579,11 @@ for (const [label, diagnostic] of [
     const control = await missingProfileFixture(t, [missingProfileWaiting], {
       baselineStderr: diagnostic,
     });
-    await assert.rejects(control.run, /./, "a client error must not qualify the baseline denial");
+    await assert.rejects(
+      control.run,
+      { message: "RuntimeDefault denied namespace creation", stderr: diagnostic },
+      "a client error must not qualify the baseline denial",
+    );
     assert.equal(control.installations(), 0);
     await control.assertCleanup();
   });
