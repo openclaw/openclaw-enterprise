@@ -58,7 +58,6 @@
 {{- fail (printf "%s must be an approved immutable SHA-256 image reference" $label) -}}
 {{- end -}}
 {{- end -}}
-{{- /* An operator-named Secret or ConfigMap: a Kubernetes resource name (DNS subdomain) of at most 253 characters, as the profile renderer's resourceNameRule checks. */ -}}
 {{- /* Resolves a mount destination as the container runtime does inside the controller image: one component at a time, following the image's top-level symlinks. The runtime stage of the root Dockerfile is node:24-bookworm-slim, where Debian base-files links /var/run and /var/lock into /run and merged /usr links /bin, /lib, /lib64 and /sbin. */ -}}
 {{- define "openclaw.runtimeMountDestination" -}}
 {{- $links := dict "/var/run" "/run" "/var/lock" "/run/lock" "/bin" "/usr/bin" "/lib" "/usr/lib" "/lib64" "/usr/lib64" "/sbin" "/usr/sbin" -}}
@@ -73,7 +72,7 @@
 {{- end -}}
 {{- $resolved -}}
 {{- end -}}
-
+{{- /* An operator-named Secret or ConfigMap: a Kubernetes resource name (DNS subdomain) of at most 253 characters, as the profile renderer's resourceNameRule checks. */ -}}
 {{- define "openclaw.validateResourceName" -}}
 {{- $value := toString .value -}}
 {{- if or (gt (len $value) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" $value)) -}}
