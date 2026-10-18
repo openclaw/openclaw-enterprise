@@ -188,8 +188,8 @@ or Namespaces, and return with Back/Forward. Check empty and invalid text, then
 explicit Cancel or Reload. The Configuration story keeps deployment disabled;
 workspace Save changes only the selected simulated file.
 
-In **Flows → Restart Agent creation**, fill a default starter form, leave, and
-re-enter: initial choices and an empty form appear.
+In **Flows → Keep an Agent draft**, fill a default starter form, leave, and
+re-enter: the form returns; Cancel clears it.
 
 In **Pages/Create Agent → Preset with an invalid field**, Use Preset names
 `agent.executionMode` and keeps the chooser. **Agent creation needs an
