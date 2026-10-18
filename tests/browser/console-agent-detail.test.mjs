@@ -913,14 +913,28 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await openAdvancedSettings(page);
   const editor = page.getByLabel("Configuration JSON");
   assert.match(await editor.inputValue(), /"marker": "draft-current"/);
-  for (const invalidJson of ["{ invalid", "[]"]) {
+  const editorError = page.locator("#configuration-json-error");
+  for (const [invalidJson, message] of [
+    ["{ invalid", "Invalid JSON at line 1, column 3. Enter a valid JSON object."],
+    ["[]", "Enter a valid JSON object, not an array or a single value."],
+  ]) {
     await editor.fill(invalidJson);
     await page.getByRole("button", { name: "Save Configuration" }).click();
-    await page.getByText("Enter a valid Configuration JSON object.").waitFor();
+    // One persistent message under the editor, linked to it; no browser bubble (finding 1903).
+    await editorError.getByText(message, { exact: true }).waitFor();
+    assert.equal(await editor.getAttribute("aria-invalid"), "true");
+    assert.match(await editor.getAttribute("aria-describedby"), /\bconfiguration-json-error\b/);
+    assert.equal(await editor.evaluate((node) => node.validationMessage), "");
+    assert.equal(
+      await page.evaluate(() => globalThis.document.activeElement?.id),
+      "configuration-json",
+    );
   }
   assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
 
   await editor.fill(JSON.stringify(nativeValues("stale-client"), null, 2));
+  assert.equal(await editorError.isHidden(), true);
+  assert.equal(await editor.getAttribute("aria-invalid"), null);
   const stale = await fixture.updateConfiguration(
     namespace.id,
     agent.configurationId,
@@ -934,6 +948,8 @@ test("Agent detail preserves admitted revision history while draft edits change 
   assert.match(await editor.inputValue(), /stale-client/);
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByText("The saved Configuration changed while you were editing.").waitFor();
+  // A conflict is an error, not a hint (finding 1903).
+  assert.equal(await page.locator("#configuration-editor-feedback").getAttribute("class"), "error");
   assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
 
   await page.reload();

@@ -1,5 +1,5 @@
 import defaultCodexPreset from "../default-codex-preset.mjs";
-import { button, element, setText } from "../dom.mjs";
+import { button, element, fieldError, jsonObjectProblem, setText } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
@@ -58,12 +58,13 @@ const MODEL_CHOICES = {
   ],
 };
 
-function field(label, input, hint) {
+function field(label, input, hint, error = null) {
   return element(
     "div",
     { className: "form-field" },
     element("label", { for: input.id }, label),
     input,
+    error,
     hint ? element("p", { className: "hint", id: `${input.id}-hint` }, hint) : null,
   );
 }
@@ -407,7 +408,7 @@ export function renderCreateAgent(context, draft) {
         "div",
         { className: "launch-actions" },
         presets.startDefault,
-        button("Start without Preset", () => startForm({}, {}, { discardOnExit: true })),
+        button("Start without Preset", () => startForm({}, {})),
       ),
     ),
     element(
@@ -584,15 +585,17 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   });
   const selectedModeUnavailable = () =>
     !nativeWorkersUnavailable.hidden || !openclawModeUnavailable.hidden;
+  // Invalid JSON is reported under the field, never by the browser's bubble (finding 1903).
   const configuration = element("textarea", {
     id: "configuration-json",
     name: "configuration",
-    required: "",
+    "aria-required": "true",
     rows: "18",
     className: "configuration-editor",
     spellcheck: "false",
     "aria-describedby": "configuration-json-hint",
   });
+  const configurationError = fieldError(configuration);
   const primary = rendered.configuration?.values?.agents?.defaults?.model;
   const initialModel = typeof primary === "string" ? primary : primary?.primary;
   const nativeProvider = element(
@@ -811,7 +814,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     pendingModelSettings = undefined;
     pendingProviderModel = undefined;
     configuration.value = currentTemplate();
-    configuration.setCustomValidity("");
+    configurationError.clear();
     feedback.textContent = "";
     renderChannelEditor();
   });
@@ -998,7 +1001,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   configuration.addEventListener("input", () => {
     const previousProvider = nativeProvider.value;
     const previousHarness = harness.value;
-    configuration.setCustomValidity("");
+    configurationError.clear();
     feedback.textContent = "";
     const values = parseObject(configuration);
     const selected = values?.agents?.defaults?.model;
@@ -1234,7 +1237,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     "Create Agent",
   );
   const startOver = button("Start over", () => {
-    if (window.confirm("Discard this draft and start again?")) {
+    if (!isTouched() || window.confirm("Discard this draft and start again?")) {
       context.drafts.forget("channels");
       renderCreateAgent(context);
     }
@@ -1403,7 +1406,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const actions = element(
     "div",
     { className: "form-actions" },
-    button("Cancel", () => context.navigate("agents")),
+    // Cancel is the explicit discard; other exits keep the draft (finding 1902).
+    button("Cancel", () => {
+      if (!isTouched() || window.confirm("Discard this draft?")) {
+        context.setDiscardOnExit(true);
+        context.navigate("agents");
+      }
+    }),
     startOver,
     retryProvisioning,
     checkCredentialRegistration,
@@ -1416,7 +1425,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let repositories;
   const form = element(
     "form",
-    { id: formId, className: "agent-form agent-card" },
+    { id: formId, className: "agent-form agent-card", novalidate: "" },
     field("Agent name", name, "Unique within this Namespace."),
     authSection,
     capabilityStatus,
@@ -1456,6 +1465,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         "Configuration JSON",
         configuration,
         "Provider and model selections update this JSON. Supported Dedicated runtimes provision and deploy from this form. Embedded and unsupported runtimes save a draft for later deployment. Slack token Secrets can be selected or created from the channel editor.",
+        configurationError.node,
       ),
       reset,
       workspaceSection,
@@ -1507,8 +1517,21 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
   }
   manualModel = draft.manualModel ?? manualModel;
+  // Whether the reader changed the form or its Preset variables: Cancel then asks first, and a
+  // reload or tab close warns. Restoring a draft and the form's own updates fire no trusted event.
+  let touched = Boolean(draft.touched);
+  const markTouched = (event) => {
+    touched ||= event.isTrusted;
+  };
+  for (const node of [form, channelEditor]) {
+    node.addEventListener("input", markTouched);
+    node.addEventListener("change", markTouched);
+  }
+  toggleModel.addEventListener("click", markTouched);
+  // Repository edits and other button-only changes set `edited`.
+  const isTouched = () => touched || edited;
   const captureDraft = () => ({
-    discardOnExit: Boolean(draft.discardOnExit),
+    touched: isTouched(),
     rendered,
     presetOptions,
     // Keep raw editor text, including invalid JSON. Password controls are deliberately excluded.
@@ -1528,23 +1551,30 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     repositoryAccess: repositories.access(),
   });
   function parseObject(input, reportInvalid = false) {
-    try {
-      const values = JSON.parse(input.value);
-      if (values === null || Array.isArray(values) || typeof values !== "object") {
-        throw new Error();
-      }
-      return values;
-    } catch {
-      if (reportInvalid) {
-        const details = input.closest("details");
-        if (details) {
-          details.open = true;
-        }
-        input.setCustomValidity("Enter a valid JSON object.");
-        input.reportValidity();
-      }
-      return undefined;
+    const problem = jsonObjectProblem(input.value);
+    if (problem === undefined) {
+      return JSON.parse(input.value);
     }
+    if (reportInvalid && input === configuration) {
+      configurationError.show(problem);
+      focusConfiguration();
+    } else if (reportInvalid) {
+      const details = input.closest("details");
+      if (details) {
+        details.open = true;
+      }
+      input.setCustomValidity("Enter a valid JSON object.");
+      input.reportValidity();
+    }
+    return undefined;
+  }
+  // The JSON is the thing to fix: open its section and put the caret there (finding 1903).
+  function focusConfiguration() {
+    const details = configuration.closest("details");
+    if (details) {
+      details.open = true;
+    }
+    configuration.focus();
   }
   function hasEnabledChannel(values) {
     const channels = values?.channels;
@@ -1644,7 +1674,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           defaultApprovers.refreshDirectory();
           pluginDiscovery.update();
         }
-        configuration.setCustomValidity("");
+        configurationError.clear();
         setTimeout(() => {
           if (context.isCurrent()) {
             renderChannelEditor();
@@ -2193,6 +2223,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       return;
     }
     const values = parseObject(configuration, true);
+    // Stop at the Configuration JSON message so the plugin field's bubble cannot take its focus.
+    if (values === undefined) {
+      return;
+    }
     const desiredPlugins = parseObject(plugins, true);
     const bindings = configurationSecretBindings;
     if (values === undefined || desiredPlugins === undefined) {
@@ -2220,6 +2254,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     ) {
       feedback.textContent =
         "Configuration must use the selected provider and model. Update the JSON or reset the template before saving.";
+      focusConfiguration();
       return;
     }
     if (
@@ -2233,6 +2268,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     ) {
       feedback.textContent =
         "Fallback models must use the selected provider and execution mode. Update the Configuration JSON or reset the template before saving.";
+      focusConfiguration();
       return;
     }
     if (
@@ -2519,7 +2555,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     recovery,
     actions,
   );
-  context.setDraftCapture(captureDraft);
+  context.setDraftCapture(captureDraft, (captured) => Boolean(captured?.touched));
   context.drafts.forget("preset");
-  context.setDiscardOnExit(Boolean(draft.discardOnExit));
+  context.setDiscardOnExit(false);
 }

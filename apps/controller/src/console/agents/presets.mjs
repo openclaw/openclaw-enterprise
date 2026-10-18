@@ -51,10 +51,16 @@ export function createPresetFields(context, apply) {
   const feedback = element("p", { className: "error", role: "alert" });
   const inputs = element("div");
   let defaultId;
-  // How the next selection change started: "shortcut" applies the default Preset at once;
-  // "restore" reopens a retained shortcut chooser. Both discard the resulting form on exit.
+  // How the next selection change started: "shortcut" applies the default Preset at once.
   let origin;
-  let discardOnExit = false;
+  // Whether the reader changed a variable. The form a Preset opens keeps it, so its Cancel asks
+  // first; a reload or tab close warns either way (finding 1902).
+  let touched = false;
+  const markTouched = (event) => {
+    touched ||= event.isTrusted;
+  };
+  inputs.addEventListener("input", markTouched);
+  inputs.addEventListener("change", markTouched);
   const chooseHint = () =>
     defaultId
       ? "Choose a Preset or start with the default Preset."
@@ -75,7 +81,7 @@ export function createPresetFields(context, apply) {
     selector.value
       ? {
           id: selector.value,
-          discardOnExit,
+          touched,
           fields: fields.length
             ? Object.fromEntries(
                 fields.map((field) => [
@@ -100,6 +106,7 @@ export function createPresetFields(context, apply) {
         }
       : retained,
   );
+  context.drafts.unsavedWhen("preset", (draft) => Boolean(draft?.touched));
 
   function currentSecrets(field) {
     return field.secrets.filter((secret) => sameNamespaceSecret(context, secret));
@@ -231,7 +238,7 @@ export function createPresetFields(context, apply) {
         };
       }
       const applied = renderPresetTemplate(renderTemplate, values);
-      apply(applied, { modelSecret: secretSelection }, { discardOnExit });
+      apply(applied, { modelSecret: secretSelection }, { touched });
       for (const field of fields) {
         if (field.definition.type === "password") {
           field.input.value = "";
@@ -258,11 +265,11 @@ export function createPresetFields(context, apply) {
     const version = ++loadVersion;
     const selectedId = selector.value;
     const applyDefault = origin === "shortcut";
-    discardOnExit = origin !== undefined;
     origin = undefined;
     if (retained?.id !== selectedId) {
       retained = undefined;
     }
+    touched = Boolean(retained?.touched);
     selected = undefined;
     fields = [];
     inputs.replaceChildren();
@@ -472,7 +479,6 @@ export function createPresetFields(context, apply) {
       startDefault.disabled = !defaultId;
       if (retained && presets.some((preset) => preset.id === retained.id)) {
         selector.value = retained.id;
-        origin = retained.discardOnExit ? "restore" : undefined;
         selector.dispatchEvent(new Event("change"));
       }
       if (presets.length === 0) {
