@@ -1318,6 +1318,8 @@ test(
         "/etc/openclaw/execution", // Profiles do not enable executionCluster mounts.
         "/etc/openclaw/installation",
         "/run/openclaw-worker",
+        "/var/run/openclaw-worker", // The controller image links /var/run to /run.
+        "/var/run/../var/lib/openclaw/bootstrap", // Dot segments apply after the link.
         "/var/lib/openclaw/bootstrap",
         "/etc/openclaw/gateway-api-key",
         "/etc/openclaw/gateway-ca",
@@ -1349,7 +1351,9 @@ test(
         "/etc/openclaw/repository-registry",
         "/etc/openclaw/repository-ca",
         "/var/run/secrets/kubernetes.io/serviceaccount",
+        "/run/secrets/kubernetes.io/serviceaccount",
         "/run/openclaw/repository-control",
+        "/var/run/openclaw/repository-control",
         "/etc/openclaw/repository-inputs", // Broker-only mounts cannot collide with its absent CA.
       ]) {
         for (const enabled of [false, true]) {

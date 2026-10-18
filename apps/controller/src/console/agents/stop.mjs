@@ -273,7 +273,7 @@ export function createAgentStop(
     state.used = true;
     let submitted = false;
     const dialog = element("dialog", {
-      className: "agent-stop-dialog",
+      className: "dialog agent-stop-dialog",
       "aria-labelledby": "agent-stop-confirm-title",
       "aria-describedby": "agent-stop-confirm-target agent-stop-confirm-description",
     });
@@ -314,7 +314,7 @@ export function createAgentStop(
         element("strong", {}, state.agent.name),
       ),
       description,
-      element("div", { className: "form-actions" }, cancel, confirm),
+      element("div", { className: "dialog-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
       if (state.pending) {

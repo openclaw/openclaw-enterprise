@@ -874,7 +874,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if err := app.printAgent(agent, false); err != nil {
 				return err
 			}
-			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ agent deploy %s\" to start the Agent again\n", args[0])
+			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
 			return nil
 		},
 	}

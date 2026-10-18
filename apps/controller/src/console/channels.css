@@ -42,24 +42,9 @@
   overflow: auto;
 }
 
-.channel-dialog {
-  width: min(42rem, calc(100vw - 2rem));
-  max-height: calc(100vh - 2rem);
-  margin: auto 0 auto auto;
-  border: 0;
-  border-radius: 0;
-  padding: 0;
-  box-shadow: var(--shadow);
-}
-
-.channel-dialog::backdrop {
-  background: var(--overlay);
-}
-
 .channel-drawer-form {
   display: grid;
   gap: 1rem;
-  padding: 1.5rem;
 }
 
 .channel-drawer-head {
@@ -113,23 +98,15 @@
   }
 
   .channel-heading,
-  .channel-card-row,
-  .channel-drawer-head {
+  .channel-card-row {
     grid-template-columns: 1fr;
   }
 
-  .channel-card-row,
-  .channel-drawer-head {
+  .channel-card-row {
     display: grid;
   }
 
   .channel-actions {
     justify-content: flex-start;
-  }
-
-  .channel-dialog {
-    width: 100vw;
-    max-height: 92vh;
-    margin: auto 0 0;
   }
 }

@@ -472,7 +472,7 @@ function openDrawer(section, state, provider, retained) {
   }
   section.querySelector("dialog")?.remove();
   const dialog = element("dialog", {
-    className: "channel-dialog",
+    className: "dialog dialog--drawer channel-dialog",
     "aria-label": `${statusOf(providerConfig(state.values, provider.id)).label === "Not configured" ? "Configure" : "Edit"} ${provider.name}`,
   });
   const config = isRecord(support.config) ? support.config : {};
@@ -674,7 +674,7 @@ function openDrawer(section, state, provider, retained) {
   if (state.copy.drawerFootnote) {
     body.append(element("p", { className: "muted" }, state.copy.drawerFootnote));
   }
-  body.append(feedback, element("div", { className: "form-actions" }, cancel, submit));
+  body.append(feedback, element("div", { className: "dialog-actions" }, cancel, submit));
   body.addEventListener("submit", (event) => {
     event.preventDefault();
     if (state.pending || stale || unresolved) {
