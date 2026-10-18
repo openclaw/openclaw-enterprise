@@ -1655,6 +1655,135 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   assert.equal(requests.filter((request) => request.path === configurationPath).length, 1);
 });
 
+// The version tabs were a row of buttons, each its own Tab stop, with no tab semantics (UX plan
+// C7). They are a tablist: the selected tab is the list's one Tab stop, Left/Right (wrapping) and
+// Home/End move focus without opening a tab, Enter opens the focused one, Tab leaves the list
+// and Shift+Tab returns to the selected tab, and aria-selected follows the URL's tab=, Back
+// included. On a phone an edge with more tabs past it fades.
+test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Tab keyboard", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Tab keyboard Agent", nativeValues("keys"));
+  const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  const list = page.getByRole("tablist", { name: "Agent configuration views" });
+  await list.waitFor();
+  const names = [
+    "Configuration",
+    "Plugins",
+    "Channels",
+    "Repositories",
+    "Credentials",
+    "Workspace files",
+  ];
+  assert.deepEqual(await list.getByRole("tab").allTextContents(), names);
+  // Which tab is selected, which one is the Tab stop, which has focus, and the URL's tab=.
+  const state = () =>
+    page.evaluate(() => {
+      const document = globalThis.document;
+      const tabs = [...document.querySelectorAll('[role="tablist"] [role="tab"]')];
+      const panel = document.querySelector('[role="tabpanel"]');
+      return {
+        selected: tabs
+          .filter((tab) => tab.getAttribute("aria-selected") === "true")
+          .map((tab) => tab.textContent),
+        stops: tabs.filter((tab) => tab.tabIndex === 0).map((tab) => tab.textContent),
+        focused: document.activeElement.closest('[role="tablist"]')
+          ? document.activeElement.textContent
+          : null,
+        panel: document.getElementById(panel.getAttribute("aria-labelledby"))?.textContent,
+        controls: tabs.every((tab) => tab.getAttribute("aria-controls") === panel.id),
+        tab: new URL(globalThis.location.href).searchParams.get("tab"),
+      };
+    });
+  const expect = async (expected, message) =>
+    assert.deepEqual(
+      await state(),
+      { panel: expected.selected[0], controls: true, ...expected },
+      message,
+    );
+  await expect({ selected: ["Plugins"], stops: ["Plugins"], focused: null, tab: "plugins" });
+
+  await list.getByRole("tab", { name: "Plugins", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(
+    { selected: ["Plugins"], stops: ["Channels"], focused: "Channels", tab: "plugins" },
+    "Right moves focus only",
+  );
+  for (const [key, focused] of [
+    ["ArrowLeft", "Plugins"],
+    ["ArrowLeft", "Configuration"],
+    ["ArrowLeft", "Workspace files"],
+    ["ArrowRight", "Configuration"],
+    ["End", "Workspace files"],
+    ["Home", "Configuration"],
+  ]) {
+    await page.keyboard.press(key);
+    await expect(
+      { selected: ["Plugins"], stops: [focused], focused, tab: "plugins" },
+      `${key} to ${focused}`,
+    );
+  }
+  // One Tab stop: Tab leaves the list, and Shift+Tab comes back to the selected tab.
+  await page.keyboard.press("Tab");
+  await expect({ selected: ["Plugins"], stops: ["Plugins"], focused: null, tab: "plugins" });
+  await page.keyboard.press("Shift+Tab");
+  await expect({ selected: ["Plugins"], stops: ["Plugins"], focused: "Plugins", tab: "plugins" });
+
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await page.waitForURL("**tab=channels**");
+  await page.getByRole("button", { name: "Configure Slack", exact: true }).waitFor();
+  await expect({
+    selected: ["Channels"],
+    stops: ["Channels"],
+    focused: "Channels",
+    tab: "channels",
+  });
+  await page.goBack();
+  await page.waitForURL("**tab=plugins**");
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ===
+      "Plugins",
+  );
+  const back = await state();
+  assert.deepEqual(back.selected, ["Plugins"], "Back reselects the URL's tab");
+  assert.deepEqual(back.stops, ["Plugins"]);
+
+  // On a phone the strip scrolls sideways; the edge with more tabs past it fades, from the first
+  // paint of a page whose selected tab needs no scrolling.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+  await list.waitFor();
+  const strip = page.locator(".agent-tabs");
+  const edges = () =>
+    strip.evaluate((node) => ({
+      before: node.hasAttribute("data-more-before"),
+      after: node.hasAttribute("data-more-after"),
+      masked: globalThis.getComputedStyle(node).maskImage !== "none",
+    }));
+  await page.waitForFunction(() =>
+    globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-after"),
+  );
+  assert.deepEqual(await edges(), { before: false, after: true, masked: true });
+  await strip.evaluate((node) => {
+    node.scrollLeft = node.scrollWidth;
+  });
+  await page.waitForFunction(() =>
+    globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-before"),
+  );
+  assert.deepEqual(await edges(), { before: true, after: false, masked: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForFunction(() => {
+    const node = globalThis.document.querySelector(".agent-tabs");
+    return !node.hasAttribute("data-more-before") && !node.hasAttribute("data-more-after");
+  });
+  assert.equal((await edges()).masked, false, "a strip that fits does not fade");
+});
+
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {
   const cookieDomain = "oce.example.test";
   const consoleHost = `console.${cookieDomain}`;
