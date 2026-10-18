@@ -50,6 +50,7 @@ export const DeploymentFailsWhileWatching = story("deploymentFailsWhileWatching"
 export const DeploymentModelProbeRetried = story("deploymentModelProbeRetried");
 export const DeploymentModelProbeFailedReadOnly = story("deploymentModelProbeFailedReadOnly");
 export const DeploymentModelProbeFailedDeployOnly = story("deploymentModelProbeFailedDeployOnly");
+export const DeploymentFailedDeployAgain = story("deploymentFailedDeployAgain");
 export const DeploymentFailedAfterSelection = story("deploymentFailedAfterSelection");
 export const DeploymentStopped = story("deploymentStopped");
 export const DeploymentSuperseded = story("deploymentSuperseded");

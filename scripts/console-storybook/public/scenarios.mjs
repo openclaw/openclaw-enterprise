@@ -3711,6 +3711,21 @@ export const scenarios = {
     ],
     gap: "The failure and permissions are simulated; this story does not verify API authorization or deployment.",
   },
+  deploymentFailedDeployAgain: {
+    group: "Pages/Agent detail",
+    name: "New version failed, deploy again",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateDependencyUnavailable: true,
+    description:
+      "v7 failed because a controller dependency stayed unavailable. The recovery leads with the failure's own next step and offers Deploy again first, because that message says to deploy again.",
+    steps: [
+      "At 1440 and 390 wide, read the message and see Deploy again without scrolling.",
+      "Select Deploy again: the draft opens with its Deploy new version in view and focused, without deploying.",
+    ],
+    gap: "The failure is simulated; this story does not verify a live deployment.",
+  },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
     name: "Deployment failed after selection",

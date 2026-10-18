@@ -86,13 +86,23 @@ function deploymentRecord(namespace, agent, revision, status, error = null) {
   };
 }
 
-function routeFailedRecord(page, fixture, namespace, agent, revision) {
+// The API's message for the model probe failure the recovery tests below record.
+const PROBE_FAILED_MESSAGE = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED").message;
+
+function routeFailedRecord(
+  page,
+  fixture,
+  namespace,
+  agent,
+  revision,
+  code = "RUNTIME_MODEL_PROBE_FAILED",
+) {
   const failed = deploymentRecord(
     namespace,
     agent,
     revision,
     "failed",
-    persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+    persistedDeploymentError(code),
   );
   return page.route(deploymentUrl(fixture, namespace, agent, revision), (route) =>
     route.fulfill(failed),
@@ -450,9 +460,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
-    .getByText(
-      "v2 failed its startup model check. Check the failed version’s logs before deploying a new version.",
-    )
+    .getByText(`v2 failed its startup model check. ${PROBE_FAILED_MESSAGE}`, { exact: true })
     .waitFor();
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
   await page
@@ -462,7 +470,8 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   // The denial updates the recovery at once: it says who can check the logs instead of
   // steering the reader into another denied read.
   const askForLogs = recovery.getByText(
-    "v2 failed its startup model check. Ask someone with log access to check the failed version’s logs before deploying a new version.",
+    `v2 failed its startup model check. ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
+    { exact: true },
   );
   await askForLogs.waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
@@ -519,7 +528,8 @@ test("A replaced current version still says who can check the logs once Logs is 
     .waitFor();
   await recovery
     .getByText(
-      "v2 failed its startup model check. v1 is still selected, but its runtime was probably stopped for this deployment. Ask someone with log access to check the failed version’s logs.",
+      `v2 failed its startup model check. v1 is still selected, but its runtime was probably stopped for this deployment. ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
+      { exact: true },
     )
     .waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
@@ -607,6 +617,178 @@ test("Recovery offers no draft link when the caller's permission answer fails", 
   assert.equal(await logs.getAttribute("class"), "overview-primary");
   assert.equal(await recovery.getByRole("link", { name: "Open Configuration" }).count(), 0);
   assert.equal(await recovery.getByRole("link").count(), 1);
+});
+
+// The banner gave every code the same "check the failed version's logs" advice; each code's own
+// next step sat in Deployment details, below the fold at phone width (finding 1898). It now
+// leads with the API's message and that step's link, in view at desktop and phone width.
+for (const c of [
+  {
+    code: "RUNTIME_AUTHENTICATION_FAILED",
+    step: "update or replace the Agent's model credential",
+    action: "Open Credentials",
+  },
+  {
+    code: "DEPENDENCY_UNAVAILABLE",
+    step: "Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+    action: "Deploy again",
+  },
+  {
+    code: "CONVERGENCE_DEADLINE_EXCEEDED",
+    step: "Check its logs and runtime diagnostics",
+    action: "Open v1 Logs",
+  },
+]) {
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    const size = `${viewport.width}x${viewport.height}`;
+    test(`A failed deployment's banner shows the ${c.code} next step in view at ${size}`, async (t) => {
+      const { fixture, namespace } = await createReadyConsoleNamespace(
+        t,
+        `Next step ${c.code}`,
+        runtimeLogs(),
+      );
+      const agent = await fixture.createAgent(namespace.id, "Next Step Agent", nativeValues("v1"));
+      // Never deployed: v1 failed.
+      const failed = await fixture.deployAgent(namespace.id, agent.id);
+      const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+      await routeFailedRecord(page, fixture, namespace, agent, failed, c.code);
+
+      await login(
+        page,
+        fixture,
+        new URL(`/console/agents/${agent.id}?namespace=${namespace.id}`, fixture.origin),
+      );
+      const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+      const { message } = persistedDeploymentError(c.code);
+      assert.ok(message.includes(c.step), `${c.code}: ${message}`);
+      const text = recovery.getByText(`v1 did not deploy successfully. ${message}`, {
+        exact: true,
+      });
+      await text.waitFor();
+      const action = recovery.getByRole("link", { name: c.action, exact: true });
+      await action.waitFor();
+      await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+      assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
+      // The step and its link are on the first screen.
+      const inView = (node) =>
+        node.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          return { top: box.top, bottom: box.bottom, innerHeight: globalThis.innerHeight };
+        });
+      const textBox = await inView(text);
+      const actionBox = await inView(action);
+      t.diagnostic(
+        `${c.code} ${size}: text ${JSON.stringify(textBox)} action ${JSON.stringify(actionBox)}`,
+      );
+      assert.ok(textBox.top < textBox.innerHeight, `the message starts below the fold`);
+      assert.ok(actionBox.top < actionBox.innerHeight, `${c.action} starts below the fold`);
+      assert.ok(actionBox.bottom <= actionBox.innerHeight, `${c.action} ends below the fold`);
+      assert.equal(
+        await recovery.getByText("before deploying a new version", { exact: false }).count(),
+        0,
+      );
+      // Only a message that says to deploy again offers it, as the step's own link.
+      assert.equal(
+        await recovery.getByRole("link", { name: "Deploy again" }).count(),
+        c.action === "Deploy again" ? 1 : 0,
+      );
+      if (c.action === "Deploy again") {
+        assert.equal(await action.getAttribute("class"), "overview-primary");
+        // It opens the draft with its Deploy new version in view.
+        await action.click();
+        // The link scrolls smoothly; wait for it to settle with Deploy new version focused.
+        await page.waitForFunction(() => {
+          const active = globalThis.document.activeElement;
+          const box = active?.getBoundingClientRect();
+          return (
+            active?.textContent === "Deploy new version" &&
+            box.top >= 0 &&
+            box.bottom <= globalThis.innerHeight
+          );
+        });
+        const deploy = page.getByRole("button", { name: "Deploy new version" });
+        const deployBox = await inView(deploy);
+        assert.ok(
+          deployBox.top >= 0 && deployBox.bottom <= deployBox.innerHeight,
+          `Deploy new version in view: ${JSON.stringify(deployBox)}`,
+        );
+      }
+    });
+  }
+}
+
+// From the current version's page, Deploy again opens the draft at its deploy step too.
+test("A failed deployment's Deploy again opens the draft's deploy step from another version", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Deploy again elsewhere");
+  const agent = await fixture.createAgent(namespace.id, "Elsewhere Agent", nativeValues("v1"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // v1 keeps serving; the v2 redeploy failed.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await routeFailedRecord(page, fixture, namespace, agent, revision, "DEPENDENCY_UNAVAILABLE");
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const again = page
+    .getByRole("region", { name: "Deployment needs attention" })
+    .getByRole("link", { name: "Deploy again" });
+  await again.waitFor();
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  await again.click();
+  await page.waitForURL((next) => next.searchParams.get("revision") === "draft");
+  await page.waitForFunction(() => {
+    const active = globalThis.document.activeElement;
+    const box = active?.getBoundingClientRect();
+    return (
+      active?.textContent === "Deploy new version" &&
+      box.top >= 0 &&
+      box.bottom <= globalThis.innerHeight
+    );
+  });
+});
+
+// Deploy again leads to the draft's deploy, so a caller who cannot deploy is not offered it.
+test("A failed deployment's banner offers Deploy again only with deploy permission", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Deploy again denied",
+    "No Deploy Agent",
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // v1 keeps serving; the v2 redeploy failed.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, revision, "DEPENDENCY_UNAVAILABLE");
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: { update: true, deploy: false, operate: true, delete: true },
+          meta: { requestId: "req_test_recovery_no_deploy" },
+        }),
+      }),
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery
+    .getByText(persistedDeploymentError("DEPENDENCY_UNAVAILABLE").message, { exact: false })
+    .waitFor();
+  const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
+  await logs.waitFor();
+  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
 });
 
 function line(second, raw) {
