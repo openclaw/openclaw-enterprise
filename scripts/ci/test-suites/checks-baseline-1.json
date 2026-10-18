@@ -12,6 +12,7 @@
     "tests/conformance/codex-native-startup.test.mjs",
     "tests/conformance/occ-api-security.test.mjs",
     "tests/integration/configuration-startup.test.mjs",
+    "tests/integration/installation-change-preflight.test.mjs",
     "tests/conformance/kubernetes-secret-driver.test.mjs",
     "tests/docs/docs-site.test.mjs",
     "tests/integration/github-login-transport.test.mjs",
@@ -288,6 +289,9 @@
     },
     {
       "path": "tests/integration/configuration-startup.test.mjs"
+    },
+    {
+      "path": "tests/integration/installation-change-preflight.test.mjs"
     },
     {
       "path": "tests/integration/console-api.test.mjs"

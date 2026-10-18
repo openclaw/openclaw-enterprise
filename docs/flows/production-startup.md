@@ -1,6 +1,6 @@
 ---
 created: 2026-08-25
-updated: "2026-10-15"
+updated: "2026-10-18"
 last_updated_session: "authoring-run/13774107-9c73-4561-8bb0-6e910588052a"
 ---
 
@@ -125,8 +125,12 @@ then upgrade/restart.
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
 refuses peer maps Kubernetes rejects, preserving null/empty semantics and accepted labels.
 
+On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` first
+loads the Installation as API startup does, without database or Kubernetes access;
+a refusal fails the hook before migration and API replacement.
+
 The hook keeps the release name and bounds its suffix to 63 characters. Both
-containers optionally mount the CA. Helm validates distinct application and
+database containers optionally mount the CA. Helm validates distinct application and
 migration Secret keys against Kubernetes syntax before use. `installation.key`
 and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
 not `.` or a `..` prefix.
@@ -200,8 +204,8 @@ It allows DNS, database egress to every `database.cidrs` host, and
 Kubernetes API egress to every `cluster.cidrs` host. Collectors use their separate
 DNS, API, and exporter policy; unknown or missing component labels retain
 default-deny. Pre-install initialization has only its hook DNS/database grants.
-Each configured database or API destination must be an explicit IPv4 `/32`; operators must refresh the values when a managed database
-or API endpoint resolves to a different address set.
+Each configured database or API destination must be an explicit IPv4 `/32`;
+refresh the values when a managed endpoint's addresses change.
 
 `deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` also renders
 an API-only TCP 443 egress policy when `api.modelDiscoveryCidrs` contains
@@ -217,11 +221,9 @@ CONNECT to `slack.com:443`. The empty default renders no rule and leaves
 production Slack directory lookup unavailable with manual exact-ID entry.
 
 The Kubernetes Compute Driver queries the API server version and verifies
-authenticated Namespace access. Kubernetes 1.35 or later is the supported
-baseline. An older server returns a structured preflight warning instead of
-blocking startup; the API logs `compute.preflight-warning` with the observed and
-minimum versions in its message and continues. An invalid version response,
-unreachable API, or failed Namespace access still fails preflight.
+authenticated Namespace access. Below the supported 1.35 baseline, the API logs
+`compute.preflight-warning` with both versions and continues. An invalid version
+response, unreachable API, or failed Namespace access fails preflight.
 
 The worker independently validates production settings, opens the same
 application-role database, loads selected Drivers, validates IAM, runs Compute
@@ -250,8 +252,8 @@ Unix listener; it performs no provider operation. The service and worker share
 only the private control volume, and the Pod uses `Recreate` with a 75-second
 termination grace period. Both containers must pass readiness for the Pod to be
 ready; the worker keeps its queue-health probe and retries unavailable session
-operations through its ordinary Driver contract. This is one service owner,
-without independent worker/service high availability. Repository runtime reconciliation continues in the
+operations through its ordinary Driver contract. Worker and service have no
+independent high availability. Repository runtime reconciliation continues in the
 [Agent repository credential flow](agent-repository-credentials.md).
 
 ### 5. Retrieve the key and prove authenticated access
@@ -285,8 +287,8 @@ until tenant deployment/TUI procedures run.
   followed by `worker.health`. `listening` carries `startupMs` since process
   start and `phasesMs` per startup phase, so a slow boot names its slow phase.
   A stopping API emits `shutdown.started` and then `shutdown.completed`.
-- `compute.preflight-warning` with code `KUBERNETES_VERSION_BELOW_MINIMUM`:
-  startup continues, but upgrade to Kubernetes 1.35 or later for support.
+- `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
+  Kubernetes to 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
   `KUBERNETES_API_UNAVAILABLE` means Compute cannot reach the Kubernetes API at
   the logged `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
@@ -322,6 +324,7 @@ until tenant deployment/TUI procedures run.
 
 ## Changelog
 
+- 2026-10-18: Check the Installation before upgrade migration.
 - 2026-10-15 22:24: Validate sandbox suffixes. (authoring-run/13774107-9c73-4561-8bb0-6e910588052a - 417cb2b7b57f)
 
 - 2026-10-14 21:02: Document hostname refusal and correction. (authoring-run/4a613194-6dc8-454f-9cf8-c2a6b46b25af - 44252f8544beb031bf9f9b4d5f9e8093d0b10176)
