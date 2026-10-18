@@ -1750,8 +1750,18 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
       "Plugins",
   );
   const back = await state();
-  assert.deepEqual(back.selected, ["Plugins"], "Back reselects the URL's tab");
-  assert.deepEqual(back.stops, ["Plugins"]);
+  // Focus stays on Channels, so the Tab stop does too until focus leaves the list.
+  assert.deepEqual(back, {
+    selected: ["Plugins"],
+    stops: ["Channels"],
+    focused: "Channels",
+    panel: "Plugins",
+    controls: true,
+    tab: "plugins",
+  });
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect({ selected: ["Plugins"], stops: ["Plugins"], focused: "Plugins", tab: "plugins" });
 
   // On a phone the strip scrolls sideways; the edge with more tabs past it fades, from the first
   // paint of a page whose selected tab needs no scrolling.

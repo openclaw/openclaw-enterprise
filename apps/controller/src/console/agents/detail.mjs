@@ -1389,6 +1389,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const blocked = Boolean(draftEditorBlocksNavigation());
     for (const [id, control] of tabControls) {
       control.disabled = blocked && id !== selectedTab;
+      // A disabled tab cannot hold the list's one Tab stop.
+      if (blocked) {
+        control.tabIndex = id === selectedTab ? 0 : -1;
+      }
     }
     for (const [control, originallyDisabled] of revisionControls) {
       control.disabled = blocked || originallyDisabled;
@@ -1460,13 +1464,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     control.focus();
   });
-  // Tabbing back in lands on the selected tab, wherever the arrows left focus.
-  tabs.addEventListener("focusout", (event) => {
-    if (!tabs.contains(event.relatedTarget)) {
-      for (const [id, control] of tabControls) {
-        control.tabIndex = id === selectedTab ? 0 : -1;
+  // Tabbing back in lands on the selected tab, wherever the arrows left focus. Checked once focus
+  // has moved: a window losing focus leaves it on the tab, so the arrowed-to stop stays.
+  tabs.addEventListener("focusout", () => {
+    queueMicrotask(() => {
+      if (!tabs.contains(document.activeElement)) {
+        for (const [id, control] of tabControls) {
+          control.tabIndex = id === selectedTab ? 0 : -1;
+        }
       }
-    }
+    });
   });
   // On a narrow screen the strip scrolls sideways; an edge with more tabs past it fades.
   const fadeTabEdges = () => {
@@ -3028,13 +3035,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
     }
     const tab = selectedTab;
+    // Focus still in the list (moved there with the arrows) keeps the Tab stop where it is.
+    const focusedTab = tabs.contains(document.activeElement) ? document.activeElement : null;
     for (const [index, id] of tabsForSelection.entries()) {
       const control = tabs.children[index];
       control.setAttribute("aria-selected", String(id === tab));
-      control.tabIndex = id === tab ? 0 : -1;
+      control.tabIndex = (focusedTab ? control === focusedTab : id === tab) ? 0 : -1;
     }
     content.setAttribute("aria-labelledby", `${tabIds}-${tab}`);
     revealSelectedTab();
+    fadeTabEdges();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);

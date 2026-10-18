@@ -1418,6 +1418,8 @@ select:not([multiple])[size="1"] {
 }
 .agent-tabs[data-more-before],
 .agent-tabs[data-more-after] {
+  /* A tab focused with the arrow keys scrolls clear of the faded edge. */
+  scroll-padding-inline: var(--space-8);
   mask-image: linear-gradient(
     to right,
     transparent,
