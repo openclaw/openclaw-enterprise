@@ -478,6 +478,32 @@ function observabilityDestination(value) {
   return url !== undefined && ipv4HostKept(value, url);
 }
 
+// The controller image's top-level symlinks (root Dockerfile runtime stage, node:24-bookworm-slim):
+// Debian base-files links /var/run and /var/lock into /run, and merged /usr links the rest.
+const runtimeImageLinks = new Map([
+  ["/var/run", "/run"],
+  ["/var/lock", "/run/lock"],
+  ["/bin", "/usr/bin"],
+  ["/lib", "/usr/lib"],
+  ["/lib64", "/usr/lib64"],
+  ["/sbin", "/usr/sbin"],
+]);
+
+// Resolves a mount destination as the container runtime does inside that image: one component
+// at a time, following image symlinks (the chart's openclaw.runtimeMountDestination).
+function runtimeMountDestination(path) {
+  let resolved = "/";
+  for (const part of path.split("/")) {
+    if (part === "..") {
+      resolved = posix.dirname(resolved);
+    } else if (part !== "" && part !== ".") {
+      resolved = posix.join(resolved, part);
+      resolved = runtimeImageLinks.get(resolved) ?? resolved;
+    }
+  }
+  return resolved;
+}
+
 function validateDatabaseCaMount(values, diagnostics) {
   if (!values.database.caSecretName) {
     return;
@@ -504,7 +530,8 @@ function validateDatabaseCaMount(values, diagnostics) {
   if (values.backend?.chatgpt.enabled) {
     reserved.add("/etc/openclaw/chatgpt");
   }
-  if (reserved.has(posix.resolve("/", values.database.caMountPath))) {
+  const destination = runtimeMountDestination(values.database.caMountPath);
+  if ([...reserved].some((path) => runtimeMountDestination(path) === destination)) {
     diagnostics.errors.push(
       "controlPlane.databaseCa.mountPath must be distinct from other active mounts in the production database clients.",
     );
