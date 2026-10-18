@@ -401,7 +401,8 @@ export function renderCreateAgent(context, draft) {
   context.view.replaceChildren(
     link("← Agents", "agents", context),
     // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
-    notReady ? element("p", { className: "muted", role: "status" }, notReady.note) : null,
+    // replaceChildren would print a null child as the text "null".
+    ...(notReady ? [element("p", { className: "muted", role: "status" }, notReady.note)] : []),
     element(
       "section",
       { className: "launch-intro agent-card" },

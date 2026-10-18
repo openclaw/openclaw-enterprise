@@ -220,6 +220,18 @@ test("a failed Namespace read keeps drafts; a read that no longer lists their Na
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  // The chooser of a ready Namespace adds no status line, and no stray "null" text.
+  assert.equal(
+    await page
+      .locator('.content [aria-live="polite"]:not([inert])')
+      .evaluate((view) =>
+        [...view.childNodes].some(
+          (node) =>
+            node.nodeType === globalThis.Node.TEXT_NODE && node.textContent.includes("null"),
+        ),
+      ),
+    false,
+  );
 });
 
 test("a failed Namespace recheck keeps the Agent page's Configuration edit", async (t) => {
