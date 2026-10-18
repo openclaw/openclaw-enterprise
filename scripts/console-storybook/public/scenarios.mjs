@@ -886,6 +886,14 @@ export const scenarios = {
     description:
       "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
   },
+  agentsNamespaceProvisioning: {
+    group: "Pages/Agents",
+    name: "Empty, Namespace still provisioning",
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    description:
+      "A first run's Namespace is still provisioning: the page names its status and what waits for it, and Create Agent stays available for drafts.",
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
@@ -1009,6 +1017,14 @@ export const scenarios = {
     path: "/console/missing",
     description: "An unknown console route offers a return to Agents.",
   },
+  createNamespaceProvisioning: {
+    group: "Pages/Create Agent",
+    name: "Namespace still provisioning",
+    path: create,
+    namespaceStatus: "provisioning",
+    description:
+      "Create Agent in a Namespace that is still provisioning names its status above the starting points, before any Secret is asked for.",
+  },
   createStart: {
     group: "Pages/Create Agent",
     name: "Choose a starting point",
@@ -1028,6 +1044,18 @@ export const scenarios = {
       "Change the model, then replace the dummy credential. Confirm the selected model remains. Confirm all three edited appServer settings remain in Configuration JSON.",
       "Choose Reset template and confirm to restore the standard runtime settings for the selected model.",
     ],
+  },
+  createInvalidConfiguration: {
+    group: "Pages/Create Agent",
+    name: "Invalid Configuration JSON",
+    path: create,
+    actions: [
+      ...readyForm,
+      { selector: "#configuration-json", value: '{\n  "agents": {\n    "defaults": {,\n  }\n}' },
+      click("Create Agent"),
+    ],
+    description:
+      "Invalid JSON is reported once, under the field, with its line and column. Nothing is saved.",
   },
   createPluginsUnavailable: {
     group: "Pages/Create Agent",
@@ -3346,7 +3374,8 @@ export const scenarios = {
       { selector: "#configuration-json", value: "{ invalid" },
       click("Save Configuration"),
     ],
-    description: "Invalid JSON retains editor contents and sends no Configuration write.",
+    description:
+      "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
   },
   configurationChangedElsewhereMerged: {
     group: "Pages/Agent detail",
@@ -5898,7 +5927,7 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. Request Stop again opens confirmation; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the card offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
   },
   stopRepeatConfirm: {
     group: "Components/Stop Agent",
@@ -5925,7 +5954,7 @@ export const scenarios = {
     name: "Never deployed",
     path: draft,
     description:
-      "An Agent created without a deploy is stopped with no version, so Stop offers no controls; the panel says to deploy a new version to start it.",
+      "An Agent created without a deploy is stopped with no version, so the page has no Stop card and the overview reports no stop request.",
   },
   stopRepeatUnknown: {
     group: "Components/Stop Agent",
@@ -5938,7 +5967,8 @@ export const scenarios = {
       click("Request Stop again"),
       { selector: ".agent-stop-dialog button.danger", click: true },
     ],
-    description: "An uncertain repeated Stop disables retry until a successful status refresh.",
+    description:
+      "An uncertain repeated Stop offers only Refresh stop status until a successful readback.",
   },
   stopDenied: {
     group: "Components/Stop Agent",

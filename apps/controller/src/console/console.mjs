@@ -1404,9 +1404,16 @@ async function loadPage({
       installationAdmin = observability.admin;
       observabilityOwner = observability.settled ? owner : null;
     }
+    // The default pick prefers a ready Namespace and never a deleting one while another remains
+    // (finding 1895); with only deleting Namespaces it shows the first, whose status the Agents
+    // page then names.
     namespaceId =
       current.namespace ??
-      (namespaces.find((item) => item.status === "ready") ?? namespaces[0])?.id ??
+      (
+        namespaces.find((item) => item.status === "ready") ??
+        namespaces.find((item) => item.status !== "deleting") ??
+        namespaces[0]
+      )?.id ??
       null;
     navigation.restoreHistory();
     history.replaceState(
@@ -1717,6 +1724,9 @@ async function loadPage({
       suspendDrafts: () => drafts.suspend(),
       view: shell.view,
       namespaceId,
+      // The selected Namespace: the Agents list and Create Agent name its status when it is not
+      // ready (finding 1895).
+      namespace: namespaces.find((item) => item.id === namespaceId),
       request: viewRequest,
       mutationVersion: () => viewState.mutations,
       navigate,
@@ -1775,6 +1785,17 @@ async function loadPage({
     } else if (permissionsRead) {
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
+    }
+    if (current.creating || (current.feature === "agents" && !current.agentId)) {
+      // The Agents list and Create Agent show the selected Namespace's status (finding 1895), so a
+      // return rebuilds them when it changed. Other Namespaces' changes keep the view.
+      const shownNamespace = namespaceId;
+      const shownStatus = agentContext.namespace?.status;
+      viewState.revalidators.add(async () => {
+        if (namespaces.find((item) => item.id === shownNamespace)?.status !== shownStatus) {
+          throw new Error("Namespace status changed");
+        }
+      });
     }
     if (current.creating) {
       renderCreateAgent(
