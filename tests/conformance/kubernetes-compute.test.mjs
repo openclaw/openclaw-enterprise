@@ -1211,7 +1211,25 @@ function dedicatedFirstDeployFixture({
                   ],
                 },
               }
-            : { status: { phase: "Running", podIP: "10.42.0.12" } }),
+            : state.waitingRole === role
+              ? {
+                  status: {
+                    phase: "Pending",
+                    conditions: [{ type: "PodScheduled", status: "True" }],
+                    [state.waitingStatuses ?? "containerStatuses"]: [
+                      {
+                        name: role,
+                        state: {
+                          waiting: {
+                            reason: state.waitingReason,
+                            message: "Back-off pulling image registry.invalid/runtime:missing",
+                          },
+                        },
+                      },
+                    ],
+                  },
+                }
+              : { status: { phase: "Running", podIP: "10.42.0.12" } }),
         },
       ],
     };
@@ -2804,6 +2822,33 @@ test("a pending dedicated deploy reports an unschedulable Pod or an unpaired nod
   const ready = await prepare();
   assert.equal(ready.ready, true);
   assert.equal(ready.pendingReason, undefined);
+});
+
+// A deploy whose container image the kubelet cannot pull names that wait instead of a
+// bare one (finding 1762); a Pod the scheduler cannot place still leads.
+test("a pending dedicated deploy names a container image pull failure", async () => {
+  const { state, prepare } = dedicatedFirstDeployFixture({ clock: { now: 0 } });
+  for (const [role, statuses, reason, expected] of [
+    ["agent", "containerStatuses", "ImagePullBackOff", "WORKLOAD_IMAGE_PULL_FAILED"],
+    ["gateway", "containerStatuses", "ErrImagePull", "WORKLOAD_IMAGE_PULL_FAILED"],
+    ["agent", "initContainerStatuses", "ImagePullBackOff", "WORKLOAD_IMAGE_PULL_FAILED"],
+    ["agent", "containerStatuses", "ContainerCreating", undefined],
+    ["agent", "containerStatuses", "CrashLoopBackOff", undefined],
+  ]) {
+    Object.assign(state, { waitingRole: role, waitingStatuses: statuses, waitingReason: reason });
+    const pending = await prepare();
+    assert.equal(pending.ready, false);
+    assert.equal(pending.pendingReason, expected, `${role} ${statuses} ${reason}`);
+  }
+  Object.assign(state, {
+    waitingRole: "agent",
+    waitingStatuses: "containerStatuses",
+    waitingReason: "ImagePullBackOff",
+    unschedulableRole: "gateway",
+  });
+  assert.equal((await prepare()).pendingReason, "WORKLOAD_UNSCHEDULABLE");
+  Object.assign(state, { waitingRole: undefined, unschedulableRole: undefined });
+  assert.equal((await prepare()).pendingReason, undefined);
 });
 
 // A deploy whose Pods the Namespace's Pod quota refuses names the quota instead of a

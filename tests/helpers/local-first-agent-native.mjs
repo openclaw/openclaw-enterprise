@@ -13,6 +13,7 @@ const provisioningPhases = ["admitted", "configuration", "transport", "handoff"]
 const deploymentProgressCodes = new Set([
   "REVISION_INCOMPLETE",
   "REVISION_UNSCHEDULABLE",
+  "REVISION_IMAGE_PULL_FAILED",
   "WORKSPACE_NODE_PENDING",
   "WORKSPACE_NODE_BINDING_PENDING",
   "WORKSPACE_SETUP_RETRYING",

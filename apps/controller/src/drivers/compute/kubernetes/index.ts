@@ -1935,6 +1935,25 @@ function podQuotaFull(quota: unknown): boolean {
   });
 }
 
+// The kubelet's waiting reasons while it cannot pull a container image: ErrImagePull on a
+// failed pull, then ImagePullBackOff between retries (finding 1762).
+const IMAGE_PULL_WAITING_REASONS: ReadonlySet<unknown> = new Set([
+  "ErrImagePull",
+  "ImagePullBackOff",
+]);
+
+// True when one of a Pod's containers or init containers waits on an image pull.
+function podWaitsOnImagePull(pod: unknown): boolean {
+  const status = asRecord(asRecord(pod)?.status);
+  return [status?.initContainerStatuses, status?.containerStatuses].some(
+    (statuses) =>
+      Array.isArray(statuses) &&
+      statuses.some((item) =>
+        IMAGE_PULL_WAITING_REASONS.has(asRecord(asRecord(asRecord(item)?.state)?.waiting)?.reason),
+      ),
+  );
+}
+
 function observedPodMatchingSelector(
   item: unknown,
   namespace: string,
@@ -5471,8 +5490,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const revisionOwnership = { ...agentOwnership, revisionId: revision.id };
     const pluginOwnership = this.pluginRuntimeOwnership(revision);
     // A known pending reason is reported with the observation; otherwise a full
-    // Namespace Pod quota (finding 1617) or a Pod the scheduler cannot place explains
-    // the wait (D224).
+    // Namespace Pod quota (finding 1617), a Pod the scheduler cannot place (D224) or a
+    // container image the kubelet cannot pull (finding 1762) explains the wait.
     // A Harness that a SandboxDriver provisions has no Harness Deployment.
     const workloadDeployments = this.runtimeStatusContainers(revision)
       .filter((role) => role === "gateway" || sandboxDriver?.provisionHarness === undefined)
@@ -5485,9 +5504,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (await this.safePodQuotaObservation(workloadDeployments)) {
         return "NAMESPACE_POD_QUOTA_EXCEEDED";
       }
-      return (await this.safeUnschedulableObservation(revision, namespace))
-        ? "WORKLOAD_UNSCHEDULABLE"
-        : undefined;
+      return await this.safePodPendingObservation(revision, namespace);
     };
     const incomplete = async (pendingReason?: ComputePendingReason): Promise<ComputeReadiness> => {
       const runtimeFailure = await this.safeRuntimeFailureObservation(
@@ -9624,14 +9641,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
-  // True when a live Pod of this revision is unschedulable (PodScheduled False,
-  // reason Unschedulable), for example for want of node memory. Like failure
-  // evidence, an unavailable observation reports nothing.
-  private async safeUnschedulableObservation(
+  // WORKLOAD_UNSCHEDULABLE when a live Pod of this revision is unschedulable
+  // (PodScheduled False, reason Unschedulable), for example for want of node memory;
+  // otherwise WORKLOAD_IMAGE_PULL_FAILED when a live Pod's container or init container
+  // waits on ErrImagePull or ImagePullBackOff. Like failure evidence, an unavailable
+  // observation reports nothing.
+  private async safePodPendingObservation(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
-  ): Promise<boolean> {
+  ): Promise<"WORKLOAD_UNSCHEDULABLE" | "WORKLOAD_IMAGE_PULL_FAILED" | undefined> {
     const ownerSignal = currentComputeAbortSignal();
+    let imagePullFailed = false;
     try {
       for (const role of this.runtimeStatusContainers(revision)) {
         const target = role === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
@@ -9651,16 +9671,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
               );
             })
           ) {
-            return true;
+            return "WORKLOAD_UNSCHEDULABLE";
           }
+          imagePullFailed ||= podWaitsOnImagePull(pod);
         }
       }
-      return false;
+      return imagePullFailed ? "WORKLOAD_IMAGE_PULL_FAILED" : undefined;
     } catch {
       if (ownerSignal?.aborted) {
         throw ownerSignal.reason;
       }
-      return false;
+      return undefined;
     }
   }
 
