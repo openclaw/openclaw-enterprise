@@ -492,7 +492,10 @@ test("log timestamps with their UTC offset stay on one line", async (t) => {
         const cells = all(".log-time");
         const longest = all(".log-row")
           .find((row) => row.textContent.includes("longest timestamp"))
-          .querySelector(".log-time");
+          ?.querySelector(".log-time");
+        if (!longest) {
+          throw new Error("no time cell in the longest timestamp's row");
+        }
         const content = longest.closest(".log-line").querySelector(".log-content");
         const box = content.getBoundingClientRect();
         return {
