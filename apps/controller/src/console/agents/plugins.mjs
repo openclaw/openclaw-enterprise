@@ -1,4 +1,4 @@
-import { button, element } from "../dom.mjs";
+import { button, element, focusSaveOutcome } from "../dom.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
@@ -175,6 +175,8 @@ export function renderAgentPlugins(
     discovery.fields.section.querySelector(".plugin-json"),
   );
   const feedback = element("p", { className: "hint", role: "status" });
+  // Refusals read as errors, as on Configuration saves, not in the muted status (finding 1864).
+  const saveError = element("p", { className: "error", role: "alert" });
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
   const updateNote = element("p", { className: "muted", role: "status", hidden: true });
   const save = button("Save plugin selections", () => void savePlugins(), {
@@ -214,6 +216,7 @@ export function renderAgentPlugins(
     updateNote,
     element("div", { className: "form-actions" }, save, discard, reload),
     feedback,
+    saveError,
   );
 
   context.drafts.track("plugins", () => {
@@ -257,6 +260,7 @@ export function renderAgentPlugins(
   input.addEventListener("input", () => {
     input.setCustomValidity("");
     feedback.textContent = "";
+    saveError.textContent = "";
     updateState();
   });
 
@@ -285,6 +289,7 @@ export function renderAgentPlugins(
       return;
     }
     pending = true;
+    saveError.textContent = "";
     feedback.textContent = "Checking saved plugin selections…";
     updateState();
     let mutationStarted = false;
@@ -332,8 +337,11 @@ export function renderAgentPlugins(
         return;
       }
       outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429, 501].includes(error.status);
-      feedback.textContent =
-        error.status === 403
+      // An unknown outcome is a status that updateState keeps in the feedback line.
+      feedback.textContent = "";
+      saveError.textContent = outcomeUnknown
+        ? ""
+        : error.status === 403
           ? mutationStarted
             ? SAVE_REFUSALS.agent
             : SAVE_REFUSALS.read
@@ -346,6 +354,8 @@ export function renderAgentPlugins(
                 : error.status === 501
                   ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
                   : message(error, mutationStarted);
+      // Save disables while it runs, which dropped focus to the page.
+      focusSaveOutcome(section, [], saveError);
     } finally {
       if (context.isCurrent() && !saved) {
         pending = false;

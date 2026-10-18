@@ -299,6 +299,8 @@ p {
 .error {
   color: var(--danger);
   margin-top: 18px;
+  /* Refusals name long setting paths and request IDs; wrap them in a phone-width card. */
+  overflow-wrap: anywhere;
 }
 /* An Agent stopped by its owner during creation: guidance, not an error (finding 1375). */
 .error .provisioning-stopped {

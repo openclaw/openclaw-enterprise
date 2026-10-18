@@ -1930,7 +1930,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   };
   // The pressed control disables while its request runs. Keep focus on the line that reports
   // progress, then on the outcome, rather than drop it to the page (finding 1490). Focus the
-  // reader moved elsewhere stays there.
+  // reader moved elsewhere stays there. The line sits below a long form, so bring it into view
+  // too: a focused refusal under the fold read as progress (finding 1862).
   function focusFeedbackLine(line) {
     const active = document.activeElement;
     if (
@@ -1943,6 +1944,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     ) {
       line.tabIndex = -1;
       line.focus({ preventScroll: true });
+      line.scrollIntoView({ block: "nearest" });
     }
   }
   function showSavedStatus() {
@@ -2439,7 +2441,19 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         rejectedAgentAttempt = undefined;
         recovery.hidden = true;
       }
-      feedback.textContent = detail + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+      // A plugin refusal's own fixes edit the Configuration or move the Agent, and this form can
+      // no longer edit the Configuration it saved. Name the fix that works here (finding 1863).
+      const refusedPlugin =
+        !savedAgent && savedConfiguration && error.status === 400 && error.serverMessage
+          ? Object.keys(body.plugins ?? {})
+              .filter((id) => error.serverMessage.includes(`plugin ${id}`))
+              .sort((a, b) => b.length - a.length)[0]
+          : undefined;
+      const guidance = refusedPlugin
+        ? ` This form cannot edit saved Configuration ${savedConfiguration.id}. Deselect plugin ${refusedPlugin} under Plugins and select Create Agent again; to use the plugin, fix the setting on the new Agent's Configuration tab, then select the plugin on its Plugins tab.`
+        : "";
+      feedback.textContent =
+        detail + guidance + (error.requestId ? ` Request ID: ${error.requestId}` : "");
       focusFeedbackLine(feedback);
     } finally {
       if (context.isCurrent()) {
@@ -2457,8 +2471,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     ),
     form,
     channelEditor,
-    savedStatus,
+    // The outcome leads; the saved-resources line explains what a retry reuses (finding 1862).
     feedback,
+    savedStatus,
     recovery,
     actions,
   );

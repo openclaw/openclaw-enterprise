@@ -68,6 +68,9 @@ const existingPresetSecret = [
 ];
 const presetSecretsPath = "/namespaces/ns_00000000-0000-4000-8000-000000000001/secrets";
 const repositoryForm = [...readyForm, { selector: "#agent-name", value: "Repository assistant" }];
+// A plugin tool-deny refusal as the API words it, naming the selected plugin.
+const pluginToolRefusal =
+  'Configuration setting agents.entries.research_assistant_planning.tools.deny denies every tool, so every turn of that Agent fails with plugin codex-plugin:calendar@openai-curated-remote selected; remove "*" or move the Agent to a Configuration without plugins.';
 const pluginCapabilities = {
   driver: { id: "codex-plugin", implementation: "occ/codex-plugin" },
   approvers: { agent: true, plugin: false, tools: false },
@@ -2871,6 +2874,36 @@ export const scenarios = {
       "Choose Codex, or Embedded execution if the installation selects no Sandbox Driver, then create the Agent again.",
     ],
   },
+  createPluginRefusal: {
+    group: "Pages/Create Agent",
+    name: "Plugin refusal after the Configuration is saved",
+    path: create,
+    unsupportedProvisioning: true,
+    pluginCapabilities,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents",
+        method: "POST",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message: pluginToolRefusal,
+        once: true,
+      },
+    ],
+    actions: [
+      ...readyForm,
+      { selector: ".plugin-json > summary", click: true },
+      { selector: "#agent-plugins", value: pluginSelections },
+      click("Create Agent"),
+    ],
+    description:
+      "The form saved its Configuration, then the API refused the Agent because the Configuration denies every tool of the selected plugin. The refusal leads the saved-resources line, scrolls into view with focus, wraps its setting path at phone widths, and names the fix this form allows: deselect the plugin.",
+    steps: [
+      "At 360-390 px, confirm the focused refusal is on screen above the Secret and Configuration saved line, with no sideways scroll.",
+      "Clear Plugin selections JSON to {} and select Create Agent again; the Agent is created.",
+    ],
+    gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.mjs.",
+  },
   createUnknown: {
     group: "Pages/Create Agent",
     name: "Provisioning outcome unknown",
@@ -3084,6 +3117,32 @@ export const scenarios = {
     description:
       "The permission answer denies Agent update, so Save plugin selections and the plugin fields are disabled, the saved selections stay in view, and the note names the grant to ask for. The API still decides.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  pluginsToolRefusal: {
+    group: "Pages/Agent detail",
+    name: "Plugin selections refused by the Configuration",
+    path: `${draft}&tab=plugins`,
+    deployed: true,
+    auth: "codex_pat",
+    pluginCapabilities,
+    pluginDiscovery,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 400,
+        code: "INVALID_REQUEST",
+        message: pluginToolRefusal,
+      },
+    ],
+    actions: [
+      { selector: ".plugin-json > summary", click: true },
+      { selector: "#agent-plugins", value: pluginSelections },
+      click("Save plugin selections"),
+    ],
+    description:
+      "The Configuration denies every tool of the selected plugin, so the API refuses the save. The refusal shows as an error and takes focus; editing the selections clears it.",
+    gap: "The refusal is simulated; the in-memory API's plugin check is covered by tests/browser/console-agent-plugin-refusals.test.mjs.",
   },
   pluginsDraft: {
     group: "Pages/Agent detail",
