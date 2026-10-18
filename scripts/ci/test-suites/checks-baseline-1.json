@@ -83,6 +83,7 @@
     "tests/conformance/codex-stderr-filter.test.mjs",
     "tests/docs/docs-server.test.mjs",
     "tests/integration/console-build-metadata.test.mjs",
+    "tests/conformance/console-design-tokens.test.mjs",
     "tests/conformance/audit.test.mjs",
     "tests/conformance/compute-lifecycle-hooks.test.mjs",
     "tests/conformance/utils.test.mjs",
@@ -116,6 +117,9 @@
     },
     {
       "path": "tests/conformance/console-carry.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-design-tokens.test.mjs"
     },
     {
       "path": "tests/conformance/contracts.test.mjs"

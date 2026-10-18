@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-10-13
-last_updated_session: authoring-run/1e1d633d-329d-462f-b077-6cb27c43a6e4
+updated: 2026-10-18
+last_updated_session: authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d
 ---
 
 # Installation Profile Rendering Flow
@@ -146,14 +146,13 @@ follow their rule within 200 UTF-16 code units, as in the chart.
 253 characters; neither `.` nor a `..` prefix. Thus `..ca.pem` and 254-character
 keys fail preflight before Helm. Omission uses `ca.pem`.
 
-`validateDatabaseCaMount` checks the generated values against the chart's active
-database-client mounts. With a database CA Secret, `mountPath` cannot equal the
-Installation, worker runtime, bootstrap, gateway key, or private gateway CA mount.
-Repository mounts are reserved only when repository credentials are enabled;
-the ChatGPT mount is reserved only when managed service accounts are configured.
-Profiles do not enable execution-cluster mounts. No CA configuration adds no
-restriction; an omitted path keeps `/etc/openclaw/database-ca`. A collision adds
-a field-specific preflight error and prevents both deployable files.
+`validateDatabaseCaMount` compares Linux destinations with the chart's active
+mounts: Installation, worker runtime, bootstrap, gateway key and private gateway CA.
+Relative, dot-segment and trailing-slash aliases collide too. Repository and
+ChatGPT paths are reserved only when enabled; execution-cluster paths remain free.
+Without CA configuration no restriction applies; omission keeps
+`/etc/openclaw/database-ca`. A collision adds a field-specific error and withholds
+both deployment files. Noncolliding paths retain their supplied spelling.
 
 The Helm values select the control-plane image, Better Auth base URL,
 bootstrap administrator, database and cluster egress CIDRs, API client
@@ -294,6 +293,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-18 14:40: Compare database CA mount destinations with Helm. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
 
 - 2026-10-13 16:26: Merge current profile validation while retaining hosted discovery DNS snapshots and explicit network policy inputs. (authoring-run/1e1d633d-329d-462f-b077-6cb27c43a6e4 - da72ecf45a0989b857fd7f05d8238a38a979eb64)
 

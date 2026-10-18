@@ -4,7 +4,7 @@ import dns from "node:dns/promises";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { isIP } from "node:net";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname, isAbsolute, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   isKubernetesNamespaceName,
@@ -504,7 +504,7 @@ function validateDatabaseCaMount(values, diagnostics) {
   if (values.backend?.chatgpt.enabled) {
     reserved.add("/etc/openclaw/chatgpt");
   }
-  if (reserved.has(values.database.caMountPath)) {
+  if (reserved.has(posix.resolve("/", values.database.caMountPath))) {
     diagnostics.errors.push(
       "controlPlane.databaseCa.mountPath must be distinct from other active mounts in the production database clients.",
     );

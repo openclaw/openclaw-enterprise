@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
 updated: "2026-10-18"
-last_updated_session: "authoring-run/13774107-9c73-4561-8bb0-6e910588052a"
+last_updated_session: "authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d"
 ---
 
 # Production Startup Flow
@@ -191,12 +191,10 @@ on reviewed control-plane nodes; empty defaults omit it.
 to `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`, keeping the private
 proxy on that pool. Tenant gateway and Agent placement remain Compute-owned.
 
-`database.caSecretName` selects read-only CA mounts at `database.caMountPath`
-for all four database clients.
-`deploy/helm/openclaw-enterprise/templates/_helpers.tpl` rejects equality with
-another active client mount, including bootstrap output. Disabled optional
-features reserve no paths; disabling the CA leaves its path unused. Kubernetes
-requires unique mount paths within each container.
+With `database.caSecretName`, `_helpers.tpl` rejects CA destinations aliasing active
+client mounts, including relative paths, dot segments and trailing slashes. Linux
+otherwise masks startup files. Emitted paths stay unchanged; noncolliding paths
+remain available.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
 selects only `api`, `worker`, and `initialization` Pods with the release identity.
@@ -323,6 +321,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-18 14:40: Compare database CA mount destinations before rendering. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
 
 - 2026-10-18: Check the Installation before upgrade migration.
 - 2026-10-15 22:24: Validate sandbox suffixes. (authoring-run/13774107-9c73-4561-8bb0-6e910588052a - 417cb2b7b57f)

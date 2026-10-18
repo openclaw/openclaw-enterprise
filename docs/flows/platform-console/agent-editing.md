@@ -78,14 +78,14 @@ editing/deployment without defaults.
 **Selected version** uses `activeRevisionId`; **View version vN** opens read-only
 details without activating it. **Deployment activity** shows the newest readable
 version's persisted status, not live health. Routine completion folds; pending work,
-read errors, warnings, and cleanup stay visible. Failed deployments offer Logs
-unless log text or revision access was denied during this sign-in. Configuration recovery
-requires Agent `update` or `deploy` and an existing Configuration without known read
-errors or denials; access remains separately authorized. Credentials recovery
-requires Agent `update`. Hidden or unlisted current versions suppress recovery;
-viewed versions show results. Activity polls every
-`DEPLOYMENT_POLL_MS` (`apps/controller/src/console/agents/detail.mjs`) until a
-result or read error; a new result also rereads selection. **Refresh deployment** rereads
+read errors, warnings, and cleanup stay visible. Failed deployments show the API's message
+(logs advice if it names no step) and offer Logs unless log text or revision access was
+denied this sign-in. Configuration recovery requires Agent `update` or `deploy` and a
+Configuration without known read errors or denials; access remains separately authorized.
+**Deploy again** (per the message) also requires `deploy`; it focuses the draft's
+**Deploy new version**. Credentials recovery requires Agent `update`. Hidden or unlisted
+current versions suppress recovery; viewed versions show results. Activity polls every
+`DEPLOYMENT_POLL_MS` until a result or read error; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection, after any poll in flight. Polls patch in place (`patchChildren`), so
 an unchanged poll writes nothing. A pending deploy lists its result rows before the first attempt;
 the details keep their tallest height until Refresh after it settles. **Current observations** requests timestamped
@@ -358,8 +358,6 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
-- 2026-10-18 12:30: Keep open Workspace editors when another version becomes current. (lows-1018h)
-- 2026-10-17 09:01: Keep keyboard focus on the pending Configuration save. (lows-1017k-1646 - 5d82453999)
-- 2026-10-16 22:40: Patch deployment polls in place; reserve pending rows. (ui-jank-code-12)
+- 2026-10-18 20:30: Show each failure's next step; add Deploy again. (ux-a1)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.
