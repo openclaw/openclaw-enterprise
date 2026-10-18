@@ -886,6 +886,14 @@ export const scenarios = {
     description:
       "A caller who cannot create Agents in an empty Namespace is told shared Agents appear here, not invited to create one.",
   },
+  agentsNamespaceProvisioning: {
+    group: "Pages/Agents",
+    name: "Empty, Namespace still provisioning",
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    description:
+      "A first run's Namespace is still provisioning: the page names its status and what waits for it, and Create Agent stays available for drafts.",
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
@@ -1008,6 +1016,14 @@ export const scenarios = {
     name: "Page not found",
     path: "/console/missing",
     description: "An unknown console route offers a return to Agents.",
+  },
+  createNamespaceProvisioning: {
+    group: "Pages/Create Agent",
+    name: "Namespace still provisioning",
+    path: create,
+    namespaceStatus: "provisioning",
+    description:
+      "Create Agent in a Namespace that is still provisioning names its status above the starting points, before any Secret is asked for.",
   },
   createStart: {
     group: "Pages/Create Agent",
