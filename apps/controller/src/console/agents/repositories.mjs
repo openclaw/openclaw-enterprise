@@ -719,7 +719,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
               : state.discovery === "loading"
                 ? "Checking repository availability…"
                 : state.discovery === "not-configured"
-                  ? "Repository availability cannot be verified because no repository access is configured for this Installation."
+                  ? "Repository availability cannot be verified because repository access is not available in this Installation's configuration."
                   : "Repository availability cannot be verified. Retry repository choices.",
           ),
         );
@@ -1070,7 +1070,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
       } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
         status.className = "hint";
         status.replaceChildren(
-          "No repository access is configured for this Installation. ",
+          "Repository access is not available in this Installation's configuration. ",
           element(
             "a",
             {
@@ -1082,7 +1082,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           ),
           state.discovery === "draft-only"
             ? ". You can continue without repository access."
-            : ". Repository access for this Agent cannot be changed until then.",
+            : ". Repository access for this Agent cannot be changed until an operator sets it up.",
         );
       } else {
         status.className = "error";

@@ -615,12 +615,14 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   assert.equal(options.status(), 503);
   assert.equal((await options.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
   await unavailablePage
-    .getByText(/No repository access is configured for this Installation/)
+    .getByText(/Repository access is not available in this Installation's configuration/)
     .waitFor();
   assert.match(
     await unavailablePage
       .getByRole("status")
-      .filter({ hasText: "No repository access is configured for this Installation" })
+      .filter({
+        hasText: "Repository access is not available in this Installation's configuration",
+      })
       .innerText(),
     /You can continue without repository access/,
   );
@@ -1573,7 +1575,9 @@ test("Dedicated Agent creation keeps provisioning when optional repository disco
   );
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset" }).click();
-  await page.getByText(/No repository access is configured for this Installation/).waitFor();
+  await page
+    .getByText(/Repository access is not available in this Installation's configuration/)
+    .waitFor();
   await page.getByLabel("Agent name", { exact: true }).fill("Model-only Agent");
   await enterManualModel(page, "model-only-test-key", "gpt-5.1");
   const admission = page.waitForResponse(

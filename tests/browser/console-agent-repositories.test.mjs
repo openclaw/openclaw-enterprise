@@ -341,9 +341,11 @@ test("Agent repository tab without a Repo Driver names the setup step and offers
   assert.equal((await response.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
   const status = page
     .getByRole("status")
-    .filter({ hasText: "No repository access is configured for this Installation." });
+    .filter({
+      hasText: "Repository access is not available in this Installation's configuration.",
+    });
   await status.waitFor();
-  assert.match(await status.innerText(), /cannot be changed until then/);
+  assert.match(await status.innerText(), /cannot be changed until an operator sets it up/);
   assert.equal(
     await status.getByRole("link", { name: "Set up repository access" }).getAttribute("href"),
     "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
