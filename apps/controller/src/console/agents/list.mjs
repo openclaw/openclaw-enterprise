@@ -22,12 +22,21 @@ export function link(label, target, context) {
 export const NAMESPACE_NOT_READY_MESSAGE =
   "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
 
+// Why a Namespace that is not ready can't take new Agents, by status. Only a provisioning one
+// becomes ready by waiting.
+const NOT_READY_REASONS = {
+  failed:
+    "Provisioning this Namespace failed, so it cannot hold new Agents. Ask an operator to check it on the Namespaces page, or choose another Namespace.",
+  deleting:
+    "This Namespace is being deleted, so it cannot hold new Agents. Choose another Namespace.",
+};
+
 // Shown where Agent creation starts when the selected Namespace is not ready: its status, then
-// why nothing can be created yet (finding 1895). An unknown status keeps creation, and the API
+// why nothing can be created (finding 1895). An unknown status keeps creation, and the API
 // still decides.
 export function namespaceNotReady(status) {
   return typeof status === "string" && status !== "" && status !== "ready"
-    ? `Namespace status: ${status[0].toUpperCase()}${status.slice(1)}. ${NAMESPACE_NOT_READY_MESSAGE}`
+    ? `Namespace status: ${status[0].toUpperCase()}${status.slice(1)}. ${NOT_READY_REASONS[status] ?? NAMESPACE_NOT_READY_MESSAGE}`
     : null;
 }
 
@@ -255,9 +264,14 @@ export function renderAgentList(context) {
     className: "primary",
   });
   create.disabled = createDenied || notReady !== null;
+  if (notReady) {
+    create.setAttribute("aria-describedby", "namespace-not-ready");
+  }
   view.replaceChildren(
     element("div", { className: "agent-toolbar" }, search, create),
-    ...(notReady ? [element("p", { className: "muted", role: "status" }, notReady)] : []),
+    ...(notReady
+      ? [element("p", { className: "muted", role: "status", id: "namespace-not-ready" }, notReady)]
+      : []),
     ...(createDenied
       ? [
           element(
@@ -393,7 +407,9 @@ export function renderAgentList(context) {
                   // (finding 1521).
                   "Agents in this Namespace that are shared with you appear here."
                 : notReady
-                  ? "You can create Agents here once this Namespace is ready."
+                  ? context.namespaceStatus === "provisioning"
+                    ? "You can create Agents here once this Namespace is ready."
+                    : "Agents cannot be created in this Namespace."
                   : "Create an Agent in this Namespace using an editable Configuration template.",
           ),
         ),

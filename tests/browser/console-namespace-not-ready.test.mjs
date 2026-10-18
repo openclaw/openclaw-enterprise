@@ -82,22 +82,44 @@ test("a deleting Namespace is never the default pick while another remains", asy
   assert.equal(new URL(page.url()).searchParams.get("namespace"), namespaces.default.id);
 });
 
-test("a return to the Agents list shows a Namespace that became ready", async (t) => {
+test("with only a deleting Namespace, the pick names it and offers no wait", async (t) => {
+  const { fixture, namespaces } = await firstRun(t);
+  const { page } = await newPage(t, fixture);
+  await reportStatuses(page, new Map([[namespaces.default.id, "deleting"]]));
+  await login(page, fixture, "/console/");
+  const view = page.locator(settledView);
+  await view.getByRole("heading", { name: "No Agents yet" }).waitFor();
+  assert.equal(
+    await view.getByRole("status").filter({ hasText: "Namespace status: Deleting." }).textContent(),
+    "Namespace status: Deleting. This Namespace is being deleted, so it cannot hold new Agents. Choose another Namespace.",
+  );
+  await view.getByText("Agents cannot be created in this Namespace.").waitFor();
+  const create = view.getByRole("button", { name: "Create Agent" });
+  assert.equal(await create.isDisabled(), true);
+  assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
+});
+
+test("a return to the Agents list and Create Agent shows a Namespace that became ready", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
   const { page } = await newPage(t, fixture);
   // The Namespace reads as provisioning until it is released.
   const statuses = new Map([[namespace.id, "provisioning"]]);
   await reportStatuses(page, statuses);
-  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const view = page.locator(settledView);
+  // Both views are kept for a return while the Namespace is provisioning.
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
+  await view.getByRole("link", { name: "← Agents", exact: true }).click();
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   assert.equal(await view.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
 
   statuses.delete(namespace.id);
-  await page.getByRole("link", { name: "Namespaces" }).click();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("list", { name: "Namespaces" }).waitFor();
-  await page.getByRole("link", { name: "Agents" }).click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await view.getByText(INVITATION).waitFor();
-  assert.equal(await view.getByRole("button", { name: "Create Agent" }).isDisabled(), false);
   assert.equal(await view.getByText(NOT_READY).count(), 0);
+  await view.getByRole("button", { name: "Create Agent" }).click();
+  await view.getByRole("button", { name: "Start without Preset" }).waitFor();
+  assert.equal(await view.getByText("Creating Agents is not available").count(), 0);
 });

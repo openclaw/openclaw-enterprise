@@ -1770,6 +1770,17 @@ async function loadPage({
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
     }
+    if (current.creating || (current.feature === "agents" && !current.agentId)) {
+      // The Agents list and Create Agent show the selected Namespace's status (finding 1895), so a
+      // return rebuilds them when it changed. Other Namespaces' changes keep the view.
+      const shownNamespace = namespaceId;
+      const shownStatus = agentContext.namespaceStatus;
+      viewState.revalidators.add(async () => {
+        if (namespaces.find((item) => item.id === shownNamespace)?.status !== shownStatus) {
+          throw new Error("Namespace status changed");
+        }
+      });
+    }
     if (current.creating) {
       renderCreateAgent(
         {
@@ -1907,8 +1918,6 @@ async function loadPage({
       JSON.stringify(items),
     );
     if (current.feature === "agents") {
-      // The list shows the selected Namespace's status, so a return rebuilds it when that changed.
-      viewState.reads.set("/namespaces", readSignature(namespaces));
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });
       showChatLinkFailure(shell.view, chatLinkFailure);
     } else {
