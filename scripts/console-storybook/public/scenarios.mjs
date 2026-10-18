@@ -2332,7 +2332,7 @@ export const scenarios = {
       "Unavailable repository choices show administrator setup guidance and allow a draft without repositories.",
     steps: [
       "Read the setup guidance and open Set up repository access to review the operator procedure.",
-      "Retry repository choices, or save a draft without repositories.",
+      "Confirm no Retry repository choices button appears, then save a draft without repositories.",
     ],
     gap: "Simulated UI proof only; this preview does not configure a GitHub App or verify repository access.",
   },
@@ -3451,6 +3451,26 @@ export const scenarios = {
     ],
     description:
       "Reopening the desired configuration keeps the Agent default and each explicit override. Saving changes updates the draft; admitted revisions retain their prior access.",
+  },
+  repositoryEditorNotConfigured: {
+    group: "Pages/Agent detail",
+    name: "Repository access without a Repo Driver",
+    path: `${draft}&tab=repositories`,
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/repository-options",
+        status: 503,
+        code: "REPOSITORY_OPTIONS_UNAVAILABLE",
+      },
+    ],
+    description:
+      "The Installation has no Repo Driver: the tab names the setup step, links the runbook, offers no Retry, and keeps Save repository access disabled.",
+    gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
   },
   repositoryEditorUpdateDenied: {
     group: "Pages/Agent detail",

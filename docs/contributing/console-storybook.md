@@ -161,7 +161,7 @@ choices, denied or unverified authorization, and reselection after a rejected sa
 In **Locale-stable repository search**, search `ibm`, select `acme/platform`, and
 confirm reference `IBM-platform`. Simulated data does not prove GitHub App access
 or credential delivery.
-In **Repository choices unavailable**, follow the setup link or retry; creation
+In **Repository choices unavailable**, follow the setup link (no retry); creation
 without repository access stays available. The recovery story keeps its saved
 Configuration and needs a current nonempty repository selection to retry.
 The fixture does not verify operator prerequisites: GitHub App setup, Namespace
