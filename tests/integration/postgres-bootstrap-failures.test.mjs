@@ -321,6 +321,46 @@ function passiveComputeDriver() {
   };
 }
 
+function assertBootstrapRaceOutcome(results) {
+  const successful = results.filter((result) => result.ok === true);
+  const failed = results.filter((result) => result.ok === false);
+  assert.equal(successful.length, 1, "expected one successful bootstrap subprocess");
+  assert.equal(failed.length, 1, "expected one failed bootstrap subprocess");
+  const bootstrapped = jsonLines(successful[0].stdout).filter(
+    (line) => line.event === "installation.bootstrapped",
+  );
+  assert.equal(bootstrapped.length, 1, "expected one installation.bootstrapped event");
+  const failure = jsonLines(failed[0].stderr).find(
+    (line) => line.event === "installation.bootstrap-failed",
+  );
+  assert.ok(failure, "expected an installation.bootstrap-failed event");
+  assert.ok(failure.attempt, "expected a failed bootstrap attempt");
+  return { winnerIndex: results.indexOf(successful[0]), winnerEvent: bootstrapped[0] };
+}
+
+function assertSingleDurableBootstrapSeed(counts) {
+  assert.deepEqual(
+    {
+      installations: counts.installations,
+      bootstrap_audits: counts.bootstrap_audits,
+      principals: counts.principals,
+      service_principals: counts.service_principals,
+      bindings: counts.bindings,
+      namespaces: counts.namespaces,
+      namespace_work: counts.namespace_work,
+    },
+    {
+      installations: 1,
+      bootstrap_audits: 1,
+      principals: 1,
+      service_principals: 1,
+      bindings: 2,
+      namespaces: 1,
+      namespace_work: 1,
+    },
+  );
+}
+
 for (const sharedOutput of [false, true]) {
   test(
     `concurrent production bootstrap subprocesses ${sharedOutput ? "with shared output paths" : "with separate output paths"} commit at most one seed`,
@@ -351,45 +391,9 @@ for (const sharedOutput of [false, true]) {
       );
 
       const results = await Promise.all(environments.map((env) => runProductionBootstrap(env)));
-      const successful = results.filter(
-        (result) =>
-          result.ok &&
-          jsonLines(result.stdout).some((line) => line.event === "installation.bootstrapped"),
-      );
-      const failed = results.filter((result) => !successful.includes(result));
-      assert.equal(successful.length, 1, JSON.stringify(results));
-      assert.equal(failed.length, 1, JSON.stringify(results));
-      const failedEvent = jsonLines(failed[0].stderr).find(
-        (line) => line.event === "installation.bootstrap-failed",
-      );
-      assert.ok(failedEvent, failed[0].stderr);
-
-      const winner = jsonLines(successful[0].stdout).find(
-        (line) => line.event === "installation.bootstrapped",
-      );
-      assert.ok(winner);
-      assert.ok(failedEvent.attempt, failed[0].stderr);
+      const { winnerEvent: winner } = assertBootstrapRaceOutcome(results);
       const counts = await rowCounts();
-      assert.deepEqual(
-        {
-          installations: counts.installations,
-          bootstrap_audits: counts.bootstrap_audits,
-          principals: counts.principals,
-          service_principals: counts.service_principals,
-          bindings: counts.bindings,
-          namespaces: counts.namespaces,
-          namespace_work: counts.namespace_work,
-        },
-        {
-          installations: 1,
-          bootstrap_audits: 1,
-          principals: 1,
-          service_principals: 1,
-          bindings: 2,
-          namespaces: 1,
-          namespace_work: 1,
-        },
-      );
+      assertSingleDurableBootstrapSeed(counts);
       const winnerIndex = environments.findIndex(
         (environment) => environment.OCC_BOOTSTRAP_SERVICE_KEY_FILE === winner.serviceKeyFile,
       );
@@ -455,20 +459,7 @@ test(
       }),
     );
     const results = await Promise.all(environments.map((env) => runBootstrapInstallation(env)));
-    const fulfilled = results.filter(
-      (result) =>
-        result.ok &&
-        jsonLines(result.stdout).some((line) => line.event === "installation.bootstrapped"),
-    );
-    const rejected = results.filter((result) => !fulfilled.includes(result));
-    assert.equal(fulfilled.length, 1, JSON.stringify(results));
-    assert.equal(rejected.length, 1, JSON.stringify(results));
-    const rejectedEvent = jsonLines(rejected[0].stderr).find(
-      (line) => line.event === "installation.bootstrap-failed",
-    );
-    assert.ok(rejectedEvent, rejected[0].stderr);
-
-    const winnerIndex = results.findIndex((result) => fulfilled.includes(result));
+    const { winnerIndex } = assertBootstrapRaceOutcome(results);
     const loserIndex = winnerIndex === 0 ? 1 : 0;
     const winnerOutputBytes = await readFile(
       environments[winnerIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE,
@@ -476,32 +467,12 @@ test(
     );
     const winnerOutputDigest = sha256(winnerOutputBytes);
     const winnerOutput = JSON.parse(winnerOutputBytes);
-    assert.ok(rejectedEvent.attempt, rejected[0].stderr);
     const loserCreatedServiceKey = existsSync(
       environments[loserIndex].OCC_BOOTSTRAP_SERVICE_KEY_FILE,
     );
 
     const counts = await rowCounts();
-    assert.deepEqual(
-      {
-        installations: counts.installations,
-        bootstrap_audits: counts.bootstrap_audits,
-        principals: counts.principals,
-        service_principals: counts.service_principals,
-        bindings: counts.bindings,
-        namespaces: counts.namespaces,
-        namespace_work: counts.namespace_work,
-      },
-      {
-        installations: 1,
-        bootstrap_audits: 1,
-        principals: 1,
-        service_principals: 1,
-        bindings: 2,
-        namespaces: 1,
-        namespace_work: 1,
-      },
-    );
+    assertSingleDurableBootstrapSeed(counts);
     assert.equal(counts.service_keys, loserCreatedServiceKey ? 2 : 1);
     assert.equal(counts.users, loserCreatedServiceKey ? 2 : 1);
 
