@@ -2939,12 +2939,14 @@ test("a Workspace reread keeps the caret and scroll of a focused, unedited edito
   const start = before.indexOf("line 30 ");
   assert.equal(after.indexOf("line 30 "), start);
   await waitForInputValue(soul, before);
-  // The reader clicks into line 30 and selects a word; the editor scrolls to show it.
+  // The reader clicks into line 30 and selects a word; the editor scrolls to centre that line.
+  // Lines are alike, so the line's share of the text is its share of the scroll height.
   await soul.evaluate((node, offset) => {
     node.focus();
-    node.scrollTop = node.scrollHeight;
     node.setSelectionRange(offset, offset + 4, "backward");
-    node.scrollTop = node.scrollHeight / 2 - node.clientHeight / 2;
+    const lines = node.value.split("\n").length;
+    const line = node.value.slice(0, offset).split("\n").length - 0.5;
+    node.scrollTop = (line / lines) * node.scrollHeight - node.clientHeight / 2;
   }, start);
   const editorState = () =>
     soul.evaluate((node) => ({

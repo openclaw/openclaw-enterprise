@@ -314,7 +314,8 @@ export function renderWorkspaceFiles(context, agent, path) {
       }
       // An identical value leaves the caret where it was. A different one moves it to the end, where
       // the next key would land, so a reader who clicked into the file without editing gets caret
-      // and scroll back; setSelectionRange clamps the caret to the new length (finding 1889).
+      // and scroll back at the same offsets; setSelectionRange clamps them to the new length
+      // (finding 1889).
       const focused = editor.ownerDocument.activeElement === editor;
       const { selectionStart, selectionEnd, selectionDirection, scrollTop } = editor;
       editor.value = file.content;

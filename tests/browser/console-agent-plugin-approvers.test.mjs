@@ -142,10 +142,11 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await page.evaluate(() => globalThis.showPluginPage2());
   await dialog.getByText("Page 2 · 2 plugins", { exact: true }).waitFor();
   assert.deepEqual(await liveWrites(), ["Page 2 · 2 plugins"]);
-  const invalid = "Fix Plugin selections JSON to use the controls.";
+  const invalid =
+    "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.";
   await page.evaluate(() => globalThis.showPluginPage2("["));
-  await dialog.getByText(invalid, { exact: false }).waitFor();
-  assert.equal((await liveWrites()).filter((text) => text.startsWith(invalid)).length, 1);
+  await dialog.getByText(invalid, { exact: true }).waitFor();
+  assert.deepEqual(await liveWrites(), [invalid]);
   await page.evaluate(() => globalThis.showPluginPage2("["));
   assert.deepEqual(await liveWrites(), []);
 });
