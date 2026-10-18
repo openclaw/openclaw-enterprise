@@ -141,7 +141,7 @@ through the response body. Cancellation preserves its reason; a socket failure i
 not invalid JSON. Neither replays the request.
 
 On return, `loadPage` checks the user and retained GET dependencies. A match
-restores the DOM, handlers, drafts, and expanded debug details. Changed data or Namespace status,
+restores the DOM, handlers, drafts, and expanded debug details. Changed data,
 a newly readable Namespace, or Refresh rebuilds the view. Pending or failed
 reads, password input, and mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
 

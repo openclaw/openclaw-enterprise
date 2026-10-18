@@ -2,8 +2,8 @@
 
 Create Agents and supported Dedicated runtimes with the
 [platform console](../console.md). Kubernetes needs a
-[ready Namespace and Secret storage](../../guides/deploy/production-agents.md#prepare-each-namespace).
-Creating tokens requires Secret creation permission. Provisioning grants accepted
+[ready Namespace and Secret storage](../../guides/deploy/production-agents.md#prepare-each-namespace);
+**Create Agent** follows the [Namespace status](../namespaces.md#lifecycle). Creating tokens requires Secret creation permission. Provisioning grants accepted
 Secret access; drafts also require permission to grant Agent key access. After deployment, [verify the same
 Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
 The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
@@ -24,8 +24,8 @@ initializes private workspace files before Sandbox handoff; the Harness verifies
 their completion marker. [Sandbox limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
 block direct Secret-backed model and environment projection.
 
-1. Sign in, select a Namespace (see its [status](../namespaces.md#lifecycle)), open
-   **Agents**, and select **Create Agent**.
+1. Sign in, select the intended Namespace, open **Agents**, and select
+   **Create Agent**.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
    Review defaults and choose an existing or new model Secret.
    **Start with default Preset** loads `default-codex`; **Start without Preset**
