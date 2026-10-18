@@ -558,6 +558,8 @@ export function createOpenShellKubernetesFixture({
   // How long a Codex turn observes a command still running when the turn completes. A suite
   // whose probe commands bound themselves (curl --max-time) passes that bound plus a margin.
   codexCommandGraceMs = 5_000,
+  // Options for retryModelAtCapacity: a test's fake model reply passes a short delay.
+  modelAtCapacityRetry = {},
   databaseUrl,
   openShellGatewayImage,
   openShellSandboxImage,
@@ -567,8 +569,6 @@ export function createOpenShellKubernetesFixture({
   openShellHelmChart,
   openShellWorkspaceHelmChart,
   openShellChartVersion = "0.1.4",
-  // Options for retryModelAtCapacity: a test's fake model reply passes a short delay.
-  modelAtCapacityRetry = {},
 }) {
   const base = createRealKubernetesFixture({
     kubeconfigPath,
