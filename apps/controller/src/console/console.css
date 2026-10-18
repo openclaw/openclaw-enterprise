@@ -1528,7 +1528,7 @@ select:not([multiple])[size="1"] {
   .dialog--drawer {
     width: 100%;
     max-width: 100%;
-    height: auto;
+    height: fit-content;
     max-height: calc(100dvh - var(--space-8));
     margin: auto 0 0;
     padding: var(--space-4);
