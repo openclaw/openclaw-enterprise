@@ -492,10 +492,10 @@ test(
       { message: stopsSetup },
     );
     await firstHeld.promise;
-    assert.throws(() => secondContext.after(() => ran.push("second late cleanup")), {
-      message: stopsSetup,
-    });
     try {
+      assert.throws(() => secondContext.after(() => ran.push("second late cleanup")), {
+        message: stopsSetup,
+      });
       // Late cleanups drain in microtasks, so one event-loop turn runs the second while the
       // first teardown's is still running.
       await new Promise((resolve) => setImmediate(resolve));

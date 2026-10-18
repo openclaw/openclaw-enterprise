@@ -617,6 +617,7 @@ test("A list held by a refocus while its rows wait to fill paints no earlier ans
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await list.requested;
   await page.clock.runFor(200);
+  // The held view is inert, so read it directly: deploymentCells reads only the active view.
   const held = await page.evaluate((reading) => {
     const view = globalThis.document.querySelector('.content [aria-live="polite"]');
     const cells = [...view.querySelectorAll(".agent-deployment")];
