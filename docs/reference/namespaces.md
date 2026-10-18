@@ -96,6 +96,13 @@ reports infrastructure readiness, but does not choose whether a Namespace is
 ready. An Agent can be created while its Namespace is `provisioning`; deploying
 an Agent requires the Namespace to be `ready`.
 
+The console's **Agents** page and **Create Agent** name a Namespace that is not
+`ready`. A `provisioning` Namespace keeps **Create Agent** for drafts that need no
+new Secret or sign-in. A `failed` or `deleting` Namespace, or a `provisioning` one
+with `existingNamespace` (no Configuration until `ready`), disables it with the
+reason. With no URL selection, the console picks a `ready` Namespace first and
+skips `deleting` ones while another remains.
+
 The separate [controller worker](controller.md) processes Namespace lifecycle
 work when the API uses PostgreSQL. Compose starts it after initialization and
 API readiness; host-process debugging starts it independently because the API does
@@ -206,6 +213,7 @@ workload is ready.
 
 ## Changelog
 
+- 2026-10-18 21:10: The console names a Namespace's status where Agent creation starts and disables creation only where the API refuses new Agents. (ux-a5)
 - 2026-10-06 18:55: The worker log names why a Namespace failed; the API still does not. (fix-d521)
 - 2026-10-06 18:40: Note that a reused existing namespace fails until its old tenant markers are cleared, that `failed` carries no reason, and that `401` covers service API keys. (dogfood-r38)
 

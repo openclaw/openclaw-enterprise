@@ -141,7 +141,7 @@ through the response body. Cancellation preserves its reason; a socket failure i
 not invalid JSON. Neither replays the request.
 
 On return, `loadPage` checks the user and retained GET dependencies. A match
-restores the DOM, handlers, drafts, and expanded debug details. Changed data,
+restores the DOM, handlers, drafts, and expanded debug details. Changed data or Namespace status,
 a newly readable Namespace, or Refresh rebuilds the view. Pending or failed
 reads, password input, and mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
 
@@ -185,7 +185,7 @@ returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
-is false, both explain the restriction. If the read fails, creation stays available;
+is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses new Agents, both explain the restriction. A failed read keeps creation available;
 the API authorizes every create. Changing Provider or Harness resets incompatible
 credentials and model choices, preserving unrelated JSON. See
 [Agent creation](../reference/console/create-and-deploy.md) for inputs and recovery.

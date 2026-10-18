@@ -24,8 +24,8 @@ initializes private workspace files before Sandbox handoff; the Harness verifies
 their completion marker. [Sandbox limits](../../flows/openshell-sandbox-provisioning.md#3-validate-and-serialize-the-sandbox)
 block direct Secret-backed model and environment projection.
 
-1. Sign in, select the intended Namespace, open **Agents**, and select
-   **Create Agent**.
+1. Sign in, select a Namespace (see its [status](../namespaces.md#lifecycle)), open
+   **Agents**, and select **Create Agent**.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
    Review defaults and choose an existing or new model Secret.
    **Start with default Preset** loads `default-codex`; **Start without Preset**
