@@ -1767,8 +1767,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       harness.value === "codex" ||
       nativeProvider.value === "anthropic" ||
       binding?.method === "runtime";
-    harness.disabled ||=
-      binding?.method === "runtime" || (usesPat && Boolean(binding || savedSecret));
+    // Why the harness choice is locked, without the request in flight: the hint must not change
+    // while Create is pending, or it shifts the refusal the form just scrolled into view.
+    const harnessChoiceLocked =
+      saved ||
+      outcomeUnknown ||
+      requestAdmitted ||
+      binding?.method === "runtime" ||
+      (usesPat && Boolean(binding || savedSecret));
+    harness.disabled ||= pending || harnessChoiceLocked;
     const dedicatedRefused = capabilityDiscoveryDone && !openclawModeUsable("dedicated");
     const nativeRefused = dedicatedRefused && harness.value === "openclaw";
     const embeddedRefused = capabilityDiscoveryDone && !openclawModeUsable("embedded");
@@ -1853,7 +1860,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       // Name Codex only when the reader can still choose it.
       const reason = anthropic
         ? " Anthropic requires Embedded OpenClaw."
-        : nativeRefused && !harness.disabled
+        : nativeRefused && !harnessChoiceLocked
           ? " Choose Codex for Dedicated execution."
           : "";
       return `This Agent will run OpenClaw with ${runtime}.${reason}`;
@@ -1864,7 +1871,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     codexOption.hidden = nativeProvider.value === "anthropic";
     codexOption.disabled = nativeProvider.value === "anthropic";
     harnessHint.textContent =
-      harness.disabled && usesPat
+      harnessChoiceLocked && usesPat
         ? "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key."
         : sandboxDriverOutage
           ? "Codex and OpenClaw are unavailable right now: this installation's Sandbox Driver is unavailable."
