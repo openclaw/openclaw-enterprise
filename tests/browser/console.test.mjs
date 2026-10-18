@@ -1558,10 +1558,13 @@ test("Namespaces rows open their Agents and status badges use words with a tone"
     assert.equal(await badge.textContent(), label);
     assert.equal(await badge.getAttribute("data-tone"), tone);
   }
-  // Selecting anywhere on the row opens that Namespace's Agents in place.
+  // The ID stays selectable above the row's link area, so clicking it stays on Namespaces.
   const row = list.getByRole("listitem").filter({ hasText: ready.id });
+  await row.locator(".resource-id").click();
+  assert.equal(new URL(page.url()).pathname, "/console/namespaces");
+  // Selecting anywhere else on the row opens that Namespace's Agents in place.
   const box = await row.boundingBox();
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height - 6);
+  await row.click({ position: { x: box.width / 2, y: box.height - 6 } });
   await page.waitForURL(`**/console/agents?namespace=${ready.id}`);
   await page.getByText("Linked Agent", { exact: true }).waitFor();
   assert.equal(await page.locator("#namespace-selector").inputValue(), ready.id);

@@ -556,6 +556,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
 
   function namespaceLink(name, id) {
     const node = element("a", { href: pageUrl("agents", id) }, name);
+    // A revalidation that remounts the list returns focus to the same row.
+    node.dataset.returnFocusHref = node.href;
     node.addEventListener("click", (event) => {
       if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
         return;

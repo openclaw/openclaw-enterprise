@@ -572,6 +572,14 @@ p {
   position: relative;
   z-index: 1;
 }
+/* The focus ring outlines the card, matching the link's hit area in every browser. */
+.resource-linked:has(.resource-name a:focus-visible) {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+.resource-linked .resource-name a:focus-visible {
+  outline: none;
+}
 .state-panel {
   padding: 36px;
   border: 1px solid var(--line);
