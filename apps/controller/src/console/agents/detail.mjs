@@ -3039,14 +3039,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
     }
     const tab = selectedTab;
-    // Focus still in the list (moved there with the arrows) keeps the Tab stop where it is.
-    const focusedTab = tabs.contains(document.activeElement) ? document.activeElement : null;
+    const focusInStrip = tabs.contains(document.activeElement);
     for (const [index, id] of tabsForSelection.entries()) {
       const control = tabs.children[index];
       control.setAttribute("aria-selected", String(id === tab));
-      control.tabIndex = (focusedTab ? control === focusedTab : id === tab) ? 0 : -1;
+      control.tabIndex = id === tab ? 0 : -1;
     }
     content.setAttribute("aria-labelledby", `${tabIds}-${tab}`);
+    // History can select another tab while focus is in the strip; focus follows the selection,
+    // so the focused tab is the one revealed and the Tab stop.
+    if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
+      tabControls.get(tab).focus({ preventScroll: true });
+    }
     revealSelectedTab();
     fadeTabEdges();
     refreshDeployControls();

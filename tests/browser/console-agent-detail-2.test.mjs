@@ -1750,18 +1750,15 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
       "Plugins",
   );
   const back = await state();
-  // Focus stays on Channels, so the Tab stop does too until focus leaves the list.
+  // Focus was in the strip, so it follows the selection back to Plugins.
   assert.deepEqual(back, {
     selected: ["Plugins"],
-    stops: ["Channels"],
-    focused: "Channels",
+    stops: ["Plugins"],
+    focused: "Plugins",
     panel: "Plugins",
     controls: true,
     tab: "plugins",
   });
-  await page.keyboard.press("Tab");
-  await page.keyboard.press("Shift+Tab");
-  await expect({ selected: ["Plugins"], stops: ["Plugins"], focused: "Plugins", tab: "plugins" });
 
   // On a phone the strip scrolls sideways; the edge with more tabs past it fades, from the first
   // paint of a page whose selected tab needs no scrolling.
@@ -1779,7 +1776,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-after"),
   );
   assert.deepEqual(await edges(), { before: false, after: true, masked: true });
-  // A focused tab stays in view when the selection moves away from it (Back) or the strip
+  // Back moves focus with the selection, and a focused tab stays in view when the strip
   // resizes, rather than the strip scrolling back to the selected tab.
   const focusedInView = () =>
     page.evaluate(() => {
@@ -1810,7 +1807,9 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
       "Configuration",
   );
   await frames();
-  assert.deepEqual(await focusedInView(), { name: "Workspace files", inView: true }, "after Back");
+  assert.deepEqual(await focusedInView(), { name: "Configuration", inView: true }, "after Back");
+  // An arrowed-to tab that is not selected stays in view through a resize.
+  await page.keyboard.press("End");
   await page.setViewportSize({ width: 360, height: 844 });
   await frames();
   assert.deepEqual(
