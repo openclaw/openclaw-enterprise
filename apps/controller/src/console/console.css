@@ -2705,8 +2705,9 @@ summary:focus-visible {
   outline-offset: 3px;
 }
 .log-line {
-  /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned. */
-  --log-level-column: minmax(max-content, 6.5em);
+  /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned, even when
+     the row is short of room. */
+  --log-level-column: minmax(6.5em, max-content);
   /* Fit a whole en-US timestamp with its UTC offset on one line (finding 1681): 33 characters of
      the 11px time, as in "12/31/2026, 12:59:59 PM GMT+10:30". ch is the row's 12px character. */
   --log-time-column: calc(33ch * 11 / 12);
@@ -2833,7 +2834,9 @@ summary:focus-visible {
    moves below the time, level and origin, as it does on phones (findings 1681, 1713). */
 @container log-viewer (width < 662px) {
   .log-line {
-    grid-template-columns: minmax(var(--log-time-column), 1fr) max-content minmax(60px, 112px);
+    grid-template-columns:
+      minmax(var(--log-time-column), 1fr) var(--log-level-column)
+      minmax(60px, 112px);
     gap: 4px 10px;
   }
   .log-content {
@@ -2841,8 +2844,8 @@ summary:focus-visible {
     margin-top: 2px;
   }
 }
-/* A whole timestamp beside the level needs 40 px row padding, 218 px time, 10 px gap and the
-   78 px reserved for UNKNOWN. In a narrower card (a window under about 400 px) the time takes
+/* A whole timestamp beside the level needs 40 px phone row padding, 218 px time, 10 px gap and
+   up to 78 px for the level. In a narrower card (a window under about 400 px) the time takes
    its own line, down to a 320 px window, and the level moves beside the origin (finding 1844).
    The .log-row prefix outranks the phone rules below. */
 @container log-viewer (width < 346px) {
