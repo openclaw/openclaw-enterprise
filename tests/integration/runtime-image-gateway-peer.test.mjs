@@ -25,6 +25,12 @@ import {
 // during a peer status outage or a replacement peer changes. Split from
 // runtime-image-startup.test.mjs by measured case durations.
 
+// No Gateway cron. A cron run in flight when the peer changes (counted as rootRequests=1
+// cronRuns=1) can wait on the Harness app-server, which these fixtures do not serve, so the old
+// process drained past the fixture's 240 s, short of the wrapper's 330 s SIGKILL (finding 1875).
+// These cases cover peer recovery, not cron.
+const SKIP_GATEWAY_CRON = "OPENCLAW_SKIP_CRON=1";
+
 for (const writableConfig of [false, true]) {
   test(
     writableConfig
@@ -75,6 +81,7 @@ for (const writableConfig of [false, true]) {
         extraEnvironment: [
           // This isolated fixture uses synthetic credentials; retain startup causes.
           "OPENCLAW_DEBUG=1",
+          SKIP_GATEWAY_CRON,
           "APP_SERVER_URL=ws://[::1]:4500",
           `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
           "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",
@@ -208,6 +215,7 @@ async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) 
     entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
     volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
     extraEnvironment: [
+      SKIP_GATEWAY_CRON,
       "APP_SERVER_URL=ws://[::1]:4500",
       `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
       "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",
