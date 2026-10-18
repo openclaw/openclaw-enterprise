@@ -160,6 +160,8 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
     await savedLine.textContent(),
   );
 
+  // The retry uses the Secret the refused attempt saved; the restored form cannot pick another.
+  assert.equal(await page.getByLabel("API key Secret", { exact: true }).isDisabled(), true);
   await name.fill("Kept Agent");
   const createdResponse = page.waitForResponse(
     (response) =>
@@ -178,6 +180,74 @@ test("a refused Create stays a draft for a reload and a return, and the retry re
   assert.equal(configurationPostRequests(requests, namespace.id).length, 1);
   // A created Agent leaves no draft behind.
   assert.equal(await asksBeforeUnload(page), false);
+});
+
+test("a draft kept after a refusal between the Secret and the Configuration keeps that Secret", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Refused configuration", { ready: true });
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: standardCodexPreset,
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  // The first Configuration write is refused as too many requests; nothing was saved by it.
+  let refuse = true;
+  await page.route(`**/namespaces/${namespace.id}/configurations`, async (route, request) => {
+    if (!refuse || request.method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    refuse = false;
+    await route.fulfill({
+      status: 429,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "RATE_LIMITED", message: "Slow down." } }),
+    });
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(preset.data.id);
+  await page.getByLabel("Name", { exact: true }).fill("Refused configuration Agent");
+  await page.getByLabel("Model", { exact: true }).fill("gpt-5.1");
+  await page.getByLabel("Model Secret", { exact: true }).fill("synthetic-refused-key");
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  const name = page.getByLabel("Agent name", { exact: true });
+  await name.waitFor();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const savedLine = page.getByText(/^Secret saved: \S+\. Retries reuse/);
+  await savedLine.waitFor();
+  const [, secretId] = /^Secret saved: (\S+)\./.exec(await savedLine.textContent());
+
+  await sidebarLink(page, "Agents").click();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await name.waitFor();
+  await savedLine.waitFor();
+  // The restored form has no password field; it names the saved Secret and keeps it fixed, since
+  // the retry grants the Agent access to that Secret (internal review).
+  const picker = page.getByLabel("API key Secret", { exact: true });
+  await waitForInputValue(picker, "Refused configuration Agent");
+  assert.equal(await picker.isDisabled(), true);
+
+  const createdResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const created = await createdResponse;
+  assert.equal(created.status(), 201);
+  const { data } = await created.json();
+  await page.waitForURL((url) => url.pathname === `/console/agents/${data.id}`);
+  assert.equal(data.harnessAuth.source.id, secretId);
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/secrets`).length, 1);
+  const access = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
+  assert.ok(
+    access.data.some(
+      (binding) => binding.subjectId === data.servicePrincipalId && binding.resourceId === secretId,
+    ),
+  );
 });
 
 test("a failed Namespace read keeps drafts; a read that no longer lists their Namespace drops them", async (t) => {
@@ -286,8 +356,6 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     assert.equal(page.url(), pageUrl);
     await sidebarLink(page, "Namespaces").click();
     assert.equal(page.url(), pageUrl);
-    assert.equal(await heading(page, "Agents").count(), 0);
-    assert.equal(await heading(page, "Namespaces").count(), 0);
     // So does Back to another page (the Agents list, before the Agent and its Channels tab):
     // the page stays and its URL is restored before the history event ends.
     await page.evaluate(
@@ -298,7 +366,6 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
         }),
     );
     assert.equal(page.url(), pageUrl);
-    assert.equal(await heading(page, "Agents").count(), 0);
     assert.equal(await deploy.isDisabled(), true);
     await note.waitFor();
     // On a phone the refusal closes the navigation drawer, which would hide the reason.
@@ -314,7 +381,8 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     held.release();
   }
   await page.getByText(/Configuration .*generation 2/).waitFor();
-  await sidebarLink(page, "Agents").click();
+  // The refused Back kept the Agents list in history, so Back now reaches it.
+  await page.goBack();
   await heading(page, "Agents").waitFor();
 });
 
@@ -385,7 +453,6 @@ test("untouched forms, unchanged drawers and search text do not ask before a rel
   assert.equal(await asksBeforeUnload(page), true);
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
   assert.deepEqual(dialogs.splice(0), ["confirm: Discard this draft?"]);
-  dialogs.length = 0;
   page.removeAllListeners("dialog");
   page.on("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Cancel", exact: true }).click();

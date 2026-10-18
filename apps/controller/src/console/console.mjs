@@ -1063,10 +1063,12 @@ async function loadPage({
     markMountedRoute(route());
     return;
   }
-  // Back or Forward to another page while the shown page waits on a write keeps it, restores its
-  // URL and says why, as ← Agents and the sidebar do (finding 1937).
+  // Back or Forward to another page while the shown page waits on a write keeps it and says
+  // why, as ← Agents and the sidebar do (finding 1937). Its URL returns as a new entry, so the
+  // page the reader tried to reach stays in history for a later Back. This follows the tab
+  // handler, which keeps same-Agent tab changes.
   if (fromHistory && mountedRouteKey !== null && leaveGuard?.({ pendingOnly: true })) {
-    history.replaceState(history.state, "", mountedRouteKey);
+    history.pushState({ previousCollection: navigation.previousCollection }, "", mountedRouteKey);
     return;
   }
   const knownPrivateState = session !== null && Object.hasOwn(pages, current.feature);
@@ -1327,8 +1329,8 @@ async function loadPage({
     }
     sessionResolved = true;
     const owner = sessionOwnerKey(session);
-    // Drafts belong to the account that wrote them. The same account signing in again, or a
-    // read retried after an unavailable check, keeps them (finding 1935).
+    // Drafts belong to the session that wrote them: a read retried after an unavailable check
+    // keeps them (finding 1935); any other session clears them.
     if (!owner || draftUserId !== owner) {
       clearDrafts();
     }

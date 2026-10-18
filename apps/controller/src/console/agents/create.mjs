@@ -1567,10 +1567,19 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       ? { modelCredentialSource: savedSecret.ref, modelCredentialSecret: savedSecret }
       : {}),
   });
+  // A changed form, or one holding resources a refused Create saved, would lose work on reload.
+  const unsavedDraft = (captured) =>
+    Boolean(
+      captured?.touched ||
+      captured?.savedSecret ||
+      captured?.savedCredentialSource ||
+      captured?.savedConfiguration,
+    );
   // A refused Create leaves the form to fix and retry, so it is a draft again: the reload warning
   // and the kept form survive it (finding 1934). A draft restores only the saved resources, so an
-  // uncertain outcome, a pending registration or an admitted provisioning job keeps the form
-  // uncaptured, as an Agent that may exist does.
+  // uncertain outcome, a pending registration, an admitted provisioning job or a repository
+  // policy refusal (which locks the retry until a reload) keeps the form uncaptured, as an Agent
+  // that may exist does.
   function keepDraftAfterRefusal() {
     if (
       !savedAgent &&
@@ -1578,9 +1587,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       !requestAdmitted &&
       !provisioningAttempt &&
       !credentialRegistration &&
-      !failedCredentialSource
+      !failedCredentialSource &&
+      rejectedAgentAttempt?.kind !== "repository-scoped"
     ) {
-      context.setDraftCapture(captureDraft, (captured) => Boolean(captured?.touched));
+      context.setDraftCapture(captureDraft, unsavedDraft);
     }
   }
   function parseObject(input, reportInvalid = false) {
@@ -1943,6 +1953,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           usesOAuth ||
           savedConfiguration ||
           savedCredentialSource ||
+          // A restored password-Preset form names the Secret it saved; a retry must use it.
+          savedSecret ||
           credentialRegistration,
         ),
     );
@@ -2267,7 +2279,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           requestAdmitted = false;
         }
       }
-      keepDraftAfterRefusal();
+      // A job that names its Agent created one, which a kept draft must not create again.
+      if (!error.provisioningAgentId) {
+        keepDraftAfterRefusal();
+      }
     } finally {
       if (context.isCurrent()) {
         pending = false;
@@ -2625,7 +2640,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     recovery,
     actions,
   );
-  context.setDraftCapture(captureDraft, (captured) => Boolean(captured?.touched));
+  context.setDraftCapture(captureDraft, unsavedDraft);
   context.drafts.forget("preset");
   context.setDiscardOnExit(false);
 }
