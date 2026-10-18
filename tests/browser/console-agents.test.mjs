@@ -2046,6 +2046,9 @@ test("Agent creation explains a denied capability check instead of offering a re
     await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
     true,
   );
+  // Without capabilities the harness hint states the requirement, not an outcome.
+  const harnessHint = page.locator("#agent-harness-hint");
+  assert.equal(await harnessHint.textContent(), "Codex requires OpenAI and Dedicated execution.");
 
   // A transient failure still offers the retry.
   status = 503;
@@ -2053,6 +2056,7 @@ test("Agent creation explains a denied capability check instead of offering a re
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByText(/^Installation capabilities unavailable\. /).waitFor();
   await retry.waitFor();
+  assert.equal(await harnessHint.textContent(), "Codex requires OpenAI and Dedicated execution.");
 });
 
 test("Agent creation withholds Dedicated OpenClaw unless the Installation reports native worker support", async (t) => {

@@ -1812,9 +1812,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const harnessOutcome = () => {
       const anthropic = nativeProvider.value === "anthropic";
       if (harness.value === "codex") {
+        // "Will run" only once the Installation's capabilities are known.
         return anthropic
           ? "This Agent cannot run Codex: Codex requires OpenAI."
-          : "This Agent will run Codex with Dedicated execution.";
+          : capabilityDiscoveryDone
+            ? "This Agent will run Codex with Dedicated execution."
+            : "Codex requires OpenAI and Dedicated execution.";
       }
       if (!capabilityDiscoveryDone) {
         return "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.";
