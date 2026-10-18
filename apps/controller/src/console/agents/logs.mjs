@@ -1,6 +1,7 @@
 import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
 import { displayDate, namespacePath } from "./list.mjs";
-import { SOURCE_LABELS, fitLogTimeColumn, podCard, recordRow, visibleText } from "./logs-view.mjs";
+import { fitLogTimeColumn } from "./logs-view.mjs";
+import { SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
 const STATUS_POLL_MS = 10_000;
 const FOLLOW_POLL_MS = 2_000;
