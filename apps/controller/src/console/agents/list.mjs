@@ -404,7 +404,11 @@ export function renderAgentList(context) {
     for (const item of matches) {
       // The cell keeps its column's width once its read lands, and its outcome link and one
       // note line fit the two lines the Agent cell already gives the row (finding 1488).
-      const deployment = element("td", { className: "agent-deployment" }, readingDeployment());
+      const deployment = element(
+        "td",
+        { className: "agent-deployment", "data-label": "Latest deployment" },
+        readingDeployment(),
+      );
       cells.set(deployment, item);
       showDeployment(item, deployment);
       body.append(
@@ -421,20 +425,28 @@ export function renderAgentList(context) {
               ? element("span", { className: "badge" }, "Saved configuration unreadable")
               : null,
           ),
-          element("td", {}, item.executionMode === "dedicated" ? "Dedicated" : "Embedded"),
+          // On a phone each cell shows its column's name (console.css, `data-label`).
           element(
             "td",
-            {},
+            { "data-label": "Execution mode" },
+            item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
+          ),
+          element(
+            "td",
+            { "data-label": "Current version" },
             item.activeRevisionId
-              ? link(
-                  shortId(item.activeRevisionId),
-                  `agents/${item.id}?revision=${item.activeRevisionId}`,
-                  context,
+              ? Object.assign(
+                  link(
+                    shortId(item.activeRevisionId),
+                    `agents/${item.id}?revision=${item.activeRevisionId}`,
+                    context,
+                  ),
+                  { className: "agent-revision-link" },
                 )
               : "No current version",
           ),
           deployment,
-          element("td", {}, displayDate(item.createdAt)),
+          element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
         ),
       );
     }

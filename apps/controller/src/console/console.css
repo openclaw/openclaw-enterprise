@@ -1367,6 +1367,14 @@ select:not([multiple])[size="1"] {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* A revision ID reads as an ID, in mono and the text colour, not as an accent link. */
+.agent-table .agent-revision-link {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-regular);
+  color: var(--color-link);
+  text-decoration: underline;
+}
 .agent-table .resource-id {
   display: block;
   margin-top: 7px;
@@ -1485,6 +1493,63 @@ summary:focus-visible {
   .agent-table th,
   .agent-table td {
     padding: 14px 8px;
+  }
+}
+/* Phone: each Agent is a stacked row, its name and ID first, then each cell beside its column's
+   name (`data-label`), so nothing scrolls sideways. The header row stays for screen readers. */
+@media (max-width: 760px) {
+  .agent-table,
+  .agent-table tbody {
+    display: block;
+  }
+  .agent-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .agent-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .agent-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .agent-table td {
+    grid-column: 1 / -1;
+    min-width: 0;
+    padding: 0;
+    border-bottom: 0;
+    overflow-wrap: anywhere;
+  }
+  .agent-table td[data-label] {
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+  }
+  .agent-table td[data-label]::before {
+    content: attr(data-label);
+    width: auto;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+  /* The outcome link and its note line keep two lines reserved while the read is pending, so a
+     landing read does not grow the row (finding 1488). */
+  .agent-table .agent-deployment {
+    grid-template-rows: auto calc(var(--text-sm) * var(--text-sm--line-height));
+    row-gap: var(--space-1);
+  }
+  .agent-table .agent-deployment::before {
+    grid-row: span 2;
+  }
+  .agent-table .agent-deployment-note {
+    margin-top: 0;
   }
 }
 
