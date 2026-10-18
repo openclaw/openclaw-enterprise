@@ -1615,7 +1615,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   revealTimer = setTimeout(showDetail, FIRST_ACTIVITY_WAIT_MS);
   function revealSelectedTab() {
     const strip = tabs.getBoundingClientRect();
-    const bounds = tabControls.get(selectedTab).getBoundingClientRect();
+    // A tab that has focus (moved there with the arrows) stays in view over the selected one.
+    const shown = tabs.contains(document.activeElement)
+      ? document.activeElement
+      : tabControls.get(selectedTab);
+    const bounds = shown.getBoundingClientRect();
     if (bounds.left < strip.left) {
       tabs.scrollLeft += Math.floor(bounds.left - strip.left);
     } else if (bounds.right > strip.right) {

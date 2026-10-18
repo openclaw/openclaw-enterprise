@@ -276,10 +276,10 @@ read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path i
 `sessionStorage` for the session owner; later views show **Configuration unavailable**
 without asking again, and **Retry** forgets the path and rereads. Logout clears it.
 
-`agents/detail.mjs:renderTab` brings a clipped selected tab into the horizontal
-strip without moving page focus or vertical scroll. A strip ResizeObserver repeats
-this on viewport changes, disconnects for inactive or detached views, and re-arms
-through the retained view's resume hook.
+The tab strip is a tablist with one Tab stop; arrows move focus, Enter opens.
+`agents/detail.mjs:renderTab` scrolls a clipped focused, else selected, tab into view
+without vertical scroll; a strip ResizeObserver repeats this, disconnecting inactive
+views, re-arming on resume.
 Completed tabs retain their DOM and draft capture callbacks within the detail view.
 Returning restores loaded controls and expanded disclosures. Pending or failed
 reads, password values, and mutations invalidate tab reuse. Each tab checks it

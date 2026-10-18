@@ -1779,6 +1779,46 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-after"),
   );
   assert.deepEqual(await edges(), { before: false, after: true, masked: true });
+  // A focused tab stays in view when the selection moves away from it (Back) or the strip
+  // resizes, rather than the strip scrolling back to the selected tab.
+  const focusedInView = () =>
+    page.evaluate(() => {
+      const tab = globalThis.document.activeElement;
+      const strip = tab.closest('[role="tablist"]')?.getBoundingClientRect();
+      const box = tab.getBoundingClientRect();
+      return {
+        name: tab.textContent,
+        inView: Boolean(strip) && box.left >= strip.left - 1 && box.right <= strip.right + 1,
+      };
+    });
+  const frames = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve));
+        }),
+    );
+  await list.getByRole("tab", { name: "Configuration", exact: true }).focus();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.waitForURL("**tab=workspace**");
+  await page.goBack();
+  await page.waitForURL("**tab=configuration**");
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ===
+      "Configuration",
+  );
+  await frames();
+  assert.deepEqual(await focusedInView(), { name: "Workspace files", inView: true }, "after Back");
+  await page.setViewportSize({ width: 360, height: 844 });
+  await frames();
+  assert.deepEqual(
+    await focusedInView(),
+    { name: "Workspace files", inView: true },
+    "after resize",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
   await strip.evaluate((node) => {
     node.scrollLeft = node.scrollWidth;
   });
