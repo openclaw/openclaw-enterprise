@@ -65,10 +65,11 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   still apply when deploying.
 - Check the Agent Configuration's tool policy. Selecting Diffs adds it to the
   [tool allowlist](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
-  If the Configuration denies every tool, for example with `tools.deny: ["*"]`,
-  no callable tool remains: the deployment still succeeds without a warning,
-  but every turn fails with `No callable tools remain`. Remove that denial
-  before selecting Diffs.
+  If the Configuration's `tools.deny` blocks every Diffs tool, for example with
+  `"*"`, `"diffs"` or `"group:plugins"`, the Agent update, provisioning and
+  deployment return `400` naming `tools.deny` and the plugin. A deny-all list
+  would leave no callable tool, so every turn would fail. Remove the matching
+  entry before selecting Diffs.
 
 Set the Namespace and Agent IDs from your Installation:
 

@@ -13,6 +13,7 @@ import {
   type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
+  ConfigurationHarnessError,
   NotImplementedError,
   PluginDiscoveryError,
   PluginPolicyValidationError,
@@ -223,6 +224,53 @@ function requiredString(value: unknown, path: string): string {
   return value;
 }
 
+// OpenClaw applies `tools.deny` before any allowlist, and a deny entry matches a tool by
+// `*`, a `*` glob, the tool's name, its plugin's ID, or `group:plugins`. A Configuration
+// that denies every tool of an enabled selection leaves the plugin nothing to offer, and
+// with a deny-all list the plugin's managed allowlist entry leaves no callable tool, so
+// every turn fails (finding 508). The error names the setting, never its entries.
+function deniedOpenClawSelection(
+  selections: PluginDesiredState,
+  configuration: Readonly<OpenClawConfigurationDocument>,
+): string | undefined {
+  const deny = asRecord(asRecord(configuration)?.tools)?.deny;
+  if (!Array.isArray(deny)) {
+    return undefined;
+  }
+  const patterns = deny
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0);
+  const denied = (tool: string, owner: string): boolean =>
+    patterns.some(
+      (pattern) =>
+        pattern === tool ||
+        pattern === owner ||
+        pattern === "group:plugins" ||
+        (pattern.includes("*") &&
+          new RegExp(
+            `^${pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replaceAll("*", ".*")}$`,
+          ).test(tool)),
+    );
+  for (const [pluginId, selection] of Object.entries(selections)) {
+    if (selection?.enabled !== true) {
+      continue;
+    }
+    const nativeId = pluginId.startsWith(`${OCC_DRIVER_ID}:`)
+      ? pluginId.slice(OCC_DRIVER_ID.length + 1)
+      : pluginId;
+    const tools = OCC_CATALOG.find((entry) => entry.id === `${OCC_DRIVER_ID}:${nativeId}`)?.tools;
+    if (
+      Array.isArray(tools) &&
+      tools.length > 0 &&
+      tools.every((tool) => denied(tool.id, nativeId))
+    ) {
+      return pluginId;
+    }
+  }
+  return undefined;
+}
+
 function validateEmptyConfiguration(configuration: unknown, name: string): void {
   const value = asRecord(configuration);
   if (value === undefined) {
@@ -355,6 +403,18 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
 
   validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void {
     this.validate("openclaw", selections, defaultApprovers);
+  }
+
+  validateAgentConfiguration(
+    selections: PluginDesiredState,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    const pluginId = deniedOpenClawSelection(selections, configuration);
+    if (pluginId !== undefined) {
+      throw new ConfigurationHarnessError(
+        `Configuration setting tools.deny blocks every tool of plugin ${pluginId}; remove the matching deny entry or deselect the plugin.`,
+      );
+    }
   }
 
   static validateConfiguration(configuration: unknown): void {
