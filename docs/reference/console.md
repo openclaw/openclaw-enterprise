@@ -85,11 +85,11 @@ Kubernetes differences, inspection scope, and unavailable states.
 
 Dedicated provisioning waits for first activation; failure links the original
 request’s existing Agent and revision. Otherwise, creation
-saves a draft (see [Namespace status](namespaces.md#lifecycle)): provide model and channel credentials when prompted, then select
+saves a draft: provide model and channel credentials when prompted, then select
 **Deploy new version**. If the Compute Driver requires them, OCC generates
 missing connection credentials during that first deployment.
 See [Create and deploy Agents](console/create-and-deploy.md) for the full
-workflow, channel constraints, and partial-write recovery.
+workflow, [Namespace status](namespaces.md#lifecycle) rules, channel constraints, and partial-write recovery.
 Plugin selections follow the API's Agent create/update contract: an omitted map
 is preserved, `{}` clears it, and deployment startup reports unsupported catalog
 or policy choices.
