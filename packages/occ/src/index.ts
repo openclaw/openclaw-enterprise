@@ -511,6 +511,8 @@ export {
   CREDENTIAL_WITHDRAWAL_TARGET,
   credentialWithdrawalWorkKey,
   isCredentialWithdrawalWork,
+  isProviderPendingReason,
+  type ProviderPendingReason,
   revisionAdmittedBeforeWork,
   runtimeFailureCause,
   validateRuntimeFailureEvidence,

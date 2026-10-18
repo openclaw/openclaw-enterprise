@@ -165,7 +165,13 @@ Pod has `PodScheduled` `False` with reason `Unschedulable`,
 `NAMESPACE_POD_QUOTA_EXCEEDED` when a revision Deployment's `ReplicaFailure`
 names a full Pod quota, `WORKSPACE_SETUP_RETRYING` while restarting a failed
 workspace setup, and `WORKSPACE_NODE_PENDING` when only the workspace node's
-gateway connection is outstanding. Activation of a dedicated revision reports
+gateway connection is outstanding.
+For a provider-owned Harness, Compute reports the first check still pending:
+`PROVIDER_HARNESS_POD_PENDING` for the provider Pod, `WORKSPACE_NODE_PENDING`
+for its workspace connection once the Gateway is ready, or `CREDENTIAL_ATTACHMENT_PENDING`
+for its credential attachments. Later checks may not have run. The worker records this detail
+alongside `REVISION_INCOMPLETE`, so an older worker still recognizes progress past credential bootstrap.
+Activation of a dedicated revision reports
 `WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
 workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
 not connected. Otherwise the code is `REVISION_INCOMPLETE`. The revision stays

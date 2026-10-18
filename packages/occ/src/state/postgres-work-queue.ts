@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { ResourceConflictError, ScopeViolationError } from "../errors.ts";
 import {
   CREDENTIAL_WITHDRAWAL_TARGET,
+  isProviderPendingReason,
   nonempty,
   safeFailureCode,
   validateFailureData,
@@ -660,8 +661,8 @@ const INSERT_EVIDENCE_SQL = `${INSERT_EVIDENCE_CTE_SQL}
   SELECT transitioned.* FROM transitioned`;
 /**
  * A deployment waiting for its runtime defers every few seconds with the same code. Only a
- * change is recorded: a deferral whose outcome and reason code match the latest evidence for the
- * same revision work item adds no row. Retries, failures, and completions are always recorded.
+ * change in outcome, reason code or pending reason (`$13`) is recorded for the same revision
+ * work item. Retries, failures, and completions are always recorded.
  * The lookup matches the `audit_events_work_attempt_idx` partial index, which covers revision
  * work only; other callers that know a deferral repeats one already recorded pass `$9` false.
  * `$11` true records a repeat too, so its time shows the work is still retrying; `$10` names the
@@ -672,7 +673,8 @@ const INSERT_DEFER_EVIDENCE_SQL = `${insertEvidenceCteSql(
       AND $9::boolean
       AND ($11::boolean OR NOT EXISTS (
         SELECT 1 FROM (
-          SELECT prior.outcome, prior.details->>'reasonCode' AS reason_code
+          SELECT prior.outcome, prior.details->>'reasonCode' AS reason_code,
+                 prior.details->>'pendingReason' AS pending_reason
           FROM occ.audit_events AS prior
           WHERE prior.kind = 'mutation' AND prior.action = 'reconcile'
             AND prior.resource_kind = 'agent_revision'
@@ -684,10 +686,12 @@ const INSERT_DEFER_EVIDENCE_SQL = `${insertEvidenceCteSql(
           LIMIT 1
         ) AS latest
         WHERE latest.outcome = $3::text AND latest.reason_code = $4::text
+          AND latest.pending_reason IS NOT DISTINCT FROM $13::text
       ))`,
   "$4::text",
   `CASE WHEN $10::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('refusal', $10::text) END
-     || CASE WHEN $12::boolean THEN jsonb_build_object('stopYielded', true) ELSE '{}'::jsonb END`,
+     || CASE WHEN $12::boolean THEN jsonb_build_object('stopYielded', true) ELSE '{}'::jsonb END
+     || CASE WHEN $13::text IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('pendingReason', $13::text) END`,
 )}
   SELECT transitioned.* FROM transitioned`;
 const SETTLE_PROVISIONING_FAILURE_SQL = `
@@ -1095,7 +1099,7 @@ export class PostgresWorkQueue {
     // to this exact work item can explain its progress; unbound history is unknown.
     const found = await this.client.query(
       `SELECT event.occurred_at, event.details->>'reasonCode' AS reason_code,
-         event.details->>'refusal' AS refusal
+         event.details->>'refusal' AS refusal, event.details->>'pendingReason' AS pending_reason
        FROM occ.controller_work AS work
        JOIN occ.audit_events AS event
          ON event.namespace_id = work.namespace_id AND event.actor_id = work.actor_id
@@ -1109,13 +1113,23 @@ export class PostgresWorkQueue {
       [nonempty(idempotencyKey, "Controller work idempotency key"), codes],
     );
     const row = found.rows[0] as
-      { occurred_at: Date | string; reason_code: string; refusal: string | null } | undefined;
+      | {
+          occurred_at: Date | string;
+          reason_code: string;
+          refusal: string | null;
+          pending_reason: unknown;
+        }
+      | undefined;
     return row === undefined
       ? undefined
       : Object.freeze({
           at: asDate(row.occurred_at),
           code: row.reason_code,
           ...(row.refusal === null ? {} : { refusal: row.refusal }),
+          ...(row.reason_code === "REVISION_INCOMPLETE" &&
+          isProviderPendingReason(row.pending_reason)
+            ? { pendingReason: row.pending_reason }
+            : {}),
         });
   }
 
@@ -1268,6 +1282,9 @@ export class PostgresWorkQueue {
         pending.refusal === undefined ? null : safeFailureCode(pending.refusal),
         options.repeatEvidence ?? false,
         pending.refusal !== undefined && pending.stopYielded === true,
+        pending.code === "REVISION_INCOMPLETE" && isProviderPendingReason(pending.pendingReason)
+          ? pending.pendingReason
+          : null,
       ],
     );
     if (deferred.rows.length === 0) {

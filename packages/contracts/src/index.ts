@@ -1753,15 +1753,14 @@ export interface RuntimeFailureEvidence {
   readonly cause?: RuntimeFailureCause;
 }
 
-/**
- * Why an unready revision is still pending, when Compute knows: its Pods cannot be
- * scheduled, the Namespace's Pod quota refuses to create them, its workspace setup failed
- * and is being retried, or its workloads are ready but the workspace node has not connected.
- */
+/** What Compute observed an unready revision waiting for, not a diagnosis of its cause. */
 export type ComputePendingReason =
   | "WORKLOAD_UNSCHEDULABLE"
   | "NAMESPACE_POD_QUOTA_EXCEEDED"
+  | "PROVIDER_HARNESS_POD_PENDING"
+  | "PROVIDER_WORKSPACE_NODE_PENDING"
   | "WORKSPACE_NODE_PENDING"
+  | "CREDENTIAL_ATTACHMENT_PENDING"
   | "WORKSPACE_SETUP_RETRYING"
   | "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING";
 

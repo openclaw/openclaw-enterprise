@@ -1,6 +1,6 @@
 import { immutableCopy, isNonEmptyString, isPositiveSafeInteger } from "@openclaw-enterprise/utils";
 import { isComputePreparationFailureEvidence } from "@openclaw-enterprise/contracts";
-import type { RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
+import type { ComputePendingReason, RuntimeFailureEvidence } from "@openclaw-enterprise/contracts";
 
 import { ScopeViolationError } from "../errors.ts";
 import { recognizedRuntimeFailureValues, runtimeFailureCause } from "../runtime-failure-cause.ts";
@@ -47,6 +47,20 @@ export interface ControllerWorkAttempt {
   readonly code: string;
   /** The refusal a `REFUSED_CANDIDATE_STOP_PENDING` deferral waits to publish. */
   readonly refusal?: string;
+  /** A more specific observation of REVISION_INCOMPLETE, never a lifecycle decision. */
+  readonly pendingReason?: ProviderPendingReason;
+}
+
+const providerPendingMessages = {
+  PROVIDER_HARNESS_POD_PENDING: "Waiting for one matching provider Harness Pod to be ready.",
+  PROVIDER_WORKSPACE_NODE_PENDING: "Waiting for the workspace node to connect to the Gateway.",
+  CREDENTIAL_ATTACHMENT_PENDING: "Waiting for the Sandbox credential attachments to be ready.",
+} satisfies Partial<Record<ComputePendingReason, string>>;
+
+export type ProviderPendingReason = keyof typeof providerPendingMessages;
+
+export function isProviderPendingReason(reason: unknown): reason is ProviderPendingReason {
+  return typeof reason === "string" && Object.hasOwn(providerPendingMessages, reason);
 }
 
 const FAILURE_CODE = /^[A-Z0-9_]{1,64}$/u;
@@ -62,10 +76,16 @@ export function deploymentProgressForWork(
   let code = "RECONCILIATION_PENDING";
   let message = "Deployment has not completed. Another reconciliation is pending.";
   switch (attempt?.code) {
-    case "REVISION_INCOMPLETE":
+    case "REVISION_INCOMPLETE": {
       code = attempt.code;
       message = "Waiting for the runtime to become ready.";
+      const reason = attempt.pendingReason;
+      if (isProviderPendingReason(reason)) {
+        code = reason === "PROVIDER_WORKSPACE_NODE_PENDING" ? "WORKSPACE_NODE_PENDING" : reason;
+        message = providerPendingMessages[reason];
+      }
       break;
+    }
     case "REVISION_UNSCHEDULABLE":
       code = attempt.code;
       message =
@@ -300,6 +320,8 @@ export interface RetryableFailure {
 }
 
 export interface DeferredWork extends RetryableFailure {
+  /** Optional readiness detail; previous workers must still see REVISION_INCOMPLETE. */
+  readonly pendingReason?: ProviderPendingReason;
   /** A refusal waiting on its candidate's stop; recorded in the deferral's evidence. */
   readonly refusal?: string;
   /** That stop yielded to other Work rather than failing; recorded as `stopYielded: true`. */

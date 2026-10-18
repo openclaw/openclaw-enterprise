@@ -966,10 +966,14 @@ test("the missed native handoff deadline reports only Pod readiness and fixed ru
     assert.equal(observed.runtimeOutput, undefined);
   });
 
-  await t.test(
-    "keep workspace-node pending and exclude a log page with the wrong source",
-    async () => {
-      const lastAttempt = { code: "WORKSPACE_NODE_PENDING" };
+  // Pods may both be Ready after the worker recorded its first pending check.
+  for (const code of [
+    "PROVIDER_HARNESS_POD_PENDING",
+    "WORKSPACE_NODE_PENDING",
+    "CREDENTIAL_ATTACHMENT_PENDING",
+  ]) {
+    await t.test(`keep ${code} and exclude a log page with the wrong source`, async () => {
+      const lastAttempt = { code, message: "private-sentinel" };
       const observed = await observe(
         [
           { ...deployment, progress: { lastAttempt } },
@@ -980,14 +984,14 @@ test("the missed native handoff deadline reports only Pod readiness and fixed ru
       );
       const ready = { count: "one", phase: "Running", ready: true };
       assert.deepEqual(observed.runtimeAfterDeadline, { gateway: ready, agent: ready });
-      assert.equal(observed.deployment.lastAttemptCode, lastAttempt.code);
+      assert.equal(observed.deployment.lastAttemptCode, code);
       assert.deepEqual(observed.runtimeOutput, {
         agent: "unavailable",
         sandbox: "unavailable",
         gateway: "unavailable",
       });
-    },
-  );
+    });
+  }
 
   await observe([{ ...deployment, deploymentId: "another-revision" }], [deploymentPath]);
   const late = { ...provisioned, status: "succeeded" };

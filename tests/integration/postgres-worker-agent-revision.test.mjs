@@ -1312,6 +1312,12 @@ revisionTest(
     const unscheduled = await fixture.agent("pending-unschedulable");
     const unpaired = await fixture.agent("pending-node");
     const overQuota = await fixture.agent("pending-pod-quota");
+    const providerPod = await fixture.agent("pending-provider-pod");
+    const providerRevision = await fixture.revision(providerPod, 1);
+    const providerNode = await fixture.agent("pending-provider-node");
+    const nodeRevision = await fixture.revision(providerNode, 1);
+    const attachment = await fixture.agent("pending-attachment");
+    const attachmentRevision = await fixture.revision(attachment, 1);
     const setupRetrying = await fixture.agent("pending-workspace-setup");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
     const overQuotaRevision = await fixture.revision(overQuota, 1);
@@ -1323,6 +1329,9 @@ revisionTest(
       [unscheduledRevision.id, "WORKLOAD_UNSCHEDULABLE"],
       [unpairedRevision.id, "WORKSPACE_NODE_PENDING"],
       [overQuotaRevision.id, "NAMESPACE_POD_QUOTA_EXCEEDED"],
+      [providerRevision.id, "PROVIDER_HARNESS_POD_PENDING"],
+      [nodeRevision.id, "PROVIDER_WORKSPACE_NODE_PENDING"],
+      [attachmentRevision.id, "CREDENTIAL_ATTACHMENT_PENDING"],
       [setupRetryingRevision.id, "WORKSPACE_SETUP_RETRYING"],
     ]);
     const delays = new Map([
@@ -1375,6 +1384,18 @@ revisionTest(
     assert.deepEqual(await progress(unpaired, unpairedRevision), {
       code: "WORKSPACE_NODE_PENDING",
       message: "Workloads are ready; waiting for the workspace node to connect to the Gateway.",
+    });
+    assert.deepEqual(await progress(providerPod, providerRevision), {
+      code: "PROVIDER_HARNESS_POD_PENDING",
+      message: "Waiting for one matching provider Harness Pod to be ready.",
+    });
+    assert.deepEqual(await progress(providerNode, nodeRevision), {
+      code: "WORKSPACE_NODE_PENDING",
+      message: "Waiting for the workspace node to connect to the Gateway.",
+    });
+    assert.deepEqual(await progress(attachment, attachmentRevision), {
+      code: "CREDENTIAL_ATTACHMENT_PENDING",
+      message: "Waiting for the Sandbox credential attachments to be ready.",
     });
     // Finding 1617: a full Namespace Pod quota is named, without its numbers.
     assert.deepEqual(await progress(overQuota, overQuotaRevision), {
@@ -1930,10 +1951,15 @@ revisionTest(
     const published = await fixture.admitInitialRevision("expired-activation-outage");
     // Readiness each pass reports, in order; once exhausted, every pass fails transiently,
     // except that the published revision's later passes are ready and its activation fails.
+    const bootstrap = "HARNESS_CREDENTIAL_BOOTSTRAP_PENDING";
+    const pod = "PROVIDER_HARNESS_POD_PENDING";
+    const node = "PROVIDER_WORKSPACE_NODE_PENDING";
+    const attachment = "CREDENTIAL_ATTACHMENT_PENDING";
+    const progressedReasons = [bootstrap, pod, pod, node, attachment, "UNRECOGNIZED_PENDING"];
     const script = new Map([
-      [running.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
-      [progressed.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING", undefined]],
-      [published.candidate.id, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
+      [running.candidate.id, [bootstrap]],
+      [progressed.candidate.id, [...progressedReasons]],
+      [published.candidate.id, [bootstrap]],
     ]);
     const passes = new Map(
       [running, progressed, published].map(({ candidate }) => [candidate.idempotencyKey, []]),
@@ -2006,7 +2032,10 @@ revisionTest(
     // outage, not the deadline, ends each deployment.
     for (const [{ candidate }, readiness] of [
       [running, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
-      [progressed, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING", "REVISION_INCOMPLETE"]],
+      [
+        progressed,
+        progressedReasons.map((reason) => (reason === bootstrap ? reason : "REVISION_INCOMPLETE")),
+      ],
       [published, ["HARNESS_CREDENTIAL_BOOTSTRAP_PENDING"]],
     ]) {
       const seen = passes.get(candidate.idempotencyKey);
@@ -2034,6 +2063,18 @@ revisionTest(
     });
     // A deployment whose bootstrap finished keeps its runtime, as at a plain deadline.
     assert.deepEqual(await cleanupRows(progressed.candidate), []);
+    // A previous worker recognizes REVISION_INCOMPLETE, not the new diagnostic values. Keep the
+    // durable reason stable, record each changed observation once, and drop an unknown reason.
+    const { rows: observations } = await fixture.observerPool.query(
+      `SELECT details->>'pendingReason' AS reason FROM occ.audit_events
+       WHERE details->>'workId' = $1 AND details->>'reasonCode' = 'REVISION_INCOMPLETE'
+       ORDER BY occurred_at, id`,
+      [progressed.candidate.idempotencyKey],
+    );
+    assert.deepEqual(
+      observations.map(({ reason }) => reason),
+      [pod, node, attachment, null],
+    );
     const keptStatus = await fixture.deploymentStatus(progressed.owner, progressed.candidate);
     assert.equal(keptStatus.error?.code, "KUBERNETES_API_UNAVAILABLE");
     assert.equal(keptStatus.cleanup, null);

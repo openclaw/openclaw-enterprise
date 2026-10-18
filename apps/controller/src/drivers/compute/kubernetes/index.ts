@@ -5489,7 +5489,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
         ? "WORKLOAD_UNSCHEDULABLE"
         : undefined;
     };
-    const incomplete = async (pendingReason?: ComputePendingReason): Promise<ComputeReadiness> => {
+    const incomplete = async ({
+      pendingReason,
+      fallbackReason,
+    }: {
+      pendingReason?: ComputePendingReason;
+      fallbackReason?: ComputePendingReason;
+    } = {}): Promise<ComputeReadiness> => {
       const runtimeFailure = await this.safeRuntimeFailureObservation(
         revision,
         namespace,
@@ -5499,7 +5505,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       const reason =
         pendingReason ??
         (runtimeFailure === undefined
-          ? await observedPendingReason()
+          ? ((await observedPendingReason()) ?? fallbackReason)
           : runtimeFailure.code === "WORKSPACE_SETUP_FAILED"
             ? "WORKSPACE_SETUP_RETRYING"
             : undefined);
@@ -6197,8 +6203,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
         }
+        // Report the first pending check. More specific failure, quota or scheduling
+        // evidence can explain the wait; a check we have not reached cannot.
         if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
-          return incomplete();
+          return incomplete({ fallbackReason: "PROVIDER_HARNESS_POD_PENDING" });
         }
         // The provider-owned Harness's own view of its startup, read through the
         // provider with the Agent transport token. `failed` carries a held startup
@@ -6282,16 +6290,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
               }
             }
           }
-          // The provider's Harness Pod and the Gateway are ready, so only the node's
-          // connection is outstanding: say so, as the Compute-owned Harness path does
-          // (D222). A Gateway still rolling out keeps the unnamed wait.
+          // Name the node wait only after its Gateway is ready. A rollout, held failure or
+          // more specific pending observation keeps its own outcome.
           return (await this.gatewayReady(
             gatewayOwnership,
             gatewayName,
             gatewayNamespace,
             revision.id,
           ))
-            ? incomplete("WORKSPACE_NODE_PENDING")
+            ? incomplete({ fallbackReason: "PROVIDER_WORKSPACE_NODE_PENDING" })
             : incomplete();
         }
         if (!nodeEnrolled) {
@@ -6316,7 +6323,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             statuses.length !== attachments.length ||
             statuses.some((status) => status.state !== "ready")
           ) {
-            return incomplete();
+            return incomplete({ fallbackReason: "CREDENTIAL_ATTACHMENT_PENDING" });
           }
         }
         if (providerEndpoint !== undefined && sandboxDriver.harnessStatus !== undefined) {
@@ -6385,7 +6392,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           return incomplete();
         }
         if (!(await this.workspaceNodeReady(revision, namespace))) {
-          return incomplete("WORKSPACE_NODE_PENDING");
+          return incomplete({ pendingReason: "WORKSPACE_NODE_PENDING" });
         }
         return repositoryMaterial !== undefined &&
           !(await this.repositoryMaterialReady(revision, namespace, repositoryMaterial))
@@ -6458,7 +6465,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       }
       if (!workspaceNodeIsReady) {
         // Both workloads are ready: only the node's connection is outstanding (D222).
-        return incomplete("WORKSPACE_NODE_PENDING");
+        return incomplete({ pendingReason: "WORKSPACE_NODE_PENDING" });
       }
       // Gateway plugin and node observations may outlive the material readiness observation.
       if (
