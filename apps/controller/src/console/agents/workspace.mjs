@@ -319,7 +319,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       const focused = editor.ownerDocument.activeElement === editor;
       const { selectionStart, selectionEnd, selectionDirection, scrollTop } = editor;
       editor.value = file.content;
-      if (focused) {
+      if (focused && editor.value !== shown) {
         editor.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
         editor.scrollTop = scrollTop;
       }

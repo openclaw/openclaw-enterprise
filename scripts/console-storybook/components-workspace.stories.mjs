@@ -27,3 +27,7 @@ export const WorkspaceVersionRereadUnconfirmed = {
   ...story("workspaceVersionRereadUnconfirmed"),
   name: "Reread cannot confirm a missing file",
 };
+export const WorkspaceVersionRereadFocused = {
+  ...story("workspaceVersionRereadFocused"),
+  name: "Reread keeps a focused editor's caret",
+};

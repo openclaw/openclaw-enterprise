@@ -6,6 +6,13 @@ const currentVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000006";
 const candidateVersion =
   "/console/agents/agt_00000000-0000-4000-8000-000000000001?namespace=ns_00000000-0000-4000-8000-000000000001&revision=rev_00000000-0000-4000-8000-000000000007";
+// A SOUL.md long enough to scroll; its first line names the version that serves it.
+const soulVersion = (version) =>
+  `# SOUL.md served by ${version}\n\n` +
+  Array.from(
+    { length: 40 },
+    (_, index) => `Line ${index + 1}: keep answers short and cite the files you used.\n`,
+  ).join("");
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
 const click = (text) => ({ click: text });
 const runtimeLogsPage = {
@@ -5416,6 +5423,33 @@ export const scenarios = {
       "SOUL.md says it could not be reread. Click Reload SOUL.md: the warning is replaced by SOUL.md loaded.",
     ],
     gap: "Simulated API results demonstrate presentation only. Browser tests cover reread ordering and later rereads clearing a failure.",
+  },
+  workspaceVersionRereadFocused: {
+    group: "Components/Workspace",
+    name: "Reread keeps a focused editor's caret",
+    path: `${currentVersion}&tab=workspace`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    workspaceFiles: { "SOUL.md": soulVersion("v6") },
+    // v7 serves a different SOUL.md; the reread after it succeeds.
+    rules: [
+      {
+        suffix: "/SOUL.md",
+        method: "GET",
+        skip: 1,
+        once: true,
+        data: { name: "SOUL.md", content: soulVersion("v7") },
+      },
+    ],
+    description:
+      "v7 finishes deploying while a reader has clicked into SOUL.md without editing. The file is reread with v7's contents, and the caret, selection and scroll stay where they were.",
+    steps: [
+      "Scroll SOUL.md to line 20 and select a word there. Don't type, and don't click Refresh deployment (it would take focus).",
+      "Wait about 5 seconds for Deployment activity to record v7 as succeeded. SOUL.md says SOUL.md reloaded with its current contents., and its first line now reads v7.",
+      "The selection is still on line 20 and SOUL.md has not scrolled. Type a word: it replaces the selection on line 20.",
+    ],
+    gap: "Simulated API results demonstrate presentation only. Browser tests cover the caret and scroll after a changed reread.",
   },
   workspaceVersionRereadUnconfirmed: {
     group: "Components/Workspace",
