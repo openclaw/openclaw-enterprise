@@ -215,6 +215,7 @@ button[aria-busy="true"] {
   outline-offset: var(--focus-offset-inset);
 }
 .slack-directory-input:has(input:focus-visible),
+.resource-linked:has(.resource-name a:focus-visible),
 .repository-option:has(:focus-visible),
 .repository-profile:has(:focus-visible) {
   outline: var(--focus-ring);
@@ -682,11 +683,8 @@ p {
   position: relative;
   z-index: 1;
 }
-/* The focus ring outlines the card, matching the link's hit area in every browser. */
-.resource-linked:has(.resource-name a:focus-visible) {
-  outline: 3px solid var(--accent);
-  outline-offset: 3px;
-}
+/* The card draws the focus ring (see the wrapper rule), matching the link's hit area in every
+   browser. */
 .resource-linked .resource-name a:focus-visible {
   outline: none;
 }
