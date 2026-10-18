@@ -339,11 +339,9 @@ test("Agent repository tab without a Repo Driver names the setup step and offers
   const response = await options;
   assert.equal(response.status(), 503);
   assert.equal((await response.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
-  const status = page
-    .getByRole("status")
-    .filter({
-      hasText: "Repository access is not available in this Installation's configuration.",
-    });
+  const status = page.getByRole("status").filter({
+    hasText: "Repository access is not available in this Installation's configuration.",
+  });
   await status.waitFor();
   assert.match(await status.innerText(), /cannot be changed until an operator sets it up/);
   assert.equal(
