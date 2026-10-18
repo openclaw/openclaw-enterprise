@@ -1713,11 +1713,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
 
   // Without a version list yet (still loading), its first render shows the new state.
   function updateCurrentAgent(freshAgent, revisionResult, snapshot) {
+    // A read answered after deletion was shown has nothing left to update.
+    if (deleting) {
+      return;
+    }
     if (freshAgent.status === "deleting") {
       showDeleting();
       return;
     }
     const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
+    const workspaceAvailabilityChanged =
+      Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
     const servingChanged =
       revisionChanged || freshAgent.desiredRuntimeState !== currentRuntimeState;
     currentRevisionId = freshAgent.activeRevisionId;
@@ -1729,9 +1735,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       if (mountedTab) {
         // Leaving must not put a tab built for the old serving state back in the cache.
         mountedTab.reusable = false;
-        if (revisionChanged && mountedTab.id === "workspace") {
+        if (workspaceAvailabilityChanged && mountedTab.id === "workspace") {
           // Capture drafts and retire the old file controls now, not on the next tab visit.
           void renderTab();
+        } else if (revisionChanged && mountedTab.id === "workspace") {
+          // Another current version keeps the editors, so a reader typing keeps focus, caret
+          // and edits; files without unsaved edits are reread from it (finding 1836).
+          mountedTab.refresh?.();
         }
       }
       // Native admin access depends on the serving version, so a finished deployment rereads it.
@@ -2883,7 +2893,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
     content.replaceChildren();
     if (tab === "workspace") {
-      content.append(renderWorkspaceFiles(tabContext, currentAgent, path));
+      const workspace = renderWorkspaceFiles(tabContext, currentAgent, path);
+      state.refresh = workspace.refresh;
+      content.append(workspace.section);
       state.loading = false;
       content.style.minHeight = "";
       return;

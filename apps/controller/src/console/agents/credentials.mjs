@@ -1,5 +1,10 @@
 import { element, button, focusSaveOutcome } from "../dom.mjs";
-import { configurationConflictMessage, isStaleGeneration, namespacePath } from "./list.mjs";
+import {
+  configurationConflictMessage,
+  isStaleGeneration,
+  namespacePath,
+  refusedSave,
+} from "./list.mjs";
 import { ensureCredentialOperateBinding } from "./credential-access.mjs";
 import { createSecretReferenceField, secretBinding, secretIdForBinding } from "./secret-picker.mjs";
 
@@ -84,7 +89,9 @@ export function hasRequiredChannelCredentials(values, configuration) {
 function credentialError(error, mutation = false) {
   let text;
   if (error.status === 403) {
-    text = "Access denied. You do not have permission for this credential operation.";
+    // A refused Configuration update names the grants it needs (finding 1839).
+    text =
+      error.refusal ?? "Access denied. You do not have permission for this credential operation.";
   } else if (error.status === 409) {
     text =
       configurationConflictMessage(error, mutation) ??
@@ -540,6 +547,9 @@ export function createChannelSecretsPanel({
         ) {
           // The write was refused. Keep the choices in this form, without requesting a reload.
           state.draftSeed = draft;
+        }
+        if (mutationStarted && !configurationSaved) {
+          refusedSave(cause, "configuration", true);
         }
         state.saveError = cause;
         state.saveErrorStep = configurationSaved

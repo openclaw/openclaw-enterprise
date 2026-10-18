@@ -249,8 +249,9 @@ Pickers switch references; rotating shared Secret values is separate.
 ### 6. Read and replace live workspace files
 
 `apps/controller/src/console/agents/workspace.mjs:renderWorkspaceFiles` opens from
-`tab=workspace` after an exact Agent read. It skips Configuration and revision history. Contents belong to the live Agent.
-With no active revision, files stay unavailable and no file request is sent.
+`tab=workspace` after an exact Agent read. Contents belong to the live Agent, not Configuration or revision history.
+With no active revision, files stay unavailable and no file request is sent. Another current version
+keeps the editors, focus and caret, rereading unedited files in place; gaining or losing one rebuilds them.
 
 The editor GETs each supported filename and normalizes textareas to LF. An
 untouched CRLF file stays clean and is not rewritten. Only an edit enables Save.
@@ -357,13 +358,8 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
+- 2026-10-18 12:30: Keep open Workspace editors when another version becomes current. (lows-1018h)
 - 2026-10-17 09:01: Keep keyboard focus on the pending Configuration save. (lows-1017k-1646 - 5d82453999)
 - 2026-10-16 22:40: Patch deployment polls in place; reserve pending rows. (ui-jank-code-12)
-
-- 2026-10-16 00:38: Reconcile in-place OAuth save feedback after merging main. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 697ca86d47f67a9671f07708f362bcfb671650e6)
-
-- 2026-10-15 22:35: Reconcile failed-version recovery and OAuth editing. (authoring-run/8c4ab973-b5a0-4bcf-8fcf-5f9d908ea26c - c997748f661b5df1198047de5a97c9cf23fb241a)
-
-- 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

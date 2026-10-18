@@ -932,7 +932,8 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       await selectSecret(page, "Slack app token", appSecret);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
       const denial = credentialsPanel.getByText(
-        "Access denied. You do not have permission for this credential operation. Request ID: req_00000000-0000-4000-8000-000000000433",
+        // The refused Configuration update names its grants (finding 1839).
+        "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds. Request ID: req_00000000-0000-4000-8000-000000000433",
         { exact: true },
       );
       await denial.first().waitFor();

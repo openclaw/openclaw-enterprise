@@ -2492,6 +2492,122 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "# Saved USER.md\n");
 });
 
+// Workspace files are live Agent data. A deployment that finishes while a reader types must not
+// rebuild the editors: the old remount dropped focus and caret and flashed the editors disabled
+// (finding 1836). Files without unsaved edits are still reread from the new current version.
+test("a deployment finishing on the poll keeps a typing reader's Workspace editor and rereads unchanged files", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    publicOrigin: true,
+    workspaceFilesAccess: {
+      async read({ revision, filename }) {
+        const content =
+          filename === "SOUL.md" ? `# Soul served by ${revision.id}\n` : `# Saved ${filename}\n`;
+        return { status: "ok", file: { name: filename, content } };
+      },
+      async write() {
+        throw new Error("no Workspace file may be written");
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Workspace deploy poll", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Workspace typist", nativeValues("ws"));
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const second = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  let status = "running";
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${second.id}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: second.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status,
+            error: null,
+            warnings: [],
+            progress: null,
+          },
+          meta: { requestId: "req_test_workspace_poll" },
+        }),
+      }),
+  );
+  await page.clock.install({ time: new Date("2026-10-18T12:00:00Z") });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, first.revision.id, "workspace"),
+  );
+  await waitForWorkspaceEditors(page, ["AGENTS.md", "SOUL.md"]);
+  const soul = page.getByLabel("SOUL.md", { exact: true });
+  assert.equal(await soul.inputValue(), `# Soul served by ${first.revision.id}\n`);
+  await page
+    .locator(".deployment-status")
+    .getByText("Recorded status: running")
+    .waitFor({ state: "attached" });
+
+  // The reader is typing in AGENTS.md with a selection in the middle of the text.
+  const file = page.getByLabel("AGENTS.md", { exact: true });
+  const typed = "# Draft instructions\n# Second line\n";
+  await file.fill(typed);
+  const editor = await file.elementHandle();
+  await editor.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(8, 20);
+    globalThis.workspaceBlurs = 0;
+    globalThis.workspaceDisabled = 0;
+    node.addEventListener("blur", () => (globalThis.workspaceBlurs += 1));
+    new globalThis.MutationObserver(() => {
+      if (node.disabled) {
+        globalThis.workspaceDisabled += 1;
+      }
+    }).observe(node, { attributes: true, attributeFilter: ["disabled"] });
+  });
+
+  // The worker finishes the deployment; the next poll reads it and the new current version.
+  await fixture.activateRevision(namespace.id, agent.id, second.id, first.revision.id);
+  status = "succeeded";
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await page
+    .locator(".deployment-status")
+    .getByText("Recorded status: succeeded")
+    .waitFor({ state: "attached" });
+  await waitForInputValue(soul, `# Soul served by ${second.id}\n`);
+
+  assert.deepEqual(
+    await editor.evaluate((node) => ({
+      connected: node.isConnected,
+      focused: node.ownerDocument.activeElement === node,
+      selection: [node.selectionStart, node.selectionEnd],
+      value: node.value,
+      blurs: globalThis.workspaceBlurs,
+      disabled: globalThis.workspaceDisabled,
+    })),
+    {
+      connected: true,
+      focused: true,
+      selection: [8, 20],
+      value: typed,
+      blurs: 0,
+      disabled: 0,
+    },
+  );
+  await page.getByText("SOUL.md reloaded with its current contents.", { exact: true }).waitFor();
+  await expectNoText(page, "Unsaved edits restored. Reload replaces them with the current file.");
+  // Typing goes on at the caret, and nothing was written for the reader.
+  await page.keyboard.type("Workspace");
+  assert.equal(await file.inputValue(), "# Draft Workspace\n# Second line\n");
+  assert.equal(
+    requests.filter((r) => r.method === "PUT" && r.path.includes("/workspace/files/")).length,
+    0,
+  );
+});
+
 test("explicit missing-file readback settles an uncertain workspace create without replaying it", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "console-workspace-missing-"));
   t.after(() => rm(root, { recursive: true, force: true }));

@@ -24,7 +24,10 @@ function fileError(error, writing) {
   return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
 }
 
+// Returns the section and `refresh`, which rereads the files in place after another version
+// becomes current.
 export function renderWorkspaceFiles(context, agent, path) {
+  const refreshers = [];
   const section = element(
     "section",
     { className: "workspace-files" },
@@ -45,7 +48,7 @@ export function renderWorkspaceFiles(context, agent, path) {
         "Workspace files require a deployed Agent with a current version and a reachable gateway.",
       ),
     );
-    return section;
+    return { section, refresh: () => {} };
   }
   for (const name of filenames) {
     const draftKey = `workspace:${name}`;
@@ -67,6 +70,8 @@ export function renderWorkspaceFiles(context, agent, path) {
     let outcomeUnknown = retained?.outcomeUnknown ?? false;
     let writing = false;
     let initialized = false;
+    // Counts reads and saves, so an in-place reread never overwrites a later answer.
+    let operations = 0;
     context.drafts.track(draftKey, () => {
       if (!loaded && !initialized) {
         return retained;
@@ -112,6 +117,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       if (pending || !context.isCurrent()) {
         return;
       }
+      operations += 1;
       pending = true;
       updateControls();
       error.textContent = "";
@@ -198,6 +204,7 @@ export function renderWorkspaceFiles(context, agent, path) {
         editor.reportValidity();
         return;
       }
+      operations += 1;
       pending = true;
       writing = true;
       updateControls();
@@ -230,8 +237,52 @@ export function renderWorkspaceFiles(context, agent, path) {
         }
       }
     });
+    // Rereads a file the reader has not changed without disabling its editor, so focus and caret
+    // stay; unsaved edits and an unknown save outcome are kept as they are (finding 1836).
+    refreshers.push(async () => {
+      if (pending || !context.isCurrent()) {
+        return;
+      }
+      if (!loaded) {
+        await load();
+        return;
+      }
+      const shown = editor.value;
+      if (outcomeUnknown || shown !== (baseline ?? "")) {
+        return;
+      }
+      const started = (operations += 1);
+      let file;
+      try {
+        file = await context.request(endpoint);
+      } catch (cause) {
+        if (cause.status === 401 && context.isCurrent()) {
+          context.onExpired();
+        }
+        // The file stays as last read; Reload shows the failure.
+        return;
+      }
+      if (!context.isCurrent() || operations !== started || pending || editor.value !== shown) {
+        return;
+      }
+      // An identical value leaves the caret where it was.
+      editor.value = file.content;
+      baseline = editor.value;
+      if (baseline !== shown) {
+        error.textContent = "";
+        status.textContent = `${name} reloaded with its current contents.`;
+        updateControls();
+      }
+    });
     section.append(form);
     void load();
   }
-  return section;
+  return {
+    section,
+    refresh: () => {
+      for (const refresh of refreshers) {
+        void refresh();
+      }
+    },
+  };
 }
