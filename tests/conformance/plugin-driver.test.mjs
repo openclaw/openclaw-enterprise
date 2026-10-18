@@ -490,9 +490,46 @@ test("OpenClaw Plugin Driver refuses a selection a roster entry's tools.deny blo
     entries: { main: { tools: { deny: ["exec"] } }, ops: { tools: { deny: ops } } },
   });
   driver.validateAgentConfiguration(plugins, { agents: roster(["group:plugins"]) });
+  // The refusal says that Agent's turns fail, not that its list blocks the plugin: a tool-less
+  // Agent may be what the operator wanted (finding 1860).
+  const denyAll = (setting, verb = "denies", entries = "entry") =>
+    `Configuration setting ${setting} ${verb} every tool, so that Agent's turns all fail with plugin occ-plugin:diffs selected; remove the deny-all ${entries} or move that Agent to a Configuration deployed without plugins.`;
   assert.throws(check({ agents: roster(["exec", " ** "]) }), {
-    message: refusal("setting agents.entries.ops.tools.deny"),
+    message: denyAll("agents.entries.ops.tools.deny"),
   });
+  const diffs = [
+    {
+      id: "occ-plugin:diffs",
+      name: "Diffs",
+      tools: [{ id: "diffs", name: "diffs", ownerId: "diffs" }],
+    },
+  ];
+  assert.deepEqual(deniedOpenClawSelection(diffs, plugins, { agents: roster(["*"]) }), {
+    pluginId: "occ-plugin:diffs",
+    kind: "entryDenyAll",
+    entry: "ops",
+    lists: [{ entry: "ops" }],
+  });
+  const both = {
+    defaults: { model: "openai/gpt-5.1" },
+    ownership: "explicit",
+    entries: { main: {}, ops: { tools: { deny: ["*"], byProvider: { openai: { deny: ["*"] } } } } },
+  };
+  assert.throws(check({ agents: both }), {
+    message: denyAll("agents.entries.ops.tools.deny", "and its byProvider list deny", "entries"),
+  });
+  const longKey = "k".repeat(300);
+  const longDenyAll = openClawToolDenialMessage({
+    pluginId: "occ-plugin:diffs",
+    kind: "entryDenyAll",
+    entry: longKey,
+    lists: [{ entry: longKey }, { entry: longKey, provider: longKey }],
+  });
+  assert.ok(Array.from(longDenyAll).length <= 256, longDenyAll);
+  assert.match(
+    longDenyAll,
+    /^Configuration setting agents\.entries\["k+…"\]\.tools\.deny and its byProvider list deny every tool, .* deployed without plugins\.$/,
+  );
   assert.throws(check({ tools: { deny: ["*"] }, agents: roster(["*"]) }), {
     message: refusal("settings tools.deny and agents.entries.ops.tools.deny", "block", "entries"),
   });
@@ -614,7 +651,8 @@ test("OpenClaw Plugin Driver refuses a selection the primary model's tools.byPro
   });
   driver.validateAgentConfiguration(plugins, { agents: roster(["diffs"]) });
   assert.throws(check({ agents: roster(["*"]) }), {
-    message: refusal("setting agents.entries.ops.tools.byProvider.openai.deny"),
+    message:
+      "Configuration setting agents.entries.ops.tools.byProvider.openai.deny denies every tool, so that Agent's turns all fail with plugin occ-plugin:diffs selected; remove the deny-all entry or move that Agent to a Configuration deployed without plugins.",
   });
   // A top-level provider list applies to every Agent, whatever the roster.
   assert.throws(

@@ -72,7 +72,9 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   deny item before selecting Diffs. With one Agent under `agents.entries`, its
   own `tools.deny` counts too, and the error names it. With several, the error
   names an Agent whose `tools.deny` denies all tools with `"*"`, because all of
-  its turns would fail. Denying only Diffs to some Agents is allowed. The
+  its turns would fail once a plugin is selected. To keep a tool-less Agent,
+  move it to a Configuration deployed without plugins. Denying only Diffs to
+  some Agents is allowed. The
   `deny` list under `tools.byProvider.<provider>` for the primary model's
   provider counts the same way, at the top level and under an Agent entry. A
   `tools.byProvider` object that also has a `<provider>/<model>` key for that
