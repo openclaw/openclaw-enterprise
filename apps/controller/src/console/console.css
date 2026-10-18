@@ -714,8 +714,20 @@ select:not([multiple]):not([size]),
 select:not([multiple])[size="1"] {
   appearance: none;
   background-image:
-    linear-gradient(45deg, transparent 42%, var(--color-text) 42%, var(--color-text) 58%, transparent 58%),
-    linear-gradient(135deg, transparent 42%, var(--color-text) 42%, var(--color-text) 58%, transparent 58%);
+    linear-gradient(
+      45deg,
+      transparent 42%,
+      var(--color-text) 42%,
+      var(--color-text) 58%,
+      transparent 58%
+    ),
+    linear-gradient(
+      135deg,
+      transparent 42%,
+      var(--color-text) 42%,
+      var(--color-text) 58%,
+      transparent 58%
+    );
   background-repeat: no-repeat;
   background-position:
     right 22px center,
