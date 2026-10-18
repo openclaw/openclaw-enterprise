@@ -5363,8 +5363,18 @@ export const scenarios = {
     name: "Missing file",
     path: `${revision}&tab=workspace`,
     deployed: true,
-    rules: [{ suffix: "/AGENTS.md", method: "GET", status: 404, once: true }],
-    description: "A missing file can be created; unrelated file editors still load.",
+    rules: [
+      {
+        suffix: "/AGENTS.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested workspace file was not found.",
+        once: true,
+      },
+    ],
+    description:
+      "A file the API confirms missing says so on first load and can be created; unrelated file editors still load.",
   },
   workspaceUnknown: {
     group: "Components/Workspace",
