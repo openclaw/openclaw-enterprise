@@ -2841,6 +2841,21 @@ summary:focus-visible {
     margin-top: 2px;
   }
 }
+/* A whole timestamp beside the level needs 40 px row padding, 218 px time, 10 px gap and the
+   78 px reserved for UNKNOWN. In a narrower card (a window under about 400 px) the time takes
+   its own line, down to a 320 px window, and the level moves beside the origin (finding 1844).
+   The .log-row prefix outranks the phone rules below. */
+@container log-viewer (width < 346px) {
+  .log-row .log-line {
+    grid-template-columns: var(--log-level-column) minmax(0, 1fr);
+  }
+  .log-row .log-time {
+    grid-column: 1 / -1;
+  }
+  .log-row .log-origin {
+    grid-column: auto;
+  }
+}
 @media (max-width: 760px) {
   .log-picker select,
   .log-search input {
@@ -2896,19 +2911,5 @@ summary:focus-visible {
   }
   .log-origin {
     grid-column: 1 / -1;
-  }
-}
-/* A whole timestamp beside the level needs 40 px row padding, 218 px time, 10 px gap and the
-   78 px reserved for UNKNOWN. In a narrower card (a window under about 400 px) the time takes
-   its own line, down to a 320 px window, and the level moves beside the origin (finding 1844). */
-@container log-viewer (width < 346px) {
-  .log-line {
-    grid-template-columns: var(--log-level-column) minmax(0, 1fr);
-  }
-  .log-time {
-    grid-column: 1 / -1;
-  }
-  .log-origin {
-    grid-column: auto;
   }
 }
