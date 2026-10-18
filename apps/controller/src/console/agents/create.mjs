@@ -14,6 +14,7 @@ import {
   GENERIC_CONFLICT,
   link,
   message,
+  namespaceCreation,
   namespacePath,
   preAdmissionRefusal,
   rejectionMessage,
@@ -362,20 +363,24 @@ export function renderCreateAgent(context, draft) {
   }
   context.setDiscardOnExit(false);
   context.setDraftCapture(null);
-  // The permission answer refuses up front what the API would refuse at submit (finding 1521).
-  // Gating only: an unknown answer keeps the start page, and the API still decides.
-  if (context.permissions?.agents?.create === false) {
+  // The permission answer refuses up front what the API would refuse at submit (finding 1521),
+  // and so does a Namespace that takes no new Agent (finding 1895). Gating only: an unknown
+  // answer keeps the start page, and the API still decides.
+  const notReady = namespaceCreation(context.namespace);
+  const unavailable =
+    context.permissions?.agents?.create === false
+      ? "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace."
+      : notReady?.blocked
+        ? notReady.note
+        : null;
+  if (unavailable) {
     context.view.replaceChildren(
       link("← Agents", "agents", context),
       element(
         "section",
         { className: "state-panel" },
         element("h2", {}, "Creating Agents is not available"),
-        element(
-          "p",
-          { role: "status" },
-          "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace.",
-        ),
+        element("p", { role: "status" }, unavailable),
       ),
     );
     // Start over re-enters here from the form; keep focus on the page, not the document.
@@ -395,6 +400,8 @@ export function renderCreateAgent(context, draft) {
   const presets = createPresetFields(context, startForm);
   context.view.replaceChildren(
     link("← Agents", "agents", context),
+    // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
+    notReady ? element("p", { className: "muted", role: "status" }, notReady.note) : null,
     element(
       "section",
       { className: "launch-intro agent-card" },
