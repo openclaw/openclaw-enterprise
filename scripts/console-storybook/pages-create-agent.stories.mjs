@@ -3,6 +3,10 @@ import { story } from "./story.mjs";
 export default { title: "Pages/Create Agent" };
 
 export const CreateStart = { ...story("createStart"), name: "Choose a starting point" };
+export const NamespaceProvisioning = {
+  ...story("createNamespaceProvisioning"),
+  name: "Namespace still provisioning",
+};
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
 export const CreateInvalidConfiguration = {
   ...story("createInvalidConfiguration"),

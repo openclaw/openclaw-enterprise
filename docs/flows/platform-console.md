@@ -185,8 +185,8 @@ returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
-is false, both explain the restriction. If the read fails, creation stays available;
-the API authorizes every create. Changing Provider or Harness resets incompatible
+is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;
+OCC still authorizes every write. Changing Provider or Harness resets incompatible
 credentials and model choices, preserving unrelated JSON. See
 [Agent creation](../reference/console/create-and-deploy.md) for inputs and recovery.
 
