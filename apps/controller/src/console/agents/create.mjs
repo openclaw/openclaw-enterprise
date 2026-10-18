@@ -1553,15 +1553,18 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     pendingProviderModel,
     configurationSecretBindings,
     stagedChannelSecrets,
-    // A restored form has no password field (it is never kept), so the Secret this form saved
-    // from it becomes the chosen model credential (finding 1934).
-    modelCredentialSource: passwordAuth && savedSecret ? savedSecret.ref : modelCredentialSource,
-    modelCredentialSecret: passwordAuth && savedSecret ? savedSecret : modelCredentialSecret,
+    modelCredentialSource,
+    modelCredentialSecret,
     oauthLogin: oauthLogin.capture(),
     repositoryAccess: repositories.access(),
     savedSecret,
     savedCredentialSource,
     savedConfiguration,
+    // A restored form has no password field (it is never kept), so the Secret this form saved
+    // from it becomes the chosen model credential (finding 1934).
+    ...(passwordAuth && savedSecret
+      ? { modelCredentialSource: savedSecret.ref, modelCredentialSecret: savedSecret }
+      : {}),
   });
   // A refused Create leaves the form to fix and retry, so it is a draft again: the reload warning
   // and the kept form survive it (finding 1934). A draft restores only the saved resources, so an
