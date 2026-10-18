@@ -32,6 +32,18 @@ export function createDraftStore() {
       snapshots.clear();
       unsavedChecks.clear();
     },
+    // Forgets the drafts of every Namespace a successful read no longer lists. Each key's first
+    // part names its Namespace (see scope).
+    retainNamespaces(namespaceIds) {
+      const kept = new Set(namespaceIds);
+      for (const entries of [captures, snapshots, unsavedChecks]) {
+        for (const key of entries.keys()) {
+          if (!kept.has(JSON.parse(key)[0])) {
+            entries.delete(key);
+          }
+        }
+      }
+    },
     // Whether a reload or tab close would lose unsaved work, shown or kept from an earlier page.
     hasUnsaved() {
       for (const [key, capture] of captures) {

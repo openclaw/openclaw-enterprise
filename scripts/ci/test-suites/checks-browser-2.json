@@ -20,7 +20,8 @@
     "tests/browser/console-agent-deploy-focus.test.mjs",
     "tests/browser/console-agents-list-return.test.mjs",
     "tests/browser/console-refocus-focus.test.mjs",
-    "tests/browser/console-focus-ring.test.mjs"
+    "tests/browser/console-focus-ring.test.mjs",
+    "tests/browser/console-drafts-kept.test.mjs"
   ],
   "files": [
     {
@@ -73,6 +74,9 @@
     },
     {
       "path": "tests/browser/console-focus-ring.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-drafts-kept.test.mjs"
     }
   ]
 }

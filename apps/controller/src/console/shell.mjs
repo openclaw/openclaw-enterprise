@@ -331,6 +331,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           return;
         }
         event.preventDefault();
+        // A page waiting on a write stays and says why, as ← Agents does (finding 1937).
+        if (refuseLeave({ pendingOnly: true })) {
+          return;
+        }
         navigate(name);
       });
       nav.append(link);

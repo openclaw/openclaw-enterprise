@@ -453,7 +453,7 @@ function takeNativeFragment(current) {
 }
 
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
-shellUI.setLeaveGuard(() => Boolean(leaveGuard?.()));
+shellUI.setLeaveGuard((options) => Boolean(leaveGuard?.(options)));
 const { publicPanel, renderRows, switchNamespace } = shellUI;
 const request = createApiClient({
   lifetime,
@@ -525,6 +525,9 @@ function clearRetainedViewsForNamespace(selection) {
 
 function clearRetainedViewsOutsideNamespaces(readable) {
   const allowed = new Set(readable.map((item) => item.id));
+  // Drafts are kept until a read proves their Namespace gone, not dropped on a failed read
+  // (finding 1935).
+  drafts.retainNamespaces(allowed);
   const accessRemoved = namespaces.some((item) => !allowed.has(item.id));
   for (const key of retainedViews.keys()) {
     const selection = retainedViewNamespace(key);
@@ -1035,6 +1038,8 @@ async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
   fromRefresh = false,
+  // Set only by Back and Forward (popstate).
+  fromHistory = false,
   openingAgent = false,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
@@ -1056,6 +1061,12 @@ async function loadPage({
   if (fromNavigation && navigateAgentTab?.(current.url)) {
     // The tab handler can reject navigation and restore the previous URL.
     markMountedRoute(route());
+    return;
+  }
+  // Back or Forward to another page while the shown page waits on a write keeps it, restores its
+  // URL and says why, as ← Agents and the sidebar do (finding 1937).
+  if (fromHistory && mountedRouteKey !== null && leaveGuard?.({ pendingOnly: true })) {
+    history.replaceState(history.state, "", mountedRouteKey);
     return;
   }
   const knownPrivateState = session !== null && Object.hasOwn(pages, current.feature);
@@ -1316,8 +1327,12 @@ async function loadPage({
     }
     sessionResolved = true;
     const owner = sessionOwnerKey(session);
-    if (!owner || previousOwner !== owner || draftUserId !== owner) {
+    // Drafts belong to the account that wrote them. The same account signing in again, or a
+    // read retried after an unavailable check, keeps them (finding 1935).
+    if (!owner || draftUserId !== owner) {
       clearDrafts();
+    }
+    if (!owner || previousOwner !== owner || draftUserId !== owner) {
       clearRetainedViews();
       observabilityUrl = null;
       observabilityOwner = null;
@@ -1774,7 +1789,7 @@ async function loadPage({
       },
       setLeaveGuard(guard) {
         if (lifetime.isCurrent(viewState.active)) {
-          const refuse = () => shownStandIn === null && guard();
+          const refuse = (options) => shownStandIn === null && guard(options);
           viewState.leaveGuard = refuse;
           leaveGuard = refuse;
         }
@@ -1959,8 +1974,8 @@ async function loadPage({
       return;
     }
     if (!accessResolved) {
-      // Uncertain shared admission invalidates every preview, not just this route.
-      clearDrafts();
+      // Uncertain shared admission invalidates every preview, not just this route. Drafts stay:
+      // a later read clears them only if it proves their Namespace or account gone (finding 1935).
       resetReads();
       clearPrivate();
       shell = null;
@@ -2258,7 +2273,7 @@ async function revalidateMountedAgent(current) {
     }
     resetReads();
     if (checking !== "detail") {
-      clearDrafts();
+      // Drafts survive an unavailable check, as in loadPage (finding 1935).
       clearPrivate();
       publicPanel(
         checking === "session" ? "Session unavailable" : "Namespace access unavailable",
@@ -2384,7 +2399,7 @@ window.addEventListener("popstate", () => {
   if (!loggingOut) {
     // Browser history can change Agent tabs while the mounted view is inert.
     // Recheck admission for the new route before exposing its cached panel.
-    void loadPage({ fromNavigation: !resumePending });
+    void loadPage({ fromNavigation: !resumePending, fromHistory: true });
   }
 });
 window.addEventListener("focus", resumePage);
