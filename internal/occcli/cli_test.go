@@ -394,6 +394,7 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		}
 	}
 	// --follow exits cleanly only when the lookup failed because of cancellation.
+	t.Setenv("OCC_NAMESPACE", "ns_stale")
 	for _, follow := range []bool{false, true} {
 		args := []string{"agent", "logs", "agt_1", "--source", "gateway"}
 		if follow {
@@ -401,7 +402,8 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		}
 		stub := &runtimeLogStub{t: t}
 		_, _, err := runLogsCommand(t, context.Background(), stub, args...)
-		if err == nil || !strings.Contains(err.Error(), "has no readable revisions") {
+		// The hint keeps the selected Namespace so the copied command targets the same Agent.
+		if err == nil || !strings.Contains(err.Error(), `agent agt_1 has no readable revisions; run "occ --namespace ns_1 agent deploy agt_1" first`) {
 			t.Fatalf("follow=%v: expected a missing revision error, got %v", follow, err)
 		}
 		if len(stub.queries) != 0 {
@@ -913,6 +915,8 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 }
 
 func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
+	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
+	t.Setenv("OCC_NAMESPACE", "ns_stale")
 	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
@@ -933,7 +937,7 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	if !strings.Contains(out.String(), "stopped-agent") {
 		t.Fatalf("stdout = %q", out.String())
 	}
-	if want := "notice: stop requested; run \"occ agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
+	if want := "notice: stop requested; run \"occ --namespace ns_1 agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
 		t.Fatalf("stderr = %q, want %q", errOut.String(), want)
 	}
 	// Structured output stays machine-readable: the notice goes to stderr only.
@@ -948,7 +952,7 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	if err := json.Unmarshal([]byte(out.String()), &decoded); err != nil || decoded["id"] != "agt_1" {
 		t.Fatalf("json stdout = %q, %v", out.String(), err)
 	}
-	if want := "notice: stop requested; run \"occ agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
+	if want := "notice: stop requested; run \"occ --namespace ns_1 agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
 		t.Fatalf("json stderr = %q, want %q", errOut.String(), want)
 	}
 	stop, _, err := New(io.Discard, io.Discard).Find([]string{"agent", "stop"})

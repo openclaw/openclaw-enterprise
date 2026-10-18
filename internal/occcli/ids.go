@@ -81,7 +81,7 @@ func latestReadableRevision(client *occclient.Client, namespace, agentID string)
 		return "", 0, err
 	}
 	if latest == nil {
-		return "", 0, fmt.Errorf("agent %s has no readable revisions; run \"occ agent deploy %s\" first", agentID, agentID)
+		return "", 0, fmt.Errorf("agent %s has no readable revisions; run \"occ --namespace %s agent deploy %s\" first", agentID, namespace, agentID)
 	}
 	revision, ok := latest.(map[string]any)
 	if !ok {

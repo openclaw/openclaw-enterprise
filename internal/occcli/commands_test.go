@@ -635,10 +635,12 @@ func TestDeploymentStatusTableShowsErrorAsCodeAndMessage(t *testing.T) {
 }
 
 func TestDeploymentStatusWithoutRevisionsExplainsHowToDeploy(t *testing.T) {
+	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
+	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
 	_, _, err := runOCC(t, map[string]string{
 		"GET /namespaces/" + testNamespaceID + "/agents/" + testAgentID + "/revisions": `[]`,
 	}, "--namespace", testNamespaceID, "agent", "deployment-status", testAgentID)
-	if err == nil || !strings.Contains(err.Error(), "occ agent deploy") {
+	if err == nil || !strings.Contains(err.Error(), `run "occ --namespace `+testNamespaceID+` agent deploy `+testAgentID+`" first`) {
 		t.Fatalf("expected a deploy hint, got %v", err)
 	}
 }
