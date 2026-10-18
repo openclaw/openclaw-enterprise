@@ -5,6 +5,7 @@ import test from "node:test";
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import {
   DEPLOYMENT_POLL_MS,
+  deploymentFailureStep,
   FIRST_ACTIVITY_WAIT_MS,
 } from "../../apps/controller/src/console/agents/detail.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -719,6 +720,93 @@ for (const c of [
     });
   }
 }
+
+// The banner reads each failure's next step from the API's own message, so the two stay in step:
+// a rewording that drops "Deploy again", or a step, fails here rather than silently changing the
+// banner (finding 1898).
+test("Every failed deployment message maps to its banner step", () => {
+  const deployAgain = [
+    "ACTOR_REVOKED",
+    "COMPUTE_DRIVER_MISMATCH",
+    "DEPENDENCY_UNAVAILABLE",
+    "HARNESS_DESCRIPTOR_MISMATCH",
+    "LEASE_EXPIRED",
+    "NAMESPACE_NOT_READY",
+    "REPOSITORY_BINDING_CHANGED",
+    "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED",
+    "REPOSITORY_DRIVER_MISMATCH",
+  ];
+  // These name no step: the banner adds the generic logs advice.
+  const none = [
+    "AGENT_GATEWAY_UNAVAILABLE",
+    "KUBERNETES_API_UNAVAILABLE",
+    "SANDBOX_ADMISSION_LIMIT_REACHED",
+    "SANDBOX_GATEWAY_UNAVAILABLE",
+    "SANDBOX_HARNESS_UNSUPPORTED",
+    "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
+    // The API's catch-all message.
+    "UNLISTED_FAILURE_CODE",
+  ];
+  const named = [
+    "AGENT_GATEWAY_UNAUTHORIZED",
+    "AUTHORIZATION_DENIED",
+    "BACKEND_UNAVAILABLE",
+    "CONVERGENCE_DEADLINE_EXCEEDED",
+    "CREDENTIAL_GATEWAY_MISMATCH",
+    "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
+    "CREDENTIAL_SOURCE_UNAVAILABLE",
+    "CREDENTIAL_WITHDRAWN",
+    "HARNESS_AUTH_REQUIRED",
+    "HARNESS_AUTH_SOURCE_CHANGED",
+    "HARNESS_AUTH_SOURCE_UNAVAILABLE",
+    "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+    "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT",
+    "REPOSITORY_BINDING_UNAVAILABLE",
+    "REPOSITORY_RUNTIME_UNSUPPORTED",
+    "RUNTIME_AUTHENTICATION_FAILED",
+    "RUNTIME_CPU_STARVED",
+    "RUNTIME_LOGIN_FAILED",
+    "RUNTIME_MODEL_PROBE_FAILED",
+    "RUNTIME_MODEL_PROBE_TIMEOUT",
+    "RUNTIME_STARTUP_FAILED",
+    "SANDBOX_GATEWAY_UNAUTHORIZED",
+    "SECRET_BINDING_UNAVAILABLE",
+    "SECRET_DRIVER_MISMATCH",
+    "SERVICE_ACCOUNT_BACKEND_MISMATCH",
+    "WORKSPACE_SETUP_REFUSED",
+    "WORKSPACE_SETUP_UNSUPPORTED",
+  ];
+  for (const [expected, codes] of [
+    ["deploy-again", deployAgain],
+    [null, none],
+    ["named", named],
+  ]) {
+    for (const code of codes) {
+      const { message } = persistedDeploymentError(code);
+      assert.equal(deploymentFailureStep(message), expected, `${code}: ${message}`);
+    }
+  }
+  assert.equal(deploymentFailureStep(""), null);
+  assert.equal(deploymentFailureStep(undefined), null);
+});
+
+// A message that names no step keeps the generic advice after it.
+test("A failed deployment's banner keeps the logs advice when the message names no step", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "No step", "No Step Agent");
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, revision, "AGENT_GATEWAY_UNAVAILABLE");
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery
+    .getByText(
+      `v1 did not deploy successfully. ${persistedDeploymentError("AGENT_GATEWAY_UNAVAILABLE").message} Check the failed version’s logs before deploying a new version.`,
+      { exact: true },
+    )
+    .waitFor();
+  await recovery.getByRole("link", { name: "Open v1 Logs" }).waitFor();
+  assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
+});
 
 // From the current version's page, Deploy again opens the draft at its deploy step too.
 test("A failed deployment's Deploy again opens the draft's deploy step from another version", async (t) => {

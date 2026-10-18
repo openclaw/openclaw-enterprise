@@ -221,8 +221,25 @@ function runtimeFailureCauseText(cause) {
 // The API's message for a failure that deploying the same Agent again can clear (an outage
 // that outlasted every attempt, a lost worker claim, an approval or driver that changed since
 // admission) starts a sentence with "Deploy again". The recovery offers Deploy again for those
-// messages only, so it never contradicts the step the message names.
+// messages only, so it never contradicts the step the message names. A message that names no
+// step at all (a deadline that passed, a Driver that cannot run this Harness) mentions none of
+// deploy, ask or check, and the banner adds the generic advice to it.
 const DEPLOY_AGAIN_STEP = /(?:^|[.;]\s)Deploy again\b/u;
+const NAMED_STEP = /\b(?:deploy|ask|check)\b/iu;
+
+/**
+ * The next step a failed deployment's API message names: "deploy-again" when it says to deploy
+ * again, "named" for any other step, and null for none.
+ */
+export function deploymentFailureStep(message) {
+  if (typeof message !== "string" || message.length === 0) {
+    return null;
+  }
+  if (DEPLOY_AGAIN_STEP.test(message)) {
+    return "deploy-again";
+  }
+  return NAMED_STEP.test(message) ? "named" : null;
+}
 
 const DEPLOYMENT_FAILURE_LINK_LABELS = {
   credentials: "Open Credentials",
@@ -1414,12 +1431,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // Deploy new version focused when the reader can press it (finding 1898).
     const actions = deploy ? detailPane.querySelector(":scope > .agent-draft-actions") : null;
     if (deploy && !actions && !detailLoadFinished) {
-      // The card is built once the draft's own reads land: open it then.
+      // The card is built once the draft's own reads land: open it then, unless the reader has
+      // moved on (another tab, or focus taken elsewhere) in the meantime.
+      const tab = selectedTab;
       void Promise.resolve(details).then(
         () => {
+          const focused = document.activeElement;
           if (
             context.isCurrent() &&
             !deleting &&
+            selectedTab === tab &&
+            (!focused || focused === document.body || focused === tabControls.get(tab)) &&
             detailPane.querySelector(":scope > .agent-draft-actions")
           ) {
             openVersionDetail({ ...options, deploy });
@@ -1982,26 +2004,23 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       // with it, so that step is in view rather than only in Deployment details below the fold
       // (finding 1898). The generic advice stays for a record without one.
       const errorMessage = latestDeploymentErrorMessage;
-      let impact = errorMessage
-        ? errorMessage
-        : logsAllowed
-          ? "Check the failed version’s logs before deploying a new version."
-          : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
+      const step = deploymentFailureStep(errorMessage);
+      const generic = logsAllowed
+        ? "Check the failed version’s logs before deploying a new version."
+        : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
+      let impact = errorMessage ? (step ? errorMessage : `${errorMessage} ${generic}`) : generic;
       if (replacementFailed) {
         impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${errorMessage ? ` ${errorMessage}` : ""}`;
       } else if (selectedFailed) {
         impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${errorMessage ? ` ${errorMessage}` : ""}`;
       }
-      if ((replacementFailed || selectedFailed || errorMessage) && !logsAllowed) {
+      if ((replacementFailed || selectedFailed || step) && !logsAllowed) {
         // Without the Logs link this is the reader's only way to the logs (finding 1484).
         impact += " Ask someone with log access to check the failed version’s logs.";
       }
       setText(recoveryMessage, `${failure} ${impact}`);
       // Deploying again is the whole next step only where the API's message says so.
-      const deployAgain =
-        typeof errorMessage === "string" &&
-        DEPLOY_AGAIN_STEP.test(errorMessage) &&
-        callerPermissions?.deploy === true;
+      const deployAgain = step === "deploy-again" && callerPermissions?.deploy === true;
       const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : null;
