@@ -808,6 +808,50 @@ test("A failed deployment's banner keeps the logs advice when the message names 
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
 });
 
+// A draft whose Configuration this caller cannot read builds no Deploy new version, so Deploy
+// again would lead nowhere and push the usable Logs link down.
+test("A failed deployment's banner offers no Deploy again once the Configuration read is denied", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Deploy again unreadable",
+    "Unreadable Configuration Agent",
+  );
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, revision, "DEPENDENCY_UNAVAILABLE");
+  const configurationPath = `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  await page.route(configurationPath, (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({
+          status: 403,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "FORBIDDEN", message: "Access denied." },
+            meta: { requestId: "req_test_recovery_configuration_denied" },
+          }),
+        })
+      : route.fallback(),
+  );
+  const denied = page.waitForResponse(
+    (response) => response.url() === configurationPath && response.status() === 403,
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await denied;
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery
+    .getByText(persistedDeploymentError("DEPENDENCY_UNAVAILABLE").message, { exact: false })
+    .waitFor();
+  const logs = recovery.getByRole("link", { name: "Open v1 Logs" });
+  await logs.waitFor();
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector(".deployment-recovery-actions .overview-primary")
+        ?.textContent === "Open v1 Logs",
+  );
+  assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).count(), 0);
+});
+
 // From the current version's page, Deploy again opens the draft at its deploy step too.
 test("A failed deployment's Deploy again opens the draft's deploy step from another version", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Deploy again elsewhere");

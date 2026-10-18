@@ -2019,8 +2019,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         impact += " Ask someone with log access to check the failed version’s logs.";
       }
       setText(recoveryMessage, `${failure} ${impact}`);
-      // Deploying again is the whole next step only where the API's message says so.
-      const deployAgain = step === "deploy-again" && callerPermissions?.deploy === true;
+      // Deploying again is the whole next step only where the API's message says so. The draft
+      // it opens builds Deploy new version only from a readable Configuration.
+      const deployAgain =
+        step === "deploy-again" && callerPermissions?.deploy === true && configurationAvailable;
       const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : null;
