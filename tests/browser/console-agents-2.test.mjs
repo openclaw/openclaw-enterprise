@@ -1017,12 +1017,12 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
     });
     // Each poll: the job's named wait, then what the deployment read that follows it answers.
     // The job hands off its first deployment, which waits for the runtime. The read names an
-    // image pull failure before the job does, then the job names it while the read is briefly
-    // unavailable (503). The deployment then waits for the Pod quota, and for the workspace node
-    // while the read is unavailable again. Then the job still names the runtime wait while the
-    // read already reports the Pod quota, and then the reader loses access (403). A stop's
-    // gateway drain follows, then no recorded wait, and the job fails. The image pull, the quota
-    // and the stop stand alone. A member can't read the deployment and gets the job's own code.
+    // image pull failure before the job does. The deployment then waits for the Pod quota, then
+    // the job names the image pull and the workspace node while the read is briefly unavailable
+    // (503). Then the job still names the runtime wait while the read already reports the Pod
+    // quota, and then the reader loses access (403). A stop's gateway drain follows, then no
+    // recorded wait, and the job fails. The image pull, the quota and the stop stand alone. A
+    // member can't read the deployment and gets the job's own code.
     const runtimeWait = { code: "REVISION_INCOMPLETE", message: runtime };
     const quotaWait = { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull };
     const pullWait = { code: "REVISION_IMAGE_PULL_FAILED", message: pullFailed };
@@ -1031,8 +1031,8 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
       ? [
           [runtimeWait, runtimeWait],
           [runtimeWait, pullWait],
-          [pullWait, 503],
           [quotaWait, quotaWait],
+          [pullWait, 503],
           [{ code: "WORKSPACE_NODE_PENDING", message: node }, 503],
           [runtimeWait, quotaWait],
           [runtimeWait, 403],
@@ -1143,6 +1143,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
             `Provisioning Agent… ${runtime}`,
             pullFailed,
             quotaFull,
+            pullFailed,
             `Provisioning Agent… ${node}`,
             quotaFull,
             "Provisioning Agent…",

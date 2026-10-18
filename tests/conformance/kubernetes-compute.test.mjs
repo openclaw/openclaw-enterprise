@@ -2852,12 +2852,20 @@ test("a pending dedicated deploy names a container image pull failure", async ()
     unschedulableRole: "gateway",
   });
   assert.equal((await prepare()).pendingReason, "WORKLOAD_UNSCHEDULABLE");
-  // A Pod being deleted names no wait: neither its placement nor its image pull.
+  // A Pod being deleted names no wait (finding 1880): with the unschedulable Gateway Pod
+  // being deleted, the Harness's image pull leads.
   state.terminatingRole = "gateway";
   assert.equal((await prepare()).pendingReason, "WORKLOAD_IMAGE_PULL_FAILED");
   Object.assign(state, { waitingRole: undefined, unschedulableRole: undefined });
   for (const [role, wait] of [
-    ["agent", { waitingRole: "agent" }],
+    [
+      "agent",
+      {
+        waitingRole: "agent",
+        waitingStatuses: "containerStatuses",
+        waitingReason: "ImagePullBackOff",
+      },
+    ],
     ["gateway", { unschedulableRole: "gateway" }],
   ]) {
     Object.assign(state, { terminatingRole: role, ...wait });
