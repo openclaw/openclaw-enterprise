@@ -2058,6 +2058,9 @@ test("Agent creation explains a denied capability check instead of offering a re
     await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
     true,
   );
+  // Without capabilities the harness hint states the requirement, not an outcome.
+  const harnessHint = page.locator("#agent-harness-hint");
+  assert.equal(await harnessHint.textContent(), "Codex requires OpenAI and Dedicated execution.");
 
   // A transient failure still offers the retry.
   status = 503;
@@ -2065,6 +2068,7 @@ test("Agent creation explains a denied capability check instead of offering a re
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByText(/^Installation capabilities unavailable\. /).waitFor();
   await retry.waitFor();
+  assert.equal(await harnessHint.textContent(), "Codex requires OpenAI and Dedicated execution.");
 });
 
 test("Agent creation withholds Dedicated OpenClaw unless the Installation reports native worker support", async (t) => {
@@ -2089,7 +2093,10 @@ test("Agent creation withholds Dedicated OpenClaw unless the Installation report
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
   // The disabled option explains itself instead of claiming Dedicated is supported.
   const harnessHint = page.locator("#agent-harness-hint");
-  assert.match(await harnessHint.textContent(), /Embedded execution works only without a Sandbox/);
+  assert.equal(
+    await harnessHint.textContent(),
+    "This Agent will run OpenClaw with Embedded execution. Choose Codex for Dedicated execution.",
+  );
   assert.doesNotMatch(await harnessHint.textContent(), /supports Dedicated/);
   const modeHint = page.locator("#execution-mode-hint");
   assert.match(await modeHint.textContent(), /Dedicated OpenClaw is unavailable/);

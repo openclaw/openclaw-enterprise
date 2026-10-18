@@ -685,20 +685,25 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
     await page.locator("#execution-mode-hint").textContent(),
     "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex.",
   );
+  // The harness hint states this Agent's outcome; Runtime details keep the conditions (finding 1904).
   assert.equal(
     await page.locator("#agent-harness-hint").textContent(),
-    "OpenClaw is available for both providers. This installation cannot run Dedicated OpenClaw, and Embedded execution works only without a Sandbox Driver; choose Codex for Dedicated execution.",
+    "This Agent will run OpenClaw with Embedded execution. Choose Codex for Dedicated execution.",
   );
-  // Anthropic hides Codex, so the hint names only the condition for Embedded OpenClaw.
+  // Anthropic hides Codex, so the hint names only why this Agent runs Embedded.
   await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
   assert.equal(
     await page.locator("#agent-harness-hint").textContent(),
-    "OpenClaw is available for both providers. Anthropic uses Embedded OpenClaw, which works only when the installation selects no Sandbox Driver.",
+    "This Agent will run OpenClaw with Embedded execution. Anthropic requires Embedded OpenClaw.",
   );
   await page.getByLabel("Provider", { exact: true }).selectOption("openai");
   // Codex does not need the Sandbox Driver and keeps Dedicated.
   await page.getByLabel("Harness", { exact: true }).selectOption("codex");
   assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "This Agent will run Codex with Dedicated execution.",
+  );
 
   // A saved Dedicated OpenClaw Preset keeps its mode and is blocked; the alert names Codex first,
   // Embedded only with its condition, and the administrator's fix.
@@ -727,6 +732,10 @@ test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated Op
   assert.match(
     await presetPage.locator(".launch-runtime summary").innerText(),
     /Execution mode unavailable/,
+  );
+  assert.equal(
+    await presetPage.locator("#agent-harness-hint").textContent(),
+    "This Agent cannot run OpenClaw with Dedicated execution on this installation.",
   );
   assert.equal(await presetPage.locator("#create-agent-form > [role=status]").innerText(), "");
   assert.equal(
@@ -1004,6 +1013,10 @@ test("With a Sandbox Driver that provisions Dedicated OpenClaw, Create Agent pre
     await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
     false,
   );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "This Agent will run OpenClaw with Dedicated execution.",
+  );
   // The user's choice of Embedded is refused here with the Sandbox Driver named as the reason.
   await mode.evaluate((select) => {
     select.querySelector('[value="embedded"]').disabled = false;
@@ -1032,7 +1045,7 @@ test("With a Sandbox Driver that provisions Dedicated OpenClaw, Create Agent pre
   );
   assert.equal(
     await page.locator("#agent-harness-hint").textContent(),
-    "OpenClaw is available for OpenAI with Dedicated execution. Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver.",
+    "This Agent cannot run OpenClaw with Embedded execution on this installation.",
   );
   assert.equal(
     await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
