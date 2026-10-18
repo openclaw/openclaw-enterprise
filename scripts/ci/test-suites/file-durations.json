@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "source": "Median wallDurationMs of each shared file in the checks-baseline and checks-browser lanes over five green main CI runs (c08598210 and the four before it, from #2736 on; provisioning-400 from b6bda8ee5 and the four before it; console-agents-2 and kubernetes-real-kubectl from 7e2000970 and the four before it; console-agent-logs from bef197b8a and the four before it, less the 4.1 s that #2841 took off its UTC-offset test, 10.96 s median there and 6.88 s on #2841's CI), rounded to 100 ms, from the ci-results-<lane> artifacts. Refresh rows when a lane's longest files change (a PR that edits this table runs full CI); a file without a row starts first.",
+  "source": "Median wallDurationMs of each shared file in the checks-baseline and checks-browser lanes over five green main CI runs (c08598210 and the four before it, from #2736 on; provisioning-400 from b6bda8ee5 and the four before it; console-agents-2 and kubernetes-real-kubectl from 7e2000970 and the four before it; console-agent-logs from bef197b8a and the four before it, less the 4.1 s that #2841 took off its UTC-offset test, 10.96 s median there and 6.88 s on #2841's CI; console-agents-list-return from 5cc598483 and the four before it), rounded to 100 ms, from the ci-results-<lane> artifacts. Refresh rows when a lane's longest files change (a PR that edits this table runs full CI); a file without a row starts first.",
   "files": {
     "tests/browser/console-agent-channels.test.mjs": 11000,
     "tests/browser/console-agent-deploy-focus.test.mjs": 3800,
@@ -16,7 +16,7 @@
     "tests/browser/console-agent-saves.test.mjs": 58800,
     "tests/browser/console-agent-state.test.mjs": 36800,
     "tests/browser/console-agents-2.test.mjs": 65900,
-    "tests/browser/console-agents-list-return.test.mjs": 17600,
+    "tests/browser/console-agents-list-return.test.mjs": 25000,
     "tests/browser/console-agents.test.mjs": 57100,
     "tests/browser/console-codex-oauth.test.mjs": 5800,
     "tests/browser/console-create-agent-provisioning-400.test.mjs": 50400,

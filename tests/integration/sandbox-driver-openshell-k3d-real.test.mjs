@@ -2699,11 +2699,33 @@ async function prepareProductionInstallation(
 
   const sandbox = await waitForSandbox(placement, deployed.data);
   if (harnessId === "codex") {
-    const initialFile = await request(
-      "GET",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/workspace/files/AGENTS.md`,
-    );
-    assert.equal(initialFile.status, 200, JSON.stringify(initialFile.error));
+    const initialFilePath = `/namespaces/${namespaceId}/agents/${agent.data.id}/workspace/files/AGENTS.md`;
+    const initialFile = await request("GET", initialFilePath);
+    if (initialFile.status !== 200) {
+      const secrets = failureSecrets([
+        process.env,
+        {
+          APP_SERVER_TOKEN: transport.appServerToken,
+          GATEWAY_API_KEY: workspaceGateway.apiKey,
+        },
+      ]);
+      const detail = await withinDiagnosticDeadline(
+        () =>
+          workspaceReadFailureDiagnostic({
+            request,
+            path: initialFilePath,
+            agentId: agent.data.id,
+            gatewayPlacement,
+            secrets,
+          }),
+        {
+          timedOut: `\nWorkspace read diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s`,
+        },
+      );
+      assert.fail(
+        `The first Workspace read answered ${initialFile.status} ${JSON.stringify(initialFile.error)}${detail}`,
+      );
+    }
     assert.equal(initialFile.data.content, "# Initialized OpenShell workspace\n");
   }
   const harnessPod = await waitForProviderHarnessPod(placement, deployed.data);
@@ -3378,6 +3400,7 @@ async function assertRefreshCredentialSources(topology) {
   const revisionId = current.data.activeRevisionId;
   const harness = await waitForProviderHarnessPod(topology.placement, { id: revisionId, agentId });
   const sourcePath = (source) => `/namespaces/${namespaceId}/credential-sources/${source.id}`;
+  const secrets = turnFailureSecrets(topology);
   const readRefresh = async (source) => {
     const read = await request("GET", sourcePath(source));
     assert.equal(read.status, 200, JSON.stringify(read.error));
@@ -3402,13 +3425,17 @@ async function assertRefreshCredentialSources(topology) {
       .filter(({ method }) => method === "item/completed")
       .map(({ params }) => params?.item)
       .filter((item) => item?.type === "commandExecution");
+    // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
+    // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
+    // check below treats it as a missing token.
     const echoed = (source) => {
       const echo = commands.find(({ command }) => String(command).includes(source.url));
       assert.ok(echo, `the Harness must call ${source.url}`);
+      const output = String(echo.aggregatedOutput ?? "").trim();
       try {
-        return JSON.parse(String(echo.aggregatedOutput ?? "").trim());
+        return JSON.parse(output);
       } catch {
-        return undefined;
+        return { unparsed: redactLogLine(output, secrets, 1_000) };
       }
     };
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
@@ -3427,7 +3454,13 @@ async function assertRefreshCredentialSources(topology) {
     }
   };
   const assertIssued = (observed, source) => {
-    assert.equal(observed?.placeholder, false, `${source.type} must arrive substituted`);
+    assert.equal(
+      observed?.placeholder,
+      false,
+      observed?.unparsed === undefined
+        ? `${source.type} must arrive substituted`
+        : `${source.type} must arrive substituted; the echo call printed ${JSON.stringify(observed.unparsed)}`,
+    );
     assert.equal(observed?.jwt?.valid, true, `${source.type} must carry a valid Keycloak token`);
     assert.equal(observed.jwt.iss, keycloak.issuer);
     assert.equal(observed.jwt.azp, source.clientId);
@@ -3505,11 +3538,25 @@ async function assertRefreshCredentialSources(topology) {
   // issued after the update would mean the new epoch reached the old Sandbox.
   const epochDeadline = Date.now() + 420_000;
   let afterReconfigure;
+  let lostAt;
   for (;;) {
     afterReconfigure = await call();
     const presented = afterReconfigure.rt?.jwt;
     if (presented?.valid !== true) {
-      break;
+      lostAt ??= Math.floor(Date.now() / 1000);
+      // The unchanged client-credentials source is checked on this same poll and deadline: one
+      // echo call that printed something other than JSON (finding 1883) is logged and polled
+      // again. A JSON answer, substituted or not, ends the poll and is checked below.
+      if (afterReconfigure.cc?.unparsed === undefined || Date.now() >= epochDeadline) {
+        break;
+      }
+      process.stderr.write(
+        `OpenShell integration: the client-credentials echo call printed ` +
+          `${JSON.stringify(afterReconfigure.cc.unparsed)} after the reconfigured source lost ` +
+          `its token; polling again.\n`,
+      );
+      await delay(15_000);
+      continue;
     }
     assert.ok(
       presented.iat < reconfiguredAt - 2,
@@ -3523,7 +3570,7 @@ async function assertRefreshCredentialSources(topology) {
   }
   process.stdout.write(
     `OpenShell integration: the running Harness lost the reconfigured token after ` +
-      `${Math.floor(Date.now() / 1000) - reconfiguredAt} s.\n`,
+      `${lostAt - reconfiguredAt} s.\n`,
   );
   assertIssued(afterReconfigure.cc, clientCredentials);
 
@@ -4357,6 +4404,79 @@ async function openShellSupervisorPod(topology) {
     throw new Error(`${supervisors.length} supervisor Pods match the Harness boundary pair`);
   }
   return supervisors[0];
+}
+
+// Finding 1882: the first Workspace read once answered 503 DEPENDENCY_UNAVAILABLE right after
+// the Sandbox was ready. The API keeps the cause out of its answer, and the read depends on the
+// Agent Gateway, so a failed read records that Gateway's Pods and log, then how a second read
+// answered after them (still failed, or a delay that passed). The test fails either way: a 503
+// right after "ready" may be a real readiness bug, so the read is not retried.
+async function workspaceReadFailureDiagnostic({
+  request,
+  path,
+  agentId,
+  gatewayPlacement,
+  secrets,
+}) {
+  const shown = (value, limit) =>
+    redactLogLine(typeof value === "string" ? value : JSON.stringify(value), secrets, limit);
+  const sections = [];
+  try {
+    const pods = (await diagnosticResources("pods", gatewayPlacement)).filter(
+      (pod) =>
+        pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
+        pod.metadata.labels?.["openclaw.dev/agent"] === agentId,
+    );
+    const states = pods.map((pod) => ({
+      name: pod.metadata.name,
+      phase: pod.status?.phase,
+      deleting: pod.metadata.deletionTimestamp !== undefined,
+      conditions: (pod.status?.conditions ?? []).map(({ type, status, reason }) => ({
+        type,
+        status,
+        reason,
+      })),
+      containers: (pod.status?.containerStatuses ?? []).map((status) => ({
+        name: status.name,
+        ready: status.ready,
+        restartCount: status.restartCount,
+        state: status.state,
+      })),
+    }));
+    sections.push(`Agent Gateway Pods: ${shown(states, 2_000)}`);
+    for (const pod of pods.slice(0, 2)) {
+      const logs = await diagnosticKubectl(
+        "logs",
+        pod.metadata.name,
+        "--namespace",
+        gatewayPlacement,
+        "--tail=500",
+        "--timestamps",
+      );
+      sections.push(
+        `Agent Gateway ${pod.metadata.name} log:\n${newestMatchingLogLines(logs, secrets, {
+          pattern: /error|warn|fail|workspace|ready|listen|start|connect|hello|auth|denied|close/iu,
+          exclude: turnDiagnosticNoise,
+          budget: 4_000,
+          lineChars: turnDiagnosticLineChars,
+        })}`,
+      );
+    }
+  } catch (error) {
+    sections.push(
+      `Agent Gateway diagnostics unavailable: ${shown(error?.message ?? String(error), 300)}`,
+    );
+  }
+  try {
+    const again = await request("GET", path);
+    sections.push(
+      `A second read after these diagnostics answered ${again.status}` +
+        (again.status === 200 ? "" : ` ${shown(again.error, 300)}`),
+    );
+  } catch (error) {
+    sections.push(`A second read failed: ${shown(error?.message ?? String(error), 300)}`);
+  }
+  return `\n${sections.join("\n")}`;
 }
 
 function turnFailureSecrets(topology, gatewayPassword) {
