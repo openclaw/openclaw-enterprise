@@ -17,20 +17,26 @@ import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
 
-// A badge's words, tone and paint, and the gap to the element before it.
+// A badge's words, tone and paint, and the gap to the element before it. `painted` is true when
+// its text has its tone's colour (muted when neutral).
 const badgeState = (locator) =>
   locator.evaluate((node) => {
     const style = globalThis.getComputedStyle(node);
+    const probe = globalThis.document.createElement("span");
+    probe.style.color = `var(--color-${node.dataset.tone ?? "text-muted"})`;
+    globalThis.document.body.append(probe);
+    const toneColor = globalThis.getComputedStyle(probe).color;
+    probe.remove();
     const before = node.previousElementSibling?.getBoundingClientRect();
     return {
-      className: node.className,
+      badge: node.classList.contains("badge"),
       text: node.textContent,
       tone: node.dataset.tone ?? null,
       gap: before ? Math.round(node.getBoundingClientRect().left - before.right) : null,
       sameLine: before
         ? Math.abs(node.getBoundingClientRect().top - before.top) < before.height
         : null,
-      tinted: style.backgroundColor !== "rgba(0, 0, 0, 0)",
+      painted: style.color === toneColor && style.backgroundColor !== "rgba(0, 0, 0, 0)",
     };
   });
 
@@ -54,12 +60,12 @@ for (const viewport of [
     assert.deepEqual(
       { ...state, gap: state.gap >= 4 },
       {
-        className: "badge",
+        badge: true,
         text: "Current",
         tone: "success",
         gap: true,
         sameLine: true,
-        tinted: true,
+        painted: true,
       },
       `badge ${JSON.stringify(state)}`,
     );
@@ -104,8 +110,8 @@ test("Credentials shows Slack token bindings as Bound and Missing badges", async
   ]) {
     const state = await badgeState(status(label));
     assert.deepEqual(
-      { className: state.className, text: state.text, tone: state.tone, tinted: state.tinted },
-      { className: "badge", text, tone, tinted: true },
+      { badge: state.badge, text: state.text, tone: state.tone, painted: state.painted },
+      { badge: true, text, tone, painted: true },
       label,
     );
   }
@@ -133,9 +139,9 @@ test("Namespaces rows use the card pattern", async (t) => {
     }),
     { card: true, radius: "14px", padding: "24px", edge: "1px" },
   );
-  const { className, text, tone, tinted } = await badgeState(row.locator(".badge"));
+  const { badge, text, tone, painted } = await badgeState(row.locator(".badge"));
   assert.deepEqual(
-    { className, text, tone, tinted },
-    { className: "badge", text: "Ready", tone: "success", tinted: true },
+    { badge, text, tone, painted },
+    { badge: true, text: "Ready", tone: "success", painted: true },
   );
 });

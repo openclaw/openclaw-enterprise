@@ -856,7 +856,6 @@ p {
     right: 14px;
   }
   .resource {
-    padding: 20px;
     align-items: start;
     gap: 12px;
   }
@@ -1315,8 +1314,9 @@ select:not([multiple])[size="1"] {
   border-color: var(--accent);
 }
 .version-item .badge {
+  /* On the version number's line without making it taller. */
+  margin-block: calc(-1 * var(--space-1));
   margin-left: var(--space-1);
-  vertical-align: 1px;
 }
 .agent-draft-actions {
   margin: 18px 0;
