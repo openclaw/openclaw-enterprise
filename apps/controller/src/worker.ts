@@ -294,6 +294,28 @@ function revisionFailureLogFields(error: unknown): {
 }
 
 /**
+ * The dependency a revision pass waits for when its failure clears by itself: within the
+ * convergence deadline, without spending the attempt budget (D28). A Sandbox gateway that did not
+ * answer at all (down or restarting) is one (findings 1658, 2040), at every step of the pass that
+ * calls it: the candidate's preparation and an exclusive predecessor's stop, which the next pass
+ * repeats. Other work (an Agent stop or deletion, a credential withdrawal, a Namespace) keeps its
+ * attempt budget: it has no convergence deadline to bound the wait.
+ */
+function revisionDependencyFailure(error: unknown): TransientDependencyError | undefined {
+  if (error instanceof TransientDependencyError) {
+    return error;
+  }
+  return error instanceof SandboxGatewayUnavailableError
+    ? new TransientDependencyError(
+        "sandbox_gateway",
+        "unavailable",
+        "The Sandbox gateway did not answer.",
+        { cause: error },
+      )
+    : undefined;
+}
+
+/**
  * Stopping a refused candidate failed or yielded to other Work. The pass waits as
  * `REFUSED_CANDIDATE_STOP_PENDING`, whose evidence and log keep the refusal code the stop was
  * for, and its log names the stop's own failure.
@@ -351,28 +373,6 @@ function activationPendingResult(error: unknown): {
     return { outcome: "pending", code: error.code };
   }
   return { outcome: "pending", code: "REVISION_FINALIZATION_INCOMPLETE" };
-}
-
-/**
- * The dependency a revision pass waits for when its failure clears by itself: within the
- * convergence deadline, without spending the attempt budget (D28). A Sandbox gateway that did not
- * answer at all (down or restarting) is one (findings 1658, 2040), at every step of the pass that
- * calls it: the candidate's preparation and an exclusive predecessor's stop, which the next pass
- * repeats. Other work (an Agent stop or deletion, a credential withdrawal, a Namespace) keeps its
- * attempt budget: it has no convergence deadline to bound the wait.
- */
-function revisionDependencyFailure(error: unknown): TransientDependencyError | undefined {
-  if (error instanceof TransientDependencyError) {
-    return error;
-  }
-  return error instanceof SandboxGatewayUnavailableError
-    ? new TransientDependencyError(
-        "sandbox_gateway",
-        "unavailable",
-        "The Sandbox gateway did not answer.",
-        { cause: error },
-      )
-    : undefined;
 }
 
 function revisionPendingCode(observation: unknown): string {

@@ -3,6 +3,8 @@ import {
   OpenShellAdmissionLimitError,
   OpenShellDeletionUnconfirmedError,
   OpenShellGatewayFailure,
+  OpenShellGatewayUnavailableError,
+  GRPC_UNAVAILABLE,
   OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
   OpenShellSandboxAlreadyExistsError,
@@ -12,11 +14,7 @@ import {
   statusCode,
 } from "./openshell-gateway-errors.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import {
-  DependencyUnavailableError,
-  gatewayEndpointRewritesIpv4,
-  SandboxGatewayUnavailableError,
-} from "@openclaw-enterprise/occ";
+import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -539,28 +537,12 @@ class OpenShellGatewayRequestFailure extends DependencyUnavailableError {
   }
 }
 
-// grpc-js answers UNAVAILABLE when it cannot reach the gateway or loses the connection to it.
-const GRPC_UNAVAILABLE = 14;
-
-/**
- * The gateway did not answer (gRPC UNAVAILABLE): it is down or restarting. A revision pass waits
- * for it within the deployment deadline instead of spending attempts (finding 2040); every other
- * caller sees the same DependencyUnavailableError as for any other failed request.
- */
-class OpenShellGatewayUnavailableFailure extends SandboxGatewayUnavailableError {
-  readonly grpcStatus = GRPC_UNAVAILABLE;
-
-  constructor(method: OpenShellMethod | "ExecSandbox", error: unknown) {
-    super(gatewayRequestFailureMessage(method, error));
-  }
-}
-
 function gatewayRequestFailure(
   method: OpenShellMethod | "ExecSandbox",
   error: unknown,
-): OpenShellGatewayRequestFailure | OpenShellGatewayUnavailableFailure {
+): OpenShellGatewayRequestFailure | OpenShellGatewayUnavailableError {
   return rawStatusCode(error) === GRPC_UNAVAILABLE
-    ? new OpenShellGatewayUnavailableFailure(method, error)
+    ? new OpenShellGatewayUnavailableError(gatewayRequestFailureMessage(method, error))
     : new OpenShellGatewayRequestFailure(method, error);
 }
 const CLIENT_MODULE = "@grpc/grpc-js";
@@ -2154,7 +2136,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     const { grpc } = await this.ensureClient();
     const code =
       error instanceof OpenShellGatewayRequestFailure ||
-      error instanceof OpenShellGatewayUnavailableFailure
+      error instanceof OpenShellGatewayUnavailableError
         ? error.grpcStatus
         : statusCode(error);
     return code === grpc.status[name];
