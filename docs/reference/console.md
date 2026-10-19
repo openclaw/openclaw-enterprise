@@ -299,9 +299,8 @@ For an unavailable gateway, follow the
 
 ## Open the native admin UI
 
-When [Agent native admin UI access](agent-native-admin.md) is enabled, the
-Agent detail tabs, including Configuration and Workspace files, include a
-**OpenClaw** panel for people with Agent `use` and a runtime assignment.
+When [Agent native admin UI access](agent-native-admin.md) is enabled, all
+Agent detail tabs include an **OpenClaw** panel for people with Agent `use` and a runtime assignment.
 It is hidden otherwise, when the Installation disables the feature, and until
 the next sign-in or new tab after a denial. The panel reports a stopped Agent
 (including before first deployment) as needing to be started, asks you to check

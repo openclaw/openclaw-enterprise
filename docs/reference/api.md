@@ -67,7 +67,7 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 4 operations |
 | [Namespaces](#namespaces) | 5 operations |
-| [Agents](#agents) | 36 operations |
+| [Agents](#agents) | 37 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
