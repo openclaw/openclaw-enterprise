@@ -3336,6 +3336,36 @@ function codexFailureOutputClass(output, error) {
   if (error?.code === "ETIMEDOUT") return "timeout";
   return text.trim() === "" ? "empty" : "unknown";
 }
+// codex exec --json reports a failed turn or a fatal error as a turn.failed or error
+// event on stdout, often with nothing on stderr (finding 2043). The model check passes
+// the events it already parsed; only their message strings are read, newest first, the
+// head of each, until one window is full. Nothing else from stdout is read.
+function codexFailureEventText(events) {
+  const parts = [];
+  let length = 0;
+  for (let index = events.length - 1; index >= 0 && length < CODEX_FAILURE_OUTPUT_WINDOW; index--) {
+    const event = events[index];
+    const message = event?.type === "error" ? event.message
+      : event?.type === "turn.failed" ? event.error?.message : undefined;
+    if (typeof message !== "string") continue;
+    const part = message.slice(0, CODEX_FAILURE_OUTPUT_WINDOW - length);
+    parts.push(part);
+    length += part.length + 1;
+  }
+  return parts.reverse().join("\n");
+}
+// The most specific class across the check's stderr and its error events, in the
+// classifier's own precedence: a status, then TLS, network, timeout, other text, none.
+const CODEX_FAILURE_OUTPUT_PRECEDENCE = [
+  "http_401_403", "http_5xx", "http_other", "tls", "network", "timeout", "unknown", "empty",
+];
+function codexProbeFailureClass(stderr, events, error) {
+  const classes = [
+    codexFailureOutputClass(stderr, error),
+    codexFailureOutputClass(Array.isArray(events) ? codexFailureEventText(events) : "", error),
+  ];
+  return CODEX_FAILURE_OUTPUT_PRECEDENCE.find((failureClass) => classes.includes(failureClass)) ?? "unknown";
+}
 `;
 
 export const AGENT_RUNTIME_ENTRYPOINT = String.raw`
@@ -3605,11 +3635,14 @@ function codexProbeStatusFailure(message, detail) {
 
 function probeCodexAuthentication(timeout) {
   let result;
+  // Set once stdout parsed into well-formed events; malformed output classifies stderr only.
+  let parsedEvents;
   const finish = (failure) => ({
     ...(typeof failure === "string" ? { code: failure } : failure),
-    // A failed check that ran names the class of its error output, never the output.
+    // A failed check that ran names the class of its error output (stderr and its
+    // error events), never the output.
     ...(failure !== undefined && result !== undefined
-      ? { failureClass: codexFailureOutputClass(result.stderr, result.error) } : {}),
+      ? { failureClass: codexProbeFailureClass(result.stderr, parsedEvents, result.error) } : {}),
     exitCode: Number.isInteger(result?.status) ? result.status : null,
     signal: ["SIGKILL", "SIGTERM", "SIGINT"].includes(result?.signal) ? result.signal : null,
   });
@@ -3674,6 +3707,7 @@ function probeCodexAuthentication(timeout) {
       return finish(probeFailure("INVALID_OUTPUT", "json"));
     }
     if (events.some((event) => typeof event?.type !== "string")) return finish(probeFailure("INVALID_OUTPUT", "shape"));
+    parsedEvents = events;
     // A failed turn caused by provider 401/403 is a deterministic credential
     // rejection; timeouts, 5xx, and transport errors keep their existing codes.
     if (events.some((event) => event.type === "turn.failed" && codexAuthenticationRejected(event.error?.message))) {
