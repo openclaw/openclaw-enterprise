@@ -44,6 +44,7 @@ const adminPassword = "postgres-agent-provisioning-password";
 const authBaseURL = "http://127.0.0.1";
 const authSecret = "postgres-agent-provisioning-auth-secret-32-bytes";
 let bootstrapPromise;
+let administratorSessionPromise;
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
 const defaultModel = "codex/gpt-6-astra";
@@ -432,7 +433,14 @@ async function createFixture(context, options = {}) {
     },
     drivers,
   );
-  const session = await signInToControllerApp(app, credentials);
+  // One administrator sign-in serves the file: each fixture's app reads the same stored session
+  // (same database and auth secret). No test ends it; a test that needs another identity signs
+  // that account in itself, and a revoked administrator binding is restored at teardown.
+  administratorSessionPromise ??= signInToControllerApp(app, credentials).catch((error) => {
+    administratorSessionPromise = undefined;
+    throw error;
+  });
+  const session = await administratorSessionPromise;
 
   context.after(async () => {
     for (const binding of revokedBindings) {
