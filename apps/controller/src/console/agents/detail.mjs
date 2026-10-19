@@ -3672,6 +3672,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         auth.setDisabled(true);
         feedback.textContent =
           "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.";
+        setStatusTone(feedback, "warning");
       }
       if (outcomeUnknown) {
         save.disabled = true;
@@ -3941,6 +3942,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       feedback.textContent = draftEditorSaving
         ? draftEditorNavigationBlock
         : "Save or cancel repository changes before leaving this tab.";
+      setStatusTone(feedback, null);
     };
     async function submit() {
       if (save.disabled || !fields.validate()) {

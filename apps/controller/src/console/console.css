@@ -1757,9 +1757,6 @@ select:not([multiple])[size="1"] {
 }
 /* The Secret dialog's grid gap spaces its fields; their page margins would add to it. */
 .credential-secret-dialog .form-field,
-.credential-secret-dialog .error:empty {
-  margin: 0;
-}
 @keyframes dialog-open {
   from {
     opacity: 0;
@@ -2033,7 +2030,7 @@ select:not([multiple])[size="1"] {
 }
 .slack-approver-field .hint,
 .slack-directory-field .hint,
-.slack-directory-field .error {
+.slack-directory-field .status {
   margin: 0;
 }
 .slack-directory-field {

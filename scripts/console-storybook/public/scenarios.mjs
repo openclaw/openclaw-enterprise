@@ -3411,7 +3411,7 @@ export const scenarios = {
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
       { selector: '[aria-label="Default plugin approvers people"]', focus: true },
       { selector: '[aria-label="Default plugin approvers people"]', value: "UDEMO123" },
-      { selector: ".slack-directory-panel:not([hidden]) .error:not(:empty)" },
+      { selector: ".slack-directory-panel:not([hidden]) .status:not(:empty)" },
       click("Add UDEMO123"),
       click("Save plugin selections"),
       { selector: '.content [aria-live="polite"][aria-busy="false"]' },
