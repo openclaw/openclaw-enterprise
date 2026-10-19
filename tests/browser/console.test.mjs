@@ -103,10 +103,12 @@ async function focusSettles(locator, settleMs = 1000) {
           return element ? "<body>" : "nothing";
         }
         const role = element.getAttribute("role");
+        // getAttribute, not className: an SVG element's className is an object.
+        const className = element.getAttribute("class");
         const name = (element.getAttribute("aria-label") ?? element.textContent ?? "").trim();
         return (
           `<${element.localName}${role ? ` role=${role}` : ""}` +
-          `${element.className ? ` class="${element.className}"` : ""}> "${name.slice(0, 60)}"` +
+          `${className ? ` class="${className}"` : ""}> "${name.slice(0, 60)}"` +
           `${element.isConnected ? "" : " (detached)"}`
         );
       };
@@ -878,12 +880,12 @@ for (const focus of ["navigation link", "account menu"]) {
     if (opened.held && opened.first !== opened.active) {
       t.diagnostic(`focus settled on the ${focus} after ${opened.first}`);
     }
-    assert.equal(
-      opened.held,
-      true,
-      `The opened drawer focuses its ${focus} ${opened.target}; focus is on ${opened.active}` +
-        ` (first check: ${opened.first}; drawer ${await toggle.getAttribute("aria-expanded")})`,
-    );
+    if (!opened.held) {
+      assert.fail(
+        `The opened drawer focuses its ${focus} ${opened.target}; focus is on ${opened.active}` +
+          ` (first check: ${opened.first}; drawer ${await toggle.getAttribute("aria-expanded")})`,
+      );
+    }
     await releaseHeldRoute(page, namespacesPattern, namespacesHold);
     await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
