@@ -268,17 +268,28 @@ test("the session evidence tolerates malformed rows and lists the newest marker 
   }
   const options = { sessionKey: "proof", turnMarker: marker, toolName: "list_calendars" };
 
-  // A truncated row from an earlier turn, before the evidence window, and one inside it leave the
-  // proof intact: a row that is not JSON establishes nothing either way.
+  // A truncated row from an earlier turn, before the evidence window, leaves the proof intact.
   const proven = await transcript("malformed", [
     '{"type":"message","message":{"role":"user"',
     prompt(1),
     call,
-    '{"type":"custom"',
     result(false),
     answer,
   ]).assertSessionToolCallEvidence({}, options);
   assert.equal(proven.codexMirrorTurnVerified, true);
+
+  // A truncated row inside the window could be the tool call the disabled-tool phase must not
+  // make, so the check that the turn made none fails on it instead of passing over it.
+  const hidden = transcript("hidden", [
+    '{"type":"message","message":{"role":"user"',
+    prompt(1),
+    '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","id":"c1"',
+    answer,
+  ]);
+  await assert.rejects(hidden.assertNoSessionToolCallEvidence({}, options), (error) => {
+    assert.match(error.message, /transcript row 2 in the evidence window is not JSON/);
+    return true;
+  });
 
   // Ten earlier marker-bearing retries, then the mirrored prompt and an unmirrored copy after it,
   // which starts the window past the prompt mirror: the denied turn's check fails and lists the

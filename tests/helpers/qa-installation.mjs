@@ -78,7 +78,9 @@ export function imageBuildFailureOutput(stderr, { lines = 200 } = {}) {
   );
   const build = all.slice(first);
   // Private keys are masked over all of stderr before the step and its last lines are cut out: a
-  // key whose BEGIN line falls outside the cut would otherwise keep its body (finding 2026).
+  // key whose BEGIN line falls outside the cut would otherwise keep its body (finding 2026). As in
+  // redactedQaTail, an unterminated BEGIN ... PRIVATE KEY line anywhere earlier masks everything
+  // after it, the failed step included: the safe direction, so the evidence is then all markers.
   const masked = maskPrivateKeyLines(all).slice(first);
   const step = build.findLast((line) => /^#\d+ ERROR: /.test(line))?.match(/^#\d+ /)[0];
   return (step ? masked.filter((_, index) => build[index].startsWith(step)) : masked).slice(-lines);

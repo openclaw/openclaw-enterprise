@@ -490,8 +490,8 @@ const sessionEvidenceScript = String.raw`
     if (toolName) return name === toolName;
     return /(^|[._:-])list[_-]?calendars$/i.test(name);
   }
-  // A row that is not JSON establishes nothing; one written long before this turn must not
-  // fail the evidence of a passing run (finding 2029).
+  // A row that is not JSON establishes nothing. One written before the evidence window must not
+  // fail the evidence of a passing run (finding 2029); one inside it fails the evidence below.
   function parseEvent(text) {
     try {
       return JSON.parse(text);
@@ -576,8 +576,12 @@ const sessionEvidenceScript = String.raw`
     }
     for (const row of rows) {
       const event = parseEvent(row.event_json);
-      // Non-message rows, including null payloads and rows that are not JSON, cannot establish
-      // tool or turn evidence.
+      // A row in the window that is not JSON could hide a tool call, so a check that this turn made
+      // none must not pass over it.
+      if (event === undefined) {
+        throw new Error("transcript row " + row.seq + " in the evidence window is not JSON");
+      }
+      // Non-message rows, including null payloads, cannot establish tool or turn evidence.
       eventTypeCounts[event?.type ?? "unknown"] = (eventTypeCounts[event?.type ?? "unknown"] ?? 0) + 1;
       if (event?.type !== "message") continue;
       const message = event.message;
