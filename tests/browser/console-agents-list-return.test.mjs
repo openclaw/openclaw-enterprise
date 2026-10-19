@@ -957,6 +957,9 @@ const unbrokenNameCases = [
   // A word joiner or zero-width joiner holds the ideograph or emoji before it.
   { name: "\u4e2d\u2060".repeat(100), unbroken: true },
   { name: "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}".repeat(8), unbroken: false },
+  // A combining mark before a joiner shares its letter's place too (finding 1999).
+  { name: "e\u0301\u2060".repeat(10), unbroken: false },
+  { name: `${"e\u0301\u2060".repeat(10)}a`, unbroken: true },
 ];
 
 test("Agents list marks names with no break opportunity, hyphen and dash runs included", async (t) => {
@@ -1024,5 +1027,48 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
       });
       assert.equal(fits, true, `${width}: the table scrolls sideways`);
     }
+  }
+});
+
+// A name of word-joiner or zero-width-joiner runs made the long-name check backtrack
+// exponentially: seconds per name, so the list froze on load and on each search keystroke that
+// kept such an Agent listed (finding 1999). Each name here is several runs of 20 that just fail
+// to be marked, the worst case. A keystroke re-renders the rows it keeps synchronously, so the
+// page times that work itself.
+test("Agents list search stays responsive with joiner-run names", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Joiner Agent names");
+  const names = [
+    `Joiners ${`${"\u2060".repeat(20)} `.repeat(9)}`.trimEnd(),
+    `Joiners ${`a${"\u200d".repeat(19)} `.repeat(9)}`.trimEnd(),
+  ];
+  for (const [index, name] of names.entries()) {
+    const secret = await fixture.createSecret(namespace.id, `Joiner name ${index}`, "test-key");
+    await fixture.createAgent(namespace.id, name, nativeValues(`joiners-${index}`), {
+      harnessAuth: { method: "api_key", source: secret.ref },
+    });
+  }
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const table = page.locator(settledView).getByRole("table", { name: "Agents" });
+  await table.getByRole("link", { name: names[1], exact: true }).waitFor();
+  const search = page.getByRole("searchbox", { name: "Search Agents" });
+  for (const text of ["J", "Jo", "Joi", "Joiners"]) {
+    const elapsed = await search.evaluate((node, value) => {
+      const started = globalThis.performance.now();
+      node.value = value;
+      node.dispatchEvent(new globalThis.Event("input", { bubbles: true }));
+      return globalThis.performance.now() - started;
+    }, text);
+    assert.ok(elapsed < 250, `typing ${JSON.stringify(text)} blocked the page for ${elapsed} ms`);
+  }
+  for (const name of names) {
+    const link = table.getByRole("link", { name, exact: true });
+    await link.waitFor();
+    assert.equal(
+      await link.evaluate((node) => node.classList.contains("agent-name-unbroken")),
+      false,
+    );
   }
 });

@@ -282,9 +282,13 @@ const UNBROKEN_CHARACTER = [
   String.raw`[\u2010\u2012-\u2014](?=[\u2010\u2012\u2013-])`,
   // - a hyphen, figure dash or en dash that starts a word, before a letter (LB20a);
   String.raw`(?<=^|[ \u200b])[\u2010\u2012\u2013](?=\p{L})`,
-  // - any character but a space or an em dash before a word joiner or zero-width joiner, an
-  //   ideograph or emoji included (LB11, LB9). What follows a joiner keeps its own rules.
-  String.raw`[^ \u200b\u2014](?=\p{M}*[\u2060\u200d])`,
+  // - an ideograph or emoji before a word joiner or zero-width joiner (LB11, LB9). The other
+  //   characters a joiner holds already count: ordinary ones always, and a hyphen, dash or wide
+  //   space because CLOSING lists the joiners. What follows a joiner keeps its own rules.
+  // No character may match two of these, nor a combining mark start one: each overlap doubles the
+  // ways to split a run, so a failing test of a joiner-run name backtracked for seconds (finding
+  // 1999). The test in tests/conformance/console-agent-name-runs.test.mjs bounds it.
+  String.raw`[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
 ].join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
@@ -294,9 +298,12 @@ const UNBROKEN_RUN = new RegExp(
   "u",
 );
 
+/** Whether a name holds a run the browser cannot wrap, so it must be marked to break anywhere. */
+export const hasUnbrokenRun = (name) => UNBROKEN_RUN.test(name);
+
 function agentNameLink(item, context) {
   const node = link(item.name, `agents/${item.id}`, context);
-  if (UNBROKEN_RUN.test(item.name)) {
+  if (hasUnbrokenRun(item.name)) {
     node.classList.add("agent-name-unbroken");
   }
   return node;
