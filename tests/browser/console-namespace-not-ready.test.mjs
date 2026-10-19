@@ -13,6 +13,7 @@ import {
   secretPostRequests,
   settledView,
 } from "./console-agents-browser-helpers.mjs";
+import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // On a first run the only Namespace is still provisioning. The Agents page and Create Agent never
@@ -23,6 +24,18 @@ const NOT_READY = /This Namespace is not ready yet\. Check its status on the Nam
 const DRAFTS =
   "Until then, Agents can be saved as drafts that need no new Secret or sign-in, but none can be deployed.";
 const INVITATION = "Create an Agent in this Namespace using an editable Configuration template.";
+const DRAFT_INVITATION =
+  "You can save an Agent draft here now. It can be deployed once this Namespace is ready.";
+
+// The note is a warning status block (UX plan C1), still a polite status: it is there on load,
+// not the answer to an action (finding 1990).
+const warningBlock = (locator) =>
+  locator.evaluate((node) => ({
+    status: node.classList.contains("status"),
+    tone: node.dataset.tone,
+    role: node.getAttribute("role"),
+  }));
+const WARNING = { status: true, tone: "warning", role: "status" };
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
@@ -64,18 +77,25 @@ test("a first run's provisioning Namespace names its status and still offers dra
   await login(page, fixture, "/console/");
   const view = page.locator(settledView);
   await view.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
-  const note = await view.getByRole("status").filter({ hasText: NOT_READY }).textContent();
+  const noteBlock = view.getByRole("status").filter({ hasText: NOT_READY });
+  const note = await noteBlock.textContent();
   assert.match(note, /^Namespace status: Provisioning\. /);
   assert.ok(note.endsWith(` ${DRAFTS}`), note);
+  assert.deepEqual(await warningBlock(noteBlock), WARNING);
+  // Create Agent still saves drafts (#2867); it points at the note, and the empty state says
+  // what will happen instead of the plain invitation (finding 1990).
   const create = view.getByRole("button", { name: "Create Agent" });
   assert.equal(await create.isDisabled(), false);
-  assert.equal(await create.getAttribute("aria-describedby"), null);
-  await view.getByText(INVITATION).waitFor();
+  assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
+  await view.getByText(DRAFT_INVITATION).waitFor();
+  assert.equal(await view.getByText(INVITATION).count(), 0);
 });
 
 test("Create Agent names a provisioning Namespace's status before any start", async (t) => {
   const { fixture, namespaces } = await firstRun(t);
   const { page } = await newPage(t, fixture, { browser });
+  // An Installation that provisions Dedicated Agents as they are created.
+  await routeInstallationProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespaces.default.id}`);
   const view = page.locator(settledView);
   const start = view.getByRole("button", { name: "Start without Preset" });
@@ -96,6 +116,20 @@ test("Create Agent names a provisioning Namespace's status before any start", as
   );
   assert.equal(await page.getByRole("dialog").count(), 0);
   assert.equal(await view.getByText("Creating Agents is not available").count(), 0);
+  assert.deepEqual(await warningBlock(note), WARNING);
+  // The form keeps the note, and says a Dedicated Agent waits for the Namespace instead of
+  // promising it deploys when created (finding 1990).
+  await start.click();
+  await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  const formNote = view.getByRole("status").filter({ hasText: NOT_READY });
+  assert.match(await formNote.textContent(), /^Namespace status: Provisioning\. /);
+  assert.deepEqual(await warningBlock(formNote), WARNING);
+  await view
+    .getByText(
+      "Dedicated Agents are provisioned and deployed when created, so one can be created here once this Namespace is ready.",
+      { exact: true },
+    )
+    .waitFor();
 });
 
 test("a provisioning Namespace saves an Agent draft from a seeded runtime-auth Preset", async (t) => {

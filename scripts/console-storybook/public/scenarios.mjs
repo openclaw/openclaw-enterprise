@@ -1032,6 +1032,15 @@ export const scenarios = {
     description:
       "Create Agent in a Namespace that is still provisioning names its status above the starting points, before any Secret is asked for.",
   },
+  createFormNamespaceProvisioning: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace still provisioning",
+    path: create,
+    namespaceStatus: "provisioning",
+    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    description:
+      "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created.",
+  },
   createStart: {
     group: "Pages/Create Agent",
     name: "Choose a starting point",
