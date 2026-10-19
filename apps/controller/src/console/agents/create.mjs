@@ -1242,7 +1242,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const savedStatus = element("p", { className: "hint", role: "status" });
   const submit = element(
     "button",
-    { type: "submit", form: formId, className: "primary" },
+    { type: "submit", form: formId, className: "button button--primary" },
     "Create Agent",
   );
   const startOver = button("Start over", () => {

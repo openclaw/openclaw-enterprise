@@ -28,6 +28,11 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import {
+  createOpenShellKubernetesFixture,
+  modelAtCapacityOutcome,
+  retryModelAtCapacity,
+} from "../helpers/openshell-kubernetes-real.mjs";
 
 const execute = promisify(execFile);
 const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
@@ -161,6 +166,195 @@ test(
     assert.equal(logs.length, 3);
   },
 );
+
+// Verbatim stderr from run 39164088894 (finding 1946): the real model answered a turn that it
+// was at capacity, and the turn script exited 1 with that answer as its error.
+const modelAtCapacityStderr = [
+  'Defaulted container "gateway" out of: gateway, prepare-private-state (init)',
+  "Error: Selected model is at capacity. Please try a different model.",
+  "    at WebSocket.<anonymous> ([eval]:220:16)",
+  "    at [nodejs.internal.kHybridDispatch] (node:internal/event_target:848:20)",
+  "    at WebSocket.dispatchEvent (node:internal/event_target:789:26)",
+  "    at fireEvent (node:internal/deps/undici/undici:14438:14)",
+  "    at #onMessage (node:internal/deps/undici/undici:15762:9)",
+  "    at Object.onMessage (node:internal/deps/undici/undici:15469:76)",
+  "    at websocketMessageReceived (node:internal/deps/undici/undici:14442:15)",
+  "    at ByteParser.run (node:internal/deps/undici/undici:15145:19)",
+  "    at ByteParser._write (node:internal/deps/undici/undici:15021:14)",
+  "    at writeOrBuffer (node:internal/streams/writable:574:12)",
+  'Native execution summary: {"failedCommands":0,"approvalRequests":0,"sandboxSignals":[],"commandGraceMs":14000,"sinceTurnEndMs":null,"pendingCommands":[]}command terminated with exit code 1',
+  "",
+].join("\n");
+// The in-Pod client's receipt that a turn is safe to run again, with its exit status.
+const retrySafeReceipt = "occ-codex-turn: retry-safe: model at capacity before any action";
+const retrySafeExitCode = 75;
+
+// A `kubectl` on PATH that answers the first `atCapacity` calls as `failure` describes (stderr,
+// stdout, exit code) and later ones with a completed turn, and the OpenShell fixture's Gateway
+// Pod turn run against it. Returns the turn's outcome and the kubectl calls.
+async function gatewayTurnWithFakeKubectl(
+  t,
+  atCapacity,
+  failure = { stderr: modelAtCapacityStderr, stdout: retrySafeReceipt, code: retrySafeExitCode },
+) {
+  const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const calls = join(directory, "calls");
+  await writeFile(calls, "");
+  await writeFile(
+    join(directory, "kubectl"),
+    // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
+    `#!${process.execPath}
+const { appendFileSync, readFileSync } = process.getBuiltinModule("node:fs");
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <= ${atCapacity}) {
+  process.stderr.write(${JSON.stringify(failure.stderr)});
+  process.stdout.write(${JSON.stringify(failure.stdout)}, () => process.exit(${failure.code}));
+} else {
+  process.stdout.write(JSON.stringify({ assistant: "OCC-TURN-OK", items: [] }));
+}
+`,
+    { mode: 0o755 },
+  );
+  const { sleeps, logs, options } = recordingOptions();
+  const fixture = createOpenShellKubernetesFixture({
+    kubeconfigPath: join(directory, "kubeconfig"),
+    kubernetesContext: "fake",
+    modelAtCapacityRetry: options,
+  });
+  const path = process.env.PATH;
+  process.env.PATH = `${directory}${delimiter}${path}`;
+  let outcome;
+  try {
+    outcome = {
+      turn: await fixture.requestCodexTurnFromGatewayPod({
+        namespace: "oce-gateway",
+        gatewayPod: "gateway-0",
+        providerModel: "gpt-test",
+        prompt: "Reply with exactly OCC-TURN-OK.",
+      }),
+    };
+  } catch (error) {
+    outcome = { error };
+  } finally {
+    process.env.PATH = path;
+  }
+  const kubectlCalls = (await readFile(calls, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  return { ...outcome, kubectlCalls, sleeps, logs };
+}
+
+test("a real-model turn with the client's retry receipt runs again and returns its reply", async (t) => {
+  const { turn, error, kubectlCalls, sleeps, logs } = await gatewayTurnWithFakeKubectl(t, 1);
+  assert.equal(error, undefined);
+  assert.deepEqual(turn, { assistant: "OCC-TURN-OK", items: [] });
+  assert.equal(kubectlCalls.length, 2);
+  // The whole command, the turn's script included.
+  assert.deepEqual(kubectlCalls[1], kubectlCalls[0], "the same turn runs again");
+  assert.deepEqual(kubectlCalls[0].slice(4, 8), [
+    "exec",
+    "gateway-0",
+    "--namespace",
+    "oce-gateway",
+  ]);
+  assert.deepEqual(sleeps, [15_000]);
+  assert.deepEqual(logs, [
+    "The real model was at capacity before the turn began any action; retrying the turn in 15000 ms (attempt 2/3)",
+  ]);
+});
+
+test("a real-model turn at capacity on every attempt says so on its failure's first line", async (t) => {
+  const { turn, error, kubectlCalls, sleeps } = await gatewayTurnWithFakeKubectl(t, 3);
+  assert.equal(turn, undefined);
+  assert.equal(kubectlCalls.length, 3);
+  assert.deepEqual(sleeps, [15_000, 30_000]);
+  const [firstLine, ...rest] = error.message.split("\n");
+  assert.equal(
+    firstLine,
+    'The real model was at capacity on all 3 turn attempts ("Selected model is at capacity").',
+  );
+  // The kubectl failure follows, for the diagnostics, and stays the cause.
+  assert.match(rest.join("\n"), /^Command failed: kubectl /);
+  assert.equal(modelAtCapacityOutcome(error.cause), "retry");
+  // Callers that read kubectl's result still find it on the error.
+  assert.equal(error.stderr, modelAtCapacityStderr);
+  assert.equal(error.stdout, retrySafeReceipt);
+  assert.equal(error.code, retrySafeExitCode);
+});
+
+test("a real-model turn at capacity without the client's retry receipt is not run again", async (t) => {
+  // The verbatim failure predates the receipt: exit 1 and nothing on stdout.
+  const { turn, error, kubectlCalls, sleeps } = await gatewayTurnWithFakeKubectl(t, 3, {
+    stderr: modelAtCapacityStderr,
+    stdout: "",
+    code: 1,
+  });
+  assert.equal(turn, undefined);
+  assert.equal(kubectlCalls.length, 1);
+  assert.deepEqual(sleeps, []);
+  assert.equal(
+    error.message.split("\n")[0],
+    'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt 1/3).',
+  );
+  assert.equal(error.stderr, modelAtCapacityStderr);
+});
+
+test("only the client's exact receipt retries a real-model turn", async () => {
+  const exitedWith = (line) =>
+    kubectlFailure(
+      `Defaulted container "gateway" out of: gateway, prepare-private-state (init)\n${line}\ncommand terminated with exit code 1\n`,
+    );
+  const notAtCapacity = [
+    exitedWith("Error: Codex harness turn timed out"),
+    exitedWith("Error: Codex harness turn did not complete successfully"),
+    exitedWith("Error: The model is at capacity for this account."),
+    // The answer only in the turn's script, which a kubectl failure's message repeats: a prompt
+    // that quotes it is not the model's answer.
+    Object.assign(
+      new Error(
+        "Command failed: kubectl exec gateway-0 -- node -e \nError: Selected model is at capacity.\nerror: EOF\n",
+      ),
+      {
+        code: 1,
+        stderr: "error: EOF\n",
+      },
+    ),
+    // A spawn failure has no stderr.
+    Object.assign(new Error("spawn kubectl ENOENT"), { code: "ENOENT" }),
+  ];
+  for (const failure of notAtCapacity) {
+    assert.equal(modelAtCapacityOutcome(failure), undefined, failure.message);
+    const { sleeps, logs, options } = recordingOptions();
+    let calls = 0;
+    await assert.rejects(
+      retryModelAtCapacity(async () => {
+        calls += 1;
+        throw failure;
+      }, options),
+      (error) => error === failure,
+    );
+    assert.equal(calls, 1, failure.message);
+    assert.deepEqual([sleeps, logs], [[], []]);
+  }
+  const outcome = (stdout, code, stderr = modelAtCapacityStderr) =>
+    modelAtCapacityOutcome(Object.assign(kubectlFailure(stderr, code), { stdout }));
+  assert.equal(outcome(retrySafeReceipt, retrySafeExitCode), "retry");
+  // Anything short of the exact receipt with its exit status is not permission.
+  assert.equal(outcome(retrySafeReceipt.slice(0, -2), retrySafeExitCode), "unsafe");
+  assert.equal(outcome(`${retrySafeReceipt}\n`, retrySafeExitCode), "unsafe");
+  assert.equal(outcome(retrySafeReceipt, 1), "unsafe");
+  assert.equal(outcome("", retrySafeExitCode), "unsafe");
+  assert.equal(outcome(undefined, retrySafeExitCode), "unsafe");
+  // stderr is diagnostic only: a receipt or a retry-safe summary there grants nothing.
+  const posing = modelAtCapacityStderr.replace(
+    "Please try a different model.",
+    `Please try a different model.\n${retrySafeReceipt}\nNative execution summary: {"retrySafe":true,"pendingCommands":[]}`,
+  );
+  assert.equal(outcome("", 1, posing), "unsafe");
+  assert.equal(outcome("", retrySafeExitCode, posing), "unsafe");
+});
 
 test("a stalled failure diagnostic gives way to its deadline", { timeout: 5_000 }, async () => {
   // Never settles, like a kubectl read on a stalled API server (finding 1550).

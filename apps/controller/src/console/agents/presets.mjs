@@ -72,7 +72,7 @@ export function createPresetFields(context, apply) {
       origin = "shortcut";
       selector.dispatchEvent(new Event("change"));
     },
-    { className: "primary", disabled: true },
+    { tone: "primary", disabled: true },
   );
   let selected;
   let fields = [];

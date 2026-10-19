@@ -471,7 +471,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
       }
       void loadStatus(true);
     },
-    { className: "overview-text-button" },
+    { tone: "ghost", size: "sm" },
   );
   const content = element("div", { className: "deployment-evidence-content" });
   const details = element("details", {}, element("summary", {}, "Deployment details"), content);
@@ -821,6 +821,8 @@ function createVersionDeploymentRecord(
         { className: "deployment-heading" },
         element("h3", {}, "This version’s deployment record"),
         button(loading ? "Refreshing…" : "Refresh record", () => void load(), {
+          tone: "ghost",
+          size: "sm",
           disabled: loading,
         }),
       ),
@@ -2836,7 +2838,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
         }
       },
-      { className: "primary" },
+      // .primary stays for tests that find Deploy new version by it.
+      { tone: "primary", className: "primary" },
     );
     updateDeployControls();
     const draftActions = element(
@@ -3459,7 +3462,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const feedback = element("p", { role: "status", className: "hint" }, savedNotice);
       const save = element(
         "button",
-        { type: "submit", className: "primary" },
+        { type: "submit", className: "button button--primary" },
         "Save authentication source",
       );
       const reload = button("Reload authentication source", async () => {
@@ -3753,7 +3756,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     const reload = button("Reload draft", () => rebuild("Draft reloaded."));
     const save = button("Save repository access", () => void submit(), {
-      className: "primary",
+      tone: "primary",
       disabled: true,
     });
     const cancel = button("Cancel", () => {
@@ -3783,6 +3786,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
       save.disabled =
         updateDenied || locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
+      if (save.getAttribute("aria-busy") !== String(pending)) {
+        save.setAttribute("aria-busy", String(pending));
+      }
       cancel.disabled = locked;
       reload.hidden = !outcomeUnknown && !reloadRequired;
       // An edit that cannot be saved would only block leaving the tab (finding 1539).
@@ -4026,7 +4032,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       startEditing();
     });
     const save = button("Save Configuration", () => void saveConfiguration(), {
-      className: "primary",
+      tone: "primary",
       // Reload draft focuses Save after carrying edits; the note says what was applied.
       ...(carriedNote && retained ? { "aria-describedby": feedback.id } : {}),
     });
@@ -4095,6 +4101,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         reloadRequired,
       });
       save.disabled = pending || outcomeUnknown || reloadRequired || !dirty;
+      // A save in flight is busy, not unavailable: the progress cursor (finding 1927). Written
+      // only on a change, so a rerender is no DOM mutation.
+      if (save.getAttribute("aria-busy") !== String(pending)) {
+        save.setAttribute("aria-busy", String(pending));
+      }
       cancel.disabled = pending || outcomeUnknown || reloadRequired;
       edit.disabled = pending || outcomeUnknown;
       enableGatewayPassword.disabled = pending || outcomeUnknown || reloadRequired;

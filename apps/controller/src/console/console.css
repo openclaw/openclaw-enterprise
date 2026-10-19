@@ -167,21 +167,87 @@ button,
 a {
   touch-action: manipulation;
 }
+/* Button hierarchy (UX plan C2). A plain button is the secondary tone, edged at 3:1 against the
+   surface; .button gives a link the same chrome. Tones: --primary (accent fill, at most one per
+   view), --ghost (no edge: toolbars and Refresh), --danger (destructive), --link (inline text).
+   --sm is the toolbar size. .primary, .overview-primary and .danger are older names for
+   --primary and --danger, kept until every caller and test uses the new ones. */
 button,
-.primary {
+.button,
+.primary,
+.overview-primary {
   color: inherit;
   cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
   padding: 8px 14px;
-  font-weight: 500;
+  font-weight: var(--weight-medium);
 }
-a.primary {
+/* Low specificity, so a tone's own colour wins. */
+:where(a.button, a.primary, a.overview-primary) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-strong);
   text-decoration: none;
 }
-button:not(:disabled):hover {
-  background: var(--hover);
+button:not(:disabled):hover,
+a.button:hover {
+  background: var(--color-surface-hover);
+}
+.button--primary,
+.primary,
+.overview-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-on-accent);
+}
+a.button--primary,
+a.primary,
+a.overview-primary {
+  color: var(--color-on-accent);
+}
+/* Tone hovers name the element so they outrank the plain button hover above. */
+button.button--primary:not(:disabled):hover,
+button.primary:not(:disabled):hover,
+a.button--primary:hover,
+a.primary:hover,
+a.overview-primary:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+.button--ghost {
+  border-color: transparent;
+  background: transparent;
+}
+.button--danger,
+.danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+button.button--danger:not(:disabled):hover,
+button.danger:not(:disabled):hover {
+  color: var(--color-danger);
+  background: var(--color-danger-subtle);
+}
+.button--link {
+  padding: var(--space-1) var(--space-2);
+  border-color: transparent;
+  background: none;
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+button.button--link:not(:disabled):hover,
+a.button.button--link:hover {
+  background: none;
+}
+.button--sm {
+  min-height: var(--control-h-sm);
+  padding: 5px var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
 }
 /* One disabled style and one busy cursor: disabled means "not now", busy means "working". The busy
    cursor is for buttons only: a whole page or list marked busy keeps its cursor, so a load that
@@ -351,15 +417,8 @@ p {
   font-size: 13px;
   color: var(--muted);
 }
-.primary {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--on-primary);
-}
-.primary:not(:disabled):hover {
-  background: var(--primary-hover);
-}
-.auth .primary {
+.auth .primary,
+.auth .button--primary {
   width: 100%;
   margin-top: 28px;
 }
@@ -396,12 +455,6 @@ p {
 .auth .auth-recovery {
   display: block;
   margin: 20px auto 0;
-  padding: 4px 8px;
-  border-color: transparent;
-  background: none;
-  color: var(--accent);
-  font-size: 13px;
-  text-decoration: underline;
 }
 .error {
   color: var(--danger);
@@ -978,34 +1031,53 @@ select:not([multiple])[size="1"] {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.overview-primary,
+/* Recovery links are buttons: the card edges them itself (below), and its first action stays the
+   primary one. */
 .deployment-recovery-actions a {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 14px;
-  border-radius: var(--radius);
+  gap: var(--space-2);
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
   text-decoration: none;
-  font-weight: 650;
-  line-height: 1.25;
+  font-weight: var(--weight-medium);
 }
-.overview-primary,
+.deployment-recovery-actions .button--primary,
 .deployment-recovery-actions .overview-primary {
-  color: var(--surface);
-  background: var(--text-strong);
-  border: 1px solid var(--text-strong);
+  color: var(--color-on-accent);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
 }
-.overview-primary:hover {
-  background: var(--text);
-}
-/* One primary action: a failed version's recovery outranks native administration, wherever the
-   recovery card sits. */
+/* One primary action: a failed version's recovery outranks native administration and, when it
+   offers an action, the draft's own Deploy new version; the draft's Deploy outranks native
+   administration. Wherever the recovery card sits. */
 [aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
   > .native-admin-access
-  .overview-primary {
-  color: var(--text-strong);
-  background: var(--surface);
-  border-color: var(--input-border);
+  :is(.overview-primary, .button--primary),
+[aria-live="polite"]:has(.agent-draft-actions)
+  > .native-admin-access
+  :is(.overview-primary, .button--primary),
+[aria-live="polite"]:has(
+    > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
+  )
+  .agent-draft-actions
+  :is(.primary, .button--primary) {
+  color: var(--color-text-strong);
+  background: var(--color-surface);
+  border-color: var(--color-border-strong);
+}
+[aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
+  > .native-admin-access
+  :is(.overview-primary, .button--primary):not(:disabled):hover,
+[aria-live="polite"]:has(.agent-draft-actions)
+  > .native-admin-access
+  :is(.overview-primary, .button--primary):not(:disabled):hover,
+[aria-live="polite"]:has(
+    > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
+  )
+  .agent-draft-actions
+  :is(.primary, .button--primary):not(:disabled):hover {
+  background: var(--color-surface-hover);
 }
 .deployment-recovery {
   background: var(--color-warning-subtle);
@@ -2063,8 +2135,6 @@ select:not([multiple])[size="1"] {
 }
 .plugin-browser-status button {
   flex-shrink: 0;
-  padding: 6px 10px;
-  font-size: 0.875rem;
 }
 .plugin-tabs,
 .plugin-pagination {
@@ -2087,6 +2157,8 @@ select:not([multiple])[size="1"] {
   border-color: var(--accent);
 }
 .plugin-list-item {
+  /* A list row, not a button: the light edge, like the version list. */
+  border-color: var(--line);
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
@@ -2204,12 +2276,6 @@ select:not([multiple])[size="1"] {
   justify-content: flex-end;
   align-items: center;
   gap: 16px;
-}
-.plugin-tool-policy-action {
-  padding: 6px 12px;
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  font-size: 0.875rem;
 }
 .plugin-tool-policy-action::after {
   content: " ▾";
@@ -2622,19 +2688,11 @@ select:not([multiple])[size="1"] {
 }
 .repository-text-action,
 .repository-remove {
-  min-width: 44px;
-  min-height: 44px;
-  border: 0;
-  background: transparent;
-  padding: 8px;
-}
-.repository-text-action {
-  color: var(--accent);
+  min-width: var(--touch-min);
+  min-height: var(--touch-min);
 }
 .repository-remove {
   flex-shrink: 0;
-  color: var(--muted);
-  font-size: 13px;
 }
 .repository-access-summary {
   justify-self: start;
@@ -2898,10 +2956,6 @@ select:not([multiple])[size="1"] {
   margin-left: auto;
 }
 .log-actions button {
-  min-height: 36px;
-  padding: 7px 12px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
   white-space: nowrap;
 }
 .log-follow[aria-pressed="true"] {
@@ -3161,6 +3215,7 @@ select:not([multiple])[size="1"] {
   background: var(--warning-subtle);
 }
 .log-chip[aria-pressed="false"] {
+  border-color: var(--line);
   color: var(--muted);
   text-decoration: line-through;
 }

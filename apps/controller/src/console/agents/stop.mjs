@@ -18,7 +18,10 @@ export function createAgentStop(
   const feedback = element("div");
   const actions = element("div", { className: "form-actions" });
   const stop = button("Stop Agent", openConfirmation, { className: "danger" });
-  const refresh = button("Refresh stop status", () => void refreshStatus());
+  const refresh = button("Refresh stop status", () => void refreshStatus(), {
+    tone: "ghost",
+    size: "sm",
+  });
   const repeat = button("Request Stop again", openConfirmation, { className: "danger" });
   const state = {
     agent,
@@ -210,6 +213,8 @@ export function createAgentStop(
     cancel.disabled = true;
     confirm.disabled = true;
     confirm.textContent = "Stopping…";
+    // Busy, not merely disabled: the progress cursor, and "working" for assistive technology.
+    confirm.setAttribute("aria-busy", "true");
     render();
     try {
       const stopped = await context.request(`${path}/stop`, { method: "POST" });

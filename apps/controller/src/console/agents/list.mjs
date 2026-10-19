@@ -288,7 +288,7 @@ export function renderAgentList(context) {
   // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
   const notReady = namespaceCreation(context.namespace);
   const create = button("Create Agent", () => context.navigate("agents/new"), {
-    className: "primary",
+    tone: "primary",
   });
   create.disabled = createDenied || notReady?.blocked === true;
   if (notReady?.blocked) {

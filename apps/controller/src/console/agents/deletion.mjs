@@ -14,7 +14,10 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
   const feedback = element("div");
   const actions = element("div", { className: "form-actions" });
   const remove = button("Delete Agent", openConfirmation, { className: "danger" });
-  const refresh = button("Refresh deletion status", () => void refreshStatus());
+  const refresh = button("Refresh deletion status", () => void refreshStatus(), {
+    tone: "ghost",
+    size: "sm",
+  });
   const state = {
     deleting: agent.status === "deleting",
     pending: false,
@@ -207,6 +210,8 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     cancel.disabled = true;
     confirm.disabled = true;
     confirm.textContent = "Deleting…";
+    // Busy, not merely disabled: the progress cursor, and "working" for assistive technology.
+    confirm.setAttribute("aria-busy", "true");
     render();
     try {
       const current = await context.request(path, { method: "DELETE" });

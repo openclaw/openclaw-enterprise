@@ -376,7 +376,7 @@ export function createChannelSecretsPanel({
     );
     const save = element(
       "button",
-      { type: "submit", form: formId, className: "primary" },
+      { type: "submit", form: formId, className: "button button--primary" },
       "Save channel Secrets",
     );
     shown.status = status;

@@ -408,7 +408,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
             ? "Installation-wide · Experimental"
             : "Installation-wide";
     const scopeSelector = feature === "namespaces" ? null : namespaceSelector();
-    const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }));
+    const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }), {
+      tone: "ghost",
+      size: "sm",
+    });
     refresh.disabled = true;
     const header = element(
       "header",
