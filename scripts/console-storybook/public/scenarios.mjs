@@ -4935,7 +4935,7 @@ export const scenarios = {
     name: "Mobile drawer",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     mobile: true,
-    actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
+    actions: [{ selector: '.content [aria-busy="false"]' }, { selector: ".mobile-toggle", click: true }],
     description:
       "390px viewport with the simulated OCC revision beside the wordmark in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
     steps: [

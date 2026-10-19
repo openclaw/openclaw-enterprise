@@ -110,9 +110,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     return svg;
   }
 
-  function menuIcon() {
+  // A 20 px line icon for the icon-only buttons of the phone top bar and drawer.
+  function lineIcon(d) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-    svg.setAttribute("class", "menu-icon");
+    svg.setAttribute("class", "line-icon");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("fill", "none");
     svg.setAttribute("stroke", "currentColor");
@@ -120,7 +121,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     svg.setAttribute("stroke-linecap", "round");
     svg.setAttribute("aria-hidden", "true");
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", "M4 6h16M4 12h16M4 18h16");
+    path.setAttribute("d", d);
     svg.append(path);
     return svg;
   }
@@ -511,7 +512,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       }
     }
     main.append(view);
-    const mobileToggle = button(menuIcon(), () => openDrawer(), {
+    const mobileToggle = button(lineIcon("M4 6h16M4 12h16M4 18h16"), () => openDrawer(), {
       className: "mobile-toggle",
       "aria-label": "Open navigation",
       "aria-controls": "navigation-drawer",
@@ -549,7 +550,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         nav.querySelector("a").focus();
       }
     }
-    sidebar.prepend(button("Close navigation", () => closeDrawer(), { className: "drawer-close" }));
+    sidebar.prepend(
+      button(lineIcon("M6 6l12 12M18 6L6 18"), () => closeDrawer(), {
+        className: "drawer-close",
+        "aria-label": "Close navigation",
+      }),
+    );
     shell.append(
       button("Close navigation overlay", () => closeDrawer(), {
         className: "scrim",

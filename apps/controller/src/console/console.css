@@ -965,6 +965,7 @@ p {
     z-index: 1;
   }
   .mobile-toggle,
+  .drawer-close,
   .topbar-avatar {
     display: inline-grid;
     place-items: center;
@@ -978,7 +979,7 @@ p {
   .topbar-avatar {
     border-radius: var(--radius-pill);
   }
-  .menu-icon {
+  .line-icon {
     width: 20px;
     height: 20px;
   }
@@ -1019,10 +1020,9 @@ p {
     border-radius: 0;
   }
   .drawer-close {
-    display: block;
     position: absolute;
-    top: 15px;
-    right: 14px;
+    top: var(--space-5);
+    right: var(--space-2);
   }
   .resource {
     align-items: start;

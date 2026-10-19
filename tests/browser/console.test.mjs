@@ -351,7 +351,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await page.getByRole("heading", { name: "Settings" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/settings\\?namespace=${beta.id}$`));
   await page.reload();
-  await page.getByText(fixture.credentials.email.toLowerCase()).waitFor();
+  await page.locator("#main").getByText(fixture.credentials.email.toLowerCase()).waitFor();
   await page.goBack();
   await page.getByRole("heading", { name: "Backends" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/backends\\?namespace=${beta.id}$`));
@@ -591,7 +591,7 @@ test("an unchanged retained view without a Namespace selection selects the defau
 
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page.getByText(fixture.credentials.email.toLowerCase(), { exact: true }).waitFor();
+  await page.locator("#main").getByText(fixture.credentials.email.toLowerCase(), { exact: true }).waitFor();
   fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(denyAll), 1);
   // The retained Backends view revalidates unchanged, but its shell was built without a selection.
   await page.goBack();
@@ -731,7 +731,7 @@ test("console keeps loaded route families visible while return reads refresh", a
 
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page.getByText(fixture.credentials.email.toLowerCase(), { exact: true }).waitFor();
+  await page.locator("#main").getByText(fixture.credentials.email.toLowerCase(), { exact: true }).waitFor();
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
   const sessionPattern = "**/api/auth/session";
