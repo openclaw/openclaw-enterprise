@@ -184,15 +184,16 @@ on `main` with:
 - `source_sha`: the original image source SHA.
 - `preparation_run_id` and `preparation_attempt`: the original **Enterprise
   Containers** run, with successful validation and both prepare/smoke jobs.
-- `workflow_ci_run_id`: successful main-push CI for the current recovery workflow
-  version. This is separate from the original image's CI evidence in its seal.
+- `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
+  commit. This is separate from the original image's CI evidence in its seal.
 
 Review the original digests and current public package settings before dispatch.
 Recovery validates artifact IDs and downloads the exact
 artifact IDs from the original run, verifies seals and archive hashes, and
-rechecks original source CI as well as recovery workflow CI. Source must remain
-in main history and precede the recovery workflow version. The approved Node
-base must still match the original seals.
+rechecks original source CI as well as recovery workflow CI. The original source
+commit must remain in `main` history. It must match the recovery workflow commit
+or be one of its ancestors. The approved Node base must still match the original
+seals.
 
 An existing source tag must match both package metadata and its remote manifest
 digest; recovery leaves it untouched even when package metadata lags. Only an

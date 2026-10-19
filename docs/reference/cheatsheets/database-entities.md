@@ -56,8 +56,20 @@ Stores Agent drafts, their desired runtime state, and the selected version refer
 - `credential_sources` (every bound credential source)
 - `active_revision_id`
 - `desired_runtime_state`
+- `sandbox_policy_editing`
 - `status`
 - `created_at`
+
+### `sandbox_policies`
+
+Stores one Agent-owned desired network policy with versioned application evidence.
+See [per-Agent policies](../sandbox-policies.md).
+
+- `id`
+- `namespace_id`
+- `agent_id`
+- `version`
+- `document` (additions, pending/latest application, last confirmed live version)
 
 ### `agent_revisions`
 

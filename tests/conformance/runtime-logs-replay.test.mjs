@@ -1,3 +1,4 @@
+import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import assert from "node:assert/strict";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import test from "node:test";
@@ -85,7 +86,7 @@ async function replay(entry) {
     const chunk = JSON.parse(text);
     const { records, withheld } = sanitizeSandboxLogLines(
       { source: "sandbox", sandbox: chunk.sandbox },
-      chunk.lines,
+      chunk.lines.map(openShellLogDecision),
     );
     return { input: chunk.lines.length, withheld, records };
   }

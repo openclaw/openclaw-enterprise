@@ -1,16 +1,13 @@
 # OCC CLI command reference
 
-`occ` manages OpenClaw Control Plane (OCC) resources. To install it and make
-your first request, see [CLI setup](../guides/cli.md). To see help for the
-installed version, run `occ --help` or add `--help` to a command.
+See [CLI setup](../guides/cli.md) to install `occ`. Run `occ --help` for commands and flags.
 
 ## Global options
 
-Command-line flags override the corresponding environment variables. An
-explicitly empty value, such as `--file=` or `--revision=`, is refused before
-the command does anything; omit the flag to use its default. Two exceptions
-clear their environment variable: `--ca-bundle=`, and `--namespace=`, which
-`service-key create` accepts for an Installation-scoped principal.
+Flags override environment variables. Empty values (`--file=`, `--revision=`)
+fail before execution; omit a flag to use its default. `--ca-bundle=` clears
+its environment variable; `--namespace=` does so for Installation-scoped
+`service-key create`.
 
 | Flag                 | Environment variable   | What it controls                                                                                                                           |
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -29,8 +26,7 @@ HTTPS endpoint unless connecting to a local loopback development Installation.
 See [Service API Keys](authentication/service-api-keys.md) for issuing or rotating
 keys.
 
-Pressing Ctrl-C, or sending `SIGTERM`, cancels an in-flight request and exits
-with an error instead of waiting for `--timeout-seconds` to expire.
+Ctrl-C or `SIGTERM` cancels in-flight requests and exits with an error.
 
 ## Resource commands
 
@@ -213,12 +209,13 @@ Run these from a repository checkout. They use local development configuration,
 not the remote connection or output options above. Kubernetes is the supported
 local setup for deploying an Agent; follow [Local Setup](../guides/quickstart.md).
 
-| Command                        | What it does                                                                                                                                                                   |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `occ dev up`                   | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.               |
-| `occ dev up --key-output PATH` | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                       |
-| `occ dev down`                 | Stops the selected profile. Docker keeps Compose volumes by default. Kubernetes removes its owned k3d cluster; the Compose control-plane profile also removes Compose volumes. |
-| `occ dev down --volumes`       | Also removes Docker Compose volumes; Kubernetes cleanup already removes its volumes.                                                                                           |
+| Command                                         | What it does                                                                                                                                                                   |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `occ dev up`                                    | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.               |
+| `occ dev up --key-output PATH`                  | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                       |
+| `occ dev up --sandbox-network-policy-file FILE` | Adds binary and endpoint rules for Kubernetes Compute with OpenShell; see [startup network policy](../guides/deploy/local-sandbox-network-policy.md).                          |
+| `occ dev down`                                  | Stops the selected profile. Docker keeps Compose volumes by default. Kubernetes removes its owned k3d cluster; the Compose control-plane profile also removes Compose volumes. |
+| `occ dev down --volumes`                        | Also removes Docker Compose volumes; Kubernetes cleanup already removes its volumes.                                                                                           |
 
 In the Go Kubernetes helpers, a failed exclusive write removes its newly created
 output, including a partial key file. Existing targets stay unchanged. If removal
@@ -232,3 +229,6 @@ profile; the Compute and Sandbox Driver settings select the implementation.
 When `scripts/dev-up` fails on the Docker profile, `occ dev up` exits with the
 script's status (`2` for a usage or configuration error) and prints nothing
 beyond the script's own message.
+
+[Agent policy commands](../guides/topics/agent-sandbox-policy.md#cli) default to
+`--facet networking`. Editing admission is temporary pending Guardrails.

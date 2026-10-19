@@ -29,7 +29,8 @@
     "tests/integration/postgres-connection-auth.test.mjs",
     "tests/integration/postgres-repository-transactions.test.mjs",
     "tests/integration/postgres-controller-work-targets.test.mjs",
-    "tests/integration/postgres-transaction-commit.test.mjs"
+    "tests/integration/postgres-transaction-commit.test.mjs",
+    "tests/integration/postgres-agent-sandbox-policy.test.mjs"
   ],
   "files": [
     {
@@ -242,6 +243,13 @@
       "path": "tests/integration/postgres-github-recovery-replacement.test.mjs",
       "expectedTests": [
         "online recovery replacement moves the reserved lane and survives a restart with the original seed"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-agent-sandbox-policy.test.mjs",
+      "expectedTests": [
+        "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
+        "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
       ]
     }
   ]

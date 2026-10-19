@@ -6,9 +6,11 @@ current behavior from remaining design work.
 
 ## Implementation status
 
-The singleton Installation, Namespace lifecycle, Agents, versions, Presets,
-Secrets, and optional CredentialSources have current implementations. The table
-below also retains planned Harness, Channel, and SandboxPolicy resource contracts;
+The singleton Installation, Namespace lifecycle, Agents, Agent revisions, Presets,
+Secrets, optional CredentialSources, and one SandboxPolicy per Agent have current
+implementations. SandboxPolicy currently covers governed additive network grants;
+see [its reference](../reference/sandbox-policies.md). The table
+below also retains planned Harness and Channel resource contracts;
 it is not an inventory of available APIs. Agent workload identity is implemented
 as an Agent-owned ServicePrincipal, while workload-token authentication to OCC
 remains deferred. Use [Concepts](../guides/concepts.md),

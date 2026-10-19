@@ -366,6 +366,14 @@ export function createOpenShellInstallationConfiguration({
     id: "credential-gateway-openshell-kubernetes",
     configuration: { binaries: [...openshellCodexBinaries] },
   };
+  configuration.sandboxNetworkPolicyCeiling = [
+    {
+      id: "python-demo",
+      binary: "/usr/bin/python3.11",
+      host: "example.org",
+      ports: [{ from: 443, to: 443 }],
+    },
+  ];
   configuration.drivers.sandbox = {
     id: "sandbox-openshell-kubernetes",
     configuration: {
