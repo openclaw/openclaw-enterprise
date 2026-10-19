@@ -3343,8 +3343,8 @@ const { performance } = require("node:perf_hooks");
 
 ${PLUGIN_RUNTIME_HELPERS}
 ${AUTH_PROBE_FAILURE_HELPER}
-${CODEX_STDERR_FILTER_HELPER}
 ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
+${CODEX_STDERR_FILTER_HELPER}
 ${startupPhaseHelper("agent")}
 
 function agentRuntimeReady() {
