@@ -2842,7 +2842,8 @@ function repositories(
             (permission) => permission.action === "use" && permission.resourceKind === "agent",
           )
         ) {
-          throw new ScopeViolationError(
+          throw new IAMPolicyValidationError(
+            "/runtimeRole",
             "A runtime assignment requires a human, exact Agent and entry Role.",
           );
         }

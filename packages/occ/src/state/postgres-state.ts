@@ -3973,6 +3973,16 @@ export class PostgresPlatformState implements PlatformStateStore {
             ],
           );
         } catch (error) {
+          if (
+            binding.runtimeRole !== undefined &&
+            error instanceof DatabaseError &&
+            error.code === "23514"
+          ) {
+            throw new IAMPolicyValidationError(
+              "/runtimeRole",
+              "A runtime assignment requires a human, exact Agent and entry Role.",
+            );
+          }
           // Preserve known assignment conflicts before the IAM boundary wraps unknown failures.
           if (
             error instanceof DatabaseError &&

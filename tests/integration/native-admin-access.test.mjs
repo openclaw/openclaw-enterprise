@@ -1440,6 +1440,27 @@ test("the normal sharing API assigns any configured role, changes it atomically,
   assert.equal((await create({ runtimeRole: "not-configured" })).status, 400);
   assert.equal((await create({ runtimeRoleConfiguration: undefined })).status, 400);
   assert.equal((await create({ runtimeRole: undefined })).status, 400);
+  const readRole = await context.fixture.request("POST", `${base}/iam/roles`, {
+    body: { permissions: [{ action: "read", resourceKind: "agent" }] },
+  });
+  assert.equal(readRole.status, 201);
+  const bindingsBefore = await context.fixture.request("GET", `${base}/iam/access-bindings`);
+  // Invalid subjects and Roles must be input errors, without creating a grant.
+  for (const overrides of [
+    { roleId: readRole.data.id },
+    { subjectId: context.agent.servicePrincipalId },
+  ]) {
+    const rejected = await create(overrides);
+    assert.equal(rejected.status, 400, JSON.stringify(rejected.body));
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST");
+    assert.deepEqual(rejected.body.error.details, [
+      { path: "/runtimeRole", code: "INVALID_VALUE" },
+    ]);
+  }
+  assert.deepEqual(
+    (await context.fixture.request("GET", `${base}/iam/access-bindings`)).data,
+    bindingsBefore.data,
+  );
   const binding = await create();
   assert.equal(binding.status, 201, JSON.stringify(binding.body));
   assert.equal(binding.data.runtimeRole, "researcher");

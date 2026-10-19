@@ -1,7 +1,7 @@
 ---
 created: "2026-09-20"
-updated: "2026-10-15"
-last_updated_session: "authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3"
+updated: "2026-10-19"
+last_updated_session: "authoring-run/d8ce5783-eee5-4fb5-94e1-d6f87dd05219"
 ---
 
 # Namespace IAM Policy Flow
@@ -167,7 +167,7 @@ COMMIT request was delayed after the last authentication check. An expired
 session raises the named `held_authentication_session_is_current` constraint;
 State maps that rejection to an authorization denial (`403`). The policy and
 success audit roll back together; the API records the denial separately.
-A duplicate runtime assignment returns `409` without a success audit. If commit outcome is unknown,
+Runtime-assignment constraints reject non-human subjects and Roles without Agent `use`; both adapters report these failures as `400` at `/runtimeRole`. A duplicate assignment returns `409` without a success audit. If commit outcome is unknown,
 State discards the connection without another query. OCC reports dependency
 failure; a caller must not infer rollback or replay the mutation from that
 result. Later authorization requests read the current policy through the IAM
@@ -230,6 +230,8 @@ selected account, session, and policy writers join the same protocol.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-19 18:15: Translate invalid runtime assignments consistently at the State boundary. (authoring-run/d8ce5783-eee5-4fb5-94e1-d6f87dd05219 - 57e6bcd87f06abd13ca4092b15f764d7c284d1d6)
 
 - 2026-10-15 13:36: Protect runtime-role PATCH with assigning-session authority through COMMIT. (authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3 - b0fdd771426669636fc97b59c651a383b5d64984)
 

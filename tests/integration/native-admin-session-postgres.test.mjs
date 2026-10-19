@@ -1367,6 +1367,49 @@ test(
     t.after(() => api.app.close());
     const session = await signIn(api.app);
     const scenario = await createNativeAgent(api, session, upstream);
+    const base = `/namespaces/${scenario.namespace.id}`;
+    const catalog = await inject(
+      api.app,
+      "GET",
+      `${base}/agents/${scenario.agent.id}/runtime-roles`,
+      {
+        session,
+      },
+    );
+    assert.equal(catalog.statusCode, 200, catalog.body);
+    const readRole = await inject(api.app, "POST", `${base}/iam/roles`, {
+      session,
+      body: { permissions: [{ action: "read", resourceKind: "agent" }] },
+    });
+    assert.equal(readRole.statusCode, 201, readRole.body);
+    const bindingsBefore = await inject(api.app, "GET", `${base}/iam/access-bindings`, { session });
+    // Exercise the database constraints through HTTP, including their error translation.
+    for (const overrides of [
+      { roleId: readRole.json().data.id },
+      { subjectId: scenario.agent.servicePrincipalId },
+    ]) {
+      const rejected = await inject(api.app, "POST", `${base}/iam/access-bindings`, {
+        session,
+        body: {
+          subjectKind: "identity",
+          subjectId: scenario.principal.id,
+          roleId: scenario.runtimeBinding.roleId,
+          resourceKind: "agent",
+          resourceId: scenario.agent.id,
+          runtimeRole: "administrator",
+          runtimeRoleConfiguration: catalog.json().data.configuration,
+          ...overrides,
+        },
+      });
+      assert.equal(rejected.statusCode, 400, rejected.body);
+      assert.equal(rejected.json().error.code, "INVALID_REQUEST");
+      assert.deepEqual(rejected.json().error.details, [
+        { path: "/runtimeRole", code: "INVALID_VALUE" },
+      ]);
+    }
+    const bindingsAfter = await inject(api.app, "GET", `${base}/iam/access-bindings`, { session });
+    assert.equal(bindingsAfter.statusCode, 200, bindingsAfter.body);
+    assert.deepEqual(bindingsAfter.json().data, bindingsBefore.json().data);
     const copy = (id, subjectId, resourceId) =>
       api.pool.query(
         `
