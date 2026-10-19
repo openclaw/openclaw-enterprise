@@ -858,6 +858,7 @@ p {
 }
 .resource-linked .resource-name a {
   color: var(--text-strong);
+  font-weight: var(--weight-medium);
   text-decoration-color: transparent;
 }
 /* The whole row is the target; its name underlines while the pointer is anywhere on it. */
@@ -1652,14 +1653,14 @@ select:not([multiple])[size="1"] {
   overflow-wrap: anywhere;
 }
 /* A row's name is its primary link: ink, and underlined only on hover, since a column of
-   underlined names reads as noise (spec 3.3). The revision ID above keeps its own underline. */
-.agent-table a {
+   underlined names reads as noise (spec 3.3). The revision and deployment links keep theirs. */
+.agent-table td:first-child > a {
   color: var(--color-text-strong);
   font-weight: var(--weight-medium);
   text-decoration-color: transparent;
 }
-.agent-table a:hover,
-.agent-table a:focus-visible {
+.agent-table td:first-child > a:hover,
+.agent-table td:first-child > a:focus-visible {
   text-decoration-color: currentColor;
 }
 .agent-tabs {

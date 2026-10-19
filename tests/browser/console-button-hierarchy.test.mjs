@@ -785,9 +785,9 @@ test("Links and disclosures use the link colour with an underline, not the accen
   const agent = await fixture.createAgent(namespace.id, "Link Agent", nativeValues("link"));
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
-  const tone = (locator) =>
-    locator.evaluate((node) => {
-      const style = globalThis.getComputedStyle(node);
+  // Each node's paint against the resolved link and accent colours.
+  const tones = (locator) =>
+    locator.evaluateAll((nodes) => {
       const resolve = (value) => {
         const probe = globalThis.document.createElement("span");
         probe.style.color = value;
@@ -796,14 +796,25 @@ test("Links and disclosures use the link colour with an underline, not the accen
         probe.remove();
         return color;
       };
-      return {
-        ink: style.color === resolve("var(--color-link)"),
-        accent: style.color === resolve("var(--color-accent)"),
-        line: style.textDecorationLine,
-        lineShows: style.textDecorationColor !== "rgba(0, 0, 0, 0)",
-        weight: style.fontWeight,
-      };
+      const [link, accent] = [resolve("var(--color-link)"), resolve("var(--color-accent)")];
+      return nodes
+        .filter((node) => node.getClientRects().length > 0)
+        .map((node) => {
+          const style = globalThis.getComputedStyle(node);
+          return {
+            text: node.textContent.trim(),
+            ink: style.color === link,
+            accent: style.color === accent,
+            line: style.textDecorationLine,
+            lineShows: style.textDecorationColor !== "rgba(0, 0, 0, 0)",
+            weight: style.fontWeight,
+          };
+        });
     });
+  const tone = async (locator) => {
+    const [{ text: _text, ...paint }] = await tones(locator);
+    return paint;
+  };
 
   // The Agents table's name link: ink, medium, its underline hidden until the pointer is on it.
   const name = page.getByRole("link", { name: "Link Agent", exact: true });
@@ -833,19 +844,8 @@ test("Links and disclosures use the link colour with an underline, not the accen
     lineShows: true,
     weight: "500",
   });
-  const painted = await page.locator(".content").evaluate((content) => {
-    const accent = (() => {
-      const probe = globalThis.document.createElement("span");
-      probe.style.color = "var(--color-accent)";
-      globalThis.document.body.append(probe);
-      const color = globalThis.getComputedStyle(probe).color;
-      probe.remove();
-      return color;
-    })();
-    return [...content.querySelectorAll("a, summary")]
-      .filter((node) => node.getClientRects().length > 0)
-      .filter((node) => globalThis.getComputedStyle(node).color === accent)
-      .map((node) => node.textContent.trim());
-  });
+  const painted = (await tones(page.locator(".content").locator("a, summary")))
+    .filter((paint) => paint.accent)
+    .map((paint) => paint.text);
   assert.deepEqual(painted, [], "links painted in the accent");
 });
