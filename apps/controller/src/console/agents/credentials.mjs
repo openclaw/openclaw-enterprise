@@ -178,7 +178,7 @@ function renderSlackBindings(state) {
         {},
         element(
           "span",
-          { className: `credential-status ${stored ? "stored" : "missing"}` },
+          { className: "badge", "data-tone": stored ? "success" : "danger" },
           stored ? "Bound" : "Missing",
         ),
       ),

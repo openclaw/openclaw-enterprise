@@ -674,11 +674,39 @@ p {
   display: grid;
   gap: 12px;
 }
-.resource {
-  background: var(--surface);
-  border: 1px solid var(--line);
+/* Section, card and badge patterns (UX plan C4). A section is a heading, an optional description
+   and its content; it is not a card. Cards live inside sections. */
+.section {
+  margin-top: var(--space-8);
+}
+.section > h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+}
+.section > h2 + p {
+  max-width: var(--prose-max);
+  margin: 0 0 var(--space-4);
+  color: var(--color-text-muted);
+}
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  padding: 24px;
+  padding: var(--space-6);
+}
+.card--muted {
+  background: var(--color-surface-2);
+}
+.card--danger {
+  border-color: var(--color-danger-subtle);
+}
+@media (max-width: 520px) {
+  .card {
+    padding: var(--space-4);
+  }
+}
+.resource {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -697,25 +725,34 @@ p {
   user-select: text;
   overflow-wrap: anywhere;
 }
+/* A status in a word or two: human copy, never a raw enum value. Neutral unless data-tone says
+   success, warning, danger or info. */
 .badge {
+  display: inline-block;
   border-radius: var(--radius-sm);
-  background: var(--hover);
-  padding: 6px 10px;
-  color: var(--muted);
-  font-size: 12px;
+  background: var(--color-surface-hover);
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 .badge[data-tone="success"] {
-  background: var(--success-subtle);
-  color: var(--success);
+  background: var(--color-success-subtle);
+  color: var(--color-success);
 }
 .badge[data-tone="warning"] {
-  background: var(--warning-subtle);
-  color: var(--warning);
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
 }
 .badge[data-tone="danger"] {
-  background: var(--danger-subtle);
-  color: var(--danger);
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+.badge[data-tone="info"] {
+  background: var(--color-info-subtle);
+  color: var(--color-info);
 }
 /* The whole Namespace row opens its Agents; the ID stays selectable above the link's area. */
 .resource-linked {
@@ -1277,12 +1314,9 @@ select:not([multiple])[size="1"] {
   background: var(--accent-subtle);
   border-color: var(--accent);
 }
-.version-current {
-  width: fit-content;
-  margin-top: 3px;
-  color: var(--success);
-  font-size: 11px;
-  font-weight: 650;
+.version-item .badge {
+  margin-left: var(--space-1);
+  vertical-align: 1px;
 }
 .agent-draft-actions {
   margin: 18px 0;
@@ -1809,20 +1843,6 @@ select:not([multiple])[size="1"] {
 }
 .credential-status-list dd {
   margin: 0;
-}
-.credential-status {
-  display: inline-block;
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  font-size: 12px;
-}
-.credential-status.stored {
-  background: var(--success-subtle);
-  color: var(--success);
-}
-.credential-status.missing {
-  background: var(--danger-subtle);
-  color: var(--danger);
 }
 .credential-actions {
   justify-content: flex-start;
@@ -2680,16 +2700,7 @@ select:not([multiple])[size="1"] {
 .repository-access-summary {
   justify-self: start;
   max-width: 100%;
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
-  color: var(--primary-hover);
-  background: var(--accent-subtle);
-  font-size: 12px;
-  font-weight: 600;
-}
-.repository-access-summary.is-error {
-  color: var(--danger);
-  background: var(--danger-subtle);
+  white-space: normal;
 }
 .repository-card-settings {
   padding: 14px;

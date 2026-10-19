@@ -680,9 +680,8 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             "span",
             {
               id: `repository-summary-${ref}`,
-              className: invalid(ref)
-                ? "repository-access-summary is-error"
-                : "repository-access-summary",
+              className: "badge repository-access-summary",
+              "data-tone": invalid(ref) ? "danger" : "info",
             },
             accessSummary(ref, override),
           ),

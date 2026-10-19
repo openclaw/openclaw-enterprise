@@ -1349,7 +1349,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   );
   function showDeleting() {
     deleting = true;
-    headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
+    headerActions.replaceChildren(
+      element("span", { className: "badge", "data-tone": "warning" }, "Deleting"),
+    );
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
     view.replaceChildren(header, deletion);
     context.revealed?.();
@@ -1793,13 +1795,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         "aria-label": `View version v${revision.revision}${revision.id === currentRevisionId ? ", current version" : ""}`,
         ...(selected === revision.id ? { "aria-current": "page" } : {}),
       });
+      // The current version's badge follows its number on the same line, after a space.
       control.append(
-        element("strong", {}, `v${revision.revision}`),
+        element(
+          "span",
+          {},
+          element("strong", {}, `v${revision.revision}`),
+          ...(revision.id === currentRevisionId
+            ? [" ", element("span", { className: "badge", "data-tone": "success" }, "Current")]
+            : []),
+        ),
         element("small", {}, displayDate(revision.createdAt)),
       );
-      if (revision.id === currentRevisionId) {
-        control.append(element("span", { className: "version-current" }, "Current version"));
-      }
       trackRevisionControl(control);
       list.append(control);
     }

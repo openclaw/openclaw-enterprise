@@ -550,7 +550,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       list.append(
         element(
           "li",
-          { className: feature === "namespaces" ? "resource resource-linked" : "resource" },
+          {
+            className: feature === "namespaces" ? "card resource resource-linked" : "card resource",
+          },
           element(
             "div",
             {},

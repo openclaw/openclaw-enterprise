@@ -479,9 +479,15 @@ export function renderAgentList(context) {
             {},
             link(item.name, `agents/${item.id}`, context),
             element("span", { className: "resource-id" }, item.id),
-            item.status === "deleting" ? element("span", { className: "badge" }, "Deleting") : null,
+            item.status === "deleting"
+              ? element("span", { className: "badge", "data-tone": "warning" }, "Deleting")
+              : null,
             item.configurationReadError
-              ? element("span", { className: "badge" }, "Saved configuration unreadable")
+              ? element(
+                  "span",
+                  { className: "badge", "data-tone": "danger" },
+                  "Saved configuration unreadable",
+                )
               : null,
           ),
           // On a phone each cell shows its column's name (console.css, `data-label`).
