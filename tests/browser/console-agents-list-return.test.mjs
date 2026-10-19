@@ -1081,13 +1081,13 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     // run the browser keeps on one line, set in the link's font in a box too narrow for any word.
     // Combining marks share their letter's place, and a space hangs at the end of its line, so
     // neither counts.
-    const measured = await table.evaluate((node) =>
-      Array.from(node.querySelectorAll("a"), (link) => {
+    const measured = await table.getByRole("link").evaluateAll((links) =>
+      links.map((link) => {
         const box = globalThis.document.createElement("div");
         const style = globalThis.getComputedStyle(link);
         box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
         box.textContent = link.textContent;
-        node.after(box);
+        link.closest("table").after(box);
         const range = globalThis.document.createRange();
         let longest = 0;
         let run = 0;
@@ -1117,7 +1117,7 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     for (const entry of cases) {
       const label = `${width}: ${JSON.stringify(entry.name.slice(0, 24))}…`;
       const matches = measured.filter((link) => link.name === entry.name);
-      assert.equal(matches.length, 1, `${label} is listed once`);
+      assert.equal(matches.length, 1, `${label} is listed once as a link`);
       const [shown] = matches;
       assert.equal(shown.marked, entry.unbroken, `${label} marked`);
       assert.equal(shown.longest >= 21, entry.unbroken, `${label} longest run ${shown.longest}`);
