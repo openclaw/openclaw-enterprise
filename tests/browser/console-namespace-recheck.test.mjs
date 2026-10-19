@@ -127,14 +127,13 @@ async function openGatedForm(t, { fixture, namespace }, { viewport, keepable = f
   await name.evaluate((input) => input.setSelectionRange(5, 5));
   namespaces.reads = 0;
   const started = () => page.evaluate(() => globalThis.namespaceReads);
-  // One 10 s tick whose read must arrive, so its answer, not the absence of one, decides.
+  // One 10 s tick whose read must arrive, so its answer, not the absence of one, decides. It
+  // returns once the page has read the answer, so the next tick is already scheduled.
   const poll = async () => {
     const before = namespaces.reads;
-    const read = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/namespaces",
-    );
+    const answered = await settledFetches(page, "/namespaces");
     await page.clock.runFor(10_000);
-    await read;
+    await waitForSettledFetches(page, "/namespaces", answered + 1);
     assert.equal(namespaces.reads, before + 1);
   };
   // Ticks that must start no read.
@@ -178,12 +177,9 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
   const team = await createReadyConsoleNamespace(t, "team");
 
   await t.test("a failed read keeps the recheck going at its 10 s cadence", async (t) => {
-    const { page, view, create, name, namespaces, poll } = await openGatedForm(t, team);
+    const { view, create, name, namespaces, poll } = await openGatedForm(t, team);
     namespaces.fail = 1;
-    const answered = await settledFetches(page, "/namespaces");
     await poll();
-    // The page has read the failed answer's body, so its next check is already scheduled.
-    await waitForSettledFetches(page, "/namespaces", answered + 1);
     await view.getByText(WAITS, { exact: true }).waitFor();
     assert.equal(await create.isDisabled(), true);
     namespaces.status = null;
