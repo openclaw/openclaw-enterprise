@@ -1445,8 +1445,10 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
 
   // The gateway process goes away under a call it received: the connection drops.
   const received = Promise.withResolvers();
+  const connections = [];
   const dropping = createH2cServer();
-  dropping.on("stream", (stream) => received.resolve(stream));
+  dropping.on("connection", (socket) => connections.push(socket));
+  dropping.on("stream", () => received.resolve());
   await new Promise((resolve) => dropping.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => dropping.close(resolve)));
   const dropped = new GrpcOpenShellGatewayClient({
@@ -1454,7 +1456,10 @@ test("OpenShell client names only an unanswered gateway request a Sandbox gatewa
   });
   t.after(() => dropped.close());
   const inFlight = dropped.health(AbortSignal.timeout(5_000));
-  (await received.promise).session.socket.destroy();
+  await received.promise;
+  for (const socket of connections) {
+    socket.destroy();
+  }
   await assert.rejects(inFlight, outage);
 
   // The gateway refuses every stream before handling it, as while it shuts down.
