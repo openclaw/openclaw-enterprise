@@ -36,15 +36,42 @@ const joinerNames = {
   "plain lowercase letters": `${"a".repeat(20)} `.repeat(10),
   "plain digits": `${"1".repeat(20)} `.repeat(10),
   "letters before a hyphen": `${"a".repeat(19)}- `.repeat(10),
+  // A run of marks after each character whose alternative looks ahead past marks: a nested
+  // quantifier there (`(?:\p{M}+)*`) matches the same names but took 8.7 s on the first of these
+  // (finding 2037). Nothing after the marks completes the lookahead, so every split is tried.
+  "a hyphen, then combining marks": `a-${"\u0301".repeat(25)}x`,
+  "an accented letter and a hyphen, then combining marks": `\u00e9-${"\u0301".repeat(25)}x`,
+  "an en dash, then combining marks": `a\u2013${"\u0301".repeat(25)}x`,
+  "a thin space, then combining marks": `a\u2009${"\u0301".repeat(25)}x`,
+  "an ideograph, then combining marks": `\u4e2d${"\u0301".repeat(25)}x`,
 };
+
+// The first call builds the rule's matcher (6.6 ms idle, about 40 ms on a loaded runner; finding
+// 2038) and the second compiles it to machine code (about 1 ms idle), so both happen before any
+// case is timed.
+for (let call = 0; call < 3; call += 1) {
+  hasUnbrokenRun(joinerNames["word joiners"]);
+}
+// A linear rule takes about 1 ms on each name; the cases this bound catches take seconds. A slow
+// runner can still stall one call, so a call over the bound is retried twice and the fastest of
+// the three counts: a steep blowup is slow every time.
+const BOUND_MS = 50;
+function fastestCall(name) {
+  let fastest = Infinity;
+  let marked;
+  for (let attempt = 0; attempt < 3 && fastest >= BOUND_MS; attempt += 1) {
+    const started = performance.now();
+    marked = hasUnbrokenRun(name);
+    fastest = Math.min(fastest, performance.now() - started);
+  }
+  return { marked, fastest };
+}
 
 for (const [label, name] of Object.entries(joinerNames)) {
   test(`The long-name check settles quickly on ${label}`, () => {
-    const started = performance.now();
-    const marked = hasUnbrokenRun(name);
-    const elapsed = performance.now() - started;
+    const { marked, fastest } = fastestCall(name);
     assert.equal(marked, false, "a run of 20 is not marked");
-    assert.ok(elapsed < 50, `${name.length} characters took ${elapsed.toFixed(1)} ms`);
+    assert.ok(fastest < BOUND_MS, `${name.length} characters took ${fastest.toFixed(1)} ms`);
   });
 }
 
@@ -79,9 +106,11 @@ const CONTEXTS = [
 ];
 const sticky = (source) => new RegExp(source, "uy");
 const alternatives = UNBROKEN_ALTERNATIVES.map(sticky);
-// Drops every lookahead and lookbehind group, skipping escapes and character classes.
-function withoutLookarounds(source) {
+// Splits off every lookahead and lookbehind group, skipping escapes and character classes:
+// `kept` is the source without them, `bodies` what each one holds.
+function splitLookarounds(source) {
   let kept = "";
+  const bodies = [];
   let depth = 0;
   let inClass = false;
   for (let index = 0; index < source.length; index += 1) {
@@ -93,20 +122,31 @@ function withoutLookarounds(source) {
     } else if (character === "]" && inClass) {
       inClass = false;
     } else if (!inClass && character === "(") {
-      if (depth > 0 || /^\(\?<?[=!]/.test(source.slice(index))) {
-        depth += 1;
+      if (depth === 0 && /^\(\?<?[=!]/.test(source.slice(index))) {
+        const opener = source.slice(index).match(/^\(\?<?[=!]/)[0];
+        index += opener.length - 1;
+        bodies.push("");
+        depth = 1;
         continue;
+      }
+      if (depth > 0) {
+        depth += 1;
       }
     } else if (!inClass && character === ")" && depth > 0) {
       depth -= 1;
-      continue;
+      if (depth === 0) {
+        continue;
+      }
     }
     if (depth === 0) {
       kept += text;
+    } else {
+      bodies[bodies.length - 1] += text;
     }
   }
-  return kept;
+  return { kept, bodies };
 }
+const withoutLookarounds = (source) => splitLookarounds(source).kept;
 const widened = UNBROKEN_ALTERNATIVES.map((source) => sticky(withoutLookarounds(source)));
 const consumes = (regex, text, at = 0) => {
   regex.lastIndex = at;
@@ -173,16 +213,52 @@ test("No two long-name alternatives match the same character, and no mark starts
 // alternative of its own that overlaps (a second branch inside one entry, or one that consumes
 // more than one character), and anything added where the alternatives are joined into the rule.
 // So each alternative must be one character class or escape, with only lookarounds beside it.
+const ATOM = String.raw`(?:\[(?:\\.|[^\]\\])*\]|\\u\{[0-9a-fA-F]+\}|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}|\\[pP]\{[\w=]+\}|\\[dDwWsSfnrtv0\\/.^$|?*+()[\]{}-]|[^\\[\](){}|*+?.^$])`;
 function atomWithoutLookarounds(source) {
-  return /^(?:\[(?:\\.|[^\]\\])*\]|\\u\{[0-9a-fA-F]+\}|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}|\\[pP]\{[\w=]+\}|\\[dDwWsSfnrtv0\\/.^$|?*+()[\]{}-]|[^\\[\](){}|*+?.^$])$/.test(
-    withoutLookarounds(source),
-  );
+  return new RegExp(`^${ATOM}$`).test(withoutLookarounds(source));
+}
+// A lookaround runs at every position the rule tries, so a body that can split marks two ways
+// brings the freeze back as well (finding 2037). Each branch of a body is one character class or
+// escape, after at most one run of marks, or the start of the name.
+const LOOKAROUND_BRANCH = new RegExp(String.raw`^(?:\^|(?:\\p\{M\}\*)?${ATOM})$`);
+// Splits a body on its top-level bars; a group inside a body is refused as a branch.
+function lookaroundBranches(body) {
+  const branches = [""];
+  let inClass = false;
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    const text = character === "\\" ? body.slice(index, index + 2) : character;
+    index += text.length - 1;
+    if (character === "[" && !inClass) {
+      inClass = true;
+    } else if (character === "]" && inClass) {
+      inClass = false;
+    } else if (character === "|" && !inClass) {
+      branches.push("");
+      continue;
+    }
+    branches[branches.length - 1] += text;
+  }
+  return branches;
 }
 
 test("Each long-name alternative consumes one character, with no branch of its own", () => {
   for (const source of UNBROKEN_ALTERNATIVES) {
     assert.ok(atomWithoutLookarounds(source), `not a single character: ${source}`);
   }
+});
+
+test("Each long-name lookaround checks one character, after at most one run of marks", () => {
+  let bodies = 0;
+  for (const source of UNBROKEN_ALTERNATIVES) {
+    for (const body of splitLookarounds(source).bodies) {
+      bodies += 1;
+      for (const branch of lookaroundBranches(body)) {
+        assert.match(branch, LOOKAROUND_BRANCH, `in ${source}`);
+      }
+    }
+  }
+  assert.ok(bodies > 0, "the rule has lookarounds to check");
 });
 
 test("The long-name rule joins exactly those alternatives, each with its marks", () => {
