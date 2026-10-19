@@ -80,10 +80,10 @@ details without activating it. **Deployment activity** shows the newest readable
 version's persisted status, not live health. Routine completion folds; pending work,
 read errors, warnings, and cleanup stay visible. Failed deployments show the API's message
 (logs advice if it names no step) and offer Logs unless log text or revision access was
-denied this sign-in. Configuration recovery requires Agent `update` or `deploy` and a
-Configuration without known read errors or denials; access remains separately authorized.
-**Deploy again** (per the message) also requires `deploy`; it focuses the draft's
-**Deploy new version**. Credentials recovery requires Agent `update`. Hidden or unlisted
+denied this sign-in. **Open Configuration** needs Agent `update` and no known Configuration
+read error or denial. **Open version draft** (`deploy` only) and **Deploy again** (per the
+message) need `deploy` and a successful Configuration read; Deploy again focuses **Deploy new
+version**. Credentials recovery needs `update`. Hidden or unlisted
 current versions suppress recovery; viewed versions show results. Activity polls every
 `DEPLOYMENT_POLL_MS` until a result or read error; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection, after any poll in flight. Polls patch in place (`patchChildren`), so
