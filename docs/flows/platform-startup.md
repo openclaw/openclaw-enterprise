@@ -1,7 +1,7 @@
 ---
 created: 2026-08-20
-updated: 2026-10-10
-last_updated_session: authoring-run/e833fed6-3411-4493-bc8a-237fef04c6b3
+updated: 2026-10-18
+last_updated_session: authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f
 ---
 
 # Platform Startup Flow
@@ -116,6 +116,11 @@ When `OCC_CONFIG_PATH` is set, each process reads the same trusted file and
 constructs its own Installation, Compute, Configuration, and mandatory
 `createIAMDriver(state)` bundle. The shared loader parses Backend integration
 metadata but never reads an admin credential or initializes a Backend client.
+`packages/occ/src/backends.ts:validateOpenShellBackend` classifies an admitted
+HTTPS endpoint case-insensitively, matching both gateway transports. HTTPS still
+needs bearer-token authentication to count as protected; operator TLS cannot
+replace that ordinary-RPC identity. HTTP still requires the explicit NetworkPolicy
+boundary and cannot carry operator TLS.
 Production requires the startup file. Development may omit it: the API then
 uses PostgreSQL plus the filesystem Configuration Driver rooted at
 `OCC_DEVELOPMENT_CONFIGURATION_ROOT`, and the worker uses the Docker Compute
@@ -260,6 +265,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-18 15:15: Match protected OpenShell transport admission to case-insensitive HTTPS schemes. (authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 
 - 2026-10-10 04:40: Refuse invalid Kubernetes resource pairs during selected Driver construction. (authoring-run/e833fed6-3411-4493-bc8a-237fef04c6b3 - 8e5a06cec7f622185222a8a7dbafe3b0a7228d9f)
 

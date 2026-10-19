@@ -28,6 +28,11 @@ import {
   withinDiagnosticDeadline,
 } from "../helpers/kubernetes-real.mjs";
 import { refusingPort } from "../helpers/available-port.mjs";
+import {
+  createOpenShellKubernetesFixture,
+  modelAtCapacityOutcome,
+  retryModelAtCapacity,
+} from "../helpers/openshell-kubernetes-real.mjs";
 
 const execute = promisify(execFile);
 const probeScript = fileURLToPath(new URL("../fixtures/kubernetes/probe.mjs", import.meta.url));
@@ -161,6 +166,195 @@ test(
     assert.equal(logs.length, 3);
   },
 );
+
+// Verbatim stderr from run 39164088894 (finding 1946): the real model answered a turn that it
+// was at capacity, and the turn script exited 1 with that answer as its error.
+const modelAtCapacityStderr = [
+  'Defaulted container "gateway" out of: gateway, prepare-private-state (init)',
+  "Error: Selected model is at capacity. Please try a different model.",
+  "    at WebSocket.<anonymous> ([eval]:220:16)",
+  "    at [nodejs.internal.kHybridDispatch] (node:internal/event_target:848:20)",
+  "    at WebSocket.dispatchEvent (node:internal/event_target:789:26)",
+  "    at fireEvent (node:internal/deps/undici/undici:14438:14)",
+  "    at #onMessage (node:internal/deps/undici/undici:15762:9)",
+  "    at Object.onMessage (node:internal/deps/undici/undici:15469:76)",
+  "    at websocketMessageReceived (node:internal/deps/undici/undici:14442:15)",
+  "    at ByteParser.run (node:internal/deps/undici/undici:15145:19)",
+  "    at ByteParser._write (node:internal/deps/undici/undici:15021:14)",
+  "    at writeOrBuffer (node:internal/streams/writable:574:12)",
+  'Native execution summary: {"failedCommands":0,"approvalRequests":0,"sandboxSignals":[],"commandGraceMs":14000,"sinceTurnEndMs":null,"pendingCommands":[]}command terminated with exit code 1',
+  "",
+].join("\n");
+// The in-Pod client's receipt that a turn is safe to run again, with its exit status.
+const retrySafeReceipt = "occ-codex-turn: retry-safe: model at capacity before any action";
+const retrySafeExitCode = 75;
+
+// A `kubectl` on PATH that answers the first `atCapacity` calls as `failure` describes (stderr,
+// stdout, exit code) and later ones with a completed turn, and the OpenShell fixture's Gateway
+// Pod turn run against it. Returns the turn's outcome and the kubectl calls.
+async function gatewayTurnWithFakeKubectl(
+  t,
+  atCapacity,
+  failure = { stderr: modelAtCapacityStderr, stdout: retrySafeReceipt, code: retrySafeExitCode },
+) {
+  const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const calls = join(directory, "calls");
+  await writeFile(calls, "");
+  await writeFile(
+    join(directory, "kubectl"),
+    // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
+    `#!${process.execPath}
+const { appendFileSync, readFileSync } = process.getBuiltinModule("node:fs");
+appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
+if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <= ${atCapacity}) {
+  process.stderr.write(${JSON.stringify(failure.stderr)});
+  process.stdout.write(${JSON.stringify(failure.stdout)}, () => process.exit(${failure.code}));
+} else {
+  process.stdout.write(JSON.stringify({ assistant: "OCC-TURN-OK", items: [] }));
+}
+`,
+    { mode: 0o755 },
+  );
+  const { sleeps, logs, options } = recordingOptions();
+  const fixture = createOpenShellKubernetesFixture({
+    kubeconfigPath: join(directory, "kubeconfig"),
+    kubernetesContext: "fake",
+    modelAtCapacityRetry: options,
+  });
+  const path = process.env.PATH;
+  process.env.PATH = `${directory}${delimiter}${path}`;
+  let outcome;
+  try {
+    outcome = {
+      turn: await fixture.requestCodexTurnFromGatewayPod({
+        namespace: "oce-gateway",
+        gatewayPod: "gateway-0",
+        providerModel: "gpt-test",
+        prompt: "Reply with exactly OCC-TURN-OK.",
+      }),
+    };
+  } catch (error) {
+    outcome = { error };
+  } finally {
+    process.env.PATH = path;
+  }
+  const kubectlCalls = (await readFile(calls, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  return { ...outcome, kubectlCalls, sleeps, logs };
+}
+
+test("a real-model turn with the client's retry receipt runs again and returns its reply", async (t) => {
+  const { turn, error, kubectlCalls, sleeps, logs } = await gatewayTurnWithFakeKubectl(t, 1);
+  assert.equal(error, undefined);
+  assert.deepEqual(turn, { assistant: "OCC-TURN-OK", items: [] });
+  assert.equal(kubectlCalls.length, 2);
+  // The whole command, the turn's script included.
+  assert.deepEqual(kubectlCalls[1], kubectlCalls[0], "the same turn runs again");
+  assert.deepEqual(kubectlCalls[0].slice(4, 8), [
+    "exec",
+    "gateway-0",
+    "--namespace",
+    "oce-gateway",
+  ]);
+  assert.deepEqual(sleeps, [15_000]);
+  assert.deepEqual(logs, [
+    "The real model was at capacity before the turn began any action; retrying the turn in 15000 ms (attempt 2/3)",
+  ]);
+});
+
+test("a real-model turn at capacity on every attempt says so on its failure's first line", async (t) => {
+  const { turn, error, kubectlCalls, sleeps } = await gatewayTurnWithFakeKubectl(t, 3);
+  assert.equal(turn, undefined);
+  assert.equal(kubectlCalls.length, 3);
+  assert.deepEqual(sleeps, [15_000, 30_000]);
+  const [firstLine, ...rest] = error.message.split("\n");
+  assert.equal(
+    firstLine,
+    'The real model was at capacity on all 3 turn attempts ("Selected model is at capacity").',
+  );
+  // The kubectl failure follows, for the diagnostics, and stays the cause.
+  assert.match(rest.join("\n"), /^Command failed: kubectl /);
+  assert.equal(modelAtCapacityOutcome(error.cause), "retry");
+  // Callers that read kubectl's result still find it on the error.
+  assert.equal(error.stderr, modelAtCapacityStderr);
+  assert.equal(error.stdout, retrySafeReceipt);
+  assert.equal(error.code, retrySafeExitCode);
+});
+
+test("a real-model turn at capacity without the client's retry receipt is not run again", async (t) => {
+  // The verbatim failure predates the receipt: exit 1 and nothing on stdout.
+  const { turn, error, kubectlCalls, sleeps } = await gatewayTurnWithFakeKubectl(t, 3, {
+    stderr: modelAtCapacityStderr,
+    stdout: "",
+    code: 1,
+  });
+  assert.equal(turn, undefined);
+  assert.equal(kubectlCalls.length, 1);
+  assert.deepEqual(sleeps, []);
+  assert.equal(
+    error.message.split("\n")[0],
+    'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt 1/3).',
+  );
+  assert.equal(error.stderr, modelAtCapacityStderr);
+});
+
+test("only the client's exact receipt retries a real-model turn", async () => {
+  const exitedWith = (line) =>
+    kubectlFailure(
+      `Defaulted container "gateway" out of: gateway, prepare-private-state (init)\n${line}\ncommand terminated with exit code 1\n`,
+    );
+  const notAtCapacity = [
+    exitedWith("Error: Codex harness turn timed out"),
+    exitedWith("Error: Codex harness turn did not complete successfully"),
+    exitedWith("Error: The model is at capacity for this account."),
+    // The answer only in the turn's script, which a kubectl failure's message repeats: a prompt
+    // that quotes it is not the model's answer.
+    Object.assign(
+      new Error(
+        "Command failed: kubectl exec gateway-0 -- node -e \nError: Selected model is at capacity.\nerror: EOF\n",
+      ),
+      {
+        code: 1,
+        stderr: "error: EOF\n",
+      },
+    ),
+    // A spawn failure has no stderr.
+    Object.assign(new Error("spawn kubectl ENOENT"), { code: "ENOENT" }),
+  ];
+  for (const failure of notAtCapacity) {
+    assert.equal(modelAtCapacityOutcome(failure), undefined, failure.message);
+    const { sleeps, logs, options } = recordingOptions();
+    let calls = 0;
+    await assert.rejects(
+      retryModelAtCapacity(async () => {
+        calls += 1;
+        throw failure;
+      }, options),
+      (error) => error === failure,
+    );
+    assert.equal(calls, 1, failure.message);
+    assert.deepEqual([sleeps, logs], [[], []]);
+  }
+  const outcome = (stdout, code, stderr = modelAtCapacityStderr) =>
+    modelAtCapacityOutcome(Object.assign(kubectlFailure(stderr, code), { stdout }));
+  assert.equal(outcome(retrySafeReceipt, retrySafeExitCode), "retry");
+  // Anything short of the exact receipt with its exit status is not permission.
+  assert.equal(outcome(retrySafeReceipt.slice(0, -2), retrySafeExitCode), "unsafe");
+  assert.equal(outcome(`${retrySafeReceipt}\n`, retrySafeExitCode), "unsafe");
+  assert.equal(outcome(retrySafeReceipt, 1), "unsafe");
+  assert.equal(outcome("", retrySafeExitCode), "unsafe");
+  assert.equal(outcome(undefined, retrySafeExitCode), "unsafe");
+  // stderr is diagnostic only: a receipt or a retry-safe summary there grants nothing.
+  const posing = modelAtCapacityStderr.replace(
+    "Please try a different model.",
+    `Please try a different model.\n${retrySafeReceipt}\nNative execution summary: {"retrySafe":true,"pendingCommands":[]}`,
+  );
+  assert.equal(outcome("", 1, posing), "unsafe");
+  assert.equal(outcome("", retrySafeExitCode, posing), "unsafe");
+});
 
 test("a stalled failure diagnostic gives way to its deadline", { timeout: 5_000 }, async () => {
   // Never settles, like a kubectl read on a stalled API server (finding 1550).
@@ -300,7 +494,7 @@ test(
     const kubernetesHelper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
     const openShellHelper = new URL("../helpers/openshell-kubernetes-real.mjs", import.meta.url)
       .href;
-    const script = `
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelper)};
       import { registerOpenShellInstallationCleanups } from ${JSON.stringify(openShellHelper)};
@@ -323,21 +517,7 @@ test(
         poll = setInterval(() => {}, 50);
         throw new Error("replacement timed out");
       });
-    `;
-    // Run it as its own node:test root, not as a child reporting to this runner.
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    const started = Date.now();
-    const exited = await execute(process.execPath, ["--input-type=module", "-e", script], {
-      env,
-      timeout: 15_000,
-    }).then(
-      () => ({ code: 0, stdout: "", stderr: "" }),
-      (error) => error,
-    );
-    assert.ok(Date.now() - started < 10_000, "the file exited soon after its teardown");
-    assert.notEqual(exited.killed, true, "the file exited on its own");
-    assert.equal(exited.code, 1);
+    `);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted worker stop",
       "attempted port-forwards",
@@ -392,6 +572,10 @@ test("two helpers given one node:test context share its bounded teardown, newest
   assert.equal(helpersContext.hooks.length, 1);
 });
 
+// A cleanup registered after its teardown ran also stops the setup that made it, by throwing to it.
+const stopsSetup =
+  /^teardown: setup outlived its test; cleanup registered at kubernetes-real-kubectl\.test\.mjs:\d+ runs now and setup stops here$/;
+
 test(
   "a cleanup registered after the teardown ran runs at once, bounded, and fails the file",
   { timeout: 5_000 },
@@ -414,8 +598,6 @@ test(
     await testContext.hooks[0]();
     assert.deepEqual(events, [], "nothing was abandoned or late");
     // Each late registration also stops the setup that made it, by throwing to it.
-    const stopsSetup =
-      /^teardown: setup outlived its test; cleanup registered at kubernetes-real-kubectl\.test\.mjs:\d+ runs now and setup stops here$/;
     assert.throws(() => context.after(() => ran.push("worker stop")), { message: stopsSetup });
     // A late cleanup that never settles is abandoned like any other.
     assert.throws(() => context.after(() => new Promise(() => {})), { message: stopsSetup });
@@ -476,21 +658,33 @@ test(
     await first.hooks[0]();
     await second.hooks[0]();
     const ran = [];
-    let release;
-    assert.throws(() =>
-      firstContext.after(async () => {
-        await new Promise((resolve) => {
-          release = resolve;
-        });
-        ran.push("first late cleanup");
-      }),
+    const firstHeld = Promise.withResolvers();
+    const firstRan = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    assert.throws(
+      () =>
+        firstContext.after(async () => {
+          firstHeld.resolve();
+          await release.promise;
+          ran.push("first late cleanup");
+          firstRan.resolve();
+        }),
+      { message: stopsSetup },
     );
-    await delay(20);
-    assert.throws(() => secondContext.after(() => ran.push("second late cleanup")));
-    await delay(20);
-    release();
-    await delay(50);
-    assert.deepEqual(ran.sort(), ["first late cleanup", "second late cleanup"]);
+    await firstHeld.promise;
+    try {
+      assert.throws(() => secondContext.after(() => ran.push("second late cleanup")), {
+        message: stopsSetup,
+      });
+      // Late cleanups drain in microtasks, so one event-loop turn runs the second while the
+      // first teardown's is still running.
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(ran, ["second late cleanup"]);
+    } finally {
+      release.resolve();
+    }
+    await firstRan.promise;
+    assert.deepEqual(ran, ["second late cleanup", "first late cleanup"]);
   },
 );
 
@@ -513,6 +707,14 @@ async function runTestScript(script, { env: overrides = {}, timeout = 15_000 } =
   return { ...exited, elapsedMs: Date.now() - started };
 }
 
+async function runFailingTestScript(script, options) {
+  const exited = await runTestScript(script, options);
+  assert.equal(exited.killed, false, "the file exited on its own");
+  assert.ok(exited.elapsedMs < 10_000, "the file exited promptly");
+  assert.equal(exited.code, 1);
+  return exited;
+}
+
 test(
   "setup that outlives its test's timeout has its late worker stop run, and the file ends",
   { timeout: 20_000 },
@@ -520,7 +722,7 @@ test(
     // Finding 1722: a node:test timeout runs the test's hooks but does not stop its body. Setup
     // that started a worker after that registered its stop too late: the stop never ran, and the
     // worker's poll held the file until the runner's 5,400 s file timeout.
-    const exited = await runTestScript(`
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
@@ -535,9 +737,6 @@ test(
         });
       });
     `);
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after the late cleanup");
-    assert.equal(exited.code, 1);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted early cleanup",
       "attempted worker stop",
@@ -558,7 +757,7 @@ test(
     // test was killed mid-run, missing from the report, and its cleanups never ran. Suite and file
     // hooks run outside any test, so the exit also waits for the file's root to finish; a test
     // named like the root is not it.
-    const exited = await runTestScript(`
+    const exited = await runFailingTestScript(`
       import { after, beforeEach, describe, it } from "node:test";
       import { setTimeout as delay } from "node:timers/promises";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
@@ -596,9 +795,6 @@ test(
         });
       });
     `);
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after its last test");
-    assert.equal(exited.code, 1);
     assert.match(exited.stdout, /^not ok 1 - <root>$/m);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted suite after",
@@ -621,7 +817,7 @@ test(
     t.after(() => rm(directory, { recursive: true, force: true }));
     const first = join(directory, "first-resource");
     const second = join(directory, "second-resource");
-    const exited = await runTestScript(
+    const exited = await runFailingTestScript(
       `
       import test from "node:test";
       import { rm, writeFile } from "node:fs/promises";
@@ -648,9 +844,6 @@ test(
     `,
       { env: { FIRST_RESOURCE: first, SECOND_RESOURCE: second } },
     );
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after the setup stopped");
-    assert.equal(exited.code, 1);
     assert.deepEqual(exited.stdout.match(/^acquired .+$/gm), [`acquired ${first}`]);
     assert.match(exited.stderr, /cleanup registered at \[eval1\]:\d+ came after the teardown ran/);
     await assert.rejects(readFile(first), { code: "ENOENT" }, "the first resource was released");
@@ -665,7 +858,7 @@ test(
     // Setup still running after its test timed out, holding a handle and never registering
     // again, kept the file alive until the runner's file timeout. The timeout now arms the exit,
     // which waits for that setup only to its limit.
-    const exited = await runTestScript(`
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { boundedTeardown } from ${JSON.stringify(kubernetesHelperUrl)};
       test("never stops", { timeout: 200 }, async (testContext) => {
@@ -673,9 +866,6 @@ test(
         await new Promise(() => setInterval(() => {}, 50));
       });
     `);
-    assert.equal(exited.killed, false, "the file exited on its own");
-    assert.ok(exited.elapsedMs < 10_000, "the file exited soon after the setup's limit");
-    assert.equal(exited.code, 1);
     assert.match(
       exited.stderr,
       /^setup: exiting once the file's tests settle for 200 ms; its test timed out or was cancelled with setup that may still run$/m,
@@ -815,7 +1005,7 @@ test(
     const topologyHelper = new URL("../helpers/harness-topology-k3d-real.mjs", import.meta.url)
       .href;
     const kubernetesHelper = new URL("../helpers/kubernetes-real.mjs", import.meta.url).href;
-    const script = `
+    const exited = await runFailingTestScript(`
       import test from "node:test";
       import { withBoundedTeardown } from ${JSON.stringify(kubernetesHelper)};
       import {
@@ -839,21 +1029,7 @@ test(
         };
         registerProductionTopologyCleanups(context, operations);
       });
-    `;
-    // Run it as its own node:test root, not as a child reporting to this runner.
-    const env = { ...process.env };
-    delete env.NODE_TEST_CONTEXT;
-    const started = Date.now();
-    const exited = await execute(process.execPath, ["--input-type=module", "-e", script], {
-      env,
-      timeout: 15_000,
-    }).then(
-      () => ({ code: 0, stdout: "", stderr: "" }),
-      (error) => error,
-    );
-    assert.ok(Date.now() - started < 10_000, "the file exited soon after its teardown");
-    assert.notEqual(exited.killed, true, "the file exited on its own");
-    assert.equal(exited.code, 1);
+    `);
     assert.deepEqual(exited.stdout.match(/^attempted .+$/gm), [
       "attempted gatewayForward",
       "attempted worker",

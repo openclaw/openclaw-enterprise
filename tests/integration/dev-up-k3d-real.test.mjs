@@ -1071,6 +1071,19 @@ test(
   },
 );
 
+// The end of a command's output for a failure message. The results artifact keeps a whole
+// message only up to 16 KiB, so each stream is bounded to leave room for both.
+const outputTailLines = 40;
+const outputTailChars = 6_000;
+function outputTail(output) {
+  return String(output ?? "")
+    .trimEnd()
+    .split("\n")
+    .slice(-outputTailLines)
+    .join("\n")
+    .slice(-outputTailChars);
+}
+
 test(
   "dev-up Keycloak second-pass failure retains recovery state until owned cleanup succeeds",
   {
@@ -1126,9 +1139,21 @@ process.exit(result.status ?? 1);
         PATH: `${fixture.root}${delimiter}${fixture.environment.PATH}`,
       }),
       (error) => {
-        assert.match(error.stdout, /Enabling Keycloak sign-in \(second Helm pass\)/);
-        assert.match(error.stderr, /injected second Helm pass failure/);
-        assert.match(error.stderr, /injected owned cluster deletion failure/);
+        // Finding 1884: dev up once failed before the second pass, and the assertion cut its
+        // stdout and never showed stderr. A mismatch now names the step dev up stopped at.
+        try {
+          assert.match(error.stdout, /Enabling Keycloak sign-in \(second Helm pass\)/);
+          assert.match(error.stderr, /injected second Helm pass failure/);
+          assert.match(error.stderr, /injected owned cluster deletion failure/);
+        } catch (mismatch) {
+          // Node's own message quotes the start of stdout; keep only its first line.
+          throw new Error(
+            `${mismatch.message.split("\n")[0].replace(/ Input:$/, "")} dev up exit ${error.code} signal ${error.signal}.` +
+              `\n--- dev up stdout, last ${outputTailLines} lines ---\n${outputTail(error.stdout)}` +
+              `\n--- dev up stderr, last ${outputTailLines} lines ---\n${outputTail(error.stderr)}`,
+            { cause: mismatch },
+          );
+        }
         return true;
       },
     );

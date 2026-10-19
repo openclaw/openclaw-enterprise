@@ -759,6 +759,23 @@ export const ProvisionAgentBody = Type.Object(
   { additionalProperties: false },
 );
 
+export const ValidateAgentCreateBody = Type.Object(
+  {
+    initialWorkspaceFiles: Type.Optional(CreateAgentBody.properties.initialWorkspaceFiles),
+    configuration: Type.Object(
+      { kind: ConfigurationKindSchema, values: ConfigurationValues },
+      {
+        additionalProperties: false,
+        description: "The Agent Configuration the caller will save, not yet saved.",
+      },
+    ),
+    executionMode: Type.Optional(HarnessExecutionModeSchema),
+    plugins: Type.Optional(Type.Ref("PluginDesiredState")),
+    pluginApprovers: Type.Optional(Type.Ref("PluginApprovers")),
+  },
+  { additionalProperties: false },
+);
+
 export const UpdateAgentBody = Type.Object(
   {
     configurationId: ConfigurationId,

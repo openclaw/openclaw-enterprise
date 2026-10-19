@@ -36,6 +36,7 @@ import {
   openShellAgentName,
   openShellGatewayName,
   openshellHash as hash,
+  outageAttemptRead,
   registerOpenShellInstallationCleanups,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import {
@@ -2698,11 +2699,33 @@ async function prepareProductionInstallation(
 
   const sandbox = await waitForSandbox(placement, deployed.data);
   if (harnessId === "codex") {
-    const initialFile = await request(
-      "GET",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/workspace/files/AGENTS.md`,
-    );
-    assert.equal(initialFile.status, 200, JSON.stringify(initialFile.error));
+    const initialFilePath = `/namespaces/${namespaceId}/agents/${agent.data.id}/workspace/files/AGENTS.md`;
+    const initialFile = await request("GET", initialFilePath);
+    if (initialFile.status !== 200) {
+      const secrets = failureSecrets([
+        process.env,
+        {
+          APP_SERVER_TOKEN: transport.appServerToken,
+          GATEWAY_API_KEY: workspaceGateway.apiKey,
+        },
+      ]);
+      const detail = await withinDiagnosticDeadline(
+        () =>
+          workspaceReadFailureDiagnostic({
+            request,
+            path: initialFilePath,
+            agentId: agent.data.id,
+            gatewayPlacement,
+            secrets,
+          }),
+        {
+          timedOut: `\nWorkspace read diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s`,
+        },
+      );
+      assert.fail(
+        `The first Workspace read answered ${initialFile.status} ${JSON.stringify(initialFile.error)}${detail}`,
+      );
+    }
     assert.equal(initialFile.data.content, "# Initialized OpenShell workspace\n");
   }
   const harnessPod = await waitForProviderHarnessPod(placement, deployed.data);
@@ -3377,6 +3400,7 @@ async function assertRefreshCredentialSources(topology) {
   const revisionId = current.data.activeRevisionId;
   const harness = await waitForProviderHarnessPod(topology.placement, { id: revisionId, agentId });
   const sourcePath = (source) => `/namespaces/${namespaceId}/credential-sources/${source.id}`;
+  const secrets = turnFailureSecrets(topology);
   const readRefresh = async (source) => {
     const read = await request("GET", sourcePath(source));
     assert.equal(read.status, 200, JSON.stringify(read.error));
@@ -3401,13 +3425,17 @@ async function assertRefreshCredentialSources(topology) {
       .filter(({ method }) => method === "item/completed")
       .map(({ params }) => params?.item)
       .filter((item) => item?.type === "commandExecution");
+    // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
+    // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
+    // check below treats it as a missing token.
     const echoed = (source) => {
       const echo = commands.find(({ command }) => String(command).includes(source.url));
       assert.ok(echo, `the Harness must call ${source.url}`);
+      const output = String(echo.aggregatedOutput ?? "").trim();
       try {
-        return JSON.parse(String(echo.aggregatedOutput ?? "").trim());
+        return JSON.parse(output);
       } catch {
-        return undefined;
+        return { unparsed: redactLogLine(output, secrets, 1_000) };
       }
     };
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
@@ -3426,7 +3454,13 @@ async function assertRefreshCredentialSources(topology) {
     }
   };
   const assertIssued = (observed, source) => {
-    assert.equal(observed?.placeholder, false, `${source.type} must arrive substituted`);
+    assert.equal(
+      observed?.placeholder,
+      false,
+      observed?.unparsed === undefined
+        ? `${source.type} must arrive substituted`
+        : `${source.type} must arrive substituted; the echo call printed ${JSON.stringify(observed.unparsed)}`,
+    );
     assert.equal(observed?.jwt?.valid, true, `${source.type} must carry a valid Keycloak token`);
     assert.equal(observed.jwt.iss, keycloak.issuer);
     assert.equal(observed.jwt.azp, source.clientId);
@@ -4358,6 +4392,79 @@ async function openShellSupervisorPod(topology) {
   return supervisors[0];
 }
 
+// Finding 1882: the first Workspace read once answered 503 DEPENDENCY_UNAVAILABLE right after
+// the Sandbox was ready. The API keeps the cause out of its answer. The read reaches the Agent
+// Gateway through the Envoy Gateway and the host relay; a failed read records the Agent Gateway
+// hop (its Pods, and its log including the Workspace identity's own connect lines), then how a
+// second read answered after them (still failed, or a delay that passed). The test fails either
+// way: a 503 right after "ready" may be a real readiness bug, so the read is not retried.
+async function workspaceReadFailureDiagnostic({
+  request,
+  path,
+  agentId,
+  gatewayPlacement,
+  secrets,
+}) {
+  const shown = (value, limit) =>
+    redactLogLine(typeof value === "string" ? value : JSON.stringify(value), secrets, limit);
+  const sections = [];
+  try {
+    const pods = (await diagnosticResources("pods", gatewayPlacement)).filter(
+      (pod) =>
+        pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
+        pod.metadata.labels?.["openclaw.dev/agent"] === agentId,
+    );
+    const states = pods.map((pod) => ({
+      name: pod.metadata.name,
+      phase: pod.status?.phase,
+      deleting: pod.metadata.deletionTimestamp !== undefined,
+      conditions: (pod.status?.conditions ?? []).map(({ type, status, reason }) => ({
+        type,
+        status,
+        reason,
+      })),
+      containers: (pod.status?.containerStatuses ?? []).map((status) => ({
+        name: status.name,
+        ready: status.ready,
+        restartCount: status.restartCount,
+        state: status.state,
+      })),
+    }));
+    sections.push(`Agent Gateway Pods: ${shown(states, 2_000)}`);
+    for (const pod of pods.slice(0, 2)) {
+      const logs = await diagnosticKubectl(
+        "logs",
+        pod.metadata.name,
+        "--namespace",
+        gatewayPlacement,
+        "--tail=500",
+        "--timestamps",
+      );
+      sections.push(
+        `Agent Gateway ${pod.metadata.name} log:\n${newestMatchingLogLines(logs, secrets, {
+          pattern: /error|warn|fail|workspace|ready|listen|start|connect|hello|auth|denied|close/iu,
+          budget: 4_000,
+          lineChars: turnDiagnosticLineChars,
+        })}`,
+      );
+    }
+  } catch (error) {
+    sections.push(
+      `Agent Gateway diagnostics unavailable: ${shown(error?.message ?? String(error), 300)}`,
+    );
+  }
+  try {
+    const again = await request("GET", path);
+    sections.push(
+      `A second read after these diagnostics answered ${again.status}` +
+        (again.status === 200 ? "" : ` ${shown(again.error, 300)}`),
+    );
+  } catch (error) {
+    sections.push(`A second read failed: ${shown(error?.message ?? String(error), 300)}`);
+  }
+  return `\n${sections.join("\n")}`;
+}
+
 function turnFailureSecrets(topology, gatewayPassword) {
   return failureSecrets([
     process.env,
@@ -4933,6 +5040,21 @@ const sandboxProbeFunction = [
   '  printf "%s_EXIT=%s\\n%s_OUT=%s\\n" "$name" "$code" "$name" "$out"; }',
 ];
 
+// Like probe, with a host: after curl's "could not resolve host" (exit 6) only, it prints what
+// the resolver returns for the host as NAME_RESOLVER and the first exit as NAME_FIRST_EXIT, then
+// runs the command once more (finding 1981). Any other exit is final.
+const sandboxResolvingProbeFunction = [
+  "probe_resolving() { local name=$1 host=$2; shift 2; local out code answer resolved;",
+  '  out=$("$@" 2>/dev/null); code=$?;',
+  '  if [ "$code" -eq 6 ]; then',
+  '    answer=$(getent ahosts "$host" 2>&1); resolved=$?;',
+  "    answer=$(printf '%s' \"$answer\" | tr '\\n' ' ' | cut -c1-400);",
+  '    printf "%s_RESOLVER=exit %s: %s\\n" "$name" "$resolved" "$answer";',
+  '    printf "%s_FIRST_EXIT=%s\\n" "$name" "$code"; sleep 2; out=$("$@" 2>/dev/null); code=$?;',
+  "  fi;",
+  '  printf "%s_EXIT=%s\\n%s_OUT=%s\\n" "$name" "$code" "$name" "$out"; }',
+];
+
 /**
  * Writes a probe script into the shared workspace and has Codex run it, so each command is a
  * Sandbox process behind OpenShell's proxy and the model never composes a credentialed command.
@@ -5055,6 +5177,7 @@ async function assertCredentialRouteEnforcement(topology) {
     'printf "PLACEHOLDER_FOUND=%s\\n" "$([ -n "$model" ] && echo yes || echo no)"',
     `printf "PLACEHOLDER_INHERITED=%s\\n" "$([ -n "$${modelCredentialVariable}" ] && echo yes || echo no)"`,
     ...sandboxProbeFunction,
+    ...sandboxResolvingProbeFunction,
     // The model placeholder sent to a tool host that curl may reach.
     `probe FOREIGN curl -sS -o "$body" -w '%{http_code}' --max-time 20 ` +
       `-H "Authorization: Bearer $model" ${toolA.url}`,
@@ -5076,9 +5199,13 @@ async function assertCredentialRouteEnforcement(topology) {
     // Direct connections that skip the proxy, by name and by address.
     // OpenShell may intercept these transparently, so a host the policy allows can still answer;
     // a host it denies must not.
-    `probe BYPASS_ALLOWED curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
+    // A one-off DNS miss on this path is not the policy's answer, so each host gets a second
+    // try after exit 6 (finding 1995). The bare address needs no lookup and gets one try.
+    `probe_resolving BYPASS_ALLOWED www.openclaw.org ` +
+      `curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
       `https://www.openclaw.org`,
-    `probe BYPASS_DENIED curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
+    `probe_resolving BYPASS_DENIED acme.com ` +
+      `curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
       `https://acme.com`,
     `probe BYPASS_ADDRESS curl --noproxy '*' -sSk -o /dev/null -w '%{http_code}' --max-time 10 ` +
       `https://${publicAddress}`,
@@ -5168,7 +5295,12 @@ async function assertCredentialRouteEnforcement(topology) {
     },
     proxyBypass: {
       allowedHostExitCode: exitCode("BYPASS_ALLOWED"),
+      // Both null unless the first try could not resolve the host (exit 6).
+      allowedHostFirstExitCode: exitCode("BYPASS_ALLOWED_FIRST"),
+      allowedHostResolver: value("BYPASS_ALLOWED_RESOLVER"),
       deniedHostExitCode: exitCode("BYPASS_DENIED"),
+      deniedHostFirstExitCode: exitCode("BYPASS_DENIED_FIRST"),
+      deniedHostResolver: value("BYPASS_DENIED_RESOLVER"),
       addressExitCode: exitCode("BYPASS_ADDRESS"),
       sandboxDns: exitCode("DNS") === 0 ? "resolved" : "failed",
     },
@@ -5213,17 +5345,25 @@ async function assertCredentialRouteEnforcement(topology) {
   assert.equal(
     observed.proxyBypass.allowedHostExitCode,
     0,
-    "a host the policy allows must stay reachable for the denied checks to mean anything.",
+    `a host the policy allows must stay reachable for the denied checks to mean anything: ${JSON.stringify(
+      observed.proxyBypass,
+    )}`,
   );
-  assert.notEqual(
+  // OpenShell refuses these connections, and curl reports that as exit 7 (could not connect).
+  // Another failure, such as 6 (could not resolve host), may never have reached the policy, so it
+  // proves nothing about it (findings 1981 and 1995). If OpenShell ever drops these connections
+  // instead (curl exit 28) or refuses them during TLS setup (35), update this check deliberately.
+  assert.equal(
     observed.proxyBypass.deniedHostExitCode,
-    0,
-    "the Sandbox must not reach a denied host by skipping its proxy.",
+    7,
+    `the Sandbox must not reach a denied host by skipping its proxy: ${JSON.stringify(
+      observed.proxyBypass,
+    )}`,
   );
-  assert.notEqual(
+  assert.equal(
     observed.proxyBypass.addressExitCode,
-    0,
-    "the Sandbox must not reach a public address directly.",
+    7,
+    `the Sandbox must not reach a public address directly: ${JSON.stringify(observed.proxyBypass)}`,
   );
   // The provider-fenced Pod has no public egress of its own outside the Sandbox.
   assert.notEqual(podNetwork.address, "connected", "the Harness Pod must not reach the Internet.");
@@ -5882,21 +6022,34 @@ async function assertOpenShellGatewayOutage(topology) {
     // A claim marks the work `claimed` and counts an attempt; a failed attempt returns it to
     // `queued`. Waiting for that while the gateway is still at zero replicas proves the worker
     // tried the revision against the stopped gateway and did not activate it.
-    const work = await waitFor(
+    // Recorded as they are read, so a timed-out wait still shows what the poll saw.
+    const deploymentStatuses = [];
+    observed.redeployDuringOutage = { deploymentStatuses };
+    const { work, status } = await waitFor(
       `deployment ${redeployed.data.id} to fail an attempt while the gateway is down`,
-      async () => {
-        const { rows } = await observerPool.query(
-          "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
-          [`agent_revision:${redeployed.data.id}:reconcile`],
-        );
-        return rows[0]?.state === "queued" && rows[0].attempt_count >= 1 ? rows[0] : undefined;
-      },
+      outageAttemptRead({
+        readWork: async () =>
+          (
+            await observerPool.query(
+              "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+              [`agent_revision:${redeployed.data.id}:reconcile`],
+            )
+          ).rows[0],
+        readStatus: async () => {
+          const deployment = await request("GET", `${agentPath}/deployments/${redeployed.data.id}`);
+          const read = deployment.data?.status ?? null;
+          if (deploymentStatuses.at(-1) !== read) {
+            deploymentStatuses.push(read);
+          }
+          return read;
+        },
+      }),
       180_000,
     );
-    const deployment = await request("GET", `${agentPath}/deployments/${redeployed.data.id}`);
     const during = await request("GET", agentPath);
     observed.redeployDuringOutage = {
-      status: deployment.data?.status ?? null,
+      status,
+      deploymentStatuses,
       work,
       activeRevisionUnchanged: during.data?.activeRevisionId === activeRevisionId,
       gatewayStopped: (await gatewayPods()).length === 0,

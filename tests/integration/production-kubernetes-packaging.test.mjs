@@ -3084,11 +3084,31 @@ test("database CA mounts stay distinct from active production volume mounts", to
     );
     assert.ok(paths.size > 0);
     for (const mountPath of paths) {
-      await assert.rejects(
-        render({ ...features, ...databaseCaValues, "database.caMountPath": mountPath }),
-        /database.caMountPath.*distinct/,
+      // Linux kubelet/runtime destinations alias these spellings. The CA must not
+      // hide an active volume after admission accepts the distinct raw strings.
+      for (const alias of [
         mountPath,
-      );
+        mountPath.slice(1),
+        `${mountPath}/`,
+        `${mountPath}/.`,
+        `${mountPath}/../${mountPath.split("/").at(-1)}`,
+        // The controller image links /var/run to /run, and the runtime follows it.
+        ...(mountPath.startsWith("/run/") ? [`/var${mountPath}`] : []),
+        ...(mountPath.startsWith("/var/run/") ? [mountPath.slice("/var".length)] : []),
+        // It links /var/lock to /run/lock too, so ".." from /var/lock lands in /run, not /var.
+        ...(mountPath.startsWith("/run/")
+          ? [
+              `/var/lock/..${mountPath.slice("/run".length)}`,
+              `/run/lock/..${mountPath.slice("/run".length)}`,
+            ]
+          : []),
+      ]) {
+        await assert.rejects(
+          render({ ...features, ...databaseCaValues, "database.caMountPath": alias }),
+          /database.caMountPath.*distinct/,
+          alias,
+        );
+      }
     }
   }
   // Paths reserved by optional features remain available when those features are disabled.
@@ -3097,11 +3117,15 @@ test("database CA mounts stay distinct from active production volume mounts", to
     "/etc/openclaw/repository-registry",
     "/etc/openclaw/repository-ca",
     "/var/run/secrets/kubernetes.io/serviceaccount",
+    "/run/secrets/kubernetes.io/serviceaccount",
     "/run/openclaw/repository-control",
+    "/var/run/openclaw/repository-control",
     "/etc/openclaw/gateway-api-key",
     "/etc/openclaw/gateway-ca",
     "/etc/openclaw/chatgpt",
     "/custom/database-ca",
+    "custom/database-ca",
+    "/custom/./database-ca",
   ]) {
     await render({ ...databaseCaValues, "database.caMountPath": mountPath });
   }

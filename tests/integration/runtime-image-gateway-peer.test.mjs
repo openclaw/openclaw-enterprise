@@ -25,6 +25,11 @@ import {
 // during a peer status outage or a replacement peer changes. Split from
 // runtime-image-startup.test.mjs by measured case durations.
 
+// No Gateway cron. Cron work in flight at the peer change (drain counts rootRequests=1
+// cronRuns=1, no agent run) kept the old process draining past the fixture's 240 s, short of
+// the wrapper's 330 s SIGKILL (finding 1875). These cases cover peer recovery, not cron.
+const SKIP_GATEWAY_CRON = "OPENCLAW_SKIP_CRON=1";
+
 for (const writableConfig of [false, true]) {
   test(
     writableConfig
@@ -75,6 +80,7 @@ for (const writableConfig of [false, true]) {
         extraEnvironment: [
           // This isolated fixture uses synthetic credentials; retain startup causes.
           "OPENCLAW_DEBUG=1",
+          SKIP_GATEWAY_CRON,
           "APP_SERVER_URL=ws://[::1]:4500",
           `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
           "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",
@@ -115,6 +121,28 @@ for (const writableConfig of [false, true]) {
         const logs = await runDocker(["logs", containerName]).catch((logsError) => logsError);
         // CI truncates error messages; preserve complete container logs separately.
         t.diagnostic(commandOutput(logs));
+        // CI also keeps only 1,000 characters of each output line, which the log above spends
+        // on the Gateway's first lines. Each wrapper phase and each stream's last lines get a
+        // line of their own, so a peer change with no respawn shows where the wrapper stopped
+        // (finding 1875).
+        for (const entry of jsonLogEntries(commandOutput(logs))) {
+          if (entry?.event === "runtime.startup_phase") {
+            t.diagnostic(
+              `wrapper phase at failure: ${entry.phase}:${entry.outcome}${entry.code ? ` ${entry.code}` : ""} ${entry.ms}/${entry.sinceStartMs} ms (duration/since start)`,
+            );
+          }
+        }
+        // Its own read: a log over runDocker's 1 MB buffer would keep only its beginning.
+        const tail = await runDocker(["logs", "--tail", "20", containerName]).catch(
+          (tailError) => tailError,
+        );
+        for (const stream of ["stdout", "stderr"]) {
+          for (const line of String(tail[stream] ?? "").split("\n")) {
+            if (line.trim() !== "") {
+              t.diagnostic(`container ${stream} tail: ${line}`);
+            }
+          }
+        }
         const runtimeErrors = jsonLogEntries(commandOutput(logs))
           .filter((entry) => entry.level === "error")
           .map((entry) => entry.message)
@@ -186,6 +214,7 @@ async function assertGatewayExitsDuringPeerScenario(t, scenario, expectedPhase) 
     entrypoint: KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
     volumes: [`${configurationPath}:/etc/openclaw/openclaw.json:ro`],
     extraEnvironment: [
+      SKIP_GATEWAY_CRON,
       "APP_SERVER_URL=ws://[::1]:4500",
       `OPENCLAW_PLUGIN_RUNTIME_JSON=${JSON.stringify({ manifest })}`,
       "OPENCLAW_PLUGIN_STATUS_CONTAINER=gateway",

@@ -166,6 +166,13 @@ function candidateDeploymentError(scenario, checkedAt) {
       },
     };
   }
+  if (scenario.candidateDependencyUnavailable) {
+    return {
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+    };
+  }
   if (scenario.candidateSelected) {
     return {
       code: "REVISION_FINALIZATION_INCOMPLETE",
@@ -228,7 +235,7 @@ export function installFixture(scenario, evidence) {
         {
           id: namespaceId,
           name: scenario.namespaceName ?? "Engineering",
-          status: "ready",
+          status: scenario.namespaceStatus ?? "ready",
           createdAt,
         },
         {
@@ -458,6 +465,8 @@ export function installFixture(scenario, evidence) {
             ? candidateDeploymentError(scenario, candidate.createdAt)
             : null,
         warnings: scenario.candidateDeploymentWarnings ?? [],
+        // The next status poll records success and selects v7 for service.
+        ...(scenario.candidateActivates ? { reads: 0 } : {}),
       });
     }
   }
@@ -1054,6 +1063,10 @@ export function installFixture(scenario, evidence) {
           credentials.set(saved.id, { transportConfigured: false });
           return response(saved, 201);
         }
+      }
+      // Create Agent's preflight accepts unless a scenario rule refuses it.
+      if (resource === "agents/validate" && method === "POST") {
+        return new Response(null, { status: 204 });
       }
       if (resource === "agents/provision" && method === "POST") {
         const {

@@ -28,7 +28,7 @@ func TestAgentRuntimeTableShowsCurrentContainerReason(t *testing.T) {
 			}}
 			var out bytes.Buffer
 			app := &application{out: &out}
-			if err := app.printRuntime(map[string]any{"pods": []any{pod}}); err != nil {
+			if err := app.printRuntime(map[string]any{"pods": []any{pod}}, "ns_1", "agt_1", "rev_1"); err != nil {
 				t.Fatal(err)
 			}
 			_, row, _ := strings.Cut(out.String(), "\n")

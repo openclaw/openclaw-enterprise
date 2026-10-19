@@ -9,6 +9,7 @@ import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
   detailUrl,
+  fileBrowser,
   holdRequests,
   login,
   nativeValues,
@@ -65,6 +66,9 @@ function succeededDeployment(namespace, agent, revisionId) {
     }),
   };
 }
+
+// The locale cases open one context each in a single Chromium instead of launching ten.
+const browser = fileBrowser();
 
 const atBottom = (node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 24;
 
@@ -124,7 +128,7 @@ test("a failed deployment's Logs link opens its version in view without reloadin
     await pane.getByText("startup failed before activation").waitFor();
     assert.equal(await page.evaluate(() => globalThis.document.logsNavigationMarker), true);
     await page.waitForFunction(() => {
-      const tab = globalThis.document.querySelector('.agent-tabs button[aria-current="page"]');
+      const tab = globalThis.document.querySelector('.agent-tabs button[aria-selected="true"]');
       const panel = globalThis.document.querySelector(".agent-logs");
       if (!tab || !panel) {
         return false;
@@ -162,7 +166,7 @@ for (const viewport of [
     );
     await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
-    const logsTab = page.getByRole("button", { name: "Logs", exact: true });
+    const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
     // The strip sits in the middle of the viewport, as after reading the overview.
     await page.evaluate(() => {
       const strip = globalThis.document.querySelector(".agent-tabs").getBoundingClientRect();
@@ -255,11 +259,11 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   }
 
   async function assertSelectedTabVisible(name) {
-    const selected = page.locator('.agent-tabs button[aria-current="page"]');
+    const selected = page.locator('.agent-tabs button[aria-selected="true"]');
     assert.equal(await selected.textContent(), name);
     await page.waitForFunction(() => {
-      const button = globalThis.document.querySelector('.agent-tabs button[aria-current="page"]');
-      const strip = button.closest("nav").getBoundingClientRect();
+      const button = globalThis.document.querySelector('.agent-tabs button[aria-selected="true"]');
+      const strip = button.closest(".agent-tabs").getBoundingClientRect();
       const bounds = button.getBoundingClientRect();
       // Scroll extents are integer CSS pixels; DOMRects retain subpixels.
       // Keep the visibility check strict beyond that rounding uncertainty.
@@ -276,7 +280,7 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   await resize(390, 844);
   await assertSelectedTabVisible("Logs");
   assert.equal(await output.evaluate((node) => node.isConnected), true);
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText("View admitted native configuration", { exact: true }).click();
   await waitForIdleFetches(page);
   const disclosure = await page.locator(".native-document").elementHandle();
@@ -303,7 +307,7 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
   assert.equal(await strip.evaluate((node) => node.isConnected), false);
   await page.goBack();
-  await page.locator('.agent-tabs button[aria-current="page"]:enabled').waitFor();
+  await page.locator('.agent-tabs button[aria-selected="true"]:enabled').waitFor();
   assert.equal(await strip.evaluate((node) => node.isConnected), true);
   await resize(390, 844);
   await assertSelectedTabVisible("Logs");
@@ -391,8 +395,8 @@ test("the Logs tab shows runtime status, sanitized output and follows with a cur
 
   // Drafts have no runtime and no Logs tab.
   await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "logs").href);
-  await page.getByRole("button", { name: "Configuration", exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Logs", exact: true }).count(), 0);
+  await page.getByRole("tab", { name: "Configuration", exact: true }).waitFor();
+  assert.equal(await page.getByRole("tab", { name: "Logs", exact: true }).count(), 0);
 });
 
 test("log timestamps distinguish the repeated hour when daylight saving time ends", async (t) => {
@@ -416,35 +420,199 @@ test("log timestamps distinguish the repeated hour when daylight saving time end
 // The UTC offset made timestamps wrap onto a second line in the fixed 170 px (150 px at 1100 px
 // and below) time column above 760 px, so every log row took two lines (findings 1681, 1697).
 // In a Logs card under 662 px (a 1000 px window and below, or about 1101-1280 px beside the
-// version list) the message moves below the time instead of shrinking to a sliver.
+// version list) the message moves below the time instead of shrinking to a sliver. At 521-527 px
+// the phone layout squeezed the time column, and under about 400 px the level beside it did
+// (finding 1844): there the time takes its own line, down to a 320 px window. The column was
+// sized for en-US, so ko-KR wrapped at every width, and es-MX and ar-EG with a long UTC offset
+// (finding 1861): the console now measures the widest timestamp of the locale and time zone,
+// and a cell too narrow for it shrinks the text rather than wrapping it.
 test("log timestamps with their UTC offset stay on one line", async (t) => {
-  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
-  // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30.
-  computeDriver.state.lines = [{ time: "2026-12-31T02:29:59Z", raw: "longest timestamp" }];
-  for (const [locale, timezoneId, shown] of [
+  const { fixture, computeDriver, namespace } = await logsFixture(t);
+  // 12/31, a two-digit hour: the longest en-US form, with Adelaide's GMT+10:30. The other lines
+  // have another level or a shorter timestamp, and their columns line up with the first.
+  computeDriver.state.lines = [
+    { time: "2026-12-31T02:29:59Z", raw: "longest timestamp" },
+    {
+      time: "2026-01-01T20:00:00Z",
+      raw: JSON.stringify({ level: "error", message: "shorter timestamp" }),
+    },
+    // Lord Howe's GMT+10:30 applies only in the southern winter.
+    { time: "2026-07-31T02:29:59Z", raw: "winter timestamp" },
+  ];
+  // The first case signs in; later contexts start with its session cookie.
+  let signedIn;
+  for (const [index, [locale, timezoneId, shown]] of [
     ["en-US", "Australia/Adelaide", /^12\/31\/2026, 12:59:59\sPM\sGMT\+10:30$/u],
     ["en-US", "Asia/Kolkata", /^12\/31\/2026, 7:59:59\sAM\sGMT\+5:30$/u],
     ["en-US", "America/New_York", /^12\/30\/2026, 9:29:59\sPM\sGMT-5$/u],
     ["fr-FR", "Europe/Paris", /^31\/12\/2026\s03:29:59\sUTC\+1$/u],
     ["de-DE", "Europe/Berlin", /^31\.12\.2026,\s03:29:59\sGMT\+1$/u],
-  ]) {
-    const { page } = await newPage(t, fixture, { context: { locale, timezoneId } });
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
-    const time = page
-      .getByRole("log", { name: "Runtime log output" })
-      .locator(".log-row", { hasText: "longest timestamp" })
-      .locator(".log-time");
+    ["ko-KR", "Asia/Seoul", /^2026\.\s12\.\s31\.\s오전\s11시\s29분\s59초\sGMT\+9$/u],
+    ["ko-KR", "Australia/Adelaide", /^2026\.\s12\.\s31\.\s오후\s12시\s59분\s59초\sGMT\+10:30$/u],
+    ["ar-EG", "Australia/Adelaide", /^٣١\S*\/١٢\S*\/٢٠٢٦،?\s١٢:٥٩:٥٩\sم\sغرينتش\+١٠:٣٠$/u],
+    ["en-AU", "Australia/Lord_Howe", /^31\/12\/2026, 1:29:59\spm\sGMT\+11$/u],
+    ["es-MX", "Australia/Adelaide", /^31\/12\/2026, 12:59:59\sp\.\s?m\.\sGMT\+10:30$/u],
+  ].entries()) {
+    // Each case reads its own Agent's logs: one Agent's reads are rate limited per principal
+    // (burst 10, then 2 a second), and ten cases in one Chromium read faster than that.
+    const agent = await fixture.createAgent(
+      namespace.id,
+      `Logs Agent ${index}`,
+      nativeValues("v1"),
+    );
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, {
+      browser,
+      context: {
+        locale,
+        timezoneId,
+        ...(signedIn === undefined ? {} : { storageState: signedIn }),
+      },
+    });
+    const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "logs");
+    if (signedIn === undefined) {
+      await login(page, fixture, url);
+      signedIn = await page.context().storageState();
+    } else {
+      await page.goto(url.href);
+    }
+    const log = page.getByRole("log", { name: "Runtime log output" });
+    const time = log.locator(".log-row", { hasText: "longest timestamp" }).locator(".log-time");
     assert.match(await time.innerText(), shown);
-    for (const width of [1440, 1300, 1200, 1101, 1100, 1001, 1000, 761]) {
+    await log.getByText("winter timestamp").waitFor();
+    for (const width of [
+      1440, 1300, 1200, 1101, 1100, 1001, 1000, 761, 760, 662, 600, 527, 524, 521, 520, 480, 404,
+      402, 397, 390, 360, 320,
+    ]) {
       await page.setViewportSize({ width, height: 900 });
-      const lines = await time.evaluate((cell) => {
-        const range = cell.ownerDocument.createRange();
-        range.selectNodeContents(cell);
-        return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+      const where = `${locale} ${timezoneId} at ${width}px`;
+      // One read of the laid-out pane per width: 220 cases, so round trips set the test's time.
+      const seen = await log.evaluate((pane) => {
+        const all = (selector) => [...pane.querySelectorAll(selector)];
+        const cells = all(".log-time");
+        const longest = all(".log-row")
+          .find((row) => row.textContent.includes("longest timestamp"))
+          ?.querySelector(".log-time");
+        if (!longest) {
+          throw new Error("no time cell in the longest timestamp's row");
+        }
+        const content = longest.closest(".log-line").querySelector(".log-content");
+        const box = content.getBoundingClientRect();
+        return {
+          cells: cells.map((cell) => {
+            const range = cell.ownerDocument.createRange();
+            range.selectNodeContents(cell);
+            const rects = [...range.getClientRects()];
+            const box = cell.getBoundingClientRect();
+            return {
+              text: cell.textContent,
+              lines: new Set(rects.map((rect) => Math.round(rect.top))).size,
+              left: Math.min(...rects.map((rect) => rect.left)) - box.left,
+              right: box.right - Math.max(...rects.map((rect) => rect.right)),
+            };
+          }),
+          starts: Object.fromEntries(
+            [".log-time", ".log-level", ".log-origin"].map((column) => [
+              column,
+              all(column).map((cell) => cell.getBoundingClientRect().left),
+            ]),
+          ),
+          times: cells.map((cell) => {
+            const { width } = cell.getBoundingClientRect();
+            return `${width} ${cell.ownerDocument.defaultView.getComputedStyle(cell.firstElementChild).fontSize}`;
+          }),
+          overflow: pane.scrollWidth > pane.clientWidth,
+          message: {
+            beside: box.top < longest.getBoundingClientRect().bottom,
+            width: box.width,
+          },
+        };
       });
-      assert.equal(lines, 1, `one ${locale} ${timezoneId} timestamp line at ${width}px`);
+      assert.equal(seen.cells.length, 3);
+      for (const cell of seen.cells) {
+        assert.equal(cell.lines, 1, `one line for ${cell.text}, ${where}`);
+        // The text stays inside its cell, so it never runs into the level beside it.
+        assert.ok(
+          cell.left >= -0.5 && cell.right >= -0.5,
+          `${cell.text} inside its cell, ${where}`,
+        );
+      }
+      // Rows with different levels and timestamp lengths keep one time width and font size.
+      for (const [column, starts] of Object.entries(seen.starts)) {
+        assert.equal(new Set(starts).size, 1, `${column} aligned, ${where}`);
+      }
+      assert.equal(new Set(seen.times).size, 1, `one time width and size, ${where}: ${seen.times}`);
+      assert.ok(!seen.overflow, `no horizontal log overflow, ${where}`);
+      // A message beside the time keeps about 200 px (196 px beside en-US's at a 662 px card);
+      // beside a longer timestamp, in a card up to 762 px, it moves below.
+      assert.ok(
+        !seen.message.beside || seen.message.width >= 195,
+        `message ${seen.message.width}px wide beside the time, ${where}`,
+      );
     }
   }
+});
+
+// Each Logs pane probed 288 timestamps to size its time column, although the width depends
+// only on the locale, time zone and font: 2-9 ms per pane, a 78 ms long task in ar-EG without an
+// Arabic font (finding 1867). Later panes reuse the first measurement.
+test("later Logs panes reuse the measured time column width", async (t) => {
+  const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
+  computeDriver.state.lines = [{ time: "2026-12-31T02:29:59Z", raw: "longest timestamp" }];
+  const { page } = await newPage(t, fixture, {
+    context: { locale: "ko-KR", timezoneId: "Australia/Adelaide" },
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revisionId, "logs"));
+  const log = page.getByRole("log", { name: "Runtime log output" });
+  await log.getByText("longest timestamp").waitFor();
+  const reused = await log.evaluate(async (shown) => {
+    // The module instance the page runs, not a second copy.
+    const url = globalThis.performance
+      .getEntriesByType("resource")
+      .find((entry) => new URL(entry.name).pathname.endsWith("/agents/logs-view.mjs")).name;
+    const { fitLogTimeColumn } = await import(url);
+    let probes = 0;
+    const observer = new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          probes += node.classList?.contains("log-time-probe") ? 1 : 0;
+        }
+      }
+    });
+    observer.observe(globalThis.document.body, { childList: true, subtree: true });
+    // What sizes the column: its width, the text in 11px ems, and the long-time layout.
+    const sizing = (pane) => [
+      pane.style.getPropertyValue("--log-time-width"),
+      pane.style.getPropertyValue("--log-time-ems"),
+      pane.hasAttribute("data-long-time"),
+    ];
+    const panes = [];
+    for (let index = 0; index < 2; index += 1) {
+      const pane = globalThis.document.createElement("div");
+      pane.className = "log-pane";
+      shown.after(pane);
+      panes.push([fitLogTimeColumn(pane), ...sizing(pane)]);
+      pane.remove();
+    }
+    const missed = observer.takeRecords();
+    observer.disconnect();
+    for (const record of missed) {
+      for (const node of record.addedNodes) {
+        probes += node.classList?.contains("log-time-probe") ? 1 : 0;
+      }
+    }
+    return { probes, panes, shown: sizing(shown) };
+  });
+  // ko-KR with GMT+10:30 is wider than en-US, so the long-time layout applies too.
+  assert.equal(reused.shown[2], true);
+  assert.deepEqual(reused, {
+    probes: 0,
+    panes: [
+      [true, ...reused.shown],
+      [true, ...reused.shown],
+    ],
+    shown: reused.shown,
+  });
 });
 
 // Above 1100 px the Logs card sits beside the version list, narrower than at 1001-1100 px.
@@ -486,7 +654,7 @@ test("log levels stay on one line and keep log columns aligned", async (t) => {
   await page.getByLabel("Include debug").check();
   await pane.getByText("debug message", { exact: true }).waitFor();
 
-  for (const width of [390, 700, 900, 1280]) {
+  for (const width of [320, 390, 524, 700, 780, 900, 1280]) {
     await page.setViewportSize({ width, height: 844 });
     const fittingLevels = await pane.locator(".log-level").evaluateAll((badges) =>
       badges.flatMap((badge) => {
@@ -1113,8 +1281,8 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   const statusReads = () =>
     requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length;
   const before = statusReads();
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "Logs", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
   await pane.getByText("log reader can see this").waitFor();
   assert.equal(await page.locator("#runtime-log-source").isDisabled(), false);
   assert.equal(statusReads(), before);
@@ -1612,8 +1780,8 @@ test("a reader without operate learns what log text needs and is asked for statu
   assert.equal(statusReads(), 1);
 
   // Every denied read is an audited authorization denial: reopening the tab does not ask again.
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "Logs", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
   // The reopened tab shows this text only after its status decision, so a repeat read has started.
   await page.getByText(/Log text needs Agent read_logs/).waitFor();
   await settlePageRequests(page);
@@ -2589,8 +2757,8 @@ test("a Logs tab rebuilt after an operate grant reads status again without a pag
   const permissionReads = () =>
     requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
   const reopenLogs = async () => {
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
-    await page.getByRole("button", { name: "Logs", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Logs", exact: true }).click();
   };
   assert.equal(statusReads(), 1);
 
@@ -2622,8 +2790,8 @@ test("a status refusal after a revocation the page did not read is asked again o
   await page.locator(".runtime-pod").first().waitFor();
   await waitForIdleFetches(page);
   const reopenLogs = async () => {
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
-    await page.getByRole("button", { name: "Logs", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Logs", exact: true }).click();
   };
 
   changeGrant(role, "operate", false);
@@ -2653,8 +2821,8 @@ test("a status refusal taken while operate is allowed is asked again after a new
   const permissionReads = () =>
     requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
   const reopenLogs = async () => {
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
-    await page.getByRole("button", { name: "Logs", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Logs", exact: true }).click();
     await page.getByText(/Runtime status requires Agent operate/).waitFor();
     await waitForIdleFetches(page);
   };

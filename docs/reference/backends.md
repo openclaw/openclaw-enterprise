@@ -147,7 +147,7 @@ backend:
 Its closed `configuration` accepts:
 
 - `endpoint`: `host:port` (bracket IPv6 literals, such as `[2001:db8::1]:8080`),
-  or an `http` or `https` origin without credentials,
+  or an `http` or `https` origin (scheme letters are case-insensitive) without credentials,
   path, query, or fragment. HTTP origins use port 80 when omitted; an explicit
   `:80` also remains 80 in the gRPC target. HTTPS retains its default 443.
   Either form refuses an IPv6 zone ID (`[fe80::1%eth0]`), which URL parsing

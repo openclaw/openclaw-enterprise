@@ -1,4 +1,4 @@
-import { element, button } from "./dom.mjs";
+import { element, button, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
   clearResolvedSecretNames,
   noteConsoleLoad,
@@ -34,6 +34,8 @@ const deniedReadsStorageKey = "occ.console.deniedReads";
 const deniedReadsLimit = 200;
 let loggingOut = false;
 let navigateAgentTab = null;
+// The shown page's refusal to leave through the Namespace selector, while a save is unsettled.
+let leaveGuard = null;
 let discardCreationOnExit = null;
 const drafts = createDraftStore();
 let draftUserId = null;
@@ -451,6 +453,7 @@ function takeNativeFragment(current) {
 }
 
 const shellUI = createShell({ app, pages, route, pageUrl, navigate, loadPage, logout });
+shellUI.setLeaveGuard((options) => Boolean(leaveGuard?.(options)));
 const { publicPanel, renderRows, switchNamespace } = shellUI;
 const request = createApiClient({
   lifetime,
@@ -522,6 +525,9 @@ function clearRetainedViewsForNamespace(selection) {
 
 function clearRetainedViewsOutsideNamespaces(readable) {
   const allowed = new Set(readable.map((item) => item.id));
+  // Drafts are kept until a read proves their Namespace gone, not dropped on a failed read
+  // (finding 1935).
+  drafts.retainNamespaces(allowed);
   const accessRemoved = namespaces.some((item) => !allowed.has(item.id));
   for (const key of retainedViews.keys()) {
     const selection = retainedViewNamespace(key);
@@ -732,6 +738,7 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
     mountedViewState.active = null;
   }
   navigateAgentTab = null;
+  leaveGuard = null;
   mountedAgent = null;
   clearPasswordInputs();
   shellUI.reset();
@@ -814,7 +821,7 @@ function showLogin(message = "", destination = null) {
     autocomplete: "current-password",
     required: "",
   });
-  const feedback = element("p", { className: "error", role: "alert" }, describe(true));
+  const feedback = statusBlock("danger", null, describe(true));
   const usernameHint = element(
     "span",
     { id: "username-hint", className: "hint" },
@@ -822,7 +829,11 @@ function showLogin(message = "", destination = null) {
   );
   // Recovery-only password sign-in hides the form until the recovery path is chosen.
   let recoveryOnly = false;
-  const submit = element("button", { type: "submit", className: "primary" }, "Login");
+  const submit = element(
+    "button",
+    { type: "submit", className: "button button--primary" },
+    "Login",
+  );
   const form = element(
     "form",
     {},
@@ -895,7 +906,7 @@ function showLogin(message = "", destination = null) {
       form.hidden = false;
       username.focus();
     },
-    { className: "auth-recovery", hidden: true },
+    { tone: "link", className: "auth-recovery", hidden: true },
   );
   function setDisabled(disabled) {
     submit.disabled = disabled;
@@ -1031,6 +1042,8 @@ async function loadPage({
   fromNavigation = false,
   reuseView = fromNavigation,
   fromRefresh = false,
+  // Set only by Back and Forward (popstate).
+  fromHistory = false,
   openingAgent = false,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
@@ -1054,6 +1067,14 @@ async function loadPage({
     markMountedRoute(route());
     return;
   }
+  // Back or Forward to another page while the shown page waits on a write keeps it and says
+  // why, as ← Agents and the sidebar do (finding 1937). Its URL returns as a new entry, so the
+  // page the reader tried to reach stays in history for a later Back. This follows the tab
+  // handler, which keeps same-Agent tab changes.
+  if (fromHistory && mountedRouteKey !== null && leaveGuard?.({ pendingOnly: true })) {
+    history.pushState({ previousCollection: navigation.previousCollection }, "", mountedRouteKey);
+    return;
+  }
   const knownPrivateState = session !== null && Object.hasOwn(pages, current.feature);
   const abandonedCreation =
     fromNavigation &&
@@ -1067,7 +1088,11 @@ async function loadPage({
   namespaceId = current.namespace;
   const active = resetReads({
     retainView: knownPrivateState,
-    returnLink: openingAgent ? document.activeElement : null,
+    // A Namespaces row link marks itself too, so Back returns focus to that row.
+    returnLink:
+      openingAgent || document.activeElement?.matches?.("a[data-return-focus-href]")
+        ? document.activeElement
+        : null,
   });
   if (abandonedCreation) {
     const creationDrafts = drafts.scope(discardCreationOnExit.namespaceId, "create");
@@ -1308,8 +1333,12 @@ async function loadPage({
     }
     sessionResolved = true;
     const owner = sessionOwnerKey(session);
-    if (!owner || previousOwner !== owner || draftUserId !== owner) {
+    // Drafts belong to the session that wrote them: a read retried after an unavailable check
+    // keeps them (finding 1935); any other session clears them.
+    if (!owner || draftUserId !== owner) {
       clearDrafts();
+    }
+    if (!owner || previousOwner !== owner || draftUserId !== owner) {
       clearRetainedViews();
       observabilityUrl = null;
       observabilityOwner = null;
@@ -1396,9 +1425,16 @@ async function loadPage({
       installationAdmin = observability.admin;
       observabilityOwner = observability.settled ? owner : null;
     }
+    // The default pick prefers a ready Namespace and never a deleting one while another remains
+    // (finding 1895); with only deleting Namespaces it shows the first, whose status the Agents
+    // page then names.
     namespaceId =
       current.namespace ??
-      (namespaces.find((item) => item.status === "ready") ?? namespaces[0])?.id ??
+      (
+        namespaces.find((item) => item.status === "ready") ??
+        namespaces.find((item) => item.status !== "deleting") ??
+        namespaces[0]
+      )?.id ??
       null;
     navigation.restoreHistory();
     history.replaceState(
@@ -1552,6 +1588,7 @@ async function loadPage({
         resume();
       }
       navigateAgentTab = retainedState.tabNavigation;
+      leaveGuard = retainedState.leaveGuard ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
       restoreRefocus = () => restoreFocus?.restore(shell.view);
@@ -1708,6 +1745,9 @@ async function loadPage({
       suspendDrafts: () => drafts.suspend(),
       view: shell.view,
       namespaceId,
+      // The selected Namespace: the Agents list and Create Agent name its status when it is not
+      // ready (finding 1895).
+      namespace: namespaces.find((item) => item.id === namespaceId),
       request: viewRequest,
       mutationVersion: () => viewState.mutations,
       navigate,
@@ -1753,12 +1793,30 @@ async function loadPage({
           navigateAgentTab = navigateTab;
         }
       },
+      setLeaveGuard(guard) {
+        if (lifetime.isCurrent(viewState.active)) {
+          const refuse = (options) => shownStandIn === null && guard(options);
+          viewState.leaveGuard = refuse;
+          leaveGuard = refuse;
+        }
+      },
     };
     if (firstPermissions !== null) {
       viewState.reads.set(permissionsPath, readSignature(firstPermissions));
     } else if (permissionsRead) {
       // Painted without the permissions answer: a return reads it again instead of reusing this.
       viewState.reusable = false;
+    }
+    if (current.creating || (current.feature === "agents" && !current.agentId)) {
+      // The Agents list and Create Agent show the selected Namespace's status (finding 1895), so a
+      // return rebuilds them when it changed. Other Namespaces' changes keep the view.
+      const shownNamespace = namespaceId;
+      const shownStatus = agentContext.namespace?.status;
+      viewState.revalidators.add(async () => {
+        if (namespaces.find((item) => item.id === shownNamespace)?.status !== shownStatus) {
+          throw new Error("Namespace status changed");
+        }
+      });
     }
     if (current.creating) {
       renderCreateAgent(
@@ -1768,10 +1826,11 @@ async function loadPage({
           setDiscardOnExit(discard) {
             discardCreationOnExit = discard ? { namespaceId } : null;
           },
-          setDraftCapture(capture) {
+          setDraftCapture(capture, unsaved) {
             agentContext.drafts.forget("create");
             if (capture) {
               agentContext.drafts.track("create", capture);
+              agentContext.drafts.unsavedWhen("create", unsaved);
             }
           },
         },
@@ -1921,8 +1980,8 @@ async function loadPage({
       return;
     }
     if (!accessResolved) {
-      // Uncertain shared admission invalidates every preview, not just this route.
-      clearDrafts();
+      // Uncertain shared admission invalidates every preview, not just this route. Drafts stay:
+      // a later read clears them only if it proves their Namespace or account gone (finding 1935).
       resetReads();
       clearPrivate();
       shell = null;
@@ -2083,11 +2142,10 @@ const chatLinkFailures = {
 function showChatLinkFailure(view, failure) {
   if (Object.hasOwn(chatLinkFailures, failure ?? "")) {
     view.prepend(
-      element(
-        "p",
-        { className: "notice unopened-chat-link", role: "status" },
-        chatLinkFailures[failure],
-      ),
+      statusBlock("warning", null, chatLinkFailures[failure], [], {
+        className: "unopened-chat-link",
+        role: "status",
+      }),
     );
   }
 }
@@ -2220,7 +2278,7 @@ async function revalidateMountedAgent(current) {
     }
     resetReads();
     if (checking !== "detail") {
-      clearDrafts();
+      // Drafts survive an unavailable check, as in loadPage (finding 1935).
       clearPrivate();
       publicPanel(
         checking === "session" ? "Session unavailable" : "Namespace access unavailable",
@@ -2342,16 +2400,26 @@ async function logout() {
   }
 }
 
+// Phone bottom sheets stay above the on-screen keyboard (finding 1957).
+trackVisualViewport();
 window.addEventListener("popstate", () => {
   if (!loggingOut) {
     // Browser history can change Agent tabs while the mounted view is inert.
     // Recheck admission for the new route before exposing its cached panel.
-    void loadPage({ fromNavigation: !resumePending });
+    void loadPage({ fromNavigation: !resumePending, fromHistory: true });
   }
 });
 window.addEventListener("focus", resumePage);
 document.addEventListener("visibilitychange", () => {
   resumePage();
+});
+// Drafts live only in this document, so a reload or tab close would lose unsaved editor work
+// (finding 1902).
+window.addEventListener("beforeunload", (event) => {
+  if (!loggingOut && drafts.hasUnsaved()) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
 });
 window.addEventListener("pagehide", () => {
   clearDrafts();

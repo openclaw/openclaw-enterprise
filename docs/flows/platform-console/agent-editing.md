@@ -78,14 +78,14 @@ editing/deployment without defaults.
 **Selected version** uses `activeRevisionId`; **View version vN** opens read-only
 details without activating it. **Deployment activity** shows the newest readable
 version's persisted status, not live health. Routine completion folds; pending work,
-read errors, warnings, and cleanup stay visible. Failed deployments offer Logs
-unless log text or revision access was denied during this sign-in. Configuration recovery
-requires Agent `update` or `deploy` and an existing Configuration without known read
-errors or denials; access remains separately authorized. Credentials recovery
-requires Agent `update`. Hidden or unlisted current versions suppress recovery;
-viewed versions show results. Activity polls every
-`DEPLOYMENT_POLL_MS` (`apps/controller/src/console/agents/detail.mjs`) until a
-result or read error; a new result also rereads selection. **Refresh deployment** rereads
+read errors, warnings, and cleanup stay visible. Failed deployments show the API's message
+(logs advice if it names no step) and offer Logs unless log text or revision access was
+denied this sign-in. **Open Configuration** needs Agent `update` and no known Configuration
+read error or denial. **Open version draft** (`deploy` only) and **Deploy again** (per the
+message) need `deploy` and a successful Configuration read; Deploy again focuses **Deploy new
+version**. Credentials recovery needs `update`. Hidden or unlisted
+current versions suppress recovery; viewed versions show results. Activity polls every
+`DEPLOYMENT_POLL_MS` until a result or read error; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection, after any poll in flight. Polls patch in place (`patchChildren`), so
 an unchanged poll writes nothing. A pending deploy lists its result rows before the first attempt;
 the details keep their tallest height until Refresh after it settles. **Current observations** requests timestamped
@@ -249,8 +249,9 @@ Pickers switch references; rotating shared Secret values is separate.
 ### 6. Read and replace live workspace files
 
 `apps/controller/src/console/agents/workspace.mjs:renderWorkspaceFiles` opens from
-`tab=workspace` after an exact Agent read. It skips Configuration and revision history. Contents belong to the live Agent.
-With no active revision, files stay unavailable and no file request is sent.
+`tab=workspace` after an exact Agent read. Contents belong to the live Agent, not Configuration or revision history.
+With no active revision, files stay unavailable and no file request is sent. Another current version
+keeps the editors, focus and caret, rereading unedited files in place; gaining or losing one rebuilds them.
 
 The editor GETs each supported filename and normalizes textareas to LF. An
 untouched CRLF file stays clean and is not rewritten. Only an edit enables Save.
@@ -288,7 +289,8 @@ not that Compute has shut down. Cancel restores focus to the invoking button; su
 
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
 revision; the Console cannot inspect history or candidate cleanup. With no selected revision
-and no readable versions yet (`setNoReadableVersions`), it shows no Stop control.
+and no readable versions yet (`setNoReadableVersions`), the Stop card is hidden unless the viewer
+just used it. The overview's **Runtime** row reports a requested stop.
 
 Refresh reads desired state and selected revision, not live health. Denial stays inline; changed
 state updates panels in place. An uncertain write blocks another Stop until readback succeeds.
@@ -357,13 +359,6 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
-- 2026-10-17 09:01: Keep keyboard focus on the pending Configuration save. (lows-1017k-1646 - 5d82453999)
-- 2026-10-16 22:40: Patch deployment polls in place; reserve pending rows. (ui-jank-code-12)
-
-- 2026-10-16 00:38: Reconcile in-place OAuth save feedback after merging main. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 697ca86d47f67a9671f07708f362bcfb671650e6)
-
-- 2026-10-15 22:35: Reconcile failed-version recovery and OAuth editing. (authoring-run/8c4ab973-b5a0-4bcf-8fcf-5f9d908ea26c - c997748f661b5df1198047de5a97c9cf23fb241a)
-
-- 2026-10-15 22:26: Reconcile current main behavior with OpenShell OAuth contracts in the accompanying merge. (authoring-run/41e4bb7a-c8eb-4332-b1f9-07fb8e234f63 - b747cf5b6402ad36ce9f1ae6dbed08928ddcf3dc)
+- 2026-10-18 20:30: Show each failure's next step; add Deploy again. (ux-a1)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

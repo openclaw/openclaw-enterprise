@@ -57,7 +57,11 @@ test("Codex device authorization never follows issuer redirects", async (t) => {
           // A refused pre-code request retains the existing pending behavior.
           assert.equal(await pollCodexDeviceAuthorization(state, signal), undefined);
         } else {
-          await assert.rejects(pollCodexDeviceAuthorization(state, signal));
+          // Native fetch refuses the redirect itself (redirect: "error").
+          await assert.rejects(
+            pollCodexDeviceAuthorization(state, signal),
+            (error) => error instanceof TypeError && error.cause?.message === "unexpected redirect",
+          );
         }
       }
       assert.deepEqual(

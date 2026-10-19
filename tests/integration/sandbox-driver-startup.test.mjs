@@ -676,8 +676,15 @@ test("startup requires protected OpenShell transport or an explicit NetworkPolic
     certificatePath: "/etc/openclaw/openshell/operator.crt",
     privateKeyPath: "/etc/openclaw/openshell/operator.key",
   };
-  protectedTransport.backend[0].configuration.operatorTls = operatorTls;
-  await load(protectedTransport);
+  // URI schemes are case-insensitive; both gateway transports parse the protocol before
+  // choosing TLS. Startup must admit the same protected connection, including operator TLS.
+  for (const scheme of ["https", "HTTPS", "hTtPs"]) {
+    protectedTransport.backend[0].configuration.endpoint = `${scheme}://openshell-gateway.openshell.svc:8080`;
+    delete protectedTransport.backend[0].configuration.operatorTls;
+    await load(protectedTransport);
+    protectedTransport.backend[0].configuration.operatorTls = operatorTls;
+    await load(protectedTransport);
+  }
   tlsOnly.backend[0].configuration.operatorTls = operatorTls;
   await assert.rejects(load(tlsOnly), /requires TLS with bearerTokenFile authentication/);
 

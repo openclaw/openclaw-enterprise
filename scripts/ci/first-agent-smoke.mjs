@@ -423,10 +423,13 @@ const clusterName = "occ-dev-first-agent-smoke";
 const watchLog = join(workDirectory, "cluster-watch.log");
 
 // `occ dev up` deletes its cluster when a step fails, so record what the
-// cluster looked like while it was being installed.
-function watchCluster() {
+// cluster looked like while it was being installed. The returned stop function
+// wakes an idle wait without another capture; one already running finishes.
+// `finalCapture` takes one last snapshot, for a failed setup.
+export function watchCluster() {
   const kubeconfig = join(workDirectory, "watch-kubeconfig");
-  let stopped = false;
+  const wake = new AbortController();
+  let finalCapture = false;
   const record = async (label, command, args) => {
     try {
       const { stdout } = await run(command, args, { timeout: minute });
@@ -435,69 +438,80 @@ function watchCluster() {
       await appendFile(watchLog, `----- ${label} unavailable: ${error.message.slice(0, 300)}\n`);
     }
   };
-  const loop = (async () => {
-    while (!stopped) {
-      await delay(30_000);
-      try {
-        const { stdout } = await run("k3d", ["kubeconfig", "get", clusterName], {
-          timeout: minute,
-        });
-        await writeFile(kubeconfig, stdout, { mode: 0o600 });
-      } catch {
-        continue;
-      }
-      const k = ["--kubeconfig", kubeconfig];
-      await record("pods", "kubectl", [...k, "get", "pods", "-A", "-o", "wide"]);
-      await record("warning events", "kubectl", [
-        ...k,
-        "get",
-        "events",
-        "-A",
-        "--field-selector",
-        "type!=Normal",
-      ]);
-      await record("node conditions", "kubectl", [
-        ...k,
-        "get",
-        "nodes",
-        "-o",
-        'jsonpath={range .items[*].status.conditions[*]}{.type}={.status} {.message}{"\\n"}{end}{.items[*].spec.taints}',
-      ]);
-      try {
-        const { stdout } = await run("kubectl", [...k, "get", "pods", "-A", "-o", "json"]);
-        for (const pod of JSON.parse(stdout).items) {
-          const ready = pod.status?.conditions?.some(
-            ({ type, status }) => type === "Ready" && status === "True",
-          );
-          const age = Date.now() - Date.parse(pod.metadata.creationTimestamp);
-          if (!ready && pod.status?.phase !== "Succeeded" && age > 90_000) {
-            await record(`describe ${pod.metadata.namespace}/${pod.metadata.name}`, "kubectl", [
-              ...k,
-              "-n",
-              pod.metadata.namespace,
-              "describe",
-              "pod",
-              pod.metadata.name,
-            ]);
-            await record(`logs ${pod.metadata.namespace}/${pod.metadata.name}`, "kubectl", [
-              ...k,
-              "-n",
-              pod.metadata.namespace,
-              "logs",
-              pod.metadata.name,
-              "--all-containers",
-              "--tail",
-              "40",
-            ]);
-          }
+  const capture = async () => {
+    try {
+      const { stdout } = await run("k3d", ["kubeconfig", "get", clusterName], {
+        timeout: minute,
+      });
+      await writeFile(kubeconfig, stdout, { mode: 0o600 });
+    } catch {
+      return;
+    }
+    const k = ["--kubeconfig", kubeconfig];
+    await record("pods", "kubectl", [...k, "get", "pods", "-A", "-o", "wide"]);
+    await record("warning events", "kubectl", [
+      ...k,
+      "get",
+      "events",
+      "-A",
+      "--field-selector",
+      "type!=Normal",
+    ]);
+    await record("node conditions", "kubectl", [
+      ...k,
+      "get",
+      "nodes",
+      "-o",
+      'jsonpath={range .items[*].status.conditions[*]}{.type}={.status} {.message}{"\\n"}{end}{.items[*].spec.taints}',
+    ]);
+    try {
+      const { stdout } = await run("kubectl", [...k, "get", "pods", "-A", "-o", "json"]);
+      for (const pod of JSON.parse(stdout).items) {
+        const ready = pod.status?.conditions?.some(
+          ({ type, status }) => type === "Ready" && status === "True",
+        );
+        const age = Date.now() - Date.parse(pod.metadata.creationTimestamp);
+        if (!ready && pod.status?.phase !== "Succeeded" && age > 90_000) {
+          await record(`describe ${pod.metadata.namespace}/${pod.metadata.name}`, "kubectl", [
+            ...k,
+            "-n",
+            pod.metadata.namespace,
+            "describe",
+            "pod",
+            pod.metadata.name,
+          ]);
+          await record(`logs ${pod.metadata.namespace}/${pod.metadata.name}`, "kubectl", [
+            ...k,
+            "-n",
+            pod.metadata.namespace,
+            "logs",
+            pod.metadata.name,
+            "--all-containers",
+            "--tail",
+            "40",
+          ]);
         }
-      } catch {
-        // The cluster may be going away.
       }
+    } catch {
+      // The cluster may be going away.
+    }
+  };
+  const loop = (async () => {
+    while (!wake.signal.aborted) {
+      try {
+        await delay(30_000, undefined, { signal: wake.signal });
+      } catch {
+        break;
+      }
+      await capture();
+    }
+    if (finalCapture) {
+      await capture();
     }
   })();
-  return async () => {
-    stopped = true;
+  return async ({ finalCapture: final = false } = {}) => {
+    finalCapture = final;
+    wake.abort();
     await loop;
   };
 }
@@ -516,7 +530,7 @@ async function startLocalSetup(environment) {
   try {
     await run(occ, ["dev", "up"], { env: environment, timeout: 25 * minute, label: "dev-up" });
   } catch (error) {
-    await stopWatching();
+    await stopWatching({ finalCapture: true });
     await printWatchLog();
     throw error;
   }

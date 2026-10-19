@@ -1,0 +1,33 @@
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// The pre-upgrade initialization Job runs this in the release's controller image
+// before migration and before Helm replaces the API Pod, which uses the Recreate
+// strategy. It loads the Installation Secret as API and worker startup do: Drivers,
+// Preset files and the repository registry it names. It never opens the database or
+// the Kubernetes API, so Kubernetes Compute preflight is not repeated. A refusal fails
+// the hook and leaves the running Pods serving. Errors are one line on stderr and
+// name the key and file to fix; API startup logs only a code.
+const prefix = "installation-check: API and worker startup would refuse the Installation";
+
+try {
+  const { loadInstallationConfiguration, loadStartupConfigurationSnapshot } = await import(
+    pathToFileURL(resolve("apps/controller/src/composition/installation-config.ts")).href
+  );
+  const startupConfiguration = await loadStartupConfigurationSnapshot({ mode: "production" });
+  await loadInstallationConfiguration({ mode: "production", startupConfiguration });
+} catch (error) {
+  let message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ");
+  if (error?.name === "PresetFileError") {
+    if (!message.includes("presets.files")) {
+      message = `presets.files: ${message}`;
+    }
+    process.stderr.write(`${prefix} (PRESET_FILE_INVALID): ${message}\n`);
+  } else {
+    process.stderr.write(`${prefix}: ${message}\n`);
+  }
+  process.exit(1);
+}
+process.stdout.write("installation-startup-ready\n");
+// Drivers may hold handles open; the hook must finish rather than wait for them.
+process.exit(0);

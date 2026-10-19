@@ -69,7 +69,7 @@ func Up(ctx context.Context, opts Options) (result error) {
 		}
 		consoleHost, agentDomain, cookieDomain := developmentBrowserHosts(state.Cluster)
 		state.BrowserPort = browserPort
-		state.BrowserOrigin = fmt.Sprintf("https://%s:%d", consoleHost, browserPort)
+		state.BrowserOrigin = developmentBrowserOrigin(consoleHost, browserPort)
 		state.NativeAdminDomain = agentDomain
 		r.env["OCC_DEVELOPMENT_BROWSER_PORT"] = strconv.Itoa(browserPort)
 		r.env["OCC_DEVELOPMENT_BROWSER_ORIGIN"] = state.BrowserOrigin

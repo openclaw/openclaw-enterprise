@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-17
-last_updated_session: authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3
+updated: 2026-10-18
+last_updated_session: authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d
 ---
 
 # Platform console request flow
@@ -105,7 +105,8 @@ Driver activation. Requests do not reread configuration or credentials.
 and the shared HTML shell with MIME types and same-origin CSP. Unknown console
 paths return the shell with `404`; API routes retain JSON errors.
 `encodedAsset` compresses static scripts and styles once (brotli or gzip, per
-`Accept-Encoding`, with `Vary`). The shell, which also answers sign-in, stays identity.
+`Accept-Encoding`, with `Vary`), unless an explicit `identity` weight beats both
+encodings. The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
 `OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
@@ -185,8 +186,8 @@ returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
-is false, both explain the restriction. If the read fails, creation stays available;
-the API authorizes every create. Changing Provider or Harness resets incompatible
+is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;
+OCC still authorizes every write. Changing Provider or Harness resets incompatible
 credentials and model choices, preserving unrelated JSON. See
 [Agent creation](../reference/console/create-and-deploy.md) for inputs and recovery.
 
@@ -233,10 +234,11 @@ access, and Secret references to [provisioning](agent-provisioning.md), even aft
 that outage. The worker reauthorizes, creates resources and exact Secret grants,
 and deploys; Console polls, then opens the revision.
 
-Ordinary drafts post `{kind: "agent", values, secretBindings}` to
-`POST /namespaces/:namespaceId/configurations`, then submit its ID, plugins,
-`initialWorkspaceFiles`, and `workspaceDefaultsId` to
-`POST /namespaces/:namespaceId/agents`. Success opens `revision=draft`.
+Ordinary drafts first check values and plugins with
+`POST /namespaces/:namespaceId/agents/validate`, then post
+`{kind: "agent", values, secretBindings}` to `.../configurations` and submit its ID,
+plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
+Success opens `revision=draft`.
 OCC stages all four workspace textareas, including unchanged/empty values, outside
 Agent/Configuration for [workspace setup](workspace-files.md).
 
@@ -307,13 +309,13 @@ rejected cursors clear rows.
 
 After full-page navigation settles, `loadPage` focuses the destination heading if
 focus fell to the body, using `preventScroll` to preserve return position. An Agent
-opened from the list focuses its heading when the title renders. Tabs and
-focused controls keep focus. Navigation, Namespace changes, and logout invalidate
+opened from the list focuses its heading when the title renders. Tabs (one Tab
+stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events. Agent detail
 rechecks access in place, preserving controls, input, and saves; failures clear it.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
-Returning to the tab restores focus after the unchanged view is admitted, if the control is still
-present and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
+Returning to the tab restores focus after the unchanged view is admitted, if the control
+remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
 
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state. `pagehide` clears
@@ -378,7 +380,6 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-17 16:30: Keep row loading text 150 ms once shown; refocus at phone width focuses Open navigation. (ui-fix-1680)
-- 2026-10-17 12:10: Keep list focus when refocusing during row reads or from sidebar and header controls. (lows-1017n)
+- 2026-10-18 15:02: Honor an explicit higher identity weight when serving static scripts and styles. (authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
