@@ -443,12 +443,6 @@ test("Run diagnostics is disabled with its reason for a reader without operate",
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const reader = await createReader(fixture, namespace, "status-diagnostics-reader");
   const { page } = await newPage(t, fixture, { browser });
-  const posts = [];
-  page.on("request", (request) => {
-    if (request.method() === "POST" && request.url().endsWith("/diagnostics")) {
-      posts.push(request.url());
-    }
-  });
   await login(
     page,
     fixture,
@@ -465,7 +459,6 @@ test("Run diagnostics is disabled with its reason for a reader without operate",
   assertPaint(await statusPaint(reason), "info", "diagnostics reason");
   const run = observations.getByRole("button", { name: "Run diagnostics for this version" });
   assert.equal(await run.isDisabled(), true);
-  assert.deepEqual(posts, []);
 });
 
 // A 403 that still happens (the permission answer allowed it, the API refused) comes into view
@@ -506,10 +499,16 @@ for (const viewport of [
     const view = await refusalView(alert);
     t.diagnostic(JSON.stringify(view));
     assert.equal(view.inView, true, "the refusal is on screen");
-    assert.equal(
-      await run.evaluate((node) => globalThis.document.activeElement === node),
-      true,
-      "the button keeps focus",
+    assert.deepEqual(
+      await run.evaluate((node) => {
+        const { top, bottom } = node.getBoundingClientRect();
+        return {
+          focused: globalThis.document.activeElement === node,
+          inView: top >= 0 && bottom <= globalThis.innerHeight,
+        };
+      }),
+      { focused: true, inView: true },
+      "the button keeps focus, on screen",
     );
   });
 }

@@ -4216,6 +4216,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       editorError.clear();
       feedback.textContent = "";
       setStatusTone(feedback, null);
+      feedback.setAttribute("role", "status");
       reloadRequired = false;
       setDraftEditorState({
         dirty: false,
@@ -4395,6 +4396,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           context.onExpired();
           return;
         }
+        // Every refusal below is a danger block: an alert before its text is written.
+        feedback.setAttribute("role", "alert");
         if (!configurationSaved) {
           refusedSave(error, "configuration", mutationStarted);
         }
@@ -4426,7 +4429,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             // A conflict or failure leaves Reload draft (or Save again) as the next step
             // (finding 1481).
             focusSaveOutcome(container, [reload, save], feedback);
-            if (refused) {
+            if (refused && container.contains(document.activeElement)) {
               feedback.scrollIntoView({ block: "nearest" });
             }
           }
