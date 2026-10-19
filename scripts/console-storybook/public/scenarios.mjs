@@ -1039,7 +1039,7 @@ export const scenarios = {
     namespaceStatus: "provisioning",
     actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
     description:
-      "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created.",
+      "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created. Create Agent stays disabled, described by that line; an Embedded OpenClaw draft still saves.",
   },
   createStart: {
     group: "Pages/Create Agent",
