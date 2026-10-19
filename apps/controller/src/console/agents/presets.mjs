@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { element, button, field as formField, validateFields } from "../dom.mjs";
 import {
   renderPresetTemplate,
   requiredPresetVariables,
@@ -181,6 +181,14 @@ export function createPresetFields(context, apply) {
     if (!selected) {
       return;
     }
+    // The console checks every variable at once, under each field, with no browser bubble, and
+    // focuses the first to fix (UX plan C3).
+    const controls = fields.map((field) =>
+      field.mode?.value === EXISTING_SECRET ? field.secretSelect : field.input,
+    );
+    if (!validateFields(controls)) {
+      return;
+    }
     try {
       const values = Object.create(null);
       const secretSelections = new Map();
@@ -188,9 +196,6 @@ export function createPresetFields(context, apply) {
         const { name, definition, input } = field;
         if (definition.type === "password" && field.mode) {
           if (field.mode.value === EXISTING_SECRET) {
-            if (!field.secretSelect.reportValidity()) {
-              return;
-            }
             const secret = currentSecrets(field).find(
               (item) => item.id === field.secretSelect.value,
             );
@@ -201,15 +206,9 @@ export function createPresetFields(context, apply) {
             secretSelections.set(name, { kind: "existing", secret });
             continue;
           }
-          if (!input.reportValidity()) {
-            return;
-          }
           values[name] = input.value;
           secretSelections.set(name, { kind: "new" });
           continue;
-        }
-        if (!input.reportValidity()) {
-          return;
         }
         if (input.dataset.supplied !== "true") {
           continue;
@@ -253,8 +252,7 @@ export function createPresetFields(context, apply) {
     "fieldset",
     {},
     element("legend", {}, "Preset"),
-    element("label", { for: selector.id }, "Preset template"),
-    selector,
+    formField({ label: "Preset template", control: selector }),
     status,
     inputs,
     applyButton,
@@ -298,6 +296,11 @@ export function createPresetFields(context, apply) {
         const label = variableLabel(name);
         // Password inputs stay required in every case; other types only when rendering needs them.
         const needed = definition.type === "password" || required.has(name);
+        const saved = retained?.fields?.[name];
+        let initialValue = definition.default === undefined ? "" : String(definition.default);
+        if (saved?.type === definition.type && definition.type !== "password") {
+          initialValue = saved.value;
+        }
         const input =
           definition.type === "boolean"
             ? element(
@@ -307,7 +310,9 @@ export function createPresetFields(context, apply) {
                 element("option", { value: "true" }, "True"),
                 element("option", { value: "false" }, "False"),
               )
-            : definition.type === "string"
+            : // A single-line value, such as an Agent name, is an input; only a value with line
+              // breaks gets a textarea.
+              definition.type === "string" && /[\r\n]/.test(initialValue)
               ? element("textarea", {
                   id: `preset-variable-${name}`,
                   rows: 2,
@@ -316,17 +321,14 @@ export function createPresetFields(context, apply) {
                 })
               : element("input", {
                   id: `preset-variable-${name}`,
-                  type: definition.type,
+                  type: definition.type === "string" ? "text" : definition.type,
                   ...(definition.type === "number" ? { step: "any" } : {}),
                   autocomplete: "off",
                   required: needed,
                   ...(definition.type === "password" ? { spellcheck: "false" } : {}),
                 });
         input.dataset.supplied = String(Object.hasOwn(definition, "default"));
-        let initialValue = definition.default === undefined ? "" : String(definition.default);
-        const saved = retained?.fields?.[name];
         if (saved?.type === definition.type && definition.type !== "password") {
-          initialValue = saved.value;
           input.dataset.supplied = saved.supplied;
         }
         input.value = initialValue;
@@ -348,17 +350,7 @@ export function createPresetFields(context, apply) {
           input.dataset.supplied = "true";
         });
         if (definition.type !== "password" || name !== harnessSecretVariable(preset.template)) {
-          inputs.append(
-            element(
-              "div",
-              { className: "form-field" },
-              element("label", { for: input.id }, label),
-              input,
-              definition.description
-                ? element("p", { className: "hint" }, definition.description)
-                : null,
-            ),
-          );
+          inputs.append(formField({ label, control: input, help: definition.description }));
           return { name, definition, input, readValue };
         }
         const mode = element(
@@ -377,25 +369,17 @@ export function createPresetFields(context, apply) {
         );
         const secretStatus = element(
           "p",
-          { className: "hint", role: "status" },
+          { className: "hint field-help", role: "status", id: `${secretSelect.id}-hint` },
           "Loading existing Secrets…",
         );
-        const inputField = element(
-          "div",
-          { className: "form-field" },
-          element("label", { for: input.id }, label),
-          input,
-          definition.description
-            ? element("p", { className: "hint" }, definition.description)
-            : null,
-        );
-        const secretField = element(
-          "div",
-          { className: "form-field", hidden: true },
-          element("label", { for: secretSelect.id }, `Existing Secret for ${label}`),
-          secretSelect,
-          secretStatus,
-        );
+        const inputField = formField({ label, control: input, help: definition.description });
+        const secretField = formField({
+          label: `Existing Secret for ${label}`,
+          control: secretSelect,
+        });
+        secretField.hidden = true;
+        secretField.append(secretStatus);
+        secretSelect.setAttribute("aria-describedby", secretStatus.id);
         const fieldEntry = {
           name,
           definition,
@@ -419,17 +403,11 @@ export function createPresetFields(context, apply) {
           feedback.textContent = "";
         });
         inputs.append(
-          element(
-            "div",
-            { className: "form-field" },
-            element("label", { for: mode.id }, `Secret source for ${label}`),
-            mode,
-            element(
-              "p",
-              { className: "hint" },
-              "Create a new masked Secret at final Create, or bind an existing Secret from this Namespace.",
-            ),
-          ),
+          formField({
+            label: `Secret source for ${label}`,
+            control: mode,
+            help: "Create a new masked Secret at final Create, or bind an existing Secret from this Namespace.",
+          }),
           inputField,
           secretField,
         );

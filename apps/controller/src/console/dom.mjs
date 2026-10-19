@@ -425,38 +425,200 @@ function visibleLength(line) {
   return pieces.filter((piece) => !INVISIBLE.test(piece)).length;
 }
 
-// A persistent error under a form control, linked to it with aria-describedby and aria-invalid,
-// in place of the browser's transient validation bubble (finding 1903).
-export function fieldError(input) {
-  const id = `${input.id}-error`;
-  const node = element("p", { className: "error field-error", id, hidden: true });
-  const others = () =>
-    (input.getAttribute("aria-describedby") ?? "")
-      .split(" ")
-      .filter((value) => value && value !== id);
-  return {
-    node,
-    show(text) {
-      node.textContent = text;
-      node.hidden = false;
-      input.setAttribute("aria-invalid", "true");
-      input.setAttribute("aria-describedby", [id, ...others()].join(" "));
-    },
-    clear() {
-      if (node.hidden) {
-        return;
-      }
+let fieldIds = 0;
+const controlId = (control) => (control.id ||= `field-${++fieldIds}`);
+
+function describe(control, id, first = false) {
+  const others = (control.getAttribute("aria-describedby") ?? "")
+    .split(/\s+/)
+    .filter((value) => value && value !== id);
+  control.setAttribute("aria-describedby", (first ? [id, ...others] : [...others, id]).join(" "));
+}
+
+function undescribe(control, id) {
+  const others = (control.getAttribute("aria-describedby") ?? "")
+    .split(/\s+/)
+    .filter((value) => value && value !== id);
+  if (others.length) {
+    control.setAttribute("aria-describedby", others.join(" "));
+  } else {
+    control.removeAttribute("aria-describedby");
+  }
+}
+
+/**
+ * A form field (UX plan C3, console.css "Form field"): a label, the control, then its help. The
+ * control is described by the help, and by its error while one shows (setFieldError), which sits
+ * between the two, under the control. `help` is text or nodes; `className` adds a component's own
+ * class (".form-field" and ".channel-field" are the older names).
+ */
+export function field({ label, control, help, error, className }) {
+  const id = controlId(control);
+  const helpNode =
+    help === undefined || help === null || help === ""
+      ? null
+      : element("p", { id: `${id}-hint`, className: "hint field-help" }, ...[help].flat());
+  const node = element(
+    "div",
+    { className: ["field", className].filter(Boolean).join(" ") },
+    element("label", { for: id }, label),
+    control,
+    helpNode,
+  );
+  if (helpNode) {
+    describe(control, helpNode.id);
+  }
+  if (error) {
+    setFieldError(control, error);
+  }
+  return node;
+}
+
+const fieldErrors = new WeakMap();
+
+// Where a control's error goes: under the control (or the wrapper holding it) in its field, or
+// after the label a checkbox sits in.
+function placeFieldError(control, node) {
+  const container = control.closest(".field, .form-field, .channel-field");
+  if (container) {
+    let child = control;
+    while (child.parentElement !== container) {
+      child = child.parentElement;
+    }
+    child.after(node);
+  } else {
+    (control.closest("label") ?? control).after(node);
+  }
+}
+
+/**
+ * Shows `text` as `control`'s error, linked with aria-describedby and aria-invalid, in place of
+ * the browser's transient validation bubble (finding 1903); empty text clears it.
+ */
+export function setFieldError(control, text) {
+  let node = fieldErrors.get(control);
+  if (!text) {
+    if (node && !node.hidden) {
       node.textContent = "";
       node.hidden = true;
-      input.removeAttribute("aria-invalid");
-      const describedBy = others().join(" ");
-      if (describedBy) {
-        input.setAttribute("aria-describedby", describedBy);
-      } else {
-        input.removeAttribute("aria-describedby");
+      control.removeAttribute("aria-invalid");
+      undescribe(control, node.id);
+    }
+    return;
+  }
+  if (!node) {
+    node = element("p", { className: "field-error", id: `${controlId(control)}-error` });
+    fieldErrors.set(control, node);
+  }
+  if (!node.isConnected) {
+    placeFieldError(control, node);
+  }
+  node.textContent = text;
+  node.hidden = false;
+  control.setAttribute("aria-invalid", "true");
+  describe(control, node.id, true);
+}
+
+/** A persistent error under `input` whose node the caller places (finding 1903). */
+export function fieldError(input) {
+  const node = element("p", { className: "field-error", id: `${controlId(input)}-error` });
+  node.hidden = true;
+  fieldErrors.set(input, node);
+  return {
+    node,
+    show: (text) => setFieldError(input, text),
+    clear: () => setFieldError(input, ""),
+  };
+}
+
+function fieldName(control) {
+  const label = control.labels?.[0]?.textContent ?? control.getAttribute("aria-label") ?? "";
+  return label.trim().replace(/\s+/g, " ") || "This field";
+}
+
+const TEXT_TYPES = new Set(["text", "search", "email", "url", "tel"]);
+
+// The console's own sentence for a control the browser's checks refuse, or "" when it passes.
+// Text that is only spaces counts as missing, as the API trims it.
+function fieldProblem(control) {
+  const blank =
+    control.required &&
+    (control.tagName === "TEXTAREA" || TEXT_TYPES.has(control.type)) &&
+    !control.value.trim();
+  const { validity } = control;
+  if (validity.customError) {
+    return control.validationMessage;
+  }
+  if (validity.valueMissing || blank) {
+    return control.type === "checkbox"
+      ? "Check this box to continue."
+      : `${fieldName(control)} is required.`;
+  }
+  return validity.valid ? "" : `Enter a valid value for ${fieldName(control)}.`;
+}
+
+// Controls whose error a check showed; an edit that makes one valid clears it. One document
+// listener runs after the form's own input handlers, which may reset custom validity.
+const checkedControls = new WeakSet();
+let clearsOnEdit = false;
+function clearFixedErrors(event) {
+  const control = event.target;
+  if (checkedControls.has(control) && !fieldProblem(control)) {
+    checkedControls.delete(control);
+    setFieldError(control, "");
+  }
+}
+
+/**
+ * Checks `controls` as the browser would on submit, without its bubble: each one that fails
+ * shows the console's error under it (opening a collapsed section around it), and focus moves to
+ * the first. Errors an earlier check showed clear once their control passes. Returns whether
+ * every control passed. Use with `novalidate` on the form.
+ */
+export function validateFields(controls) {
+  if (!clearsOnEdit) {
+    clearsOnEdit = true;
+    document.addEventListener("input", clearFixedErrors);
+    document.addEventListener("change", clearFixedErrors);
+  }
+  let first;
+  for (const control of controls) {
+    if (!control?.willValidate) {
+      continue;
+    }
+    const problem = fieldProblem(control);
+    if (problem) {
+      setFieldError(control, problem);
+      checkedControls.add(control);
+      first ??= control;
+      const details = control.closest("details");
+      if (details) {
+        details.open = true;
+      }
+    } else if (checkedControls.delete(control)) {
+      setFieldError(control, "");
+    }
+  }
+  first?.focus();
+  return !first;
+}
+
+/**
+ * Turns off `form`'s browser validation and checks it with validateFields before any other
+ * submit handler runs; a form that fails does not submit.
+ */
+export function validateOnSubmit(form) {
+  form.noValidate = true;
+  form.addEventListener(
+    "submit",
+    (event) => {
+      if (!validateFields([...form.elements])) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
       }
     },
-  };
+    { capture: true },
+  );
 }
 
 const STATUS_ALERT_TONES = new Set(["danger", "warning"]);

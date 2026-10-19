@@ -2,11 +2,13 @@ import defaultCodexPreset from "../default-codex-preset.mjs";
 import {
   button,
   element,
+  field as formField,
   fieldError,
   jsonObjectProblem,
   setStatusTone,
   setText,
   statusBlock,
+  validateFields,
 } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
@@ -68,14 +70,11 @@ const MODEL_CHOICES = {
 };
 
 function field(label, input, hint, error = null) {
-  return element(
-    "div",
-    { className: "form-field" },
-    element("label", { for: input.id }, label),
-    input,
-    error,
-    hint ? element("p", { className: "hint", id: `${input.id}-hint` }, hint) : null,
-  );
+  const node = formField({ label, control: input, help: hint, className: "form-field" });
+  if (error) {
+    input.after(error);
+  }
+  return node;
 }
 
 function configurationTemplate(harnessId, nativeProvider, providerModel) {
@@ -1621,7 +1620,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         details.open = true;
       }
       input.setCustomValidity("Enter a valid JSON object.");
-      input.reportValidity();
+      validateFields([input]);
     }
     return undefined;
   }
@@ -2327,7 +2326,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       !capabilityDiscoveryDone ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      !form.reportValidity()
+      // The console's own errors under each field, not the browser's bubble (UX plan C3).
+      !validateFields([...form.elements])
     ) {
       return;
     }
