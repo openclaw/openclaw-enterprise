@@ -258,14 +258,32 @@ const READING_SHOWN_MS = 150;
 
 // A run of more characters than any ordinary word cannot wrap, so it would set the table's width
 // (finding 1955). Only a name with one breaks anywhere (console.css); others wrap as before. The
-// run ends only where a line can break: a breaking space, a zero-width space, a soft hyphen or a
-// hyphen or dash (a name holds no control or line-separator characters). No-break spaces
-// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. The browser does not
-// break after a hyphen-minus before a digit ("1000-1001", UAX #14 LB25) or after a hyphen or
-// dash before another one (LB21), and a run of em dashes breaks only at its ends (LB17), so it
-// is a run of its own (finding 1971).
-const UNBROKEN_RUN =
-  /\u2014{21,}|(?:[^ \u1680\u2000-\u2006\u2008-\u200b\u205f\u3000\u00ad\u2010\u2012-\u2014-]|-(?=[\p{Nd}\u2010\u2012\u2013-])|[\u2010\u2012\u2013](?=[\u2010\u2012\u2013-])){21,}/u;
+// rule follows the break points Chromium was measured to use (finding 1982), not all of UAX #14.
+// A run ends where a line can break: after a breaking space, a zero-width space, a soft hyphen,
+// or a hyphen or dash (a name holds no control or line-separator characters). No-break spaces
+// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. A hyphen before a digit
+// does break ("1000-1001"). Combining marks count with the letter they sit on. Ideographs, kana,
+// Hangul syllables and emoji break on both sides; other scripts (Thai, for one) count per
+// character, which can only over-mark: a marked name still shows in full, in a narrower box.
+const WIDE_SPACES = String.raw`\u1680\u2000-\u2006\u2008-\u200a\u205f\u3000`;
+const DASHES = String.raw`\u00ad\u2010\u2012\u2013`; // soft hyphen, hyphen, figure and en dash
+const CLOSING = String.raw`!),./:;\]}\u00bb\u2019\u201d\u200d\u2060`; // with joiners
+const IDEOGRAPHIC = String.raw`\p{Ideographic}\u3041-\u3096\u30a1-\u30fa\uac00-\ud7a3\p{Emoji_Presentation}`;
+const UNBROKEN_CHARACTER = [
+  String.raw`[^ ${WIDE_SPACES}\u200b${DASHES}\u2014\p{M}${IDEOGRAPHIC}-]`,
+  // Where a break character does not break: a hyphen-minus before closing punctuation, "$" or
+  // an Arabic-Indic digit; a wide space or dash before closing punctuation or a quote; a hyphen
+  // or dash before another (LB21); a hyphen that starts a word (LB20a).
+  String.raw`-(?=[${CLOSING}$\u0660-\u0669\u06f0-\u06f9])`,
+  String.raw`[${WIDE_SPACES}${DASHES}](?=[${CLOSING}"'|])`,
+  String.raw`[\u2010\u2012\u2013-](?=[\u2010\u2012\u2013-])`,
+  String.raw`(?<=^|[ ${WIDE_SPACES}\u200b])[\u2010-]`,
+].join("|");
+// A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
+const UNBROKEN_RUN = new RegExp(
+  String.raw`\u2014{21,}|(?:(?:${UNBROKEN_CHARACTER})\p{M}*){21,}`,
+  "u",
+);
 
 function agentNameLink(item, context) {
   const node = link(item.name, `agents/${item.id}`, context);
