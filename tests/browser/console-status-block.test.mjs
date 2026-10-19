@@ -14,6 +14,7 @@ import {
 import {
   createRepositoryLaunchFixture,
   openAdvancedSettings,
+  withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 
 // Errors, warnings and notices share one status block (UX plan C1): a stripe and wash in the
@@ -906,3 +907,267 @@ for (const viewport of [
     );
   });
 }
+
+// A member who reads the Agent's Namespace, versions and Configuration, with `agentActions` on
+// the Agent itself.
+function createAgentMember(fixture, namespace, name, agentActions) {
+  return fixture.createAccountWithPolicy(name, (principal) => {
+    fixture.policy.roles.push({
+      id: `role-${name}`,
+      namespaceId: namespace.id,
+      permissions: [
+        ...["namespace", "agent_revision", "configuration"].map((resourceKind) => ({
+          action: "read",
+          resourceKind,
+        })),
+        ...agentActions.map((action) => ({ action, resourceKind: "agent" })),
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: `binding-${name}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: `role-${name}`,
+    });
+  });
+}
+
+// Resolves once the page has read the Agent's permission answer, failed or not. The count goes up
+// one microtask before the console acts on the answer, and the console decides its controls in the
+// same microtask chain; waitForFunction checks in a later task, so they are settled by then.
+async function watchPermissionAnswer(page, agentId) {
+  await page.addInitScript((suffix) => {
+    const json = globalThis.Response.prototype.json;
+    globalThis.permissionAnswers = 0;
+    globalThis.Response.prototype.json = function readJson() {
+      const read = json.call(this);
+      if (this.url && new URL(this.url).pathname.endsWith(suffix)) {
+        const answered = () => {
+          globalThis.permissionAnswers += 1;
+        };
+        read.then(answered, answered);
+      }
+      return read;
+    };
+  }, `/agents/${agentId}/permissions`);
+  return () => page.waitForFunction(() => globalThis.permissionAnswers > 0);
+}
+
+// A diagnostics run that answers with one passing check, counting its requests.
+async function answerDiagnostics(page, revisionId) {
+  const runs = [];
+  await page.route("**/deployments/*/diagnostics", (route) => {
+    runs.push(route.request().method());
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          revisionId,
+          observedAt: "2026-10-19T09:00:01.000Z",
+          checks: [
+            {
+              component: "slack",
+              check: "authentication",
+              state: "succeeded",
+              checkedAt: "2026-10-19T09:00:01.000Z",
+            },
+          ],
+        },
+        meta: { requestId: "req_test_diagnostics_status" },
+      }),
+    });
+  });
+  return runs;
+}
+
+// Agent operate, and nothing else, decides Run diagnostics; without a permission answer the
+// button stays enabled and the API decides (finding 2008).
+const DIAGNOSTICS_REASON = "Your access does not include running diagnostics for this Agent.";
+for (const caller of [
+  { name: "a member with operate but not update", agentActions: ["read", "operate"], runs: true },
+  { name: "a member with update but not operate", agentActions: ["read", "update"], runs: false },
+  { name: "an administrator whose permission answer is withheld", withheld: true, runs: true },
+]) {
+  test(`Run diagnostics is ${caller.runs ? "enabled" : "disabled"} for ${caller.name}`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Status diagnostics gate", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Diagnostics gate", nativeValues("dg"));
+    const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const member = caller.agentActions
+      ? await createAgentMember(
+          fixture,
+          namespace,
+          "status-diagnostics-member",
+          caller.agentActions,
+        )
+      : null;
+    const { page } = await newPage(t, fixture, { browser });
+    const answered = await watchPermissionAnswer(page, agent.id);
+    const runs = await answerDiagnostics(page, active.revision.id);
+    if (caller.withheld) {
+      await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
+    }
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+      member?.credentials,
+    );
+    const observations = page.locator(".version-diagnostics");
+    const run = observations.getByRole("button", { name: "Run diagnostics for this version" });
+    await run.waitFor();
+    await answered();
+    const reason = observations.getByRole("status").filter({ hasText: DIAGNOSTICS_REASON });
+    if (!caller.runs) {
+      await reason.waitFor();
+      assert.equal(await run.isDisabled(), true);
+      assert.deepEqual(runs, []);
+      return;
+    }
+    assert.equal(await reason.count(), 0);
+    assert.equal(await run.isEnabled(), true);
+    await run.click();
+    await observations.getByText(/^Observed /).waitFor();
+    assert.deepEqual(runs, ["POST"]);
+  });
+}
+
+// Whether `locator` is whole on screen, and where it is.
+const onScreen = (locator) =>
+  locator.evaluate((node) => {
+    const { top, bottom } = node.getBoundingClientRect();
+    return {
+      inView: top >= 0 && bottom <= globalThis.innerHeight,
+      below: top >= globalThis.innerHeight,
+      rect: [Math.round(top), Math.round(bottom), globalThis.innerHeight, globalThis.scrollY],
+    };
+  });
+
+// A Configuration save that ends in a conflict or an unknown outcome moves focus to Reload draft
+// and brings its message, under the buttons, into view (finding 2009).
+for (const outcome of [
+  {
+    name: "conflict",
+    status: 409,
+    error: {
+      code: "RESOURCE_CONFLICT",
+      message: "Conflict.",
+      details: [{ path: "/expectedGeneration" }],
+    },
+    text: "The saved Configuration changed while you were editing. Reload this draft before saving.",
+  },
+  {
+    name: "unknown outcome",
+    status: 500,
+    error: { code: "INTERNAL", message: "Held." },
+    text: "Outcome unknown. Configuration may have been saved. Reload this draft before saving again.",
+  },
+]) {
+  test(`a Configuration save ${outcome.name} brings its message on screen`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Status config outcome", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Status outcome", nativeValues("co"));
+    const { page } = await newPage(t, fixture, {
+      browser,
+      context: { viewport: { width: 1440, height: 900 } },
+    });
+    let release;
+    const held = new Promise((resolve) => {
+      release = resolve;
+    });
+    t.after(() => release());
+    let sent;
+    const writing = new Promise((resolve) => {
+      sent = resolve;
+    });
+    await page.route(
+      `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      async (route) => {
+        if (route.request().method() !== "PATCH") {
+          await route.continue();
+          return;
+        }
+        sent();
+        await held;
+        await route.fulfill({
+          status: outcome.status,
+          contentType: "application/json",
+          body: JSON.stringify({ error: outcome.error }),
+        });
+      },
+    );
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    await page.getByRole("button", { name: "Edit Configuration" }).click();
+    await openAdvancedSettings(page);
+    await page
+      .getByLabel("Configuration JSON")
+      .fill(JSON.stringify(nativeValues("edited"), null, 2));
+    const save = page.getByRole("button", { name: "Save Configuration" });
+    await save.click();
+    await writing;
+    // The reader scrolls while the save runs: the buttons at the bottom of the screen, the line
+    // under them out of sight.
+    await save.evaluate((node) => node.scrollIntoView({ block: "end" }));
+    const feedback = page.locator("#configuration-editor-feedback");
+    const before = await onScreen(feedback);
+    assert.equal(before.below, true, `the message starts below the fold: ${before.rect}`);
+    release();
+    await page.getByText(outcome.text, { exact: true }).waitFor();
+    const reload = page.getByRole("button", { name: "Reload draft" });
+    assert.equal(
+      await reload.evaluate((node) => node === globalThis.document.activeElement),
+      true,
+      "Reload draft has focus",
+    );
+    const after = await onScreen(feedback);
+    t.diagnostic(JSON.stringify(after));
+    assert.equal(after.inView, true, "the message is on screen");
+  });
+}
+
+// Only a refusal scrolls: a result, below the button the reader pressed, stays where it is so the
+// page does not jump under the pointer (finding 2009).
+test("a successful Run diagnostics leaves the page where it was", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Status diagnostics result", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Diagnostics result", nativeValues("dres"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await answerDiagnostics(page, active.revision.id);
+  // The waiting line (shown after 250 ms) takes focus and so scrolls; time stands still, so a
+  // slow answer never shows it.
+  await page.clock.install({ time: new Date("2026-10-19T09:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-10-19T09:00:01Z"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const observations = page.locator(".version-diagnostics");
+  const run = observations.getByRole("button", { name: "Run diagnostics for this version" });
+  await run.waitFor();
+  await run.evaluate((node) => node.scrollIntoView({ block: "end" }));
+  const scrolled = await page.evaluate(() => globalThis.scrollY);
+  await run.click();
+  const observed = observations.getByText(/^Observed /);
+  await observed.waitFor();
+  assert.equal((await onScreen(observed)).below, true, "the result is below the fold");
+  assert.equal(await page.evaluate(() => globalThis.scrollY), scrolled, "the page did not scroll");
+  assert.equal(
+    await run.evaluate((node) => node === globalThis.document.activeElement),
+    true,
+    "the button keeps focus",
+  );
+});

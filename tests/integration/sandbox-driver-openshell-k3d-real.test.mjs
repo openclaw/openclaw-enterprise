@@ -5199,12 +5199,13 @@ async function assertCredentialRouteEnforcement(topology) {
     // Direct connections that skip the proxy, by name and by address.
     // OpenShell may intercept these transparently, so a host the policy allows can still answer;
     // a host it denies must not.
-    // A one-off DNS miss on this path is not the policy's answer, so only the allowed host gets
-    // a second try after exit 6; the denied host and the address below get one try each.
+    // A one-off DNS miss on this path is not the policy's answer, so each host gets a second
+    // try after exit 6 (finding 1995). The bare address needs no lookup and gets one try.
     `probe_resolving BYPASS_ALLOWED www.openclaw.org ` +
       `curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
       `https://www.openclaw.org`,
-    `probe BYPASS_DENIED curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
+    `probe_resolving BYPASS_DENIED acme.com ` +
+      `curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
       `https://acme.com`,
     `probe BYPASS_ADDRESS curl --noproxy '*' -sSk -o /dev/null -w '%{http_code}' --max-time 10 ` +
       `https://${publicAddress}`,
@@ -5298,6 +5299,8 @@ async function assertCredentialRouteEnforcement(topology) {
       allowedHostFirstExitCode: exitCode("BYPASS_ALLOWED_FIRST"),
       allowedHostResolver: value("BYPASS_ALLOWED_RESOLVER"),
       deniedHostExitCode: exitCode("BYPASS_DENIED"),
+      deniedHostFirstExitCode: exitCode("BYPASS_DENIED_FIRST"),
+      deniedHostResolver: value("BYPASS_DENIED_RESOLVER"),
       addressExitCode: exitCode("BYPASS_ADDRESS"),
       sandboxDns: exitCode("DNS") === 0 ? "resolved" : "failed",
     },
@@ -5346,15 +5349,21 @@ async function assertCredentialRouteEnforcement(topology) {
       observed.proxyBypass,
     )}`,
   );
-  assert.notEqual(
+  // OpenShell refuses these connections, and curl reports that as exit 7 (could not connect).
+  // Another failure, such as 6 (could not resolve host), may never have reached the policy, so it
+  // proves nothing about it (findings 1981 and 1995). If OpenShell ever drops these connections
+  // instead (curl exit 28) or refuses them during TLS setup (35), update this check deliberately.
+  assert.equal(
     observed.proxyBypass.deniedHostExitCode,
-    0,
-    "the Sandbox must not reach a denied host by skipping its proxy.",
+    7,
+    `the Sandbox must not reach a denied host by skipping its proxy: ${JSON.stringify(
+      observed.proxyBypass,
+    )}`,
   );
-  assert.notEqual(
+  assert.equal(
     observed.proxyBypass.addressExitCode,
-    0,
-    "the Sandbox must not reach a public address directly.",
+    7,
+    `the Sandbox must not reach a public address directly: ${JSON.stringify(observed.proxyBypass)}`,
   );
   // The provider-fenced Pod has no public egress of its own outside the Sandbox.
   assert.notEqual(podNetwork.address, "connected", "the Harness Pod must not reach the Internet.");
