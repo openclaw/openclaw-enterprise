@@ -412,6 +412,8 @@ test("A deployer who cannot read the Configuration gets no Open version draft", 
   await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
+  // The link used to render with Logs, before any Configuration read.
+  assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
   await denied;
   await nextFrames(page);
   assert.equal(await logs.getAttribute("class"), "overview-primary");
@@ -456,11 +458,13 @@ test("Open version draft waits for the Configuration read to succeed", async (t)
   const recovery = recoveryOf(page);
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
+  const openDraft = recovery.getByRole("link", { name: "Open version draft" });
+  assert.equal(await openDraft.count(), 0);
   await read.requested;
   await nextFrames(page);
-  assert.equal(await recovery.getByRole("link", { name: "Open version draft" }).count(), 0);
+  assert.equal(await openDraft.count(), 0);
   assert.equal(await logs.getAttribute("class"), "overview-primary");
 
   read.release();
-  await recovery.getByRole("link", { name: "Open version draft" }).waitFor();
+  await openDraft.waitFor();
 });
