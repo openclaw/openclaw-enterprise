@@ -682,6 +682,15 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   await login(deniedPage, deniedFixture, `/console/agents/new?namespace=${deniedNamespace.id}`);
   await deniedPage.getByRole("button", { name: "Start with default Preset" }).click();
   await deniedPage.getByText(/Repository choices are denied/).waitFor();
+  // A refusal is a danger alert, not a quiet hint (finding 2006).
+  assert.deepEqual(
+    await deniedPage.getByText(/Repository choices are denied/).evaluate((node) => ({
+      className: node.className,
+      tone: node.dataset.tone ?? null,
+      role: node.getAttribute("role"),
+    })),
+    { className: "status", tone: "danger", role: "alert" },
+  );
   // The disabled state must reflect both reads' outcome, not a read still pending.
   await waitForCreateFormReads(deniedPage);
   assert.equal(await deniedPage.getByRole("button", { name: "Create Agent" }).isDisabled(), true);

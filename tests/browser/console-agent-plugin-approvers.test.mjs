@@ -82,6 +82,15 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
 // Each redraw (tool details arriving, for one) used to rewrite the dialog's status lines with the
 // same words, so screen readers could announce "Page 1 · 2 plugins" again (finding 1890). Live
 // regions change only when their text does.
+// The look and announcement of a status line: its class, tone and role (finding 2006).
+function statusTone(locator) {
+  return locator.evaluate((node) => ({
+    className: node.className,
+    tone: node.dataset.tone ?? null,
+    role: node.getAttribute("role"),
+  }));
+}
+
 test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -147,6 +156,11 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await page.evaluate(() => globalThis.showPluginPage2("["));
   await dialog.getByText(invalid, { exact: true }).waitFor();
   assert.deepEqual(await liveWrites(), [invalid]);
+  assert.deepEqual(await statusTone(dialog.getByText(invalid, { exact: true })), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+  });
   await page.evaluate(() => globalThis.showPluginPage2("["));
   assert.deepEqual(await liveWrites(), []);
 });
@@ -494,6 +508,12 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await picker
     .getByText("This bot belongs to workspace TTEST123. Enter a user in that workspace.")
     .waitFor();
+  assert.deepEqual(
+    await statusTone(
+      picker.getByText("This bot belongs to workspace TTEST123. Enter a user in that workspace."),
+    ),
+    { className: "status", tone: "danger", role: "alert" },
+  );
   directoryAvailable = false;
   await people.fill("UTEST999");
   await picker.getByText("Slack directory lookup is unavailable.").waitFor();
