@@ -679,16 +679,34 @@ test("A list left again during its rows' rereads is reused on the next return an
 // a stacked row: name and ID, then each cell beside its column's name. A dozen Agents with
 // 60-character names fit 390 and 360 px, every column name shows, IDs break only after a hyphen
 // or underscore, and the row still opens its Agent. At 1440 the table is unchanged.
+// One name is the longest allowed with no break in it (200 characters): it wraps inside its row
+// at every width, and above 760 px within its ID's 310 px, so it does not widen the table
+// (findings 1955, 1956).
 test("On a phone the Agents list stacks each row, fits the screen and still opens the Agent", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Phone Agents list");
   const agents = [];
   for (let index = 1; index <= AGENTS; index += 1) {
-    const name =
-      `Phone Agent ${String(index).padStart(2, "0")} coordinating the quarterly release review and sign-off`.slice(
-        0,
-        60,
-      );
-    const agent = await fixture.createAgent(namespace.id, name, nativeValues(name));
+    const unbroken = index === AGENTS;
+    const name = unbroken
+      ? "W".repeat(200)
+      : `Phone Agent ${String(index).padStart(2, "0")} coordinating the quarterly release review and sign-off`.slice(
+          0,
+          60,
+        );
+    // The default harness Secret is named after its Agent, so it would exceed the name limit.
+    const agent = await fixture.createAgent(
+      namespace.id,
+      name,
+      nativeValues(name),
+      unbroken
+        ? {
+            harnessAuth: {
+              method: "api_key",
+              source: (await fixture.createSecret(namespace.id, "Unbroken auth", "test-key")).ref,
+            },
+          }
+        : {},
+    );
     // Half the Agents have a current version, so both forms of that cell are shown.
     if (index % 2 === 0) {
       await fixture.seedActiveAgentRevision(namespace.id, agent.id);
@@ -697,9 +715,10 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
   }
   assert.equal(agents[0].name.length, 60);
   const columns = ["Agent", "Execution mode", "Current version", "Latest deployment", "Created"];
-  for (const width of [390, 360, 600, 1440]) {
+  for (const width of [390, 360, 600, 760, 761, 1440]) {
+    const desktop = width > 760;
     const { page } = await newPage(t, fixture, {
-      context: { viewport: { width, height: width === 1440 ? 900 : 844 } },
+      context: { viewport: { width, height: desktop ? 900 : 844 } },
     });
     // Each row keeps its height when its deployment read lands (finding 1488).
     const rows = await holdRowReads(t, page, namespace);
@@ -741,7 +760,13 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
           }
           top = rect.top;
         }
+        const name = cells[0].querySelector("a").getBoundingClientRect();
+        const first = cells[0].getBoundingClientRect();
         return {
+          name: {
+            width: name.width,
+            inside: name.left >= first.left - 0.5 && name.right <= first.right + 0.5,
+          },
           overflows: cells.some((cell) => {
             const box = cell.getBoundingClientRect();
             return box.left < tableBox.left - 0.5 || box.right > tableBox.right + 0.5;
@@ -779,17 +804,24 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       };
     });
     assert.equal(layout.pageFits, true, `${width}: the page scrolls sideways`);
-    assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
+    // At 761 px the five columns still scroll inside their card (finding 1907).
+    if (width !== 761) {
+      assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
+    }
     assert.equal(layout.rows.length, AGENTS);
     for (const [index, row] of layout.rows.entries()) {
       assert.equal(row.overflows, false, `${width}: row ${index} overflows the table`);
+      assert.equal(row.name.inside, true, `${width}: row ${index} name overflows its cell`);
+      if (desktop) {
+        assert.ok(row.name.width <= 310.5, `${width}: row ${index} name is ${row.name.width} px`);
+      }
       assert.deepEqual(
         row.labels.map(({ label }) => label),
         columns.slice(1),
         `${width}: row ${index} labels`,
       );
       for (const { label, shown, beside, below } of row.labels) {
-        if (width === 1440) {
+        if (desktop) {
           // The desktop table names its columns in the header row instead.
           assert.equal(shown, false, `${width}: ${label} labelled in the cell`);
         } else {
@@ -812,9 +844,9 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
         assert.match(row.revision.fontFamily, /monospace/, `${width}: row ${index} revision`);
         assert.equal(row.revision.color, layout.text, `${width}: row ${index} revision colour`);
       }
-      assert.equal(row.display, width === 1440 ? "table-row" : "grid", `${width}: row display`);
+      assert.equal(row.display, desktop ? "table-row" : "grid", `${width}: row display`);
     }
-    assert.equal(layout.headerShown, width === 1440, `${width}: header row`);
+    assert.equal(layout.headerShown, desktop, `${width}: header row`);
     // The row's name still opens its Agent.
     const target = agents[1];
     await table.getByRole("link", { name: target.name, exact: true }).click();

@@ -1416,6 +1416,15 @@ select:not([multiple])[size="1"] {
   font-weight: 550;
   text-decoration: none;
 }
+/* The name wraps within the width its ID takes, and a word longer than that (a name may be 200
+   unbroken characters) breaks, so one long name does not widen the table (finding 1955). Only
+   such a word breaks: `anywhere` would also break ordinary names where the table is at its
+   narrowest. */
+.agent-table td:first-child > a {
+  display: inline-block;
+  max-width: 310px;
+  overflow-wrap: break-word;
+}
 .agent-tabs {
   display: flex;
   overflow-x: auto;
@@ -1669,6 +1678,10 @@ select:not([multiple])[size="1"] {
   .agent-table .resource-id {
     margin-top: var(--space-2);
     max-width: none;
+  }
+  .agent-table td:first-child > a {
+    display: inline;
+    overflow-wrap: inherit;
   }
   .agent-table .agent-deployment-note {
     margin-top: 0;
