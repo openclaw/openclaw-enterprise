@@ -267,15 +267,15 @@ const READING_SHOWN_MS = 150;
 // character, which can only over-mark: a marked name still shows in full, in a narrower box.
 const WIDE_SPACES = String.raw`\u1680\u2000-\u2006\u2008-\u200a\u205f\u3000`;
 const DASHES = String.raw`\u00ad\u2010\u2012\u2013`; // soft hyphen, hyphen, figure and en dash
-const CLOSING = String.raw`!),./:;\]}\u00bb\u2019\u201d\u200d\u2060`; // with joiners
+const CLOSING = String.raw`!),./:;\]}\u00bb\u2019\u201d\u2060\u200d`; // and joiners (ZWJ last: lint)
 const IDEOGRAPHIC = String.raw`\p{Ideographic}\u3041-\u3096\u30a1-\u30fa\uac00-\ud7a3\p{Emoji_Presentation}`;
 const UNBROKEN_CHARACTER = [
   String.raw`[^ ${WIDE_SPACES}\u200b${DASHES}\u2014\p{M}${IDEOGRAPHIC}-]`,
   // Where a break character does not break: a hyphen-minus before closing punctuation, "$" or
   // an Arabic-Indic digit; a wide space or dash before closing punctuation or a quote; a hyphen
   // or dash before another (LB21); a hyphen that starts a word (LB20a).
-  String.raw`-(?=[${CLOSING}$\u0660-\u0669\u06f0-\u06f9])`,
-  String.raw`[${WIDE_SPACES}${DASHES}](?=[${CLOSING}"'|])`,
+  String.raw`-(?=[$\u0660-\u0669\u06f0-\u06f9${CLOSING}])`,
+  String.raw`[${WIDE_SPACES}${DASHES}](?=["'|${CLOSING}])`,
   String.raw`[\u2010\u2012\u2013-](?=[\u2010\u2012\u2013-])`,
   String.raw`(?<=^|[ ${WIDE_SPACES}\u200b])[\u2010-]`,
 ].join("|");
