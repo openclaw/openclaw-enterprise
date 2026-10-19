@@ -399,6 +399,7 @@ for (const pending of [
     kind: "a deploy",
     tab: "configuration",
     reason: "This page stays open until the deploy request finishes.",
+    beside: ".agent-draft-actions",
     hold: ({ namespace, agent }) => [`**/namespaces/${namespace.id}/agents/${agent.id}/deploy`],
     start: (page) => page.getByRole("button", { name: "Deploy new version" }).click(),
   },
@@ -406,6 +407,7 @@ for (const pending of [
     kind: "an authentication save",
     tab: "credentials",
     reason: "This page stays open until the authentication save finishes.",
+    beside: "form.agent-card",
     hold: ({ namespace, agent }) => [
       `**/namespaces/${namespace.id}/agents/${agent.id}`,
       { method: "PATCH" },
@@ -416,6 +418,7 @@ for (const pending of [
     kind: "a channel Secrets save",
     tab: "credentials",
     reason: "This page stays open until the channel Secret bindings save finishes.",
+    beside: ".channel-secrets",
     hold: ({ namespace, agent }) => [
       `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
       { method: "PATCH" },
@@ -428,7 +431,8 @@ for (const pending of [
   {
     kind: "a plugin save",
     tab: "plugins",
-    reason: "This page stays open until plugin selections finish saving.",
+    reason: "Wait for plugin selections to finish saving before leaving this tab.",
+    beside: "section.agent-card",
     hold: ({ namespace, agent }) => [
       `**/namespaces/${namespace.id}/agents/${agent.id}`,
       { method: "PATCH" },
@@ -467,25 +471,45 @@ for (const pending of [
     await held.requested;
     const pageUrl = page.url();
     const reason = page.getByText(pending.reason, { exact: true });
-    try {
-      await sidebarLink(page, "Agents").click();
+    // Each refusal shows the note again; it is removed first so a silent one would fail.
+    const refusedWithReason = async (leave) => {
+      await reason.evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+      await leave();
       await reason.waitFor();
       assert.equal(page.url(), pageUrl);
-      // Back to the Agents list: the URL returns before the history event ends.
-      await page.evaluate(
-        () =>
-          new Promise((resolve) => {
-            globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), { once: true });
-            globalThis.history.back();
-          }),
+    };
+    try {
+      await refusedWithReason(() => sidebarLink(page, "Agents").click());
+      // Back to the Agents list (past the tab change, where one was made): the URL returns
+      // before the history event ends.
+      await refusedWithReason(() =>
+        page.evaluate(
+          (steps) =>
+            new Promise((resolve) => {
+              globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), {
+                once: true,
+              });
+              globalThis.history.go(steps);
+            }),
+          pending.tab === "configuration" ? -1 : -2,
+        ),
       );
-      assert.equal(page.url(), pageUrl);
-      await page.getByRole("link", { name: "← Agents" }).click();
-      assert.equal(page.url(), pageUrl);
+      await refusedWithReason(() => page.getByRole("link", { name: "← Agents" }).click());
       // One note, in a live region, beside the control whose request holds the page.
       assert.equal(await reason.count(), 1);
       assert.equal(await reason.getAttribute("role"), "status");
       assert.equal(await reason.isVisible(), true);
+      assert.equal(
+        await reason.evaluate(
+          (node, beside) =>
+            Boolean(
+              node.parentElement.closest(beside) || node.previousElementSibling?.matches(beside),
+            ),
+          pending.beside,
+        ),
+        true,
+        `the note sits beside ${pending.beside}`,
+      );
     } finally {
       held.release();
     }
@@ -704,7 +728,7 @@ async function routeProvisioningJob(page, namespace, read) {
   await page.route(`**${url}`, (route) => route.fulfill(read(url)));
 }
 
-test("an uncertain Create outcome keeps no draft (finding 1965)", async (t) => {
+test("an uncertain Create outcome keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Uncertain create", { ready: true });
@@ -728,7 +752,7 @@ test("an uncertain Create outcome keeps no draft (finding 1965)", async (t) => {
   await expectNoKeptDraft(page);
 });
 
-test("a refused read of an admitted provisioning job keeps no draft (finding 1965)", async (t) => {
+test("a refused read of an admitted provisioning job keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Admitted create", { ready: true });
@@ -744,7 +768,7 @@ test("a refused read of an admitted provisioning job keeps no draft (finding 196
   await expectNoKeptDraft(page);
 });
 
-test("a failed provisioning job that names its Agent keeps no draft (finding 1965)", async (t) => {
+test("a failed provisioning job that names its Agent keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Failed job create", { ready: true });
@@ -779,7 +803,7 @@ test("a failed provisioning job that names its Agent keeps no draft (finding 196
   await expectNoKeptDraft(page);
 });
 
-test("a refused credential registration keeps no draft (finding 1965)", async (t) => {
+test("a refused credential registration keeps no draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Registration create", { ready: true });
@@ -816,7 +840,7 @@ test("a refused credential registration keeps no draft (finding 1965)", async (t
   await expectNoKeptDraft(page);
 });
 
-test("a repository-scoped Agent refusal keeps no draft (finding 1965)", async (t) => {
+test("a repository-scoped Agent refusal keeps no draft", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
     {
       repositoryRef: "application",

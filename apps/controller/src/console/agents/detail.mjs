@@ -1417,7 +1417,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       return "This page stays open until the deploy request finishes.";
     }
     if (refreshingDraft) {
-      return "This page stays open until the draft finishes reloading.";
+      return "This page stays open until the draft finishes updating.";
     }
     if (authenticationSaveState === "saving") {
       return "This page stays open until the authentication save finishes.";
@@ -1429,8 +1429,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   function showLeaveBlock() {
     const reason = leaveReason();
-    if (deployInFlight || refreshingDraft) {
+    if (deployInFlight) {
       showLeaveNote(detailPane.querySelector(":scope > .agent-draft-actions"), reason, "end");
+    } else if (refreshingDraft) {
+      // A refresh replaces the draft actions card mid-hold; the tab panel stays until it ends.
+      showLeaveNote(content, reason, "start");
     } else if (authenticationSaveState === "saving") {
       showLeaveNote(authenticationLeaveAnchor, reason, "end");
     } else if (activeCredentials?.isSaving()) {
@@ -2994,7 +2997,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           : pluginEditorState.reloadRequired
             ? "Reload plugin selections before leaving this tab."
             : pluginEditorState.saving
-              ? "This page stays open until plugin selections finish saving."
+              ? "Wait for plugin selections to finish saving before leaving this tab."
               : null;
         updateNavigationControls();
         updateDeployControls();
