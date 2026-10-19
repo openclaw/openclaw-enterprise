@@ -12,7 +12,13 @@ import {
   newPage,
   persistedDeploymentError,
 } from "./console-agents-browser-helpers.mjs";
-import { openAdvancedSettings } from "./console-agents-test-support.mjs";
+import {
+  createModelCredentialSecret,
+  enterManualModel,
+  openAdvancedSettings,
+  routeInstallationWithoutProvisioning,
+  waitForCreateFormReads,
+} from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // The console's button hierarchy (UX plan C2): each view shows at most one primary action, a
@@ -328,4 +334,194 @@ test("Stop, Delete and Save Configuration show busy, not only disabled, while th
   });
   patch.release();
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
+});
+
+const refusal = (status, code, message) => ({
+  status,
+  contentType: "application/json",
+  body: JSON.stringify({
+    error: { code, message },
+    meta: { requestId: "req_00000000-0000-4000-8000-000000001961" },
+  }),
+});
+
+// The busy state the button shows after its request ended, wherever the button now is.
+const busyAfter = (handle) =>
+  handle.evaluate((node) => ({ busy: node.getAttribute("aria-busy"), disabled: node.disabled }));
+
+async function openCreateForm(page, fixture, namespace, name) {
+  await page.goto(new URL(`/console/agents/new?namespace=${namespace.id}`, fixture.origin).href);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill(name);
+  await enterManualModel(page, `${name} key`, "gpt-busy-create");
+  await waitForCreateFormReads(page);
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  assert.deepEqual(await busyState(create), {
+    busy: "false",
+    cursor: "pointer",
+    disabled: false,
+    text: "Create Agent",
+  });
+  return create;
+}
+
+// Create Agent is busy while its own request runs, and its busy state ends with the request:
+// after a refusal, after success, and after a navigation away (finding 1961).
+test("Create Agent shows busy while its request runs and clears it on refusal, success and navigation away", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Busy create");
+  const { page } = await newPage(t, fixture, { browser });
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const validateUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/validate`;
+  const agentsUrl = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  const busy = { busy: "true", cursor: "progress", disabled: true, text: "Create Agent" };
+
+  // Refused by the preflight: available again, and no longer busy.
+  let create = await openCreateForm(page, fixture, namespace, "Busy refused");
+  const refused = await holdRequests(t, page, validateUrl, {
+    method: "POST",
+    once: true,
+    fulfill: refusal(400, "VALIDATION_FAILED", "Refused for the busy test."),
+  });
+  await create.click();
+  await refused.requested;
+  assert.deepEqual(await busyState(create), busy);
+  refused.release();
+  await page.getByRole("alert").filter({ hasText: "Refused for the busy test." }).waitFor();
+  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: false });
+
+  // Created: the page moves to the new Agent, and the button it left is not busy.
+  const saved = await holdRequests(t, page, agentsUrl, { method: "POST", once: true });
+  await create.click();
+  await saved.requested;
+  assert.deepEqual(await busyState(create), busy);
+  let handle = await create.elementHandle();
+  saved.release();
+  await page.waitForURL((url) => /^\/console\/agents\/agt_/.test(url.pathname));
+  await page.waitForFunction((node) => node.getAttribute("aria-busy") === "false", handle);
+
+  // Left while the request runs (leaving aborts it): the form it left is not busy.
+  create = await openCreateForm(page, fixture, namespace, "Busy left");
+  const left = await holdRequests(t, page, validateUrl, { method: "POST", once: true });
+  await create.click();
+  await left.requested;
+  assert.deepEqual(await busyState(create), busy);
+  handle = await create.elementHandle();
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.waitForURL((url) => url.pathname === "/console/agents");
+  left.release();
+  await page.waitForFunction((node) => node.getAttribute("aria-busy") === "false", handle);
+});
+
+// A Credential Gateway that registers model Secrets as Credential Sources. Only the browser sees
+// it: the Credential Source requests below are answered here.
+async function routeCredentialSourceInstallation(page, fixture) {
+  await page.route(`${fixture.origin}/installation`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          id: "ins_00000000-0000-4000-8000-000000000001",
+          name: "Console test installation",
+          createdAt: new Date().toISOString(),
+          capabilities: {
+            agentProvisioning: { executionModes: ["dedicated"] },
+            credentialSources: {
+              types: [
+                {
+                  type: "openai",
+                  config: [],
+                  secrets: [{ name: "api_key", required: true }],
+                  rotation: "none",
+                  harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+                },
+              ],
+            },
+          },
+        },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+      }),
+    }),
+  );
+}
+
+// Create's busy state is its own: Check credential registration's request disables Create but
+// does not mark it busy, and an uncertain or refused registration ends the busy state.
+test("Create Agent is busy only for its own request, not a recovery control's", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Own busy state");
+  const { page } = await newPage(t, fixture, { browser });
+  await routeCredentialSourceInstallation(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await page.getByLabel("Agent name").fill("Own busy Agent");
+  await createModelCredentialSecret(page, "own-busy-model-key");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  await waitForCreateFormReads(page);
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  const sourcesUrl = `${fixture.origin}/namespaces/${namespace.id}/credential-sources`;
+  const busy = { busy: "true", cursor: "progress", disabled: true, text: "Create Agent" };
+
+  // The registration's outcome is unknown: Create waits for a check, but is not busy.
+  const uncertain = await holdRequests(t, page, sourcesUrl, {
+    method: "POST",
+    once: true,
+    fulfill: refusal(503, "DEPENDENCY_UNAVAILABLE", "Synthetic lost registration."),
+  });
+  await create.click();
+  await uncertain.requested;
+  assert.deepEqual(await busyState(create), busy);
+  uncertain.release();
+  const check = page.getByRole("button", { name: "Check credential registration" });
+  await check.waitFor();
+  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: true });
+
+  // Another control's request disables Create; Create is not the one working.
+  const read = await holdRequests(t, page, sourcesUrl, {
+    method: "GET",
+    once: true,
+    fulfill: {
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: [],
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000002" },
+      }),
+    },
+  });
+  await check.click();
+  await read.requested;
+  assert.equal(await check.isDisabled(), true);
+  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: true });
+  assert.notEqual(
+    await create.evaluate((node) => globalThis.getComputedStyle(node).cursor),
+    "progress",
+  );
+  read.release();
+  await page
+    .getByText(
+      "No credential registration is visible. Select Create Agent to retry the same registration.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: false });
+
+  // A refused registration: available again, and no longer busy.
+  const refused = await holdRequests(t, page, sourcesUrl, {
+    method: "POST",
+    once: true,
+    fulfill: refusal(400, "VALIDATION_FAILED", "Refused registration for the busy test."),
+  });
+  await create.click();
+  await refused.requested;
+  assert.deepEqual(await busyState(create), busy);
+  refused.release();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Credential Source registration could not be confirmed." })
+    .waitFor();
+  assert.deepEqual(await busyAfter(create), { busy: "false", disabled: false });
 });
