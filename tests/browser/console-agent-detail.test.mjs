@@ -440,7 +440,7 @@ for (const unreadable of ["draft", "revision"]) {
       ...(unreadable === "draft" ? ["Credentials"] : []),
     ];
     for (const tab of tabs) {
-      await page.getByRole("button", { name: tab, exact: true }).click();
+      await page.getByRole("tab", { name: tab, exact: true }).click();
       await page
         .getByRole("heading", { name: "Saved configuration unreadable", exact: true })
         .waitFor();
@@ -883,7 +883,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByRole("heading", { name: "Revisioned Agent" }).waitFor();
   requests.length = 0;
 
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await revealNativeConfiguration(page, "View admitted native configuration");
   await page.getByText('"marker": "rev-one"').waitFor();
@@ -961,10 +961,10 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByText("Save or cancel these Configuration edits before deploying.").waitFor();
   await page.getByText("Save or cancel Configuration edits before deploying.").waitFor();
   // Tabs, admitted revision browsing, and global routes preserve this exact unsaved draft.
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
   await page.getByLabel("Available versions").selectOption(second.revision.id);
   await page.getByRole("button", { name: "Edit current Configuration" }).click();
@@ -1009,10 +1009,10 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "draft-edited"').waitFor();
 
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Authentication source").selectOption("");
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "");
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
@@ -1436,12 +1436,12 @@ test("Agent detail saves plugin changes for the next revision without changing a
     editedPlugins,
   );
 
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), editedPlugins);
   await page.getByLabel("Available versions").selectOption(first.revision.id);
   await page.waitForURL((current) => current.searchParams.get("revision") === first.revision.id);
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("heading", { name: "Plugin selections snapshot" }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("pre").textContent()), originalPlugins);
   assert.equal(await page.getByRole("button", { name: "Save plugin selections" }).count(), 0);
@@ -1680,7 +1680,7 @@ test("Dedicated OpenClaw credentials and plugins do not offer Codex-only control
       response.url() ===
       `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/plugins/capabilities`,
   );
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal((await capabilities).status(), 200);
   await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
@@ -2236,7 +2236,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
 
   await page.getByText("Outcome unknown. Configuration may have been saved.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Save Configuration" }).isDisabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Channels" }).isDisabled(), true);
+  assert.equal(await page.getByRole("tab", { name: "Channels" }).isDisabled(), true);
   await page.evaluate(() => {
     const next = new URL(globalThis.location.href);
     next.searchParams.set("tab", "channels");
@@ -2370,7 +2370,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     revisions.data.map((revision) => revision.id),
     [active.revision.id],
   );
-  await page.getByRole("button", { name: "Workspace files" }).click();
+  await page.getByRole("tab", { name: "Workspace files" }).click();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
 
   const cleared = await state.transact((unit) =>
@@ -2387,7 +2387,7 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
     .getByText("No version is selected. Deploy a new version to start this Agent.")
     .waitFor();
 
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Create new version", exact: true }).last().click();
   await page.getByRole("button", { name: "Deploy new version" }).click();
   await page.waitForURL(/revision=rev_/);
@@ -2468,7 +2468,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
 
   // Stop acceptance does not clear the current version. Open Workspace in the interval
   // before the worker clears it, and keep an unsaved edit in the mounted editor.
-  const workspace = page.getByRole("button", { name: "Workspace files", exact: true });
+  const workspace = page.getByRole("tab", { name: "Workspace files", exact: true });
   const file = page.getByLabel("AGENTS.md", { exact: true });
   const draft = "Unsaved workspace edit during Stop";
   await workspace.click();
@@ -2497,7 +2497,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   );
   assert.equal(await file.count(), 0, "the mounted Workspace must release the old live editor");
   await unavailable.waitFor();
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(
     await page.locator('.revision-selector [aria-label$=", current version"]').count(),

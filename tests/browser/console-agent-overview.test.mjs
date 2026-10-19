@@ -477,7 +477,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await askForLogs.waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   // Leaving Logs for another tab of the same version keeps that.
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await askForLogs.waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   const configuration = recovery.getByRole("link", { name: "Open Configuration" });
@@ -1011,7 +1011,7 @@ test("opening the Logs tab by click does not move the cards below it", async (t)
     await page.getByRole("button", { name: "Stop Agent" }).waitFor();
     await page.evaluate(() => globalThis.document.fonts.ready);
     // A reader scrolls the tabs into view, then selects Logs once the page is still.
-    const logsTab = page.getByRole("button", { name: "Logs", exact: true });
+    const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
     await logsTab.evaluate((tab) => tab.scrollIntoView({ block: "center" }));
     await waitForIdleFetches(page);
     await nextFrames(page);
@@ -1086,11 +1086,9 @@ test("a failed version's banner does not move the overview on a slow link", asyn
         ),
       );
     assert.equal(await leadsOverview(), true);
-    const plugins = page
-      .locator(".agent-tabs")
-      .getByRole("button", { name: "Plugins", exact: true });
+    const plugins = page.locator(".agent-tabs").getByRole("tab", { name: "Plugins", exact: true });
     await plugins.click();
-    await page.locator('.agent-tabs [aria-current="page"]', { hasText: "Plugins" }).waitFor();
+    await page.locator('.agent-tabs [aria-selected="true"]', { hasText: "Plugins" }).waitFor();
     assert.equal(await leadsOverview(), true, "a tab change keeps the card above the overview");
   }
 });
@@ -1107,7 +1105,7 @@ function versionDetailInView() {
 const focusedTab = (page) =>
   page.evaluate(() => {
     const active = globalThis.document.activeElement;
-    return active?.closest(".agent-tabs") && active.getAttribute("aria-current") === "page"
+    return active?.closest(".agent-tabs") && active.getAttribute("aria-selected") === "true"
       ? active.textContent
       : null;
   });

@@ -9,9 +9,9 @@ follows `:focus-visible`.
    links. Every stop, including the Namespace select, Refresh, search, Create
    Agent and each Agent name, shows the same 3 px accent ring just outside its
    edge.
-2. Open **Pages / Agent detail / Draft**. Tab through the tabs, Edit
-   Configuration and the **View native Configuration** disclosure. Each one shows
-   the same ring.
+2. Open **Pages / Agent detail / Draft**. Tab to the selected tab, arrow through
+   the others, then Tab to Edit Configuration and the **View native
+   Configuration** disclosure. Each one shows the same ring.
 3. Open **Pages / Agent detail / Runtime logs**. Tab to the log pane. Its ring
    sits inside the pane edge (inset). Tab to a log row summary. Its ring sits
    outside, like a button.

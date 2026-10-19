@@ -385,10 +385,10 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await page.getByRole("button", { name: "Configure plugins", exact: true }).focus();
   assert.equal(await people.getAttribute("aria-expanded"), "false");
   const peopleNode = await people.elementHandle();
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await people.waitFor({ state: "detached" });
   assert.equal(await peopleNode.evaluate((node) => node.isConnected), false);
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await people.waitFor();
   assert.equal(await peopleNode.evaluate((node) => node.isConnected), true);
   assert.equal(await resultNode.evaluate((node) => node.isConnected), true);
@@ -407,9 +407,9 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     .getByText("Alex (@alex)")
     .waitFor();
   const selectedPeopleNode = await people.elementHandle();
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await people.waitFor({ state: "detached" });
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await people.waitFor();
   assert.equal(await selectedPeopleNode.evaluate((node) => node.isConnected), true);
   assert.equal(
@@ -520,8 +520,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
   await page.goto(pluginsUrl.href);
   await page.getByLabel("Default plugin approvers mode").selectOption("inherit");
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal(await page.getByLabel("Default plugin approvers mode").inputValue(), "inherit");
   const clearedDefault = page.waitForResponse(
     (response) =>
@@ -559,14 +559,14 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
 
   await page.getByLabel("Default plugin approvers mode").selectOption("none");
   assert.equal(await deploy.isDisabled(), true);
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
   assert.equal(await deploy.isDisabled(), true);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal(await page.getByLabel("Default plugin approvers mode").inputValue(), "none");
   await page
     .getByText("Save or discard plugin changes before deploying.", { exact: true })

@@ -1479,8 +1479,8 @@ test("Agent detail history navigation rechecks session during refocus", async (t
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
 
   let releaseSession;
@@ -1533,14 +1533,14 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
   await page.getByRole("heading", { name: "Configuration draft", exact: true }).waitFor();
   // Late reads (for example the sharing policy) change the page height; measure after them.
   await waitForIdleFetches(page);
-  await page.getByRole("button", { name: "Channels", exact: true }).scrollIntoViewIfNeeded();
+  await page.getByRole("tab", { name: "Channels", exact: true }).scrollIntoViewIfNeeded();
   const panels = await page
     .locator("h1, .agent-toolbar, .native-admin-access, .revision-selector, .agent-tabs")
     .elementHandles();
   const top = await page.evaluate(() => globalThis.scrollY);
   requests.length = 0;
 
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Configure Slack", exact: true }).waitFor();
   assert.equal(new URL(page.url()).searchParams.get("tab"), "channels");
   // The surrounding DOM must stay mounted; a fast full-page rerender still loses focus and scroll.
@@ -1548,13 +1548,13 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
     assert.equal(await panel.evaluate((node) => node.isConnected), true);
   }
   assert.ok(Math.abs((await page.evaluate(() => globalThis.scrollY)) - top) < 2);
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   const secret = page.getByLabel("API key Secret");
   await secret.waitFor();
   // A tab is kept for Back only if its reads (here the Secret list) finished before leaving it.
   await waitForIdleFetches(page);
   const secretElement = await secret.elementHandle();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await page
     .getByText(
       "Workspace files require a deployed Agent with a current version and a reachable gateway.",
@@ -1635,9 +1635,9 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
     await gate;
     await route.fulfill({ response });
   });
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await held;
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
   const delivered = page.waitForResponse(`${fixture.origin}${configurationPath}`);
   release();
@@ -1650,9 +1650,187 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   );
   assert.equal(await page.getByRole("button", { name: "Configure Slack", exact: true }).count(), 0);
   assert.equal(await tabs.evaluate((node) => node.isConnected), true);
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Configure Slack", exact: true }).waitFor();
   assert.equal(requests.filter((request) => request.path === configurationPath).length, 1);
+});
+
+// The version tabs were a row of buttons, each its own Tab stop, with no tab semantics (UX plan
+// C7). They are a tablist: the selected tab is the list's one Tab stop, Left/Right (wrapping) and
+// Home/End move focus without opening a tab, Enter opens the focused one, Tab leaves the list
+// and Shift+Tab returns to the selected tab, and aria-selected follows the URL's tab=, Back
+// included. On a phone an edge with more tabs past it fades.
+test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selection", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Tab keyboard", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Tab keyboard Agent", nativeValues("keys"));
+  const { page } = await newPage(t, fixture);
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  const list = page.getByRole("tablist", { name: "Agent configuration views" });
+  await list.waitFor();
+  const names = [
+    "Configuration",
+    "Plugins",
+    "Channels",
+    "Repositories",
+    "Credentials",
+    "Workspace files",
+  ];
+  assert.deepEqual(await list.getByRole("tab").allTextContents(), names);
+  // Which tab is selected, which one is the Tab stop, which has focus, and the URL's tab=.
+  const state = () =>
+    page.evaluate(() => {
+      const document = globalThis.document;
+      const tabs = [...document.querySelectorAll('[role="tablist"] [role="tab"]')];
+      const panel = document.querySelector('[role="tabpanel"]');
+      return {
+        selected: tabs
+          .filter((tab) => tab.getAttribute("aria-selected") === "true")
+          .map((tab) => tab.textContent),
+        stops: tabs.filter((tab) => tab.tabIndex === 0).map((tab) => tab.textContent),
+        focused: document.activeElement.closest('[role="tablist"]')
+          ? document.activeElement.textContent
+          : null,
+        panel: document.getElementById(panel.getAttribute("aria-labelledby"))?.textContent,
+        controls: tabs.every((tab) => tab.getAttribute("aria-controls") === panel.id),
+        tab: new URL(globalThis.location.href).searchParams.get("tab"),
+      };
+    });
+  const expect = async (expected, message) =>
+    assert.deepEqual(
+      await state(),
+      { panel: expected.selected[0], controls: true, ...expected },
+      message,
+    );
+  await expect({ selected: ["Plugins"], stops: ["Plugins"], focused: null, tab: "plugins" });
+
+  await list.getByRole("tab", { name: "Plugins", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(
+    { selected: ["Plugins"], stops: ["Channels"], focused: "Channels", tab: "plugins" },
+    "Right moves focus only",
+  );
+  for (const [key, focused] of [
+    ["ArrowLeft", "Plugins"],
+    ["ArrowLeft", "Configuration"],
+    ["ArrowLeft", "Workspace files"],
+    ["ArrowRight", "Configuration"],
+    ["End", "Workspace files"],
+    ["Home", "Configuration"],
+  ]) {
+    await page.keyboard.press(key);
+    await expect(
+      { selected: ["Plugins"], stops: [focused], focused, tab: "plugins" },
+      `${key} to ${focused}`,
+    );
+  }
+  // One Tab stop: Tab leaves the list, and Shift+Tab comes back to the selected tab.
+  await page.keyboard.press("Tab");
+  await expect({ selected: ["Plugins"], stops: ["Plugins"], focused: null, tab: "plugins" });
+  await page.keyboard.press("Shift+Tab");
+  await expect({ selected: ["Plugins"], stops: ["Plugins"], focused: "Plugins", tab: "plugins" });
+
+  await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Enter");
+  await page.waitForURL("**tab=channels**");
+  await page.getByRole("button", { name: "Configure Slack", exact: true }).waitFor();
+  await expect({
+    selected: ["Channels"],
+    stops: ["Channels"],
+    focused: "Channels",
+    tab: "channels",
+  });
+  await page.goBack();
+  await page.waitForURL("**tab=plugins**");
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ===
+      "Plugins",
+  );
+  const back = await state();
+  // Focus was in the strip, so it follows the selection back to Plugins.
+  assert.deepEqual(back, {
+    selected: ["Plugins"],
+    stops: ["Plugins"],
+    focused: "Plugins",
+    panel: "Plugins",
+    controls: true,
+    tab: "plugins",
+  });
+
+  // On a phone the strip scrolls sideways; the edge with more tabs past it fades, from the first
+  // paint of a page whose selected tab needs no scrolling.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
+  await list.waitFor();
+  const strip = page.locator(".agent-tabs");
+  const edges = () =>
+    strip.evaluate((node) => ({
+      before: node.hasAttribute("data-more-before"),
+      after: node.hasAttribute("data-more-after"),
+      masked: globalThis.getComputedStyle(node).maskImage !== "none",
+    }));
+  await page.waitForFunction(() =>
+    globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-after"),
+  );
+  assert.deepEqual(await edges(), { before: false, after: true, masked: true });
+  // Back moves focus with the selection, and a focused tab stays in view when the strip
+  // resizes, rather than the strip scrolling back to the selected tab.
+  const focusedInView = () =>
+    page.evaluate(() => {
+      const tab = globalThis.document.activeElement;
+      const strip = tab.closest('[role="tablist"]')?.getBoundingClientRect();
+      const box = tab.getBoundingClientRect();
+      return {
+        name: tab.textContent,
+        inView: Boolean(strip) && box.left >= strip.left - 1 && box.right <= strip.right + 1,
+      };
+    });
+  const frames = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve));
+        }),
+    );
+  await list.getByRole("tab", { name: "Configuration", exact: true }).focus();
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.waitForURL("**tab=workspace**");
+  await page.goBack();
+  await page.waitForURL("**tab=configuration**");
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector('[role="tab"][aria-selected="true"]')?.textContent ===
+      "Configuration",
+  );
+  await frames();
+  assert.deepEqual(await focusedInView(), { name: "Configuration", inView: true }, "after Back");
+  // An arrowed-to tab that is not selected stays in view through a resize.
+  await page.keyboard.press("End");
+  await page.setViewportSize({ width: 360, height: 844 });
+  await frames();
+  assert.deepEqual(
+    await focusedInView(),
+    { name: "Workspace files", inView: true },
+    "after resize",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await strip.evaluate((node) => {
+    node.scrollLeft = node.scrollWidth;
+  });
+  await page.waitForFunction(() =>
+    globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-before"),
+  );
+  assert.deepEqual(await edges(), { before: true, after: false, masked: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForFunction(() => {
+    const node = globalThis.document.querySelector(".agent-tabs");
+    return !node.hasAttribute("data-more-before") && !node.hasAttribute("data-more-after");
+  });
+  assert.equal((await edges()).masked, false, "a strip that fits does not fade");
 });
 
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {
@@ -2450,20 +2628,20 @@ test("live workspace drafts survive navigation, stay Agent-scoped, and clear on 
   assert.deepEqual(nonAuthWriteRequests(requests), []);
   await file.fill("# Unsaved instructions\n");
   await page.getByLabel("USER.md", { exact: true }).fill("");
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await waitForWorkspaceEditors(page, ["AGENTS.md", "USER.md"]);
   assert.equal(await file.inputValue(), "# Unsaved instructions\n");
   assert.equal(await page.getByLabel("USER.md", { exact: true }).inputValue(), "");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("link", { name: "Other workspace Agent", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
   assert.equal(await file.inputValue(), "# Saved AGENTS.md\n");
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByLabel("Search Agents").fill("Workspace draft owner");
   await page.getByRole("link", { name: "Workspace draft owner", exact: true }).click();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   await waitForWorkspaceEditors(page, ["AGENTS.md"]);
   assert.equal(await file.inputValue(), "# Unsaved instructions\n");
   assert.deepEqual(nonAuthWriteRequests(requests), []);
@@ -3264,7 +3442,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
   await page.getByRole("link", { name: "Auth Bound Secrets", exact: true }).waitFor();
   assert.equal(await page.getByText("Draft model", { exact: true }).count(), 0);
   await page.screenshot({ path: join(artifacts, "bound-harness-revision.png"), fullPage: true });
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("link", { name: "Revision Slack app", exact: true }).waitFor();
   await page
     .getByText(`Bound Secret · ${bot.id} · Metadata unavailable (access denied)`, { exact: true })
@@ -3295,10 +3473,10 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
     .getByText(`Bound Secret · ${app.id} · Metadata unavailable`, { exact: true })
     .waitFor();
   await page.getByRole("button", { name: "Open version draft", exact: true }).last().click();
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByText("No Secret bound", { exact: true }).first().waitFor();
   assert.equal(await page.getByText("No Secret bound", { exact: true }).count(), 2);
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("link", { name: "Draft model", exact: true }).waitFor();
 });
 
