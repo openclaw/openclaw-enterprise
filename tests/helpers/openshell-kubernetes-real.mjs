@@ -101,8 +101,9 @@ export function modelAtCapacityOutcome(error) {
   if (!modelAtCapacity.test(stderr)) {
     return undefined;
   }
-  // pendingCommands is the summary's last field, so the object ends at the first "]}".
-  const summary = /^Native execution summary: (\{.*?\]\})/m.exec(stderr)?.[1];
+  // pendingCommands is the summary's last field, so the object ends at the first "]}". The
+  // client writes its error first, so only the last summary line can be its own.
+  const summary = [...stderr.matchAll(/^Native execution summary: (\{.*?\]\})/gm)].at(-1)?.[1];
   let retrySafe;
   try {
     retrySafe = JSON.parse(summary ?? "null")?.retrySafe === true;
@@ -1261,7 +1262,8 @@ export function createOpenShellKubernetesFixture({
           ? "process.env.APP_SERVER_TOKEN"
           : `require("node:fs").readFileSync(${JSON.stringify(appServerTokenPath)}, "utf8")`
       };
-      const timeout = setTimeout(() => fail(new Error("Codex harness turn timed out")), 300000);
+      // While a command's terminal is awaited, running out of time leaves its outcome unknown.
+      const timeout = setTimeout(() => commandDeadline ? unknownCommandOutcome() : fail(new Error("Codex harness turn timed out")), 300000);
       const pending = new Map();
       const items = [];
       const pendingCommands = new Map();
@@ -1414,8 +1416,9 @@ export function createOpenShellKubernetesFixture({
         const message = JSON.parse(String(data));
         const { method, params } = message;
         const item = params?.item;
+        // Any server request (an approval of any API version) counts as an action too.
         if ((item?.type !== undefined && !["userMessage", "agentMessage", "reasoning"].includes(item.type)) ||
-            String(method).endsWith("/requestApproval") || String(method).endsWith("/outputDelta")) {
+            (message.id !== undefined && method !== undefined) || String(method).endsWith("/outputDelta")) {
           actionSeen = true;
         }
         const decline = message.id !== undefined && (
@@ -1504,7 +1507,8 @@ export function createOpenShellKubernetesFixture({
           }
           // Only our own turn's final error can make the turn safe to run again.
           fail(error, {
-            retrySafe: params?.threadId === threadId && params?.turnId === turnId && params?.willRetry === false,
+            retrySafe: typeof threadId === "string" && typeof turnId === "string" &&
+              params?.threadId === threadId && params?.turnId === turnId && params?.willRetry === false,
           });
         }
       });

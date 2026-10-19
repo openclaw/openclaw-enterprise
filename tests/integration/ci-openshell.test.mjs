@@ -565,6 +565,11 @@ test("a turn the model answered at capacity runs again only for its own final er
       }
       if (method === "thread/start") {
         threadStarts += 1;
+        if (scripts[0] === "capacity before the thread starts") {
+          // Before thread/start answers, the client knows no thread or turn ID to match.
+          scripts.shift();
+          send(atCapacity({}));
+        }
         return send({
           id,
           result: {
@@ -576,6 +581,12 @@ test("a turn the model answered at capacity runs again only for its own final er
       assert.equal(method, "turn/start");
       const threadId = `thread-${threadStarts}`;
       const turn = { id: `turn-${threadStarts}`, status: "inProgress" };
+      const script = scripts.shift();
+      if (script === "capacity before the turn starts") {
+        // Before turn/start answers, the client knows no turn ID to match.
+        send(atCapacity({}));
+        return send({ id, result: { turn } });
+      }
       send({ id, result: { turn } });
       const at = { threadId, turnId: turn.id };
       const command = { id: "command", type: "commandExecution", command: "true" };
@@ -589,6 +600,22 @@ test("a turn the model answered at capacity runs again only for its own final er
       });
       const events = {
         capacity: [atCapacity(at)],
+        // Reasoning and a message are not actions.
+        "capacity after a message": [
+          { method: "item/started", params: { ...at, item: { id: "think", type: "reasoning" } } },
+          {
+            method: "item/completed",
+            params: { ...at, item: { id: "note", type: "agentMessage", text: "Working." } },
+          },
+          atCapacity(at),
+        ],
+        "file change": [
+          {
+            method: "item/started",
+            params: { ...at, item: { id: "edit", type: "fileChange", status: "inProgress" } },
+          },
+          atCapacity(at),
+        ],
         // Not our turn's final error, so it cannot show our turn is safe to run again.
         "capacity for another turn": [atCapacity(at, { turnId: "other-turn" })],
         "capacity for another thread": [atCapacity(at, { threadId: "other-thread" })],
@@ -625,7 +652,7 @@ test("a turn the model answered at capacity runs again only for its own final er
             params: { threadId, turn: { ...turn, status: "completed" } },
           },
         ],
-      }[scripts.shift()];
+      }[script];
       for (const event of events) {
         if (event === "close") {
           socket.close();
@@ -659,10 +686,12 @@ test("a turn the model answered at capacity runs again only for its own final er
     'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client did not report it safe to run again (it may have begun an action), so it is not run again (attempt 1/3).';
 
   // Our turn's final error at capacity before any action: the same turn runs again.
-  const retried = await turn(["capacity", "reply"]);
-  assert.equal(retried.assistant, "OCC-TURN-OK");
-  assert.equal(threadStarts, 2);
-  assert.deepEqual(sleeps, [15_000]);
+  for (const script of ["capacity", "capacity after a message"]) {
+    const retried = await turn([script, "reply"]);
+    assert.equal(retried.assistant, "OCC-TURN-OK", script);
+    assert.equal(threadStarts, 2, script);
+    assert.deepEqual(sleeps, [15_000], script);
+  }
 
   // At capacity on every attempt: three threads, and the first line says so.
   const persistent = await failure(turn(["capacity", "capacity", "capacity"]));
@@ -680,7 +709,10 @@ test("a turn the model answered at capacity runs again only for its own final er
     "capacity for another thread",
     "capacity naming no turn",
     "capacity without willRetry",
+    "capacity before the thread starts",
+    "capacity before the turn starts",
     "command completed",
+    "file change",
     "approval",
     "output",
   ]) {
