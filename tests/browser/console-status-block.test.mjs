@@ -92,8 +92,8 @@ const refusalView = (locator) =>
     const { top, bottom } = node.getBoundingClientRect();
     return {
       focused: globalThis.document.activeElement === node,
-      // Sub-pixel layout can end the block a fraction past the viewport it was aligned to.
-      inView: top >= -1 && top < globalThis.innerHeight && bottom <= globalThis.innerHeight + 1,
+      // Whole, with room for its focus ring (3 px plus a 2 px offset).
+      inView: top >= 5 && top < globalThis.innerHeight && bottom <= globalThis.innerHeight - 5,
       rect: [Math.round(top), Math.round(bottom), globalThis.innerHeight, globalThis.scrollY],
     };
   });
