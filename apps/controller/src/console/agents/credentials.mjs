@@ -1,4 +1,4 @@
-import { element, button, focusSaveOutcome } from "../dom.mjs";
+import { element, button, focusSaveOutcome, setStatusTone } from "../dom.mjs";
 import {
   configurationConflictMessage,
   isStaleGeneration,
@@ -398,6 +398,7 @@ export function createChannelSecretsPanel({
           state.carriedNote = "";
           updateGrantWarning();
           error.textContent = state.saveGrantWarning;
+          setStatusTone(error, "warning");
           status.textContent = "";
           updateControls();
           onChange();
@@ -563,6 +564,7 @@ export function createChannelSecretsPanel({
         updateGrantWarning(state.configuration.secretBindings);
         status.textContent = "";
         error.textContent = saveErrorText();
+        setStatusTone(error, "danger");
       } finally {
         if (context.isCurrent()) {
           state.saving = false;
@@ -590,7 +592,7 @@ export function createChannelSecretsPanel({
     if (slackEnabled(state.values) && servicePrincipalId(state.agent) === null) {
       return element(
         "p",
-        { className: "error", role: "alert" },
+        { className: "status", "data-tone": "danger", role: "alert" },
         "The API did not return this Agent's service principal, so the console cannot bind Secrets.",
       );
     }
@@ -598,15 +600,16 @@ export function createChannelSecretsPanel({
   }
 
   function render() {
+    // A refused save is danger; Secret grants left unconfirmed after a save are a warning.
     const error = element(
       "p",
-      { className: "error", role: "alert" },
+      { className: "status", "data-tone": state.saveError ? "danger" : "warning", role: "alert" },
       state.saveError ? saveErrorText() : state.saveGrantWarning,
     );
     const reloadMessage = state.reloadRequired
       ? element(
           "p",
-          { className: "error", role: "status" },
+          { className: "status", "data-tone": "danger", role: "status" },
           "Configuration changed. Reload this draft before saving channel Secrets.",
         )
       : null;
@@ -614,7 +617,7 @@ export function createChannelSecretsPanel({
       state.outcomeUnknown && (!state.saveError || isDefinitiveRejection(state.saveError))
         ? element(
             "p",
-            { className: "error", role: "status" },
+            { className: "status", "data-tone": "danger", role: "status" },
             "Credential changes may have been saved. Reload this draft and inspect the saved state before deploying.",
           )
         : null;

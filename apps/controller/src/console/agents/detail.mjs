@@ -5,6 +5,7 @@ import {
   focusSaveOutcome,
   jsonObjectProblem,
   patchChildren,
+  revealStatus,
   setHidden,
   setStatusTone,
   setText,
@@ -3570,6 +3571,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         },
       );
       const feedback = element("p", { role: "status", className: "hint" }, savedNotice);
+      // Progress stays a quiet hint; a refusal is a danger block that takes focus, and a save
+      // whose Secret access is unconfirmed a warning (finding 1966).
+      const say = (text, tone = null) => {
+        feedback.textContent = text;
+        setStatusTone(feedback, tone);
+        if (tone) {
+          revealStatus(feedback, form);
+        }
+      };
       const save = element(
         "button",
         { type: "submit", className: "button button--primary" },
@@ -3667,6 +3677,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         save.disabled = true;
         auth.setDisabled(true);
         feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
+        setStatusTone(feedback, "danger");
       }
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -3678,7 +3689,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           harnessAuth = savedAuthentication?.harnessAuth ?? (await auth.readBinding());
         } catch (error) {
           // Incomplete fields (no Secret, unfinished ChatGPT sign-in) say what to do next.
-          feedback.textContent = error.message;
+          say(error.message, "danger");
           return;
         }
         save.disabled = true;
@@ -3687,9 +3698,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         auth.setDisabled(true);
         data.setAuthenticationSaveState("saving");
         data.setAuthenticationPending(true);
-        feedback.textContent = savedAuthentication
-          ? "Checking Secret access…"
-          : "Saving authentication…";
+        say(savedAuthentication ? "Checking Secret access…" : "Saving authentication…");
         let mutationStarted = false;
         try {
           const current = await request(path);
@@ -3704,8 +3713,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             current.configurationId !== expected.configurationId ||
             JSON.stringify(current.harnessAuth) !== JSON.stringify(expected.harnessAuth)
           ) {
-            feedback.textContent =
-              "The Configuration changed. Reload authentication source before saving.";
+            say("The Configuration changed. Reload authentication source before saving.", "danger");
             outcomeUnknown = true;
             return;
           }
@@ -3731,14 +3739,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             details = null;
           }
           if (harnessAuth?.method === "credential_source") {
-            feedback.textContent = "Authentication saved. Checking credential source access…";
+            say("Authentication saved. Checking credential source access…");
             await ensureCredentialOperateBinding(context, current, {
               kind: "credential_source",
               namespaceId: context.namespaceId,
               id: harnessAuth.sourceId,
             });
           } else if (harnessAuth?.source?.kind === "secret") {
-            feedback.textContent = "Authentication saved. Checking Secret access…";
+            say("Authentication saved. Checking Secret access…");
             await ensureCredentialOperateBinding(context, current, harnessAuth.source);
           }
           if (context.isCurrent()) {
@@ -3756,17 +3764,22 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           if (error.status === 401) {
             context.onExpired();
           } else if (savedAuthentication) {
-            feedback.textContent =
+            say(
               savedAuthentication.harnessAuth?.method === "credential_source"
                 ? `Authentication source saved, but this Agent's credential source access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent operate access to the selected credential source, then retry credential access. Deployment readiness is not confirmed.`
-                : `Authentication source saved, but this Agent's Secret access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent secret:operate on the selected Secret, then retry credential access. Deployment readiness is not confirmed.`;
+                : `Authentication source saved, but this Agent's Secret access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent secret:operate on the selected Secret, then retry credential access. Deployment readiness is not confirmed.`,
+              "warning",
+            );
           } else {
             outcomeUnknown =
               error.outcomeUnknown ??
               (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status));
-            feedback.textContent = error.outcomeUnknown
-              ? error.message
-              : rejectionMessage(refusedSave(error, "agent", mutationStarted), mutationStarted);
+            say(
+              error.outcomeUnknown
+                ? error.message
+                : rejectionMessage(refusedSave(error, "agent", mutationStarted), mutationStarted),
+              "danger",
+            );
             data.setAuthenticationPending(outcomeUnknown);
           }
         } finally {
@@ -3857,6 +3870,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     let updateDenied = false;
     const updateNote = element("p", { className: "muted", role: "status", hidden: true });
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
+    // A refused save is a danger block that takes focus; other notes stay a hint (finding 1966).
+    const refuse = (text) => {
+      feedback.textContent = text;
+      setStatusTone(feedback, "danger");
+      revealStatus(feedback, feedback.closest("section") ?? undefined);
+    };
     // Reload and Cancel reread the Agent and rebuild this tab in place (finding 1445's rest).
     // Set once Reload or Cancel starts rereading; this editor is about to be replaced.
     let reloading = false;
@@ -3912,6 +3931,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           feedback.textContent = fields.isDirty()
             ? "Save or cancel repository changes before deploying."
             : "No repository changes to save.";
+          setStatusTone(feedback, null);
         }
         update();
       },
@@ -3941,8 +3961,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           JSON.stringify(fresh.repositoryBindings) !== JSON.stringify(agent.repositoryBindings)
         ) {
           saveState = "conflict";
-          feedback.textContent =
-            "Repository access changed while you were editing. Reload this draft before saving.";
+          refuse(
+            "Repository access changed while you were editing. Reload this draft before saving.",
+          );
           return;
         }
         // TODO: enforce an expected Agent version in PATCH when draft concurrency
@@ -3968,9 +3989,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         if (error.status === 401) {
           context.onExpired();
         } else {
-          feedback.textContent = rejectionMessage(
-            saved ? error : refusedSave(error, "agent", mutationStarted),
-            mutationStarted,
+          refuse(
+            rejectionMessage(
+              saved ? error : refusedSave(error, "agent", mutationStarted),
+              mutationStarted,
+            ),
           );
           if (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status)) {
             saveState = "uncertain";

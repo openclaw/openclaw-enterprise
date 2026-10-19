@@ -3,6 +3,8 @@ import {
   element,
   field as formField,
   setFieldError,
+  setStatusTone,
+  statusBlock,
   validateFields,
 } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
@@ -405,7 +407,7 @@ export function createSecretReferenceField({
     }
     input.disabled = true;
     closeListbox({ restoreSelection: false });
-    status.className = "hint";
+    setStatusTone(status, null);
     try {
       await onSecretSelected(secret);
       if (!secrets.some((item) => item.id === secret.id)) {
@@ -460,7 +462,7 @@ export function createSecretReferenceField({
       required: "",
       autocomplete: "off",
     });
-    const feedback = element("p", { className: "error", role: "alert" });
+    const feedback = statusBlock("danger", null, null);
     const cancel = element("button", { type: "button" }, "Cancel");
     const submit = element(
       "button",
@@ -625,7 +627,7 @@ export function createSecretReferenceField({
         secrets.splice(0, secrets.length, ...listed, ...added);
         setSecretOptions({ preserveSearch: true });
         if (!staged) {
-          status.className = "hint";
+          setStatusTone(status, null);
           status.textContent = secrets.length
             ? "Choose an existing Secret or create a new one."
             : "No readable Secrets yet. Create a new Secret to bind this field.";
@@ -636,7 +638,7 @@ export function createSecretReferenceField({
         if (!isCurrent()) {
           return;
         }
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent =
           error.status === 401
             ? "Your session has expired."

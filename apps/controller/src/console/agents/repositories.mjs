@@ -1,4 +1,4 @@
-import { element, button, setText } from "../dom.mjs";
+import { element, button, setStatusTone, setText } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
@@ -163,7 +163,12 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     { className: "hint", role: "status", "aria-live": "polite" },
     "Loading approved repositories…",
   );
-  const validation = element("p", { className: "error", role: "alert", hidden: true });
+  const validation = element("p", {
+    className: "status",
+    "data-tone": "danger",
+    role: "alert",
+    hidden: true,
+  });
   const choices = element("div", { className: "repository-options", "aria-busy": "true" });
   const cards = element("div", { className: "repository-selected" });
   const announcements = element("p", { className: "hint", role: "status", "aria-live": "polite" });
@@ -726,7 +731,10 @@ export function createRepositoryFields(context, onChange, initial = {}) {
         settings.append(
           element(
             "p",
-            { className: "error" },
+            // Checking is progress; the other three say the repository cannot be used.
+            state.discovery === "loading"
+              ? { className: "hint" }
+              : { className: "status", "data-tone": "danger" },
             state.discovery === "ready"
               ? "This repository is no longer available. Remove it or retry discovery."
               : state.discovery === "loading"
@@ -741,7 +749,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           settings.append(
             element(
               "p",
-              { className: "error" },
+              { className: "status", "data-tone": "danger" },
               `Choose approved access: ${entry.allowedProfiles.map(profileLabel).join(", ")}.`,
             ),
           );
@@ -1013,7 +1021,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     resetSearch();
     retry.hidden = true;
     choices.setAttribute("aria-busy", "true");
-    status.className = "hint";
+    setStatusTone(status, null);
     status.textContent = "Loading approved repositories…";
     if (clearSelections) {
       state.options = [];
@@ -1069,20 +1077,20 @@ export function createRepositoryFields(context, onChange, initial = {}) {
         agentScoped: !clearSelections && Boolean(initial.agentId),
       });
       if (state.discovery === "denied") {
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent = initial.agentId
           ? "Repository choices are denied because you are not authorized to update this Agent."
           : "Repository choices are denied because you are not authorized to create Agents in this Namespace.";
       } else if (state.discovery === "conflict") {
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent = initial.agentId
           ? "Repository choices conflict with the current Agent or Namespace. Reload this draft before continuing."
           : "This Namespace no longer accepts new Agents.";
       } else if (clearSelections) {
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
       } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
-        status.className = "hint";
+        setStatusTone(status, null);
         status.replaceChildren(
           "Repository access is not available in this Installation's configuration. ",
           element(
@@ -1099,7 +1107,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             : ". You can’t save repository changes on this page until an operator sets up repository access.",
         );
       } else {
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
       }
       retry.hidden = clearSelections || ["draft-only", "not-configured"].includes(state.discovery);
