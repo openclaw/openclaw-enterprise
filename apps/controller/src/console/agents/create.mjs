@@ -1245,7 +1245,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let provisioningAttempt = null;
   const capabilityStatus = element(
     "p",
-    { className: "hint", role: "status" },
+    { id: "create-agent-capability-status", className: "hint", role: "status" },
     "Checking installation capabilities…",
   );
   let pending = false;
@@ -1774,6 +1774,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     );
     return candidates.length === 1 ? candidates[0] : null;
   }
+  // Every step of a provisioning plan needs a ready Namespace, so the API would refuse it; a
+  // draft plan still saves (finding 2007, #2867).
+  const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
@@ -1881,7 +1884,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady
-            ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first."
+            ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then."
             : "Dedicated Agents are provisioned and deployed when created."
           : mode.value === "embedded"
             ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."
@@ -2051,7 +2054,19 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       !capabilityDiscoveryDone ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
+      (!savedAgent && provisioningWaitsForNamespace()) ||
       Boolean(provisioningAttempt);
+    // Create Agent names why it waits: the status line above says so (finding 2007).
+    if (
+      !savedAgent &&
+      capabilityDiscoveryDone &&
+      !selectedModeUnavailable() &&
+      provisioningWaitsForNamespace()
+    ) {
+      submit.setAttribute("aria-describedby", capabilityStatus.id);
+    } else {
+      submit.removeAttribute("aria-describedby");
+    }
     checkCredentialRegistration.hidden = !credentialRegistration;
     checkCredentialRegistration.disabled = pending;
     removeCredentialRegistration.hidden = !failedCredentialSource;

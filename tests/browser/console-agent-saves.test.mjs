@@ -473,6 +473,19 @@ test("saving and reloading plugin selections update the Agent page in place", as
   await save.click();
   const reload = page.getByRole("button", { name: "Reload plugin selections" });
   await reload.waitFor();
+  // Save disabled itself, so Reload takes focus, described by why (finding 1998).
+  assert.deepEqual(
+    await reload.evaluate((node) => ({
+      focused: node === globalThis.document.activeElement,
+      description: (node.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .map((id) => globalThis.document.getElementById(id)?.textContent),
+    })),
+    {
+      focused: true,
+      description: ["Plugin selections changed. Reload this Agent before saving again."],
+    },
+  );
   await reload.click();
   await page.getByRole("status").filter({ hasText: "Plugin selections reloaded." }).waitFor();
   await place.check();
