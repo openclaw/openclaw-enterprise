@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -624,47 +624,53 @@ test(
   requiresFailurePostgres,
   async (context) => {
     const directory = await prepareBootstrapFailureFixture(context, "retained-output");
-    const env = productionEnvironment({
-      directory,
-      email: "retained-output@example.test",
-      name: "Bootstrap retained output",
-    });
-    const password = env.OCC_BOOTSTRAP_PASSWORD_FILE;
-    const serviceKey = env.OCC_BOOTSTRAP_SERVICE_KEY_FILE;
-    for (const [retained, absent] of [
-      [password, serviceKey],
-      [serviceKey, password],
-    ]) {
+    for (const retainPassword of [true, false]) {
+      // Separate directories let the fixture clean up both cases without unlinking the marker here.
+      const env = productionEnvironment({
+        directory: await mkdtemp(join(directory, "attempt-")),
+        email: "retained-output@example.test",
+        name: "Bootstrap retained output",
+      });
+      const password = env.OCC_BOOTSTRAP_PASSWORD_FILE;
+      const serviceKey = env.OCC_BOOTSTRAP_SERVICE_KEY_FILE;
+      const [retained, absent] = retainPassword ? [password, serviceKey] : [serviceKey, password];
       const marker = "retained-credential-sentinel";
-      await writeFile(retained, marker, { flag: "wx", mode: 0o600 });
-      const before = await lstat(retained, { bigint: true });
+      const file = await open(retained, "wx+", 0o600);
+      try {
+        await file.writeFile(marker);
+        const before = await file.stat({ bigint: true });
 
-      const result = await runProductionBootstrap(env);
-      assert.equal(result.ok, false);
-      const failure = jsonLines(result.stderr).find(
-        (line) => line.event === "installation.bootstrap-failed",
-      );
-      assert.equal(failure?.code, "BOOTSTRAP_OUTPUT_EXISTS", result.stderr);
-      assert.equal(failure.attempt, undefined);
-      assert.match(result.stderr, /preserve it and reconcile the original installation/i);
-      for (const privateValue of [directory, marker]) {
-        assert.ok(
-          !(result.stdout + result.stderr).includes(privateValue),
-          "diagnostic disclosed a path or content",
+        const result = await runProductionBootstrap(env);
+        assert.equal(result.ok, false);
+        const failure = jsonLines(result.stderr).find(
+          (line) => line.event === "installation.bootstrap-failed",
         );
-      }
+        assert.equal(failure?.code, "BOOTSTRAP_OUTPUT_EXISTS", result.stderr);
+        assert.equal(failure.attempt, undefined);
+        assert.match(result.stderr, /preserve it and reconcile the original installation/i);
+        for (const privateValue of [directory, marker]) {
+          assert.ok(
+            !(result.stdout + result.stderr).includes(privateValue),
+            "diagnostic disclosed a path or content",
+          );
+        }
 
-      const after = await lstat(retained, { bigint: true });
-      for (const field of ["ino", "mode", "ctimeNs", "mtimeNs"]) {
-        assert.equal(after[field], before[field]);
+        const after = await lstat(retained, { bigint: true });
+        for (const field of ["dev", "ino", "mode", "size", "ctimeNs", "mtimeNs"]) {
+          assert.equal(after[field], before[field]);
+        }
+        // Check the bytes on the original file, never reopen the path we just inspected.
+        const buffer = Buffer.alloc(Buffer.byteLength(marker) + 1);
+        const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+        assert.equal(buffer.subarray(0, bytesRead).toString("utf8"), marker);
+        await assert.rejects(lstat(absent), { code: "ENOENT" });
+        const counts = await rowCounts();
+        for (const [table, count] of Object.entries(counts)) {
+          assert.equal(count, 0, table);
+        }
+      } finally {
+        await file.close();
       }
-      assert.equal(await readFile(retained, "utf8"), marker);
-      await assert.rejects(lstat(absent), { code: "ENOENT" });
-      const counts = await rowCounts();
-      for (const [table, count] of Object.entries(counts)) {
-        assert.equal(count, 0, table);
-      }
-      await rm(retained);
     }
   },
 );
