@@ -284,8 +284,9 @@ function contrast(a, b) {
 }
 
 // A secondary recovery action is a white button on the card's warning tint, so its edge is what
-// marks it as a control: it needs 3:1 against the tint as painted (WCAG 1.4.11, finding 1958).
-test("The recovery card's secondary action has an edge of at least 3:1 against the card", async (t) => {
+// marks it as a control: it needs 3:1 against both the tint as painted and the button's own fill
+// (WCAG 1.4.11, finding 1958).
+test("The recovery card's secondary action has an edge of at least 3:1 against the card and its own fill", async (t) => {
   const { fixture, namespace, agent, active, page } = await failedRedeploy(t, "Recovery edge");
   await login(
     page,
@@ -296,7 +297,7 @@ test("The recovery card's secondary action has an edge of at least 3:1 against t
   await recovery.getByRole("link", { name: "Deploy again" }).waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   assert.notEqual(await logs.getAttribute("class"), "overview-primary");
-  const { edge, card } = await logs.evaluate((link) => {
+  const { edge, fill, card } = await logs.evaluate((link) => {
     const rgba = (value) => {
       const [r, g, b, a = 1] = value.match(/[\d.]+/g).map(Number);
       return { rgb: [r, g, b], a };
@@ -317,6 +318,7 @@ test("The recovery card's secondary action has an edge of at least 3:1 against t
     const style = globalThis.getComputedStyle(link);
     return {
       edge: { ...rgba(style.borderTopColor), width: style.borderTopWidth },
+      fill: rgba(style.backgroundColor),
       card: painted,
     };
   });
@@ -324,6 +326,9 @@ test("The recovery card's secondary action has an edge of at least 3:1 against t
   assert.equal(edge.width, "1px");
   const ratio = contrast(edge.rgb, card);
   assert.ok(ratio >= 3, `edge ${edge.rgb} on card ${card.map(Math.round)}: ${ratio.toFixed(2)}:1`);
+  assert.equal(fill.a, 1);
+  const fillRatio = contrast(edge.rgb, fill.rgb);
+  assert.ok(fillRatio >= 3, `edge ${edge.rgb} on fill ${fill.rgb}: ${fillRatio.toFixed(2)}:1`);
 });
 
 // Opens Deploy again from v1's Configuration tab with the draft's own Configuration read held, and
