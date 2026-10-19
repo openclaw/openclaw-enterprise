@@ -112,8 +112,11 @@ const focusedRing = (page, selector = null) =>
       // fractional box, less its borders and its (whole-pixel) scrollbars.
       const right = rect.right - Number.parseFloat(edge.borderRightWidth);
       const bottom = rect.bottom - Number.parseFloat(edge.borderBottomWidth);
-      const barWidth = Math.round(right - left - scroller.clientWidth);
-      const barHeight = Math.round(bottom - top - scroller.clientHeight);
+      // A gap under 2px is the rounding alone: any real scrollbar is wider.
+      const gapX = right - left - scroller.clientWidth;
+      const gapY = bottom - top - scroller.clientHeight;
+      const barWidth = gapX >= 2 ? Math.round(gapX) : 0;
+      const barHeight = gapY >= 2 ? Math.round(gapY) : 0;
       const cut = Math.max(
         left - (box.left - reach),
         top - (box.top - reach),
@@ -334,7 +337,7 @@ test("repository rows and the Slack people search on Create Agent show an unclip
               candidates: [{ id: "UTEST123", name: "freeman", displayName: "Freeman Example" }],
               complete: true,
             },
-            meta: { requestId: "req_test_directory" },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000001963" },
           }),
         }),
     );
@@ -398,7 +401,8 @@ test("every stop in the Configure plugins dialog shows an unclipped token ring",
     await page.getByRole("button", { name: "Configure plugins", exact: true }).press("Enter");
     const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
     await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
-    // Walk the settled dialog, so a slow run and a fast one measure the same layout.
+    // Walk the settled dialog, so a slow run and a fast one measure the same layout. Only the
+    // dialog's own open animation: a spinner inside it never finishes.
     await dialog.evaluate(async (node) => {
       await Promise.all(node.getAnimations().map((animation) => animation.finished));
     });
