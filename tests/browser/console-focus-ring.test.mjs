@@ -92,7 +92,7 @@ const focusedRing = (page, selector = null) =>
         owner = owner.parentElement;
       }
       if (!owner || globalThis.getComputedStyle(owner).outlineStyle === "none") {
-        return { name, tag, ring: "none", clipped: [] };
+        return { name, tag, ring: "none", clipped: [], frames: [] };
       }
       const style = globalThis.getComputedStyle(owner);
       const ring = [
@@ -383,11 +383,16 @@ test("repository rows and the Slack people search on Create Agent show an unclip
     await repositoryCheckbox(page, "example/app").check();
     const toggle = page.getByRole("button", { name: "Access for example/app", exact: true });
     await toggle.click();
+    assert.equal(await toggle.getAttribute("aria-expanded"), "true", `${label}: access is open`);
     await toggle.focus();
     const access = await tabStops(page, ({ name }) => name === "Use Agent default");
     // Customizing the access adds the profile radios after the checkbox.
     await page.keyboard.press("Space");
-    await page.locator(".repository-profile input").first().waitFor();
+    await page
+      .getByRole("group", { name: "Access for example/app", exact: true })
+      .locator(".repository-profile input")
+      .first()
+      .waitFor();
     access.push(
       ...(await tabStops(page, ({ frames }) =>
         frames.some(({ frame }) => frame === ".repository-profile"),

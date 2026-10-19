@@ -155,6 +155,17 @@ test("Agents, Agent detail, Create Agent and Logs each show at most one primary 
       // Park the pointer so no hover repaints a control.
       await page.mouse.move(0, 0);
       assert.deepEqual(await filledActions(page), [view.primary], `${view.name} at ${size}`);
+      if (view.primary === "Deploy again") {
+        // Its secondary action is a white button on the card's warning tint, so its edge marks
+        // it (finding 1958).
+        await assertControlEdge(
+          page
+            .getByRole("region", { name: "Deployment needs attention" })
+            .getByRole("link", { name: "Open v2 Logs" }),
+          `Open v2 Logs, ${view.name} at ${size}`,
+          { opaqueFill: true },
+        );
+      }
     }
     // The recovery's secondary link is a button of the same size as its primary, not bare text.
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
@@ -164,13 +175,12 @@ test("Agents, Agent detail, Create Agent and Logs each show at most one primary 
       ),
     );
     assert.equal(secondaryBox.height, primaryBox.height, size);
-    const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
     assert.equal(
-      await logs.evaluate((link) => globalThis.getComputedStyle(link).textDecorationLine),
+      await recovery
+        .getByRole("link", { name: "Open v2 Logs" })
+        .evaluate((link) => globalThis.getComputedStyle(link).textDecorationLine),
       "none",
     );
-    // It is a white button on the card's warning tint, so its edge marks it (finding 1958).
-    await assertControlEdge(logs, `Open v2 Logs at ${size}`, { opaqueFill: true });
   }
 });
 

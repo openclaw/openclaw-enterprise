@@ -518,7 +518,7 @@ export async function routeFailedDeployment(
 }
 
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
-export function contrastRatio(a, b) {
+function contrastRatio(a, b) {
   const luminance = (rgb) => {
     const [r, g, bl] = rgb.map((value) => {
       const channel = value / 255;
