@@ -1,4 +1,4 @@
-import { button, element, focusSaveOutcome } from "../dom.mjs";
+import { button, element, focusSaveOutcome, revealStatus, statusBlock } from "../dom.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
@@ -157,7 +157,7 @@ export function renderAgentPlugins(
   });
   // Refusals read as errors, as on Configuration saves, not in the muted status (finding 1864).
   // Declared before the approver field, whose edits clear it.
-  const saveError = element("p", { className: "error", role: "alert" });
+  const saveError = statusBlock("danger", null, null);
   const defaultApprovers = createSlackApproverField({
     context,
     label: "Default plugin approvers",
@@ -205,14 +205,18 @@ export function renderAgentPlugins(
     ),
     ...(agent.harnessAuth?.method === "credential_source"
       ? [
-          element(
-            "p",
-            { className: "notice" },
+          statusBlock(
+            "info",
+            null,
             "Plugin browsing uses this Agent's saved credential source.",
+            [],
+            { role: null },
           ),
         ]
       : []),
-    ...(apiKeyAuth ? [element("p", { className: "notice" }, API_KEY_PLUGIN_MESSAGE)] : []),
+    ...(apiKeyAuth
+      ? [statusBlock("warning", null, API_KEY_PLUGIN_MESSAGE, [], { role: null })]
+      : []),
     discovery.fields.section,
     capabilitiesStatus,
     updateNote,
@@ -357,7 +361,7 @@ export function renderAgentPlugins(
                   ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
                   : message(error, mutationStarted);
       // Save disables while it runs, which dropped focus to the page.
-      focusSaveOutcome(section, [], saveError);
+      revealStatus(saveError, section);
     } finally {
       if (context.isCurrent() && !saved) {
         pending = false;

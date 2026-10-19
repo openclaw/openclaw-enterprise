@@ -1,5 +1,5 @@
 import defaultCodexPreset from "../default-codex-preset.mjs";
-import { button, element, fieldError, jsonObjectProblem, setText } from "../dom.mjs";
+import { button, element, fieldError, jsonObjectProblem, setText, statusBlock } from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
@@ -570,27 +570,27 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     element("option", { value: "openclaw" }, "OpenClaw"),
   );
   const harnessHint = element("p", { id: "agent-harness-hint", className: "hint" });
-  const nativeHarnessWarning = element(
-    "p",
-    { className: "notice", role: "status", hidden: true },
+  const nativeHarnessWarning = statusBlock(
+    "warning",
+    null,
     "Experimental: Dedicated OpenClaw requires a runtime build with native worker-inference support. Released OpenClaw images may not include it yet.",
+    [],
+    { role: "status", hidden: true },
   );
   // The Installation reports native worker support only when it can admit dedicated OpenClaw:
   // the runtime supports native workers and a Sandbox Driver can provision them (finding 1608).
   // Its absence does not say whether Embedded remains: any selected Sandbox Driver refuses
   // Embedded execution, so the copy names Codex and the condition (finding 1612).
-  const nativeWorkersUnavailable = element(
-    "p",
-    { className: "error", role: "alert", hidden: true },
+  const nativeWorkersUnavailable = statusBlock(
+    "danger",
+    null,
     "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
+    [],
+    { hidden: true },
   );
   // The Installation lists the OpenClaw execution modes admission accepts (#2670). When the
   // selected mode is not one of them, say so here and keep Create disabled, before any write.
-  const openclawModeUnavailable = element("p", {
-    className: "error",
-    role: "alert",
-    hidden: true,
-  });
+  const openclawModeUnavailable = statusBlock("danger", null, null, [], { hidden: true });
   const selectedModeUnavailable = () =>
     !nativeWorkersUnavailable.hidden || !openclawModeUnavailable.hidden;
   // Invalid JSON is reported under the field, never by the browser's bubble (finding 1903).
@@ -1241,7 +1241,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let savedConfiguration = draft.savedConfiguration;
   let savedAgent;
   let stagedChannelSecrets = draft.stagedChannelSecrets ?? [];
-  const feedback = element("p", { className: "error", role: "alert" });
+  const feedback = statusBlock("danger", null, null);
   const savedStatus = element("p", { className: "hint", role: "status" });
   const submit = element(
     "button",
@@ -1669,10 +1669,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           "section",
           { className: "channels-section" },
           element("div", { className: "channel-heading" }, element("h2", {}, "Channels")),
-          element(
-            "p",
-            { className: "error" },
+          statusBlock(
+            "danger",
+            null,
             "Enter a valid Configuration JSON object before configuring channels.",
+            [],
+            { role: null },
           ),
         ),
       );
@@ -1730,10 +1732,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     });
     const modeWarning =
       mode.value === "embedded" && hasEnabledChannel(values)
-        ? element(
-            "p",
-            { className: "error" },
+        ? statusBlock(
+            "danger",
+            null,
             "Channels require Dedicated execution. Select Dedicated under Runtime details or disable configured channels before creating the Agent.",
+            [],
+            { role: null },
           )
         : null;
     channelEditor.replaceChildren(...[channels, modeWarning].filter(Boolean));

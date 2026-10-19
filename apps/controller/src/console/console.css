@@ -474,6 +474,64 @@ p {
 .error .provisioning-stopped {
   color: var(--text);
 }
+/* Status block (UX plan C1): an error, warning or notice. A stripe in the tone's colour on its
+   subtle wash; the text stays in the body colour, and only the label takes the tone. Built by
+   statusBlock() in dom.mjs; data-tone is info, success, warning or danger. */
+.status {
+  --status-tone: var(--color-text-muted);
+  --status-wash: var(--color-surface-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--status-tone);
+  border-radius: var(--radius-md);
+  background: var(--status-wash);
+  color: var(--color-text);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+  /* Refusals name long setting paths and request IDs; wrap them in a phone-width card. */
+  overflow-wrap: anywhere;
+}
+.status:empty {
+  display: none;
+}
+.status[data-tone="info"] {
+  --status-tone: var(--color-info);
+  --status-wash: var(--color-info-subtle);
+}
+.status[data-tone="success"] {
+  --status-tone: var(--color-success);
+  --status-wash: var(--color-success-subtle);
+}
+.status[data-tone="warning"] {
+  --status-tone: var(--color-warning);
+  --status-wash: var(--color-warning-subtle);
+}
+.status[data-tone="danger"] {
+  --status-tone: var(--color-danger);
+  --status-wash: var(--color-danger-subtle);
+}
+.status-label {
+  margin: 0 0 var(--space-1);
+  color: var(--status-tone);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+.status-body,
+.status > ul {
+  margin: 0;
+}
+.status > ul {
+  padding-left: var(--space-5);
+}
+.status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
 .shell {
   min-height: 100dvh;
   display: grid;
@@ -1017,12 +1075,6 @@ select:not([multiple])[size="1"] {
 .agent-detail-pending > :not(.agent-overview-toolbar) {
   display: none;
 }
-.agent-status-line {
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  color: var(--warning);
-  background: var(--warning-subtle);
-}
 .deployment-evidence {
   position: relative;
 }
@@ -1247,20 +1299,6 @@ select:not([multiple])[size="1"] {
   .deployment-pending-progress dd {
     min-height: 2lh;
   }
-}
-.deployment-warnings {
-  padding: 12px 16px;
-  background: var(--warning-subtle);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-.deployment-warnings h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
-}
-.deployment-warnings ul {
-  margin: 0;
-  padding-left: 20px;
 }
 .agent-version-layout {
   display: grid;
@@ -3003,22 +3041,6 @@ select:not([multiple])[size="1"] {
 .log-source-hint,
 .log-error {
   margin: 0 20px 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.log-source-hint {
-  border-color: var(--warning);
-  color: var(--warning);
-  background: var(--warning-subtle);
-}
-.log-error {
-  border-color: var(--danger);
-  color: var(--danger);
-  background: var(--danger-subtle);
-  overflow-wrap: anywhere;
 }
 .log-output-status {
   margin: 0;
