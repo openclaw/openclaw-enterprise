@@ -20,9 +20,10 @@ import {
   serviceKey,
 } from "../helpers/dev-up.mjs";
 
-// dev-up's Compose stack: engine selection, generated configuration, key output, readiness and
-// the ports Compose renders. The Kubernetes Compute cases are in dev-up.test.mjs; CI runs the
-// two files side by side.
+// dev-up's Compose stack: engine selection, generated configuration, key output, readiness,
+// profile selection and the ports Compose renders, including the Kubernetes Compute checks that
+// refuse before startup. The Kubernetes lifecycle, cleanup, rollback and launcher cases are in
+// dev-up.test.mjs; CI runs the two files side by side.
 
 test("dev-up builds the default runtime only when real Compose leaves runtime images unselected", async (t) => {
   const fixture = await createFixture(t);
