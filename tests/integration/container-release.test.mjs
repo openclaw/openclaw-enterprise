@@ -648,16 +648,18 @@ test("prepared OCI metadata cannot cross source, image, attempt, CI or base-imag
   }
 });
 
+async function writeOciBlob(layout, value) {
+  const bytes = Buffer.from(JSON.stringify(value));
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  await writeFile(join(layout, "blobs/sha256", hash), bytes);
+  return { digest: `sha256:${hash}`, size: bytes.length };
+}
+
 test("OCI archive validation binds both platforms to their real manifest and config blobs", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "enterprise-oci-platforms-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await mkdir(join(directory, "blobs/sha256"), { recursive: true });
-  async function blob(value) {
-    const bytes = JSON.stringify(value);
-    const hash = createHash("sha256").update(bytes).digest("hex");
-    await writeFile(join(directory, "blobs/sha256", hash), bytes);
-    return { digest: `sha256:${hash}`, size: Buffer.byteLength(bytes) };
-  }
+  const blob = (value) => writeOciBlob(directory, value);
   const manifests = [];
   const configs = [];
   // These are actual OCI scratch-image configs/manifests in a tar archive.
@@ -820,12 +822,10 @@ test("separate platform exports assemble into a digest-bound archive and reject 
     for (const arch of ["amd64", "arm64"]) {
       const layout = join(output, arch);
       await mkdir(join(layout, "blobs/sha256"), { recursive: true });
-      async function blob(value, mediaType) {
-        const bytes = Buffer.from(JSON.stringify(value));
-        const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-        await writeFile(join(layout, "blobs/sha256", digest.slice(7)), bytes);
-        return { digest, size: bytes.length, mediaType };
-      }
+      const blob = async (value, mediaType) => ({
+        ...(await writeOciBlob(layout, value)),
+        mediaType,
+      });
       const config = await blob(
         { os: "linux", architecture: fault === "platform" ? "amd64" : arch },
         "application/vnd.oci.image.config.v1+json",

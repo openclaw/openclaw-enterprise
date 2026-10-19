@@ -234,6 +234,51 @@ test("nothing is abandoned during the tests", () => {});
   assert.match(output, /later after hook failed/);
 });
 
+// Runs a test's steps within `budgetMs`, kept under the test's own timeout. Each step waits only
+// for what is left of the budget, so a step that never ends fails by name, with the steps before
+// it, their times, and `describe()`, instead of the test timeout naming nothing (finding 1945).
+// A step's own failure (a waitFor limit or an assertion) keeps its message and gains the same.
+function stepBudget(budgetMs, describe = () => undefined) {
+  const started = Date.now();
+  const done = [];
+  const where = (name, stepStarted) => {
+    const detail = describe();
+    return [
+      `step "${name}" after ${Date.now() - stepStarted} ms (${Date.now() - started} ms into the budget)`,
+      `earlier steps: ${done.length > 0 ? done.join(", ") : "none"}`,
+      ...(detail === undefined ? [] : [detail]),
+    ].join("; ");
+  };
+  return async function step(name, run) {
+    const stepStarted = Date.now();
+    let timer;
+    let budgetError;
+    const expired = new Promise((resolve, reject) => {
+      timer = setTimeout(
+        () => {
+          budgetError = new Error(
+            `Timed out within the ${budgetMs} ms step budget at ${where(name, stepStarted)}.`,
+          );
+          reject(budgetError);
+        },
+        Math.max(0, started + budgetMs - stepStarted),
+      );
+    });
+    try {
+      const value = await Promise.race([Promise.resolve().then(run), expired]);
+      done.push(`${name} ${Date.now() - stepStarted} ms`);
+      return value;
+    } catch (error) {
+      if (error === budgetError) {
+        throw error;
+      }
+      throw new Error(`${error?.message ?? error} (${where(name, stepStarted)})`, { cause: error });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
+
 // The worker is serial. A Compute wait that only saves a later pass asks whether
 // other Work is waiting and ends early when it is, so another Agent's deploy
 // runs next instead of queuing behind the wait (D221).
@@ -243,9 +288,16 @@ test(
   async (context) => {
     const { computeWorkWaiting } =
       await import("../../apps/controller/src/drivers/compute/operation-context.ts");
-    const fixture = await setup(context);
-    const first = await fixture.agent("waiting-first", { executionMode: "dedicated" });
-    const second = await fixture.agent("waiting-second", { executionMode: "dedicated" });
+    // Where the first Agent's pass is, for a step that runs out of time.
+    let pass = "not started";
+    const step = stepBudget(27_000, () => `first pass: ${pass}`);
+    const fixture = await step("revision fixture setup", () => setup(context));
+    const first = await step("the first Agent's creation", () =>
+      fixture.agent("waiting-first", { executionMode: "dedicated" }),
+    );
+    const second = await step("the second Agent's creation", () =>
+      fixture.agent("waiting-second", { executionMode: "dedicated" }),
+    );
     const prepared = [];
     let secondRevision;
     let wait;
@@ -258,11 +310,16 @@ test(
         }
         // The first Agent's pass waits, as for its node to pair; nothing else is
         // queued yet, so nothing is waiting for the worker.
+        pass = "asking whether Work waits before the second Agent's revision";
         const before = await computeWorkWaiting();
+        pass = "admitting the second Agent's revision";
         secondRevision = await fixture.revision(second, 1);
         const started = Date.now();
         let endedEarly = false;
+        let checks = 0;
         while (Date.now() - started < 10_000) {
+          checks += 1;
+          pass = `waiting for other Work (check ${checks}, ${Date.now() - started} ms)`;
           if (await computeWorkWaiting()) {
             endedEarly = true;
             break;
@@ -270,17 +327,26 @@ test(
           await delay(25);
         }
         wait = { before, endedEarly, ms: Date.now() - started };
-        return {
+        pass = `preparing after a ${wait.ms} ms wait (ended early: ${endedEarly})`;
+        const result = {
           ...(await fixture.compute.prepareRevision(revision, deploymentContext)),
           ready: false,
         };
+        pass = `ended pending after a ${wait.ms} ms wait (ended early: ${endedEarly})`;
+        return result;
       },
     };
-    await fixture.start(compute);
-    const firstRevision = await fixture.revision(first, 1);
-    await waitFor("the second Agent to deploy during the first pass", async () => secondRevision);
-    await fixture.work(secondRevision, "succeeded");
-    await fixture.work(firstRevision, "succeeded");
+    await step("worker start", () => fixture.start(compute));
+    const firstRevision = await step("the first Agent's revision admission", () =>
+      fixture.revision(first, 1),
+    );
+    await step("the second Agent's revision during the first pass", () =>
+      waitFor("the second Agent to deploy during the first pass", async () => secondRevision),
+    );
+    await step("the second Agent's Work to succeed", () =>
+      fixture.work(secondRevision, "succeeded"),
+    );
+    await step("the first Agent's Work to succeed", () => fixture.work(firstRevision, "succeeded"));
     assert.equal(wait.before, false, "the pass's own Agent is not other Work");
     assert.equal(wait.endedEarly, true);
     assert.ok(wait.ms < 5_000, `the wait ended early (${wait.ms} ms)`);

@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { availableParallelism, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test, { after } from "node:test";
 import pg from "pg";
@@ -18,6 +17,7 @@ import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/compos
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
@@ -46,62 +46,29 @@ if (compileCache !== process.env.NODE_COMPILE_CACHE) {
   after(() => rm(compileCache, { recursive: true, force: true }));
 }
 
+// The production listener and sign-in settings of the API boots that reach session auth.
+const productionServer = {
+  OCC_HOST: "192.0.2.10",
+  OCC_PORT: "8080",
+  OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+  OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+};
+
 // Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
 // the signal instead of reading as a wrong exit status.
-const slots = { free: Math.max(2, availableParallelism()), waiting: [] };
+const limit = concurrencyLimit();
 async function boot(script, env, timeout = 10_000) {
-  if (slots.free > 0) {
-    slots.free -= 1;
-  } else {
-    await new Promise((resolve) => slots.waiting.push(resolve));
+  const { signal, ...result } = await limit(() =>
+    captureChild(process.execPath, [script], {
+      cwd: process.cwd(),
+      env: { ...env, NODE_COMPILE_CACHE: compileCache },
+      timeout,
+    }),
+  );
+  if (signal) {
+    throw new Error(`${script} ended by ${signal} (timeout ${timeout} ms): ${result.stderr}`);
   }
-  try {
-    return await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [script], {
-        cwd: process.cwd(),
-        env: { ...env, NODE_COMPILE_CACHE: compileCache },
-        stdio: ["ignore", "pipe", "pipe"],
-        timeout,
-      });
-      const stdout = [];
-      const stderr = [];
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.stderr.on("data", (chunk) => stderr.push(chunk));
-      child.on("error", reject);
-      child.on("close", (status, signal) => {
-        const result = {
-          status,
-          stdout: Buffer.concat(stdout).toString("utf8"),
-          stderr: Buffer.concat(stderr).toString("utf8"),
-        };
-        if (signal) {
-          reject(
-            new Error(`${script} ended by ${signal} (timeout ${timeout} ms): ${result.stderr}`),
-          );
-        } else {
-          resolve(result);
-        }
-      });
-    });
-  } finally {
-    const next = slots.waiting.shift();
-    if (next) {
-      next();
-    } else {
-      slots.free += 1;
-    }
-  }
-}
-
-// Like Promise.all, but waits for every boot so no process outlives its test's
-// temporary directories, then rethrows the first failure.
-async function settled(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
+  return result;
 }
 
 async function fixture(t, configuration = installation()) {
@@ -533,10 +500,7 @@ test("repository startup constructs the same local resolver without a private so
     NODE_ENV: "production",
     OCC_CONFIG_PATH: path,
     OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-    OCC_HOST: "192.0.2.10",
-    OCC_PORT: "8080",
-    OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-    OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+    ...productionServer,
   });
   assert.equal(server.status, 1);
   assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "PERSISTENCE_UNAVAILABLE");
@@ -1169,10 +1133,7 @@ test("only the actual API process reads ChatGPT admin credentials and backend ac
   const [server, worker, inMemory] = await settled([
     boot("apps/controller/src/server.mjs", {
       ...shared,
-      OCC_HOST: "192.0.2.10",
-      OCC_PORT: "8080",
-      OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-      OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+      ...productionServer,
     }),
     boot("apps/controller/src/worker.mjs", shared),
     boot("apps/controller/src/server.mjs", {
@@ -1559,10 +1520,7 @@ test("API and worker name a Preset file failure in their startup error code", as
       const [server, worker] = await settled([
         boot("apps/controller/src/server.mjs", {
           ...shared,
-          OCC_HOST: "192.0.2.10",
-          OCC_PORT: "8080",
-          OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-          OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+          ...productionServer,
         }),
         boot("apps/controller/src/worker.mjs", shared),
       ]);

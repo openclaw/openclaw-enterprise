@@ -141,7 +141,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const { page, artifacts } = await newPage(t, fixture, { browser });
 
     await openDraft(page, fixture, agent, "Channel Agent");
-    await page.getByRole("button", { name: "Channels" }).click();
+    await page.getByRole("tab", { name: "Channels" }).click();
     for (const value of [secretValue, slackAppSecretValue, slackBotSecretValue]) {
       await expectNoText(page, value);
     }
@@ -333,8 +333,8 @@ describe("Agent channels", { concurrency: 3 }, () => {
 
     await openDraft(page, fixture, agent, "Unbound Slack Agent");
     // Establish a same-document history entry before opening the modal.
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
-    await page.getByRole("button", { name: "Channels", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Channels", exact: true }).click();
     await page.getByRole("button", { name: "Edit Slack" }).click();
     const dialog = page.getByRole("dialog", { name: "Edit Slack" });
     assert.equal(await dialog.getByRole("link", { name: /Secret metadata/ }).count(), 0);
@@ -483,7 +483,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
         true,
       );
       assert.equal(
-        await page.getByRole("button", { name: "Credentials", exact: true }).isDisabled(),
+        await page.getByRole("tab", { name: "Credentials", exact: true }).isDisabled(),
         true,
       );
     } finally {
@@ -704,13 +704,13 @@ describe("Agent channels", { concurrency: 3 }, () => {
     );
 
     assert.equal(
-      await page.getByRole("button", { name: "Credentials", exact: true }).isDisabled(),
+      await page.getByRole("tab", { name: "Credentials", exact: true }).isDisabled(),
       true,
     );
     await page.getByRole("button", { name: "Reload draft" }).click();
     await dialog.waitFor({ state: "hidden" });
     await page.getByText(/Configuration .*generation 2/).waitFor();
-    await page.getByRole("button", { name: "Credentials", exact: true }).click();
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     const appToken = page.getByLabel("Slack app token");
     await appToken.waitFor();
     assert.equal(await appToken.evaluate((node) => node.tagName), "INPUT");
@@ -898,11 +898,13 @@ describe("Agent channels", { concurrency: 3 }, () => {
       requests.length = 0;
       await selectSecret(page, "Slack app token", replacementAppSecret);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
-      await page
-        .getByText(
-          "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret.",
-        )
-        .waitFor();
+      const grantWarning = page.getByText(
+        "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret.",
+      );
+      await grantWarning.waitFor();
+      // The Configuration saved, so the unconfirmed grant is a warning from the start, not a
+      // refusal that turns into one when another Secret is picked (finding 2003).
+      assert.equal(await grantWarning.getAttribute("data-tone"), "warning");
       assert.equal(
         await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
         false,
@@ -952,7 +954,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
         );
       }
       if (grantStatus === 403) {
-        await page.getByRole("button", { name: "Channels", exact: true }).click();
+        await page.getByRole("tab", { name: "Channels", exact: true }).click();
         await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
         const dialog = page.getByRole("dialog", { name: "Edit Slack" });
         await setSlackSelection(

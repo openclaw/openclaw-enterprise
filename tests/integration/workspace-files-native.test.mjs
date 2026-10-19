@@ -348,7 +348,7 @@ test(
           "-e",
           `fetch("http://127.0.0.1:18880/counter").then(r=>r.json()).then(v=>console.log(v.modelCalls));`,
         ]);
-        assert.equal(Number(counter.stdout.trim()), 0);
+        assert.equal(counter.stdout.trim(), "0");
         t.diagnostic(
           JSON.stringify({ roster: index, apiRoundTrip: true, diskReadback: true, modelCalls: 0 }),
         );

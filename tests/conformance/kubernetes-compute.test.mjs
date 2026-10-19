@@ -40,6 +40,7 @@ import {
   DependencyUnavailableError,
   ResourceConflictError,
   ResourceStateConflictError,
+  SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
   resolveConfiguredHarnessId,
@@ -1195,6 +1196,10 @@ function dedicatedFirstDeployFixture({
             namespace: requestedNamespace,
             uid: `${role}-uid`,
             labels,
+            // A Pod being deleted, as during a rollout or a scale-down.
+            ...(state.terminatingRole === role
+              ? { deletionTimestamp: "2026-08-25T00:00:00Z" }
+              : {}),
           },
           ...(state.unschedulableRole === role
             ? {
@@ -1210,7 +1215,25 @@ function dedicatedFirstDeployFixture({
                   ],
                 },
               }
-            : { status: { phase: "Running", podIP: "10.42.0.12" } }),
+            : state.waitingRole === role
+              ? {
+                  status: {
+                    phase: "Pending",
+                    conditions: [{ type: "PodScheduled", status: "True" }],
+                    [state.waitingStatuses ?? "containerStatuses"]: [
+                      {
+                        name: role,
+                        state: {
+                          waiting: {
+                            reason: state.waitingReason,
+                            message: "Back-off pulling image registry.invalid/runtime:missing",
+                          },
+                        },
+                      },
+                    ],
+                  },
+                }
+              : { status: { phase: "Running", podIP: "10.42.0.12" } }),
         },
       ],
     };
@@ -1820,6 +1843,67 @@ test("Kubernetes native Sandbox provisioning fails a revision on the worker's he
   assert.equal(withdrawals.length, 1);
 });
 
+// Finding 1708: a provider-owned Harness's private workspace setup that refuses the workspace
+// (the setup runner's exit status 2) refuses every retry the same way, so Compute reports the
+// held WORKSPACE_SETUP_REFUSED failure its own init container reports, and the deployment fails
+// at once instead of spending its retries.
+test("Kubernetes Sandbox provisioning fails a revision at once when the provider's workspace setup refuses", async () => {
+  const provisions = [];
+  let failure = new SandboxWorkspaceSetupRefusedError(
+    "OpenShell workspace initialization refused.",
+  );
+  const sandboxDriver = {
+    id: "native-sandbox",
+    implementation: "openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    async workspaceNodePeerLabels() {
+      return undefined;
+    },
+    async provisionHarness(context) {
+      provisions.push(context);
+      throw failure;
+    },
+    async harnessEndpoint() {
+      assert.fail("native OpenClaw has no inbound Harness endpoint");
+    },
+    async harnessStatus() {
+      assert.fail("a refused setup is reported without a status read");
+    },
+    async withdrawHarnessExposure() {},
+  };
+  const { gatewayName, markReady, prepare } = dedicatedFirstDeployFixture({
+    sandboxDriver,
+    revision: {
+      harness: { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+      sandboxDriverId: sandboxDriver.id,
+      configuration: admitLoggingConfiguration(
+        createHarnessConfiguration("openclaw", "gpt-5"),
+        "info",
+      ),
+      plugins: undefined,
+    },
+  });
+  assert.equal((await prepare()).ready, false);
+  markReady(gatewayName);
+  const before = Date.now();
+  const refused = await prepare();
+  assert.equal(provisions.length, 1);
+  assert.equal(refused.ready, false);
+  assert.equal(refused.pendingReason, undefined);
+  const { checkedAt, ...evidence } = refused.runtimeFailure;
+  assert.deepEqual(evidence, {
+    component: "agent",
+    check: "workspace-setup",
+    code: "WORKSPACE_SETUP_REFUSED",
+  });
+  assert.ok(Date.parse(checkedAt) >= before - 1000, checkedAt);
+  // Any other provisioning failure, a setup that may pass on a retry included, keeps its path.
+  failure = new Error("OpenShell workspace initialization failed.");
+  await assert.rejects(prepare(), /OpenShell workspace initialization failed/);
+  assert.equal(provisions.length, 2);
+});
+
 // Finding 1671: the node Secret is the Agent's, so a redeploy found a recorded device from its
 // first pass, counted as enrolled, never read the provider's held failure, and created its
 // exposure only to delete it at once; a redeploy holding a failed model check waited for the
@@ -2072,6 +2156,22 @@ test("Kubernetes Compute withdraws a native Harness exposure outside a preparati
   assert.equal(withdrawals[3].revision, revision);
   assert.equal(withdrawals[3].namespace.name, namespace);
   assert.equal(withdrawals[3].workspaceNodeEnrolled, true);
+  // A Namespace at the derived name that another Namespace owns (none claims this one by label)
+  // fails before the provider is asked.
+  const listNamespace = clients.core.listNamespace;
+  clients.core.listNamespace = async () => ({ items: [] });
+  clients.core.readNamespace = async () => ({
+    ...driver.manifest("v1", "Namespace", namespace, {
+      namespaceId: "ns_00000000-0000-4000-8000-000000000009",
+    }),
+    status: { phase: "Active" },
+  });
+  await assert.rejects(
+    driver.withdrawHarnessExposure(revision, signal),
+    /Refusing an unowned Kubernetes namespace/,
+  );
+  assert.equal(withdrawals.length, 4);
+  clients.core.listNamespace = listNamespace;
   clients.core.readNamespace = readNamespace;
 });
 
@@ -2728,6 +2828,54 @@ test("a pending dedicated deploy reports an unschedulable Pod or an unpaired nod
   assert.equal(ready.pendingReason, undefined);
 });
 
+// A deploy whose container image the kubelet cannot pull names that wait instead of a
+// bare one (finding 1762); a Pod the scheduler cannot place still leads, and a Pod being
+// deleted names no wait (finding 1880).
+test("a pending dedicated deploy names a container image pull failure", async () => {
+  const { state, prepare } = dedicatedFirstDeployFixture({ clock: { now: 0 } });
+  for (const [role, statuses, reason, expected] of [
+    ["agent", "containerStatuses", "ImagePullBackOff", "WORKLOAD_IMAGE_PULL_FAILED"],
+    ["gateway", "containerStatuses", "ErrImagePull", "WORKLOAD_IMAGE_PULL_FAILED"],
+    ["agent", "initContainerStatuses", "ImagePullBackOff", "WORKLOAD_IMAGE_PULL_FAILED"],
+    ["agent", "containerStatuses", "ContainerCreating", undefined],
+    ["agent", "containerStatuses", "CrashLoopBackOff", undefined],
+  ]) {
+    Object.assign(state, { waitingRole: role, waitingStatuses: statuses, waitingReason: reason });
+    const pending = await prepare();
+    assert.equal(pending.ready, false);
+    assert.equal(pending.pendingReason, expected, `${role} ${statuses} ${reason}`);
+  }
+  Object.assign(state, {
+    waitingRole: "agent",
+    waitingStatuses: "containerStatuses",
+    waitingReason: "ImagePullBackOff",
+    unschedulableRole: "gateway",
+  });
+  assert.equal((await prepare()).pendingReason, "WORKLOAD_UNSCHEDULABLE");
+  // A Pod being deleted names no wait (finding 1880): with the unschedulable Gateway Pod
+  // being deleted, the Harness's image pull leads.
+  state.terminatingRole = "gateway";
+  assert.equal((await prepare()).pendingReason, "WORKLOAD_IMAGE_PULL_FAILED");
+  Object.assign(state, { waitingRole: undefined, unschedulableRole: undefined });
+  for (const [role, wait] of [
+    [
+      "agent",
+      {
+        waitingRole: "agent",
+        waitingStatuses: "containerStatuses",
+        waitingReason: "ImagePullBackOff",
+      },
+    ],
+    ["gateway", { unschedulableRole: "gateway" }],
+  ]) {
+    Object.assign(state, { terminatingRole: role, ...wait });
+    assert.equal((await prepare()).pendingReason, undefined, `terminating ${role}`);
+    Object.assign(state, { waitingRole: undefined, unschedulableRole: undefined });
+  }
+  state.terminatingRole = undefined;
+  assert.equal((await prepare()).pendingReason, undefined);
+});
+
 // A deploy whose Pods the Namespace's Pod quota refuses names the quota instead of a
 // bare wait (finding 1617). The Deployment controller copies its ReplicaSet's
 // ReplicaFailure condition onto the Deployment, which the driver reads, and the refused
@@ -2863,6 +3011,15 @@ test("a pending dedicated deploy names a full Namespace Pod quota", async () => 
     undefined,
   );
   setQuota({ pods: "10" }, { pods: "10" });
+  // A full Pod quota leads a container that waits on an image pull (finding 1880).
+  Object.assign(state, {
+    waitingRole: "gateway",
+    waitingStatuses: "containerStatuses",
+    waitingReason: "ImagePullBackOff",
+  });
+  assert.equal(await pendingReasonWith(agentName, podRefusal), quota);
+  assert.equal((await prepare()).pendingReason, "WORKLOAD_IMAGE_PULL_FAILED");
+  state.waitingRole = undefined;
   state.unreadableKind = "ResourceQuota";
   assert.equal(await pendingReasonWith(agentName, podRefusal), undefined);
   state.unreadableKind = undefined;
@@ -4549,6 +4706,89 @@ test("sandbox routing keeps generated HTML off the administrative origin and bac
   );
 });
 
+test("two-cluster Compute refuses a harness routing hostname that parses as another address", () => {
+  const twoCluster = twoClusterOptions();
+  const harness = (hostname) => () =>
+    createKubernetesComputeDriver({
+      ...twoCluster,
+      executionCluster: {
+        ...twoCluster.executionCluster,
+        harnessRouting: { ...twoCluster.executionCluster.harnessRouting, hostname },
+      },
+    });
+  // A URL parser reads 127.1 and 0x7f.1 as 127.0.0.1 and refuses api.123 and harness.0x10 as
+  // malformed IPv4, so a Harness would not reach the name the operator wrote (finding 1856).
+  // The refusal names the harness setting, not the Gateway routing the execution plane reuses
+  // it as.
+  for (const hostname of ["127.1", "0x7f.1", "api.123", "harness.0x10"]) {
+    assert.throws(harness(hostname), {
+      message:
+        "Harness routing hostname must be a DNS hostname without a port or path. A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers.",
+    });
+  }
+  for (const hostname of [
+    "Harness.example.test",
+    "harness.example.test:443",
+    "harness_1.test",
+    7,
+  ]) {
+    assert.throws(harness(hostname), {
+      message: "Harness routing hostname must be a DNS hostname without a port or path.",
+    });
+  }
+  for (const hostname of ["", undefined]) {
+    assert.throws(harness(hostname), {
+      message: "Harness routing hostname must be explicitly configured.",
+    });
+  }
+  for (const hostname of ["harness.example.test", "1password.example.test", "0x.example.test"]) {
+    assert.doesNotThrow(harness(hostname), hostname);
+  }
+});
+
+test("two-cluster Compute names the harness routing field it refuses", () => {
+  const twoCluster = twoClusterOptions();
+  const harness = (field, value) => () =>
+    createKubernetesComputeDriver({
+      ...twoCluster,
+      executionCluster: {
+        ...twoCluster.executionCluster,
+        harnessRouting: { ...twoCluster.executionCluster.harnessRouting, [field]: value },
+      },
+    });
+  // The execution plane's own check reads the harness routing as its Gateway routing, so
+  // without the harness check these refusals name a gatewayRouting setting (finding 1858).
+  for (const [field, value, message] of [
+    [
+      "gatewayName",
+      "Bad_Name",
+      "Harness routing Gateway name must be a DNS-safe Kubernetes resource name.",
+    ],
+    // The 63-character cap is covered by the Gateway name test below.
+    ["gatewayName", undefined, "Harness routing Gateway name must be explicitly configured."],
+    [
+      "gatewayNamespace",
+      "Bad_Namespace",
+      "Harness routing Gateway namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.",
+    ],
+    ["gatewayNamespace", "", "Harness routing Gateway namespace must be explicitly configured."],
+    [
+      "envoyNamespace",
+      "envoy.system",
+      "Harness routing Envoy namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.",
+    ],
+    ["envoyNamespace", undefined, "Harness routing Envoy namespace must be explicitly configured."],
+    ...[0, 65536, 443.5, "10443"].map((port) => [
+      "envoyHttpsTargetPort",
+      port,
+      "Harness routing Envoy HTTPS target port must be a valid port.",
+    ]),
+  ]) {
+    assert.throws(harness(field, value), { message }, `${field}: ${String(value)}`);
+  }
+  assert.doesNotThrow(harness("envoyHttpsTargetPort", 8443));
+});
+
 test("sandbox routing caps the domain length and requires two labels", () => {
   const label = "a".repeat(63);
   const sandboxDriver = (domain) =>
@@ -4632,7 +4872,7 @@ test("gateway routing caps the Gateway name at a label value's 63 characters", (
       }),
     {
       message:
-        "Gateway routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
+        "Harness routing Gateway name must not exceed 63 characters, because it is also a Kubernetes label value.",
     },
   );
 });
@@ -7072,6 +7312,7 @@ test("a ServiceAccount credential rollback deletes only the Secret holding its o
     await stored(fixture);
     await assert.rejects(
       fixture.driver.deleteServiceAccountCredential(input(fixture, "at-request-fixture")),
+      { message: "delete failed", statusCode: 409 },
     );
     assert.equal(fixture.storedToken(), "at-request-fixture");
   });
@@ -7099,7 +7340,9 @@ test("a ServiceAccount credential rollback deletes only the Secret holding its o
     assert.equal(fixture.storedToken(), "at-request-fixture");
     assert.deepEqual(fixture.deletes, []);
     // Account deletion still refuses it instead of passing over it silently.
-    await assert.rejects(fixture.driver.deleteServiceAccountCredential(input(fixture)));
+    await assert.rejects(fixture.driver.deleteServiceAccountCredential(input(fixture)), {
+      message: /^Refusing unowned Kubernetes Secret service-account-[a-f0-9]{32}\.$/,
+    });
     assert.deepEqual(fixture.deletes, []);
   });
 
@@ -7304,12 +7547,21 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
     status: { phase: "Active" },
   };
   let namespaceExists = true;
+  let foreignNamespace;
   driver.apiClients = Promise.resolve({
     core: {
       async listNamespace() {
-        return { items: namespaceExists ? [structuredClone(namespaceResource)] : [] };
+        return {
+          items:
+            namespaceExists && foreignNamespace === undefined
+              ? [structuredClone(namespaceResource)]
+              : [],
+        };
       },
       async readNamespace() {
+        if (foreignNamespace !== undefined) {
+          return structuredClone(foreignNamespace);
+        }
         if (!namespaceExists) {
           throw Object.assign(new Error("Not found"), { statusCode: 404 });
         }
@@ -7379,6 +7631,24 @@ test("credential withdrawal revokes through the revision's exact Sandbox", async
     },
   );
   assert.equal(withdrawals.length, 0);
+
+  // A Namespace at the derived name that this Namespace does not own (none claims it by label)
+  // is checked before the gateway is asked: retrying cannot change it, so the worker fails the
+  // withdrawal at once.
+  foreignNamespace = {
+    ...driver.manifest("v1", "Namespace", namespace, {
+      namespaceId: "ns_00000000-0000-4000-8000-000000000009",
+    }),
+    status: { phase: "Active" },
+  };
+  await assert.rejects(driver.withdrawCredentialSource(revision, source, signal), (error) => {
+    assert.ok(error instanceof CredentialWithdrawalRefusedError, String(error));
+    assert.equal(error.code, "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT");
+    assert.match(error.message, /Refusing an unowned Kubernetes namespace/);
+    return true;
+  });
+  assert.equal(withdrawals.length, 0);
+  foreignNamespace = undefined;
 
   // A missing Namespace proves nothing about the Sandbox (finding 1693): the gateway's record
   // outlives it, so the gateway still withdraws, in the derived placement, and its answer stands.

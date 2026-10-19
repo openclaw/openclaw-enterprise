@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   fileBrowser,
   holdRequests,
@@ -9,6 +8,7 @@ import {
   nativeValues,
   newPage,
 } from "./console-agents-browser-helpers.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -22,9 +22,7 @@ const refocus = (page) => page.evaluate(() => globalThis.dispatchEvent(new Event
 // refocus recheck does not: the list stays inert while we check access, then the reader can
 // continue from the same link. Moving to the navigation during the check is a new focus choice.
 test("refocusing the Agents list restores its focused link unless the reader moved on", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Refocus focus", { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Refocus focus");
   await fixture.createAgent(namespace.id, "Refocus Agent", nativeValues("v1"));
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
@@ -89,9 +87,7 @@ const tagList = (page) =>
 const listKept = async (page) => (await page.locator(`${settledView}[data-kept]`).count()) === 1;
 
 async function openDeployedList(t, name) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agent = await fixture.createAgent(namespace.id, "Refocus Agent", nativeValues("v1"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });

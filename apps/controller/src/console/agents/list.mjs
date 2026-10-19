@@ -22,6 +22,38 @@ export function link(label, target, context) {
 export const NAMESPACE_NOT_READY_MESSAGE =
   "This Namespace is not ready yet. Check its status on the Namespaces page: a provisioning Namespace becomes ready when its Kubernetes setup completes (on Kubernetes installs, after an operator grants the tenant RoleBindings).";
 
+// Why a Namespace can't take new Agents, by status. Neither becomes ready by waiting.
+const NOT_READY_REASONS = {
+  failed:
+    "Provisioning this Namespace failed, so it cannot hold new Agents. Ask an operator to check it on the Namespaces page, or choose another Namespace.",
+  deleting:
+    "This Namespace is being deleted, so it cannot hold new Agents. Choose another Namespace.",
+};
+
+// What the selected Namespace's status means where Agent creation starts (finding 1895): null
+// when it is ready or its status is unknown, otherwise the status and its consequence, and
+// whether the API refuses every new Agent there (`blocked`). A provisioning Namespace still
+// accepts Agent drafts, but no Secret, sign-in or deployment until it is ready; one that adopts
+// an existing Kubernetes namespace takes no Configuration until then; a failed or deleting one
+// takes no new Agent. The API still decides.
+export function namespaceCreation(namespace) {
+  const status = namespace?.status;
+  if (typeof status !== "string" || status === "" || status === "ready") {
+    return null;
+  }
+  const label = `Namespace status: ${status[0].toUpperCase()}${status.slice(1)}.`;
+  if (status === "provisioning" && namespace.existingNamespace === undefined) {
+    return {
+      blocked: false,
+      note: `${label} ${NAMESPACE_NOT_READY_MESSAGE} Until then, Agents can be saved as drafts that need no new Secret or sign-in, but none can be deployed.`,
+    };
+  }
+  return {
+    blocked: Object.hasOwn(NOT_READY_REASONS, status) || status === "provisioning",
+    note: `${label} ${NOT_READY_REASONS[status] ?? NAMESPACE_NOT_READY_MESSAGE}`,
+  };
+}
+
 // The API's catch-all answers: a caller's own denial and an untyped conflict. They name nothing
 // the caller can act on, so views keep their own guidance instead of showing them.
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
@@ -219,11 +251,65 @@ export function assertReadableConfiguration(resource) {
 // focusable holder wraps stays readable to a screen reader meanwhile.
 const readingDeployment = (className = "delayed-status") =>
   element("span", { className }, "Reading deployment…");
-// The 250 ms rule's delay (console.css .delayed-status and .delayed-text). With a dozen rows, reads
-// that landed just after it replaced the text a frame or a few after it showed (16-133 ms,
-// finding 1683), so once shown it stays at least READING_SHOWN_MS.
-const READING_DELAY_MS = 250;
+// With a dozen rows, reads that landed just after the 250 ms rule's delay (console.css
+// .delayed-status and .delayed-text) replaced the text a frame or a few after it showed (16-133
+// ms, finding 1683), so once shown it stays at least READING_SHOWN_MS.
 const READING_SHOWN_MS = 150;
+
+// A run of more characters than any ordinary word cannot wrap, so it would set the table's width
+// (finding 1955). Only a name with one breaks anywhere (console.css); others wrap as before. The
+// rule follows the break points Chromium was measured to use (finding 1982), not all of UAX #14.
+// A run ends where a line can break: after a breaking space, a zero-width space, a soft hyphen,
+// or a hyphen or dash (a name holds no control or line-separator characters). No-break spaces
+// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. A hyphen between digits
+// does break ("1000-1001"). Combining marks count with the letter they sit on. Ideographs, kana,
+// Hangul syllables and emoji break on both sides; other scripts (Thai, for one) count per
+// character, which can only over-mark: a marked name still shows in full, in a narrower box.
+const WIDE_SPACES = String.raw`\u1680\u2000-\u2006\u2008-\u200a\u205f\u3000`;
+const DASHES = String.raw`\u00ad\u2010\u2012\u2013`; // soft hyphen, hyphen, figure and en dash
+const CLOSING = String.raw`!),./:;\]}\u00bb\u2019\u201d\u2060\u200d`; // and joiners (ZWJ last: lint)
+const IDEOGRAPHIC = String.raw`\p{Ideographic}\u3041-\u3096\u30a1-\u30fa\uac00-\ud7a3\p{Emoji_Presentation}`;
+const UNBROKEN_CHARACTER = [
+  String.raw`[^ ${WIDE_SPACES}\u200b${DASHES}\u2014\p{M}${IDEOGRAPHIC}-]`,
+  // Where a break character holds the next one on its line:
+  // - a hyphen-minus before closing punctuation, "$", an Arabic-Indic digit, or a hyphen, figure
+  //   dash or en dash; and before any digit when no letter or digit precedes it ("-5");
+  String.raw`-(?=\p{M}*[$\u0660-\u0669\u06f0-\u06f9\u2010\u2012\u2013${CLOSING}])`,
+  String.raw`(?<![\p{L}\p{N}\p{M}])-(?=\p{Nd})(?![\u0660-\u0669\u06f0-\u06f9])`,
+  // - a wide space, soft hyphen or dash before closing punctuation, a quote or a vertical bar;
+  String.raw`[${WIDE_SPACES}${DASHES}](?=\p{M}*["'|${CLOSING}])`,
+  // - a hyphen or dash (an em dash too) before any of them but an em dash (LB21);
+  String.raw`[\u2010\u2012-\u2014](?=[\u2010\u2012\u2013-])`,
+  // - a hyphen, figure dash or en dash that starts a word, before a letter (LB20a);
+  String.raw`(?<=^|[ \u200b])[\u2010\u2012\u2013](?=\p{L})`,
+  // - an ideograph or emoji before a word joiner or zero-width joiner (LB11, LB9). The other
+  //   characters a joiner holds already count: ordinary ones always, and a hyphen, dash or wide
+  //   space because CLOSING lists the joiners. What follows a joiner keeps its own rules.
+  // No character may match two of these (the Arabic-Indic digits after a hyphen-minus are the
+  // line above's, not the "-5" line's), nor a combining mark start one: each overlap doubles the
+  // ways to split a run, so a failed match on a joiner-run name backtracked for seconds (finding
+  // 1999). One ideograph is a combining mark (U+16FE4), so the last line skips marks.
+  // tests/conformance/console-agent-name-runs.test.mjs bounds it.
+  String.raw`(?!\p{M})[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
+].join("|");
+const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
+// A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
+// The wide space, hyphen or dash a line breaks after stays on that line, so it counts too.
+const UNBROKEN_RUN = new RegExp(
+  String.raw`\u2014{21,}|(?:${RUN_CHARACTER}){21,}|(?:${RUN_CHARACTER}){20}[${WIDE_SPACES}${DASHES}-]`,
+  "u",
+);
+
+/** Whether a name holds a run the browser cannot wrap, so it must be marked to break anywhere. */
+export const hasUnbrokenRun = (name) => UNBROKEN_RUN.test(name);
+
+function agentNameLink(item, context) {
+  const node = link(item.name, `agents/${item.id}`, context);
+  if (hasUnbrokenRun(item.name)) {
+    node.classList.add("agent-name-unbroken");
+  }
+  return node;
+}
 
 export function renderAgentList(context) {
   const { view, items } = context;
@@ -234,18 +320,42 @@ export function renderAgentList(context) {
   });
   search.value = context.drafts.get("agent-search") ?? "";
   context.drafts.track("agent-search", () => search.value || undefined);
+  context.drafts.unsavedWhen("agent-search", () => false);
   const rows = element("div");
   const deployments = new Map();
   // The page renders with the caller's permission answer, so Create Agent is never painted
   // enabled and then refused, and the note never pushes the table down (finding 1517). Gating
   // only: the API still authorizes creation, so an unknown answer keeps the control.
   const createDenied = context.permissions?.agents?.create === false;
+  // A Namespace that is not ready names its status here, so the first sign is never a refused
+  // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
+  const notReady = namespaceCreation(context.namespace);
   const create = button("Create Agent", () => context.navigate("agents/new"), {
-    className: "primary",
+    tone: "primary",
   });
-  create.disabled = createDenied;
+  create.disabled = createDenied || notReady?.blocked === true;
+  // A provisioning Namespace still takes drafts, so Create Agent stays enabled, and says why
+  // nothing deploys yet (finding 1990).
+  if (notReady) {
+    create.setAttribute("aria-describedby", "namespace-not-ready");
+  }
   view.replaceChildren(
     element("div", { className: "agent-toolbar" }, search, create),
+    ...(notReady
+      ? [
+          // A warning status block (dom.mjs statusBlock's markup), a polite status on load.
+          element(
+            "p",
+            {
+              className: "status",
+              "data-tone": "warning",
+              role: "status",
+              id: "namespace-not-ready",
+            },
+            notReady.note,
+          ),
+        ]
+      : []),
     ...(createDenied
       ? [
           element(
@@ -293,15 +403,22 @@ export function renderAgentList(context) {
     if (!deployments.has(item.id)) {
       deployments.set(item.id, readDeployment(item));
     }
-    // The cell's "Reading deployment…" (or its focusable holder) and when its text shows.
+    // The cell's "Reading deployment…" (or its focusable holder) and when its text shows: the
+    // frame its delay animation ends in, not render time plus the delay. The animation starts
+    // with the frame that first styles the text, which can be a frame or two either side of the
+    // render, so that estimate let a read landing between the two fill the cell one frame after
+    // the text painted (finding 1716).
     const reading = deployment.firstElementChild;
-    const shownAt = performance.now() + READING_DELAY_MS;
+    let shownAt;
+    reading.addEventListener("animationend", () => {
+      shownAt = performance.now();
+    });
     // A read that lands before the text shows, or after it has shown long enough, fills the cell
     // now; otherwise once it has. A later resume or render replaces the text, and its own read
     // fills the cell instead.
     const fill = (...content) => {
-      const wait = shownAt + READING_SHOWN_MS - performance.now();
-      if (wait <= 0 || wait > READING_SHOWN_MS) {
+      const wait = shownAt === undefined ? 0 : shownAt + READING_SHOWN_MS - performance.now();
+      if (wait <= 0) {
         fillDeployment(deployment, ...content);
         return;
       }
@@ -373,7 +490,13 @@ export function renderAgentList(context) {
                 ? // Under the note above: say what the reader can expect, not invite creating
                   // (finding 1521).
                   "Agents in this Namespace that are shared with you appear here."
-                : "Create an Agent in this Namespace using an editable Configuration template.",
+                : notReady?.blocked
+                  ? context.namespace.status === "provisioning"
+                    ? "You can create Agents here once this Namespace is ready."
+                    : "Agents cannot be created in this Namespace."
+                  : notReady
+                    ? "You can save an Agent draft here now. It can be deployed once this Namespace is ready."
+                    : "Create an Agent in this Namespace using an editable Configuration template.",
           ),
         ),
       );
@@ -395,9 +518,21 @@ export function renderAgentList(context) {
     );
     const body = element("tbody");
     for (const item of matches) {
+      const revision = item.activeRevisionId
+        ? link(
+            shortId(item.activeRevisionId),
+            `agents/${item.id}?revision=${item.activeRevisionId}`,
+            context,
+          )
+        : null;
+      revision?.classList.add("agent-revision-link");
       // The cell keeps its column's width once its read lands, and its outcome link and one
       // note line fit the two lines the Agent cell already gives the row (finding 1488).
-      const deployment = element("td", { className: "agent-deployment" }, readingDeployment());
+      const deployment = element(
+        "td",
+        { className: "agent-deployment", "data-label": "Latest deployment" },
+        readingDeployment(),
+      );
       cells.set(deployment, item);
       showDeployment(item, deployment);
       body.append(
@@ -407,31 +542,45 @@ export function renderAgentList(context) {
           element(
             "td",
             {},
-            link(item.name, `agents/${item.id}`, context),
+            agentNameLink(item, context),
             element("span", { className: "resource-id" }, item.id),
-            item.status === "deleting" ? element("span", { className: "badge" }, "Deleting") : null,
+            item.status === "deleting"
+              ? element("span", { className: "badge", "data-tone": "warning" }, "Deleting")
+              : null,
             item.configurationReadError
-              ? element("span", { className: "badge" }, "Saved configuration unreadable")
+              ? element(
+                  "span",
+                  { className: "badge", "data-tone": "danger" },
+                  "Saved configuration unreadable",
+                )
               : null,
           ),
-          element("td", {}, item.executionMode === "dedicated" ? "Dedicated" : "Embedded"),
+          // On a phone each cell shows its column's name (console.css, `data-label`).
           element(
             "td",
-            {},
-            item.activeRevisionId
-              ? link(
-                  shortId(item.activeRevisionId),
-                  `agents/${item.id}?revision=${item.activeRevisionId}`,
-                  context,
-                )
-              : "No current version",
+            { "data-label": "Execution mode" },
+            item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
           ),
+          element("td", { "data-label": "Current version" }, revision ?? "No current version"),
           deployment,
-          element("td", {}, displayDate(item.createdAt)),
+          element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
         ),
       );
     }
     table.append(body);
+    // On a phone the rows stack (console.css), and a table part whose CSS display changes can
+    // lose its table role in some browsers. Explicit roles keep the table for screen readers.
+    table.setAttribute("role", "table");
+    for (const [parts, role] of [
+      ["thead, tbody", "rowgroup"],
+      ["tr", "row"],
+      ["th", "columnheader"],
+      ["td", "cell"],
+    ]) {
+      for (const part of table.querySelectorAll(parts)) {
+        part.setAttribute("role", role);
+      }
+    }
     rows.replaceChildren(element("div", { className: "table-scroll" }, table));
   }
   // A retained list is mounted without rereading its rows' deployments, so what they showed is

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-17"
-last_updated_session: "authoring-run/af74f35a-b377-4437-94ce-c5881f9cbb5a"
+updated: "2026-10-19"
+last_updated_session: "authoring-run/25cd33d6-ffad-4529-9fdd-897a95172b1c"
 ---
 
 # Production image upgrade flow
@@ -170,8 +170,9 @@ If the candidate is already present after a lost response, it does not write it
 again. The candidate Installation checksum is included in both OCC Pod
 templates.
 
-A durable marker precedes `helm upgrade`. The candidate migrator and bootstrap
-run in the Helm initialization hook before API and worker rollout. If Helm
+A durable marker precedes `helm upgrade`. The Helm initialization hook checks
+the Installation, then runs the candidate migrator and bootstrap, before API and
+worker rollout. If Helm
 fails, resumption reads its current status and migration state before a retry;
 it does not start the old image to undo a committed schema change.
 
@@ -290,6 +291,10 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-19 14:05: Preserve installation preflight and cleanup inventory traces when synchronizing with main. (authoring-run/25cd33d6-ffad-4529-9fdd-897a95172b1c - 135464336db25189228e7a6bdb21b71e39012d28)
+
+- 2026-10-18: The initialization hook checks the Installation before migration.
 
 - 2026-10-17 19:01: Exclude repository cleanup in every state from deployment inventory while preserving genuine deployment guards. (authoring-run/af74f35a-b377-4437-94ce-c5881f9cbb5a - edb197e6976a5737742cf7ee7fad43e3b06d5810)
 

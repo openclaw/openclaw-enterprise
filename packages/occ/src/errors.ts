@@ -858,6 +858,29 @@ export class SandboxRevisionUnsupportedError extends Error {
 }
 
 /**
+ * A Sandbox Driver's private workspace setup refused the revision's workspace (the setup
+ * runner's exit status 2): its files, setup record or runtime defaults disagree, so no retry
+ * can change it. Compute reports it as a held `WORKSPACE_SETUP_REFUSED` runtime failure, which
+ * fails the deployment at once, as for its own init container (finding 1708).
+ */
+export class SandboxWorkspaceSetupRefusedError extends Error {
+  readonly code = "WORKSPACE_SETUP_REFUSED";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxWorkspaceSetupRefusedError";
+  }
+}
+
+/**
+ * A Sandbox Driver's code for a DeleteService or DeleteSandbox that found nothing where a read
+ * had just found the target: the target went between the two (a failed candidate retired by the
+ * next activation) or the identity lost sight of it. Neither is confirmed, so the caller keeps
+ * its retry and the worker's exposure sweep logs it apart from a failure (finding 1696).
+ */
+export const SANDBOX_DELETION_UNCONFIRMED = "SANDBOX_DELETION_UNCONFIRMED";
+
+/**
  * The Sandbox gateway refuses the controller's own identity in the revision's Workspace, so the
  * Driver cannot tell a Sandbox that is gone, with its Harness exposure withdrawn and its
  * credentials detached, from one it is no longer allowed to see: an unauthorized Sandbox lookup
@@ -867,14 +890,21 @@ export class SandboxRevisionUnsupportedError extends Error {
  * out of band presents the same way, since the gateway drops the identity's membership with it.
  * An operator restores the identity's Workspace role (or the Workspace, through a deploy) and
  * runs the operation again. The message stays in the controller.
+ *
+ * `transient` is true when the gateway could not authenticate the identity at all
+ * (UNAUTHENTICATED): an expired or not-yet-valid token file and a signing key the gateway has
+ * not refreshed yet mend themselves, so the worker retries within its attempt budget before it
+ * fails with `code` (finding 1694). A role the identity lacks (PERMISSION_DENIED) fails at once.
  */
 export class SandboxGatewayUnauthorizedError extends Error {
   readonly code: "SANDBOX_GATEWAY_UNAUTHORIZED";
+  readonly transient: boolean;
 
-  constructor(message: string, options?: ErrorOptions) {
+  constructor(message: string, options?: ErrorOptions & { readonly transient?: boolean }) {
     super(message, options);
     this.name = "SandboxGatewayUnauthorizedError";
     this.code = "SANDBOX_GATEWAY_UNAUTHORIZED";
+    this.transient = options?.transient === true;
   }
 }
 

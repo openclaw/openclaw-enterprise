@@ -86,8 +86,10 @@ for examples.
 ## Resolution and analysis limits
 
 The analyzer resolves supported static imports and selected Node loader and path
-patterns. It fails closed on unknown loads and unsupported package import aliases
-(`#name`). It does not model arbitrary wrappers, computed execution, external
+patterns. Package export targets follow Node's case-insensitive refusal of
+`node_modules` path segments, including percent-encoded spellings. A query or
+fragment word alone is not a path segment; slash boundaries in the original
+target are still checked without URL normalization. It fails closed on unknown loads and unsupported package import aliases (`#name`). It does not model arbitrary wrappers, computed execution, external
 mutation, or control flow. A pass is a development check, not runtime security
 enforcement. For a resolution failure, inspect the import, loader anchor,
 package exports, and selected roots.

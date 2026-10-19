@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { request as httpRequest } from "node:http";
 import { test } from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
@@ -7,6 +6,10 @@ import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
+import {
+  assertWriteAuthorizationDenial,
+  partialWrite,
+} from "../helpers/partial-write-authorization.mjs";
 
 // The Configuration write limit: the Kubernetes Driver's 1 MiB of values and a 32 KiB envelope,
 // all written with six-byte JSON escapes.
@@ -47,46 +50,6 @@ async function sendRaw(fixture, method, path, text, session) {
     signal: AbortSignal.timeout(30_000),
   });
   return { status: response.status, body: await response.json() };
-}
-
-// Declares `declaredBytes`, sends only a 64 KiB prefix, and resolves with the response, or null
-// when the controller waits for the rest of the body.
-function partialWrite(fixture, method, path, session, declaredBytes) {
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const settle = (callback, value) => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        request.destroy();
-        callback(value);
-      }
-    };
-    const request = httpRequest(new URL(path, fixture.origin), {
-      method,
-      headers: {
-        ...authenticatedHeaders(session, { origin: fixture.origin }),
-        "content-type": "application/json",
-        "content-length": String(declaredBytes),
-      },
-    });
-    const timer = setTimeout(() => settle(resolve, null), 15_000);
-    request.on("response", (response) => {
-      const chunks = [];
-      response.on("data", (chunk) => chunks.push(chunk));
-      response.on("end", () => {
-        try {
-          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-          settle(resolve, { status: response.statusCode, body });
-        } catch (error) {
-          settle(reject, error);
-        }
-      });
-      response.on("error", (error) => settle(reject, error));
-    });
-    request.on("error", (error) => settle(reject, error));
-    request.write(`{"kind":"agent","values":{"notes":"${"x".repeat(64 * 1024)}`);
-  });
 }
 
 test("Configuration writes admit every Configuration the Kubernetes Driver stores", async (t) => {
@@ -194,26 +157,22 @@ test("Configuration writes refuse a caller without the grant before reading the 
     });
     assert.equal(small.status, 403, `${method}: ${JSON.stringify(small.body)}`);
     assert.deepEqual(small.body.error, forbidden, method);
-    const denials = () =>
-      fixture.audit.events.filter(
-        (event) =>
-          event.kind === "authorization_denial" &&
-          event.actor?.principalId === memberId &&
-          event.action === action,
-      );
-    const before = denials().length;
-    const refused = await partialWrite(fixture, method, path, session, declaredBytes);
+    const auditStart = fixture.audit.events.length;
+    const refused = await partialWrite({
+      origin: fixture.origin,
+      method,
+      path,
+      session,
+      declaredBytes,
+      bodyPrefix: '{"kind":"agent","values":{"notes":"',
+    });
     assert.notEqual(refused, null, `${method}: the controller waited for the unread body`);
     assert.equal(refused.status, 403, `${method}: ${JSON.stringify(refused.body)}`);
     assert.deepEqual(refused.body.error, forbidden, method);
     // The refusal keeps its audit row, naming the exact grant the write itself checks.
-    const recorded = denials().slice(before);
-    assert.equal(recorded.length, 1, method);
-    assert.equal(recorded[0].reasonCode, "AUTHORIZATION_DENIED", method);
-    assert.deepEqual(recorded[0].resource, target, method);
-    assert.deepEqual(
-      recorded[0].authorization,
-      { principalId: memberId, action: grant, resource: target },
+    assertWriteAuthorizationDenial(
+      fixture.audit.events.slice(auditStart),
+      { principalId: memberId, action, grant, resource: target },
       method,
     );
   }

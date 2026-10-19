@@ -257,12 +257,16 @@ If the Job started, inspect the failing container:
 
 ```bash
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
+  logs "$INITIALIZATION_JOB" -c installation-check # upgrades only
+kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   logs "$INITIALIZATION_JOB" -c migration
 kubectl --kubeconfig "$KUBECONFIG_FILE" --context "$CONTEXT" -n openclaw-system \
   logs "$INITIALIZATION_JOB" -c bootstrap
 ```
 
-Migration runs before bootstrap; an unstarted bootstrap container has no logs.
+On an upgrade, `installation-check` first loads the Installation as API
+startup does and names a refused setting and file; the running API keeps
+serving. Migration runs before bootstrap; an unstarted container has no logs.
 For image, scheduling, or volume errors, use the Pod events reported by
 `kubectl describe pod <pod-name>` with the same context and namespace. Fix the
 specific image, scheduling, or storage error. For a bootstrap failure, follow

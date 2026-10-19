@@ -1,4 +1,4 @@
-import { element, button, setText } from "../dom.mjs";
+import { element, button, setStatusTone, setText } from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
 import { visibleText } from "./logs-view.mjs";
 import {
@@ -91,15 +91,22 @@ function repositoryResults(options, recent, { query: queryText, browsing, page: 
   return { small, query, matches, count, page, visible };
 }
 
-function discoveryFailure(error, { allowDraft }) {
+function discoveryFailure(error, { allowDraft, agentScoped }) {
   if (error.status === 403) {
     return "denied";
   }
   if (error.status === 409) {
     return "conflict";
   }
-  if (allowDraft && error.status === 503 && error.code === "REPOSITORY_OPTIONS_UNAVAILABLE") {
-    return "draft-only";
+  // The API answers this code only for the Installation's fixed composition (no Repo Driver
+  // or no compatible Compute Driver), so retrying cannot succeed until an operator changes it.
+  if (error.status === 503 && error.code === "REPOSITORY_OPTIONS_UNAVAILABLE") {
+    if (allowDraft) {
+      return "draft-only";
+    }
+    if (agentScoped) {
+      return "not-configured";
+    }
   }
   return "unavailable";
 }
@@ -156,7 +163,12 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     { className: "hint", role: "status", "aria-live": "polite" },
     "Loading approved repositories…",
   );
-  const validation = element("p", { className: "error", role: "alert", hidden: true });
+  const validation = element("p", {
+    className: "status",
+    "data-tone": "danger",
+    role: "alert",
+    hidden: true,
+  });
   const choices = element("div", { className: "repository-options", "aria-busy": "true" });
   const cards = element("div", { className: "repository-selected" });
   const announcements = element("p", { className: "hint", role: "status", "aria-live": "polite" });
@@ -232,6 +244,18 @@ export function createRepositoryFields(context, onChange, initial = {}) {
       return "Choose approved access";
     }
     return `${profileLabel(effective(ref))} · ${override === null ? "Agent default" : "Custom"}`;
+  }
+
+  // Red only for a choice that is not approved. Loading choices is not a problem, and a failed
+  // read is a warning, not a refusal (finding 1970).
+  function accessTone(ref) {
+    if (!isSettled()) {
+      return "info";
+    }
+    if (blocksCreate()) {
+      return "warning";
+    }
+    return invalid(ref) ? "danger" : "info";
   }
 
   function resetSearch() {
@@ -555,7 +579,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             renderResults();
             results.querySelector('input[type="checkbox"]:not(:disabled)')?.focus();
           },
-          { className: "repository-text-action", disabled: !editable() },
+          { tone: "link", className: "repository-text-action", disabled: !editable() },
         ),
       );
     }
@@ -655,6 +679,8 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           focusDiscovery();
         },
         {
+          tone: "ghost",
+          size: "sm",
           className: "repository-remove",
           "aria-label": `Remove ${label}`,
           title: `Remove ${label}`,
@@ -671,9 +697,8 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             "span",
             {
               id: `repository-summary-${ref}`,
-              className: invalid(ref)
-                ? "repository-access-summary is-error"
-                : "repository-access-summary",
+              className: "badge repository-access-summary",
+              "data-tone": accessTone(ref),
             },
             accessSummary(ref, override),
           ),
@@ -706,12 +731,17 @@ export function createRepositoryFields(context, onChange, initial = {}) {
         settings.append(
           element(
             "p",
-            { className: "error" },
+            // Checking is progress; the other three say the repository cannot be used.
+            state.discovery === "loading"
+              ? { className: "hint" }
+              : { className: "status", "data-tone": "danger" },
             state.discovery === "ready"
               ? "This repository is no longer available. Remove it or retry discovery."
               : state.discovery === "loading"
                 ? "Checking repository availability…"
-                : "Repository availability cannot be verified. Retry repository choices.",
+                : state.discovery === "not-configured"
+                  ? "Repository availability cannot be verified because repository access is not available in this Installation's configuration."
+                  : "Repository availability cannot be verified. Retry repository choices.",
           ),
         );
       } else {
@@ -719,7 +749,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           settings.append(
             element(
               "p",
-              { className: "error" },
+              { className: "status", "data-tone": "danger" },
               `Choose approved access: ${entry.allowedProfiles.map(profileLabel).join(", ")}.`,
             ),
           );
@@ -754,7 +784,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             renderCards();
             cards.lastElementChild.focus();
           },
-          { className: "repository-text-action" },
+          { tone: "link", className: "repository-text-action" },
         ),
       );
     }
@@ -774,6 +804,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           },
           {
             disabled: state.disabled || state.selected.size >= MAX_SELECTED,
+            tone: "link",
             className: "repository-text-action",
           },
         ),
@@ -990,7 +1021,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     resetSearch();
     retry.hidden = true;
     choices.setAttribute("aria-busy", "true");
-    status.className = "hint";
+    setStatusTone(status, null);
     status.textContent = "Loading approved repositories…";
     if (clearSelections) {
       state.options = [];
@@ -1043,24 +1074,25 @@ export function createRepositoryFields(context, onChange, initial = {}) {
       choices.setAttribute("aria-busy", "false");
       state.discovery = discoveryFailure(error, {
         allowDraft: !clearSelections && !initial.agentId && state.selected.size === 0,
+        agentScoped: !clearSelections && Boolean(initial.agentId),
       });
       if (state.discovery === "denied") {
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent = initial.agentId
           ? "Repository choices are denied because you are not authorized to update this Agent."
           : "Repository choices are denied because you are not authorized to create Agents in this Namespace.";
       } else if (state.discovery === "conflict") {
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent = initial.agentId
           ? "Repository choices conflict with the current Agent or Namespace. Reload this draft before continuing."
           : "This Namespace no longer accepts new Agents.";
       } else if (clearSelections) {
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent = `Repository choices could not be reloaded. ${message(error)} Retry the reload or start a new draft.`;
-      } else if (state.discovery === "draft-only") {
-        status.className = "hint";
+      } else if (state.discovery === "draft-only" || state.discovery === "not-configured") {
+        setStatusTone(status, null);
         status.replaceChildren(
-          "Repository choices are unavailable. ",
+          "Repository access is not available in this Installation's configuration. ",
           element(
             "a",
             {
@@ -1070,17 +1102,23 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             },
             "Set up repository access",
           ),
-          ". You can continue without repository access.",
+          state.discovery === "draft-only"
+            ? ". You can continue without repository access."
+            : ". You can’t save repository changes on this page until an operator sets up repository access.",
         );
       } else {
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent = `Repository choices could not be loaded. ${message(error)} Retry repository choices before ${initial.agentId ? "saving repository access" : "creating an Agent"}.`;
       }
-      retry.hidden = clearSelections;
+      retry.hidden = clearSelections || ["draft-only", "not-configured"].includes(state.discovery);
       revealInvalidSelections();
       render();
       onChange(false);
-      return { kind: state.discovery === "draft-only" ? "unavailable" : state.discovery };
+      return {
+        kind: ["draft-only", "not-configured"].includes(state.discovery)
+          ? "unavailable"
+          : state.discovery,
+      };
     }
   }
 

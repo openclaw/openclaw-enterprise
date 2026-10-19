@@ -1,4 +1,5 @@
 import {
+  SANDBOX_DELETION_UNCONFIRMED,
   SandboxGatewayUnauthorizedError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
@@ -16,9 +17,11 @@ export type GatewayCall = <T>(call: () => Promise<T>) => Promise<T>;
  * Wraps the gateway calls of one Sandbox operation in `workspace`. A refusal of the
  * controller's own gateway identity (grpc-js PERMISSION_DENIED or UNAUTHENTICATED, which
  * `unary` passes through raw) becomes `SandboxGatewayUnauthorizedError`, so the worker fails
- * the work with that code at once instead of spending its attempts on a generic failure.
- * `unconfirmed` names what the refusal leaves unconfirmed, for example "the Harness exposure
- * of Sandbox x cannot be confirmed withdrawn".
+ * the work with that code instead of spending its attempts on a generic failure: at once for
+ * PERMISSION_DENIED (a role the identity lacks), after its attempt budget for UNAUTHENTICATED,
+ * which OpenShell also answers while a token file or its JWKS is between refreshes (`transient`,
+ * finding 1694). `unconfirmed` names what the refusal leaves unconfirmed, for example "the
+ * Harness exposure of Sandbox x cannot be confirmed withdrawn".
  */
 export function gatewayIdentityRefusal(workspace: string, unconfirmed: string): GatewayCall {
   return async (call) => {
@@ -31,12 +34,22 @@ export function gatewayIdentityRefusal(workspace: string, unconfirmed: string): 
       if (code === GRPC_PERMISSION_DENIED || code === GRPC_UNAUTHENTICATED) {
         throw new SandboxGatewayUnauthorizedError(
           `OpenShell refused the controller gateway identity in Workspace ${workspace}, so ${unconfirmed}.`,
-          { cause: error },
+          { cause: error, transient: code === GRPC_UNAUTHENTICATED },
         );
       }
       throw error;
     }
   };
+}
+
+/**
+ * DeleteSandbox or DeleteService answered NOT_FOUND for a target a read had just found: the
+ * target went away in between (a failed candidate retired by the next activation while the
+ * sweep was withdrawing its exposure, finding 1696) or the identity lost sight of it. Either way
+ * nothing is confirmed; the next attempt settles it through `confirmSandboxAbsent`.
+ */
+export class OpenShellDeletionUnconfirmedError extends OpenShellGatewayFailure {
+  readonly code = SANDBOX_DELETION_UNCONFIRMED;
 }
 
 /**

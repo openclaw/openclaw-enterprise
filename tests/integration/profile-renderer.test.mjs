@@ -2770,7 +2770,10 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
           ...compute,
           runtime: { ...compute.runtime, codexModelBaseUrl: value },
         }),
-      undefined,
+      // Compute startup has no separate nonempty-string refusal; its general rule covers it.
+      {
+        message: `Codex model endpoint ${message === "must be a nonempty string." ? general : message}`,
+      },
       JSON.stringify(value),
     );
   }

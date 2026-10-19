@@ -607,9 +607,18 @@ const sessionEvidenceScript = String.raw`
             ? contains(message, resultPattern) || textOf(message.content).includes(resultPattern)
             : hasStructuredResult(message.content),
           mirrorIdentity,
+          // Codex records risk and authorization only with a completed judgement; a
+          // reviewer that failed closed or timed out leaves them out (finding 1980).
           approvalReviews: (message.details?.approvalReviews ?? []).map((review) => ({
             id: review.id,
             status: review.status,
+            ...(typeof review.riskLevel === "string" ? { riskLevel: review.riskLevel } : {}),
+            ...(typeof review.userAuthorization === "string"
+              ? { userAuthorization: review.userAuthorization }
+              : {}),
+            ...(typeof review.rationale === "string"
+              ? { rationale: review.rationale.slice(0, 500) }
+              : {}),
           })),
         });
       }
@@ -645,6 +654,68 @@ const sessionEvidenceScript = String.raw`
     db.close();
   }
 `;
+
+// Codex's automatic reviewer reports a judgement as approved or denied with a risk level
+// and user authorization. When the review itself cannot finish (session, parse or prompt
+// errors) Codex fails closed: "denied" with no risk or authorization and a rationale that
+// starts with this prefix. A review that ran out of time reports "timed_out". A changed
+// authorization fails closed the same way but may be the policy's own change, so it is
+// kept apart and never treated as a reviewer error.
+const reviewerFailedRationale = "Automatic approval review failed: ";
+const staleAuthorizationRationale = `${reviewerFailedRationale}authorization changed before approval could be applied`;
+
+export function approvalReviewKind(review) {
+  if (review?.status === "timed_out") {
+    return "reviewer-error";
+  }
+  if (review?.status !== "denied") {
+    return review?.status ?? "unknown";
+  }
+  if (typeof review.riskLevel === "string" || typeof review.userAuthorization === "string") {
+    return "judged-deny";
+  }
+  if (typeof review.rationale !== "string") {
+    return "denied-unclassified";
+  }
+  if (review.rationale.startsWith(staleAuthorizationRationale)) {
+    return "stale-authorization";
+  }
+  return review.rationale.startsWith(reviewerFailedRationale)
+    ? "reviewer-error"
+    : "denied-unclassified";
+}
+
+// One line per failure: rationales (session and parse errors among them) can span lines.
+export function describeApprovalReviews(results) {
+  const reviews = results.flatMap((result) => result.approvalReviews ?? []);
+  if (reviews.length === 0) {
+    return "no approval review recorded";
+  }
+  return reviews
+    .map((review) => {
+      const facts = [
+        review.riskLevel && `risk: ${review.riskLevel}`,
+        review.userAuthorization && `authorization: ${review.userAuthorization}`,
+      ].filter(Boolean);
+      const reason = review.rationale ? `: ${review.rationale.replace(/\s+/g, " ").trim()}` : "";
+      return `${approvalReviewKind(review)}${facts.length ? ` (${facts.join(", ")})` : ""}${reason}`;
+    })
+    .join("; ");
+}
+
+// True only when the call failed and every review of it is a reviewer error, so no
+// judgement (deny, approve or unclassified) was reached for it.
+export function automaticReviewerErrored(results) {
+  return (
+    results.length > 0 &&
+    results.every(
+      (result) =>
+        result.isError === true &&
+        (result.approvalReviews ?? []).length > 0 &&
+        result.approvalReviews.every((review) => approvalReviewKind(review) === "reviewer-error"),
+    )
+  );
+}
 
 function codexToolTurnPrefix(identity, suffix) {
   if (typeof identity !== "string" || !identity.endsWith(suffix)) {
@@ -1209,18 +1280,27 @@ export function createNativePluginAssertions({
           result.matchesResult === true,
       ),
     );
-    assert.ok(
-      matched,
-      `native transcript for ${options.sessionKey} did not include ${options.toolName ?? "a list_calendars tool"} with a matching successful result: ${JSON.stringify(
-        {
-          runtime: evidence.runtime,
-          sessionId: evidence.sessionId,
-          calls: evidence.calls,
-          results: evidence.results,
-          diagnostics: evidence.diagnostics,
-        },
-      )}`,
-    );
+    if (!matched) {
+      // Lead with the review outcome so the first line says whether a reviewer judged
+      // the read or failed to judge it (finding 1980).
+      const error = new assert.AssertionError({
+        message: `native transcript for ${options.sessionKey} did not include ${options.toolName ?? "a list_calendars tool"} with a matching successful result (approval reviews: ${describeApprovalReviews(evidence.results)}): ${JSON.stringify(
+          {
+            runtime: evidence.runtime,
+            sessionId: evidence.sessionId,
+            calls: evidence.calls,
+            results: evidence.results,
+            diagnostics: evidence.diagnostics,
+          },
+        )}`,
+        actual: matched,
+        expected: true,
+        operator: "==",
+      });
+      error.automaticReviewerErrored = automaticReviewerErrored(evidence.results);
+      error.approvalReviewSummary = describeApprovalReviews(evidence.results);
+      throw error;
+    }
     const result = evidence.results.find(
       (candidate) =>
         candidate.toolCallId === matched.id &&
