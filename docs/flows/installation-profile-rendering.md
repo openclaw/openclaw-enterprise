@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-19
-last_updated_session: authoring-run/45f16ec0-9506-4874-9bb5-62003aa555c3
+last_updated_session: authoring-run/d45560cc-1312-47a3-bc97-9e85137cdea9
 ---
 
 # Installation Profile Rendering Flow
@@ -288,19 +288,11 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
-- 2026-10-19 14:05: Preserve upstream mount validation while integrating trusted profile customization. (authoring-run/45f16ec0-9506-4874-9bb5-62003aa555c3 - 82c7e1f8fb66ae966f7126ac4e1fa1337d7dc3fd)
+- 2026-10-19 22:48: Add trusted profile-file overrides, optional default Preset seeding and PluginDriver-based catalog prerequisites. (authoring-run/d45560cc-1312-47a3-bc97-9e85137cdea9 - a0e909fda01709486815fcc113db4229eba646bc)
 
 - 2026-10-18 14:40: Compare database CA mount destinations with Helm. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
 
-- 2026-10-15 13:26: Integrate upstream hosted discovery DNS handling with trusted profiles. (authoring-run/4863651f-24de-427e-ac6f-152c65948af3 - 775a7cff0890d646ed433df45b9233ea58b553e6)
-
 - 2026-10-13 16:26: Merge current profile validation while retaining hosted discovery DNS snapshots and explicit network policy inputs. (authoring-run/1e1d633d-329d-462f-b077-6cb27c43a6e4 - da72ecf45a0989b857fd7f05d8238a38a979eb64)
-
-- 2026-10-12 22:38: Derive hosted catalog prerequisites from the selected PluginDriver under either profile family. (authoring-run/d5a03f17-87b8-4652-bfd0-e703b8e20eb7 - 2f94a9ef472f4f7a2168f08df0e478ea7a4eb67b)
-
-- 2026-10-12 15:28: Integrate upstream b195e54e9 while retaining the custom profile and readable starter contracts. (authoring-run/df6d4023-3aec-45e7-aa7d-8eca68711247 - 85561c4fc4666805b187d0a554c872938eb9b048)
-
-- 2026-10-12 14:04: Document the validated profile and omitted-configuration contract. (authoring-run/41b6a9fe-f98e-419b-904b-6f24815b6dd2 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-11 18:12: Validate sign-in and ChatGPT admin Secret references before rendering deployment files. (authoring-run/a792f860-0966-4b83-8955-7d864ba96f61 - ec6d41d1ac7f4cbe889ff7cdf45b60ebef99ffb7)
 

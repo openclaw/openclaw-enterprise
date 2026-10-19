@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
 updated: 2026-10-19
-last_updated_session: authoring-run/45f16ec0-9506-4874-9bb5-62003aa555c3
+last_updated_session: authoring-run/d45560cc-1312-47a3-bc97-9e85137cdea9
 ---
 
 # Agent Presets flow
@@ -283,19 +283,11 @@ or an immutable admitted revision.
 
 ## Changelog
 
-- 2026-10-19 14:05: Preserve custom drafts across navigation until explicit discard. (authoring-run/45f16ec0-9506-4874-9bb5-62003aa555c3 - 82c7e1f8fb66ae966f7126ac4e1fa1337d7dc3fd)
-
-- 2026-10-16 13:00: Integrate upstream Console changes while retaining readable starter selection. (authoring-run/0bac9d5a-6aa7-4151-87e0-54e6a380e79c - ba98603943c22e5fb4e40b03b07b95ade9b29db8)
+- 2026-10-19 22:48: Add named quick-start from the first readable Preset when default-codex is unavailable, preserving exact-resource authorization and draft handling. (authoring-run/d45560cc-1312-47a3-bc97-9e85137cdea9 - a0e909fda01709486815fcc113db4229eba646bc)
 
 - 2026-10-15 18:50: Allow search-only Slack Secret selection during Agent creation. (authoring-run/23d60562-6525-4593-ad0c-29ce57483c38 - aad21c63837ef24f9f9bae152877812abe9b1abd)
 
-- 2026-10-15 13:26: Name the selected custom starter and retain upstream Preset summaries. (authoring-run/4863651f-24de-427e-ac6f-152c65948af3 - 775a7cff0890d646ed433df45b9233ea58b553e6)
-
 - 2026-10-14: The Preset list returns summaries. (fix-1323-lists)
-
-- 2026-10-12 15:28: Integrate upstream b195e54e9 while retaining the custom profile and readable starter contracts. (authoring-run/df6d4023-3aec-45e7-aa7d-8eca68711247 - 85561c4fc4666805b187d0a554c872938eb9b048)
-
-- 2026-10-12 14:04: Document readable starter selection and exact-name ties. (authoring-run/41b6a9fe-f98e-419b-904b-6f24815b6dd2 - 80725162a946f80652b939a32a57ee4e922eeb5c)
 
 - 2026-10-10 07:02: Integrate main without changing the model-selection repair; retain both flow histories. (authoring-run/93ddce15-e08f-4d84-9e30-6c2cb0f1e838 - 500ca364793d117e7996ef568ac144df877e5b8b)
 
