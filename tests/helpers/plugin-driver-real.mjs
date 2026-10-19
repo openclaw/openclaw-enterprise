@@ -514,6 +514,21 @@ const sessionEvidenceScript = String.raw`
       return event?.type === "message" && event.message?.role === "user" && contains(event.message, marker);
     });
     const rows = start < 0 ? [] : allRows.slice(start);
+    // Every user message that carries the marker, in or before the window, so a turn without
+    // its prompt mirror shows where the prompt went (finding 2019): a second, unmirrored copy
+    // after the mirrored one moves the window past it. The newest ten.
+    const markerUserMessages = allRows
+      .map((row, index) => ({ row, index, event: JSON.parse(row.event_json) }))
+      .filter(({ event }) => event?.type === "message" && event.message?.role === "user" && contains(event.message, marker))
+      .slice(-10)
+      .map(({ row, index, event }) => ({
+        seq: row.seq,
+        inWindow: index >= start,
+        mirrorIdentity: event.message.__openclaw?.mirrorIdentity ?? null,
+        mirrorOrigin: event.message.__openclaw?.mirrorOrigin ?? null,
+        idempotencyKey: typeof event.message.idempotencyKey === "string" ? event.message.idempotencyKey : null,
+        timestamp: event.message.timestamp ?? null,
+      }));
     const messages = [];
     const calls = [];
     const results = [];
@@ -640,6 +655,7 @@ const sessionEvidenceScript = String.raw`
       calls,
       results,
       codexTurns: Array.from(codexTurns.values()),
+      markerUserMessages,
       diagnostics: {
         eventCount: rows.length,
         eventTypeCounts,
@@ -1326,6 +1342,7 @@ export function createNativePluginAssertions({
             sessionId: evidence.sessionId,
             turnPrefix: callPrefix,
             turn,
+            markerUserMessages: evidence.markerUserMessages,
           },
         )}`,
       );
@@ -1377,6 +1394,15 @@ export function createNativePluginAssertions({
           turn.terminalAssistantSeen &&
           turn.toolCallMirrorSeen &&
           turn.toolResultMirrorSeen,
+        `${options.sessionKey} denied Codex native turn must include prompt, tool call, tool result, and terminal assistant mirror identities: ${JSON.stringify(
+          {
+            runtime: evidence.runtime,
+            sessionId: evidence.sessionId,
+            turnPrefix: prefix,
+            turn,
+            markerUserMessages: evidence.markerUserMessages,
+          },
+        )}`,
       );
     }
     assert.equal(evidence.results[0].isError, true, "denial must prevent a successful native read");
@@ -1430,7 +1456,14 @@ export function createNativePluginAssertions({
       // the completed native turn as well as zero calls, not just an empty mirror.
       assert.ok(
         evidence.codexTurns.some((turn) => turn.promptSeen && turn.terminalAssistantSeen),
-        `${options.sessionKey} must include a completed marker-bearing native Codex turn.`,
+        `${options.sessionKey} must include a completed marker-bearing native Codex turn: ${JSON.stringify(
+          {
+            runtime: evidence.runtime,
+            sessionId: evidence.sessionId,
+            codexTurns: evidence.codexTurns,
+            markerUserMessages: evidence.markerUserMessages,
+          },
+        )}`,
       );
     }
     assert.equal(
