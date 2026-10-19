@@ -13,7 +13,7 @@ The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage.
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/qa-advisory.yml:jobs`: advisory QA after a push to `main`; include the hosted installation rehearsal when a maintainer requests `full-qa` on a trusted PR.
+- `.github/workflows/qa-advisory.yml:jobs`: post-merge QA; trusted pull requests opt in with `full-qa`.
 - `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
