@@ -231,7 +231,7 @@ it during prepare, activation, or stop. The systemd unit loads it for managed
 password access and omits it for trusted proxy without a password.
 
 The optional `EnvironmentFile=-<agentDir>/env` is operator-owned and never read
-or written by the Driver. Provision model/channel credential lines there and
+or written by the Driver. Provision model credential lines there and
 reference them through native environment SecretRefs. Systemd reads this file
 as root; keep it `root:root 0600`. Protect the state root and SSH identity and
 never put plaintext credentials in native Configuration or Installation YAML.
@@ -247,8 +247,12 @@ Redeployment, stop, and version retirement preserve the operator file. Changing
 it can affect an existing version without redeployment; restart the process to
 load changed environment values. Agent and Namespace deletion remove this file.
 
-Embedded Agents may use any channel provider supported by the host's OpenClaw
-build. Separate Unix users and private groups protect sibling state and native
+Enabled Slack requires [Secret-backed credential validation](slack-channel.md#credential-validation).
+The host environment file cannot satisfy that requirement, and SSH does not
+deliver OCC Secrets. Use [Kubernetes Compute](kubernetes-compute.md) for that path.
+
+Other native channels require both OCC admission and support in the host's
+OpenClaw build. Separate Unix users and private groups protect sibling state and native
 configuration snapshots. Agents still share host networking; SSH does not
 provide Kubernetes NetworkPolicy isolation or the channel isolation of
 dedicated execution. Operators own host/network trust and credential access.
