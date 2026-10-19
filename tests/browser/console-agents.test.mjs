@@ -427,7 +427,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
   await page.getByRole("button", { name: "Save authentication source" }).click();
   assert.equal((await deniedBinding).status(), 403);
   await page
-    .locator('.agent-version-detail form.agent-card > [role="status"]')
+    .locator('.agent-version-detail form.agent-card > [role="alert"]')
     .filter({ hasText: /Access denied|not authorized|permission/i })
     .waitFor();
   assert.deepEqual(
