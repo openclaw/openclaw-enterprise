@@ -91,7 +91,8 @@ export function renderNamespaces(context, items, renderRows) {
     const checkName = () => name.setCustomValidity(namespaceNameProblem(name.value));
     name.addEventListener("input", () => {
       checkName();
-      if (name.validity.customError) {
+      // An error already shown is rechecked too, so clearing the name swaps it for "required".
+      if (name.validity.customError || name.hasAttribute("aria-invalid")) {
         validateFields([name]);
       }
     });
@@ -176,10 +177,14 @@ export function renderNamespaces(context, items, renderRows) {
         // read Namespaces would open Agents into "Namespace unavailable". Read the list the
         // Agents page reads; when it cannot be read, offer Open Agents as before (finding 2044).
         const readable = await context.request("/namespaces").then(
-          (items) => !Array.isArray(items) || items.some((item) => item?.id === created.id),
-          (error) => error.status !== 403,
+          (listed) => !Array.isArray(listed) || listed.some((item) => item?.id === created.id),
+          (error) => (error.status === 401 ? null : error.status !== 403),
         );
         if (!context.isCurrent()) {
+          return;
+        }
+        if (readable === null) {
+          context.onExpired();
           return;
         }
         title.textContent = "Namespace created";
@@ -221,7 +226,11 @@ export function renderNamespaces(context, items, renderRows) {
             element(
               "div",
               { className: "dialog-actions" },
-              button("Done", close, { tone: "primary" }),
+              // A dialog's description is not reread when focus moves inside it.
+              button("Done", close, {
+                tone: "primary",
+                "aria-describedby": "create-namespace-access",
+              }),
             ),
           );
         }

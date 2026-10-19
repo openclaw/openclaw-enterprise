@@ -27,9 +27,9 @@ test("the console refuses exactly the trimmed names the API refuses", () => {
     "Bell\u0007team",
     "Delete\u007fteam",
     "C1\u0085team",
-    "Line separator",
-    "Paragraph separator",
-    "No-break space",
+    "Line\u2028separator",
+    "Paragraph\u2029separator",
+    "No-break\u00a0space",
     "Lone\ud800surrogate",
     "n".repeat(200),
     "n".repeat(201),

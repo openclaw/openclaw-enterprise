@@ -167,6 +167,10 @@ test("the Namespace name is checked at the field with the API's own rule", async
   assert.equal(await name.getAttribute("aria-invalid"), "true");
   assert.match(await describedError(), /Remove tabs/);
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  // Clearing the name replaces the shown error with the required one.
+  await name.fill("");
+  await dialog.getByText("Namespace name is required.").waitFor();
+  assert.match(await describedError(), /is required/);
 
   // The API counts characters (code points), and a longer name is refused, not cut.
   const tooLong = "n".repeat(201);
@@ -281,7 +285,10 @@ test("a creator who cannot read Namespaces is told so instead of offered Open Ag
     .filter({ hasText: "Your access does not include viewing this Namespace." })
     .waitFor();
   assert.equal(await dialog.getByRole("button", { name: "Open Agents" }).count(), 0);
-  const done = dialog.getByRole("button", { name: "Done" });
+  const done = dialog.getByRole("button", {
+    name: "Done",
+    description: /Your access does not include viewing this Namespace/,
+  });
   assert.equal(await done.evaluate((node) => node === node.ownerDocument.activeElement), true);
   assert.ok(
     (await fixture.request("GET", "/namespaces")).data.some((item) => item.name === "Creator team"),
