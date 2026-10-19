@@ -490,6 +490,15 @@ const sessionEvidenceScript = String.raw`
     if (toolName) return name === toolName;
     return /(^|[._:-])list[_-]?calendars$/i.test(name);
   }
+  // A row that is not JSON establishes nothing; one written long before this turn must not
+  // fail the evidence of a passing run (finding 2029).
+  function parseEvent(text) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
   try {
     db.exec("PRAGMA busy_timeout=5000");
     const session = db.prepare("SELECT current_session_id, entry_json FROM session_nodes WHERE session_key = ?").get(sessionKey);
@@ -510,7 +519,7 @@ const sessionEvidenceScript = String.raw`
       .all(session.current_session_id);
     // Repeated calls share a session; an earlier allowed result cannot prove this turn.
     const start = allRows.findLastIndex((row) => {
-      const event = JSON.parse(row.event_json);
+      const event = parseEvent(row.event_json);
       return event?.type === "message" && event.message?.role === "user" && contains(event.message, marker);
     });
     const rows = start < 0 ? [] : allRows.slice(start);
@@ -518,7 +527,7 @@ const sessionEvidenceScript = String.raw`
     // its prompt mirror shows where the prompt went (finding 2019): a second, unmirrored copy
     // after the mirrored one moves the window past it. The newest ten.
     const markerUserMessages = allRows
-      .map((row, index) => ({ row, index, event: JSON.parse(row.event_json) }))
+      .map((row, index) => ({ row, index, event: parseEvent(row.event_json) }))
       .filter(({ event }) => event?.type === "message" && event.message?.role === "user" && contains(event.message, marker))
       .slice(-10)
       .map(({ row, index, event }) => ({
@@ -566,8 +575,9 @@ const sessionEvidenceScript = String.raw`
       return index === -1 ? undefined : withoutSuffix.slice(0, index);
     }
     for (const row of rows) {
-      const event = JSON.parse(row.event_json);
-      // Non-message rows, including null payloads, cannot establish tool or turn evidence.
+      const event = parseEvent(row.event_json);
+      // Non-message rows, including null payloads and rows that are not JSON, cannot establish
+      // tool or turn evidence.
       eventTypeCounts[event?.type ?? "unknown"] = (eventTypeCounts[event?.type ?? "unknown"] ?? 0) + 1;
       if (event?.type !== "message") continue;
       const message = event.message;
