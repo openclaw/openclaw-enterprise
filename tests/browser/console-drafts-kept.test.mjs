@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -385,6 +386,108 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
   await page.goBack();
   await heading(page, "Agents").waitFor();
 });
+
+// Each write that holds the page names itself beside its control when the sidebar, Back or
+// ← Agents is refused; they refused in silence before (findings 1962, 1965).
+for (const pending of [
+  {
+    kind: "a deploy",
+    tab: "configuration",
+    reason: "This page stays open until the deploy request finishes.",
+    hold: ({ namespace, agent }) => [`**/namespaces/${namespace.id}/agents/${agent.id}/deploy`],
+    start: (page) => page.getByRole("button", { name: "Deploy new version" }).click(),
+  },
+  {
+    kind: "an authentication save",
+    tab: "credentials",
+    reason: "This page stays open until the authentication save finishes.",
+    hold: ({ namespace, agent }) => [
+      `**/namespaces/${namespace.id}/agents/${agent.id}`,
+      { method: "PATCH" },
+    ],
+    start: (page) => page.getByRole("button", { name: "Save authentication source" }).click(),
+  },
+  {
+    kind: "a channel Secrets save",
+    tab: "credentials",
+    reason: "This page stays open until the channel Secret bindings save finishes.",
+    hold: ({ namespace, agent }) => [
+      `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      { method: "PATCH" },
+    ],
+    start: async (page, { replacement }) => {
+      await selectSecret(page, "Slack app token", replacement);
+      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    },
+  },
+  {
+    kind: "a plugin save",
+    tab: "plugins",
+    reason: "This page stays open until plugin selections finish saving.",
+    hold: ({ namespace, agent }) => [
+      `**/namespaces/${namespace.id}/agents/${agent.id}`,
+      { method: "PATCH" },
+    ],
+    start: async (page) => {
+      await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
+      await page
+        .getByLabel("Plugin selections JSON")
+        .fill(JSON.stringify({ "occ-plugin:diffs": { enabled: true } }));
+      await page.getByRole("button", { name: "Save plugin selections" }).click();
+    },
+  },
+]) {
+  test(`${pending.kind} holds the sidebar, Back and ← Agents and says why`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    if (pending.tab === "plugins") {
+      const driver = new OCCPluginDriver();
+      fixture.controller.registerDriver(driver);
+      fixture.controller.selectDriver("plugin", driver.id);
+    }
+    const namespace = await fixture.createNamespace("Pending reason", { ready: true });
+    const { agent } = await createSlackAgent(fixture, namespace, "Pending reason Agent");
+    const replacement = await fixture.createSecret(namespace.id, "Replacement app", "xapp-new");
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    await page.getByRole("link", { name: "Pending reason Agent" }).click();
+    if (pending.tab !== "configuration") {
+      const tabLabel = pending.tab === "plugins" ? "Plugins" : "Credentials";
+      await page.getByRole("tab", { name: tabLabel, exact: true }).click();
+      await page.waitForURL((url) => url.searchParams.get("tab") === pending.tab);
+    }
+    await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+    const held = await holdRequests(t, page, ...pending.hold({ namespace, agent }));
+    await pending.start(page, { replacement });
+    await held.requested;
+    const pageUrl = page.url();
+    const reason = page.getByText(pending.reason, { exact: true });
+    try {
+      await sidebarLink(page, "Agents").click();
+      await reason.waitFor();
+      assert.equal(page.url(), pageUrl);
+      // Back to the Agents list: the URL returns before the history event ends.
+      await page.evaluate(
+        () =>
+          new Promise((resolve) => {
+            globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), { once: true });
+            globalThis.history.back();
+          }),
+      );
+      assert.equal(page.url(), pageUrl);
+      await page.getByRole("link", { name: "← Agents" }).click();
+      assert.equal(page.url(), pageUrl);
+      // One note, in a live region, beside the control whose request holds the page.
+      assert.equal(await reason.count(), 1);
+      assert.equal(await reason.getAttribute("role"), "status");
+      assert.equal(await reason.isVisible(), true);
+    } finally {
+      held.release();
+    }
+    // The note goes with the hold.
+    await reason.waitFor({ state: "detached" });
+  });
+}
 
 test("an uncertain Configuration save holds ← Agents, but the sidebar may leave the kept draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
