@@ -712,8 +712,17 @@ test("Deleting and unreadable configuration badges take their tones on the list 
   const deletingPath = `/namespaces/${namespace.id}/agents/${deleting.id}`;
   assert.equal((await fixture.request("DELETE", deletingPath)).status, 202);
   const { page } = await newPage(t, fixture, { browser });
-  // The list reports a saved configuration it cannot decode in this wire shape; PostgreSQL tests
-  // own the decode failure itself.
+  // The list reports a saved configuration it cannot decode in the API's degraded shape: Agent
+  // metadata without the six saved-settings fields (AgentReadSchema), plus configurationReadError.
+  // PostgreSQL tests own the decode failure itself.
+  const savedSettings = [
+    "plugins",
+    "pluginApprovers",
+    "repositoryBindings",
+    "repositoryAccess",
+    "harnessAuth",
+    "credentialSources",
+  ];
   await page.route(`${fixture.origin}/namespaces/${namespace.id}/agents`, async (route) => {
     if (route.request().method() !== "GET") {
       await route.continue();
@@ -724,7 +733,9 @@ test("Deleting and unreadable configuration badges take their tones on the list 
     payload.data = payload.data.map((item) =>
       item.id === unreadable.id
         ? {
-            ...item,
+            ...Object.fromEntries(
+              Object.entries(item).filter(([field]) => !savedSettings.includes(field)),
+            ),
             configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
           }
         : item,
