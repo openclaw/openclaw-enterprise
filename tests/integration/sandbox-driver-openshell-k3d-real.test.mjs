@@ -32,6 +32,7 @@ import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
+  failedRecoveryDiagnostic,
   OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY,
   openShellAgentName,
   openShellGatewayName,
@@ -6083,6 +6084,14 @@ async function assertOpenShellGatewayOutage(topology) {
   } catch (error) {
     failure = error;
   }
+  // Finding 2017: a held deployment that ends failed (RUNTIME_LOGIN_FAILED) says why.
+  const recoveryDiagnostic = activated
+    ? ""
+    : await failedRecoveryDiagnostic({
+        readWorker: () => topology.diagnoseRevision(redeployed.data.id),
+        describe: (worker) => replacementActivationDiagnostic(topology, redeployed.data, worker),
+        failure,
+      });
   const work = await observerPool.query(
     "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
     [`agent_revision:${redeployed.data.id}:reconcile`],
@@ -6175,7 +6184,11 @@ async function assertOpenShellGatewayOutage(topology) {
   assert.equal(observed.redeployDuringOutage.status, "queued");
   assert.equal(observed.redeployDuringOutage.activeRevisionUnchanged, true);
   // Once the gateway is back, the held deployment proceeds without operator action.
-  assert.equal(observed.recovery.redeployActivated, true, JSON.stringify(observed.recovery));
+  assert.equal(
+    observed.recovery.redeployActivated,
+    true,
+    `${JSON.stringify(observed.recovery)}${recoveryDiagnostic}`,
+  );
   assert.equal(observed.recovery.sourceState, "ready");
   assert.equal(observed.recovery.turn, true, "the new revision must serve a model turn.");
   for (const { type, afterRestart, rotated } of observed.recovery.refresh) {

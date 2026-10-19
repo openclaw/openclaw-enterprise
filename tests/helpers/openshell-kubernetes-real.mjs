@@ -11,6 +11,8 @@ import { promisify } from "node:util";
 import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
+  diagnosticDeadlineMs,
+  withinDiagnosticDeadline,
 } from "./kubernetes-real.mjs";
 
 const execute = promisify(execFile);
@@ -86,6 +88,38 @@ export function outageAttemptRead({ readWork, readStatus }) {
     const status = await readStatus();
     return status === "running" ? undefined : { work, status };
   };
+}
+
+// Finding 2017: after the gateway outage the held deployment can end failed_permanent with
+// RUNTIME_LOGIN_FAILED. The proof reads why near the failure, before its refresh checks take
+// minutes and the failed revision's Pods go: `readWorker` gives the worker's events and persisted
+// state, and `describe(worker)` the revision's Pods with the Gateway, Harness and OpenShell
+// supervisor log tails. Each read stops at the diagnostic deadline, and one that fails or stalls
+// only says so: it never replaces the failure it explains. The text is written to stderr, added
+// to `failure`'s message when the wait itself failed, and returned for the assertion.
+export async function failedRecoveryDiagnostic(
+  { readWorker, describe, failure, write = (text) => process.stderr.write(text) },
+  { timeoutMs = diagnosticDeadlineMs } = {},
+) {
+  const worker = await withinDiagnosticDeadline(
+    () =>
+      Promise.resolve()
+        .then(readWorker)
+        .catch(() => undefined),
+    { timeoutMs, timedOut: undefined },
+  );
+  const detail = await withinDiagnosticDeadline(
+    () =>
+      Promise.resolve()
+        .then(() => describe(worker))
+        .catch((error) => `\nRecovery diagnostic unavailable: ${error?.name ?? "Error"}`),
+    { timeoutMs, timedOut: `\nRecovery diagnostic timed out after ${timeoutMs / 1_000} s` },
+  );
+  write(`OpenShell integration: gateway outage recovery failed.${detail}\n`);
+  if (failure instanceof Error) {
+    failure.message = `${failure.message}${detail}`;
+  }
+  return detail;
 }
 
 // The real model's final answer when its provider has no capacity for the selected model; the

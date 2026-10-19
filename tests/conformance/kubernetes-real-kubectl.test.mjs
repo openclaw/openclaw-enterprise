@@ -31,6 +31,7 @@ import {
 import { refusingPort } from "../helpers/available-port.mjs";
 import {
   createOpenShellKubernetesFixture,
+  failedRecoveryDiagnostic,
   modelAtCapacityOutcome,
   retryModelAtCapacity,
 } from "../helpers/openshell-kubernetes-real.mjs";
@@ -463,9 +464,9 @@ test("a timed-out Namespace delete still fails when the Namespace is gone or the
     assert.match(error.message, /remains: phase Terminating, finalizers \[\]\n/);
     assert.match(
       error.message,
-      /\n  listing objects failed: error: the server is currently unable/,
+      /\n {2}listing objects failed: error: the server is currently unable/,
     );
-    assert.match(error.message, /\n  Pod\/left$/);
+    assert.match(error.message, /\n {2}Pod\/left$/);
     assert.doesNotMatch(error.message, /no objects left/);
     return true;
   });
@@ -479,6 +480,77 @@ test("a timed-out Namespace delete still fails when the Namespace is gone or the
     );
     return true;
   });
+});
+
+test("a failed outage recovery says why without replacing its failure", async () => {
+  const written = [];
+  const write = (text) => written.push(text);
+  // The wait itself failed: the worker and Pod evidence join its message.
+  const failure = new Error("deployment rev-1 to activate after the gateway outage timed out");
+  const described = [];
+  const detail = await failedRecoveryDiagnostic({
+    readWorker: async () => ({ events: [{ code: "RUNTIME_LOGIN_FAILED" }] }),
+    describe: async (worker) => {
+      described.push(worker);
+      return "\nHarness diagnostics:\nHarness model authentication probe failed.";
+    },
+    failure,
+    write,
+  });
+  assert.deepEqual(described, [{ events: [{ code: "RUNTIME_LOGIN_FAILED" }] }]);
+  assert.equal(detail, "\nHarness diagnostics:\nHarness model authentication probe failed.");
+  assert.equal(
+    failure.message,
+    "deployment rev-1 to activate after the gateway outage timed out\nHarness diagnostics:\nHarness model authentication probe failed.",
+  );
+  assert.deepEqual(written, [`OpenShell integration: gateway outage recovery failed.${detail}\n`]);
+
+  // The deployment failed without a wait error: the detail is returned for the assertion, and a
+  // worker read that throws still lets the Pods be described.
+  const unread = [];
+  assert.equal(
+    await failedRecoveryDiagnostic({
+      readWorker: () => {
+        throw new Error("pool closed");
+      },
+      describe: async (worker) => {
+        unread.push(worker);
+        return "\nReplacement Pods: []";
+      },
+      failure: undefined,
+      write,
+    }),
+    "\nReplacement Pods: []",
+  );
+  assert.deepEqual(unread, [undefined]);
+
+  // A describe that fails names only its error's class; one that stalls gives way to the deadline.
+  assert.equal(
+    await failedRecoveryDiagnostic({
+      readWorker: async () => undefined,
+      describe: async () => {
+        throw new TypeError("token=secret-value");
+      },
+      write,
+    }),
+    "\nRecovery diagnostic unavailable: TypeError",
+  );
+  const started = Date.now();
+  const stalled = new Error("wait failed");
+  assert.equal(
+    await failedRecoveryDiagnostic(
+      {
+        readWorker: () => new Promise(() => {}),
+        describe: () => new Promise(() => {}),
+        failure: stalled,
+        write,
+      },
+      { timeoutMs: 50 },
+    ),
+    "\nRecovery diagnostic timed out after 0.05 s",
+  );
+  assert.equal(stalled.message, "wait failed\nRecovery diagnostic timed out after 0.05 s");
+  assert.ok(Date.now() - started < 2_000);
 });
 
 test("a stalled failure diagnostic gives way to its deadline", { timeout: 5_000 }, async () => {
