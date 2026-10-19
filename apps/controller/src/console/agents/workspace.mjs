@@ -1,4 +1,4 @@
-import { element, button, statusBlock } from "../dom.mjs";
+import { element, button, statusBlock, validateFields } from "../dom.mjs";
 
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 
@@ -103,7 +103,7 @@ export function renderWorkspaceFiles(context, agent, path) {
     const reload = button(`Reload ${name}`, () => void load(true));
     const form = element(
       "form",
-      { className: "agent-card agent-form" },
+      { className: "agent-card agent-form", novalidate: "" },
       element(
         "div",
         { className: "form-field" },
@@ -220,7 +220,8 @@ export function renderWorkspaceFiles(context, agent, path) {
         editor.setCustomValidity(
           "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.",
         );
-        editor.reportValidity();
+        // The error goes under the file, without the browser's bubble (UX plan C3).
+        validateFields([editor]);
         return;
       }
       operations += 1;

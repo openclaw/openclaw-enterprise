@@ -10,6 +10,7 @@ import {
   setStatusTone,
   setText,
   statusBlock,
+  validateFields,
 } from "../dom.mjs";
 import {
   configuredHarnessId,
@@ -3609,7 +3610,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const updateNote = element("p", { className: "muted", role: "status", hidden: true });
       const form = element(
         "form",
-        { className: "agent-card" },
+        { className: "agent-card", novalidate: "" },
         auth.section,
         updateNote,
         save,
@@ -3682,7 +3683,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!form.reportValidity() || save.disabled) {
+        // The console's own errors under each field, not the browser's bubble (UX plan C3).
+        if (!validateFields([...form.elements]) || save.disabled) {
           return;
         }
         let harnessAuth;

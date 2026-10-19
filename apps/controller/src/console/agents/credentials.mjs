@@ -1,4 +1,4 @@
-import { element, button, focusSaveOutcome, setStatusTone } from "../dom.mjs";
+import { element, button, focusSaveOutcome, setStatusTone, validateFields } from "../dom.mjs";
 import {
   configurationConflictMessage,
   isStaleGeneration,
@@ -439,7 +439,7 @@ export function createChannelSecretsPanel({
     };
     const form = element(
       "form",
-      { id: formId, className: "credential-form" },
+      { id: formId, className: "credential-form", novalidate: "" },
       ...SLACK_SECRET_BINDINGS.map((binding) => createTokenPicker(binding)),
       status,
       element("div", { className: "form-actions" }, save),
@@ -449,7 +449,8 @@ export function createChannelSecretsPanel({
       if (!canEnterChannelCredentials()) {
         return;
       }
-      if (!form.reportValidity()) {
+      // The console's own errors under each field, not the browser's bubble (UX plan C3).
+      if (!validateFields([...form.elements])) {
         return;
       }
       if (!canSaveChannelSecrets()) {

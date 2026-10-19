@@ -1498,16 +1498,6 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       workspaceSection,
     ),
   );
-  form.addEventListener(
-    "invalid",
-    (event) => {
-      const details = event.target.closest("details");
-      if (details) {
-        details.open = true;
-      }
-    },
-    true,
-  );
   form.addEventListener("input", (event) => {
     edited = true;
     event.target.setCustomValidity?.("");

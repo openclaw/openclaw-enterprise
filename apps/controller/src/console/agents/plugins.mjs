@@ -1,4 +1,11 @@
-import { button, element, focusSaveOutcome, revealStatus, statusBlock } from "../dom.mjs";
+import {
+  button,
+  element,
+  focusSaveOutcome,
+  revealStatus,
+  statusBlock,
+  validateFields,
+} from "../dom.mjs";
 import { createPluginDiscovery } from "./plugin-discovery.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
@@ -289,8 +296,8 @@ export function renderAgentPlugins(
       }
     } catch {
       input.setCustomValidity("Enter a valid Plugin selections JSON object.");
-      input.closest("details").open = true;
-      input.reportValidity();
+      // The error goes under the field, opening its section, without the browser's bubble.
+      validateFields([input]);
       feedback.textContent = "Enter a valid Plugin selections JSON object.";
       return;
     }
@@ -360,15 +367,17 @@ export function renderAgentPlugins(
                 : error.status === 501
                   ? "This Installation has no compatible Plugin Driver for these selections. Ask an operator to select or configure one, then retry."
                   : message(error, mutationStarted);
-      // Save disables while it runs, which dropped focus to the page.
-      revealStatus(saveError, section);
+      // Save disables while it runs, which dropped focus to the page. Focus the reader moved
+      // anywhere else while the save ran, in this section too, stays there (finding 1978).
+      revealStatus(saveError, save);
     } finally {
       if (context.isCurrent() && !saved) {
         pending = false;
         updateState();
         if (outcomeUnknown) {
-          // updateState shows the outcome and its Reload, which takes focus.
-          focusSaveOutcome(section, [reload], feedback);
+          // updateState shows the outcome and its Reload, which takes focus unless the reader
+          // moved it off Save (finding 1978).
+          focusSaveOutcome(save, [reload], feedback);
         }
       }
     }
