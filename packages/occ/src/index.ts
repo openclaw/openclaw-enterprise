@@ -339,6 +339,7 @@ export {
   RuntimeLogsSandboxNotFoundError,
   SANDBOX_DELETION_UNCONFIRMED,
   SandboxGatewayUnauthorizedError,
+  SandboxGatewayUnavailableError,
   SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
   SandboxWorkspaceSetupRefusedError,

@@ -6014,9 +6014,10 @@ async function assertOpenShellGatewayOutage(topology) {
     };
     redeployed = await request("POST", `${agentPath}/deploy`);
     assert.equal(redeployed.status, 202, JSON.stringify(redeployed.error));
-    // A claim marks the work `claimed` and counts an attempt; a failed attempt returns it to
-    // `queued`. Waiting for that while the gateway is still at zero replicas proves the worker
-    // tried the revision against the stopped gateway and did not activate it.
+    // A claim marks the work `claimed` and counts an attempt; a pass that waits on the gateway
+    // returns it to `queued` and gives the attempt back (finding 2040). Waiting for that while the
+    // gateway is still at zero replicas proves the worker tried the revision against the stopped
+    // gateway, did not activate it, and spent none of its attempt budget.
     // Recorded as they are read, so a timed-out wait still shows what the poll saw.
     const deploymentStatuses = [];
     observed.redeployDuringOutage = { deploymentStatuses };
@@ -6026,7 +6027,14 @@ async function assertOpenShellGatewayOutage(topology) {
         readWork: async () =>
           (
             await observerPool.query(
-              "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+              `SELECT work.state, work.reason_code, work.attempt_count, (
+                 SELECT attempt.details->>'reasonCode' FROM occ.audit_events attempt
+                 WHERE attempt.kind = 'mutation' AND attempt.action = 'reconcile'
+                   AND attempt.resource_kind = 'agent_revision'
+                   AND attempt.details->>'workId' = work.idempotency_key
+                 ORDER BY attempt.occurred_at DESC, attempt.id DESC LIMIT 1
+               ) AS last_attempt_code
+               FROM occ.controller_work work WHERE work.idempotency_key = $1`,
               [`agent_revision:${redeployed.data.id}:reconcile`],
             )
           ).rows[0],
@@ -6182,6 +6190,13 @@ async function assertOpenShellGatewayOutage(topology) {
   assert.deepEqual(observed.registration, { httpStatus: 503, code: "DEPENDENCY_UNAVAILABLE" });
   assert.equal(observed.redeployDuringOutage.gatewayStopped, true);
   assert.equal(observed.redeployDuringOutage.status, "queued");
+  // The outage spends no attempt: the pass waits on the gateway (finding 2040).
+  assert.equal(
+    observed.redeployDuringOutage.work.last_attempt_code,
+    "SANDBOX_GATEWAY_UNAVAILABLE",
+    JSON.stringify(observed.redeployDuringOutage),
+  );
+  assert.equal(observed.redeployDuringOutage.work.attempt_count, 0);
   assert.equal(observed.redeployDuringOutage.activeRevisionUnchanged, true);
   // Once the gateway is back, the held deployment proceeds without operator action.
   assert.equal(

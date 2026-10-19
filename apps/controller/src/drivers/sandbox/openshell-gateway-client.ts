@@ -12,7 +12,11 @@ import {
   statusCode,
 } from "./openshell-gateway-errors.ts";
 import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
-import { DependencyUnavailableError, gatewayEndpointRewritesIpv4 } from "@openclaw-enterprise/occ";
+import {
+  DependencyUnavailableError,
+  gatewayEndpointRewritesIpv4,
+  SandboxGatewayUnavailableError,
+} from "@openclaw-enterprise/occ";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -505,28 +509,59 @@ type OpenShellGrpcClient = Client &
     ): ClientReadableStream<RecordValue>;
   };
 
+/** A failed gateway request's message: the method, its gRPC status, and only a safe detail. */
+function gatewayRequestFailureMessage(
+  method: OpenShellMethod | "ExecSandbox",
+  error: unknown,
+): string {
+  const grpcStatus = rawStatusCode(error);
+  // A failure without a gRPC status (a local client error) keeps only its class: its message
+  // can be any library text, and the API logs this message for a 503 (http.dependency_unavailable).
+  const detail =
+    method === "CreateSandbox"
+      ? sanitizedErrorDetail(error)
+      : grpcStatus === undefined &&
+          error instanceof Error &&
+          /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(error.name)
+        ? error.name
+        : undefined;
+  return `OpenShell ${method} failed${
+    grpcStatus === undefined ? "" : ` with gRPC status ${grpcStatus}`
+  }${detail === undefined ? "." : `: ${detail}`}`;
+}
+
 class OpenShellGatewayRequestFailure extends DependencyUnavailableError {
   readonly grpcStatus: number | undefined;
 
   constructor(method: OpenShellMethod | "ExecSandbox", error: unknown) {
-    const grpcStatus = rawStatusCode(error);
-    // A failure without a gRPC status (a local client error) keeps only its class: its message
-    // can be any library text, and the API logs this message for a 503 (http.dependency_unavailable).
-    const detail =
-      method === "CreateSandbox"
-        ? sanitizedErrorDetail(error)
-        : grpcStatus === undefined &&
-            error instanceof Error &&
-            /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(error.name)
-          ? error.name
-          : undefined;
-    super(
-      `OpenShell ${method} failed${
-        grpcStatus === undefined ? "" : ` with gRPC status ${grpcStatus}`
-      }${detail === undefined ? "." : `: ${detail}`}`,
-    );
-    this.grpcStatus = grpcStatus;
+    super(gatewayRequestFailureMessage(method, error));
+    this.grpcStatus = rawStatusCode(error);
   }
+}
+
+// grpc-js answers UNAVAILABLE when it cannot reach the gateway or loses the connection to it.
+const GRPC_UNAVAILABLE = 14;
+
+/**
+ * The gateway did not answer (gRPC UNAVAILABLE): it is down or restarting. A revision pass waits
+ * for it within the deployment deadline instead of spending attempts (finding 2040); every other
+ * caller sees the same DependencyUnavailableError as for any other failed request.
+ */
+class OpenShellGatewayUnavailableFailure extends SandboxGatewayUnavailableError {
+  readonly grpcStatus = GRPC_UNAVAILABLE;
+
+  constructor(method: OpenShellMethod | "ExecSandbox", error: unknown) {
+    super(gatewayRequestFailureMessage(method, error));
+  }
+}
+
+function gatewayRequestFailure(
+  method: OpenShellMethod | "ExecSandbox",
+  error: unknown,
+): OpenShellGatewayRequestFailure | OpenShellGatewayUnavailableFailure {
+  return rawStatusCode(error) === GRPC_UNAVAILABLE
+    ? new OpenShellGatewayUnavailableFailure(method, error)
+    : new OpenShellGatewayRequestFailure(method, error);
 }
 const CLIENT_MODULE = "@grpc/grpc-js";
 const LOADER_MODULE = "@grpc/proto-loader";
@@ -1169,7 +1204,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         }
       };
       const abort = () => {
-        finish(new OpenShellGatewayRequestFailure("ExecSandbox", { code: grpc.status.CANCELLED }));
+        finish(gatewayRequestFailure("ExecSandbox", { code: grpc.status.CANCELLED }));
         call?.cancel();
       };
       signal.addEventListener("abort", abort, { once: true });
@@ -1201,11 +1236,11 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           exitCode = value;
         });
         call.on("error", (error: unknown) => {
-          finish(new OpenShellGatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
+          finish(gatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
         });
         call.on("end", () => finish());
       } catch (error) {
-        finish(new OpenShellGatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
+        finish(gatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
         call?.cancel();
       }
     });
@@ -2082,7 +2117,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
                   "DeleteProviderRefresh",
                 ].includes(method)
               ) {
-                reject(new OpenShellGatewayRequestFailure(method, error));
+                reject(gatewayRequestFailure(method, error));
               } else if (
                 code === grpc.status.RESOURCE_EXHAUSTED &&
                 typeof details === "string" &&
@@ -2101,7 +2136,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
               ) {
                 reject(error);
               } else {
-                reject(new OpenShellGatewayRequestFailure(method, error));
+                reject(gatewayRequestFailure(method, error));
               }
               return;
             }
@@ -2110,7 +2145,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         );
       } catch (error) {
         signal.removeEventListener("abort", abort);
-        throw new OpenShellGatewayRequestFailure(method, error);
+        throw gatewayRequestFailure(method, error);
       }
     });
   }
@@ -2118,7 +2153,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   private async isStatus(error: unknown, name: "NOT_FOUND" | "ALREADY_EXISTS"): Promise<boolean> {
     const { grpc } = await this.ensureClient();
     const code =
-      error instanceof OpenShellGatewayRequestFailure ? error.grpcStatus : statusCode(error);
+      error instanceof OpenShellGatewayRequestFailure ||
+      error instanceof OpenShellGatewayUnavailableFailure
+        ? error.grpcStatus
+        : statusCode(error);
     return code === grpc.status[name];
   }
 

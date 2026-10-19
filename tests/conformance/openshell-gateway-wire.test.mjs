@@ -22,7 +22,10 @@ import {
   openShellProviderName,
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
-import { TransientDependencyError } from "../../packages/occ/src/index.ts";
+import {
+  SandboxGatewayUnavailableError,
+  TransientDependencyError,
+} from "../../packages/occ/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -975,6 +978,77 @@ test("OpenShell client holds only the durable admission limit as a transient dep
     }
   } finally {
     client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  }
+});
+
+// Finding 2040: only a gateway that does not answer (gRPC UNAVAILABLE: down, restarting, or
+// nothing listening) is a Sandbox gateway outage, which a revision pass waits out instead of
+// spending its attempt budget. It stays a DependencyUnavailableError (HTTP 503, other work's
+// retries), keeps its gRPC status, and never carries the gateway's text. Any other failure keeps
+// the ordinary class.
+test("OpenShell client names only an unanswered gateway request a Sandbox gateway outage", async () => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const privateDetails = "synthetic gateway detail must never enter errors";
+  const answers = [
+    grpc.status.UNAVAILABLE,
+    grpc.status.INTERNAL,
+    grpc.status.DEADLINE_EXCEEDED,
+    grpc.status.UNKNOWN,
+  ];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    Health: (_call, callback) => callback({ code: answers.shift(), details: privateDetails }),
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  // A gateway scaled to zero: nothing listens at its address.
+  const stopped = new GrpcOpenShellGatewayClient({
+    endpoint: "127.0.0.1:1",
+    requestTimeoutMs: 2_000,
+  });
+  const outage = (error) => {
+    assert.ok(error instanceof SandboxGatewayUnavailableError, String(error));
+    assert.ok(error instanceof DependencyUnavailableError);
+    assert.ok(!(error instanceof TransientDependencyError));
+    assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+    assert.equal(error.message.includes(privateDetails), false);
+    return true;
+  };
+  try {
+    await assert.rejects(client.health(AbortSignal.timeout(2_000)), outage);
+    for (const code of [grpc.status.INTERNAL, grpc.status.DEADLINE_EXCEEDED, grpc.status.UNKNOWN]) {
+      await assert.rejects(client.health(AbortSignal.timeout(2_000)), (error) => {
+        assert.ok(error instanceof DependencyUnavailableError, String(error));
+        assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+        assert.equal(error.grpcStatus, code);
+        assert.equal(error.message.includes(privateDetails), false);
+        return true;
+      });
+    }
+    await assert.rejects(stopped.health(AbortSignal.timeout(3_000)), outage);
+    await assert.rejects(
+      stopped.createSandbox(
+        {
+          name: "outage",
+          workspace: "tenant-workspace",
+          requestId: "0b0f7c43-3c55-4a8a-9d1c-b3f3a0b1d1c9",
+          labels: {},
+          annotations: {},
+          spec: {},
+          serviceExposures: [],
+        },
+        AbortSignal.timeout(3_000),
+      ),
+      outage,
+    );
+  } finally {
+    client.close();
+    stopped.close();
     await new Promise((resolve) => server.tryShutdown(resolve));
   }
 });
