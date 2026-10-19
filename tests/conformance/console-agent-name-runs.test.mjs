@@ -18,6 +18,10 @@ const joinerNames = {
   "an ideograph, then word joiners": `\u4e2d${"\u2060".repeat(19)} `.repeat(10),
   "combining marks between word joiners": `a${"\u0301\u2060".repeat(19)} `.repeat(10),
   "hyphens before Arabic-Indic digits": `${"\u2060-\u0660".repeat(6)}\u2060\u2060 `.repeat(10),
+  // U+16FE4 is both an ideograph and a combining mark.
+  "an ideographic combining mark before word joiners": `a${"\u{16fe4}".repeat(18)}\u2060 `.repeat(
+    10,
+  ),
   "word joiners, 1,050 characters": `${"\u2060".repeat(20)} `.repeat(50),
 };
 
@@ -43,4 +47,6 @@ test("Joiners still hold the character before them", () => {
   assert.equal(hasUnbrokenRun(`${"\u2009\u2060".repeat(10)}a`), true);
   assert.equal(hasUnbrokenRun(`${"e\u0301\u2060".repeat(10)}a`), true);
   assert.equal(hasUnbrokenRun(`${"e\u0301\u2060".repeat(10)}`), false);
+  assert.equal(hasUnbrokenRun(`a${"\u{16fe4}".repeat(19)}\u2060`), false);
+  assert.equal(hasUnbrokenRun(`${"a\u{16fe4}\u2060".repeat(10)}a`), true);
 });

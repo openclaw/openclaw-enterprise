@@ -288,8 +288,9 @@ const UNBROKEN_CHARACTER = [
   // No character may match two of these (the Arabic-Indic digits after a hyphen-minus are the
   // line above's, not the "-5" line's), nor a combining mark start one: each overlap doubles the
   // ways to split a run, so a failed match on a joiner-run name backtracked for seconds (finding
-  // 1999). tests/conformance/console-agent-name-runs.test.mjs bounds it.
-  String.raw`[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
+  // 1999). One ideograph is a combining mark (U+16FE4), so the last line skips marks.
+  // tests/conformance/console-agent-name-runs.test.mjs bounds it.
+  String.raw`(?!\p{M})[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
 ].join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
