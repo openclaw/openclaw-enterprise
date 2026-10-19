@@ -7,6 +7,7 @@ export const NamespaceProvisioning = {
   ...story("createNamespaceProvisioning"),
   name: "Namespace still provisioning",
 };
+export const FormNamespaceProvisioning = story("createFormNamespaceProvisioning");
 export const CreateForm = { ...story("createForm"), name: "OpenAI with Codex harness" };
 export const CreateInvalidConfiguration = {
   ...story("createInvalidConfiguration"),

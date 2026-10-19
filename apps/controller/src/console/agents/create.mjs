@@ -387,7 +387,9 @@ export function renderCreateAgent(context, draft) {
         "section",
         { className: "state-panel" },
         element("h2", {}, "Creating Agents is not available"),
-        element("p", { role: "status" }, unavailable),
+        unavailable === notReady?.note
+          ? namespaceNote(notReady)
+          : element("p", { role: "status" }, unavailable),
       ),
     );
     // Start over re-enters here from the form; keep focus on the page, not the document.
@@ -409,7 +411,7 @@ export function renderCreateAgent(context, draft) {
     link("← Agents", "agents", context),
     // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
     // replaceChildren would print a null child as the text "null".
-    ...(notReady ? [element("p", { className: "muted", role: "status" }, notReady.note)] : []),
+    ...(notReady ? [namespaceNote(notReady)] : []),
     element(
       "section",
       { className: "launch-intro agent-card" },
@@ -440,8 +442,15 @@ export function renderCreateAgent(context, draft) {
   );
 }
 
+// A Namespace that is not ready keeps its note on the start page and the form, so the first
+// sign is never a refused Secret or submit (findings 1895, 1990).
+function namespaceNote(notReady) {
+  return statusBlock("warning", null, notReady.note, [], { role: "status" });
+}
+
 function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const { view, request, namespaceId } = context;
+  const notReady = namespaceCreation(context.namespace);
   const agent = rendered.agent ?? {};
   const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   const workspaceFileNames = Object.keys(WORKSPACE_DEFAULTS);
@@ -1871,7 +1880,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       let nextStatus = "";
       if (!modeUnavailable) {
         nextStatus = shouldProvision()
-          ? "Dedicated Agents are provisioned and deployed when created."
+          ? notReady
+            ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first."
+            : "Dedicated Agents are provisioned and deployed when created."
           : mode.value === "embedded"
             ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."
             : "This installation creates draft Agents for later deployment.";
@@ -2651,6 +2662,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   });
   view.replaceChildren(
     link("← Agents", "agents", context),
+    ...(notReady ? [namespaceNote(notReady)] : []),
     element(
       "p",
       { className: "muted" },

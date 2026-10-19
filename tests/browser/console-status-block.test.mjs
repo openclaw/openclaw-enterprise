@@ -11,7 +11,10 @@ import {
   newPage,
   selectSecret,
 } from "./console-agents-browser-helpers.mjs";
-import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
+import {
+  createRepositoryLaunchFixture,
+  openAdvancedSettings,
+} from "./console-agents-test-support.mjs";
 
 // Errors, warnings and notices share one status block (UX plan C1): a stripe and wash in the
 // tone's design-token colours, with the text in the body colour. A refusal after a request takes
@@ -366,3 +369,146 @@ test("a refused repository access save is a focused danger block", async (t) => 
   assert.equal(view.focused, true, "the refusal has focus");
   assert.equal(view.inView, true, "the refusal is on screen");
 });
+
+// A member who reads the Agent, its versions and its Configuration, and may change none of them.
+function createReader(fixture, namespace, name) {
+  return fixture.createAccountWithPolicy(name, (principal) => {
+    fixture.policy.roles.push({
+      id: `role-${name}`,
+      namespaceId: namespace.id,
+      permissions: ["namespace", "agent", "agent_revision", "configuration"].map(
+        (resourceKind) => ({ action: "read", resourceKind }),
+      ),
+    });
+    fixture.policy.bindings.push({
+      id: `binding-${name}`,
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: `role-${name}`,
+    });
+  });
+}
+
+const CONFIGURATION_REFUSAL =
+  "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
+
+// A reader's refused Configuration save was a status line under the editor, neither announced
+// as an alert nor focused, and cut by the fold at 1440 (finding 1991).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`a reader's refused Configuration save is a focused alert on screen at ${viewport.width}px`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Status config refusal", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Status config", nativeValues("cfg"));
+    const reader = await createReader(fixture, namespace, "status-config-reader");
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+      reader.credentials,
+    );
+    await page.getByRole("button", { name: "Edit Configuration" }).click();
+    await openAdvancedSettings(page);
+    const editor = page.getByLabel("Configuration JSON");
+    await editor.fill(JSON.stringify(nativeValues("edited by a reader"), null, 2));
+    await page.getByRole("button", { name: "Save Configuration" }).click();
+    const alert = page.getByRole("alert").filter({ hasText: CONFIGURATION_REFUSAL });
+    await alert.waitFor();
+    const view = await refusalView(alert);
+    t.diagnostic(JSON.stringify(view));
+    assert.equal(view.focused, true, "the refusal has focus");
+    assert.equal(view.inView, true, "the refusal is on screen");
+    assertPaint(await statusPaint(alert), "danger", "Configuration refusal");
+    // An edit clears it; the line is a status again for the next save's progress.
+    await editor.fill(JSON.stringify(nativeValues("edited again"), null, 2));
+    assert.equal(
+      await page.locator("#configuration-editor-feedback").getAttribute("role"),
+      "status",
+    );
+  });
+}
+
+// Run diagnostics needs Agent operate. A reader without it saw the button enabled beside a
+// disabled Stop and Delete, and its 403 landed below the fold at 1440 (finding 1992).
+test("Run diagnostics is disabled with its reason for a reader without operate", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Status diagnostics reader", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Diagnostics reader", nativeValues("dr"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const reader = await createReader(fixture, namespace, "status-diagnostics-reader");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+    reader.credentials,
+  );
+  // The same answer that disables Stop disables Run diagnostics.
+  await page.getByText("Your access does not include stopping this Agent.").waitFor();
+  const observations = page.locator(".version-diagnostics");
+  const reason = observations
+    .getByRole("status")
+    .filter({ hasText: "Your access does not include running diagnostics for this Agent." });
+  await reason.waitFor();
+  assertPaint(await statusPaint(reason), "info", "diagnostics reason");
+  const run = observations.getByRole("button", { name: "Run diagnostics for this version" });
+  assert.equal(await run.isDisabled(), true);
+});
+
+// A 403 that still happens (the permission answer allowed it, the API refused) comes into view
+// below the button, which keeps focus (since #2779).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`a refused Run diagnostics brings its alert on screen at ${viewport.width}px`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Status diagnostics refusal", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Diagnostics denied", nativeValues("dd"));
+    const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    await page.route("**/deployments/*/diagnostics", (route) =>
+      route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Forbidden" } }),
+      }),
+    );
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+    );
+    const observations = page.locator(".version-diagnostics");
+    const run = observations.getByRole("button", { name: "Run diagnostics for this version" });
+    await run.waitFor();
+    // As the live walk did: the button at the bottom of the screen, pressed by pointer.
+    await run.evaluate((node) => node.scrollIntoView({ block: "end" }));
+    await run.click();
+    const alert = observations
+      .getByRole("alert")
+      .filter({ hasText: "Diagnostics require Agent read and operate access" });
+    await alert.waitFor();
+    const view = await refusalView(alert);
+    t.diagnostic(JSON.stringify(view));
+    assert.equal(view.inView, true, "the refusal is on screen");
+    assert.deepEqual(
+      await run.evaluate((node) => {
+        const { top, bottom } = node.getBoundingClientRect();
+        return {
+          focused: globalThis.document.activeElement === node,
+          inView: top >= 0 && bottom <= globalThis.innerHeight,
+        };
+      }),
+      { focused: true, inView: true },
+      "the button keeps focus, on screen",
+    );
+  });
+}

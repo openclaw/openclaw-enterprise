@@ -904,25 +904,64 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
 });
 
 // A name the browser cannot wrap sets the desktop table's width unless it is marked to break
-// anywhere (finding 1955). A hyphen-minus before a digit and a run of em dashes are not line
-// breaks (UAX #14 LB25 and LB17), so names made of them must be marked too (finding 1971). A
-// hyphen before a letter still breaks, so a date-stamped name with words wraps as before.
+// anywhere (finding 1955). Each row is a break point Chromium was measured to use (finding 1982),
+// and the test measures it again: each name is marked exactly when the longest run the browser
+// keeps on one line (spaces aside) has 21 or more characters. A hyphen between digits is a break
+// ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is not, nor
+// is a hyphen before a digit or a dash that starts a word. A run of em dashes breaks only at its
+// ends (finding 1971).
+const groups = (part, separator, count = 6) =>
+  Array.from({ length: count }, () => part).join(separator);
+const unbrokenNameCases = [
+  {
+    name: Array.from({ length: 40 }, (_, index) => String(1000 + index))
+      .join("-")
+      .slice(0, 200),
+    unbroken: false,
+  },
+  { name: "\u2014".repeat(200), unbroken: true },
+  { name: `Release ${"\u2013".repeat(40)}`, unbroken: true },
+  // The threshold: 21 characters with no break are marked, 20 are not (finding 1974), and a
+  // mid-length run (about 600 px unmarked) stays within the column too.
+  { name: `Run ${"W".repeat(21)}`, unbroken: true },
+  { name: `Run ${"W".repeat(20)}`, unbroken: false },
+  { name: `Run ${"W".repeat(40)}`, unbroken: true },
+  { name: "nightly-build-2026-10-19-release-candidate", unbroken: false },
+  // Closing punctuation after a break character holds the run together.
+  { name: groups("abc", "-.5", 30), unbroken: true },
+  { name: groups("abcdefgh", "-)"), unbroken: true },
+  { name: groups("abcdefgh", "\u2013,"), unbroken: true },
+  { name: groups("abcdefgh", "\u2010\u2019"), unbroken: true },
+  { name: groups("abcdefgh", "\u2009!"), unbroken: true },
+  { name: groups("abcdefgh", "\u3000/"), unbroken: true },
+  { name: groups("abcdefgh", "-("), unbroken: false },
+  { name: groups("abcdefgh", "-\u201d"), unbroken: true },
+  // A hyphen-minus that starts a word holds a digit, not a letter; a hyphen or dash holds a letter.
+  { name: `x ${groups(`-${"1".repeat(20)}`, " ", 3)}`, unbroken: true },
+  { name: `x ${groups(`-${"a".repeat(20)}`, " ", 3)}`, unbroken: false },
+  { name: `x ${groups(`\u2010${"a".repeat(20)}`, " ", 3)}`, unbroken: true },
+  { name: `x ${groups(`\u2010${"a".repeat(19)}`, " ", 3)}`, unbroken: false },
+  // The hyphen a line breaks after stays on it; hyphen-minus pairs break between them.
+  { name: `${"a".repeat(20)}-b`, unbroken: true },
+  { name: `${"a".repeat(19)}-b`, unbroken: false },
+  { name: `Run ${"-".repeat(40)}`, unbroken: false },
+  { name: groups("ab", "-\u0661", 10), unbroken: true },
+  { name: groups("ab", "-\uff11", 10), unbroken: false },
+  // Combining marks share their letter's place; ideographs, kana, Hangul and emoji each break.
+  { name: "e\u0301".repeat(15), unbroken: false },
+  { name: "\u4e2d\u6587\u540d\u5b57".repeat(8), unbroken: false },
+  { name: "\u30ab\u30bf\u30ab\u30ca".repeat(8), unbroken: false },
+  { name: "\ud55c\uad6d\uc5b4".repeat(10), unbroken: false },
+  { name: "\u{1F680}".repeat(25), unbroken: false },
+  { name: `${"a".repeat(15)}\u4e2d${"b".repeat(15)}`, unbroken: false },
+  // A word joiner or zero-width joiner holds the ideograph or emoji before it.
+  { name: "\u4e2d\u2060".repeat(100), unbroken: true },
+  { name: "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}".repeat(8), unbroken: false },
+];
+
 test("Agents list marks names with no break opportunity, hyphen and dash runs included", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbroken Agent names");
-  const digitGroups = Array.from({ length: 40 }, (_, index) => String(1000 + index))
-    .join("-")
-    .slice(0, 200);
-  const cases = [
-    { name: digitGroups, unbroken: true },
-    { name: "\u2014".repeat(200), unbroken: true },
-    { name: `Release ${"\u2013".repeat(40)}`, unbroken: true },
-    // The threshold: 21 characters with no break are marked, 20 are not (finding 1974), and a
-    // mid-length run (about 600 px unmarked) stays within the column too.
-    { name: `Run ${"W".repeat(21)}`, unbroken: true },
-    { name: `Run ${"W".repeat(20)}`, unbroken: false },
-    { name: `Run ${"W".repeat(40)}`, unbroken: true },
-    { name: "nightly-build-2026-10-19-release-candidate", unbroken: false },
-  ];
+  const cases = unbrokenNameCases;
   for (const [index, entry] of cases.entries()) {
     // The default harness Secret is named after its Agent, so it would exceed the name limit.
     const secret = await fixture.createSecret(namespace.id, `Unbroken name ${index}`, "test-key");
@@ -938,13 +977,44 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     for (const entry of cases) {
       const shown = await table
         .getByRole("link", { name: entry.name, exact: true })
-        .evaluate((node) => ({
-          marked: node.classList.contains("agent-name-unbroken"),
-          width: node.getBoundingClientRect().width,
-        }));
-      assert.equal(shown.marked, entry.unbroken, `${width}: ${entry.name.slice(0, 24)}… marked`);
+        .evaluate((node) => {
+          // The longest run the browser keeps on one line, set in the link's font in a box too
+          // narrow for any word. Combining marks share their letter's place, and a space hangs at
+          // the end of its line, so neither counts.
+          const box = globalThis.document.createElement("div");
+          const style = globalThis.getComputedStyle(node);
+          box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
+          box.textContent = node.textContent;
+          node.closest("table").after(box);
+          const range = globalThis.document.createRange();
+          let longest = 0;
+          let run = 0;
+          let top = null;
+          let offset = 0;
+          for (const character of Array.from(node.textContent)) {
+            range.setStart(box.firstChild, offset);
+            range.setEnd(box.firstChild, offset + character.length);
+            offset += character.length;
+            const rect = range.getClientRects()[0];
+            if (!rect || /[\p{M} ]/u.test(character)) {
+              continue;
+            }
+            run = Math.round(rect.top) === top ? run + 1 : 1;
+            top = Math.round(rect.top);
+            longest = Math.max(longest, run);
+          }
+          box.remove();
+          return {
+            marked: node.classList.contains("agent-name-unbroken"),
+            width: node.getBoundingClientRect().width,
+            longest,
+          };
+        });
+      const label = `${width}: ${JSON.stringify(entry.name.slice(0, 24))}…`;
+      assert.equal(shown.marked, entry.unbroken, `${label} marked`);
+      assert.equal(shown.longest >= 21, entry.unbroken, `${label} longest run ${shown.longest}`);
       if (entry.unbroken) {
-        assert.ok(shown.width <= 310.5, `${width}: the unbroken name is ${shown.width} px`);
+        assert.ok(shown.width <= 310.5, `${label} the unbroken name is ${shown.width} px`);
       }
     }
     if (width === 1440) {

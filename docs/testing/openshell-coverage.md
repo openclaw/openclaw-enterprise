@@ -93,6 +93,6 @@ the second Agent still receives its token. The scenario then checks that:
 The Codex scenario then updates the source through the API, withdraws it from
 the running Agent, waits for `revoked`, and expects the next model turn in the
 same process to fail. It accepts any turn failure, so it does not yet tell a
-credential rejection from a transport error or a restarted process. Full
-manual integration lanes run from `main`; trusted pull requests also run the
-OpenShell advisory job described in [Tests in each workflow](ci.md#tests-in-each-workflow).
+credential rejection from a transport error or a restarted process. The
+[complete OpenShell advisory lane](ci.md#qa-matrix) runs on every push to `main` and on
+trusted pull requests when a maintainer requests it with the `full-qa` label.
