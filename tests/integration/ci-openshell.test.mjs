@@ -510,6 +510,165 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   }
 });
 
+test("a turn the model answered at capacity runs again only if it began no action", async (t) => {
+  // Finding 1946. The actual in-Pod client, kubectl error path and retry; only kubectl
+  // transport, the app-server peer and the retry's sleep are fixtures. Message order, not
+  // timing, decides: a command that began (even one that completed), or an approval request,
+  // before the at-capacity answer leaves the outcome unknown, so no second thread starts.
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const server = createServer();
+  const peer = new WebSocketServer({ server });
+  server.listen(0, "127.0.0.1");
+  t.after(() => server.close());
+  await once(server, "listening");
+  const directory = await fixture(t);
+  await writeFile(
+    join(directory, "kubectl"),
+    [
+      "#!/bin/sh",
+      'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
+      "shift",
+      `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
+      'exec "$@"',
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const path = process.env.PATH;
+  process.env.PATH = directory + delimiter + path;
+  t.after(() => {
+    process.env.PATH = path;
+  });
+  const atCapacity = {
+    method: "error",
+    params: {
+      error: { message: "Selected model is at capacity. Please try a different model." },
+      willRetry: false,
+    },
+  };
+  // Each turn/start answers with the next script's events, then the at-capacity error unless
+  // the script completes the turn.
+  let scripts = [];
+  let threadStarts = 0;
+  peer.on("connection", (socket) => {
+    socket.on("message", (data) => {
+      const { method, id } = JSON.parse(data);
+      const send = (message) => socket.send(JSON.stringify(message));
+      if (method === undefined || method === "initialized") {
+        return;
+      }
+      if (method === "initialize") {
+        return send({ id, result: {} });
+      }
+      if (method === "thread/start") {
+        threadStarts += 1;
+        return send({
+          id,
+          result: {
+            thread: { id: `thread-${threadStarts}` },
+            sandbox: { type: "dangerFullAccess" },
+          },
+        });
+      }
+      assert.equal(method, "turn/start");
+      const threadId = `thread-${threadStarts}`;
+      const turn = { id: `turn-${threadStarts}`, status: "inProgress" };
+      send({ id, result: { turn } });
+      const at = { threadId, turnId: turn.id };
+      const command = { id: "command", type: "commandExecution", command: "true" };
+      const events = {
+        capacity: [atCapacity],
+        "command started": [
+          { method: "item/started", params: { ...at, item: { ...command, status: "inProgress" } } },
+          atCapacity,
+        ],
+        "command completed": [
+          { method: "item/started", params: { ...at, item: { ...command, status: "inProgress" } } },
+          {
+            method: "item/completed",
+            params: { ...at, item: { ...command, status: "completed", exitCode: 0 } },
+          },
+          atCapacity,
+        ],
+        // As the app server sends them: an approval request and output name the item, not carry it.
+        approval: [
+          {
+            id: "approval",
+            method: "item/commandExecution/requestApproval",
+            params: { ...at, itemId: command.id, command: command.command },
+          },
+          atCapacity,
+        ],
+        output: [
+          {
+            method: "item/commandExecution/outputDelta",
+            params: { ...at, itemId: command.id, delta: "output" },
+          },
+          atCapacity,
+        ],
+        reply: [
+          {
+            method: "item/completed",
+            params: { ...at, item: { id: "reply", type: "agentMessage", text: "OCC-TURN-OK" } },
+          },
+          {
+            method: "turn/completed",
+            params: { threadId, turn: { ...turn, status: "completed" } },
+          },
+        ],
+      }[scripts.shift()];
+      for (const event of events) {
+        send(event);
+      }
+    });
+  });
+  const sleeps = [];
+  const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({
+    modelAtCapacityRetry: { sleep: async (ms) => sleeps.push(ms), log: () => {} },
+  });
+  const turn = async (turnScripts) => {
+    scripts = [...turnScripts];
+    threadStarts = 0;
+    sleeps.length = 0;
+    return requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" });
+  };
+  const failure = (promise) =>
+    promise.then(
+      () => assert.fail("the turn must fail"),
+      (error) => error,
+    );
+
+  // At capacity before any action: the same turn runs again on a new thread.
+  const retried = await turn(["capacity", "reply"]);
+  assert.equal(retried.assistant, "OCC-TURN-OK");
+  assert.equal(threadStarts, 2);
+  assert.deepEqual(sleeps, [15_000]);
+
+  // At capacity on every attempt: three threads, and the first line says so.
+  const persistent = await failure(turn(["capacity", "capacity", "capacity"]));
+  assert.equal(threadStarts, 3);
+  assert.deepEqual(sleeps, [15_000, 30_000]);
+  assert.equal(
+    persistent.message.split("\n")[0],
+    'The real model was at capacity on all 3 turn attempts ("Selected model is at capacity").',
+  );
+
+  // At capacity after an action began: one thread, the outcome stays unknown, and the first
+  // line still says the model was at capacity.
+  for (const script of ["command started", "command completed", "approval", "output"]) {
+    const error = await failure(turn([script, "reply"]));
+    assert.equal(threadStarts, 1, script);
+    assert.deepEqual(sleeps, [], script);
+    assert.equal(
+      error.message.split("\n")[0],
+      'The real model was at capacity ("Selected model is at capacity"), and the turn may have begun an action, so its outcome is unknown and it is not run again (attempt 1/3).',
+      script,
+    );
+    const summary = JSON.parse(/Native execution summary: (\{.*?\]\})/s.exec(error.stderr)[1]);
+    assert.equal(summary.retrySafe, false, script);
+  }
+});
+
 test("OpenShell fixture networking admits the supervisor callback without granting tenant Pods", () => {
   const configuration = createOpenShellInstallationConfiguration({
     authentication: {},

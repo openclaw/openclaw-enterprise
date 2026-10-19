@@ -30,7 +30,7 @@ import {
 import { refusingPort } from "../helpers/available-port.mjs";
 import {
   createOpenShellKubernetesFixture,
-  isModelAtCapacity,
+  modelAtCapacityOutcome,
   retryModelAtCapacity,
 } from "../helpers/openshell-kubernetes-real.mjs";
 
@@ -185,11 +185,16 @@ const modelAtCapacityStderr = [
   'Native execution summary: {"failedCommands":0,"approvalRequests":0,"sandboxSignals":[],"commandGraceMs":14000,"sinceTurnEndMs":null,"pendingCommands":[]}command terminated with exit code 1',
   "",
 ].join("\n");
+// The same failure from the client that reports its verdict: the turn began no action.
+const retrySafeAtCapacityStderr = modelAtCapacityStderr.replace(
+  '"sinceTurnEndMs":null,',
+  '"sinceTurnEndMs":null,"retrySafe":true,',
+);
 
 // A `kubectl` on PATH that answers the first `atCapacity` calls with the model's at-capacity
-// failure and later ones with a completed turn, and the OpenShell fixture's Gateway Pod turn
-// run against it. Returns the turn's outcome and the kubectl calls.
-async function gatewayTurnWithFakeKubectl(t, atCapacity) {
+// failure (`stderr`) and later ones with a completed turn, and the OpenShell fixture's Gateway
+// Pod turn run against it. Returns the turn's outcome and the kubectl calls.
+async function gatewayTurnWithFakeKubectl(t, atCapacity, stderr = retrySafeAtCapacityStderr) {
   const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const calls = join(directory, "calls");
@@ -201,7 +206,7 @@ async function gatewayTurnWithFakeKubectl(t, atCapacity) {
 const { appendFileSync, readFileSync } = process.getBuiltinModule("node:fs");
 appendFileSync(${JSON.stringify(calls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 if (readFileSync(${JSON.stringify(calls)}, "utf8").trim().split("\\n").length <= ${atCapacity}) {
-  process.stderr.write(${JSON.stringify(modelAtCapacityStderr)});
+  process.stderr.write(${JSON.stringify(stderr)});
   process.exit(1);
 }
 process.stdout.write(JSON.stringify({ assistant: "OCC-TURN-OK", items: [] }));
@@ -238,7 +243,7 @@ process.stdout.write(JSON.stringify({ assistant: "OCC-TURN-OK", items: [] }));
   return { ...outcome, kubectlCalls, sleeps, logs };
 }
 
-test("a real-model turn the model answered at capacity runs again and returns its reply", async (t) => {
+test("a real-model turn at capacity before any action runs again and returns its reply", async (t) => {
   const { turn, error, kubectlCalls, sleeps, logs } = await gatewayTurnWithFakeKubectl(t, 1);
   assert.equal(error, undefined);
   assert.deepEqual(turn, { assistant: "OCC-TURN-OK", items: [] });
@@ -253,7 +258,7 @@ test("a real-model turn the model answered at capacity runs again and returns it
   ]);
   assert.deepEqual(sleeps, [15_000]);
   assert.deepEqual(logs, [
-    "The real model was at capacity; retrying the turn in 15000 ms (attempt 2/3)",
+    "The real model was at capacity before the turn began any action; retrying the turn in 15000 ms (attempt 2/3)",
   ]);
 });
 
@@ -269,10 +274,27 @@ test("a real-model turn at capacity on every attempt says so on its failure's fi
   );
   // The kubectl failure follows, for the diagnostics, and stays the cause.
   assert.match(rest.join("\n"), /^Command failed: kubectl /);
-  assert.equal(isModelAtCapacity(error.cause), true);
+  assert.equal(modelAtCapacityOutcome(error.cause), "retry");
   // Callers that read kubectl's result still find it on the error.
-  assert.equal(error.stderr, modelAtCapacityStderr);
+  assert.equal(error.stderr, retrySafeAtCapacityStderr);
   assert.equal(error.code, 1);
+});
+
+test("a real-model turn at capacity without the client's retry-safe verdict is not run again", async (t) => {
+  // The verbatim failure predates the verdict, so it cannot show the turn began no action.
+  const { turn, error, kubectlCalls, sleeps } = await gatewayTurnWithFakeKubectl(
+    t,
+    3,
+    modelAtCapacityStderr,
+  );
+  assert.equal(turn, undefined);
+  assert.equal(kubectlCalls.length, 1);
+  assert.deepEqual(sleeps, []);
+  assert.equal(
+    error.message.split("\n")[0],
+    'The real model was at capacity ("Selected model is at capacity"), and the turn may have begun an action, so its outcome is unknown and it is not run again (attempt 1/3).',
+  );
+  assert.equal(error.stderr, modelAtCapacityStderr);
 });
 
 test("only the model's at-capacity answer retries a real-model turn", async () => {
@@ -299,7 +321,7 @@ test("only the model's at-capacity answer retries a real-model turn", async () =
     Object.assign(new Error("spawn kubectl ENOENT"), { code: "ENOENT" }),
   ];
   for (const failure of notAtCapacity) {
-    assert.equal(isModelAtCapacity(failure), false, failure.message);
+    assert.equal(modelAtCapacityOutcome(failure), undefined, failure.message);
     const { sleeps, logs, options } = recordingOptions();
     let calls = 0;
     await assert.rejects(
@@ -312,7 +334,22 @@ test("only the model's at-capacity answer retries a real-model turn", async () =
     assert.equal(calls, 1, failure.message);
     assert.deepEqual([sleeps, logs], [[], []]);
   }
-  assert.equal(isModelAtCapacity(kubectlFailure(modelAtCapacityStderr)), true);
+  // Only the client's own verdict makes an at-capacity answer safe to retry.
+  const verdict = (summary) =>
+    modelAtCapacityOutcome(
+      kubectlFailure(
+        modelAtCapacityStderr.replace(
+          /Native execution summary: .*?\]\}/,
+          () => `Native execution summary: ${summary}`,
+        ),
+      ),
+    );
+  assert.equal(verdict('{"retrySafe":true,"pendingCommands":[]}'), "retry");
+  assert.equal(verdict('{"retrySafe":false,"pendingCommands":[]}'), "unsafe");
+  assert.equal(verdict('{"retrySafe":"true","pendingCommands":[]}'), "unsafe");
+  assert.equal(verdict('{"retrySafe":true,"pendingCommands":[]'), "unsafe");
+  assert.equal(modelAtCapacityOutcome(kubectlFailure(modelAtCapacityStderr)), "unsafe");
+  assert.equal(modelAtCapacityOutcome(kubectlFailure(retrySafeAtCapacityStderr)), "retry");
 });
 
 test("a stalled failure diagnostic gives way to its deadline", { timeout: 5_000 }, async () => {

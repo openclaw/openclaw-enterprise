@@ -92,14 +92,31 @@ export function outageAttemptRead({ readWork, readStatus }) {
 // turn script prints it as its error, and kubectl's failure carries it on stderr (finding 1946).
 const modelAtCapacity = /^Error: Selected model is at capacity\./m;
 
-export function isModelAtCapacity(error) {
-  return modelAtCapacity.test(String(error?.stderr ?? ""));
+// "retry" when the model answered at capacity and the in-Pod client, which owns the turn's
+// state, reported that the turn ended before it began any action (retrySafe in its execution
+// summary); "unsafe" when it answered at capacity after an action, or with no such verdict;
+// undefined for any other failure.
+export function modelAtCapacityOutcome(error) {
+  const stderr = String(error?.stderr ?? "");
+  if (!modelAtCapacity.test(stderr)) {
+    return undefined;
+  }
+  // pendingCommands is the summary's last field, so the object ends at the first "]}".
+  const summary = /^Native execution summary: (\{.*?\]\})/m.exec(stderr)?.[1];
+  let retrySafe;
+  try {
+    retrySafe = JSON.parse(summary ?? "null")?.retrySafe === true;
+  } catch {
+    retrySafe = false;
+  }
+  return retrySafe ? "retry" : "unsafe";
 }
 
 // Runs a real-model Codex turn, and runs it again, a bounded number of times, when the model
-// answered only that it is at capacity: an upstream condition, not the product's. Any other
-// failure is thrown at once. If every attempt is at capacity, the failure's first line says so,
-// since the kubectl failure itself starts with the command line (finding 1946).
+// answered only that it is at capacity before the turn began any action: an upstream
+// condition, not the product's. A turn that had begun a command keeps its unknown outcome and
+// is never run again. Either way an at-capacity failure says so on its first line, since the
+// kubectl failure itself starts with the command line; any other failure is thrown at once.
 export async function retryModelAtCapacity(
   turn,
   {
@@ -109,26 +126,35 @@ export async function retryModelAtCapacity(
     log = (message) => process.stderr.write(`${message}\n`),
   } = {},
 ) {
+  // Keeps kubectl's stderr and exit code for callers that read them.
+  const atCapacity = (line, error) =>
+    Object.assign(new Error(`${line}\n${error.message}`, { cause: error }), {
+      stderr: error.stderr,
+      code: error.code,
+    });
   let delayMs = firstDelayMs;
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await turn();
     } catch (error) {
-      if (!isModelAtCapacity(error)) {
+      const outcome = modelAtCapacityOutcome(error);
+      if (outcome === undefined) {
         throw error;
       }
+      if (outcome === "unsafe") {
+        throw atCapacity(
+          `The real model was at capacity ("Selected model is at capacity"), and the turn may have begun an action, so its outcome is unknown and it is not run again (attempt ${attempt}/${attempts}).`,
+          error,
+        );
+      }
       if (attempt >= attempts) {
-        // Keeps kubectl's stderr and exit code for callers that read them.
-        throw Object.assign(
-          new Error(
-            `The real model was at capacity on all ${attempts} turn attempts ("Selected model is at capacity").\n${error.message}`,
-            { cause: error },
-          ),
-          { stderr: error.stderr, code: error.code },
+        throw atCapacity(
+          `The real model was at capacity on all ${attempts} turn attempts ("Selected model is at capacity").`,
+          error,
         );
       }
       log(
-        `The real model was at capacity; retrying the turn in ${delayMs} ms (attempt ${attempt + 1}/${attempts})`,
+        `The real model was at capacity before the turn began any action; retrying the turn in ${delayMs} ms (attempt ${attempt + 1}/${attempts})`,
       );
       await sleep(delayMs);
       delayMs *= 2;
@@ -1247,6 +1273,9 @@ export function createOpenShellKubernetesFixture({
       let finished = false;
       let failedCommands = 0;
       let approvalRequests = 0;
+      // Whether the turn began anything that can act: a command, file change, tool call or
+      // approval. Only a turn that failed before any of these is safe to run again.
+      let actionSeen = false;
       const sandboxSignals = new Set();
 
       function rememberFailureSignals(message) {
@@ -1294,13 +1323,15 @@ export function createOpenShellKubernetesFixture({
         });
       }
 
-      function fail(error) {
+      // retrySafe: the model's final error ended the turn before it began any action.
+      function fail(error, { retrySafe = false } = {}) {
         clearTimeout(timeout);
         process.stderr.write(error?.stack || String(error));
         process.stderr.write("\nNative execution summary: " + JSON.stringify({
           failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
           commandGraceMs: ${codexCommandGraceMs},
           sinceTurnEndMs: turnCompletedAt === undefined ? null : Math.floor(performance.now() - turnCompletedAt),
+          retrySafe: retrySafe && !actionSeen,
           pendingCommands: pendingCommandTimes(),
         }));
         process.exit(1);
@@ -1376,6 +1407,10 @@ export function createOpenShellKubernetesFixture({
         const message = JSON.parse(String(data));
         const { method, params } = message;
         const item = params?.item;
+        if ((item?.type !== undefined && !["userMessage", "agentMessage", "reasoning"].includes(item.type)) ||
+            String(method).endsWith("/requestApproval") || String(method).endsWith("/outputDelta")) {
+          actionSeen = true;
+        }
         const decline = message.id !== undefined && (
           method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval"
         );
@@ -1451,7 +1486,7 @@ export function createOpenShellKubernetesFixture({
         } else if (message.method === "error" && message.params?.willRetry !== true) {
           // Codex reports retried model reconnects as errors; only a final error ends the turn,
           // and turn/completed still requires a completed status.
-          fail(new Error(message.params?.error?.message || "Codex harness turn failed"));
+          fail(new Error(message.params?.error?.message || "Codex harness turn failed"), { retrySafe: true });
         }
       });
       socket.addEventListener("error", () => {
