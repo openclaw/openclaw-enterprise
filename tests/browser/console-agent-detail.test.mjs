@@ -949,7 +949,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await page.getByRole("button", { name: "Save Configuration" }).click();
   await page.getByText("The saved Configuration changed while you were editing.").waitFor();
   // A conflict is an error, not a hint (finding 1903).
-  assert.equal(await page.locator("#configuration-editor-feedback").getAttribute("class"), "error");
+  const feedback = page.locator("#configuration-editor-feedback");
+  assert.equal(await feedback.getAttribute("class"), "status");
+  assert.equal(await feedback.getAttribute("data-tone"), "danger");
   assert.deepEqual(configurationPatchRequests(requests, namespace.id, agent.configurationId), []);
 
   await page.reload();
