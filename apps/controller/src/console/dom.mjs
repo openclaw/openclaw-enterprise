@@ -510,7 +510,7 @@ export function setFieldError(control, text) {
     node = element("p", { className: "field-error", id: `${controlId(control)}-error` });
     fieldErrors.set(control, node);
   }
-  if (!node.isConnected) {
+  if (!node.parentNode) {
     placeFieldError(control, node);
   }
   node.textContent = text;
@@ -532,14 +532,20 @@ export function fieldError(input) {
 }
 
 function fieldName(control) {
-  const label = control.labels?.[0]?.textContent ?? control.getAttribute("aria-label") ?? "";
+  const labelledBy = (control.getAttribute("aria-labelledby") ?? "")
+    .split(/\s+/)
+    .map((id) => (id ? document.getElementById(id)?.textContent : ""))
+    .join(" ");
+  const label =
+    control.labels?.[0]?.textContent || labelledBy || control.getAttribute("aria-label") || "";
   return label.trim().replace(/\s+/g, " ") || "This field";
 }
 
 const TEXT_TYPES = new Set(["text", "search", "email", "url", "tel"]);
 
 // The console's own sentence for a control the browser's checks refuse, or "" when it passes.
-// Text that is only spaces counts as missing, as the API trims it.
+// Text that is only spaces counts as missing, as the API trims it, so this refuses some values
+// checkValidity() accepts: gate a form on validateFields, not on both.
 function fieldProblem(control) {
   const blank =
     control.required &&
@@ -557,15 +563,20 @@ function fieldProblem(control) {
   return validity.valid ? "" : `Enter a valid value for ${fieldName(control)}.`;
 }
 
-// Controls whose error a check showed; an edit that makes one valid clears it. One document
-// listener runs after the form's own input handlers, which may reset custom validity.
-const checkedControls = new WeakSet();
+// Controls whose error a check showed. After any edit, one that now passes, or is no longer
+// checked (disabled, or no longer required after another field changed), loses its error. One
+// document listener runs after the form's own input handlers, which may reset custom validity or
+// toggle `required`.
+const checkedControls = new Set();
 let clearsOnEdit = false;
-function clearFixedErrors(event) {
-  const control = event.target;
-  if (checkedControls.has(control) && !fieldProblem(control)) {
-    checkedControls.delete(control);
-    setFieldError(control, "");
+function clearFixedErrors() {
+  for (const control of checkedControls) {
+    if (!control.isConnected) {
+      checkedControls.delete(control);
+    } else if (!control.willValidate || !fieldProblem(control)) {
+      checkedControls.delete(control);
+      setFieldError(control, "");
+    }
   }
 }
 

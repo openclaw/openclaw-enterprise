@@ -15,6 +15,20 @@ function harnessSecretVariable(template) {
   return typeof value === "string" ? HARNESS_SECRET_TOKEN.exec(value)?.[1] : undefined;
 }
 
+// A string variable is one line when the template names the Agent with it (the whole agent.name
+// is its token), or its default is a single non-empty line; any other string may hold several
+// lines (instructions, a workspace file), so it keeps a textarea (UX plan C3).
+function singleLineVariable(template, name, definition, value) {
+  if (/[\r\n]/.test(value)) {
+    return false;
+  }
+  const agentName = template?.agent?.name;
+  return (
+    (typeof agentName === "string" && HARNESS_SECRET_TOKEN.exec(agentName)?.[1] === name) ||
+    (typeof definition.default === "string" && definition.default !== "")
+  );
+}
+
 function variableLabel(name) {
   const words = name
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -310,9 +324,8 @@ export function createPresetFields(context, apply) {
                 element("option", { value: "true" }, "True"),
                 element("option", { value: "false" }, "False"),
               )
-            : // A single-line value, such as an Agent name, is an input; only a value with line
-              // breaks gets a textarea.
-              definition.type === "string" && /[\r\n]/.test(initialValue)
+            : definition.type === "string" &&
+                !singleLineVariable(preset.template, name, definition, initialValue)
               ? element("textarea", {
                   id: `preset-variable-${name}`,
                   rows: 2,

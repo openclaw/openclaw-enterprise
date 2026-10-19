@@ -190,8 +190,53 @@ for (const viewport of [
     await page.getByRole("button", { name: "Use Preset", exact: true }).click();
     assert.equal(await focusedId(page), await model.getAttribute("id"));
     assert.deepEqual(await invalidEvents(), []);
+    // A field another choice turns off loses its error: an existing Secret replaces the typed one.
+    await page
+      .getByLabel("Secret source for Model Secret", { exact: true })
+      .selectOption("existing");
+    assert.equal(await errorPlacement(secret), null);
+    assert.equal(await secret.getAttribute("aria-invalid"), null);
   });
 }
+
+// The Agent name and a variable with a one-line default are single-line inputs; any other string
+// variable may hold several lines (instructions, a workspace file), so it keeps a textarea.
+test("Preset string variables are inputs only where a value is one line", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Preset controls", { ready: true });
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Preset controls",
+      template: {
+        variables: {
+          agentName: { type: "string" },
+          notes: { type: "string" },
+          prefix: { type: "string", default: "One line" },
+          lines: { type: "string", default: "First\nSecond" },
+        },
+        agent: {
+          name: "{{ vars.agentName }}",
+          initialWorkspaceFiles: { "USER.md": "{{ vars.notes }}" },
+        },
+        configuration: {
+          values: { messages: { responsePrefix: "{{ vars.prefix }} {{ vars.lines }}" } },
+        },
+      },
+    },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  const { page } = await newPage(t, fixture, { browser });
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
+  await page.getByLabel("Agent Name", { exact: true }).waitFor();
+  const tag = (label) => page.getByLabel(label, { exact: true }).evaluate((node) => node.tagName);
+  assert.deepEqual(
+    [await tag("Agent Name"), await tag("Notes"), await tag("Prefix"), await tag("Lines")],
+    ["INPUT", "TEXTAREA", "INPUT", "TEXTAREA"],
+  );
+});
 
 test("Create Agent checks its fields without the browser bubble and focuses the first", async (t) => {
   const fixture = await createConsoleAppFixture(t);
