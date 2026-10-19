@@ -292,3 +292,72 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
     .waitFor();
   assert.equal(await view.getByText(NOT_READY).count(), 0);
 });
+
+// Create Agent open on a provisioning Namespace with a Dedicated plan waits for the Namespace.
+// The page skips its own recheck while a form is open, so the form rechecks the Namespace itself
+// and updates only the gate: the typed name, its caret and focus stay (finding 2012).
+const WAITS =
+  "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then.";
+const READY_PLAN = "Dedicated Agents are provisioned and deployed when created.";
+
+async function openGatedForm(t, { clock = false } = {}) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
+  const { page } = await newPage(t, fixture, { browser });
+  if (clock) {
+    await page.clock.install({ time: new Date("2026-10-19T12:00:00Z") });
+  }
+  // The Namespace reads as provisioning, and takes drafts, until it is released.
+  const patches = new Map([[namespace.id, { status: "provisioning" }]]);
+  await reportNamespaces(page, patches);
+  await routeInstallationProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const view = page.locator(settledView);
+  await view.getByRole("button", { name: "Start without Preset" }).click();
+  await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  await view.getByText(WAITS, { exact: true }).waitFor();
+  const create = view.getByRole("button", { name: "Create Agent", exact: true });
+  assert.equal(await create.isDisabled(), true);
+  // The reader is mid-edit: the caret sits inside the typed name.
+  const name = view.getByLabel("Agent name");
+  await name.fill("Probe Agent");
+  await name.evaluate((input) => input.setSelectionRange(5, 5));
+  return { page, view, create, name, release: () => patches.delete(namespace.id) };
+}
+
+async function assertDraftIntact(name) {
+  assert.equal(await name.inputValue(), "Probe Agent");
+  assert.deepEqual(
+    await name.evaluate((input) => [
+      globalThis.document.activeElement === input,
+      input.selectionStart,
+      input.selectionEnd,
+    ]),
+    [true, 5, 5],
+  );
+}
+
+test("a refocus re-enables Create Agent once the Namespace is ready, keeping the draft", async (t) => {
+  const { page, view, create, name, release } = await openGatedForm(t);
+  release();
+  await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+  await view.getByText(READY_PLAN, { exact: true }).waitFor();
+  assert.equal(await create.isDisabled(), false);
+  assert.equal(await create.getAttribute("aria-describedby"), null);
+  assert.equal(await view.getByText(WAITS).count(), 0);
+  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  await assertDraftIntact(name);
+});
+
+test("an open form waiting on the Namespace sees it become ready without a refocus", async (t) => {
+  const { page, view, create, name, release } = await openGatedForm(t, { clock: true });
+  // A Namespace still provisioning keeps the gate.
+  await page.clock.runFor(10_000);
+  await view.getByText(WAITS, { exact: true }).waitFor();
+  assert.equal(await create.isDisabled(), true);
+  release();
+  await page.clock.runFor(10_000);
+  await view.getByText(READY_PLAN, { exact: true }).waitFor();
+  assert.equal(await create.isDisabled(), false);
+  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  await assertDraftIntact(name);
+});

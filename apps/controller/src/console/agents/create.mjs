@@ -36,6 +36,27 @@ const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
 // The API's Agent name limit, in characters (code points).
 const AGENT_NAME_MAX_CHARACTERS = 200;
+// How often an open form rereads a provisioning Namespace while Create Agent waits for it: the
+// runtime status poll's cadence (finding 2012).
+const NAMESPACE_RECHECK_MS = 10_000;
+
+// The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
+// recheck skips any open form, because a reload would discard it (finding 2012).
+let recheckOpenForm = null;
+let refocusListening = false;
+function onRefocus(recheck) {
+  recheckOpenForm = recheck;
+  if (refocusListening) {
+    return;
+  }
+  refocusListening = true;
+  window.addEventListener("focus", () => recheckOpenForm?.());
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      recheckOpenForm?.();
+    }
+  });
+}
 
 // TODO: This starter list is intentionally hardcoded for the initial Console release.
 // Revisit catalog refresh and credential-aware discovery after the basic creation flow ships.
@@ -450,7 +471,9 @@ function namespaceNote(notReady) {
 
 function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const { view, request, namespaceId } = context;
-  const notReady = namespaceCreation(context.namespace);
+  // A recheck replaces it once the Namespace becomes ready (finding 2012).
+  let notReady = namespaceCreation(context.namespace);
+  let notReadyNote = notReady ? namespaceNote(notReady) : null;
   const agent = rendered.agent ?? {};
   const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
   const workspaceFileNames = Object.keys(WORKSPACE_DEFAULTS);
@@ -1777,6 +1800,70 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   // Every step of a provisioning plan needs a ready Namespace, so the API would refuse it; a
   // draft plan still saves (finding 2007, #2867).
   const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
+  // The Namespace can become ready while the form is open. Reread only its status, on refocus
+  // and while Create Agent waits for it, and update just the note and the gate: the draft,
+  // focus and field values stay (finding 2012). A failed read stops the wait until a refocus.
+  let namespaceTimer = null;
+  let namespaceReading = false;
+  const namespaceGateShown = () =>
+    !savedAgent && !provisioningAttempt && provisioningWaitsForNamespace();
+  const recheckNamespace = async () => {
+    clearTimeout(namespaceTimer);
+    namespaceTimer = null;
+    if (!context.isCurrent()) {
+      if (recheckOpenForm === recheckNamespace) {
+        recheckOpenForm = null;
+      }
+      return;
+    }
+    if (!notReady || namespaceReading || document.hidden) {
+      return;
+    }
+    namespaceReading = true;
+    let namespace;
+    try {
+      const namespaces = await request("/namespaces", { revalidate: false, rereadOnResume: true });
+      namespace = namespaces.find((item) => item.id === namespaceId);
+    } catch {
+      return;
+    } finally {
+      namespaceReading = false;
+    }
+    if (!context.isCurrent()) {
+      return;
+    }
+    const next = namespace ? namespaceCreation(namespace) : notReady;
+    if (next?.note !== notReady?.note) {
+      notReady = next;
+      const replacement = next ? namespaceNote(next) : null;
+      if (replacement) {
+        notReadyNote?.replaceWith(replacement);
+      } else {
+        notReadyNote?.remove();
+      }
+      notReadyNote = replacement;
+      updateControls();
+    }
+    waitForNamespace();
+  };
+  const waitForNamespace = () => {
+    if (namespaceTimer === null && !namespaceReading && namespaceGateShown()) {
+      namespaceTimer = setTimeout(() => {
+        namespaceTimer = null;
+        if (namespaceGateShown()) {
+          void recheckNamespace();
+        }
+      }, NAMESPACE_RECHECK_MS);
+    }
+  };
+  if (notReady) {
+    onRefocus(recheckNamespace);
+    // A retained form comes back with its timer stopped: recheck as on a refocus.
+    context.onResume?.(() => {
+      onRefocus(recheckNamespace);
+      void recheckNamespace();
+    });
+  }
   const credentialSourceRefused = () =>
     credentialSourceTypes !== undefined &&
     (binding?.method ?? authMethod.value) !== "credential_source" &&
@@ -2077,6 +2164,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     retryCapabilityDiscovery.disabled = pending;
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
     submit.setAttribute("aria-busy", createPending ? "true" : "false");
+    waitForNamespace();
   };
   // Every way Create's request ends clears its busy state, a navigation away included: the view
   // it leaves may still show as an inert preview.
@@ -2678,7 +2766,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   });
   view.replaceChildren(
     link("← Agents", "agents", context),
-    ...(notReady ? [namespaceNote(notReady)] : []),
+    ...(notReadyNote ? [notReadyNote] : []),
     element(
       "p",
       { className: "muted" },
