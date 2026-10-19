@@ -50,8 +50,9 @@ export function renderAgentAccess(context, agent) {
     "aria-describedby": "share-principal-help",
   });
   const acknowledge = element("input", { type: "checkbox", required: true });
-  const share = element("button", { type: "submit", className: "primary" }, "Share Agent");
-  const refresh = button("Refresh sharing", () => void load());
+  // The Agent page's one primary action is its next deployment step, not sharing.
+  const share = element("button", { type: "submit" }, "Share Agent");
+  const refresh = button("Refresh sharing", () => void load(), { tone: "ghost", size: "sm" });
   const form = element(
     "form",
     { className: "agent-access-form" },

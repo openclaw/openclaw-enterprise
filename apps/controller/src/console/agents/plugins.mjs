@@ -182,7 +182,7 @@ export function renderAgentPlugins(
   const capabilitiesStatus = element("p", { className: "hint", role: "status" });
   const updateNote = element("p", { className: "muted", role: "status", hidden: true });
   const save = button("Save plugin selections", () => void savePlugins(), {
-    className: "primary",
+    tone: "primary",
   });
   const discard = button("Discard changes", () => {
     input.value = initialText;

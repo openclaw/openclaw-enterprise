@@ -562,7 +562,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             renderResults();
             results.querySelector('input[type="checkbox"]:not(:disabled)')?.focus();
           },
-          { className: "repository-text-action", disabled: !editable() },
+          { tone: "link", className: "repository-text-action", disabled: !editable() },
         ),
       );
     }
@@ -662,6 +662,8 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           focusDiscovery();
         },
         {
+          tone: "ghost",
+          size: "sm",
           className: "repository-remove",
           "aria-label": `Remove ${label}`,
           title: `Remove ${label}`,
@@ -763,7 +765,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             renderCards();
             cards.lastElementChild.focus();
           },
-          { className: "repository-text-action" },
+          { tone: "link", className: "repository-text-action" },
         ),
       );
     }
@@ -783,6 +785,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
           },
           {
             disabled: state.disabled || state.selected.size >= MAX_SELECTED,
+            tone: "link",
             className: "repository-text-action",
           },
         ),

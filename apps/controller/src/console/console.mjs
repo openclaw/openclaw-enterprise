@@ -829,7 +829,11 @@ function showLogin(message = "", destination = null) {
   );
   // Recovery-only password sign-in hides the form until the recovery path is chosen.
   let recoveryOnly = false;
-  const submit = element("button", { type: "submit", className: "primary" }, "Login");
+  const submit = element(
+    "button",
+    { type: "submit", className: "button button--primary" },
+    "Login",
+  );
   const form = element(
     "form",
     {},
@@ -902,7 +906,7 @@ function showLogin(message = "", destination = null) {
       form.hidden = false;
       username.focus();
     },
-    { className: "auth-recovery", hidden: true },
+    { tone: "link", className: "auth-recovery", hidden: true },
   );
   function setDisabled(disabled) {
     submit.disabled = disabled;

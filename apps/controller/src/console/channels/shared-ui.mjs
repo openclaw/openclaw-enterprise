@@ -175,7 +175,7 @@ function renderCard(section, state, provider) {
           : button(action, () => openDrawer(section, state, provider), actionAttrs),
         canDisable
           ? button(`Disable ${provider.name}`, () => void disableProvider(state, provider), {
-              className: "danger",
+              tone: "danger",
             })
           : null,
       ),
@@ -533,7 +533,7 @@ function openDrawer(section, state, provider, retained) {
   const cancel = button("Cancel", discard);
   const submit = element(
     "button",
-    { type: "submit", className: "primary" },
+    { type: "submit", className: "button button--primary" },
     state.copy.saveLabel ?? "Save configuration",
   );
   body.append(

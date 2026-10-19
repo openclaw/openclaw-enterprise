@@ -97,8 +97,28 @@ export function patchChildren(parent, children) {
   return changed;
 }
 
-export function button(label, action, attributes = {}) {
-  const node = element("button", { type: "button", ...attributes }, label);
+/**
+ * The class list for the button hierarchy (UX plan C2, console.css "Button hierarchy"): `tone` is
+ * "primary" (at most one per view), "secondary", "ghost", "danger" or "link", and `size` "sm" is
+ * the toolbar size. `className` adds a component's own class.
+ */
+function buttonClass({ tone, size, className } = {}) {
+  return [
+    ...(tone || size ? ["button"] : []),
+    ...(tone ? [`button--${tone}`] : []),
+    ...(size ? [`button--${size}`] : []),
+    ...(className ? [className] : []),
+  ].join(" ");
+}
+
+/** A button; `tone` and `size` pick its place in the hierarchy (see buttonClass). */
+export function button(label, action, { tone, size, ...attributes } = {}) {
+  const className = buttonClass({ tone, size, className: attributes.className });
+  const node = element(
+    "button",
+    { type: "button", ...attributes, ...(className ? { className } : {}) },
+    label,
+  );
   node.addEventListener("click", action);
   return node;
 }

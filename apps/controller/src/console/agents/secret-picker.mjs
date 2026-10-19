@@ -451,7 +451,11 @@ export function createSecretReferenceField({
     });
     const feedback = element("p", { className: "error", role: "alert" });
     const cancel = element("button", { type: "button" }, "Cancel");
-    const submit = element("button", { type: "submit", className: "primary" }, "Create Secret");
+    const submit = element(
+      "button",
+      { type: "submit", className: "button button--primary" },
+      "Create Secret",
+    );
     let creating = false;
     let outcomeUnknown = false;
     const fixedKey = createFixedKey
