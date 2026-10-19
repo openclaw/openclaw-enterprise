@@ -219,6 +219,8 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
       await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
       await view.getByText(REFUSES, { exact: true }).waitFor();
       assert.equal(await create.isDisabled(), true);
+      // A draft plan waits on nothing, so only the refusal still names the reason (finding 2039).
+      assert.equal(await create.getAttribute("aria-describedby"), "create-agent-capability-status");
       await idle();
     });
   }
@@ -234,6 +236,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
       await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
       await view.getByText(ADOPTED_WAITS, { exact: true }).waitFor();
       assert.equal(await create.isDisabled(), true);
+      assert.equal(await create.getAttribute("aria-describedby"), "create-agent-capability-status");
       await poll();
       namespaces.status = null;
       await poll();
@@ -257,6 +260,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
       await idle();
       await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
       assert.equal(await create.isDisabled(), true);
+      assert.equal(await create.getAttribute("aria-describedby"), "create-agent-capability-status");
       await idle();
       // Start over discards the draft, not what the form learned about the Namespace.
       page.once("dialog", (dialog) => void dialog.accept());
@@ -297,6 +301,17 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     assert.equal(await view.getByText(NOT_READY).count(), 0);
     assert.equal(await top(), before);
     await assertDraftIntact(name);
+    // The reserved height lasts until the width changes: the form reflows then anyway, and the
+    // space would only stay empty (finding 2039).
+    const minHeight = () => note.evaluate((node) => node.style.minHeight);
+    assert.notEqual(await minHeight(), "");
+    const resized = page.evaluate(
+      () =>
+        new Promise((resolve) => globalThis.addEventListener("resize", resolve, { once: true })),
+    );
+    await page.setViewportSize({ width: 390, height: 900 });
+    await resized;
+    assert.equal(await minHeight(), "");
   });
 
   await t.test("a hidden tab starts no read, and showing it again rechecks", async (t) => {
@@ -348,7 +363,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
   });
 
   await t.test("a return to the kept form resumes the recheck", async (t) => {
-    const { page, view, create, name, namespaces, poll } = await openGatedForm(t, team, {
+    const { page, view, create, name, namespaces, poll, idle } = await openGatedForm(t, team, {
       keepable: true,
     });
     // The same form comes back: only a view with no read in flight is kept for a return.
@@ -364,8 +379,18 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await view.getByText(WAITS, { exact: true }).waitFor();
     assert.equal(await name.getAttribute("data-kept"), "true");
     await waitForIdleFetches(page);
-    namespaces.status = null;
     await poll();
+    await view.getByText(WAITS, { exact: true }).waitFor();
+    // A hidden tab stops the recheck there too, and showing it again restarts it: the return
+    // registers the kept form's refocus recheck again (finding 2039).
+    await setHidden(page, true);
+    namespaces.status = null;
+    await idle();
+    const read = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/namespaces",
+    );
+    await setHidden(page, false);
+    await read;
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
     assert.equal(await create.isDisabled(), false);
     assert.equal(await name.inputValue(), "Probe Agent");
