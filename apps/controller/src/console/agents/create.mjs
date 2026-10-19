@@ -1242,7 +1242,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const savedStatus = element("p", { className: "hint", role: "status" });
   const submit = element(
     "button",
-    { type: "submit", form: formId, className: "primary" },
+    { type: "submit", form: formId, className: "button button--primary" },
     "Create Agent",
   );
   const startOver = button("Start over", () => {
@@ -1786,6 +1786,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
     for (const node of actions.querySelectorAll("button")) {
       node.disabled = pending;
+    }
+    // Create Agent is busy, not unavailable, while pending: the progress cursor (finding 1927).
+    if (submit.getAttribute("aria-busy") !== String(pending)) {
+      submit.setAttribute("aria-busy", String(pending));
     }
     updatePluginDiscovery();
     pluginFields.setDisabled(planLocked);

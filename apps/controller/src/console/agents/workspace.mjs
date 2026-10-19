@@ -95,7 +95,7 @@ export function renderWorkspaceFiles(context, agent, path) {
     });
     const save = element(
       "button",
-      { type: "submit", className: "primary", disabled: true },
+      { type: "submit", className: "button button--primary", disabled: true },
       `Save ${name}`,
     );
     const reload = button(`Reload ${name}`, () => void load(true));

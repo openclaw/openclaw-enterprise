@@ -133,7 +133,7 @@ export function createPluginFields({
   const summary = element("p", { className: "hint" });
   const list = element("div", { className: "plugin-list" });
   const detail = element("div", { className: "plugin-detail" });
-  const loadPlugins = button("Load plugins", () => loadPage("refresh"));
+  const loadPlugins = button("Load plugins", () => loadPage("refresh"), { size: "sm" });
   loadPlugins.hidden = !onLoadPlugins;
   const previous = button("Previous page", () => loadPage("previous"));
   const next = button("Next page", () => loadPage("next"));
@@ -968,7 +968,11 @@ export function createPluginFields({
               element(
                 "span",
                 { className: "plugin-tool-actions" },
-                element("span", { className: "plugin-tool-policy-action" }, "Tool policy"),
+                element(
+                  "span",
+                  { className: "button button--sm plugin-tool-policy-action" },
+                  "Tool policy",
+                ),
                 enabledOverride,
               ),
             ),

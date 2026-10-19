@@ -188,13 +188,19 @@ export function renderAgentLogs(
   });
   const followButton = button("Follow", () => setFollow(!following), {
     "aria-pressed": "false",
+    size: "sm",
     className: "log-follow",
     disabled: true,
   });
   const refreshButton = button("Refresh logs", () => void readLogs({ restart: true }), {
+    tone: "ghost",
+    size: "sm",
     disabled: true,
   });
-  const downloadButton = button("Download", () => void download(), { disabled: true });
+  const downloadButton = button("Download", () => void download(), {
+    size: "sm",
+    disabled: true,
+  });
   const hiddenLevels = new Set();
   const levelChips = LEVELS.map((level) =>
     button(
