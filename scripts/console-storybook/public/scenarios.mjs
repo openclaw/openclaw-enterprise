@@ -3794,6 +3794,18 @@ export const scenarios = {
       "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
     ],
   },
+  agentsLongNameJoiners: {
+    group: "Pages/Agents",
+    name: "Long name of word-joiner runs",
+    deployed: true,
+    agentName: `Joiners ${`${"\u2060".repeat(20)} `.repeat(9)}`.trimEnd(),
+    actions: [{ selector: 'input[type="search"]', value: "Joiners" }],
+    description:
+      "A 196-character name of word-joiner (U+2060) runs of 20, each just short of the long-name threshold, found by a search. Checking such a name took seconds and froze the list on load and on each search keystroke (finding 1999); the check is now linear, so search answers at once and the name wraps as before.",
+    steps: [
+      "Clear Search Agents, then type Joiners one letter at a time. Each letter filters the list at once, and the Agent stays listed.",
+    ],
+  },
   agentsLongNamePhone: {
     group: "Pages/Agents",
     name: "Long unbroken name (phone)",

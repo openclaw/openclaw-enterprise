@@ -8,6 +8,7 @@ export const LongName = story("agentsLongName");
 export const LongNameDigits = story("agentsLongNameDigits");
 export const LongNamePunctuation = story("agentsLongNamePunctuation");
 export const LongNameDashes = story("agentsLongNameDashes");
+export const LongNameJoiners = story("agentsLongNameJoiners");
 export const LongNamePhone = story("agentsLongNamePhone");
 export const AgentsEmpty = { ...story("agentsEmpty"), name: "Empty" };
 export const AgentsSearch = { ...story("agentsSearch"), name: "No search matches" };
