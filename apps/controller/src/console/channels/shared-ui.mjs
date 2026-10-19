@@ -1,4 +1,11 @@
-import { element, button, dismissOnBackdrop, focusSaveOutcome } from "../dom.mjs";
+import {
+  element,
+  button,
+  dismissOnBackdrop,
+  field as formField,
+  focusSaveOutcome,
+  validateOnSubmit,
+} from "../dom.mjs";
 import { renderSecretReference } from "../agents/secret-picker.mjs";
 import { carryList, carryValue } from "../carry.mjs";
 
@@ -13,13 +20,7 @@ export const refsEqual = (left, right) =>
   left.id === right.id;
 
 export function field(label, control, hint) {
-  return element(
-    "div",
-    { className: "channel-field" },
-    element("label", { for: control.id }, label),
-    control,
-    hint ? element("p", { className: "hint", id: `${control.id}-hint` }, hint) : null,
-  );
+  return formField({ label, control, help: hint, className: "channel-field" });
 }
 
 export function checkbox(id, label, checked, disabled = false) {
@@ -511,6 +512,7 @@ function openDrawer(section, state, provider, retained) {
     config.enabled !== false,
   );
   const body = element("form", { method: "dialog", className: "channel-drawer-form" });
+  validateOnSubmit(body);
   const carriedNote = carried
     ? element("p", { className: "hint", role: "status", id: `${provider.id}-carried-edits` })
     : null;

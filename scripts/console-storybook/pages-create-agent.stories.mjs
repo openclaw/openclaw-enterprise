@@ -46,6 +46,10 @@ export const CreateSlackCreateSecretModal = {
   ...story("createSlackCreateSecretModal"),
   name: "Create Slack Secret before Agent exists",
 };
+export const CreateSecretRequiredFields = {
+  ...story("createSecretRequiredFields"),
+  name: "Create Secret required fields",
+};
 export const CreateSlackSecretStaged = {
   ...story("createSlackSecretStaged"),
   name: "Slack Secret bindings staged",
@@ -225,6 +229,10 @@ export const CreatePasswordPreset = {
 export const CreatePasswordPresetMissingModel = {
   ...story("createPasswordPresetMissingModel"),
   name: "Standard Codex missing model",
+};
+export const CreatePresetRequiredFields = {
+  ...story("createPresetRequiredFields"),
+  name: "Preset required fields",
 };
 export const CreatePasswordPresetDraft = {
   ...story("createPasswordPresetDraft"),

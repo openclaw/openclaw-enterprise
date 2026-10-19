@@ -1,4 +1,4 @@
-import { button, element, revealStatus, setStatusTone } from "../dom.mjs";
+import { button, element, revealStatus, setStatusTone, validateOnSubmit } from "../dom.mjs";
 import { message, namespacePath, rejectionMessage } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }];
@@ -75,6 +75,8 @@ export function renderAgentAccess(context, agent) {
     ),
     element("div", { className: "form-actions" }, share),
   );
+  // The console checks the Principal ID and the acknowledgement, not the browser (UX plan C3).
+  validateOnSubmit(form);
   const state = {
     pending: false,
     loaded: false,

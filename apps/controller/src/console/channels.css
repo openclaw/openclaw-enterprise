@@ -54,20 +54,32 @@
   align-items: start;
 }
 
+/* The form field pattern (console.css "Form field"); the drawer's grid gap spaces the fields. */
 .channel-field {
-  display: grid;
-  gap: 0.35rem;
+  margin: 0;
+}
+
+.channel-field > label {
+  display: block;
+  font-weight: var(--weight-medium);
+  margin-bottom: var(--space-2);
 }
 
 .channel-field input,
 .channel-field select {
   width: 100%;
-  padding: 11px 12px;
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text);
+  min-height: var(--control-h);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text);
   font: inherit;
+}
+
+.channel-field > .hint {
+  margin-top: var(--space-1);
+  font-size: var(--text-md);
 }
 
 .channel-check {

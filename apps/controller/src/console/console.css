@@ -405,9 +405,10 @@ p {
 .auth input {
   display: block;
   width: 100%;
+  min-height: var(--control-h);
   border: 1px solid var(--input-border);
   border-radius: var(--radius);
-  padding: 12px;
+  padding: var(--space-2) var(--space-3);
   background: var(--surface);
   color: inherit;
 }
@@ -462,12 +463,15 @@ p {
   /* Refusals name long setting paths and request IDs; wrap them in a phone-width card. */
   overflow-wrap: anywhere;
 }
-/* A field's own error sits under it, like its hint, not after the form (finding 1903). */
-.error.field-error {
-  margin-top: var(--space-2);
+/* A field's own error sits under its control, above its help, not after the form (finding
+   1903): danger text, linked by aria-describedby, with aria-invalid on the control. */
+.field-error {
+  margin: var(--space-1) 0 0;
   font-size: var(--text-md);
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
 }
-.form-field [aria-invalid="true"] {
+[aria-invalid="true"]:not([type="checkbox"]):not([type="radio"]) {
   border-color: var(--color-danger);
 }
 /* Status block (UX plan C1): an error, warning or notice. A stripe in the tone's colour on its
@@ -1400,15 +1404,23 @@ select:not([multiple])[size="1"] {
 .agent-form {
   max-width: 960px;
 }
+/* Form field (UX plan C3): label, control, the control's error, then help. Built by field() in
+   dom.mjs; .form-field and .channel-field are older names. One control height (--control-h) and
+   one help layout. */
+.field,
 .form-field {
-  margin: 20px 0;
+  margin: var(--space-5) 0;
 }
+.field > label,
 .form-field label,
 .revision-selector label {
   display: block;
-  font-weight: 550;
-  margin-bottom: 8px;
+  font-weight: var(--weight-medium);
+  margin-bottom: var(--space-2);
 }
+.field input,
+.field select,
+.field textarea,
 .form-field input,
 .form-field select,
 .form-field textarea,
@@ -1417,9 +1429,27 @@ select:not([multiple])[size="1"] {
 .plugin-json textarea,
 .revision-selector select {
   width: 100%;
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
-  padding: 11px 12px;
+  min-height: var(--control-h);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+.field input[type="checkbox"],
+.field input[type="radio"] {
+  width: auto;
+}
+.field input[type="checkbox"],
+.field input[type="radio"],
+.form-field input[type="checkbox"],
+.form-field input[type="radio"] {
+  min-height: 0;
+}
+.field > .hint,
+.form-field > .hint,
+.field-help {
+  margin-top: var(--space-1);
+  font-size: var(--text-md);
+  color: var(--color-text-muted);
 }
 .secret-typeahead {
   position: relative;
@@ -1931,8 +1961,19 @@ select:not([multiple])[size="1"] {
 
 .agent-access-form {
   display: grid;
-  gap: 0.65rem;
+  gap: var(--space-3);
   max-width: 44rem;
+}
+
+/* The grid gap spaces the form; a field's help and the acknowledgement's error sit under their
+   control, as in every other field (UX plan C3). */
+.agent-access-form > .form-field {
+  margin: 0;
+}
+
+.agent-access-form > .form-field + .hint,
+.agent-access-form > .field-error {
+  margin-top: calc(var(--space-1) - var(--space-3));
 }
 
 .agent-access-consent {
@@ -2492,10 +2533,6 @@ select:not([multiple])[size="1"] {
 }
 .launch-preset legend {
   display: none;
-}
-.launch-preset select {
-  width: 100%;
-  margin: 8px 0;
 }
 .launch-advanced,
 .launch-runtime,

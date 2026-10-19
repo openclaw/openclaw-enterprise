@@ -1,4 +1,10 @@
-import { element, dismissOnBackdrop } from "../dom.mjs";
+import {
+  dismissOnBackdrop,
+  element,
+  field as formField,
+  setFieldError,
+  validateFields,
+} from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
 
 export function secretIdForBinding(binding) {
@@ -384,6 +390,10 @@ export function createSecretReferenceField({
         ? `${label} is required.`
         : "",
     );
+    // A binding is chosen without an input event; its "is required" error goes with it.
+    if (input.validity.valid) {
+      setFieldError(input, "");
+    }
     if (manuallyDisabled) {
       closeListbox({ restoreSelection: true });
     }
@@ -440,6 +450,7 @@ export function createSecretReferenceField({
       id: `create-${id}-name`,
       type: "text",
       required: "",
+      "data-trim": "",
       autocomplete: "off",
       value: createSecretName(),
     });
@@ -467,7 +478,7 @@ export function createSecretReferenceField({
       : null;
     const form = element(
       "form",
-      { method: "dialog", className: "channel-drawer-form" },
+      { method: "dialog", className: "channel-drawer-form", novalidate: "" },
       element(
         "div",
         { className: "channel-drawer-head" },
@@ -475,32 +486,25 @@ export function createSecretReferenceField({
         element("button", { type: "button" }, "Close"),
       ),
       fixedKey
-        ? element(
-            "div",
-            { className: "form-field" },
-            element("label", { for: fixedKey.id }, createFixedKey.label),
-            fixedKey,
-            element("p", { className: "hint" }, createFixedKey.hint),
-          )
+        ? formField({
+            label: createFixedKey.label,
+            control: fixedKey,
+            help: createFixedKey.hint,
+            className: "form-field",
+          })
         : null,
-      element(
-        "div",
-        { className: "form-field" },
-        element("label", { for: name.id }, "Name"),
-        name,
-        element("p", { className: "hint" }, "Unique within this Namespace."),
-      ),
-      element(
-        "div",
-        { className: "form-field" },
-        element("label", { for: value.id }, "Value"),
-        value,
-        element(
-          "p",
-          { className: "hint" },
-          "Stored as a Namespace Secret. The value is never read back.",
-        ),
-      ),
+      formField({
+        label: "Name",
+        control: name,
+        help: "Unique within this Namespace.",
+        className: "form-field",
+      }),
+      formField({
+        label: "Value",
+        control: value,
+        help: "Stored as a Namespace Secret. The value is never read back.",
+        className: "form-field",
+      }),
       feedback,
       element("div", { className: "dialog-actions" }, cancel, submit),
     );
@@ -522,18 +526,14 @@ export function createSecretReferenceField({
     };
     form.querySelector(".channel-drawer-head button").addEventListener("click", close);
     cancel.addEventListener("click", close);
-    name.addEventListener("input", () => name.setCustomValidity(""));
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (creating || outcomeUnknown || !form.reportValidity()) {
+      // The console checks the fields, so no browser bubble shows; a Name of only spaces is
+      // missing too (UX plan C3).
+      if (creating || outcomeUnknown || !validateFields([...form.elements])) {
         return;
       }
       const secretName = name.value.trim();
-      if (!secretName) {
-        name.setCustomValidity("Name is required.");
-        form.reportValidity();
-        return;
-      }
       creating = true;
       submit.disabled = true;
       cancel.disabled = true;
