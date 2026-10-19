@@ -571,11 +571,40 @@ class OpenShellGatewayRequestFailure extends DependencyUnavailableError {
   }
 }
 
+// gRPC UNAVAILABLE says two different things. grpc-js synthesises it, with these fixed details,
+// when it never reached the gateway or lost the connection under a call: the gateway did not
+// answer. The gateway also sends UNAVAILABLE itself, with its own reason, for failures that do
+// not clear by themselves (at the pinned OpenShell, resource admission's Kubernetes 401/403/TLS
+// errors, credential driver errors, finding 2042). Only the first is an outage. The list is an
+// allowlist on purpose: anything else, including a TLS failure (an untrusted gateway certificate,
+// a refused client certificate), is an ordinary failed request on the attempt budget.
+const UNANSWERED_REQUEST_DETAILS: readonly RegExp[] = [
+  // The connection closed or was reset under an in-flight call (the gateway process is gone).
+  /^Connection dropped$/u,
+  /^(?:read|write) (?:ECONNRESET|ETIMEDOUT)$/u,
+  // The gateway refused the stream before handling it (shutting down, or at its stream limit).
+  /^Stream refused by server$/u,
+  // No address for the gateway, or no connection to any of them: nothing listens there.
+  /^Name resolution failed for target /u,
+  /^No connection established\. Last error: (?:No addresses resolved|(?:Error: )?(?:connect (?:ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)|(?:read|write) (?:ECONNRESET|ETIMEDOUT|EPIPE)))\b/u,
+];
+
+/** True only for grpc-js's own UNAVAILABLE for a gateway that did not answer (finding 2042). */
+function gatewayDidNotAnswer(error: unknown): boolean {
+  const details = asRecord(error)?.details;
+  return (
+    rawStatusCode(error) === GRPC_UNAVAILABLE &&
+    typeof details === "string" &&
+    UNANSWERED_REQUEST_DETAILS.some((pattern) => pattern.test(details))
+  );
+}
+
 function gatewayRequestFailure(
   method: OpenShellMethod | "ExecSandbox",
   error: unknown,
+  unanswered: boolean = gatewayDidNotAnswer(error),
 ): OpenShellGatewayRequestFailure | OpenShellGatewayUnavailableError {
-  return rawStatusCode(error) === GRPC_UNAVAILABLE
+  return unanswered
     ? new OpenShellGatewayUnavailableError(gatewayRequestFailureMessage(method, error))
     : new OpenShellGatewayRequestFailure(method, error);
 }
@@ -1326,11 +1355,23 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           exitCode = value;
         });
         call.on("error", (error: unknown) => {
-          finish(gatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
+          finish(
+            gatewayRequestFailure(
+              "ExecSandbox",
+              { code: rawStatusCode(error) },
+              gatewayDidNotAnswer(error),
+            ),
+          );
         });
         call.on("end", () => finish());
       } catch (error) {
-        finish(gatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
+        finish(
+          gatewayRequestFailure(
+            "ExecSandbox",
+            { code: rawStatusCode(error) },
+            gatewayDidNotAnswer(error),
+          ),
+        );
         call?.cancel();
       }
     });
