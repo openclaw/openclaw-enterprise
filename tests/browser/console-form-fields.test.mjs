@@ -1,0 +1,289 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
+import {
+  apiRequests,
+  detailUrl,
+  fileBrowser,
+  login,
+  nativeValues,
+  newPage,
+  nonAuthWriteRequests,
+} from "./console-agents-browser-helpers.mjs";
+import {
+  openCreateSecretDialog,
+  routeInstallationWithoutProvisioning,
+  waitForCreateFormReads,
+} from "./console-agents-test-support.mjs";
+
+// Form fields share one pattern (UX plan C3): a label, the control, its error, then its help.
+// The console checks required fields itself, so the browser's transient bubble never shows; it
+// writes a persistent error under each field, links it with aria-describedby and aria-invalid,
+// and moves focus to the first field to fix.
+
+const browser = fileBrowser();
+
+const defaultCodexPreset = JSON.parse(
+  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+);
+const standardCodexPreset = JSON.parse(
+  await readFile(new URL("../../deploy/presets/standard-codex.json", import.meta.url), "utf8"),
+);
+const createConsoleAppFixture = (t, options = {}) =>
+  createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+
+// Counts the browser's `invalid` events. Its validation fires one per refused control whenever
+// it would show a bubble (a submit without novalidate, or reportValidity); the console's own
+// check reads `validity` and fires none.
+async function countInvalidEvents(page) {
+  await page.addInitScript(() => {
+    globalThis.invalidEvents = [];
+    globalThis.document.addEventListener(
+      "invalid",
+      (event) => globalThis.invalidEvents.push(event.target.id || event.target.tagName),
+      true,
+    );
+  });
+  return () => page.evaluate(() => globalThis.invalidEvents);
+}
+
+// A control's accessible name and description as Chromium's accessibility tree computes them,
+// which is what a screen reader announces on focus.
+async function accessible(page, locator) {
+  await locator.evaluate((node) => node.setAttribute("data-ax-probe", ""));
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    const { nodeId } = await cdp.send("DOM.querySelector", {
+      nodeId: root.nodeId,
+      selector: "[data-ax-probe]",
+    });
+    const { nodes } = await cdp.send("Accessibility.getPartialAXTree", {
+      nodeId,
+      fetchRelatives: false,
+    });
+    const [node] = nodes;
+    return {
+      name: node.name?.value ?? "",
+      description: node.description?.value ?? "",
+      invalid: node.properties?.find((property) => property.name === "invalid")?.value?.value,
+    };
+  } finally {
+    await cdp.detach();
+    await locator.evaluate((node) => node.removeAttribute("data-ax-probe"));
+  }
+}
+
+// The field's error sits under its control (or the control's wrapper), inside the same field,
+// and reads in the danger colour.
+const errorPlacement = (control) =>
+  control.evaluate((node) => {
+    const error = globalThis.document.getElementById(`${node.id}-error`);
+    if (!error || error.hidden) {
+      return null;
+    }
+    const field = node.closest(".field, .form-field, .channel-field");
+    const probe = globalThis.document.createElement("span");
+    probe.style.color = "var(--color-danger)";
+    globalThis.document.body.append(probe);
+    const danger = globalThis.getComputedStyle(probe).color;
+    probe.remove();
+    return {
+      text: error.textContent,
+      inField: Boolean(field?.contains(error)),
+      below: error.getBoundingClientRect().top >= node.getBoundingClientRect().bottom,
+      danger: globalThis.getComputedStyle(error).color === danger,
+    };
+  });
+
+const focusedId = (page) => page.evaluate(() => globalThis.document.activeElement?.id ?? null);
+
+async function assertFieldError(page, control, { name, error, help }) {
+  const shown = await accessible(page, control);
+  assert.equal(shown.name, name, `${name}: accessible name`);
+  assert.equal(shown.invalid, "true", `${name}: aria-invalid`);
+  assert.ok(shown.description.includes(error), `${name}: described by "${shown.description}"`);
+  if (help) {
+    assert.ok(shown.description.includes(help), `${name}: described by its help`);
+  }
+  const placement = await errorPlacement(control);
+  assert.deepEqual(placement, { text: error, inField: true, below: true, danger: true }, name);
+}
+
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`Use Preset checks its variables without the browser bubble at ${viewport.width}px`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Preset fields", { ready: true });
+    const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+      body: standardCodexPreset,
+    });
+    assert.equal(preset.status, 201, JSON.stringify(preset.body));
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    const invalidEvents = await countInvalidEvents(page);
+    await routeInstallationWithoutProvisioning(page, fixture);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    const selector = page.getByLabel("Preset template", { exact: true });
+    await selector.selectOption(preset.data.id);
+    const name = page.getByLabel("Name", { exact: true });
+    const model = page.getByLabel("Model", { exact: true });
+    const secret = page.getByLabel("Model Secret", { exact: true });
+    await name.waitFor();
+    // A single-line value is an input, not a resizable textarea.
+    assert.equal(await name.evaluate((node) => node.tagName), "INPUT");
+    // The Preset select has the shared input chrome and control height.
+    const chrome = await selector.evaluate((node) => {
+      const probe = globalThis.document.createElement("span");
+      probe.style.color = "var(--color-border-strong)";
+      globalThis.document.body.append(probe);
+      const strong = globalThis.getComputedStyle(probe).color;
+      probe.remove();
+      const style = globalThis.getComputedStyle(node);
+      return {
+        edge: style.borderTopWidth === "1px" && style.borderTopColor === strong,
+        height: Math.round(node.getBoundingClientRect().height),
+      };
+    });
+    const inputHeight = Math.round((await name.boundingBox()).height);
+    assert.equal(chrome.edge, true, "the Preset select has the input edge");
+    assert.equal(chrome.height, inputHeight, "the Preset select is as tall as the inputs");
+    assert.ok(inputHeight >= 40, `controls are at least --control-h tall (${inputHeight})`);
+
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+    assert.equal(await focusedId(page), await name.getAttribute("id"), "focus on the first");
+    await assertFieldError(page, name, {
+      name: "Name",
+      error: "Name is required.",
+      help: "Name for the new Agent",
+    });
+    await assertFieldError(page, model, {
+      name: "Model",
+      error: "Model is required.",
+      help: "Codex model ID without the codex/ prefix",
+    });
+    await assertFieldError(page, secret, {
+      name: "Model Secret",
+      error: "Model Secret is required.",
+      help: "Model API key; stored as a Secret when you create the Agent",
+    });
+    // The Preset group's own alert stays empty: the errors are under the fields.
+    assert.equal(
+      await page.getByRole("group", { name: "Preset" }).getByRole("alert").textContent(),
+      "",
+    );
+    assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+
+    // Fixing a field clears its error; the others stay until the next check.
+    await name.fill("Field Agent");
+    const fixed = await accessible(page, name);
+    assert.equal(fixed.invalid, "false");
+    assert.equal(fixed.description, "Name for the new Agent");
+    assert.equal(await errorPlacement(name), null);
+    assert.equal((await accessible(page, model)).invalid, "true");
+    // The next check moves focus to the first field still wrong.
+    await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+    assert.equal(await focusedId(page), await model.getAttribute("id"));
+    assert.deepEqual(await invalidEvents(), []);
+  });
+}
+
+test("Create Agent checks its fields without the browser bubble and focuses the first", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Create fields", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  const invalidEvents = await countInvalidEvents(page);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await waitForCreateFormReads(page);
+  const name = page.getByLabel("Agent name", { exact: true });
+  await name.fill("   ");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+  assert.equal(await focusedId(page), "agent-name");
+  // Spaces alone are no name: the API trims them.
+  await assertFieldError(page, name, {
+    name: "Agent name",
+    error: "Agent name is required.",
+    help: "Unique within this Namespace.",
+  });
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("the Create Secret dialog checks its fields without the browser bubble", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret fields", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  const invalidEvents = await countInvalidEvents(page);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await waitForCreateFormReads(page);
+  await openCreateSecretDialog(page, "API key Secret");
+  const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+  const name = dialog.getByLabel("Name", { exact: true });
+  const value = dialog.getByLabel("Value", { exact: true });
+  await name.fill("  ");
+  await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+  assert.equal(await focusedId(page), await name.getAttribute("id"));
+  await assertFieldError(page, name, {
+    name: "Name",
+    error: "Name is required.",
+    help: "Unique within this Namespace.",
+  });
+  await assertFieldError(page, value, {
+    name: "Value",
+    error: "Value is required.",
+    help: "Stored as a Namespace Secret. The value is never read back.",
+  });
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("Share Agent checks its fields without the browser bubble", async (t) => {
+  const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["field-recipient"] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Share fields");
+  const agent = await fixture.createAgent(namespace.id, "Share fields", nativeValues("fields"));
+  const { page } = await newPage(t, fixture, { browser });
+  const invalidEvents = await countInvalidEvents(page);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  const principal = panel.getByLabel("Existing person’s Principal ID", { exact: true });
+  const acknowledge = panel.getByRole("checkbox");
+  const share = panel.getByRole("button", { name: "Share Agent", exact: true });
+  await page.waitForFunction(
+    () => !globalThis.document.querySelector("#share-principal-id")?.disabled,
+  );
+  await share.click();
+  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+  assert.equal(await focusedId(page), "share-principal-id");
+  await assertFieldError(page, principal, {
+    name: "Existing person’s Principal ID",
+    error: "Existing person’s Principal ID is required.",
+    help: "Use the Principal ID returned when the person was provisioned in this Installation. This does not create an account.",
+  });
+  const consent = await accessible(page, acknowledge);
+  assert.equal(consent.invalid, "true");
+  assert.equal(consent.description, "Check this box to continue.");
+  // Both errors clear as the fields are fixed, and the share goes ahead.
+  await principal.fill(fixture.provisionedAccounts[0].principal.id);
+  await acknowledge.check();
+  assert.equal((await accessible(page, principal)).invalid, "false");
+  assert.equal((await accessible(page, acknowledge)).invalid, "false");
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  await share.click();
+  await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
+  assert.deepEqual(await invalidEvents(), []);
+});
