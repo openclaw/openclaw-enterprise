@@ -599,7 +599,10 @@ test("a Namespace listing caps its objects and a failed read's error", async () 
   const reason = `error: ${"y".repeat(400)}`;
   const { kubectl } = namespaceKubectl({
     "get namespace": JSON.stringify({ spec: {}, status: { phase: "Terminating" } }),
-    "api-resources --namespaced=true": "pods\n",
+    "api-resources --namespaced=true": Object.assign(
+      kubectlFailure("error: discovery failed for one group\nsecond line of detail\n"),
+      { stdout: "pods\n" },
+    ),
     "get pods": Object.assign(kubectlFailure(`${reason}\nsecond line of detail\n`), {
       stdout: `${objects.join("\n")}\n`,
     }),
@@ -609,6 +612,7 @@ test("a Namespace listing caps its objects and a failed read's error", async () 
       error.message.slice(error.message.indexOf("\nNamespace oce-held")),
       [
         "\nNamespace oce-held remains: phase Terminating, finalizers []",
+        "listing kinds failed: error: discovery failed for one group",
         `listing objects failed: ${reason.slice(0, 300)}`,
         ...Array.from({ length: 40 }, (_, index) => `Pod/p-${index}`),
         "and 5 more objects",

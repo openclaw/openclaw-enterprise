@@ -268,11 +268,13 @@ test("the session evidence tolerates malformed rows and lists the newest marker 
   }
   const options = { sessionKey: "proof", turnMarker: marker, toolName: "list_calendars" };
 
-  // A truncated row from an earlier turn, before the evidence window, leaves the proof intact.
+  // A truncated row from an earlier turn, before the evidence window, and one inside it leave the
+  // proof intact: a row that is not JSON establishes nothing either way.
   const proven = await transcript("malformed", [
     '{"type":"message","message":{"role":"user"',
     prompt(1),
     call,
+    '{"type":"custom"',
     result(false),
     answer,
   ]).assertSessionToolCallEvidence({}, options);
