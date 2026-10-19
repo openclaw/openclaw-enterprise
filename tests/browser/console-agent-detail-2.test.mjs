@@ -504,7 +504,13 @@ test("failed repeat deletion preserves feedback when a poll was rearmed during i
   }
 });
 
-test("a repeat confirmed during a deletion status read waits for it, shows as sending, then sends once", async (t) => {
+test("a repeat confirmed during a deletion status read waits for it, shows as sending, then sends once", (t) =>
+  checkRepeatDuringRead(t, { endsAccess: false }));
+
+test("a deletion status read that ends access drops a repeat confirmed while it ran", (t) =>
+  checkRepeatDuringRead(t, { endsAccess: true }));
+
+async function checkRepeatDuringRead(t, { endsAccess }) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Read before repeat", { ready: true });
@@ -540,46 +546,69 @@ test("a repeat confirmed during a deletion status read waits for it, shows as se
     const response = await route.fetch();
     entered();
     await gate;
+    if (endsAccess) {
+      // Finishing the deletion removed the reader's only grants on this Agent.
+      await route.fulfill({
+        status: 403,
+        contentType: "application/json",
+        body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Forbidden." } }),
+      });
+      return;
+    }
     await route.fulfill({ response });
   });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id));
   await page.getByRole("button", { name: "Request deletion again", exact: true }).click();
-  const confirm = page
-    .getByRole("dialog")
-    .getByRole("button", { name: "Request deletion again", exact: true });
+  const dialog = page.getByRole("dialog");
+  const confirm = dialog.getByRole("button", { name: "Request deletion again", exact: true });
   holdRead = true;
   await page.clock.fastForward(DELETION_POLL_MS);
   await pending;
   await confirm.click();
   // The confirmed repeat waits for the read instead of being dropped (finding 1975), and says so.
-  const sending = page.getByRole("dialog").getByRole("button", { name: "Deleting…", exact: true });
+  const sending = dialog.getByRole("button", { name: "Deleting…", exact: true });
   await sending.waitFor();
   assert.equal(await sending.getAttribute("aria-busy"), "true");
   assert.equal(await sending.isDisabled(), true);
   assert.equal(
-    await page
-      .getByRole("dialog")
-      .getByRole("button", { name: "Cancel", exact: true })
-      .isDisabled(),
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).isDisabled(),
     true,
   );
   await page.keyboard.press("Escape");
-  assert.equal(await page.getByRole("dialog").isVisible(), true, "Escape keeps a confirmed repeat");
+  assert.equal(await dialog.isVisible(), true, "Escape keeps a confirmed repeat");
   assert.equal(writes, 0, "pending read prevents delete admission");
+  if (endsAccess) {
+    release();
+    await dialog.waitFor({ state: "detached" });
+    await page
+      .getByRole("status")
+      .getByText(
+        "Deletion was accepted. Your access to this Agent ended with it, so this page cannot follow the cleanup.",
+      )
+      .waitFor();
+    assert.equal(
+      await page
+        .getByRole("heading", { name: "Delete Agent", exact: true })
+        .evaluate((node) => node.matches(":focus")),
+      true,
+    );
+    assert.equal(writes, 0, "a read that ended access sends no repeat");
+    return;
+  }
   const accepted = page.waitForResponse(
     (response) =>
       response.url() === fixture.origin + path && response.request().method() === "DELETE",
   );
   release();
   assert.equal((await accepted).status(), 202);
-  await page.getByRole("dialog").waitFor({ state: "detached" });
+  await dialog.waitFor({ state: "detached" });
   await page.waitForFunction(() =>
     [...globalThis.document.querySelectorAll("button")].some(
       (node) => node.textContent === "Refresh deletion status" && !node.disabled,
     ),
   );
   assert.equal(writes, 1);
-});
+}
 
 test("An uncertain repeat deletion stays blocked until a successful deleting readback", async (t) => {
   const fixture = await createConsoleAppFixture(t);

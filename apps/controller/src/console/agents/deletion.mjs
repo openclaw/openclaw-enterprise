@@ -193,6 +193,13 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
         state.pending = false;
         state.polling = false;
         render();
+        // A read that ended access drops a waiting repeat with its dialog, before focus moves:
+        // the heading cannot take focus while the modal is open. Forbidden and needs-refresh
+        // states cannot arise while one waits; they are checked defensively.
+        const dropQueued = state.accessEnded || state.forbidden || state.needsRefresh;
+        if (queued && dropQueued) {
+          queued.dialog.close();
+        }
         if (state.accessEnded) {
           // Refresh is gone, so keep focus in this section on its heading.
           if (focusedHere) {
@@ -201,13 +208,10 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
         } else if (!quiet && focusedHere) {
           (state.deleting || state.needsRefresh ? refresh : remove).focus({ preventScroll: true });
         }
-        if (queued) {
-          if (state.accessEnded || state.forbidden || state.needsRefresh) {
-            // The read ended what the repeat could do; its outcome is on the page.
-            queued.dialog.close();
-          } else {
-            void deleteAgent(queued.dialog, queued.cancel, queued.confirm);
-          }
+        if (queued && !dropQueued) {
+          // Sent even after a failed read: the reader confirmed it, and its outcome replaces
+          // the read's error.
+          void deleteAgent(queued.dialog, queued.cancel, queued.confirm);
         }
       }
     }
@@ -376,7 +380,12 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
           !(state.pending && !state.polling) &&
           document.activeElement === document.body
         ) {
-          (state.forbidden ? heading : state.needsRefresh ? refresh : remove).focus();
+          (state.forbidden || state.accessEnded
+            ? heading
+            : state.needsRefresh
+              ? refresh
+              : remove
+          ).focus();
         }
       },
       { once: true },
