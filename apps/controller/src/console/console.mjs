@@ -1,4 +1,4 @@
-import { element, button } from "./dom.mjs";
+import { element, button, trackVisualViewport } from "./dom.mjs";
 import {
   clearResolvedSecretNames,
   noteConsoleLoad,
@@ -2380,6 +2380,8 @@ async function logout() {
   }
 }
 
+// Phone bottom sheets stay above the on-screen keyboard (finding 1957).
+trackVisualViewport();
 window.addEventListener("popstate", () => {
   if (!loggingOut) {
     // Browser history can change Agent tabs while the mounted view is inert.

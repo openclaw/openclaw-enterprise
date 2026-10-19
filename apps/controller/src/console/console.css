@@ -1575,6 +1575,8 @@ select:not([multiple])[size="1"] {
     opacity: 0;
   }
 }
+/* The sheet sits on the bottom of the visible area: an on-screen keyboard shrinks only that area,
+   which dom.mjs `trackVisualViewport` mirrors into these properties (finding 1957). */
 @media (max-width: 760px) {
   .dialog,
   .dialog--wide,
@@ -1583,14 +1585,14 @@ select:not([multiple])[size="1"] {
     width: 100%;
     max-width: 100%;
     height: fit-content;
-    max-height: calc(100% - var(--space-8));
-    margin: auto 0 0;
+    max-height: calc(var(--visual-viewport-height, 100%) - var(--space-8));
+    margin: auto 0 var(--visual-viewport-bottom, 0);
     padding: var(--space-4);
     border-bottom: 0;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
   .dialog--wide {
-    height: calc(100% - var(--space-8));
+    height: calc(var(--visual-viewport-height, 100%) - var(--space-8));
   }
 }
 @media (prefers-reduced-motion: reduce) {

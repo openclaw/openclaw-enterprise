@@ -128,6 +128,33 @@ export function dismissOnBackdrop(dialog) {
   });
 }
 
+/**
+ * A phone's on-screen keyboard shrinks the visual viewport, not the layout viewport a modal
+ * dialog sits in, so a bottom sheet's actions ended up under the keyboard (finding 1957). This
+ * mirrors the visible area into `--visual-viewport-height` and `--visual-viewport-bottom` (the
+ * layout viewport's height hidden below it), which the phone sheet sizes itself from
+ * (console.css). Nothing is set while the two viewports match.
+ */
+export function trackVisualViewport(root = document.documentElement) {
+  const viewport = globalThis.visualViewport;
+  if (!viewport) {
+    return;
+  }
+  const update = () => {
+    const bottom = Math.max(0, root.clientHeight - viewport.offsetTop - viewport.height);
+    if (bottom < 1 && Math.abs(root.clientHeight - viewport.height) < 1) {
+      root.style.removeProperty("--visual-viewport-height");
+      root.style.removeProperty("--visual-viewport-bottom");
+    } else {
+      root.style.setProperty("--visual-viewport-height", `${viewport.height}px`);
+      root.style.setProperty("--visual-viewport-bottom", `${bottom}px`);
+    }
+  };
+  viewport.addEventListener("resize", update);
+  viewport.addEventListener("scroll", update);
+  update();
+}
+
 let describedFocusIds = 0;
 
 /**
