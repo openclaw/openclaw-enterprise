@@ -89,6 +89,11 @@ provides transport for trusted Gateway integrations. Harness egress and Credenti
 Proxy credential mediation remain separate; composition with protected Harness or
 Credential Proxy configurations is unqualified.
 
+The **Policy denials** tab manages [Sandbox network policies](sandbox-policies.md).
+Its grants and this **Network** tab's Gateway selection are separate settings with
+separate permissions. A revision can retain both snapshots. Saving or applying a
+Sandbox grant does not approve additional Gateway access.
+
 CONNECT admits only port 443. The proxy validates the hostname, resolves it once,
 rejects any forbidden DNS answer, and connects to a vetted IPv4 literal. Private,
 loopback, link-local, metadata, CGNAT, reserved and configured infrastructure
@@ -150,4 +155,4 @@ an allowed hostname can mean the plugin transport does not honor the proxy.
 
 [Runtime flow](../flows/gateway-outbound.md) explains resource ordering.
 [Testing](../testing/gateway-outbound.md) records selected proof and limits.
-[RFC-0021](../../specs/rfcs/0021-gateway-outbound.md) records the architectural proposal.
+[RFC-0021](../../specs/rfcs/0023-gateway-outbound.md) records the architectural proposal.

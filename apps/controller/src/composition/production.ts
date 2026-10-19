@@ -258,6 +258,7 @@ export async function composeProduction(config: ProductionConfig) {
         : { managedProxyHost: config.controlPlaneOutboundProxyManagedHost }),
     });
     const controller = new OpenClawController(persistedInstallation, {
+      sandboxNetworkPolicyCeiling: config.drivers.installation.sandboxNetworkPolicyCeiling ?? [],
       state,
       recordOperations: true,
       backends: installation.backend,

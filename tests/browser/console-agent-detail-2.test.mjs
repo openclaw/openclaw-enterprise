@@ -35,6 +35,7 @@ import {
   waitForIdleFetches,
   waitForInputValue,
   waitForSettledFetches,
+  statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -143,6 +144,12 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
 
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  // Queued deletion is an info notice, not a warning (finding 2006).
+  assert.deepEqual(await statusTone(page.getByText(/^Deletion was requested\. /)), {
+    className: "status",
+    tone: "info",
+    role: "status",
+  });
   await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
   // The dialog's close event arrives after the request put focus on the status check. It must
   // not move focus back to the relabelled danger button "Request deletion again" (finding 1421).
@@ -1761,6 +1768,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     "Repositories",
     "Credentials",
     "Workspace files",
+    "Policy denials",
   ];
   assert.deepEqual(await list.getByRole("tab").allTextContents(), names);
   // Which tab is selected, which one is the Tab stop, which has focus, and the URL's tab=.
@@ -1801,9 +1809,9 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     ["ArrowLeft", "Channels"],
     ["ArrowLeft", "Plugins"],
     ["ArrowLeft", "Configuration"],
-    ["ArrowLeft", "Workspace files"],
+    ["ArrowLeft", "Policy denials"],
     ["ArrowRight", "Configuration"],
-    ["End", "Workspace files"],
+    ["End", "Policy denials"],
     ["Home", "Configuration"],
   ]) {
     await page.keyboard.press(key);
@@ -1884,7 +1892,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await list.getByRole("tab", { name: "Configuration", exact: true }).focus();
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
-  await page.waitForURL("**tab=workspace**");
+  await page.waitForURL("**tab=policy**");
   await page.goBack();
   await page.waitForURL("**tab=configuration**");
   await page.waitForFunction(
@@ -1898,11 +1906,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await page.keyboard.press("End");
   await page.setViewportSize({ width: 360, height: 844 });
   await frames();
-  assert.deepEqual(
-    await focusedInView(),
-    { name: "Workspace files", inView: true },
-    "after resize",
-  );
+  assert.deepEqual(await focusedInView(), { name: "Policy denials", inView: true }, "after resize");
   await page.setViewportSize({ width: 390, height: 844 });
   await strip.evaluate((node) => {
     node.scrollLeft = node.scrollWidth;
@@ -1911,7 +1915,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-before"),
   );
   assert.deepEqual(await edges(), { before: true, after: false, masked: true });
-  // Leave room for every tab beside both navigation columns with Linux and macOS fonts.
+  // Leave room for every tab, including Policy denials, beside both navigation columns with Linux and macOS fonts.
   await page.setViewportSize({ width: 1920, height: 900 });
   await page.waitForFunction(() => {
     const node = globalThis.document.querySelector(".agent-tabs");
@@ -3208,6 +3212,13 @@ test("a Workspace reread keeps the caret and scroll of a focused, unedited edito
   const start = before.indexOf("line 30 ");
   assert.equal(after.indexOf("line 30 "), start);
   await waitForInputValue(soul, before);
+  // The files can load while the detail view is still held back for its overview read, and a
+  // hidden editor has no scroll height and takes no focus; wait until SOUL.md is shown and
+  // overflows (finding 2034).
+  await page.waitForFunction(() => {
+    const node = globalThis.document.getElementById("workspace-SOUL.md");
+    return node?.scrollHeight > node?.clientHeight;
+  });
   // The reader clicks into line 30 and selects a word; the editor scrolls to centre that line.
   // Lines are alike, so the line's share of the text is its share of the scroll height.
   await soul.evaluate((node, offset) => {

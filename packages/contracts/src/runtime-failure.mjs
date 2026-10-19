@@ -189,3 +189,23 @@ export const PROCESS_EXIT_ERROR_CODES = Object.freeze([
 
 /** The highest process exit status a `PROCESS_EXIT` cause may name, as `exit-<status>`. */
 export const PROCESS_EXIT_MAX_STATUS = 255;
+
+/**
+ * The classes of a failed Codex login's or startup model check's error output (finding 2017):
+ * its stderr and, for the model check, the messages of its `error` and `turn.failed` events
+ * (finding 2043), whichever names the more specific class:
+ * `network` (DNS, connect, reset or a transport timeout), `tls`, `http_401_403`, `http_5xx`,
+ * `http_other` (another 4xx), `timeout` (the wrapper's own process timeout, when the output
+ * names none of those), `empty` and `unknown`. The runtime wrapper logs only the class,
+ * never the output.
+ */
+export const CODEX_FAILURE_OUTPUT_CLASSES = Object.freeze([
+  "network",
+  "tls",
+  "http_401_403",
+  "http_5xx",
+  "http_other",
+  "timeout",
+  "empty",
+  "unknown",
+]);

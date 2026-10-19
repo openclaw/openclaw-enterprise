@@ -53,7 +53,9 @@
                 ]
               }
             ],
-            "hidden": ["guides/README"]
+            "hidden": [
+              "guides/README"
+            ]
           },
           {
             "tab": "Topics",
@@ -715,7 +717,9 @@
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding"]
+            "hidden": [
+              "reference/postgres-auth-binding"
+            ]
           },
           {
             "tab": "Contribute",
@@ -935,6 +939,7 @@
               "contributing/rfc-template",
               "guides/deploy/local-repository-credentials",
               "guides/deploy/local-compose-kubernetes",
+              "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
               "reference/settings/development",
               "design/resources",
@@ -1006,7 +1011,10 @@
               "testing/repository-credentials",
               "flows/agent-presets",
               "flows/gateway-outbound",
-              "testing/gateway-outbound"
+              "testing/gateway-outbound",
+              "reference/sandbox-policies",
+              "guides/topics/agent-sandbox-policy",
+              "flows/agent-sandbox-policy"
             ]
           }
         ]

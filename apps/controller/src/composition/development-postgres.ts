@@ -235,6 +235,7 @@ export async function composePostgresDevelopment(
     const { driver: channelDriver, channelNetworkRequirements } =
       createBundledChannelCapabilities();
     const controller = new OpenClawController(persistedInstallation, {
+      sandboxNetworkPolicyCeiling: drivers?.installation.sandboxNetworkPolicyCeiling ?? [],
       state,
       recordOperations: true,
       defaultPresets: drivers?.defaultPresets ?? [],

@@ -2694,6 +2694,15 @@ test(
       ],
       denyCidrs: ["10.42.0.0/16"],
     };
+    // A dedicated revision can own both policies. Adding Gateway authority must
+    // preserve the separately admitted Sandbox snapshot in the database CHECK.
+    const sandboxPolicy = {
+      driverId: "sandbox-contract",
+      implementation: "openshell",
+      version: 1,
+      defaults: {},
+      additions: [],
+    };
     const revision = await state.transact((unit) =>
       unit.revisions.createRevision({
         ...fixture.revision,
@@ -2701,6 +2710,8 @@ test(
         revision: nextNumber,
         harness: { ...fixture.revision.harness, mode: "dedicated" },
         gatewayOutbound,
+        sandboxDriverId: sandboxPolicy.driverId,
+        sandboxPolicy,
       }),
     );
     await state.transact((unit) =>
@@ -2728,6 +2739,7 @@ test(
       "draft tightening cannot rewrite an admitted version",
     );
     assert.equal(Object.isFrozen(reloaded.gatewayOutbound), true);
+    assert.deepEqual(reloaded.sandboxPolicy, sandboxPolicy);
     await assert.rejects(
       pool.query(
         "UPDATE occ.agent_revisions SET admitted_spec=jsonb_set(admitted_spec,'{gateway_outbound}', $1::jsonb) WHERE id=$2",

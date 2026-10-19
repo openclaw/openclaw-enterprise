@@ -16,6 +16,30 @@ export {
   GATEWAY_OUTBOUND_HOST_PATTERN,
 } from "./gateway-outbound.ts";
 
+export type { SandboxPolicyDecision } from "./sandbox-policy.ts";
+export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandbox-policy.ts";
+import type {
+  SandboxNetworkGrant,
+  SandboxPolicySnapshot,
+  SandboxPolicyObservation,
+  SandboxPolicyRecommendations,
+} from "./sandbox-policy.ts";
+
+export type {
+  SandboxNetworkGrant,
+  SandboxPolicy,
+  SandboxPolicySnapshot,
+  SandboxPolicyApplication,
+  SandboxPolicyObservation,
+  SandboxPolicyRecommendation,
+  SandboxPolicyRecommendations,
+} from "./sandbox-policy.ts";
+export {
+  SandboxNetworkGrantSchema,
+  SandboxNetworkGrantsSchema,
+  validateSandboxNetworkGrants,
+  sandboxNetworkGrantsWithinCeiling,
+} from "./sandbox-policy.ts";
 import type { WorkspaceSetup } from "./workspace-setup.ts";
 
 export type { ComputePreparationFailureEvidence } from "./compute-preparation.ts";
@@ -235,6 +259,7 @@ export const RESOURCE_KINDS = Object.freeze([
   "agent",
   "agent_revision",
   "credential_source",
+  "sandbox_policy",
 ] as const);
 
 export type ResourceKind = (typeof RESOURCE_KINDS)[number];
@@ -735,6 +760,7 @@ export type AgentDesiredRuntimeState = "running" | "stopped";
  */
 export type AgentStatus = "active" | "deleting";
 export interface Agent extends Scope {
+  readonly sandboxPolicyEditing?: boolean;
   readonly id: string;
   readonly namespaceId: string;
   readonly name: string;
@@ -833,6 +859,7 @@ export interface AgentRevision extends Scope {
     readonly admission?: string;
   };
   readonly sandboxDriverId?: string;
+  readonly sandboxPolicy?: SandboxPolicySnapshot;
   readonly secretDriverId?: string;
   readonly secretBindings?: SecretBindings;
   readonly plugins?: PluginRevisionState;
@@ -925,6 +952,7 @@ export const PERMISSION_ACTIONS = Object.freeze([
   "operate",
   "administer",
   "read_logs",
+  "manage_policy",
 ] as const);
 
 export type PermissionAction = (typeof PERMISSION_ACTIONS)[number];
@@ -944,6 +972,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
   service_account: Object.freeze(["create", "read", "update", "delete"] as const),
   secret: Object.freeze(["create", "read", "update", "delete", "operate"] as const),
   credential_source: Object.freeze(["create", "read", "update", "delete", "operate"] as const),
+  sandbox_policy: Object.freeze(["read", "update"] as const),
   agent: Object.freeze([
     "create",
     "read",
@@ -953,6 +982,7 @@ export const SUPPORTED_PERMISSION_ACTIONS: Readonly<
     "operate",
     "administer",
     "read_logs",
+    "manage_policy",
   ] as const),
   agent_revision: Object.freeze(["read"] as const),
 });
@@ -1350,6 +1380,7 @@ export type ManagedIAMResourceKind =
   | "agent_revision"
   | "configuration"
   | "credential_source"
+  | "sandbox_policy"
   | "preset"
   | "secret"
   | "service_account";
@@ -1559,6 +1590,34 @@ export interface CredentialRefreshDriver extends Driver {
 }
 
 export interface SandboxDriver extends Driver {
+  /** Explicit support; a networking facet alone never grants editable policy. */
+  readonly networkPolicy?: {
+    readonly wildcards: boolean;
+    readonly portRanges: boolean;
+    readonly live: boolean;
+  };
+  admitNetworkPolicy?(
+    additions: readonly SandboxNetworkGrant[],
+    version: number,
+    defaults?: SandboxPolicySnapshot["defaults"],
+  ): SandboxPolicySnapshot;
+  observeNetworkPolicy?(
+    context: SandboxLogContext,
+    snapshot: SandboxPolicySnapshot,
+  ): Promise<SandboxPolicyObservation>;
+  applyNetworkPolicy?(
+    context: SandboxLogContext,
+    input: {
+      readonly snapshot: SandboxPolicySnapshot;
+      readonly expectedProviderVersion: string;
+      readonly operationId: string;
+    },
+  ): Promise<void>;
+  readPolicyRecommendations?(
+    context: SandboxLogContext,
+    limit: number,
+  ): Promise<SandboxPolicyRecommendations>;
+
   readonly capability: "sandbox";
   /** One or more distinct containment facets implemented by this driver. */
   readonly facets: readonly SandboxFacet[];
@@ -2158,6 +2217,7 @@ export {
 } from "./preset-variables.mjs";
 
 export {
+  CODEX_FAILURE_OUTPUT_CLASSES,
   PROCESS_EXIT_ERROR_CODES,
   PROCESS_EXIT_MAX_STATUS,
   PROCESS_EXIT_SIGNALS,

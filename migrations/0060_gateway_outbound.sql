@@ -71,7 +71,7 @@ ALTER TABLE occ.agent_revisions
     ])
     AND (admitted_spec
       - 'configuration_id' - 'configuration_kind' - 'configuration_generation'
-      - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id'
+      - 'draft_spec' - 'harness' - 'compute' - 'sandbox_driver_id' - 'sandbox_policy'
       - 'secret_driver_id' - 'secret_bindings' - 'harness_auth' - 'credential_sources' - 'plugins' - 'plugin_approvers'
       - 'repository_credentials' - 'gateway_outbound') = '{}'::jsonb
     AND jsonb_typeof(admitted_spec->'configuration_id') = 'string'

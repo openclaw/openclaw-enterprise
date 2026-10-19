@@ -1,12 +1,12 @@
 ---
-rfc: ../rfcs/0021-gateway-outbound.md
+rfc: ../rfcs/0023-gateway-outbound.md
 ---
 
 # Implementation plan: managed Gateway outbound HTTPS
 
-- **ID:** RFC-0021
+- **ID:** RFC-0023
 - **Delivery status:** In progress
-- **Authority:** [RFC-0021](../rfcs/0021-gateway-outbound.md)
+- **Authority:** [RFC-0023](../rfcs/0023-gateway-outbound.md)
 - **Source baseline:** `d3ccc54781d0d50b40e9aeb814f0573d38c0a585`
 - **Refresh target:** upstream `main` at `26d3bcc89e313a7041c6def5b973dfc54ea0e2f4`
 
@@ -85,3 +85,5 @@ prerequisite failures; targeted passing suites do not imply all local suites pas
   upstream `d3ccc54781d0d50b40e9aeb814f0573d38c0a585`.
 - 2026-10-16: Renumbered to RFC-0021 after upstream allocated RFC-0020; refreshed
   against current main and composed Gateway/reader withdrawal through Compute.
+- 2026-10-19: Renumbered to RFC-0023 after upstream allocated RFC-0021 and RFC-0022;
+  integrated Sandbox policies while retaining the separate Gateway transport boundary.

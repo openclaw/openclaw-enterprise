@@ -546,6 +546,7 @@ export const PermissionActionSchema = Type.Union([
   Type.Literal("operate"),
   Type.Literal("administer"),
   Type.Literal("read_logs"),
+  Type.Literal("manage_policy"),
 ]);
 
 export const ResourceKindSchema = Type.Union([
@@ -558,6 +559,7 @@ export const ResourceKindSchema = Type.Union([
   Type.Literal("agent"),
   Type.Literal("agent_revision"),
   Type.Literal("credential_source"),
+  Type.Literal("sandbox_policy"),
 ]);
 
 export const NamespacePolicyResourceKindSchema = Type.Union([
@@ -566,6 +568,7 @@ export const NamespacePolicyResourceKindSchema = Type.Union([
   Type.Literal("agent_revision"),
   Type.Literal("configuration"),
   Type.Literal("credential_source"),
+  Type.Literal("sandbox_policy"),
   Type.Literal("preset"),
   Type.Literal("secret"),
   Type.Literal("service_account"),

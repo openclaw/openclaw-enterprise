@@ -10,3 +10,4 @@ export declare const RUNTIME_DIAGNOSTIC_CHECKS: readonly string[];
 export declare const PROCESS_EXIT_SIGNALS: readonly string[];
 export declare const PROCESS_EXIT_ERROR_CODES: readonly string[];
 export declare const PROCESS_EXIT_MAX_STATUS: 255;
+export declare const CODEX_FAILURE_OUTPUT_CLASSES: readonly string[];

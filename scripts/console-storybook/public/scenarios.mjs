@@ -1041,6 +1041,52 @@ export const scenarios = {
     description:
       "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created. Create Agent stays disabled, described by that line; an Embedded OpenClaw draft still saves.",
   },
+  createFormNamespaceBecomesReady: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace becomes ready after a failed check",
+    path: create,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: [503, "ready"],
+    actions: [
+      click("Start without Preset"),
+      { selector: "#agent-auth-method", value: "api_key" },
+      { selector: "#agent-name", value: "Release notes Agent", focus: true },
+    ],
+    description:
+      "The open form rechecks a provisioning Namespace every 10 s while Create Agent waits for it. The first recheck fails and the next one still runs; when the Namespace reads ready, a success note takes the warning's place at the same height, so the field being typed in does not move, and Create Agent is enabled.",
+    steps: [
+      'Keep the caret in Agent name. Within about 20 s the warning note above the form becomes "Namespace status: Ready. Agents created here can be deployed now."',
+      'Confirm Agent name did not move and keeps its text and focus, the status line reads "Dedicated Agents are provisioned and deployed when created.", and Create Agent is enabled.',
+    ],
+  },
+  createFormNamespaceFailed: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace turns failed",
+    path: create,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["failed"],
+    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    description:
+      'A Namespace that fails while the form is open never becomes ready by waiting. The next recheck shows its failed status, ends the recheck, and Create Agent stays disabled for every plan, described by "This Namespace cannot hold new Agents, so Create Agent is unavailable."',
+    steps: [
+      'Within about 10 s the note reads "Namespace status: Failed." and the status line says the Namespace cannot hold new Agents.',
+      "Switch Harness to OpenClaw: Create Agent stays disabled. No further Namespace reads happen.",
+    ],
+  },
+  createFormNamespaceMissing: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace no longer listed",
+    path: create,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    description:
+      "The Namespace list the form rereads no longer holds its Namespace: it was deleted, or the reader lost access. The recheck ends, the note asks for another Namespace, and Create Agent stays disabled for every plan. Start over keeps that answer.",
+    steps: [
+      'Within about 10 s the note reads "This Namespace is missing or you no longer have access. Choose another Namespace." and the status line reads "Create Agent is unavailable until you choose another Namespace."',
+      "Switch Harness to OpenClaw: Create Agent stays disabled. Choose Start over: Creating Agents is not available, with the same note.",
+    ],
+  },
   createStart: {
     group: "Pages/Create Agent",
     name: "Choose a starting point",
@@ -3869,6 +3915,19 @@ export const scenarios = {
       "Clear Search Agents, then type Joiners one letter at a time. Each letter filters the list at once, and the Agent stays listed.",
     ],
   },
+  agentsLongNameMixed: {
+    group: "Pages/Agents",
+    name: "Long name held by emoji, quotes and digits",
+    deployed: true,
+    agentName: "\u043e\u0442\u0447\u0451\u0442-2026-\u00abbuild\u00bb\u26a1deploy\u26a1"
+      .repeat(10)
+      .slice(0, 200),
+    description:
+      "A 200-character name of Cyrillic words, digits after hyphens, quoted words and lightning emoji. A browser breaks a line at none of these, so the name has no break at all; the console now treats it as unbroken and it wraps within the width of its ID, where before it widened the table (findings 2000 and 2001).",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+    ],
+  },
   agentsLongNamePhone: {
     group: "Pages/Agents",
     name: "Long unbroken name (phone)",
@@ -6550,3 +6609,70 @@ export const scenarios = {
     gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",
   },
 };
+
+for (const [id, state, name] of [
+  ["policyDenials", "ready", "Policy denials and reviewed network additions"],
+  ["policyDenialsEmpty", "empty", "No denials in the loaded window"],
+  ["policyDenialsDisabled", "disabled", "Policy editing disabled"],
+  ["policyDenialsUnsupported", "unsupported", "Sandbox policy capability unavailable"],
+  ["policyDenialsGap", "gap", "Policy denial window has a buffer gap"],
+  ["policyDenialsMissingMetadata", "missingMetadata", "Policy denial with unknown metadata"],
+  ["policyDenialsFailed", "failed", "Policy application unconfirmed"],
+  ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
+  ["policyDenialsEditDenied", "editDenied", "Independent policy permission denied"],
+  ["policyDenialsCeilingDenied", "ceilingDenied", "Policy addition exceeds the delegation ceiling"],
+  [
+    "policyDenialsSuggestionsUnavailable",
+    "suggestionsUnavailable",
+    "Manual policy editing without suggestions",
+  ],
+  ["policyDenialsReadDenied", "readDenied", "Policy logs denied but policy remains editable"],
+  ["policyDenialsLoading", "loading", "Policy decisions loading"],
+  [
+    "policyDenialsNoCredential",
+    "noCredential",
+    "Policy logs unavailable without runtime credentials",
+  ],
+]) {
+  scenarios[id] = {
+    group: "Pages/Agent detail",
+    name,
+    path: `${candidateVersion}&tab=policy`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    policyState: state,
+    description:
+      "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
+    steps: [
+      "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
+      "Use + to add a proposed rule and × to remove it. Confirm these local edits do not save. Review changes and return with Back to editing.",
+      "Compare Save (current revision unchanged) with Save and apply to current revision (pending, then confirmed with a provider version). Apply saved policy to current revision is unavailable while a proposal has unsaved edits.",
+      "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
+    ],
+    gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+    ...(state === "ceilingDenied"
+      ? {
+          steps: [
+            "Review the suggested outside.example.org addition and compare it with the Installation delegation ceiling.",
+            "Choose Review changes and Save and apply to current revision. The ceiling rejection must be announced and brought into view, with the attempted addition preserved for correction.",
+            "Confirm the saved policy version and additions are unchanged. This preview simulates the API rejection; the browser integration exercises actual OCC admission.",
+          ],
+        }
+      : {}),
+    ...(state === "applyRejected"
+      ? {
+          steps: [
+            "Review a suggestion, then choose Review changes and Save and apply to current revision.",
+            "Confirm the alert states the policy was saved but application was not confirmed. The saved version increases and the rule remains saved; do not infer live enforcement.",
+          ],
+        }
+      : {}),
+    ...(state === "readDenied"
+      ? { rules: [{ suffix: "/runtime/logs", status: 403, code: "AUTHORIZATION_DENIED" }] }
+      : {}),
+    ...(state === "loading" ? { rules: [{ suffix: "/runtime/logs", hold: true }] } : {}),
+    ...(state === "noCredential"
+      ? { rules: [{ suffix: "/runtime/logs", status: 503, code: "DEPENDENCY_UNAVAILABLE" }] }
+      : {}),
+  };
+}

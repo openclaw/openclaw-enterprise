@@ -6,9 +6,9 @@ author: miguelbranco80
 
 # Proposal: managed outbound HTTPS for dedicated Gateways
 
-- **ID:** RFC-0021
+- **ID:** RFC-0023
 - **Created:** 2026-10-14
-- **Implementation plan:** [RFC-0021 delivery](../plans/0021-gateway-outbound.md)
+- **Implementation plan:** [RFC-0023 delivery](../plans/0023-gateway-outbound.md)
 - **Source baseline:** `d3ccc54781d0d50b40e9aeb814f0573d38c0a585`
 - **Related:** [Agent egress for 0.x](0017-agent-egress-0x/index.md),
   [Compute](../../docs/reference/drivers/compute.md),
@@ -30,6 +30,9 @@ installation establishes the ceiling without enumerating future Agents.
 
 Native plugins remain trusted in-process Gateway code. Harness placement,
 networking, model credentials and Sandbox contracts retain their existing owners.
+The [per-Agent Sandbox policy](../../docs/reference/sandbox-policies.md) applies to
+the Sandbox, while this selection applies to the dedicated Gateway. Both snapshots
+can belong to one revision; approving either does not grant authority to the other.
 This extends the existing channel transport. Harness egress and Credential Proxy
 credential mediation remain separate capabilities; this transport neither injects
 credentials nor supplies a universal remote plugin host.
