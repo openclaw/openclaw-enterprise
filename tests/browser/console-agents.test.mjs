@@ -1041,7 +1041,10 @@ test("Agent creation recovers from stale authoritative admission without replaci
   await page.getByRole("button", { name: "Reload repository choices" }).click();
   await page
     .getByRole("alert")
-    .filter({ hasText: /^Repository choices could not be reloaded because this Namespace no longer accepts new Agents\. / })
+    .filter({
+      hasText:
+        /^Repository choices could not be reloaded because this Namespace no longer accepts new Agents\. /,
+    })
     .waitFor();
   await page
     .getByRole("alert")

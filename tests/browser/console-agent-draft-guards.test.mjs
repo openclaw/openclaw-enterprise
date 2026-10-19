@@ -1067,7 +1067,9 @@ for (const changed of ["generation", "identity"]) {
       assert.equal(updated.status, 200, JSON.stringify(updated.body));
     }
     await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    // A danger block, so an alert (finding 2005).
     await page
+      .getByRole("alert")
       .getByText("Configuration changed. Reload this draft before saving channel Secrets.", {
         exact: true,
       })

@@ -303,26 +303,102 @@ test("an empty alert block stays in the accessibility tree until its refusal arr
   assert.deepEqual(refused, { backendNodeId: pending.backendNodeId, role: "alert" });
 });
 
-// Saving the Credentials tab's authentication source and the Repositories editor showed their
-// refusals in the grey hint line that also carries progress, unfocused (finding 1966).
-test("a refused authentication source save is a focused danger block", async (t) => {
+// A feedback line's class, tone, role and text.
+const lineState = (locator) =>
+  locator.evaluate((node) => ({
+    className: node.className,
+    tone: node.dataset.tone ?? null,
+    role: node.getAttribute("role"),
+    text: node.textContent,
+  }));
+
+// Records the role a feedback line has each time its text is written: a refusal is written into
+// an alert, not into a status that turns into one afterwards (finding 2010).
+const recordWrites = (locator) =>
+  locator.evaluate((node) => {
+    const own = Object.getOwnPropertyDescriptor(globalThis.Node.prototype, "textContent");
+    const writes = [];
+    node.recordedWrites = writes;
+    Object.defineProperty(node, "textContent", {
+      configurable: true,
+      get() {
+        return own.get.call(this);
+      },
+      set(value) {
+        writes.push({ text: String(value), role: this.getAttribute("role") });
+        own.set.call(this, value);
+      },
+    });
+  });
+const rolesWhenWritten = (locator, text) =>
+  locator.evaluate(
+    (node, written) =>
+      node.recordedWrites.filter((write) => write.text === written).map((write) => write.role),
+    text,
+  );
+
+// A route answer held until the test releases it.
+function holdRequests(t) {
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(() => release());
+  let reached;
+  const reaching = new Promise((resolve) => {
+    reached = resolve;
+  });
+  return { held, reaching, reached: () => reached(), release: () => release() };
+}
+
+// A draft Agent's Credentials tab with an API key Secret chosen for its authentication source.
+async function authenticationSourcePage(t, name, { harnessId } = {}) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Status auth refusal", { ready: true });
-  const agent = await fixture.createAgent(namespace.id, "Status auth", nativeValues("auth"));
+  const namespace = await fixture.createNamespace(`Status ${name}`, { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    `Status ${name}`,
+    nativeValues(name, harnessId ? { harnessId } : {}),
+    harnessId ? { executionMode: "dedicated" } : undefined,
+  );
   const secret = await fixture.createSecret(namespace.id, "Status key", "synthetic-status-key");
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByLabel("Authentication source").selectOption("api_key");
-  await selectSecret(page, "API key Secret", secret);
+  if (!harnessId) {
+    await page.getByLabel("Authentication source").selectOption("api_key");
+    await selectSecret(page, "API key Secret", secret);
+  }
+  const save = page.getByRole("button", { name: "Save authentication source" });
+  // The form's own feedback line, its last child.
+  const feedback = page
+    .locator("form")
+    .filter({ has: page.getByRole("button", { name: "Reload authentication source" }) })
+    .locator(":scope > p")
+    .last();
+  return {
+    fixture,
+    namespace,
+    agent,
+    page,
+    save,
+    feedback,
+    agentUrl: `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+  };
+}
+
+// Saving the Credentials tab's authentication source and the Repositories editor showed their
+// refusals in the grey hint line that also carries progress, unfocused (finding 1966).
+test("a refused authentication source save is a focused danger block", async (t) => {
+  const { fixture, namespace, agent, page, save } = await authenticationSourcePage(t, "auth");
   // Saved elsewhere while this tab was open: the save's preflight read refuses it.
   const changed = await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
     body: { configurationId: agent.configurationId, harnessAuth: null },
   });
   assert.equal(changed.status, 200);
-  await page.getByRole("button", { name: "Save authentication source" }).click();
+  await save.click();
   const refusal = page
-    .getByRole("status")
+    .getByRole("alert")
     .filter({ hasText: "The Configuration changed. Reload authentication source before saving." });
   await refusal.waitFor();
   assertPaint(await statusPaint(refusal), "danger", "authentication refusal");
@@ -360,7 +436,7 @@ test("a refused repository access save is a focused danger block", async (t) => 
   );
   await page.locator("#repository-default-git-read").check();
   await page.getByRole("button", { name: "Save repository access" }).click();
-  const refusal = page.getByRole("status").filter({
+  const refusal = page.getByRole("alert").filter({
     hasText: "Repository access changed while you were editing. Reload this draft before saving.",
   });
   await refusal.waitFor();
@@ -368,6 +444,214 @@ test("a refused repository access save is a focused danger block", async (t) => 
   const view = await refusalView(refusal);
   assert.equal(view.focused, true, "the refusal has focus");
   assert.equal(view.inView, true, "the refusal is on screen");
+});
+
+const AGENT_REFUSAL =
+  "You do not have permission to save this Agent. Ask an administrator for Agent update and Configuration read access, plus access to the Secrets, credential sources and Service Account it binds.";
+
+// The API's 403 (not only the preflight conflict above) was the original grey, unfocused hint
+// (findings 1966, 2004). A later save's progress is a quiet status again.
+test("an API-refused authentication source save is a focused alert, and the next save's progress a status", async (t) => {
+  const { page, save, feedback, agentUrl } = await authenticationSourcePage(t, "auth-403");
+  await recordWrites(feedback);
+  const reads = holdRequests(t);
+  let holdNextRead = false;
+  await page.route(agentUrl, async (route) => {
+    if (route.request().method() === "GET" && holdNextRead) {
+      holdNextRead = false;
+      reads.reached();
+      await reads.held;
+    }
+    await forbidden(route);
+  });
+  await save.click();
+  const refusal = page.getByRole("alert").filter({ hasText: AGENT_REFUSAL });
+  await refusal.waitFor();
+  assert.deepEqual(await lineState(feedback), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+    text: AGENT_REFUSAL,
+  });
+  assertPaint(await statusPaint(refusal), "danger", "authentication 403");
+  const view = await refusalView(refusal);
+  assert.equal(view.focused, true, "the refusal has focus");
+  assert.equal(view.inView, true, "the refusal is on screen");
+  assert.deepEqual(await rolesWhenWritten(feedback, AGENT_REFUSAL), ["alert"]);
+
+  // Saving again: while its preflight read runs, the line is quiet progress, not the old refusal.
+  holdNextRead = true;
+  await save.click();
+  await reads.reaching;
+  assert.deepEqual(await lineState(feedback), {
+    className: "hint",
+    tone: null,
+    role: "status",
+    text: "Saving authentication…",
+  });
+  reads.release();
+  await refusal.waitFor();
+});
+
+// Incomplete fields the form cannot catch (a ChatGPT sign-in not finished) refuse the save too.
+test("an authentication source save without its ChatGPT sign-in is a focused alert", async (t) => {
+  const { page, save, feedback } = await authenticationSourcePage(t, "auth-oauth", {
+    harnessId: "codex",
+  });
+  await page.getByLabel("Authentication source").selectOption("credential_source");
+  await save.click();
+  const refusal = page
+    .getByRole("alert")
+    .filter({ hasText: "Complete ChatGPT sign-in before saving." });
+  await refusal.waitFor();
+  assert.deepEqual(await lineState(feedback), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+    text: "Complete ChatGPT sign-in before saving.",
+  });
+  assert.equal((await refusalView(refusal)).focused, true, "the refusal has focus");
+});
+
+const SECRET_ACCESS_UNCONFIRMED =
+  /^Authentication source saved, but this Agent's Secret access could not be confirmed\. /;
+
+// A saved source whose Secret grant was refused is a warning, also when the tab is rebuilt.
+test("an authentication source saved with its Secret access unconfirmed stays a warning alert", async (t) => {
+  const { fixture, namespace, page, save, feedback } = await authenticationSourcePage(
+    t,
+    "auth-grant",
+  );
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/iam/**`, forbidden);
+  await save.click();
+  const warning = page.getByRole("alert").filter({ hasText: SECRET_ACCESS_UNCONFIRMED });
+  await warning.waitFor();
+  const state = await lineState(feedback);
+  assert.deepEqual(
+    { ...state, text: SECRET_ACCESS_UNCONFIRMED.test(state.text) },
+    { className: "status", tone: "warning", role: "alert", text: true },
+  );
+  assertPaint(await statusPaint(warning), "warning", "unconfirmed Secret access");
+  assert.equal((await refusalView(warning)).focused, true, "the warning has focus");
+
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  const kept = page.getByRole("alert").filter({
+    hasText:
+      "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.",
+  });
+  await kept.waitFor();
+  assert.deepEqual(
+    { ...(await lineState(kept)), text: undefined },
+    { className: "status", tone: "warning", role: "alert", text: undefined },
+  );
+});
+
+// An unknown outcome is a danger alert, also when the tab is rebuilt.
+test("an authentication source save with an unknown outcome stays a danger alert", async (t) => {
+  const { page, save, agentUrl } = await authenticationSourcePage(t, "auth-unknown");
+  await page.route(agentUrl, async (route) => {
+    if (route.request().method() === "GET") {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 502,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "BAD_GATEWAY", message: "Bad gateway" } }),
+    });
+  });
+  await save.click();
+  await page.locator("form > p.status[data-tone=danger][role=alert]").waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
+  const kept = page.getByRole("alert").filter({
+    hasText: "Outcome unknown. Reload authentication source before saving again.",
+  });
+  await kept.waitFor();
+  assert.deepEqual(
+    { ...(await lineState(kept)), text: undefined },
+    { className: "status", tone: "danger", role: "alert", text: undefined },
+  );
+});
+
+// The Repositories editor's 403 is a focused alert too (finding 2004); an edit or a held
+// navigation turns the line back into a quiet status.
+test("an API-refused repository access save is a focused alert until the next edit or navigation", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1601",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+    },
+  ]);
+  const agent = await fixture.createAgent(namespace.id, "Status repos 403", nativeValues("r403"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  assert.equal(
+    (
+      await fixture.request("PATCH", agentPath, {
+        body: {
+          configurationId: agent.configurationId,
+          repositoryAccess: {
+            defaultProfile: "git-full",
+            repositories: [{ repositoryRef: "application" }],
+          },
+        },
+      })
+    ).status,
+    200,
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(`${fixture.origin}${agentPath}`, forbidden);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "repositories"));
+  await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
+  const save = page.getByRole("button", { name: "Save repository access" });
+  const feedback = page
+    .locator("section.agent-card")
+    .filter({ has: save })
+    .locator(":scope > p")
+    .last();
+  await recordWrites(feedback);
+  const refuse = async () => {
+    await save.click();
+    const refusal = page.getByRole("alert").filter({ hasText: AGENT_REFUSAL });
+    await refusal.waitFor();
+    assert.deepEqual(await lineState(feedback), {
+      className: "status",
+      tone: "danger",
+      role: "alert",
+      text: AGENT_REFUSAL,
+    });
+    return refusal;
+  };
+  await page.locator("#repository-default-git-read").check();
+  const refusal = await refuse();
+  assertPaint(await statusPaint(refusal), "danger", "repository 403");
+  const view = await refusalView(refusal);
+  assert.equal(view.focused, true, "the refusal has focus");
+  assert.equal(view.inView, true, "the refusal is on screen");
+  assert.deepEqual(await rolesWhenWritten(feedback, AGENT_REFUSAL), ["alert"]);
+
+  // An edit (back to the saved access): guidance in a quiet status.
+  await page.locator("#repository-default-git-full").check();
+  assert.deepEqual(await lineState(feedback), {
+    className: "hint",
+    tone: null,
+    role: "status",
+    text: "No repository changes to save.",
+  });
+
+  // Refused again, then leaving the tab with the edit unsaved: the hold is a quiet status too.
+  await page.locator("#repository-default-git-read").check();
+  await refuse();
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  assert.deepEqual(await lineState(feedback), {
+    className: "hint",
+    tone: null,
+    role: "status",
+    text: "Save or cancel repository changes before leaving this tab.",
+  });
 });
 
 // A member who reads the Agent, its versions and its Configuration, and may change none of them.
@@ -432,6 +716,116 @@ for (const viewport of [
     );
   });
 }
+
+const CONFIGURATION_CHANGED =
+  "The saved Configuration changed while you were editing. Reload this draft before saving.";
+
+// The Configuration editor's draft for `agent`, open with an edit, and its feedback line.
+async function editConfiguration(page, fixture, namespace, agent, marker, credentials) {
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    credentials,
+  );
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await openAdvancedSettings(page);
+  await page.getByLabel("Configuration JSON").fill(JSON.stringify(nativeValues(marker), null, 2));
+  return page.locator("#configuration-editor-feedback");
+}
+
+// The pre-save reread's conflict was written while the line was still a status, and became an
+// alert only afterwards (finding 2010). Holding navigation turns it back into a quiet status.
+test("a Configuration save conflict is written into an alert, and a navigation hold is a status", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Status config conflict", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Status conflict", nativeValues("cc"));
+  const { page } = await newPage(t, fixture, { browser });
+  const feedback = await editConfiguration(page, fixture, namespace, agent, "edited here");
+  await recordWrites(feedback);
+  // Saved elsewhere while this editor was open.
+  await fixture.updateConfiguration(namespace.id, agent.configurationId, nativeValues("other"));
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await page.getByRole("alert").filter({ hasText: CONFIGURATION_CHANGED }).waitFor();
+  assert.deepEqual(await lineState(feedback), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+    text: CONFIGURATION_CHANGED,
+  });
+  assert.deepEqual(await rolesWhenWritten(feedback, CONFIGURATION_CHANGED), ["alert"]);
+
+  await page.getByRole("link", { name: "← Agents", exact: true }).click();
+  assert.deepEqual(await lineState(feedback), {
+    className: "hint",
+    tone: null,
+    role: "status",
+    text: "Reload this draft before leaving the editor.",
+  });
+});
+
+// After a refused save the line is an alert; the next save's progress and Cancel each make it a
+// quiet status again (finding 2010).
+test("a refused Configuration save's alert gives way to a status for progress and Cancel", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Status config resets", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Status resets", nativeValues("cr"));
+  const reader = await createReader(fixture, namespace, "status-config-resets");
+  const { page } = await newPage(t, fixture, { browser });
+  const reads = holdRequests(t);
+  let holdNextRead = false;
+  await page.route(`**/configurations/${agent.configurationId}`, async (route) => {
+    if (route.request().method() === "GET" && holdNextRead) {
+      holdNextRead = false;
+      reads.reached();
+      await reads.held;
+    }
+    await route.continue();
+  });
+  const feedback = await editConfiguration(
+    page,
+    fixture,
+    namespace,
+    agent,
+    "edited by a reader",
+    reader.credentials,
+  );
+  const save = page.getByRole("button", { name: "Save Configuration" });
+  const refused = async () => {
+    await page.getByRole("alert").filter({ hasText: CONFIGURATION_REFUSAL }).waitFor();
+    assert.deepEqual(await lineState(feedback), {
+      className: "status",
+      tone: "danger",
+      role: "alert",
+      text: CONFIGURATION_REFUSAL,
+    });
+  };
+  await save.click();
+  await refused();
+
+  // Save stays enabled with the draft still edited; its preflight is quiet progress.
+  holdNextRead = true;
+  await save.click();
+  await reads.reaching;
+  assert.deepEqual(await lineState(feedback), {
+    className: "hint",
+    tone: null,
+    role: "status",
+    text: "Checking Configuration…",
+  });
+  reads.release();
+  await refused();
+
+  // Cancel closes the editor; opened again, its line is a quiet status.
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  assert.deepEqual(
+    { ...(await lineState(feedback)), text: undefined },
+    { className: "hint", tone: null, role: "status", text: undefined },
+  );
+});
 
 // Run diagnostics needs Agent operate. A reader without it saw the button enabled beside a
 // disabled Stop and Delete, and its 403 landed below the fold at 1440 (finding 1992).
