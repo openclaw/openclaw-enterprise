@@ -37,7 +37,7 @@ const joinerNames = {
   "plain digits": `${"1".repeat(20)} `.repeat(10),
   "letters before a hyphen": `${"a".repeat(19)}- `.repeat(10),
   // A run of marks after each character whose alternative looks ahead past marks: a nested
-  // quantifier there (`(?:\p{M}+)*`) matches the same names but took 8.7 s on the first of these
+  // quantifier there (`(?:\p{M}+)*`) matches the same names but takes 0.6 to 4 s on these
   // (finding 2037). Nothing after the marks completes the lookahead, so every split is tried.
   "a hyphen, then combining marks": `a-${"\u0301".repeat(25)}x`,
   "an accented letter and a hyphen, then combining marks": `\u00e9-${"\u0301".repeat(25)}x`,
@@ -52,7 +52,7 @@ const joinerNames = {
 for (let call = 0; call < 3; call += 1) {
   hasUnbrokenRun(joinerNames["word joiners"]);
 }
-// A linear rule takes about 1 ms on each name; the cases this bound catches take seconds. A slow
+// A linear rule takes about 0.1 ms on each name; the cases this bound catches take 0.6 s or more. A slow
 // runner can still stall one call, so a call over the bound is retried twice and the fastest of
 // the three counts: a steep blowup is slow every time.
 const BOUND_MS = 50;
