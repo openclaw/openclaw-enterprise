@@ -77,14 +77,20 @@ test("Agent delete confirmation can be canceled without sending a write request"
     .waitFor();
   const cancel = dialog.getByRole("button", { name: "Cancel" });
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
-  const unexpectedDelete = page.waitForResponse(
-    (response) =>
-      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
-      response.request().method() === "DELETE",
-    { timeout: 300 },
+  // Attach the rejection check when the timed wait starts: on a loaded runner the click can
+  // outlast the 300 ms window, and a wait that times out with no handler fails the test as an
+  // unhandled rejection (finding 1986). The requests check below still covers a late DELETE.
+  const unexpectedDelete = assert.rejects(
+    page.waitForResponse(
+      (response) =>
+        response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}` &&
+        response.request().method() === "DELETE",
+      { timeout: 300 },
+    ),
+    /Timeout/,
   );
   await cancel.click();
-  await assert.rejects(unexpectedDelete, /Timeout/);
+  await unexpectedDelete;
   // Cancel returns focus to the control that opened the dialog.
   assert.equal(
     await page.evaluate(() => globalThis.document.activeElement?.textContent),

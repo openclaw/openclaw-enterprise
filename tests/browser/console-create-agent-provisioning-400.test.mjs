@@ -835,15 +835,19 @@ async function fillOpenClawDraft(t, fixture, namespace, name) {
 // matches `writePath` within 2 s. Without a refusal the first write goes out within
 // milliseconds.
 async function assertBypassedSubmitWritesNothing(page, writePath) {
-  const wrote = page.waitForRequest(
-    (request) => request.method() === "POST" && writePath.test(new URL(request.url()).pathname),
-    { timeout: 2_000 },
-  );
+  // Attach both outcomes when the timed wait starts, so a submit that outlasts the window on a
+  // loaded runner cannot leave the timeout as an unhandled rejection (finding 1986).
+  const wrote = page
+    .waitForRequest(
+      (request) => request.method() === "POST" && writePath.test(new URL(request.url()).pathname),
+      { timeout: 2_000 },
+    )
+    .then(
+      (request) => assert.fail(`Create Agent wrote ${request.url()}`),
+      () => {},
+    );
   await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
-  await wrote.then(
-    (request) => assert.fail(`Create Agent wrote ${request.url()}`),
-    () => {},
-  );
+  await wrote;
 }
 
 // The filesystem Configuration Driver saves without a cluster, so a submit that got past the form
