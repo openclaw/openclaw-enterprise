@@ -3,7 +3,13 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { detailUrl, login, nativeValues, newPage } from "./console-agents-browser-helpers.mjs";
+import {
+  detailUrl,
+  fileBrowser,
+  login,
+  nativeValues,
+  newPage,
+} from "./console-agents-browser-helpers.mjs";
 import {
   enterManualModel,
   openAdvancedSettings,
@@ -16,6 +22,9 @@ const defaultCodexPreset = JSON.parse(
 
 // The Configuration editor's errors read as errors and its hints as hints, including after the
 // editor is rebuilt from a kept draft (finding 1940).
+
+// One Chromium for the file; each test still gets its own context.
+const browser = fileBrowser();
 
 // "danger" for an error (the danger status block, UX plan C1), otherwise the line's class.
 const feedbackClass = (page) =>
@@ -46,7 +55,7 @@ test("a refused or stale Configuration save is an error; editing again is a hint
   const namespace = await fixture.createNamespace("Configuration feedback", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Feedback Agent", nativeValues("saved"));
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   let patchAnswer = "refuse";
   await page.route(`**${configurationPath}`, async (route, request) => {
     if (request.method() !== "PATCH") {
@@ -103,7 +112,7 @@ test("an unknown Configuration save outcome stays an error when the editor is re
   const namespace = await fixture.createNamespace("Unknown feedback", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Unknown Agent", nativeValues("saved"));
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await page.route(`**${configurationPath}`, async (route, request) => {
     if (request.method() !== "PATCH") {
       await route.continue();
@@ -139,7 +148,7 @@ test("Create Agent: Reset template clears a JSON error; a primary or fallback mo
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Create JSON feedback", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("heading", { name: "Create Agent" }).waitFor();
   await page.getByRole("button", { name: "Start with default Preset" }).click();

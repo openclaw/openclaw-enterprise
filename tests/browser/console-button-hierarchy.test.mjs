@@ -2,15 +2,20 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
+  assertControlEdge,
+  consoleViewports,
   detailUrl,
   fileBrowser,
   holdRequests,
   login,
   nativeValues,
   newPage,
-  persistedDeploymentError,
+  routeFailedDeployment,
+  settledView,
 } from "./console-agents-browser-helpers.mjs";
 import {
   createModelCredentialSecret,
@@ -21,13 +26,13 @@ import {
 } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
-// The console's button hierarchy (UX plan C2): each view shows at most one primary action, a
-// secondary button's edge is visible against its surface, and a button waiting on its own request
-// says it is busy instead of looking permanently disabled (finding 1927).
+// The console's control patterns. Button hierarchy (UX plan C2): each view shows at most one
+// primary action, a secondary button's edge is visible against its surface, and a button waiting
+// on its own request says it is busy instead of looking permanently disabled (finding 1927).
+// Status badges and cards (UX plan C4): a word or two of human copy in `.badge`, with a tone.
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
-const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 
 // The visible controls painted as a primary action: filled with the accent, or with the strong
 // text colour the Agent page's older black primary used. Counted by paint, not class, so an
@@ -56,47 +61,32 @@ const filledActions = (page) =>
       .map((node) => node.textContent.trim().replace(/\s+/g, " "));
   });
 
-// An Agent whose v1 serves while its v2 redeploy failed with DEPENDENCY_UNAVAILABLE.
-async function failedRedeploy(t, fixture, namespace, page) {
+// An Agent whose v1 serves while its v2 redeploy failed; each page routes that deployment's read
+// to a DEPENDENCY_UNAVAILABLE failure.
+async function failedRedeploy(fixture, namespace) {
   const agent = await fixture.createAgent(namespace.id, "Failed Agent", nativeValues("failed"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const failed = await fixture.deployAgent(namespace.id, agent.id);
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${failed.id}`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId: failed.id,
-            namespaceId: namespace.id,
-            agentId: agent.id,
-            status: "failed",
-            error: persistedDeploymentError("DEPENDENCY_UNAVAILABLE"),
-            warnings: [],
-            progress: null,
-          },
-          meta: { requestId: "req_test_button_hierarchy" },
-        }),
-      }),
-  );
-  return { agent, active };
+  const route = (page) =>
+    routeFailedDeployment(page, fixture, {
+      namespaceId: namespace.id,
+      agentId: agent.id,
+      deploymentId: failed.id,
+    });
+  return { agent, active, route };
 }
 
-for (const viewport of [
-  { width: 1440, height: 900 },
-  { width: 390, height: 844 },
-]) {
-  const size = `${viewport.width}x${viewport.height}`;
-  test(`Agents, Agent detail, Create Agent and Logs each show at most one primary action at ${size}`, async (t) => {
-    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Primary ${size}`, {
-      computeDriver: createRuntimeLogComputeDriver(),
-      agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
-    });
-    const draft = await fixture.createAgent(namespace.id, "Draft Agent", nativeValues("draft"));
+test("Agents, Agent detail, Create Agent and Logs each show at most one primary action at 1440 and 390", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Primary actions", {
+    computeDriver: createRuntimeLogComputeDriver(),
+    agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
+  });
+  const draft = await fixture.createAgent(namespace.id, "Draft Agent", nativeValues("draft"));
+  const { agent: failed, active, route } = await failedRedeploy(fixture, namespace);
+  for (const viewport of consoleViewports) {
+    const size = `${viewport.width}x${viewport.height}`;
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    const { agent: failed, active } = await failedRedeploy(t, fixture, namespace, page);
+    await route(page);
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
 
     const views = [
@@ -164,7 +154,18 @@ for (const viewport of [
       await page.locator(settledView).waitFor();
       // Park the pointer so no hover repaints a control.
       await page.mouse.move(0, 0);
-      assert.deepEqual(await filledActions(page), [view.primary], view.name);
+      assert.deepEqual(await filledActions(page), [view.primary], `${view.name} at ${size}`);
+      if (view.primary === "Deploy again") {
+        // Its secondary action is a white button on the card's warning tint, so its edge marks
+        // it (finding 1958).
+        await assertControlEdge(
+          page
+            .getByRole("region", { name: "Deployment needs attention" })
+            .getByRole("link", { name: "Open v2 Logs" }),
+          `Open v2 Logs, ${view.name} at ${size}`,
+          { opaqueFill: true },
+        );
+      }
     }
     // The recovery's secondary link is a button of the same size as its primary, not bare text.
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
@@ -173,50 +174,15 @@ for (const viewport of [
         recovery.getByRole("link", { name }).boundingBox(),
       ),
     );
-    assert.equal(secondaryBox.height, primaryBox.height);
+    assert.equal(secondaryBox.height, primaryBox.height, size);
     assert.equal(
       await recovery
         .getByRole("link", { name: "Open v2 Logs" })
         .evaluate((link) => globalThis.getComputedStyle(link).textDecorationLine),
       "none",
     );
-  });
-}
-
-// WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
-function contrast(a, b) {
-  const luminance = (rgb) => {
-    const [r, g, bl] = rgb.map((value) => {
-      const channel = value / 255;
-      return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
-    });
-    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
-  };
-  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-  return (light + 0.05) / (dark + 0.05);
-}
-
-// A secondary button's own edge, its fill and the first opaque background behind it.
-const edgeColours = (locator) =>
-  locator.evaluate((node) => {
-    const rgba = (value) => {
-      const [r, g, b, a = 1] = value.match(/[\d.]+/g).map(Number);
-      return { rgb: [r, g, b], a };
-    };
-    let parent = node.parentElement;
-    let behind = rgba(globalThis.getComputedStyle(parent).backgroundColor);
-    while (behind.a < 1 && parent.parentElement) {
-      parent = parent.parentElement;
-      behind = rgba(globalThis.getComputedStyle(parent).backgroundColor);
-    }
-    const style = globalThis.getComputedStyle(node);
-    return {
-      edge: rgba(style.borderTopColor),
-      fill: rgba(style.backgroundColor),
-      behind: behind.a < 1 ? { rgb: [255, 255, 255], a: 1 } : behind,
-      width: style.borderTopWidth,
-    };
-  });
+  }
+});
 
 // A secondary button is a white control on a white or near-white card, so its edge is what marks
 // it as a control (WCAG 1.4.11). The old 1.27:1 line edge left a grey slab with no edge.
@@ -244,19 +210,7 @@ test("Secondary buttons have an edge of at least 3:1 against their fill and the 
     await control.waitFor();
     await page.locator(settledView).waitFor();
     await page.mouse.move(0, 0);
-    const { edge, fill, behind, width } = await edgeColours(control);
-    assert.equal(width, "1px", name);
-    assert.equal(edge.a, 1, name);
-    for (const [against, colour] of [
-      ["fill", fill],
-      ["surface", behind],
-    ]) {
-      const ratio = contrast(edge.rgb, colour.rgb);
-      assert.ok(
-        ratio >= 3,
-        `${name}: edge ${edge.rgb} is ${ratio.toFixed(2)}:1 against its ${against}`,
-      );
-    }
+    await assertControlEdge(control, name);
   }
 });
 
@@ -334,6 +288,37 @@ test("Stop, Delete and Save Configuration show busy, not only disabled, while th
   });
   patch.release();
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
+});
+
+test("a permanently disabled button says not allowed, not busy", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Disabled cursor", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "API-key plugin Agent",
+    nativeValues("api-key-cursor", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  assert.equal(agent.harnessAuth.method, "api_key");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
+  // An API key can never browse the catalog, so Load plugins stays disabled: nothing is pending.
+  const load = dialog.getByRole("button", { name: "Load plugins" });
+  assert.equal(await load.isDisabled(), true);
+  assert.deepEqual(
+    await load.evaluate((node) => {
+      const style = globalThis.getComputedStyle(node);
+      return [style.cursor, style.opacity];
+    }),
+    ["not-allowed", "0.6"],
+  );
 });
 
 const refusal = (status, code, message) => ({
@@ -529,4 +514,120 @@ test("Create Agent is busy only for its own request, not a recovery control's", 
     .filter({ hasText: "Credential Source registration could not be confirmed." })
     .waitFor();
   assert.deepEqual(await busyAfter(create), { busy: "false", disabled: false });
+});
+
+// A badge's words, tone and paint, and the gap to the element before it. `painted` is true when
+// its text has its tone's colour (muted when neutral).
+const badgeState = (locator) =>
+  locator.evaluate((node) => {
+    const style = globalThis.getComputedStyle(node);
+    const probe = globalThis.document.createElement("span");
+    probe.style.color = `var(--color-${node.dataset.tone ?? "text-muted"})`;
+    globalThis.document.body.append(probe);
+    const toneColor = globalThis.getComputedStyle(probe).color;
+    probe.remove();
+    const before = node.previousElementSibling?.getBoundingClientRect();
+    return {
+      badge: node.classList.contains("badge"),
+      text: node.textContent,
+      tone: node.dataset.tone ?? null,
+      gap: before ? Math.round(node.getBoundingClientRect().left - before.right) : null,
+      sameLine: before
+        ? Math.abs(node.getBoundingClientRect().top - before.top) < before.height
+        : null,
+      painted: style.color === toneColor && style.backgroundColor !== "rgba(0, 0, 0, 0)",
+    };
+  });
+
+// Status badges share one pattern. The version list's "Current version" label read as
+// "Currentversion" (audit 2.2), and the Credentials tab's Slack token states had their own chrome.
+test("The current version, Slack token bindings and Namespace rows use the badge and card patterns", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Badges and cards");
+  const versioned = await fixture.createAgent(namespace.id, "Badge Agent", nativeValues("badge"));
+  await fixture.seedActiveAgentRevision(namespace.id, versioned.id);
+  const bot = await fixture.createSecret(namespace.id, "Badge bot token", "xoxb-badge");
+  const slack = await fixture.createAgent(
+    namespace.id,
+    "Credential badges",
+    nativeValues("channels", {
+      harnessId: "codex",
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+          channels: {},
+        },
+      },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: { SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } } },
+    },
+  );
+
+  // The current version shows a Current badge after a visible space.
+  for (const viewport of consoleViewports) {
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    await login(page, fixture, detailUrl(fixture, namespace.id, versioned.id));
+    const version = page.getByRole("button", {
+      name: "View version v1, current version",
+      exact: true,
+    });
+    await version.waitFor();
+    const state = await badgeState(version.locator(".badge"));
+    assert.deepEqual(
+      { ...state, gap: state.gap >= 4 },
+      { badge: true, text: "Current", tone: "success", gap: true, sameLine: true, painted: true },
+      `badge at ${viewport.width}: ${JSON.stringify(state)}`,
+    );
+    // Rendered text: the badge follows the version number after a space.
+    assert.match(await version.innerText(), /^v1 Current\n/);
+  }
+
+  // Each Slack token binding reads Bound or Missing in the shared badge, with a tone.
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, slack.id, "draft", "credentials"));
+  const list = page.locator(".credential-status-list").filter({ hasText: "Slack bot token" });
+  await list.waitFor();
+  const status = (label) =>
+    list.locator("dt", { hasText: label }).locator("xpath=following-sibling::dd[1]/span");
+  for (const [label, text, tone] of [
+    ["Slack app token", "Missing", "danger"],
+    ["Slack bot token", "Bound", "success"],
+  ]) {
+    const state = await badgeState(status(label));
+    assert.deepEqual(
+      { badge: state.badge, text: state.text, tone: state.tone, painted: state.painted },
+      { badge: true, text, tone, painted: true },
+      label,
+    );
+  }
+
+  // Namespace rows are cards: the shared card surface, edge and radius.
+  await page.goto(new URL(`/console/namespaces?namespace=${namespace.id}`, fixture.origin).href);
+  const row = page
+    .getByRole("list", { name: "Namespaces", exact: true })
+    .getByRole("listitem")
+    .filter({ hasText: namespace.id });
+  await row.waitFor();
+  assert.deepEqual(
+    await row.evaluate((node) => {
+      const style = globalThis.getComputedStyle(node);
+      return {
+        card: node.classList.contains("card"),
+        radius: style.borderTopLeftRadius,
+        padding: style.paddingTop,
+        edge: style.borderTopWidth,
+      };
+    }),
+    { card: true, radius: "14px", padding: "24px", edge: "1px" },
+  );
+  const { badge, text, tone, painted } = await badgeState(row.locator(".badge"));
+  assert.deepEqual(
+    { badge, text, tone, painted },
+    { badge: true, text: "Ready", tone: "success", painted: true },
+    "Namespace row",
+  );
 });

@@ -32,6 +32,9 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     error: null,
   };
   let pollTimer;
+  // A repeat confirmed while a quiet poll reads. Reads and writes stay serialized, so it is sent
+  // when that read ends instead of being dropped (finding 1975).
+  let queuedDelete = null;
   const heading = element("h2", { id: "agent-deletion-title", tabindex: "-1" }, "Delete Agent");
 
   section.append(
@@ -183,11 +186,20 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       }
     } finally {
       document.removeEventListener("focusin", trackFocus, true);
+      const queued = queuedDelete;
+      queuedDelete = null;
       if (context.isCurrent()) {
         const quiet = state.polling;
         state.pending = false;
         state.polling = false;
         render();
+        // A read that ended access drops a waiting repeat with its dialog, before focus moves:
+        // the heading cannot take focus while the modal is open. Forbidden and needs-refresh
+        // states cannot arise while one waits; they are checked defensively.
+        const dropQueued = state.accessEnded || state.forbidden || state.needsRefresh;
+        if (queued && dropQueued) {
+          queued.dialog.close();
+        }
         if (state.accessEnded) {
           // Refresh is gone, so keep focus in this section on its heading.
           if (focusedHere) {
@@ -196,22 +208,39 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
         } else if (!quiet && focusedHere) {
           (state.deleting || state.needsRefresh ? refresh : remove).focus({ preventScroll: true });
         }
+        if (queued && !dropQueued) {
+          // Sent even after a failed read: the reader confirmed it, and its outcome replaces
+          // the read's error.
+          void deleteAgent(queued.dialog, queued.cancel, queued.confirm);
+        }
       }
     }
   }
 
-  async function deleteAgent(dialog, cancel, confirm) {
-    if (state.forbidden || state.pending || state.needsRefresh || !context.isCurrent()) {
-      return;
-    }
-    state.pending = true;
-    state.error = null;
-    state.notice = "";
+  function showSending(cancel, confirm) {
     cancel.disabled = true;
     confirm.disabled = true;
     confirm.textContent = "Deleting…";
     // Busy, not merely disabled: the progress cursor, and "working" for assistive technology.
     confirm.setAttribute("aria-busy", "true");
+  }
+
+  async function deleteAgent(dialog, cancel, confirm) {
+    if (state.forbidden || state.needsRefresh || !context.isCurrent()) {
+      return;
+    }
+    if (state.pending) {
+      // A quiet poll is reading: show the repeat as sent and send it when the read ends.
+      if (state.polling && !queuedDelete) {
+        queuedDelete = { dialog, cancel, confirm };
+        showSending(cancel, confirm);
+      }
+      return;
+    }
+    state.pending = true;
+    state.error = null;
+    state.notice = "";
+    showSending(cancel, confirm);
     render();
     try {
       const current = await context.request(path, { method: "DELETE" });
@@ -310,6 +339,12 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       if (!dialog.open || (state.pending && !state.polling)) {
         return;
       }
+      if (queuedDelete?.dialog === dialog) {
+        // The waiting repeat was never sent: drop it with its dialog.
+        queuedDelete = null;
+        dialog.close();
+        return;
+      }
       confirm.disabled = true;
       description.textContent = permissionNotice;
       cancel.focus();
@@ -326,7 +361,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
       element("div", { className: "form-actions" }, cancel, confirm),
     );
     dialog.addEventListener("cancel", (event) => {
-      if (state.pending && !state.polling) {
+      if ((state.pending && !state.polling) || queuedDelete?.dialog === dialog) {
         event.preventDefault();
       }
     });
@@ -345,7 +380,12 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
           !(state.pending && !state.polling) &&
           document.activeElement === document.body
         ) {
-          (state.forbidden ? heading : state.needsRefresh ? refresh : remove).focus();
+          (state.forbidden || state.accessEnded
+            ? heading
+            : state.needsRefresh
+              ? refresh
+              : remove
+          ).focus();
         }
       },
       { once: true },

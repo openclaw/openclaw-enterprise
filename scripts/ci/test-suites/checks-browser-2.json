@@ -24,7 +24,6 @@
     "tests/browser/console-focus-ring.test.mjs",
     "tests/browser/console-drafts-kept.test.mjs",
     "tests/browser/console-button-hierarchy.test.mjs",
-    "tests/browser/console-badges.test.mjs",
     "tests/browser/console-status-block.test.mjs"
   ],
   "files": [
@@ -87,9 +86,6 @@
     },
     {
       "path": "tests/browser/console-button-hierarchy.test.mjs"
-    },
-    {
-      "path": "tests/browser/console-badges.test.mjs"
     },
     {
       "path": "tests/browser/console-status-block.test.mjs"
