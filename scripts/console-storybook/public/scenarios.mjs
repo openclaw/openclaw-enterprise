@@ -3834,6 +3834,29 @@ export const scenarios = {
     ],
     gap: "The failure and the denial are simulated; the API still authorizes every page a link opens.",
   },
+  deploymentModelProbeFailedDeployOnlyUnreadable: {
+    group: "Pages/Agent detail",
+    name: "New version failed, viewer may deploy, Configuration unreadable",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateModelProbeCause: { kind: "PROBE_STATUS", detail: "format" },
+    agentPermissionSummary: { update: false, deploy: true, operate: false, delete: false },
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "GET",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "The startup model check failure for a viewer who may deploy but can neither update the Agent nor read its Configuration. The draft Open version draft opens would have no Deploy new version, so recovery reads the Configuration first and, on the denial, offers Open v7 Logs only.",
+    steps: [
+      "At 1440 and 390 wide, confirm the recovery shows one link, Open v7 Logs, and never shows Open version draft.",
+    ],
+    gap: "The failure, permissions and denial are simulated; the API still authorizes every page a link opens.",
+  },
   deploymentFailedAfterSelection: {
     group: "Pages/Agent detail",
     name: "Deployment failed after selection",

@@ -38,7 +38,11 @@ const nextFrames = (page) =>
   );
 
 // An Agent whose v1 keeps serving while its v2 redeploy failed with DEPENDENCY_UNAVAILABLE.
-async function failedRedeploy(t, name, { viewport, auditSink } = {}) {
+async function failedRedeploy(
+  t,
+  name,
+  { viewport, auditSink, code = "DEPENDENCY_UNAVAILABLE" } = {},
+) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name, {
     computeDriver: createRuntimeLogComputeDriver(),
     agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
@@ -60,7 +64,7 @@ async function failedRedeploy(t, name, { viewport, auditSink } = {}) {
         namespaceId: namespace.id,
         agentId: agent.id,
         status: "failed",
-        error: persistedDeploymentError("DEPENDENCY_UNAVAILABLE"),
+        error: persistedDeploymentError(code),
         warnings: [],
         progress: null,
       },
@@ -364,4 +368,103 @@ test("Recovery offers no Deploy again when the caller's permission answer fails"
   assert.equal(await logs.getAttribute("class"), "overview-primary");
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
   assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
+});
+
+// A startup model check failure sends the caller to the draft's Configuration. A deployer without
+// update gets "Open version draft", whose only step is Deploy new version, and that is built only
+// from a readable Configuration. The link used to follow "not yet denied" and opened a draft without
+// it (finding 1944); it now waits for the same read as Deploy again.
+test("A deployer who cannot read the Configuration gets no Open version draft", async (t) => {
+  const auditSink = new InMemoryAuditSink();
+  const { fixture, namespace, agent, active, page, configurationUrl } = await failedRedeploy(
+    t,
+    "Open draft denied",
+    { auditSink, code: "RUNTIME_MODEL_PROBE_FAILED" },
+  );
+  const deployer = await deployerWithoutConfiguration(fixture, namespace);
+  await page.addInitScript(() => {
+    globalThis.openDraftSeen = false;
+    new globalThis.MutationObserver(() => {
+      for (const node of globalThis.document.querySelectorAll(".deployment-recovery a")) {
+        if (node.textContent === "Open version draft") {
+          globalThis.openDraftSeen = true;
+        }
+      }
+    }).observe(globalThis.document, { childList: true, subtree: true, characterData: true });
+  });
+  const permissions = page.waitForResponse((response) =>
+    response.url().endsWith(`/agents/${agent.id}/permissions`),
+  );
+  const denied = page.waitForResponse(
+    (response) => response.url() === configurationUrl && response.status() === 403,
+  );
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+    deployer.credentials,
+  );
+  const answer = (await (await permissions).json()).data;
+  assert.equal(answer.deploy, true);
+  assert.equal(answer.update, false);
+  const recovery = recoveryOf(page);
+  await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+  const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
+  await logs.waitFor();
+  // The link used to render with Logs, before any Configuration read.
+  assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
+  await denied;
+  await nextFrames(page);
+  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await recovery.getByRole("link", { name: "Open version draft" }).count(), 0);
+  assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
+  const configurationDenials = auditSink
+    .list()
+    .filter(
+      (event) =>
+        event.kind === "authorization_denial" && event.action === "openclaw.configurations.read",
+    );
+  assert.equal(configurationDenials.length, 1);
+});
+
+// A deployer who can read it gets the link once the read succeeds, not before.
+test("Open version draft waits for the Configuration read to succeed", async (t) => {
+  const { fixture, namespace, agent, active, page, configurationUrl } = await failedRedeploy(
+    t,
+    "Open draft held",
+    { code: "RUNTIME_MODEL_PROBE_FAILED" },
+  );
+  const deployer = await fixture.createAccountWithPolicy("deployer-reads-configuration", (p) => {
+    grantRole(fixture.policy, p.id, {
+      id: "role-deployer-reads-configuration",
+      namespaceId: namespace.id,
+      permissions: {
+        namespace: ["read"],
+        agent: ["read", "deploy", "read_logs"],
+        agent_revision: ["read"],
+        configuration: ["read"],
+      },
+    });
+  });
+  const read = await holdRequests(t, page, configurationUrl, { method: "GET", once: true });
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "logs"),
+    deployer.credentials,
+  );
+  const recovery = recoveryOf(page);
+  const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
+  await logs.waitFor();
+  const openDraft = recovery.getByRole("link", { name: "Open version draft" });
+  assert.equal(await openDraft.count(), 0);
+  await read.requested;
+  await nextFrames(page);
+  assert.equal(await openDraft.count(), 0);
+  assert.equal(await logs.getAttribute("class"), "overview-primary");
+
+  read.release();
+  await openDraft.waitFor();
 });
