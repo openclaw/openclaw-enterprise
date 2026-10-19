@@ -341,11 +341,11 @@ test("saving and reloading the authentication source update the Agent page in pl
   const read = await holdRequests(t, page, agentPath);
   await reload.click();
   await read.requested;
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByRole("button", { name: "Edit Configuration" }).waitFor();
   read.release();
   await page.unroute(agentPath);
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await waitForInputValue(secretField, secretOptionLabel(first));
   await saveAuthentication.waitFor();
   assert.equal(await saveAuthentication.isDisabled(), false);
@@ -473,13 +473,26 @@ test("saving and reloading plugin selections update the Agent page in place", as
   await save.click();
   const reload = page.getByRole("button", { name: "Reload plugin selections" });
   await reload.waitFor();
+  // Save disabled itself, so Reload takes focus, described by why (finding 1998).
+  assert.deepEqual(
+    await reload.evaluate((node) => ({
+      focused: node === globalThis.document.activeElement,
+      description: (node.getAttribute("aria-describedby") ?? "")
+        .split(/\s+/)
+        .map((id) => globalThis.document.getElementById(id)?.textContent),
+    })),
+    {
+      focused: true,
+      description: ["Plugin selections changed. Reload this Agent before saving again."],
+    },
+  );
   await reload.click();
   await page.getByRole("status").filter({ hasText: "Plugin selections reloaded." }).waitFor();
   await place.check();
   assert.deepEqual(JSON.parse(await json.inputValue()), elsewhere);
   assert.equal(await save.isDisabled(), true);
   // The rebuilt editor is clean, so the tabs are free to leave again.
-  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
 });
 
 const repositoryAccess = (defaultProfile) => ({
@@ -564,7 +577,7 @@ test("repository saves, Cancel and Reload draft update the Agent page in place",
     .waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isEnabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
   assert.equal(pathRequests(place.requests, "PATCH", agentPath).length, 1);
 });
 
@@ -1029,7 +1042,7 @@ for (const c of declinedCarryCases) {
     await page.getByRole("link", { name: "← Agents", exact: true }).click();
     await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
     await page.getByRole("link", { name: "Declined Carry", exact: true }).click();
-    await page.getByRole("button", { name: "Channels", exact: true }).click();
+    await page.getByRole("tab", { name: "Channels", exact: true }).click();
     await page.getByRole("button", { name: "Edit Slack", exact: true }).waitFor();
     assert.equal(await page.getByRole("status").filter({ hasText: c.note }).count(), 0);
     assert.equal(await dialog.count(), 0);
@@ -1049,12 +1062,12 @@ const SAVED_STATE_CONFLICT =
 // Deploy would deliver the saved bindings, not the refused choices shown (finding 1640).
 const UNSAVED_SECRETS_GATE =
   "Save the channel Secret choices before deploying, or reload the page to discard unsaved changes.";
-const reservedSaveCases = [
+const configurationSaveCases = [
   {
     name: "Channels",
     tab: "channels",
     genericText: SAVED_STATE_CONFLICT,
-    async act(page) {
+    async act({ page }) {
       await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
       const dialog = page.getByRole("dialog", { name: "Edit Slack" });
       await dialog.getByLabel("Direct-message policy").selectOption("disabled");
@@ -1065,10 +1078,10 @@ const reservedSaveCases = [
     name: "Configuration editor",
     tab: "configuration",
     genericText: SAVED_STATE_CONFLICT,
-    async act(page) {
+    async act({ page, configurationEdit }) {
       await page.getByRole("button", { name: "Edit Configuration" }).click();
       await openAdvancedSettings(page);
-      const values = nativeValues("reserved", { harnessId: "codex" });
+      const values = nativeValues(configurationEdit, { harnessId: "codex" });
       await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
       await page.getByRole("button", { name: "Save Configuration" }).click();
     },
@@ -1077,14 +1090,15 @@ const reservedSaveCases = [
     name: "channel Secrets",
     tab: "credentials",
     genericText: "Credential metadata conflicts with the saved Agent state or selected Secrets.",
-    async act(page, c) {
-      await selectNewSlackSecrets(page, c);
+    staleText: "Configuration changed. Reload this draft before saving channel Secrets.",
+    async act({ page, context }) {
+      await selectNewSlackSecrets(page, context);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
     },
   },
 ];
 
-for (const [c, generic] of reservedSaveCases.flatMap((c) => [
+for (const [c, generic] of configurationSaveCases.flatMap((c) => [
   [c, false],
   [c, true],
 ])) {
@@ -1121,7 +1135,7 @@ for (const [c, generic] of reservedSaveCases.flatMap((c) => [
     await page.getByRole("heading", { name: `Reserved ${c.name}` }).waitFor();
     await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
     const requests = apiRequests(page, fixture.origin);
-    await c.act(page, context);
+    await c.act({ page, context, configurationEdit: "reserved" });
     await page
       .getByText(generic ? c.genericText : refusal)
       .first()
@@ -1565,13 +1579,13 @@ test("the other tabs stay locked while a saved channel draft refreshes", async (
   });
   await page.getByRole("heading", { name: "Refresh Lock" }).waitFor();
   await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
-  const plugins = page.getByRole("button", { name: "Plugins", exact: true });
+  const plugins = page.getByRole("tab", { name: "Plugins", exact: true });
   assert.equal(await plugins.isEnabled(), true);
   await page.getByRole("button", { name: "Disable Slack" }).click();
   await refreshing;
   assert.equal(await plugins.isDisabled(), true);
   assert.equal(
-    await page.getByRole("button", { name: "Credentials", exact: true }).isDisabled(),
+    await page.getByRole("tab", { name: "Credentials", exact: true }).isDisabled(),
     true,
   );
   release();
@@ -1739,40 +1753,7 @@ test("a late Configuration save leaves focus on the Agents link when the reader 
 // A save from another browser that landed between a save's reread and its PATCH was silently
 // overwritten (finding 1505). The PATCH now names the generation the page read, and the API's
 // 409 leaves Reload draft as the next step, as a conflict found by the reread does.
-const racedSaveCases = [
-  {
-    name: "Channels",
-    tab: "channels",
-    async act(page) {
-      await page.getByRole("button", { name: "Edit Slack", exact: true }).click();
-      const dialog = page.getByRole("dialog", { name: "Edit Slack" });
-      await dialog.getByLabel("Direct-message policy").selectOption("disabled");
-      await dialog.getByRole("button", { name: "Save configuration" }).click();
-    },
-  },
-  {
-    name: "Configuration editor",
-    tab: "configuration",
-    async act(page) {
-      await page.getByRole("button", { name: "Edit Configuration" }).click();
-      await openAdvancedSettings(page);
-      const values = nativeValues("raced", { harnessId: "codex" });
-      await page.getByLabel("Configuration JSON").fill(JSON.stringify(values, null, 2));
-      await page.getByRole("button", { name: "Save Configuration" }).click();
-    },
-  },
-  {
-    name: "channel Secrets",
-    tab: "credentials",
-    message: "Configuration changed. Reload this draft before saving channel Secrets.",
-    async act(page, c) {
-      await selectNewSlackSecrets(page, c);
-      await page.getByRole("button", { name: "Save channel Secrets" }).click();
-    },
-  },
-];
-
-for (const c of racedSaveCases) {
+for (const c of configurationSaveCases) {
   test(`a ${c.name} save raced after its reread is refused and offers Reload draft`, async (t) => {
     const context = await slackAgent(t, `Raced ${c.name}`);
     const { fixture, namespace, agent } = context;
@@ -1793,9 +1774,9 @@ for (const c of racedSaveCases) {
     });
     await page.getByRole("heading", { name: `Raced ${c.name}` }).waitFor();
     await page.getByRole("button", { name: "Deploy new version", disabled: false }).waitFor();
-    await c.act(page, context);
+    await c.act({ page, context, configurationEdit: "raced" });
     const message =
-      c.message ??
+      c.staleText ??
       "The saved Configuration changed while you were editing. Reload this draft before saving.";
     await page.getByText(message).first().waitFor();
     assert.equal(await focusedText(page), "Reload draft");

@@ -16,3 +16,6 @@ or go Back inside the preview instead, so the Console keeps the state you are ch
    **Follow**: it reads logs without restoring the old Pod selection.
 4. **Pod status access restored on Back.** Start with readable logs and no Pod status.
    Open **Namespaces**, then use browser **Back**. The Pod appears.
+5. **Selected Pod disappears from runtime status.** Select **gateway-retiring** in the Pod
+   picker before the next status poll. When that Pod disappears, the picker, caption and
+   log lines switch together. Output from the retired Pod is no longer shown.

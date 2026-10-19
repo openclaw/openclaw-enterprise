@@ -8,45 +8,126 @@
 }
 :root {
   color-scheme: light;
-  font-family:
-    "Instrument Sans",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
   font-synthesis: none;
   color: var(--text);
   background: var(--bg);
-  --bg: #faf9f7;
-  --surface: #ffffff;
-  --surface-muted: #f4f1ec;
-  --hover: #efebe4;
-  --text: #403c35;
-  --text-strong: #211e1a;
-  --muted: #6e6960;
-  --line: #e8e4dc;
-  --input-border: #938b7f;
-  --accent: #bd4531;
-  --accent-subtle: rgba(189, 69, 49, 0.08);
-  --primary: #bd4531;
-  --primary-hover: #a83c29;
-  --on-primary: #ffffff;
-  --success: #166534;
-  --success-subtle: rgba(22, 101, 52, 0.08);
-  --danger: #b91c1c;
-  --danger-subtle: rgba(185, 28, 28, 0.08);
-  --warning: #92400e;
-  --warning-subtle: rgba(146, 64, 14, 0.08);
-  --overlay: rgba(15, 23, 42, 0.4);
-  --shadow: 0 8px 24px rgba(60, 42, 24, 0.09);
+  /* Design tokens. New rules use these; values reproduce the current look. */
+  /* Colour roles. Dark mode would redefine only this group. */
+  --color-bg: #faf9f7;
+  --color-surface: #ffffff;
+  --color-surface-2: #f4f1ec;
+  --color-surface-hover: #efebe4;
+  --color-border: #e8e4dc;
+  --color-border-strong: #938b7f;
+  --color-text: #403c35;
+  --color-text-strong: #211e1a;
+  --color-text-muted: #6e6960;
+  --color-accent: #bd4531;
+  --color-accent-hover: #a83c29;
+  --color-accent-subtle: rgba(189, 69, 49, 0.08);
+  --color-on-accent: #ffffff;
+  --color-link: var(--color-text-strong);
+  --color-success: #166534;
+  --color-success-subtle: rgba(22, 101, 52, 0.08);
+  --color-warning: #92400e;
+  --color-warning-subtle: rgba(146, 64, 14, 0.08);
+  --color-danger: #b91c1c;
+  --color-danger-subtle: rgba(185, 28, 28, 0.08);
+  --color-info: #1e3a5f;
+  --color-info-subtle: rgba(30, 58, 95, 0.07);
+  --color-overlay: rgba(15, 23, 42, 0.4);
+  /* Type: size and its line height. */
+  --font-sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-xs: 11px;
+  --text-xs--line-height: 1.4;
+  --text-sm: 12px;
+  --text-sm--line-height: 1.5;
+  --text-md: 13px;
+  --text-md--line-height: 1.5;
+  --text-base: 14px;
+  --text-base--line-height: 1.5;
+  --text-lg: 16px;
+  --text-lg--line-height: 1.4;
+  --text-xl: 18px;
+  --text-xl--line-height: 1.3;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 1.2;
+  --text-display: clamp(27px, 3vw, 36px);
+  --text-display--line-height: 1.12;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --tracking-tight: -0.02em;
+  --tracking-caps: 0.08em;
+  /* Spacing: 4px grid. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  /* Shape, elevation, motion, focus, controls, layout. */
   --radius-sm: 6px;
-  --radius: 10px;
+  --radius-md: 10px;
   --radius-lg: 14px;
+  --radius-pill: 999px;
+  --shadow-1: 0 8px 24px rgba(60, 42, 24, 0.09);
+  --shadow-2: 0 16px 48px rgba(60, 42, 24, 0.18);
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --focus-ring: 3px solid var(--color-accent);
+  --focus-offset: 2px;
+  --focus-offset-inset: -3px;
+  --control-h: 40px;
+  --control-h-sm: 32px;
+  --touch-min: 44px;
+  --content-max: 1300px;
+  --form-max: 960px;
+  --prose-max: 640px;
+  --sidebar-w: 258px;
+  /* Breakpoints (media queries cannot read custom properties): phone <= 520px,
+     tablet <= 760px, desktop <= 1100px. */
+  /* Older names, kept as aliases until every rule uses the tokens above. */
+  --bg: var(--color-bg);
+  --surface: var(--color-surface);
+  --surface-muted: var(--color-surface-2);
+  --hover: var(--color-surface-hover);
+  --text: var(--color-text);
+  --text-strong: var(--color-text-strong);
+  --muted: var(--color-text-muted);
+  --line: var(--color-border);
+  --input-border: var(--color-border-strong);
+  --accent: var(--color-accent);
+  --accent-subtle: var(--color-accent-subtle);
+  --primary: var(--color-accent);
+  --primary-hover: var(--color-accent-hover);
+  --on-primary: var(--color-on-accent);
+  --success: var(--color-success);
+  --success-subtle: var(--color-success-subtle);
+  --danger: var(--color-danger);
+  --danger-subtle: var(--color-danger-subtle);
+  --warning: var(--color-warning);
+  --warning-subtle: var(--color-warning-subtle);
+  --overlay: var(--color-overlay);
+  --shadow: var(--shadow-1);
+  --radius: var(--radius-md);
   /* Keep the scrollbar's space whether or not the page scrolls, so the header and content do not
      move sideways between short and long pages with classic scrollbars (finding 1520). */
   scrollbar-gutter: stable;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 1ms;
+    --duration-base: 1ms;
+  }
 }
 * {
   box-sizing: border-box;
@@ -86,37 +167,129 @@ button,
 a {
   touch-action: manipulation;
 }
+/* Button hierarchy (UX plan C2). A plain button is the secondary tone, edged at 3:1 against the
+   surface; .button gives a link the same chrome. Tones: --primary (accent fill, at most one per
+   view), --ghost (no edge: toolbars and Refresh), --danger (destructive), --link (inline text).
+   --sm is the toolbar size. .primary, .overview-primary and .danger are older names for
+   --primary and --danger, kept until every caller and test uses the new ones. */
 button,
-.primary {
+.button,
+.primary,
+.overview-primary {
   color: inherit;
   cursor: pointer;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
   padding: 8px 14px;
-  font-weight: 500;
+  font-weight: var(--weight-medium);
 }
-a.primary {
+/* Low specificity, so a tone's own colour wins. */
+:where(a.button, a.primary, a.overview-primary) {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-strong);
   text-decoration: none;
 }
-button:not(:disabled):hover {
-  background: var(--hover);
+button:not(:disabled):hover,
+a.button:hover {
+  background: var(--color-surface-hover);
 }
+.button--primary,
+.primary,
+.overview-primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-on-accent);
+}
+a.button--primary,
+a.primary,
+a.overview-primary {
+  color: var(--color-on-accent);
+}
+/* Tone hovers name the element so they outrank the plain button hover above. */
+button.button--primary:not(:disabled):hover,
+button.primary:not(:disabled):hover,
+a.button--primary:hover,
+a.primary:hover,
+a.overview-primary:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+.button--ghost {
+  border-color: transparent;
+  background: transparent;
+}
+.button--danger,
+.danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+button.button--danger:not(:disabled):hover,
+button.danger:not(:disabled):hover {
+  color: var(--color-danger);
+  background: var(--color-danger-subtle);
+}
+.button--link {
+  padding: var(--space-1) var(--space-2);
+  border-color: transparent;
+  background: none;
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+button.button--link:not(:disabled):hover,
+a.button.button--link:hover {
+  background: none;
+}
+.button--sm {
+  min-height: var(--control-h-sm);
+  padding: 5px var(--space-3);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+}
+/* One disabled style and one busy cursor: disabled means "not now", busy means "working". The busy
+   cursor is for buttons only: a whole page or list marked busy keeps its cursor, so a load that
+   settles quickly never flashes it (findings 1444, 1447). */
 button:disabled {
-  cursor: wait;
-  opacity: 0.55;
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 .agent-card[inert] button {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.6;
 }
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 3px;
+[aria-busy="true"] button:disabled,
+button[aria-busy="true"] {
+  cursor: progress;
+}
+/* One focus ring for every control. Rows and panes that sit against an edge use the inset offset
+   (.focus-inset, or listed here); wrappers that draw the ring for a borderless child use the
+   normal one. Items inside a scrolling list or tab strip are inset too: the scroller clips
+   anything drawn outside it. */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+.focus-inset:focus-visible,
+.focus-inset:has(input:focus-visible),
+.agent-tabs button:focus-visible,
+.log-pane:focus-visible,
+.plugin-list-item:focus-visible,
+.repository-card-toggle:focus-visible,
+.repository-result:has(input:focus-visible),
+.slack-directory-result.active,
+.version-item:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset-inset);
+}
+.slack-directory-input:has(input:focus-visible),
+.resource-linked:has(.resource-name a:focus-visible),
+.repository-option:has(:focus-visible),
+.repository-profile:has(:focus-visible) {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
 }
 a {
   color: var(--accent);
@@ -232,9 +405,10 @@ p {
 .auth input {
   display: block;
   width: 100%;
+  min-height: var(--control-h);
   border: 1px solid var(--input-border);
   border-radius: var(--radius);
-  padding: 12px;
+  padding: var(--space-2) var(--space-3);
   background: var(--surface);
   color: inherit;
 }
@@ -244,15 +418,8 @@ p {
   font-size: 13px;
   color: var(--muted);
 }
-.primary {
-  background: var(--primary);
-  border-color: var(--primary);
-  color: var(--on-primary);
-}
-.primary:not(:disabled):hover {
-  background: var(--primary-hover);
-}
-.auth .primary {
+.auth .primary,
+.auth .button--primary {
   width: 100%;
   margin-top: 28px;
 }
@@ -265,7 +432,7 @@ p {
   height: 18px;
   margin-right: 10px;
   vertical-align: middle;
-  background: #fff;
+  background: var(--color-surface);
 }
 .auth-google-colors {
   width: 100%;
@@ -289,20 +456,102 @@ p {
 .auth .auth-recovery {
   display: block;
   margin: 20px auto 0;
-  padding: 4px 8px;
-  border-color: transparent;
-  background: none;
-  color: var(--accent);
-  font-size: 13px;
-  text-decoration: underline;
 }
 .error {
   color: var(--danger);
   margin-top: 18px;
+  /* Refusals name long setting paths and request IDs; wrap them in a phone-width card. */
+  overflow-wrap: anywhere;
+}
+/* A field's own error sits under its control, above its help, not after the form (finding
+   1903): danger text, linked by aria-describedby, with aria-invalid on the control. */
+.field-error {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-md);
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+}
+[aria-invalid="true"]:not([type="checkbox"]):not([type="radio"]) {
+  border-color: var(--color-danger);
+}
+/* Status block (UX plan C1): an error, warning or notice. A stripe in the tone's colour on its
+   subtle wash; the text stays in the body colour, and only the label takes the tone. Built by
+   statusBlock() in dom.mjs; data-tone is info, success, warning or danger. */
+.status {
+  --status-tone: var(--color-text-muted);
+  --status-wash: var(--color-surface-2);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--status-tone);
+  border-radius: var(--radius-md);
+  background: var(--status-wash);
+  color: var(--color-text);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+  /* Refusals name long setting paths and request IDs; wrap them in a phone-width card. */
+  overflow-wrap: anywhere;
+  /* A refusal scrolled into view keeps room for its focus ring. */
+  scroll-margin-block: var(--space-4);
+}
+/* An empty block shows nothing. One that is a live region (alert or status) keeps its place in
+   the accessibility tree with no box, so the message later written into the same node is
+   announced; display: none would drop it from the tree. One without a live role goes. An
+   explicit hidden attribute still hides either. */
+.status:empty {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.status:empty:not([role="alert"], [role="status"]) {
+  display: none;
+}
+/* An error keeps the gap .error gave it from the control above. :where() leaves a component's
+   own margin (.log-error) in charge. */
+.status:where([data-tone="danger"]) {
+  margin-top: var(--space-4);
+}
+.status[data-tone="info"] {
+  --status-tone: var(--color-info);
+  --status-wash: var(--color-info-subtle);
+}
+.status[data-tone="success"] {
+  --status-tone: var(--color-success);
+  --status-wash: var(--color-success-subtle);
+}
+.status[data-tone="warning"] {
+  --status-tone: var(--color-warning);
+  --status-wash: var(--color-warning-subtle);
+}
+.status[data-tone="danger"] {
+  --status-tone: var(--color-danger);
+  --status-wash: var(--color-danger-subtle);
 }
 /* An Agent stopped by its owner during creation: guidance, not an error (finding 1375). */
-.error .provisioning-stopped {
-  color: var(--text);
+.status:has(> .provisioning-stopped) {
+  --status-tone: var(--color-info);
+  --status-wash: var(--color-info-subtle);
+}
+.status-label {
+  margin: 0 0 var(--space-1);
+  color: var(--status-tone);
+  font-size: var(--text-xs);
+  line-height: var(--text-xs--line-height);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+.status-body,
+.status > ul {
+  margin: 0;
+}
+.status > ul {
+  padding-left: var(--space-5);
+}
+.status-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 .shell {
   min-height: 100dvh;
@@ -488,7 +737,7 @@ p {
   max-width: 100%;
   min-height: 42px;
   padding: 10px 12px;
-  border: 1px solid #bbc7c0;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   text-overflow: ellipsis;
 }
@@ -504,11 +753,39 @@ p {
   display: grid;
   gap: 12px;
 }
-.resource {
-  background: var(--surface);
-  border: 1px solid var(--line);
+/* Section, card and badge patterns (UX plan C4). A section is a heading, an optional description
+   and its content; it is not a card. Cards live inside sections. */
+.section {
+  margin-top: var(--space-8);
+}
+.section > h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+}
+.section > h2 + p {
+  max-width: var(--prose-max);
+  margin: 0 0 var(--space-4);
+  color: var(--color-text-muted);
+}
+.card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  padding: 24px;
+  padding: var(--space-6);
+}
+.card--muted {
+  background: var(--color-surface-2);
+}
+.card--danger {
+  border-color: var(--color-danger-subtle);
+}
+@media (max-width: 520px) {
+  .card {
+    padding: var(--space-4);
+  }
+}
+.resource {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -527,13 +804,62 @@ p {
   user-select: text;
   overflow-wrap: anywhere;
 }
+/* A status in a word or two: human copy, never a raw enum value. Neutral unless data-tone says
+   success, warning, danger or info. */
 .badge {
+  display: inline-block;
   border-radius: var(--radius-sm);
-  background: var(--hover);
-  padding: 6px 10px;
-  color: var(--muted);
-  font-size: 12px;
+  background: var(--color-surface-hover);
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  font-weight: var(--weight-medium);
   white-space: nowrap;
+}
+.badge[data-tone="success"] {
+  background: var(--color-success-subtle);
+  color: var(--color-success);
+}
+.badge[data-tone="warning"] {
+  background: var(--color-warning-subtle);
+  color: var(--color-warning);
+}
+.badge[data-tone="danger"] {
+  background: var(--color-danger-subtle);
+  color: var(--color-danger);
+}
+.badge[data-tone="info"] {
+  background: var(--color-info-subtle);
+  color: var(--color-info);
+}
+/* The whole Namespace row opens its Agents; the ID stays selectable above the link's area. */
+.resource-linked {
+  position: relative;
+}
+@media (hover: hover) {
+  .resource-linked:hover {
+    background: var(--hover);
+  }
+}
+.resource-linked .resource-name a {
+  color: var(--text-strong);
+  text-decoration: none;
+}
+.resource-linked .resource-name a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+.resource-linked .resource-id {
+  position: relative;
+  z-index: 1;
+}
+/* The card draws the focus ring (see the wrapper rule), matching the link's hit area in every
+   browser. */
+.resource-linked .resource-name a:focus-visible {
+  outline: none;
 }
 .state-panel {
   padding: 36px;
@@ -609,7 +935,6 @@ p {
     right: 14px;
   }
   .resource {
-    padding: 20px;
     align-items: start;
     gap: 12px;
   }
@@ -631,8 +956,20 @@ select:not([multiple]):not([size]),
 select:not([multiple])[size="1"] {
   appearance: none;
   background-image:
-    linear-gradient(45deg, transparent 42%, #403c35 42%, #403c35 58%, transparent 58%),
-    linear-gradient(135deg, transparent 42%, #403c35 42%, #403c35 58%, transparent 58%);
+    linear-gradient(
+      45deg,
+      transparent 42%,
+      var(--color-text) 42%,
+      var(--color-text) 58%,
+      transparent 58%
+    ),
+    linear-gradient(
+      135deg,
+      transparent 42%,
+      var(--color-text) 42%,
+      var(--color-text) 58%,
+      transparent 58%
+    );
   background-repeat: no-repeat;
   background-position:
     right 22px center,
@@ -759,12 +1096,6 @@ select:not([multiple])[size="1"] {
 .agent-detail-pending > :not(.agent-overview-toolbar) {
   display: none;
 }
-.agent-status-line {
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  color: var(--warning);
-  background: var(--warning-subtle);
-}
 .deployment-evidence {
   position: relative;
 }
@@ -809,41 +1140,60 @@ select:not([multiple])[size="1"] {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.overview-primary,
+/* Recovery links are buttons: the card edges them itself (below), and its first action stays the
+   primary one. */
 .deployment-recovery-actions a {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 14px;
-  border-radius: var(--radius);
+  gap: var(--space-2);
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
   text-decoration: none;
-  font-weight: 650;
-  line-height: 1.25;
+  font-weight: var(--weight-medium);
 }
-.overview-primary,
+.deployment-recovery-actions .button--primary,
 .deployment-recovery-actions .overview-primary {
-  color: var(--surface);
-  background: var(--text-strong);
-  border: 1px solid var(--text-strong);
+  color: var(--color-on-accent);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
 }
-.overview-primary:hover {
-  background: var(--text);
-}
-/* One primary action: a failed version's recovery outranks native administration, wherever the
-   recovery card sits. */
+/* One primary action: a failed version's recovery outranks native administration and, when it
+   offers an action, the draft's own Deploy new version; the draft's Deploy outranks native
+   administration. Wherever the recovery card sits. */
 [aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
   > .native-admin-access
-  .overview-primary {
-  color: var(--text-strong);
-  background: var(--surface);
-  border-color: var(--input-border);
+  :is(.overview-primary, .button--primary),
+[aria-live="polite"]:has(.agent-draft-actions)
+  > .native-admin-access
+  :is(.overview-primary, .button--primary),
+[aria-live="polite"]:has(
+    > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
+  )
+  .agent-draft-actions
+  :is(.primary, .button--primary) {
+  color: var(--color-text-strong);
+  background: var(--color-surface);
+  border-color: var(--color-border-strong);
+}
+[aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
+  > .native-admin-access
+  :is(.overview-primary, .button--primary):not(:disabled):hover,
+[aria-live="polite"]:has(.agent-draft-actions)
+  > .native-admin-access
+  :is(.overview-primary, .button--primary):not(:disabled):hover,
+[aria-live="polite"]:has(
+    > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
+  )
+  .agent-draft-actions
+  :is(.primary, .button--primary):not(:disabled):hover {
+  background: var(--color-surface-hover);
 }
 .deployment-recovery {
-  background: #fff8ed;
-  border-color: #e7c590;
+  background: var(--color-warning-subtle);
+  border-color: var(--color-border-strong);
 }
 .recovery-label {
-  color: #78450c;
+  color: var(--color-warning);
   font-size: 13px;
   font-weight: 650;
 }
@@ -864,8 +1214,10 @@ select:not([multiple])[size="1"] {
   gap: 8px;
   margin-top: 16px;
 }
+/* The warning tint darkens the card, so the input edge falls below 3:1 there; the muted text
+   colour keeps a white secondary action's edge at 4.6:1 (finding 1958). */
 .deployment-recovery-actions a {
-  border: 1px solid #cbbb9e;
+  border: 1px solid var(--color-text-muted);
   color: var(--text-strong);
   background: var(--surface);
 }
@@ -969,20 +1321,6 @@ select:not([multiple])[size="1"] {
     min-height: 2lh;
   }
 }
-.deployment-warnings {
-  padding: 12px 16px;
-  background: var(--warning-subtle);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-.deployment-warnings h3 {
-  margin: 0 0 8px;
-  font-size: 14px;
-}
-.deployment-warnings ul {
-  margin: 0;
-  padding-left: 20px;
-}
 .agent-version-layout {
   display: grid;
   grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
@@ -1036,12 +1374,10 @@ select:not([multiple])[size="1"] {
   background: var(--accent-subtle);
   border-color: var(--accent);
 }
-.version-current {
-  width: fit-content;
-  margin-top: 3px;
-  color: var(--success);
-  font-size: 11px;
-  font-weight: 650;
+.version-item .badge {
+  /* On the version number's line without making it taller. */
+  margin-block: calc(-1 * var(--space-1));
+  margin-left: var(--space-1);
 }
 .agent-draft-actions {
   margin: 18px 0;
@@ -1068,15 +1404,23 @@ select:not([multiple])[size="1"] {
 .agent-form {
   max-width: 960px;
 }
+/* Form field (UX plan C3): label, control, the control's error, then help. Built by field() in
+   dom.mjs; .form-field and .channel-field are older names. One control height (--control-h) and
+   one help layout. */
+.field,
 .form-field {
-  margin: 20px 0;
+  margin: var(--space-5) 0;
 }
+.field > label,
 .form-field label,
 .revision-selector label {
   display: block;
-  font-weight: 550;
-  margin-bottom: 8px;
+  font-weight: var(--weight-medium);
+  margin-bottom: var(--space-2);
 }
+.field input,
+.field select,
+.field textarea,
 .form-field input,
 .form-field select,
 .form-field textarea,
@@ -1085,9 +1429,27 @@ select:not([multiple])[size="1"] {
 .plugin-json textarea,
 .revision-selector select {
   width: 100%;
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
-  padding: 11px 12px;
+  min-height: var(--control-h);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+.field input[type="checkbox"],
+.field input[type="radio"] {
+  width: auto;
+}
+.field input[type="checkbox"],
+.field input[type="radio"],
+.form-field input[type="checkbox"],
+.form-field input[type="radio"] {
+  min-height: 0;
+}
+.field > .hint,
+.form-field > .hint,
+.field-help {
+  margin-top: var(--space-1);
+  font-size: var(--text-md);
+  color: var(--color-text-muted);
 }
 .secret-typeahead {
   position: relative;
@@ -1101,7 +1463,7 @@ select:not([multiple])[size="1"] {
   border: 1px solid var(--input-border);
   border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: 0 12px 28px rgb(15 23 42 / 14%);
+  box-shadow: var(--shadow-1);
 }
 .secret-typeahead-listbox [role="option"],
 .secret-typeahead-empty {
@@ -1233,9 +1595,25 @@ select:not([multiple])[size="1"] {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* A revision ID reads as an ID, in mono and the text colour, not as an accent link. */
+.agent-table .agent-revision-link {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-regular);
+  color: var(--color-link);
+  text-decoration: underline;
+}
 .agent-table .resource-id {
   display: block;
   margin-top: 7px;
+  max-width: 310px;
+  overflow-wrap: anywhere;
+}
+/* A name with a run too long to wrap (list.mjs marks it; a name may be 200 unbroken characters)
+   breaks anywhere within the width its ID takes, so it does not widen the table (finding 1955).
+   Other names wrap as before. */
+.agent-table .agent-name-unbroken {
+  display: inline-block;
   max-width: 310px;
   overflow-wrap: anywhere;
 }
@@ -1257,10 +1635,30 @@ select:not([multiple])[size="1"] {
   border-radius: 0;
   background: transparent;
 }
-.agent-tabs [aria-current] {
+.agent-tabs [aria-selected="true"] {
   border-bottom: 2px solid var(--accent);
   color: var(--accent);
   font-weight: 600;
+}
+/* An edge with more tabs past it fades (detail.mjs sets the attributes as the strip scrolls).
+   A mask reads only alpha, so the opaque stop may be any opaque colour. */
+.agent-tabs[data-more-before] {
+  --agent-tabs-fade-before: var(--space-8);
+}
+.agent-tabs[data-more-after] {
+  --agent-tabs-fade-after: var(--space-8);
+}
+.agent-tabs[data-more-before],
+.agent-tabs[data-more-after] {
+  /* A tab focused with the arrow keys scrolls clear of the faded edge. */
+  scroll-padding-inline: var(--space-8);
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    var(--color-text) var(--agent-tabs-fade-before, 0px),
+    var(--color-text) calc(100% - var(--agent-tabs-fade-after, 0px)),
+    transparent
+  );
 }
 .notice {
   color: var(--warning);
@@ -1314,22 +1712,99 @@ select:not([multiple])[size="1"] {
   background: var(--danger-subtle);
   color: var(--danger);
 }
-.agent-delete-dialog,
-.agent-stop-dialog {
-  width: min(30rem, calc(100vw - 2rem));
-  padding: 24px;
-  border: 1px solid var(--danger-subtle);
+/* Dialog pattern (UX plan C6): every modal shares this chrome, backdrop, shadow and open motion.
+   `--wide` holds a workspace (plugins), `--drawer` sits at the right edge (channels), and at
+   760px and below each one is a bottom sheet. Sizes use % of the viewport box a modal dialog
+   sits in, which excludes a classic scrollbar's gutter (finding 1520); 100vw would not. */
+.dialog {
+  --dialog-open-from: translateY(var(--space-2));
+  width: min(32rem, calc(100% - 2 * var(--space-4)));
+  max-width: calc(100% - 2 * var(--space-4));
+  max-height: calc(100% - 2 * var(--space-4));
+  padding: var(--space-6);
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
+  box-shadow: var(--shadow-2);
 }
-.agent-delete-dialog::backdrop,
-.agent-stop-dialog::backdrop {
-  background: var(--overlay);
+.dialog--wide {
+  width: min(72rem, calc(100% - 2 * var(--space-4)));
+  height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
-select:focus-visible,
-summary:focus-visible {
-  outline: 3px solid var(--accent);
-  outline-offset: 3px;
+.dialog--drawer {
+  --dialog-open-from: translateX(var(--space-6));
+  width: min(42rem, calc(100% - 2 * var(--space-4)));
+  height: calc(100% - 2 * var(--space-4));
+  margin: var(--space-4) var(--space-4) var(--space-4) auto;
+}
+/* One animation name for every variant: a breakpoint change while a dialog is open changes only
+   the starting offset, so it does not replay the animation. */
+.dialog[open] {
+  animation: dialog-open var(--duration-base) var(--ease);
+}
+.dialog[open]::backdrop {
+  animation: dialog-backdrop-open var(--duration-base) var(--ease);
+}
+/* Cancel first (left), the confirming action last (right). */
+.dialog-actions,
+.dialog > .form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin-top: var(--space-5);
+}
+/* The Secret dialog's grid gap spaces its fields; their page margins would add to it. */
+.credential-secret-dialog .form-field {
+  margin: 0;
+}
+@keyframes dialog-open {
+  from {
+    opacity: 0;
+    transform: var(--dialog-open-from);
+  }
+}
+@keyframes dialog-backdrop-open {
+  from {
+    opacity: 0;
+  }
+}
+/* The sheet sits on the bottom of the visible area: an on-screen keyboard shrinks only that area,
+   which dom.mjs `trackVisualViewport` mirrors into these insets (finding 1957). They are 0 unless
+   a keyboard or zoom is up, and resolve against the layout viewport the fixed dialog sits in. */
+@media (max-width: 760px) {
+  .dialog,
+  .dialog--wide,
+  .dialog--drawer {
+    --dialog-open-from: translateY(var(--space-8));
+    width: 100%;
+    max-width: 100%;
+    height: fit-content;
+    top: var(--visual-viewport-top, 0px);
+    bottom: var(--visual-viewport-bottom, 0px);
+    max-height: calc(
+      100% - var(--visual-viewport-top, 0px) - var(--visual-viewport-bottom, 0px) - var(--space-8)
+    );
+    margin: auto 0 0;
+    padding: var(--space-4);
+    border-bottom: 0;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  }
+  .dialog--wide {
+    height: calc(
+      100% - var(--visual-viewport-top, 0px) - var(--visual-viewport-bottom, 0px) - var(--space-8)
+    );
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dialog[open],
+  .dialog[open]::backdrop {
+    animation: none;
+  }
+}
+.dialog::backdrop {
+  background: var(--color-overlay);
 }
 @media (max-width: 760px) {
   .agent-card {
@@ -1348,9 +1823,84 @@ summary:focus-visible {
   .configuration-summary dd {
     margin-bottom: 12px;
   }
-  .agent-table th,
+}
+/* Phone: each Agent is a stacked row, its name and ID first, then each cell beside its column's
+   name (`data-label`), so nothing scrolls sideways. The header row stays for screen readers. */
+@media (max-width: 760px) {
+  .agent-table,
+  .agent-table tbody {
+    display: block;
+  }
+  .agent-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .agent-table tbody tr {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-4);
+    border-bottom: 1px solid var(--color-border);
+  }
+  .agent-table tbody tr:last-child {
+    border-bottom: 0;
+  }
   .agent-table td {
-    padding: 14px 8px;
+    grid-column: 1 / -1;
+    min-width: 0;
+    padding: 0;
+    border-bottom: 0;
+    overflow-wrap: anywhere;
+  }
+  .agent-table td[data-label] {
+    display: grid;
+    grid-template-columns: subgrid;
+    align-items: baseline;
+    row-gap: var(--space-1);
+  }
+  .agent-table td[data-label]::before {
+    content: attr(data-label);
+    /* The hidden header row already names the column for screen readers. */
+    content: attr(data-label) / "";
+    width: auto;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+  /* The outcome link and its note line keep two lines reserved while the read is pending, so a
+     landing read does not grow the row (finding 1488). */
+  .agent-table .agent-deployment {
+    grid-template-rows: auto calc(var(--text-sm) * var(--text-sm--line-height));
+  }
+  .agent-table .agent-deployment::before {
+    grid-row: span 2;
+  }
+  .agent-table .resource-id {
+    margin-top: var(--space-2);
+    max-width: none;
+  }
+  .agent-table .agent-name-unbroken {
+    display: inline;
+    overflow-wrap: inherit;
+  }
+  .agent-table .agent-deployment-note {
+    margin-top: 0;
+  }
+}
+/* Narrow phones put each column's name above its value, so values keep the row's full width. */
+@media (max-width: 520px) {
+  .agent-table td[data-label] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-table .agent-deployment {
+    grid-template-rows: auto auto calc(var(--text-sm) * var(--text-sm--line-height));
+  }
+  .agent-table .agent-deployment::before {
+    grid-row: auto;
   }
 }
 
@@ -1401,20 +1951,6 @@ summary:focus-visible {
 .credential-status-list dd {
   margin: 0;
 }
-.credential-status {
-  display: inline-block;
-  border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  font-size: 12px;
-}
-.credential-status.stored {
-  background: var(--success-subtle);
-  color: var(--success);
-}
-.credential-status.missing {
-  background: var(--danger-subtle);
-  color: var(--danger);
-}
 .credential-actions {
   justify-content: flex-start;
 }
@@ -1424,8 +1960,19 @@ summary:focus-visible {
 
 .agent-access-form {
   display: grid;
-  gap: 0.65rem;
+  gap: var(--space-3);
   max-width: 44rem;
+}
+
+/* The grid gap spaces the form; a field's help and the acknowledgement's error sit under their
+   control, as in every other field (UX plan C3). */
+.agent-access-form > .form-field {
+  margin: 0;
+}
+
+.agent-access-form > .form-field + .hint,
+.agent-access-form > .field-error {
+  margin-top: calc(var(--space-1) - var(--space-3));
 }
 
 .agent-access-consent {
@@ -1504,7 +2051,7 @@ summary:focus-visible {
 }
 .slack-approver-field .hint,
 .slack-directory-field .hint,
-.slack-directory-field .error {
+.slack-directory-field .status {
   margin: 0;
 }
 .slack-directory-field {
@@ -1528,10 +2075,6 @@ summary:focus-visible {
   border: 1px solid var(--input-border);
   border-radius: 8px;
   background: var(--surface);
-}
-.slack-directory-input:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
 }
 .slack-directory-input input {
   flex: 1 1 15rem;
@@ -1595,8 +2138,6 @@ summary:focus-visible {
 }
 .slack-directory-result.active {
   background: var(--surface-muted);
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
 }
 .slack-directory-result span {
   display: flex;
@@ -1610,13 +2151,6 @@ summary:focus-visible {
 }
 .plugin-dialog {
   overflow: hidden;
-  width: min(72rem, calc(100vw - 2rem));
-  height: min(52rem, calc(100dvh - 2rem));
-  max-height: calc(100dvh - 2rem);
-  padding: 24px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  box-shadow: 0 12px 48px rgba(13, 20, 33, 0.24);
 }
 .plugin-dialog[open] {
   display: flex;
@@ -1633,7 +2167,7 @@ summary:focus-visible {
 .plugin-access-help,
 .plugin-setup-reminder {
   padding: 12px 16px;
-  background: #f7f9f8;
+  background: var(--color-surface-2);
   border: 1px solid var(--line);
   border-radius: 8px;
 }
@@ -1661,9 +2195,6 @@ summary:focus-visible {
 }
 .plugin-access-instructions > .hint {
   margin-top: 0;
-}
-.plugin-dialog::backdrop {
-  background: rgba(15, 23, 42, 0.4);
 }
 .plugin-dialog-header,
 .plugin-detail-header,
@@ -1700,7 +2231,8 @@ summary:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 4px 16px 4px 4px;
+  /* Room for the focus ring of the search field and the buttons at the scroller's edge. */
+  padding: var(--space-2) var(--space-4) var(--space-2) var(--space-2);
   border-right: 1px solid var(--line);
 }
 .plugin-browser > :not(.plugin-list) {
@@ -1743,8 +2275,6 @@ summary:focus-visible {
 }
 .plugin-browser-status button {
   flex-shrink: 0;
-  padding: 6px 10px;
-  font-size: 0.875rem;
 }
 .plugin-tabs,
 .plugin-pagination {
@@ -1763,10 +2293,12 @@ summary:focus-visible {
 }
 .plugin-tabs [aria-pressed="true"],
 .plugin-list-item[aria-current="true"] {
-  background: #e8f2ec;
+  background: var(--color-accent-subtle);
   border-color: var(--accent);
 }
 .plugin-list-item {
+  /* A list row, not a button: the light edge, like the version list. */
+  border-color: var(--line);
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
@@ -1790,7 +2322,7 @@ summary:focus-visible {
   height: 32px;
   overflow: hidden;
   border-radius: 6px;
-  background: #f0f4f2;
+  background: var(--color-surface-2);
   color: var(--muted);
   font-size: 1rem;
 }
@@ -1799,7 +2331,7 @@ summary:focus-visible {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: white;
+  background: var(--color-surface);
 }
 .plugin-detail-header .plugin-logo {
   flex-basis: 40px;
@@ -1809,7 +2341,6 @@ summary:focus-visible {
 .plugin-list-item .badge {
   align-self: flex-start;
   margin-left: 42px;
-  font-size: 0.75rem;
 }
 .plugin-detail-empty {
   margin: 4rem 2rem;
@@ -1885,12 +2416,6 @@ summary:focus-visible {
   align-items: center;
   gap: 16px;
 }
-.plugin-tool-policy-action {
-  padding: 6px 12px;
-  border: 1px solid var(--line);
-  border-radius: 20px;
-  font-size: 0.875rem;
-}
 .plugin-tool-policy-action::after {
   content: " ▾";
 }
@@ -1904,9 +2429,9 @@ summary:focus-visible {
   width: 36px;
   height: 20px;
   margin: 0;
-  border: 1px solid #bbc7c0;
+  border: 1px solid var(--color-border-strong);
   border-radius: 12px;
-  background: #e3e8e5;
+  background: var(--color-surface-2);
   cursor: pointer;
 }
 .plugin-tool-switch::before {
@@ -1917,7 +2442,7 @@ summary:focus-visible {
   top: 2px;
   left: 2px;
   border-radius: 50%;
-  background: white;
+  background: var(--color-surface);
 }
 .plugin-tool-switch:checked {
   background: var(--accent);
@@ -1934,12 +2459,8 @@ summary:focus-visible {
   background: var(--accent);
 }
 .plugin-tool-switch:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-.plugin-tool-switch:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .plugin-tool-description {
   display: -webkit-box;
@@ -1994,7 +2515,7 @@ summary:focus-visible {
   }
   .plugin-browser {
     border: 0;
-    padding: 4px;
+    padding: var(--space-2);
   }
   .plugin-workspace[data-show-details="true"] .plugin-browser,
   .plugin-workspace[data-show-details="false"] .plugin-detail {
@@ -2031,10 +2552,6 @@ summary:focus-visible {
 .launch-preset legend {
   display: none;
 }
-.launch-preset select {
-  width: 100%;
-  margin: 8px 0;
-}
 .launch-advanced,
 .launch-runtime,
 .repository-customize {
@@ -2056,11 +2573,6 @@ summary:focus-visible {
 .repository-profile > span {
   min-width: 0;
   overflow-wrap: anywhere;
-}
-.repository-option:focus-within,
-.repository-profile:focus-within {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
 }
 .launch-advanced[open] > .form-field:first-of-type {
   margin-top: 20px;
@@ -2196,8 +2708,6 @@ summary:focus-visible {
 .repository-result:has(input:focus-visible) {
   position: relative;
   z-index: 1;
-  outline: 2px solid var(--accent);
-  outline-offset: -3px;
 }
 .repository-result:has(input:disabled) {
   cursor: not-allowed;
@@ -2287,9 +2797,6 @@ summary:focus-visible {
 .repository-remove:hover {
   background: var(--surface-muted);
 }
-.repository-card-toggle:focus-visible {
-  outline-offset: -3px;
-}
 .repository-chevron {
   display: inline-block;
   width: 8px;
@@ -2316,33 +2823,16 @@ summary:focus-visible {
 }
 .repository-text-action,
 .repository-remove {
-  min-width: 44px;
-  min-height: 44px;
-  border: 0;
-  background: transparent;
-  padding: 8px;
-}
-.repository-text-action {
-  color: var(--accent);
+  min-width: var(--touch-min);
+  min-height: var(--touch-min);
 }
 .repository-remove {
   flex-shrink: 0;
-  color: var(--muted);
-  font-size: 13px;
 }
 .repository-access-summary {
   justify-self: start;
   max-width: 100%;
-  padding: 3px 8px;
-  border-radius: var(--radius-sm);
-  color: var(--primary-hover);
-  background: var(--accent-subtle);
-  font-size: 12px;
-  font-weight: 600;
-}
-.repository-access-summary.is-error {
-  color: var(--danger);
-  background: var(--danger-subtle);
+  white-space: normal;
 }
 .repository-card-settings {
   padding: 14px;
@@ -2497,6 +2987,9 @@ summary:focus-visible {
   color: var(--muted);
 }
 .log-viewer {
+  /* Log rows size to this card, not the window: above 1100 px the card sits beside the
+     version list in a pane narrower than at 1001-1100 px (finding 1713). */
+  container: log-viewer / inline-size;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -2589,10 +3082,6 @@ summary:focus-visible {
   margin-left: auto;
 }
 .log-actions button {
-  min-height: 36px;
-  padding: 7px 12px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
   white-space: nowrap;
 }
 .log-follow[aria-pressed="true"] {
@@ -2645,22 +3134,6 @@ summary:focus-visible {
 .log-source-hint,
 .log-error {
   margin: 0 20px 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  line-height: 1.6;
-}
-.log-source-hint {
-  border-color: var(--warning);
-  color: var(--warning);
-  background: var(--warning-subtle);
-}
-.log-error {
-  border-color: var(--danger);
-  color: var(--danger);
-  background: var(--danger-subtle);
-  overflow-wrap: anywhere;
 }
 .log-output-status {
   margin: 0;
@@ -2682,10 +3155,6 @@ summary:focus-visible {
     Menlo,
     monospace;
 }
-.log-pane:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
-}
 .log-row {
   padding: 8px 16px 8px 32px;
   border-bottom: 1px solid var(--line);
@@ -2701,6 +3170,8 @@ summary:focus-visible {
 .log-row summary {
   position: relative;
   display: block;
+  /* Keyboard scrolling stops short of the pane edge, so the ring outside the summary shows. */
+  scroll-margin-block: var(--space-2);
   cursor: pointer;
   list-style: none;
 }
@@ -2716,16 +3187,20 @@ summary:focus-visible {
 .log-row[open] summary::before {
   content: "▾";
 }
-.log-row summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
-}
 .log-line {
-  /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned. */
-  --log-level-column: minmax(max-content, 6.5em);
-  /* Fit a whole en-US timestamp with its UTC offset on one line (finding 1681): 33 characters of
-     the 11px time, as in "12/31/2026, 12:59:59 PM GMT+10:30". ch is the row's 12px character. */
-  --log-time-column: calc(33ch * 11 / 12);
+  /* Reserve room for UNKNOWN so the columns after shorter level labels stay aligned, even when
+     the row is short of room. */
+  --log-level-column: minmax(6.5em, max-content);
+  /* Fit a whole timestamp with its UTC offset on one line (findings 1681, 1861). The console
+     measures the widest one its locale and time zone can show and sets --log-time-width (px,
+     with 4 px of slack) and --log-time-ems (the text in 11px ems) on the pane. Until then: 33
+     characters of the 11px time, as in en-US "12/31/2026, 12:59:59 PM GMT+10:30". ch is the
+     row's 12px character. */
+  --log-time-column: var(--log-time-width, calc(33ch * 11 / 12));
+  /* Where the message moves below: the time takes the room the level (6.5em), the narrowest
+     origin (60px) and two 10px gaps leave, up to its width, and any room beyond. In a card too
+     narrow for a long timestamp its text shrinks to fit (.log-time-text). */
+  --log-time-track: minmax(min(var(--log-time-column), 100% - 6.5em - 80px), 1fr);
   display: grid;
   grid-template-columns:
     var(--log-time-column) var(--log-level-column) minmax(72px, 112px)
@@ -2734,9 +3209,26 @@ summary:focus-visible {
   gap: 12px;
 }
 .log-time {
+  /* A size container, so the text below can shrink to a cell narrower than the measured width
+     (a phone layout with a long timestamp, such as ko-KR "2026. 12. 31. 오후 12시 59분 59초
+     GMT+10:30") instead of wrapping. Each row's cell is the same width, so columns stay aligned. */
+  container-type: inline-size;
   color: var(--muted);
   font-size: 11px;
-  white-space: normal;
+}
+.log-time-text {
+  font-size: min(11px, (100cqi - 4px) / var(--log-time-ems, 19.4));
+  white-space: nowrap;
+}
+.log-time-probe {
+  position: absolute;
+  visibility: hidden;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.log-time-probe > span {
+  display: block;
 }
 .log-level {
   width: fit-content;
@@ -2833,10 +3325,11 @@ summary:focus-visible {
   background: var(--warning-subtle);
 }
 .log-chip[aria-pressed="false"] {
+  border-color: var(--line);
   color: var(--muted);
   text-decoration: line-through;
 }
-@media (max-width: 1100px) {
+@container log-viewer (width < 762px) {
   .log-line {
     grid-template-columns:
       var(--log-time-column) var(--log-level-column) minmax(60px, 88px)
@@ -2844,16 +3337,48 @@ summary:focus-visible {
     gap: 10px;
   }
 }
-/* Below 1000 px a whole timestamp would leave the message column under about 200 px, so the
-   message moves below the time, level and origin, as it does on phones (finding 1681). */
-@media (max-width: 1000px) {
+/* In a card narrower than 662 px a whole timestamp would leave the message column under 200 px
+   (48 px row padding, en-US's 218 px time, 78 px level, 88 px origin and 30 px of gaps), so the
+   message moves below the time, level and origin, as it does on phones (findings 1681, 1713). */
+@container log-viewer (width < 662px) {
   .log-line {
-    grid-template-columns: minmax(var(--log-time-column), 1fr) max-content minmax(60px, 112px);
+    grid-template-columns:
+      var(--log-time-track) var(--log-level-column)
+      minmax(60px, 112px);
     gap: 4px 10px;
   }
   .log-content {
     grid-column: 1 / -1;
     margin-top: 2px;
+  }
+}
+/* A pane whose measured timestamps are wider than en-US's (data-long-time, finding 1861) moves
+   the message below up to a 762 px card too, so the message column keeps 200 px. */
+@container log-viewer (662px <= width < 762px) {
+  .log-pane[data-long-time] .log-line {
+    grid-template-columns:
+      var(--log-time-track) var(--log-level-column)
+      minmax(60px, 112px);
+    gap: 4px 10px;
+  }
+  .log-pane[data-long-time] .log-content {
+    grid-column: 1 / -1;
+    margin-top: 2px;
+  }
+}
+/* A whole en-US timestamp beside the level needs 40 px phone row padding, 218 px time, 10 px
+   gap and up to 78 px for the level. In a narrower card (a window under about 400 px) the time
+   takes its own line, down to a 320 px window, and the level moves beside the origin (finding
+   1844). A longer timestamp shrinks to fit. The .log-row prefix outranks the phone rules below. */
+@container log-viewer (width < 346px) {
+  .log-row .log-line {
+    grid-template-columns: var(--log-level-column) minmax(0, 1fr);
+  }
+  .log-row .log-time {
+    grid-column: 1 / -1;
+  }
+  .log-row .log-origin {
+    grid-column: auto;
   }
 }
 @media (max-width: 760px) {
@@ -2865,7 +3390,9 @@ summary:focus-visible {
     margin-left: 0;
   }
   .log-line {
-    grid-template-columns: minmax(0, 1fr) max-content minmax(60px, 112px);
+    grid-template-columns:
+      var(--log-time-track) var(--log-level-column)
+      minmax(60px, 112px);
     gap: 4px 10px;
   }
   .log-content {
@@ -2905,7 +3432,9 @@ summary:focus-visible {
     padding-left: 28px;
   }
   .log-line {
-    grid-template-columns: minmax(0, 1fr) max-content;
+    /* The reserved level column gives every row's time the same width, so a shrunk timestamp
+       has one size in every row (finding 1861). */
+    grid-template-columns: minmax(0, 1fr) var(--log-level-column);
   }
   .log-origin {
     grid-column: 1 / -1;

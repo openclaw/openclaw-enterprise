@@ -65,10 +65,28 @@ and [runtime proof limits](../../reference/drivers/plugin-bundled.md#native-mapp
   still apply when deploying.
 - Check the Agent Configuration's tool policy. Selecting Diffs adds it to the
   [tool allowlist](../../reference/drivers/plugin-bundled.md#native-mappings-and-limits).
-  If the Configuration denies every tool, for example with `tools.deny: ["*"]`,
-  no callable tool remains: the deployment still succeeds without a warning,
-  but every turn fails with `No callable tools remain`. Remove that denial
-  before selecting Diffs.
+  If the Configuration's `tools.deny` blocks every Diffs tool, for example with
+  `"*"`, `"diffs"` or `"group:plugins"`, Agent create, update, provisioning
+  and deployment return `400` naming `tools.deny` and the plugin. A deny-all list
+  would leave no callable tool, so every turn would fail. Remove the matching
+  deny item before selecting Diffs. Create Agent checks the pair before it saves
+  anything, so after this refusal every field stays editable, the Configuration
+  included. If Agent create refuses after the console saved the Configuration,
+  the console names the fix it allows: deselect the plugin and create the Agent, then fix the setting
+  on the Agent's Configuration tab and select the plugin again. With one Agent under `agents.entries`, its
+  own `tools.deny` counts too, and the error names it. With several, the error
+  names an Agent whose `tools.deny` denies all tools with `"*"`, because all of
+  its turns would fail once a plugin is selected. To keep a tool-less Agent,
+  move it to a Configuration without plugins. Denying only Diffs to some
+  Agents is allowed. The `deny` list under `tools.byProvider.<provider>` for
+  the primary model's provider counts the same way, at the top level and under
+  an Agent entry. A `tools.byProvider` object that also has a
+  `<provider>/<model>` key for that provider is not checked, because OpenClaw
+  may rewrite the model ID it matches.
+- With one Agent under `agents.entries` and a `minimal`, `coding` or
+  `messaging` tool profile, the Agent's own `tools.alsoAllow` replaces the
+  top-level list that grants Diffs, so the request returns `400` unless that
+  list names Diffs, for example `"diffs"`.
 
 Set the Namespace and Agent IDs from your Installation:
 

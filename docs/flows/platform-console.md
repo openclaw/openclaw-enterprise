@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: "2026-10-17"
-last_updated_session: "authoring-run/dc9ec1fb-19a3-4d2b-8e27-d5596378b7d2"
+updated: "2026-10-19"
+last_updated_session: "authoring-run/0a964265-43ea-4512-b547-2175d1d28e72"
 ---
 
 # Platform console request flow
@@ -102,9 +102,11 @@ Startup passes safe Backend `{id,type}` summaries to `createFastifyApp`.
 requests reread neither configuration nor credentials.
 
 `apps/controller/src/console-assets.ts:readConsoleAsset` serves allowlisted assets
-with MIME types and same-origin CSP. Unknown console paths return the shell with
-`404`; APIs retain JSON errors. `encodedAsset` compresses static scripts/styles
-once per `Accept-Encoding` with `Vary`; the sign-in shell stays identity.
+and the shared HTML shell with MIME types and same-origin CSP. Unknown console
+paths return the shell with `404`; API routes retain JSON errors.
+`encodedAsset` compresses static scripts and styles once (brotli or gzip, per
+`Accept-Encoding`, with `Vary`), unless an explicit `identity` weight beats both
+encodings. The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
 `OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
@@ -183,8 +185,8 @@ returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
-is false, both explain the restriction. If the read fails, creation stays available;
-the API authorizes every create. Changing Provider or Harness resets incompatible
+is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;
+OCC still authorizes every write. Changing Provider or Harness resets incompatible
 credentials and model choices, preserving unrelated JSON. See
 [Agent creation](../reference/console/create-and-deploy.md) for inputs and recovery.
 
@@ -228,10 +230,11 @@ access, and Secret references to [provisioning](agent-provisioning.md), even aft
 that outage. The worker reauthorizes, creates resources and exact Secret grants,
 and deploys; Console polls, then opens the revision.
 
-Ordinary drafts post `{kind: "agent", values, secretBindings}` to
-`POST /namespaces/:namespaceId/configurations`, then submit its ID, plugins,
-`initialWorkspaceFiles`, and `workspaceDefaultsId` to
-`POST /namespaces/:namespaceId/agents`. Success opens `revision=draft`.
+Ordinary drafts first check values and plugins with
+`POST /namespaces/:namespaceId/agents/validate`, then post
+`{kind: "agent", values, secretBindings}` to `.../configurations` and submit its ID,
+plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
+Success opens `revision=draft`.
 OCC stages all four workspace textareas, including unchanged/empty values, outside
 Agent/Configuration for [workspace setup](workspace-files.md).
 
@@ -277,11 +280,13 @@ log space keeps Stop/Delete fixed. Direct links focus and scroll output; tab
 selection leaves visible output still. Recovery links scroll and focus the version
 tab, smoothly unless rebuilt or motion is reduced.
 
-[Runtime logs](agent-runtime-logs.md) traces authorization and revalidation.
-Status `403` hides Pod details without denying independent logs; denials last until
-logout, while new `operate` grants permit retry. Refused log reads/downloads clear
-rows and reject late successes. Refusal rereads status, superseding stale in-flight
-answers. Back rebuilds refused views; otherwise it admits the checked page.
+[Runtime logs](agent-runtime-logs.md) explains access. Status `403` hides Pod details, not
+separately authorized logs. Denials last until logout; newly granted `operate` permits another
+status read. Refused reads or downloads clear the rows; late successes cannot restore them or
+download. Refusing allowed log text rereads status at once, superseding stale reads. Back
+rebuilds refused views, else shows the checked page. Refresh keeps rows and cursor until
+replaced; rate-limit notices update at the retry time without rereading. New streams or
+rejected cursors clear rows.
 
 ### 7. Commit only the current response, or clear the view
 
@@ -289,13 +294,13 @@ answers. Back rebuilds refused views; otherwise it admits the checked page.
 
 After full-page navigation settles, `loadPage` focuses the destination heading if
 focus fell to the body, using `preventScroll` to preserve return position. An Agent
-opened from the list focuses its heading when the title renders. Tabs and
-focused controls keep focus. Navigation, Namespace changes, and logout invalidate
+opened from the list focuses its heading when the title renders. Tabs (one Tab
+stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events. Agent detail
 rechecks access in place, preserving controls, input, and saves; failures clear it.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
-Returning to the tab restores focus after the unchanged view is admitted, if the control is still
-present and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
+Returning to the tab restores focus after the unchanged view is admitted, if the control
+remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
 
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state. `pagehide` clears
@@ -360,29 +365,8 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-17 19:17: Use main's retained-view handling and preserve role-catalog recovery. (authoring-run/dc9ec1fb-19a3-4d2b-8e27-d5596378b7d2 - f87c00ca0ae71d6cd7f263761cc9be3aa6624852)
+- 2026-10-19 14:08: Preserve role-catalog recovery alongside updated Console behavior and move older entries into the flow history. (authoring-run/0a964265-43ea-4512-b547-2175d1d28e72 - 22c5ee8f85e33efab6d80045df8ea0dfbd3b1458)
 
-- 2026-10-17 16:30: Keep row loading text 150 ms once shown; refocus at phone width focuses Open navigation. (ui-fix-1680)
-- 2026-10-17 12:10: Keep list focus when refocusing during row reads or from sidebar and header controls. (lows-1017n)
-- 2026-10-16 13:04: Combine held-page navigation and first reads with completed read-outcome revalidation. (authoring-run/b88902de-ac9a-4c44-98a7-073323cfb09b - ff0edc4f28ab3fa423cc1f331ba209d1cda04372)
-
-- 2026-10-15 23:00: Keep views across abandoned returns; show slow rechecks. (console-nav-1015)
-- 2026-10-15 20:00: Hold pages until returns revalidate. (public-pr/2523)
-- 2026-10-15 19:40: Compress static console scripts and styles per `Accept-Encoding`. (console-gzip)
-- 2026-10-15 19:03: Preserve scoped destinations across sign-in and resolve Agent recovery after session admission. (authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3 - 91ac04d6919860b7d7386444468a3dc0ddc90481)
-- 2026-10-15 13:36: Retain pagination metadata and failed-read outcomes together during view revalidation. (authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3 - b0fdd771426669636fc97b59c651a383b5d64984)
-
-- 2026-10-13 12:00: Explain outage sign-in reasons. (kc-guide-fix)
-- 2026-10-09 21:10: Preserve cancellation, deadline and transport failures during response body reads (authoring-run/2e195d67-c77d-43d0-8c32-2179523eb3a2 - 013bcf5f76819ca280a164745d470855fc5b74cd)
-
-- 2026-10-08 15:59: Trace responsive drawer and tab visibility, destination focus, scoped authentication feedback, and compact plugin setup. (01a11d68-d6e8-7033-ab93-03767bced2da - 58daaa5a3ac4c64bc5fb3af00759b59b365b20ca)
-- 2026-10-08 14:30: Trace client navigation from a failed deployment to its exact version and focus its Logs tab and scroll the panel into view. (01a11d68-d6e8-7033-ab93-03767bced2da - 0ff96342dc416325770eebed5963e9886fd3dff3)
-- 2026-10-07 12:30: Explain a disabled account's provider sign-in (`authReason=account-disabled`). (fix-member-1007/d534)
-
-- 2026-10-03 22:38: Trace switching between listed and manual model entry, preserving listed models and one submitted model. (01a10328-9de5-7081-ada2-d88ff80161e4 - 340feea42)
-- 2026-10-03 20:00: Rebuild a view retained without a Namespace selection once one is readable, so the header selector shows the default.
-- 2026-10-03 18:00: Re-enable the header selector during retained-view reads once Namespace access is checked.
-
-- 2026-10-03 09:42: Track completed GET failures centrally and revalidate their outcomes before restoring a view. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - f7af67dd9a7b6e5571e7d4d7c384966ba7fb31fd)
+- 2026-10-18 15:02: Honor an explicit higher identity weight when serving static scripts and styles. (authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

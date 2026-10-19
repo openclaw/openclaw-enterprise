@@ -189,6 +189,7 @@ test("provider prepares a scoped immutable image pair and requires a completed t
   await execute("openssl", ["verify", "-CAfile", ca, "-verify_hostname", "api.openai.com", leaf]);
   await assert.rejects(
     execute("openssl", ["verify", "-CAfile", ca, "-verify_hostname", "unrelated.test", leaf]),
+    { code: 2, message: /hostname mismatch/i },
   );
   assert.match(images.OCC_DEVELOPMENT_CONTROLLER_IMAGE, /\/controller@sha256:[a-f0-9]{64}$/);
   assert.match(images.OCC_KUBERNETES_RUNTIME_IMAGE, /\/runtime@sha256:[a-f0-9]{64}$/);

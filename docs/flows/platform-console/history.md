@@ -8,6 +8,19 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-17 19:17: Use main's retained-view handling and preserve role-catalog recovery. (authoring-run/dc9ec1fb-19a3-4d2b-8e27-d5596378b7d2 - f87c00ca0ae71d6cd7f263761cc9be3aa6624852)
+
+- 2026-10-16 13:04: Combine held-page navigation and first reads with completed read-outcome revalidation. (authoring-run/b88902de-ac9a-4c44-98a7-073323cfb09b - ff0edc4f28ab3fa423cc1f331ba209d1cda04372)
+
+- 2026-10-15 13:36: Retain pagination metadata and failed-read outcomes together during view revalidation. (authoring-run/f64d2a52-ee3c-4e67-9d22-30f2e4d89aa3 - b0fdd771426669636fc97b59c651a383b5d64984)
+
+- 2026-10-03 09:42: Track completed GET failures centrally and revalidate their outcomes before restoring a view. (authoring-run/59d7541c-66d2-414c-8139-174fca84fe33 - f7af67dd9a7b6e5571e7d4d7c384966ba7fb31fd)
+
+- 2026-10-18 10:30: Count the row loading text's 150 ms from the frame it shows in. (lows-1018f)
+
+- 2026-10-17 16:30: Keep row loading text 150 ms once shown; refocus at phone width focuses Open navigation. (ui-fix-1680)
+- 2026-10-17 12:10: Keep list focus when refocusing during row reads or from sidebar and header controls. (lows-1017n)
+
 - 2026-10-17 10:50: Delay row loading text 250 ms; keep focus through sidebar navigation and list refocus. (lows-1017m)
 - 2026-10-17 10:36: Restore the reader’s focus when a tab recheck reuses the same view.
 - 2026-10-17 08:32: Show the rechecked Agents list before refreshing visible deployment cells. (fix-1644 - c29af02c98)

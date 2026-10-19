@@ -23,6 +23,7 @@ import {
   createKubernetesInstallationConfiguration,
   createRealKubernetesFixture,
   kubernetesHash as hash,
+  withBoundedTeardown,
 } from "../helpers/kubernetes-real.mjs";
 import {
   ensureEnvoyGatewayControllers,
@@ -1417,7 +1418,42 @@ async function topologyPods(topology) {
   return (await Promise.all(targets.map((target) => resources("pods", target)))).flat();
 }
 
-async function arrangeProductionTopology(context, mode, slack, options = {}) {
+// The topology's own cleanups, each its own registration (finding 1711), so a worker stop that
+// rejects cannot keep the later ones from running. Operations are closures, so resources assigned
+// later are read at cleanup time. They run last-registered first: the forward and worker stop
+// before the pools, the Postgres network and the Namespaces they use go away.
+const productionTopologyCleanupOrder = Object.freeze([
+  "gatewayForward",
+  "worker",
+  "productionApp",
+  "observerPool",
+  "postgresNetwork",
+  "gatewayRuntimeNamespace",
+  "placementNamespace",
+  "temporaryDirectory",
+]);
+
+function registerProductionTopologyCleanups(context, operations) {
+  let stopped;
+  for (const name of [...productionTopologyCleanupOrder].reverse()) {
+    const operation = operations[name];
+    assert.equal(typeof operation, "function", `production topology cleanup ${name}`);
+    // Named for the teardown log: every registration comes from this line. Registered after its
+    // test's teardown, each runs at once and throws to stop the setup; register them all first.
+    try {
+      context.after({ [name]: () => operation() }[name]);
+    } catch (error) {
+      stopped ??= error;
+    }
+  }
+  if (stopped !== undefined) {
+    throw stopped;
+  }
+}
+
+async function arrangeProductionTopology(testContext, mode, slack, options = {}) {
+  // node:test would run these cleanups oldest-first and stop at the first failure (finding 1711).
+  const context = withBoundedTeardown(testContext, { label: "production topology teardown" });
   const loggingObservationStartedAt = Date.now();
   const includeSecretProbes = options.secretLifecycle === true;
   if (mode === "dedicated") {
@@ -1598,20 +1634,19 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
   let gatewayRuntimeNamespace;
   let gatewayPlacement;
   let forwarding;
-  context.after(async () => {
-    try {
-      await forwarding?.stop();
-    } finally {
+  registerProductionTopologyCleanups(context, {
+    gatewayForward: () => forwarding?.stop(),
+    worker: async () => {
       if (worker !== undefined) {
         await worker.stop();
       } else if (workerPool !== undefined) {
         await workerPool.end();
       }
-      if (productionApp !== undefined) {
-        await productionApp.close();
-      }
-      await observerPool.end();
-      await detachPostgres?.();
+    },
+    productionApp: () => productionApp?.close(),
+    observerPool: () => observerPool.end(),
+    postgresNetwork: () => detachPostgres?.(),
+    gatewayRuntimeNamespace: async () => {
       if (gatewayRuntimeNamespace !== undefined && gatewayRuntimeNamespace !== placement) {
         await kubectl(
           "delete",
@@ -1622,6 +1657,8 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           "--timeout=120s",
         );
       }
+    },
+    placementNamespace: async () => {
       if (placement !== undefined) {
         await kubectl(
           "delete",
@@ -1632,13 +1669,13 @@ async function arrangeProductionTopology(context, mode, slack, options = {}) {
           "--timeout=120s",
         );
       }
-      await rm(directory, { recursive: true, force: true });
-    }
+    },
+    temporaryDirectory: () => rm(directory, { recursive: true, force: true }),
   });
 
   // Docker may replace published-port connections when another network attaches.
   // Complete that topology change before opening the observer/bootstrap pools;
-  // its registered cleanup runs only after those pools and controllers stop.
+  // its registered cleanup runs only after those pools and the workers stop.
   if (workspaceGateway !== undefined) {
     databaseAddress = await attachPostgresToK3d((cleanup) => {
       detachPostgres = cleanup;
@@ -5830,6 +5867,8 @@ async function assertRoutedWorkspaceModelTurn(topology, connection, marker) {
 
 export {
   arrangeProductionTopology,
+  productionTopologyCleanupOrder,
+  registerProductionTopologyCleanups,
   assertActualModelTurn,
   assertActualPublicGithubRead,
   assertDedicatedAgentsInstructionsInFreshSession,

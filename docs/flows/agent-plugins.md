@@ -1,7 +1,7 @@
 ---
 created: 2026-09-08
-updated: 2026-10-17
-last_updated_session: authoring-run/629826fb-b521-49bb-865a-dbc1b5c975a5
+updated: 2026-10-18
+last_updated_session: lows-1018b
 ---
 
 # Agent Plugin Deployment Flow
@@ -110,7 +110,11 @@ HTTP contracts validate input before [OpenClawController](../../packages/occ/src
 checks the exact Namespace and Agent. Reads require Agent `read`; create/PATCH
 stores the `plugins` map. Shared validators check the nested selection shape.
 `OpenClawController.validatePluginPolicies` calls the selected Driver's
-`validatePolicies` before Agent create/update and provisioning writes. Unsupported
+`validatePolicies` before Agent create/update and provisioning writes. Its optional
+`validateAgentConfiguration` checks selections against Configuration values here and at
+deployment. The OpenClaw Driver refuses a selection whose tools `tools.deny`, the sole
+`agents.entries` entry's list, the primary provider's `byProvider` lists, or these together block,
+any selection beside an entry denying `*`, or one a sole entry's `alsoAllow` hides under a profile. Unsupported
 controls, reviewer scopes, and combinations return `400 INVALID_REQUEST`;
 a missing selected Driver returns `501 NOT_IMPLEMENTED`. Validation is static: native app mapping,
 authentication, and release/tool metadata remain startup checks. Agent mutations store desired state and audit evidence atomically without changing
@@ -348,6 +352,9 @@ deadline.
 
 ## Changelog
 
+- 2026-10-18 03:00: Check the primary model's `tools.byProvider` deny lists and a sole entry's `alsoAllow` under a profile (findings 1855, 1857). (lows-1018c)
+- 2026-10-18 02:20: Check roster entries' `tools.deny` in the OpenClaw Driver's selection check (finding 1848). (lows-1018b - 628ee9fbf)
+
 - 2026-10-17 06:05: Preserve OAuth discovery changes while integrating the native reader fix. (authoring-run/629826fb-b521-49bb-865a-dbc1b5c975a5 - 23965d64cc2824f0c5a2b5d704f767fead13f11b)
 
 - 2026-10-17 00:10: Contain non-object native catalog envelopes in the discovery error path. (authoring-run/3d8efdc8-6da6-4cf9-99f7-adebd5e5649d - 42fb0a90337209e28318765c1b537bc4f3623506)
@@ -366,20 +373,5 @@ deadline.
 - 2026-10-10 04:49: Preserve writable native configuration during Harness peer recovery and same-Pod container restarts. (codex/thirty-compute-07-oct10 - 8e5a06ce)
 
 - 2026-10-10 04:10: Check the Codex automatic reviewer policy at Agent create and update too. (fix-994-995)
-
-- 2026-10-10 04:00: Hold an unusable writable-configuration peer bridge record unready with its file and remedy named. (fix-994-995)
-
-- 2026-10-10 00:30: Keep the earlier Codex `config.toml` of revisions prepared before an upgrade. (fix-982)
-
-- 2026-10-09 15:02: Preserve the configured Codex session approval policy during startup. (authoring-run/72c276e8-6db5-44e5-aac1-f9e3fdc34ff2 - 504bf89a0707b66e1612d26e3d67ed6f6b16232f)
-
-- 2026-10-09 17:01: Clarify that CredentialGateway retrieval may refresh before authorized plugin discovery in the accompanying change. (01a11d95-ebef-76e1-b9b9-9d3d2e88e99e - 4f902e2ab7738568fc8bb278296e54255355b8b7)
-
-- 2026-10-08 22:00: Integrate validated plugin default-off grants before native install, with final app-policy verification and skill-only selections. (authoring-run/74dc7eaf-a67b-47ef-91bd-2ecd0463fb10 - 65911984b3f6d9ee398aed913a0b8dd08e2ae094)
-
-- 2026-10-07 17:42: Replace login-bundle discovery with warm CredentialSource token callbacks. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - da984340a)
-- 2026-10-07 19:30: Pass the admitted model to native Codex before reviewer validation. (authoring-run/bc793557-585a-4c1a-9463-b2c55682ea02 - b1be0e0602b9db1035a689ca2a4ac4982f6d0b3b)
-
-- 2026-09-30 13:32: Clarify readiness and routing propagation. (codex/01a0b0e4-839a-71b3-9ec1-3b1000b5d06a - a0ca6376)
 
 [Agent plugin deployment documentation history](agent-plugins/history.md) preserves the older dated entries.

@@ -569,36 +569,41 @@ test(
   },
 );
 
+async function seedActiveAndFailedNativeExposureRevisions(fixture) {
+  const sandboxDriverId = "native-sandbox";
+  const nativeHarness = { ...fixture.productionHarness, id: "openclaw", mode: "dedicated" };
+  const native = { harness: nativeHarness, sandboxDriverId };
+  const { owner: served, candidate: active } = await fixture.admitInitialRevision("served", {
+    agent: { executionMode: "dedicated" },
+    revision: native,
+  });
+  const failed = await fixture.revision(served, 2, native);
+  await fixture.observerPool.query(
+    `UPDATE occ.controller_work
+     SET state = 'succeeded', reason_code = 'REVISION_ACTIVATED', completed_at = clock_timestamp()
+     WHERE idempotency_key = $1`,
+    [active.idempotencyKey],
+  );
+  await fixture.observerPool.query(
+    `UPDATE occ.controller_work
+     SET state = 'failed_permanent', reason_code = 'DEPENDENCY_UNAVAILABLE', completed_at = clock_timestamp()
+     WHERE idempotency_key = $1`,
+    [failed.idempotencyKey],
+  );
+  await fixture.observerPool.query(
+    "UPDATE occ.agents SET active_revision_id = $2, desired_runtime_state = 'running' WHERE id = $1",
+    [served.id, active.id],
+  );
+  return { served, active, failed };
+}
+
 // Finding 1695: the sweep step ran only on passes after an empty claim, so a worker whose queue
 // is never empty never withdrew a second listed exposure (the first goes on the first pass).
 // It now also runs after every five claimed passes in a row.
 revisionTest(
   "a saturated queue still gets a sweep step after five claimed passes",
   async (fixture) => {
-    const sandboxDriverId = "native-sandbox";
-    const nativeHarness = { ...fixture.productionHarness, id: "openclaw", mode: "dedicated" };
-    const native = { harness: nativeHarness, sandboxDriverId };
-    const { owner: served, candidate: active } = await fixture.admitInitialRevision("served", {
-      agent: { executionMode: "dedicated" },
-      revision: native,
-    });
-    const failed = await fixture.revision(served, 2, native);
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
-     SET state = 'succeeded', reason_code = 'REVISION_ACTIVATED', completed_at = clock_timestamp()
-     WHERE idempotency_key = $1`,
-      [active.idempotencyKey],
-    );
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
-     SET state = 'failed_permanent', reason_code = 'DEPENDENCY_UNAVAILABLE', completed_at = clock_timestamp()
-     WHERE idempotency_key = $1`,
-      [failed.idempotencyKey],
-    );
-    await fixture.observerPool.query(
-      "UPDATE occ.agents SET active_revision_id = $2, desired_runtime_state = 'running' WHERE id = $1",
-      [served.id, active.id],
-    );
+    const { active, failed } = await seedActiveAndFailedNativeExposureRevisions(fixture);
     // Eight deployments queued before the worker starts keep every claim busy.
     const busy = [];
     for (let index = 0; index < 8; index += 1) {
@@ -647,30 +652,7 @@ revisionTest(
 revisionTest(
   "a target gone between the sweep's read and delete is logged unconfirmed",
   async (fixture) => {
-    const sandboxDriverId = "native-sandbox";
-    const nativeHarness = { ...fixture.productionHarness, id: "openclaw", mode: "dedicated" };
-    const native = { harness: nativeHarness, sandboxDriverId };
-    const { owner: served, candidate: active } = await fixture.admitInitialRevision("served", {
-      agent: { executionMode: "dedicated" },
-      revision: native,
-    });
-    const failed = await fixture.revision(served, 2, native);
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
-     SET state = 'succeeded', reason_code = 'REVISION_ACTIVATED', completed_at = clock_timestamp()
-     WHERE idempotency_key = $1`,
-      [active.idempotencyKey],
-    );
-    await fixture.observerPool.query(
-      `UPDATE occ.controller_work
-     SET state = 'failed_permanent', reason_code = 'DEPENDENCY_UNAVAILABLE', completed_at = clock_timestamp()
-     WHERE idempotency_key = $1`,
-      [failed.idempotencyKey],
-    );
-    await fixture.observerPool.query(
-      "UPDATE occ.agents SET active_revision_id = $2, desired_runtime_state = 'running' WHERE id = $1",
-      [served.id, active.id],
-    );
+    const { served, active, failed } = await seedActiveAndFailedNativeExposureRevisions(fixture);
     const events = [];
     const withdrawals = [];
     await fixture.start(

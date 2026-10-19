@@ -1,4 +1,17 @@
-import { button, element, focusSaveOutcome, patchChildren, setHidden, setText } from "../dom.mjs";
+import {
+  button,
+  element,
+  fieldError,
+  focusSaveOutcome,
+  jsonObjectProblem,
+  patchChildren,
+  revealStatus,
+  setHidden,
+  setStatusTone,
+  setText,
+  statusBlock,
+  validateFields,
+} from "../dom.mjs";
 import {
   configuredHarnessId,
   createHarnessAuthFields,
@@ -52,13 +65,38 @@ async function readRevisionPage(request, path, cursor = null) {
   return { revisions: page.data, nextCursor: page.meta?.nextCursor ?? null };
 }
 
+// The pending write of each status that announceAfterShown is waiting to fill.
+const pendingAnnouncements = new WeakMap();
+
 // Empties a status just inserted with `text` and writes it again once screen readers have seen
 // it empty, so they announce it as a change. A timer, unlike a frame, also runs in a hidden tab.
+// A newer call replaces the pending write, so the status is written once (finding 1976).
 function announceAfterShown(status, text) {
+  clearTimeout(pendingAnnouncements.get(status)?.timer);
   status.textContent = "";
-  setTimeout(() => {
-    status.textContent = text;
+  const pending = { text };
+  pending.timer = setTimeout(() => {
+    pendingAnnouncements.delete(status);
+    status.textContent = pending.text;
   }, 100);
+  pendingAnnouncements.set(status, pending);
+}
+
+// Sets a status's text, or, while announceAfterShown waits to fill it, the text it will write:
+// writing now as well would make a screen reader speak it twice.
+function setAnnouncedText(status, text) {
+  const pending = pendingAnnouncements.get(status);
+  if (pending) {
+    pending.text = text;
+  } else {
+    status.textContent = text;
+  }
+}
+
+// Drops a status's pending write, for a status taken off the page.
+function cancelAnnouncement(status) {
+  clearTimeout(pendingAnnouncements.get(status)?.timer);
+  pendingAnnouncements.delete(status);
 }
 
 // A 503 the deploy request answered before admission: no version was created, so Deploy stays
@@ -158,10 +196,6 @@ function nativeDocument(values, label) {
   );
 }
 
-function isPlainObject(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 // A save's reread or its PATCH found a newer Configuration generation than the page's.
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
@@ -218,6 +252,29 @@ function runtimeFailureCauseText(cause) {
   return retried ? `${label} (${detail}).${retry}` : `${label} (${detail})`;
 }
 
+// The API's message for a failure that deploying the same Agent again can clear (an outage
+// that outlasted every attempt, a lost worker claim, an approval or driver that changed since
+// admission) starts a sentence with "Deploy again". The recovery offers Deploy again for those
+// messages only, so it never contradicts the step the message names. A message that names no
+// step at all (a deadline that passed, a Driver that cannot run this Harness) mentions none of
+// deploy, ask or check, and the banner adds the generic advice to it.
+const DEPLOY_AGAIN_STEP = /(?:^|[.;]\s)Deploy again\b/u;
+const NAMED_STEP = /\b(?:deploy|ask|check)\b/iu;
+
+/**
+ * The next step a failed deployment's API message names: "deploy-again" when it says to deploy
+ * again, "named" for any other step, and null for none.
+ */
+export function deploymentFailureStep(message) {
+  if (typeof message !== "string" || message.length === 0) {
+    return null;
+  }
+  if (DEPLOY_AGAIN_STEP.test(message)) {
+    return "deploy-again";
+  }
+  return NAMED_STEP.test(message) ? "named" : null;
+}
+
 const DEPLOYMENT_FAILURE_LINK_LABELS = {
   credentials: "Open Credentials",
   configuration: "Open Configuration",
@@ -232,7 +289,7 @@ function deploymentFailure(error) {
   return element(
     "div",
     {},
-    element("p", { className: "error", role: "alert" }, `${error.code}: ${error.message}`),
+    statusBlock("danger", null, `${error.code}: ${error.message}`),
     preparation
       ? element(
           "div",
@@ -403,8 +460,9 @@ export function noteConsoleLoad() {
   }
 }
 
+/** The link request for this page, if one names it: `{ deploy }` says how to open it. */
 function takeLinkedVersionView(key) {
-  const linked = linkedVersionView?.key === key;
+  const linked = linkedVersionView?.key === key ? linkedVersionView : null;
   if (linked) {
     linkedVersionView = null;
   }
@@ -442,7 +500,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
       }
       void loadStatus(true);
     },
-    { className: "overview-text-button" },
+    { tone: "ghost", size: "sm" },
   );
   const content = element("div", { className: "deployment-evidence-content" });
   const details = element("details", {}, element("summary", {}, "Deployment details"), content);
@@ -580,7 +638,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
 
   function renderStatus() {
     if (state.error) {
-      return element("p", { className: "error", role: "alert" }, message(state.error));
+      return statusBlock("danger", null, message(state.error));
     }
     if (!state.status) {
       return element("p", { className: "muted" }, "Deployment status has not loaded.");
@@ -628,9 +686,8 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
       ),
       state.status.error ? deploymentResult(state.status) : null,
       state.status.warnings?.length
-        ? element(
-            "div",
-            { className: "deployment-warnings" },
+        ? statusBlock(
+            "warning",
             element("h3", {}, "Startup warnings"),
             element(
               "ul",
@@ -639,6 +696,8 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
                 element("li", {}, pluginWarningText(warning)),
               ),
             ),
+            [],
+            { role: null },
           )
         : null,
     );
@@ -676,9 +735,9 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
       renderStatus(),
       ...(state.overviewError
         ? [
-            element(
-              "p",
-              { className: "error", role: "alert" },
+            statusBlock(
+              "danger",
+              null,
               "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
             ),
           ]
@@ -792,11 +851,13 @@ function createVersionDeploymentRecord(
         { className: "deployment-heading" },
         element("h3", {}, "This version’s deployment record"),
         button(loading ? "Refreshing…" : "Refresh record", () => void load(), {
+          tone: "ghost",
+          size: "sm",
           disabled: loading,
         }),
       ),
       error
-        ? element("p", { className: "error", role: "alert" }, message(error))
+        ? statusBlock("danger", null, message(error))
         : status
           ? element(
               "div",
@@ -835,22 +896,65 @@ function createVersionDeploymentRecord(
   return { section, show, release, current: () => status };
 }
 
-function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus = () => null) {
+// The console's delay for loading text (console.css .delayed-status): a diagnostics answer within
+// it never shows the waiting line (finding 1714).
+const DIAGNOSTICS_WAITING_DELAY_MS = 250;
+
+function createVersionDiagnosticsPanel(
+  context,
+  path,
+  revisionId,
+  recordedStatus = () => null,
+  operateAllowed = null,
+) {
   const section = element("section", { className: "agent-card version-diagnostics" });
   let diagnostics = null;
+  // Set when the caller's permission answer denies Agent operate, which diagnostics need: the
+  // button is disabled with the reason, as Stop and Delete are (finding 1992).
+  let operateDenied = false;
   let error = null;
   let loading = false;
+  // Set once a run outlasts DIAGNOSTICS_WAITING_DELAY_MS: the waiting line replaces the last
+  // result and the button disables itself.
+  let waitingShown = false;
+  // The id of the result that describes the button after a run. render() sets it on both: a
+  // deployment poll re-renders the panel, and patchChildren drops attributes that render()
+  // does not set (finding 1712).
+  let outcomeId = null;
 
   async function run() {
     if (loading || !context.isCurrent()) {
       return;
     }
     loading = true;
-    error = null;
-    diagnostics = null;
-    render();
+    const runButton = section.querySelector(".deployment-heading button");
+    // Until the delay passes, the last result and the focused button stay as they are, so a fast
+    // answer replaces the result directly: no waiting line is painted or announced, and focus
+    // does not move (finding 1714). A second press meanwhile does nothing.
+    let waitingLine = null;
+    const waitingTimer = setTimeout(() => {
+      if (!loading || !context.isCurrent()) {
+        return;
+      }
+      // Only a reader still on the button follows it to the waiting line; one who moved on, even
+      // to the page itself, stays where they are.
+      const onButton = document.activeElement === runButton;
+      waitingShown = true;
+      error = null;
+      diagnostics = null;
+      outcomeId = null;
+      render();
+      // The button disables itself while it waits: move focus to the waiting line, as Deploy
+      // does, so a keyboard reader is not dropped to the page (finding 1705).
+      waitingLine = section.lastElementChild;
+      if (onButton) {
+        focusSaveOutcome(section, [], waitingLine);
+      }
+    }, DIAGNOSTICS_WAITING_DELAY_MS);
+    let answer = null;
+    let failure = null;
     try {
-      diagnostics = await context.request(
+      answer = await context.request(
         `${path}/deployments/${encodeURIComponent(revisionId)}/diagnostics`,
         { method: "POST", readOnly: true },
       );
@@ -862,20 +966,50 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         context.onExpired();
         return;
       }
-      error = cause;
+      failure = cause;
     } finally {
+      clearTimeout(waitingTimer);
       if (context.isCurrent()) {
+        const active = document.activeElement;
+        const waited = active === runButton || (waitingLine !== null && active === waitingLine);
+        if (!waitingShown) {
+          // With no waiting line in between, patching would keep a result identical to the last
+          // one in place, and nothing would be announced: insert it anew instead.
+          for (const node of [section.querySelector('[role="alert"]'), section.lastElementChild]) {
+            node?.remove();
+          }
+        }
         loading = false;
+        waitingShown = false;
+        diagnostics = answer;
+        error = failure;
+        outcomeId = null;
         render();
+        // The result replaces the waiting line (or the last result): focus returns to, or stays
+        // on, the button, described by the alert or the "Observed" line (not the whole check
+        // list, which the view's live region already reads), unless the reader has moved on.
+        if (waited) {
+          const outcome = error
+            ? section.querySelector('[role="alert"]')
+            : section.lastElementChild.firstElementChild;
+          focusSaveOutcome(section, [runButton], outcome);
+          outcomeId = runButton.getAttribute("aria-describedby") ? outcome.id : null;
+          // Focus stays on the button; a refusal below it still comes into view (finding 1992).
+          if (error) {
+            outcome?.scrollIntoView({ block: "nearest" });
+          }
+        }
       }
     }
   }
 
   function renderChecks() {
-    if (loading) {
+    if (waitingShown) {
+      // Focusable here, not only by focusSaveOutcome: a deployment poll re-renders the panel,
+      // and patchChildren drops attributes that render() does not set.
       return element(
         "p",
-        { className: "muted", role: "status" },
+        { className: "muted", role: "status", tabindex: "-1" },
         "Waiting for diagnostic results…",
       );
     }
@@ -902,7 +1036,11 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
     return element(
       "div",
       {},
-      element("p", { className: "muted" }, `Observed ${displayDate(diagnostics.observedAt)}`),
+      element(
+        "p",
+        { className: "muted", ...describedOutcome() },
+        `Observed ${displayDate(diagnostics.observedAt)}`,
+      ),
       diagnostics.checks.length
         ? checks
         : element("p", { className: "muted" }, "No diagnostic checks were returned."),
@@ -953,6 +1091,10 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
       : [];
   }
 
+  function describedOutcome() {
+    return outcomeId ? { id: outcomeId } : {};
+  }
+
   // The version's record calls this on every deployment poll: rewrite only what changed.
   function render() {
     patchChildren(section, [
@@ -963,8 +1105,20 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         // The button keeps its label while it waits, as Deploy and Save do: the status line
         // below is the one announcement, and a changed label inside the Agent view's live
         // region was announced as well (finding 1698).
-        button("Run diagnostics for this version", () => void run(), { disabled: loading }),
+        button("Run diagnostics for this version", () => void run(), {
+          disabled: waitingShown || operateDenied,
+          ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
+        }),
       ),
+      ...(operateDenied
+        ? [
+            statusBlock(
+              "info",
+              null,
+              "Your access does not include running diagnostics for this Agent.",
+            ),
+          ]
+        : []),
       element(
         "p",
         { className: "muted" },
@@ -977,14 +1131,16 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
       ),
       ...(error
         ? [
-            element(
-              "p",
-              { className: "error", role: "alert" },
+            statusBlock(
+              "danger",
+              null,
               error.status === 403
                 ? "Diagnostics require Agent read and operate access plus read access to this version. Ask a Namespace administrator to confirm those grants."
                 : error.status === 503
                   ? "Current-runtime diagnostics are unavailable. This Compute Driver may not support them, or the runtime may be unreachable. Check the runtime and try again."
                   : message(error),
+              [],
+              describedOutcome(),
             ),
           ]
         : []),
@@ -993,6 +1149,12 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
   }
 
   render();
+  void operateAllowed?.then((permitted) => {
+    if (permitted === false && context.isCurrent()) {
+      operateDenied = true;
+      render();
+    }
+  });
   return { section, render };
 }
 
@@ -1060,7 +1222,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   const linkedKey = (revision = selected, tab = selectedTab) =>
     JSON.stringify([namespaceId, target(revision, tab)]);
   // A link to one of this Agent's version tabs that brings the tab into view once it opens.
-  function versionLink(label, revision, tab) {
+  // With `deploy`, a draft link brings that draft's Deploy new version into view instead.
+  function versionLink(label, revision, tab, { deploy = false } = {}) {
     const node = element("a", { href: context.pageUrl(target(revision, tab)) }, label);
     node.addEventListener("click", (event) => {
       if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
@@ -1069,18 +1232,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       event.preventDefault();
       if (revision === selected && tab === selectedTab) {
         // Already open below: rebuilding it would only discard the reader's edits.
-        openVersionDetail({ animate: true });
+        openVersionDetail({ animate: true, deploy });
         return;
       }
       // The load this navigation starts is the next one.
-      linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1 };
+      linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1, deploy };
       context.navigate(target(revision, tab));
     });
     return node;
   }
   const change = (revision, tab) => {
     if (draftEditorBlocksNavigation()) {
-      showDraftEditorNavigationBlock();
+      showLeaveBlock();
       return;
     }
     context.navigate(target(revision, tab));
@@ -1090,13 +1253,40 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       ? button("Create new version", () => change("draft", "configuration"))
       : null;
   const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
+  // The note that holds the tabs also holds ← Agents and the Namespace selector (finding 1902).
+  const refuseLeave = ({ pendingOnly = false } = {}) => {
+    if (!(pendingOnly ? draftWriteInFlight() : draftEditorBlocksNavigation())) {
+      return false;
+    }
+    showLeaveBlock();
+    return true;
+  };
+  const agentsLink = link("← Agents", "agents", context);
+  agentsLink.addEventListener(
+    "click",
+    (event) => {
+      if (
+        !event.button &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.shiftKey &&
+        !event.altKey &&
+        refuseLeave()
+      ) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+    },
+    { capture: true },
+  );
+  context.setLeaveGuard?.(refuseLeave);
   const header = element(
     "div",
     { className: "agent-toolbar agent-overview-toolbar" },
     element(
       "div",
       { className: "agent-overview-identity" },
-      link("← Agents", "agents", context),
+      agentsLink,
       element("span", { className: "resource-id", title: "Agent ID" }, agent.id),
     ),
     headerActions,
@@ -1116,6 +1306,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
   const liveServingValue = element("strong", {}, "Not verified");
   const liveServingNote = element("p", { className: "muted" });
+  // A requested stop belongs in the summary, not only in the Stop card at the bottom (finding
+  // 1899). It is attached only once the Agent has a version: an Agent is created stopped.
+  const runtimeNote = element("p", { className: "muted" });
+  const runtimeFact = element(
+    "div",
+    {},
+    element("span", { className: "overview-fact-label" }, "Runtime"),
+    element("strong", {}, "Stop requested"),
+    runtimeNote,
+  );
   const currentSummary = element(
     "section",
     { className: "agent-current-summary", "aria-label": "Agent state at a glance" },
@@ -1141,7 +1341,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       liveServingNote,
     ),
   );
-  const statusLine = element("p", { className: "agent-status-line", hidden: true });
+  const statusLine = statusBlock("warning", null, null, [], {
+    className: "agent-status-line",
+    role: null,
+    hidden: true,
+  });
   // Revision read is granted per version, so someone who may deploy can still be
   // unable to read the version that is now current, or the one they just requested.
   function revisionHidden(revisionId) {
@@ -1174,6 +1378,20 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           ? "Selected for service · you cannot read this version"
           : "",
     );
+    const stopRequested =
+      currentRuntimeState === "stopped" &&
+      (Boolean(currentRevisionId) || visibleRevisions.length > 0);
+    if (!stopRequested) {
+      runtimeFact.remove();
+    } else if (runtimeFact.parentNode !== currentSummary) {
+      currentSummary.append(runtimeFact);
+    }
+    setText(
+      runtimeNote,
+      currentRevisionId
+        ? "Shutdown completion is not shown here. Deploy a new version to start this Agent again."
+        : "Deploy a new version to start this Agent again.",
+    );
   }
   renderCurrentVersion();
   // Stop changes only the runtime state and the current version, so update the page in place.
@@ -1195,7 +1413,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   );
   function showDeleting() {
     deleting = true;
-    headerActions.replaceChildren(element("span", { className: "badge" }, "Deleting"));
+    headerActions.replaceChildren(
+      element("span", { className: "badge", "data-tone": "warning" }, "Deleting"),
+    );
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
     view.replaceChildren(header, deletion);
     context.revealed?.();
@@ -1218,7 +1438,76 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   const tabControls = new Map();
   const revisionControls = new Map();
   let draftEditorNavigationBlock = null;
-  let showDraftEditorNavigationBlock = () => {};
+  // Whether a draft editor's write is in flight (its block names the save to wait for).
+  let draftEditorSaving = false;
+  // A refused leave says why beside the control whose request holds the page (finding 1962).
+  // The configuration, channels and repositories editors write their block into their own
+  // feedback; every other hold writes it here.
+  const leaveNote = statusBlock("info", null, null);
+  let leaveNoteText = null;
+  // The authentication form, whose save holds the page from the Credentials tab.
+  let authenticationLeaveAnchor = null;
+  function showLeaveNote(anchor, text, place) {
+    if (!anchor?.isConnected || !text) {
+      return;
+    }
+    const placed =
+      place === "end"
+        ? anchor.lastElementChild === leaveNote
+        : place === "start"
+          ? anchor.firstElementChild === leaveNote
+          : anchor.nextElementSibling === leaveNote;
+    leaveNoteText = text;
+    if (placed) {
+      setAnnouncedText(leaveNote, text);
+      return;
+    }
+    if (place === "end") {
+      anchor.append(leaveNote);
+    } else if (place === "start") {
+      anchor.prepend(leaveNote);
+    } else {
+      anchor.after(leaveNote);
+    }
+    announceAfterShown(leaveNote, text);
+  }
+  // A tab without its own editor feedback shows its block at the top of the tab panel.
+  const showBlockInPanel = () => showLeaveNote(content, draftEditorNavigationBlock, "start");
+  let showDraftEditorNavigationBlock = showBlockInPanel;
+  // Why the page holds, for each write in flight; editor blocks name their own.
+  function leaveReason() {
+    if (!draftEditorBlocksNavigation()) {
+      return null;
+    }
+    if (deployInFlight) {
+      return "This page stays open until the deploy request finishes.";
+    }
+    if (refreshingDraft) {
+      return "This page stays open until the draft finishes updating.";
+    }
+    if (authenticationSaveState === "saving") {
+      return "This page stays open until the authentication save finishes.";
+    }
+    if (activeCredentials?.isSaving()) {
+      return "This page stays open until the channel Secret bindings save finishes.";
+    }
+    return draftEditorNavigationBlock;
+  }
+  function showLeaveBlock() {
+    const reason = leaveReason();
+    if (deployInFlight) {
+      showLeaveNote(detailPane.querySelector(":scope > .agent-draft-actions"), reason, "end");
+    } else if (refreshingDraft) {
+      // A refresh replaces the draft actions card mid-hold; the tab panel stays until it ends.
+      showLeaveNote(content, reason, "start");
+    } else if (authenticationSaveState === "saving") {
+      showLeaveNote(authenticationLeaveAnchor, reason, "end");
+    } else if (activeCredentials?.isSaving()) {
+      showLeaveNote(activeCredentials.section, reason, "after");
+    } else {
+      showDraftEditorNavigationBlock();
+    }
+  }
   function draftEditorBlocksNavigation() {
     return (
       selected === "draft" &&
@@ -1230,22 +1519,52 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           draftEditorNavigationBlock))
     );
   }
+  // A write in flight, whose answer only this page can handle: the sidebar and Back wait for it
+  // too (finding 1937). An uncertain or stale editor is kept as a draft, so they may leave it.
+  function draftWriteInFlight() {
+    return (
+      selected === "draft" &&
+      (deployInFlight ||
+        refreshingDraft ||
+        authenticationSaveState === "saving" ||
+        activeCredentials?.isSaving() ||
+        (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
+          draftEditorSaving))
+    );
+  }
   function trackRevisionControl(control) {
     revisionControls.set(control, control.disabled);
   }
   function updateNavigationControls() {
+    // The note goes once the hold it explained ends or changes; the next refusal says why anew.
+    if (leaveNoteText !== null && leaveReason() !== leaveNoteText) {
+      cancelAnnouncement(leaveNote);
+      leaveNote.remove();
+      leaveNoteText = null;
+    }
     const blocked = Boolean(draftEditorBlocksNavigation());
     for (const [id, control] of tabControls) {
       control.disabled = blocked && id !== selectedTab;
+      // A disabled tab cannot hold the list's one Tab stop.
+      if (blocked) {
+        control.tabIndex = id === selectedTab ? 0 : -1;
+      }
     }
     for (const [control, originallyDisabled] of revisionControls) {
       control.disabled = blocked || originallyDisabled;
     }
   }
-  const tabs = element("nav", {
+  // A tab list (UX plan C7): one Tab stop on the selected tab, Left/Right (and Home/End) move
+  // focus between tabs, Enter or Space opens one. Opening still changes the URL's `tab=`.
+  const tabIds = `agent-tabs-${crypto.randomUUID()}`;
+  const tabs = element("div", {
     className: "agent-tabs",
+    role: "tablist",
     "aria-label": "Agent configuration views",
   });
+  content.id = `${tabIds}-panel`;
+  content.setAttribute("role", "tabpanel");
+  content.setAttribute("aria-labelledby", `${tabIds}-${selectedTab}`);
   for (const [id, label] of [
     ["configuration", "Configuration"],
     ["plugins", "Plugins"],
@@ -1266,18 +1585,64 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           return;
         }
         if (draftEditorBlocksNavigation()) {
-          showDraftEditorNavigationBlock();
+          showLeaveBlock();
           return;
         }
         change(selected, id);
       },
       {
-        ...(id === selectedTab ? { "aria-current": "page" } : {}),
+        id: `${tabIds}-${id}`,
+        role: "tab",
+        "aria-controls": content.id,
+        "aria-selected": String(id === selectedTab),
+        tabindex: id === selectedTab ? "0" : "-1",
       },
     );
     tabControls.set(id, control);
     tabs.append(control);
   }
+  tabs.addEventListener("keydown", (event) => {
+    const enabled = [...tabControls.values()].filter((control) => !control.disabled);
+    const at = enabled.indexOf(document.activeElement);
+    const next = {
+      ArrowLeft: at - 1,
+      ArrowRight: at + 1,
+      Home: 0,
+      End: enabled.length - 1,
+    }[event.key];
+    if (at === -1 || next === undefined || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    const control = enabled[(next + enabled.length) % enabled.length];
+    for (const other of tabControls.values()) {
+      other.tabIndex = other === control ? 0 : -1;
+    }
+    // focus() leaves a partly visible tab where it is; scrolling it into view honours the strip's
+    // scroll padding, so the tab and its ring clear the faded edge.
+    control.focus({ preventScroll: true });
+    control.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+  // Tabbing back in lands on the selected tab, wherever the arrows left focus. Checked once focus
+  // has moved: a window losing focus leaves it on the tab, so the arrowed-to stop stays.
+  tabs.addEventListener("focusout", () => {
+    queueMicrotask(() => {
+      if (!tabs.contains(document.activeElement)) {
+        for (const [id, control] of tabControls) {
+          control.tabIndex = id === selectedTab ? 0 : -1;
+        }
+      }
+    });
+  });
+  // On a narrow screen the strip scrolls sideways; an edge with more tabs past it fades.
+  const fadeTabEdges = () => {
+    tabs.toggleAttribute("data-more-before", tabs.scrollLeft > 0);
+    tabs.toggleAttribute(
+      "data-more-after",
+      tabs.scrollLeft + tabs.clientWidth < tabs.scrollWidth - 1,
+    );
+  };
+  tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
   detailPane.append(detailHeading, versionEvidence, tabs, content);
   const runtimeAccess = renderRuntimeAccess(context, path);
   const recoveryTitle = element("h2");
@@ -1325,28 +1690,59 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // Brings the version's detail (heading, tab strip and open tab) to the top of the window. A
   // click in the shown page scrolls smoothly unless the reader asked for reduced motion; a page
   // about to show scrolls at once, so it never paints at the top first (findings 1552, 1586).
-  function scrollToVersionDetail({ animate = false } = {}) {
+  function scrollToVersionDetail({ animate = false } = {}, node = detailPane) {
     const smooth = animate && !globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    detailPane.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "instant" });
+    node.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "instant" });
   }
-  function openVersionDetail(options) {
-    tabControls.get(selectedTab)?.focus({ preventScroll: true });
-    scrollToVersionDetail(options);
+  function openVersionDetail({ deploy = false, ...options } = {}) {
+    // Deploy again opens the draft at its deploy step, whose card can end below a phone's
+    // fold when the version detail is at the top: the card is brought to the top, with its
+    // Deploy new version focused when the reader can press it (finding 1898).
+    const actions = deploy ? detailPane.querySelector(":scope > .agent-draft-actions") : null;
+    if (deploy && !actions && !detailLoadFinished) {
+      // The card is built once the draft's own reads land: open it then, unless the reader has
+      // moved on (another tab, or focus taken elsewhere) in the meantime.
+      const tab = selectedTab;
+      void Promise.resolve(details).then(
+        () => {
+          const focused = document.activeElement;
+          if (
+            context.isCurrent() &&
+            !deleting &&
+            selectedTab === tab &&
+            (!focused || focused === document.body || focused === tabControls.get(tab)) &&
+            detailPane.querySelector(":scope > .agent-draft-actions")
+          ) {
+            openVersionDetail({ ...options, deploy });
+          }
+        },
+        () => {},
+      );
+    }
+    const deployButton = actions?.querySelector("button.primary");
+    if (deployButton && !deployButton.disabled) {
+      deployButton.focus({ preventScroll: true });
+    } else {
+      tabControls.get(selectedTab)?.focus({ preventScroll: true });
+    }
+    scrollToVersionDetail(options, actions ?? detailPane);
   }
   // Opened by a recovery link: show its tab once this page shows. Logs waits for its output
   // first and scrolls itself.
-  if (takeLinkedVersionView(linkedKey()) && selectedTab !== "logs") {
+  const linkedOnLoad = takeLinkedVersionView(linkedKey());
+  if (linkedOnLoad && selectedTab !== "logs") {
     scrollOnReveal = () => {
       scrollOnReveal = null;
       if (context.isCurrent() && !deleting) {
-        openVersionDetail();
+        openVersionDetail({ deploy: linkedOnLoad.deploy });
       }
     };
   }
   // A page restored for Back mounts at its old scroll position.
   context.onResume?.(() => {
-    if (takeLinkedVersionView(linkedKey()) && !deleting) {
-      openVersionDetail();
+    const linked = takeLinkedVersionView(linkedKey());
+    if (linked && !deleting) {
+      openVersionDetail({ deploy: linked.deploy });
     }
   });
   function showDetail() {
@@ -1378,7 +1774,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   revealTimer = setTimeout(showDetail, FIRST_ACTIVITY_WAIT_MS);
   function revealSelectedTab() {
     const strip = tabs.getBoundingClientRect();
-    const bounds = tabControls.get(selectedTab).getBoundingClientRect();
+    // A tab that has focus (moved there with the arrows) stays in view over the selected one.
+    const shown = tabs.contains(document.activeElement)
+      ? document.activeElement
+      : tabControls.get(selectedTab);
+    const bounds = shown.getBoundingClientRect();
     if (bounds.left < strip.left) {
       tabs.scrollLeft += Math.floor(bounds.left - strip.left);
     } else if (bounds.right > strip.right) {
@@ -1391,6 +1791,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       return;
     }
     revealSelectedTab();
+    fadeTabEdges();
   });
   tabResize.observe(tabs);
   // Detached views stop observing; Back's retained view re-arms the strip.
@@ -1411,11 +1812,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let activityPanel = deploymentStatus;
   let activityRevisionId;
   let viewedSnapshot = null;
+  // The Configuration ID this page has read successfully, and the one recovery is checking. Deploy
+  // again opens a draft that builds Deploy new version only from a readable Configuration, and
+  // "not yet denied" is not readable (finding 1931).
+  let readableConfigurationId = null;
+  let configurationCheckId = null;
   let detailLoadFinished = false;
   let latestRevisionResult = null;
   let latestDeploymentStatus = null;
   let latestDeploymentError = false;
   let latestDeploymentErrorCode = null;
+  let latestDeploymentErrorMessage = null;
   let latestDeploymentRecord = null;
   let versionRecord = null;
   const revisionsPromise = readRevisionPage(request, path);
@@ -1525,13 +1932,20 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         "aria-label": `View version v${revision.revision}${revision.id === currentRevisionId ? ", current version" : ""}`,
         ...(selected === revision.id ? { "aria-current": "page" } : {}),
       });
+      // The current version's badge follows its number on the same line, after a space.
       control.append(
-        element("strong", {}, `v${revision.revision}`),
+        element(
+          "span",
+          {},
+          element("strong", {}, `v${revision.revision}`),
+          ...(revision.id === currentRevisionId
+            ? // Current means only that OCC selected this version; it can be stopped or failed
+              // (finding 1969), so the badge marks it without claiming health.
+              [" ", element("span", { className: "badge", "data-tone": "info" }, "Current")]
+            : []),
+        ),
         element("small", {}, displayDate(revision.createdAt)),
       );
-      if (revision.id === currentRevisionId) {
-        control.append(element("span", { className: "version-current" }, "Current version"));
-      }
       trackRevisionControl(control);
       list.append(control);
     }
@@ -1594,7 +2008,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const nextRevision = chooser.value;
       if (draftEditorBlocksNavigation()) {
         chooser.value = selected;
-        showDraftEditorNavigationBlock();
+        showLeaveBlock();
         return;
       }
       change(nextRevision, "configuration");
@@ -1607,22 +2021,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         newVersion,
         list,
         olderError
-          ? element(
-              "p",
-              { className: "error", role: "alert" },
-              `Older versions unavailable. ${message(olderError)}`,
-            )
+          ? statusBlock("danger", null, `Older versions unavailable. ${message(olderError)}`)
           : null,
         revisions.length || selected !== "draft"
           ? element("label", { for: "revision-selector" }, "Available versions")
           : null,
         revisions.length || selected !== "draft" ? chooser : null,
         historyError
-          ? element(
-              "p",
-              { className: "error", role: "alert" },
-              `Version history unavailable. ${message(historyError)}`,
-            )
+          ? statusBlock("danger", null, `Version history unavailable. ${message(historyError)}`)
           : null,
         !historyError && !revisions.length
           ? element(
@@ -1642,11 +2048,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
 
   // Without a version list yet (still loading), its first render shows the new state.
   function updateCurrentAgent(freshAgent, revisionResult, snapshot) {
+    // A read answered after deletion was shown has nothing left to update.
+    if (deleting) {
+      return;
+    }
     if (freshAgent.status === "deleting") {
       showDeleting();
       return;
     }
     const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
+    const workspaceAvailabilityChanged =
+      Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
     const servingChanged =
       revisionChanged || freshAgent.desiredRuntimeState !== currentRuntimeState;
     currentRevisionId = freshAgent.activeRevisionId;
@@ -1658,9 +2070,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       if (mountedTab) {
         // Leaving must not put a tab built for the old serving state back in the cache.
         mountedTab.reusable = false;
-        if (revisionChanged && mountedTab.id === "workspace") {
+        if (workspaceAvailabilityChanged && mountedTab.id === "workspace") {
           // Capture drafts and retire the old file controls now, not on the next tab visit.
           void renderTab();
+        } else if (revisionChanged && mountedTab.id === "workspace") {
+          // Another current version keeps the editors, so a reader typing keeps focus, caret
+          // and edits; files without unsaved edits are reread from it (finding 1836).
+          mountedTab.refresh?.();
         }
       }
       // Native admin access depends on the serving version, so a finished deployment rereads it.
@@ -1862,26 +2278,49 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         !context.deniedReads?.has(
           `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(configurationId)}`,
         );
-      let impact = logsAllowed
+      // The API's message states this failure's own next step (finding 1393); the banner leads
+      // with it, so that step is in view rather than only in Deployment details below the fold
+      // (finding 1898). The generic advice stays for a record without one.
+      const errorMessage = latestDeploymentErrorMessage;
+      const step = deploymentFailureStep(errorMessage);
+      const generic = logsAllowed
         ? "Check the failed version’s logs before deploying a new version."
         : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
+      let impact = errorMessage ? (step ? errorMessage : `${errorMessage} ${generic}`) : generic;
       if (replacementFailed) {
-        impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.`;
+        impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${errorMessage ? ` ${errorMessage}` : ""}`;
       } else if (selectedFailed) {
-        impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.`;
+        impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${errorMessage ? ` ${errorMessage}` : ""}`;
       }
-      if ((replacementFailed || selectedFailed) && !logsAllowed) {
-        // Without the Logs link this is the reader's only next step (finding 1484).
+      if ((replacementFailed || selectedFailed || step) && !logsAllowed) {
+        // Without the Logs link this is the reader's only way to the logs (finding 1484).
         impact += " Ask someone with log access to check the failed version’s logs.";
       }
       setText(recoveryMessage, `${failure} ${impact}`);
+      // Deploying again is the whole next step only where the API's message says so. The draft
+      // it opens builds Deploy new version only from a readable Configuration, so the link waits
+      // for a successful read of it (finding 1931).
+      const deployAgainAllowed =
+        step === "deploy-again" && callerPermissions?.deploy === true && configurationAvailable;
+      const deployAgain = deployAgainAllowed && readableConfigurationId === configurationId;
       const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : null;
+      // Without update, the draft's only step is Deploy new version, which it builds only from a
+      // readable Configuration, so "Open version draft" waits for the same read (finding 1944).
+      const openDraftAllowed =
+        guidance === "configuration" &&
+        configurationAvailable &&
+        callerPermissions?.update !== true &&
+        callerPermissions?.deploy === true;
+      if ((deployAgainAllowed || openDraftAllowed) && readableConfigurationId !== configurationId) {
+        checkConfigurationReadable(configurationId);
+      }
       const canOpenConfiguration =
         guidance === "configuration" &&
         configurationAvailable &&
-        (callerPermissions?.update === true || callerPermissions?.deploy === true);
+        (callerPermissions?.update === true ||
+          (openDraftAllowed && readableConfigurationId === configurationId));
       const canOpenCredentials =
         guidance === "credentials" &&
         callerPermissions?.update === true &&
@@ -1891,12 +2330,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         canOpenConfiguration && callerPermissions?.update !== true
           ? "Open version draft"
           : DEPLOYMENT_FAILURE_LINK_LABELS[tab];
-      const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}`;
+      const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;
       if (recoveryTarget !== actionsFor) {
         recoveryTarget = actionsFor;
+        const again = deployAgain
+          ? versionLink("Deploy again", "draft", "configuration", { deploy: true })
+          : null;
         const logs = logsAllowed ? versionLink(`Open ${version} Logs`, latest.id, "logs") : null;
         const next = tab ? versionLink(nextLabel, "draft", tab) : null;
-        const actions = [logs, next].filter(Boolean);
+        const actions = [again, logs, next].filter(Boolean);
         if (actions.length) {
           actions[0].className = "overview-primary";
         }
@@ -1904,6 +2346,39 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         recoveryActions.hidden = actions.length === 0;
       }
     }
+  }
+
+  // Another version's tabs have no reason to read the Configuration, so recovery reads it once
+  // before offering Deploy again or Open version draft. A denial is remembered like the draft's;
+  // any other failure leaves the links hidden for this page view. The draft's own read decides
+  // there.
+  function checkConfigurationReadable(configurationId) {
+    if (selected === "draft" || configurationCheckId === configurationId) {
+      return;
+    }
+    configurationCheckId = configurationId;
+    const configurationPath = `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(configurationId)}`;
+    void request(configurationPath).then(
+      () => {
+        // A late answer for a Configuration the Agent has since replaced decides nothing.
+        if (!context.isCurrent() || deleting || configurationCheckId !== configurationId) {
+          return;
+        }
+        readableConfigurationId = configurationId;
+        renderLatestDeployment();
+      },
+      (error) => {
+        if (error.status === 403) {
+          context.deniedReads?.remember(configurationPath);
+          if (context.isCurrent() && !deleting) {
+            renderLatestDeployment();
+          }
+        } else if (!context.isCurrent() && configurationCheckId === configurationId) {
+          // Cut short by leaving the page: a view Back restores asks again.
+          configurationCheckId = null;
+        }
+      },
+    );
   }
 
   // List summaries omit the credential binding a revision was admitted with, so the
@@ -1980,6 +2455,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     visibleRevisions = revisions;
     visibleRevisionsLoaded = revisionResult.status === "fulfilled";
     stopPanel.setNoReadableVersions(visibleRevisionsLoaded ? revisions.length === 0 : null);
+    const labels = new Map(revisions.map((revision) => [revision.id, `v${revision.revision}`]));
+    stopPanel.setVersionLabel((id) => labels.get(id));
     renderCurrentVersion();
     renderVersions(
       revisions,
@@ -1994,6 +2471,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       latestDeploymentRecord = null;
       latestDeploymentError = false;
       latestDeploymentErrorCode = null;
+      latestDeploymentErrorMessage = null;
       // On first load the newest version's panel replaces the loading placeholder once its
       // first status read settles, in the same frame as the summary and status line, so the
       // page below moves once instead of once for an empty panel and again for the status.
@@ -2029,6 +2507,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               latestDeploymentStatus = status;
               latestDeploymentError = unavailable;
               latestDeploymentErrorCode = errorCode;
+              latestDeploymentErrorMessage = record?.error?.message || null;
               if (errorCode === "RUNTIME_AUTHENTICATION_FAILED") {
                 void readLatestRevisionDetail(mostRecent);
               }
@@ -2142,6 +2621,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     const revisionResult = latestRevisionResult ?? results[0];
     let snapshot = results[1].status === "fulfilled" ? results[1].value : null;
+    if (selected === "draft") {
+      // The draft's own read is the Configuration read; recovery waits for it.
+      readableConfigurationId = snapshot?.id ?? null;
+    }
     detailLoadFinished = true;
     viewedSnapshot = snapshot;
     renderOverview(revisionResult, snapshot);
@@ -2166,8 +2649,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         () => diagnosticsPanel?.render(),
         { shared: activityRevisionId === selected && !latestDeploymentError },
       );
-      diagnosticsPanel = createVersionDiagnosticsPanel(context, path, selected, () =>
-        versionRecord.current(),
+      diagnosticsPanel = createVersionDiagnosticsPanel(
+        context,
+        path,
+        selected,
+        () => versionRecord.current(),
+        callerPermissionsRead.then((permissions) => permissions?.operate),
       );
       versionEvidence.append(versionRecord.section, diagnosticsPanel.section);
       if (latestDeploymentRecord?.revisionId === selected) {
@@ -2230,6 +2717,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               carriedChannelSecrets = carried;
               if (carried) {
                 context.drafts.track("channelSecrets", () => carried);
+                // Saved Secrets the reloaded draft references: nothing a reload would lose.
+                context.drafts.unsavedWhen("channelSecrets", () => false);
               } else {
                 context.drafts.forget("channelSecrets");
               }
@@ -2367,7 +2856,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     refreshDeployControls = updateDeployControls;
     deployStatus = element("p", { className: "muted", role: "status" });
-    deployFeedback = element("p", { className: "error", role: "alert" });
+    deployFeedback = statusBlock("danger", null, null);
     deploy = button(
       "Deploy new version",
       async () => {
@@ -2491,7 +2980,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           }
         }
       },
-      { className: "primary" },
+      // .primary stays for tests that find Deploy new version by it.
+      { tone: "primary", className: "primary" },
     );
     updateDeployControls();
     const draftActions = element(
@@ -2544,6 +3034,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       },
       setDraftEditorState(nextState) {
         Object.assign(draftEditorState, nextState);
+        draftEditorSaving = Boolean(draftEditorState.saving);
         draftEditorNavigationBlock = draftEditorState.outcomeUnknown
           ? "Outcome unknown. Reload this draft before leaving the editor."
           : draftEditorState.reloadRequired
@@ -2570,6 +3061,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       },
       setPluginEditorState(nextState) {
         Object.assign(pluginEditorState, nextState);
+        draftEditorSaving = Boolean(pluginEditorState.saving);
         draftEditorNavigationBlock = pluginEditorState.outcomeUnknown
           ? "Outcome unknown. Reload this Agent before leaving plugin selections."
           : pluginEditorState.reloadRequired
@@ -2681,6 +3173,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     details = next;
     // The rebuilt editors start clean; nothing is saving any more.
     draftEditorNavigationBlock = null;
+    draftEditorSaving = false;
     authenticationSaveState = "idle";
     // Tabs built from the previous draft state would drive its replaced controls.
     retainedTabs.clear();
@@ -2750,6 +3243,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === 0) {
         mountedTab.nodes = [...content.childNodes];
+        // Its editor's block note returns with it, not the last built tab's (finding 1962).
+        mountedTab.showBlock = showDraftEditorNavigationBlock;
         retainedTabs.set(mountedTab.id, mountedTab);
       }
       mountedTab = null;
@@ -2767,24 +3262,31 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
     }
     const tab = selectedTab;
+    const focusInStrip = tabs.contains(document.activeElement);
     for (const [index, id] of tabsForSelection.entries()) {
       const control = tabs.children[index];
-      if (id === tab) {
-        control.setAttribute("aria-current", "page");
-      } else {
-        control.removeAttribute("aria-current");
-      }
+      control.setAttribute("aria-selected", String(id === tab));
+      control.tabIndex = id === tab ? 0 : -1;
+    }
+    content.setAttribute("aria-labelledby", `${tabIds}-${tab}`);
+    // History can select another tab while focus is in the strip; focus follows the selection,
+    // so the focused tab is the one revealed and the Tab stop.
+    if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
+      tabControls.get(tab).focus({ preventScroll: true });
     }
     revealSelectedTab();
+    fadeTabEdges();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
     if (retained && retained.mutations === context.mutationVersion()) {
       mountedTab = retained;
+      showDraftEditorNavigationBlock = retained.showBlock;
       content.replaceChildren(...retained.nodes);
       retained.resumeDrafts();
       return;
     }
+    showDraftEditorNavigationBlock = showBlockInPanel;
     const state = {
       id: tab,
       reusable: true,
@@ -2812,7 +3314,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     content.style.minHeight = `${content.getBoundingClientRect().height}px`;
     content.replaceChildren();
     if (tab === "workspace") {
-      content.append(renderWorkspaceFiles(tabContext, currentAgent, path));
+      const workspace = renderWorkspaceFiles(tabContext, currentAgent, path);
+      state.refresh = workspace.refresh;
+      content.append(workspace.section);
       state.loading = false;
       content.style.minHeight = "";
       return;
@@ -2926,33 +3430,31 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function renderConfigurationTab(context, selectedTab, data) {
     const { snapshot, values, draft, executionMode, credentials, channelSecretsNote } = data;
     content.append(
-      element(
-        "p",
-        { className: "notice version-selection-notice", role: "status" },
-        versionNotice(),
-      ),
+      statusBlock("info", null, versionNotice(), [], { className: "version-selection-notice" }),
     );
     if (selectedTab === "repositories" && draft) {
       content.append(renderRepositoryEditor(context, data));
     } else if (selectedTab === "plugins") {
-      content.append(
-        renderAgentPlugins(context, {
-          agent,
-          snapshot,
-          draft,
-          path,
-          onState: data.setPluginEditorState,
-          savedNotice,
-          updateAllowed: agentUpdateAllowed,
-          // Saves and reloads rebuild the tab in place (finding 1445's rest).
-          onSaved: (savedAgent) =>
-            refreshDraftInPlace({ agent: savedAgent, saved: "Plugin selections saved." }),
-          onReload: () => {
-            context.drafts.forget("plugins");
-            return reloadDraftInPlace(context, { saved: "Plugin selections reloaded." });
-          },
-        }),
-      );
+      const plugins = renderAgentPlugins(context, {
+        agent,
+        snapshot,
+        draft,
+        path,
+        onState: data.setPluginEditorState,
+        savedNotice,
+        updateAllowed: agentUpdateAllowed,
+        // Saves and reloads rebuild the tab in place (finding 1445's rest).
+        onSaved: (savedAgent) =>
+          refreshDraftInPlace({ agent: savedAgent, saved: "Plugin selections saved." }),
+        onReload: () => {
+          context.drafts.forget("plugins");
+          return reloadDraftInPlace(context, { saved: "Plugin selections reloaded." });
+        },
+      });
+      // Plugin blocks had no note of their own: the sidebar and Back refused in silence.
+      showDraftEditorNavigationBlock = () =>
+        showLeaveNote(plugins, draftEditorNavigationBlock, "after");
+      content.append(plugins);
     } else if (selectedTab === "channels") {
       const channels = renderChannels({
         values,
@@ -3102,9 +3604,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         },
       );
       const feedback = element("p", { role: "status", className: "hint" }, savedNotice);
+      // Progress stays a quiet hint; a refusal is a danger block that takes focus, and a save
+      // whose Secret access is unconfirmed a warning (finding 1966).
+      const say = (text, tone = null) => {
+        feedback.textContent = text;
+        setStatusTone(feedback, tone);
+        if (tone) {
+          revealStatus(feedback, form);
+        }
+      };
       const save = element(
         "button",
-        { type: "submit", className: "primary" },
+        { type: "submit", className: "button button--primary" },
         "Save authentication source",
       );
       const reload = button("Reload authentication source", async () => {
@@ -3131,7 +3642,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const updateNote = element("p", { className: "muted", role: "status", hidden: true });
       const form = element(
         "form",
-        { className: "agent-card" },
+        { className: "agent-card", novalidate: "" },
         auth.section,
         updateNote,
         save,
@@ -3139,6 +3650,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         feedback,
       );
       data.setAuthenticationForm(form);
+      authenticationLeaveAnchor = form;
       let outcomeUnknown = retained?.outcomeUnknown ?? false;
       let pending = false;
       // Set when the caller's permission answer denies Agent update (finding 1530).
@@ -3193,15 +3705,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         auth.setDisabled(true);
         feedback.textContent =
           "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.";
+        setStatusTone(feedback, "warning");
       }
       if (outcomeUnknown) {
         save.disabled = true;
         auth.setDisabled(true);
         feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
+        setStatusTone(feedback, "danger");
       }
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
-        if (!form.reportValidity() || save.disabled) {
+        // The console's own errors under each field, not the browser's bubble (UX plan C3).
+        if (!validateFields([...form.elements]) || save.disabled) {
           return;
         }
         let harnessAuth;
@@ -3209,7 +3724,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           harnessAuth = savedAuthentication?.harnessAuth ?? (await auth.readBinding());
         } catch (error) {
           // Incomplete fields (no Secret, unfinished ChatGPT sign-in) say what to do next.
-          feedback.textContent = error.message;
+          say(error.message, "danger");
           return;
         }
         save.disabled = true;
@@ -3218,9 +3733,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         auth.setDisabled(true);
         data.setAuthenticationSaveState("saving");
         data.setAuthenticationPending(true);
-        feedback.textContent = savedAuthentication
-          ? "Checking Secret access…"
-          : "Saving authentication…";
+        say(savedAuthentication ? "Checking Secret access…" : "Saving authentication…");
         let mutationStarted = false;
         try {
           const current = await request(path);
@@ -3235,8 +3748,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             current.configurationId !== expected.configurationId ||
             JSON.stringify(current.harnessAuth) !== JSON.stringify(expected.harnessAuth)
           ) {
-            feedback.textContent =
-              "The Configuration changed. Reload authentication source before saving.";
+            say("The Configuration changed. Reload authentication source before saving.", "danger");
             outcomeUnknown = true;
             return;
           }
@@ -3262,14 +3774,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             details = null;
           }
           if (harnessAuth?.method === "credential_source") {
-            feedback.textContent = "Authentication saved. Checking credential source access…";
+            say("Authentication saved. Checking credential source access…");
             await ensureCredentialOperateBinding(context, current, {
               kind: "credential_source",
               namespaceId: context.namespaceId,
               id: harnessAuth.sourceId,
             });
           } else if (harnessAuth?.source?.kind === "secret") {
-            feedback.textContent = "Authentication saved. Checking Secret access…";
+            say("Authentication saved. Checking Secret access…");
             await ensureCredentialOperateBinding(context, current, harnessAuth.source);
           }
           if (context.isCurrent()) {
@@ -3287,17 +3799,22 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           if (error.status === 401) {
             context.onExpired();
           } else if (savedAuthentication) {
-            feedback.textContent =
+            say(
               savedAuthentication.harnessAuth?.method === "credential_source"
                 ? `Authentication source saved, but this Agent's credential source access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent operate access to the selected credential source, then retry credential access. Deployment readiness is not confirmed.`
-                : `Authentication source saved, but this Agent's Secret access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent secret:operate on the selected Secret, then retry credential access. Deployment readiness is not confirmed.`;
+                : `Authentication source saved, but this Agent's Secret access could not be confirmed. ${message(error)} Ask a Namespace administrator to grant this Agent secret:operate on the selected Secret, then retry credential access. Deployment readiness is not confirmed.`,
+              "warning",
+            );
           } else {
             outcomeUnknown =
               error.outcomeUnknown ??
               (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status));
-            feedback.textContent = error.outcomeUnknown
-              ? error.message
-              : rejectionMessage(refusedSave(error, "agent", mutationStarted), mutationStarted);
+            say(
+              error.outcomeUnknown
+                ? error.message
+                : rejectionMessage(refusedSave(error, "agent", mutationStarted), mutationStarted),
+              "danger",
+            );
             data.setAuthenticationPending(outcomeUnknown);
           }
         } finally {
@@ -3388,6 +3905,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     let updateDenied = false;
     const updateNote = element("p", { className: "muted", role: "status", hidden: true });
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
+    // A refused save is a danger block that takes focus; other notes stay a hint (finding 1966).
+    const refuse = (text) => {
+      feedback.textContent = text;
+      setStatusTone(feedback, "danger");
+      revealStatus(feedback, feedback.closest("section") ?? undefined);
+    };
     // Reload and Cancel reread the Agent and rebuild this tab in place (finding 1445's rest).
     // Set once Reload or Cancel starts rereading; this editor is about to be replaced.
     let reloading = false;
@@ -3398,7 +3921,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     const reload = button("Reload draft", () => rebuild("Draft reloaded."));
     const save = button("Save repository access", () => void submit(), {
-      className: "primary",
+      tone: "primary",
       disabled: true,
     });
     const cancel = button("Cancel", () => {
@@ -3428,6 +3951,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       data.setDraftEditorState({ dirty, saving: pending, outcomeUnknown, reloadRequired });
       save.disabled =
         updateDenied || locked || !dirty || !fields?.isSettled() || fields.blocksCreate();
+      if (save.getAttribute("aria-busy") !== String(pending)) {
+        save.setAttribute("aria-busy", String(pending));
+      }
       cancel.disabled = locked;
       reload.hidden = !outcomeUnknown && !reloadRequired;
       // An edit that cannot be saved would only block leaving the tab (finding 1539).
@@ -3440,13 +3966,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           feedback.textContent = fields.isDirty()
             ? "Save or cancel repository changes before deploying."
             : "No repository changes to save.";
+          setStatusTone(feedback, null);
         }
         update();
       },
       { ...agent, agentId: agent.id },
     );
     showDraftEditorNavigationBlock = () => {
-      feedback.textContent = "Save or cancel repository changes before leaving this tab.";
+      feedback.textContent = draftEditorSaving
+        ? draftEditorNavigationBlock
+        : "Save or cancel repository changes before leaving this tab.";
+      setStatusTone(feedback, null);
     };
     async function submit() {
       if (save.disabled || !fields.validate()) {
@@ -3467,8 +3997,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           JSON.stringify(fresh.repositoryBindings) !== JSON.stringify(agent.repositoryBindings)
         ) {
           saveState = "conflict";
-          feedback.textContent =
-            "Repository access changed while you were editing. Reload this draft before saving.";
+          refuse(
+            "Repository access changed while you were editing. Reload this draft before saving.",
+          );
           return;
         }
         // TODO: enforce an expected Agent version in PATCH when draft concurrency
@@ -3494,9 +4025,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         if (error.status === 401) {
           context.onExpired();
         } else {
-          feedback.textContent = rejectionMessage(
-            saved ? error : refusedSave(error, "agent", mutationStarted),
-            mutationStarted,
+          refuse(
+            rejectionMessage(
+              saved ? error : refusedSave(error, "agent", mutationStarted),
+              mutationStarted,
+            ),
           );
           if (mutationStarted && ![400, 403, 404, 409, 429].includes(error.status)) {
             saveState = "uncertain";
@@ -3607,6 +4140,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       spellcheck: "false",
       "aria-describedby": "configuration-json-hint",
     });
+    // Invalid JSON is reported under the editor, never by the browser's bubble (finding 1903).
+    const editorError = fieldError(editor);
     editor.value = retained?.text ?? initialText;
     context.drafts.track("configuration", () =>
       editing
@@ -3618,6 +4153,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             reloadRequired,
           }
         : undefined,
+    );
+    // An open but unchanged editor is no unsaved work.
+    context.drafts.unsavedWhen(
+      "configuration",
+      (draft) => draft !== undefined && (draft.text !== draft.initialText || draft.outcomeUnknown),
     );
     const feedback = element(
       "p",
@@ -3664,7 +4204,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       startEditing();
     });
     const save = button("Save Configuration", () => void saveConfiguration(), {
-      className: "primary",
+      tone: "primary",
       // Reload draft focuses Save after carrying edits; the note says what was applied.
       ...(carriedNote && retained ? { "aria-describedby": feedback.id } : {}),
     });
@@ -3673,8 +4213,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       initialText = JSON.stringify(values, null, 2);
       editing = false;
       editor.value = initialText;
-      editor.setCustomValidity("");
+      editorError.clear();
       feedback.textContent = "";
+      setStatusTone(feedback, null);
+      feedback.setAttribute("role", "status");
       reloadRequired = false;
       setDraftEditorState({
         dirty: false,
@@ -3709,21 +4251,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
 
     function parseEditor(reportInvalid = false) {
-      try {
-        const parsed = JSON.parse(editor.value);
-        if (!isPlainObject(parsed)) {
-          throw new Error();
-        }
-        return parsed;
-      } catch {
-        if (reportInvalid) {
-          editor.setCustomValidity("Enter a valid JSON object.");
-          editor.reportValidity();
-          feedback.textContent = "Enter a valid Configuration JSON object.";
-          feedbackLocked = true;
-        }
-        return undefined;
+      const problem = jsonObjectProblem(editor.value);
+      if (problem === undefined) {
+        return JSON.parse(editor.value);
       }
+      if (reportInvalid) {
+        // One message, under the editor, which keeps focus so the JSON can be fixed in place.
+        editorError.show(problem);
+        feedback.textContent = "";
+        feedbackLocked = true;
+        editor.focus();
+      }
+      return undefined;
     }
 
     function updateState() {
@@ -3735,6 +4274,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         reloadRequired,
       });
       save.disabled = pending || outcomeUnknown || reloadRequired || !dirty;
+      // A save in flight is busy, not unavailable: the progress cursor (finding 1927). Written
+      // only on a change, so a rerender is no DOM mutation.
+      if (save.getAttribute("aria-busy") !== String(pending)) {
+        save.setAttribute("aria-busy", String(pending));
+      }
       cancel.disabled = pending || outcomeUnknown || reloadRequired;
       edit.disabled = pending || outcomeUnknown;
       enableGatewayPassword.disabled = pending || outcomeUnknown || reloadRequired;
@@ -3742,10 +4286,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       if (outcomeUnknown) {
         feedback.textContent =
           "Outcome unknown. Configuration may have been saved. Reload this draft before saving again.";
+        setStatusTone(feedback, "danger");
         feedbackLocked = true;
       } else if (reloadRequired) {
         if (!feedbackLocked) {
           feedback.textContent = "Reload this draft before saving again.";
+          setStatusTone(feedback, "danger");
         }
         feedbackLocked = true;
       } else if (pending) {
@@ -3764,8 +4310,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
 
     editor.addEventListener("input", () => {
-      editor.setCustomValidity("");
+      editorError.clear();
       feedback.textContent = "";
+      setStatusTone(feedback, null);
+      feedback.setAttribute("role", "status");
       feedbackLocked = false;
       reloadRequired = false;
       updateState();
@@ -3773,6 +4321,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     showDraftEditorNavigationBlock = () => {
       if (draftEditorNavigationBlock) {
         feedback.textContent = draftEditorNavigationBlock;
+        setStatusTone(feedback, null);
+        feedback.setAttribute("role", "status");
         feedbackLocked = true;
       }
     };
@@ -3788,6 +4338,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       pending = true;
       feedback.textContent = "Checking Configuration…";
+      setStatusTone(feedback, null);
+      feedback.setAttribute("role", "status");
       feedbackLocked = true;
       const saveFocused = document.activeElement === save;
       updateState();
@@ -3814,6 +4366,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           freshConfig.generation !== baseline.generation
         ) {
           feedback.textContent = CONFIGURATION_CHANGED;
+          setStatusTone(feedback, "danger");
           feedbackLocked = true;
           reloadRequired = true;
           return;
@@ -3843,11 +4396,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           context.onExpired();
           return;
         }
+        // Every refusal below is a danger block: an alert before its text is written.
+        feedback.setAttribute("role", "alert");
         if (!configurationSaved) {
           refusedSave(error, "configuration", mutationStarted);
         }
         if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
           feedback.textContent = CONFIGURATION_CHANGED;
+          setStatusTone(feedback, "danger");
           feedbackLocked = true;
           reloadRequired = true;
           return;
@@ -3855,6 +4411,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         feedback.textContent =
           configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
           rejectionMessage(error, mutationStarted);
+        setStatusTone(feedback, "danger");
         feedbackLocked = true;
         outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
       } finally {
@@ -3862,10 +4419,19 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           pending = false;
           updateState();
           render();
-          if (container.isConnected) {
+          const refused = feedback.dataset.tone === "danger";
+          feedback.setAttribute("role", refused ? "alert" : "status");
+          if (container.isConnected && refused && !outcomeUnknown && !reloadRequired) {
+            // A refusal Reload cannot fix (a 403, say) is an alert that takes focus and comes
+            // into view; under the fold, nothing seemed to happen (finding 1991).
+            revealStatus(feedback, container);
+          } else if (container.isConnected) {
             // A conflict or failure leaves Reload draft (or Save again) as the next step
             // (finding 1481).
             focusSaveOutcome(container, [reload, save], feedback);
+            if (refused && container.contains(document.activeElement)) {
+              feedback.scrollIntoView({ block: "nearest" });
+            }
           }
         }
       }
@@ -3901,6 +4467,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           { className: "form-field" },
           element("label", { for: "configuration-json" }, "Configuration JSON"),
           editor,
+          editorError.node,
           element(
             "p",
             { className: "hint", id: "configuration-json-hint" },
@@ -3943,7 +4510,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         "",
         context.pageUrl(target(selected, selectedTab), namespaceId),
       );
-      showDraftEditorNavigationBlock();
+      showLeaveBlock();
       // A recovery link refused here would look dead again: its refusal shows with the editor.
       if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
         openVersionDetail({ animate: true });
@@ -3962,7 +4529,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     void renderTab({ activated: true });
     // Logs scrolls to its output once that has loaded.
     if (linked && nextTab !== "logs") {
-      openVersionDetail({ animate: true });
+      openVersionDetail({ animate: true, deploy: linked.deploy });
     }
     return true;
   });

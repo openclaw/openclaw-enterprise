@@ -5,6 +5,7 @@ import test from "node:test";
 import { DELETION_POLL_MS } from "../../apps/controller/src/console/agents/deletion.mjs";
 import {
   DEPLOYMENT_POLL_MS,
+  deploymentFailureStep,
   FIRST_ACTIVITY_WAIT_MS,
 } from "../../apps/controller/src/console/agents/detail.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
@@ -86,13 +87,23 @@ function deploymentRecord(namespace, agent, revision, status, error = null) {
   };
 }
 
-function routeFailedRecord(page, fixture, namespace, agent, revision) {
+// The API's message for the model probe failure the recovery tests below record.
+const PROBE_FAILED_MESSAGE = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED").message;
+
+function routeFailedRecord(
+  page,
+  fixture,
+  namespace,
+  agent,
+  revision,
+  code = "RUNTIME_MODEL_PROBE_FAILED",
+) {
   const failed = deploymentRecord(
     namespace,
     agent,
     revision,
     "failed",
-    persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+    persistedDeploymentError(code),
   );
   return page.route(deploymentUrl(fixture, namespace, agent, revision), (route) =>
     route.fulfill(failed),
@@ -450,9 +461,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
-    .getByText(
-      "v2 failed its startup model check. Check the failed version’s logs before deploying a new version.",
-    )
+    .getByText(`v2 failed its startup model check. ${PROBE_FAILED_MESSAGE}`, { exact: true })
     .waitFor();
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
   await page
@@ -462,12 +471,13 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   // The denial updates the recovery at once: it says who can check the logs instead of
   // steering the reader into another denied read.
   const askForLogs = recovery.getByText(
-    "v2 failed its startup model check. Ask someone with log access to check the failed version’s logs before deploying a new version.",
+    `v2 failed its startup model check. ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
+    { exact: true },
   );
   await askForLogs.waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   // Leaving Logs for another tab of the same version keeps that.
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await askForLogs.waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   const configuration = recovery.getByRole("link", { name: "Open Configuration" });
@@ -519,7 +529,8 @@ test("A replaced current version still says who can check the logs once Logs is 
     .waitFor();
   await recovery
     .getByText(
-      "v2 failed its startup model check. v1 is still selected, but its runtime was probably stopped for this deployment. Ask someone with log access to check the failed version’s logs.",
+      `v2 failed its startup model check. v1 is still selected, but its runtime was probably stopped for this deployment. ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
+      { exact: true },
     )
     .waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
@@ -607,6 +618,309 @@ test("Recovery offers no draft link when the caller's permission answer fails", 
   assert.equal(await logs.getAttribute("class"), "overview-primary");
   assert.equal(await recovery.getByRole("link", { name: "Open Configuration" }).count(), 0);
   assert.equal(await recovery.getByRole("link").count(), 1);
+});
+
+// The banner gave every code the same "check the failed version's logs" advice; each code's own
+// next step sat in Deployment details, below the fold at phone width (finding 1898). It now
+// leads with the API's message and that step's link, in view at desktop and phone width.
+for (const c of [
+  {
+    code: "RUNTIME_AUTHENTICATION_FAILED",
+    step: "update or replace the Agent's model credential",
+    action: "Open Credentials",
+  },
+  {
+    code: "DEPENDENCY_UNAVAILABLE",
+    step: "Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+    action: "Deploy again",
+  },
+  {
+    code: "CONVERGENCE_DEADLINE_EXCEEDED",
+    step: "Check its logs and runtime diagnostics",
+    action: "Open v1 Logs",
+  },
+]) {
+  for (const viewport of [
+    { width: 1440, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    const size = `${viewport.width}x${viewport.height}`;
+    test(`A failed deployment's banner shows the ${c.code} next step in view at ${size}`, async (t) => {
+      const { fixture, namespace } = await createReadyConsoleNamespace(
+        t,
+        `Next step ${c.code}`,
+        runtimeLogs(),
+      );
+      const agent = await fixture.createAgent(namespace.id, "Next Step Agent", nativeValues("v1"));
+      // Never deployed: v1 failed.
+      const failed = await fixture.deployAgent(namespace.id, agent.id);
+      const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+      await routeFailedRecord(page, fixture, namespace, agent, failed, c.code);
+
+      await login(
+        page,
+        fixture,
+        new URL(`/console/agents/${agent.id}?namespace=${namespace.id}`, fixture.origin),
+      );
+      const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+      const { message } = persistedDeploymentError(c.code);
+      assert.ok(message.includes(c.step), `${c.code}: ${message}`);
+      const text = recovery.getByText(`v1 did not deploy successfully. ${message}`, {
+        exact: true,
+      });
+      await text.waitFor();
+      const action = recovery.getByRole("link", { name: c.action, exact: true });
+      await action.waitFor();
+      await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+      assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
+      // The step and its link are on the first screen.
+      const inView = (node) =>
+        node.evaluate((element) => {
+          const box = element.getBoundingClientRect();
+          return { top: box.top, bottom: box.bottom, innerHeight: globalThis.innerHeight };
+        });
+      const textBox = await inView(text);
+      const actionBox = await inView(action);
+      t.diagnostic(
+        `${c.code} ${size}: text ${JSON.stringify(textBox)} action ${JSON.stringify(actionBox)}`,
+      );
+      assert.ok(textBox.top < textBox.innerHeight, `the message starts below the fold`);
+      assert.ok(actionBox.top < actionBox.innerHeight, `${c.action} starts below the fold`);
+      assert.ok(actionBox.bottom <= actionBox.innerHeight, `${c.action} ends below the fold`);
+      assert.equal(
+        await recovery.getByText("before deploying a new version", { exact: false }).count(),
+        0,
+      );
+      // Only a message that says to deploy again offers it, as the step's own link.
+      assert.equal(
+        await recovery.getByRole("link", { name: "Deploy again" }).count(),
+        c.action === "Deploy again" ? 1 : 0,
+      );
+      if (c.action === "Deploy again") {
+        assert.equal(await action.getAttribute("class"), "overview-primary");
+        // It opens the draft with its Deploy new version in view.
+        await action.click();
+        // The link scrolls smoothly; wait for it to settle with Deploy new version focused.
+        await page.waitForFunction(() => {
+          const active = globalThis.document.activeElement;
+          const box = active?.getBoundingClientRect();
+          return (
+            active?.textContent === "Deploy new version" &&
+            box.top >= 0 &&
+            box.bottom <= globalThis.innerHeight
+          );
+        });
+        const deploy = page.getByRole("button", { name: "Deploy new version" });
+        const deployBox = await inView(deploy);
+        assert.ok(
+          deployBox.top >= 0 && deployBox.bottom <= deployBox.innerHeight,
+          `Deploy new version in view: ${JSON.stringify(deployBox)}`,
+        );
+      }
+    });
+  }
+}
+
+// The banner reads each failure's next step from the API's own message, so the two stay in step:
+// a rewording that drops "Deploy again", or a step, fails here rather than silently changing the
+// banner (finding 1898).
+test("Every failed deployment message maps to its banner step", () => {
+  const deployAgain = [
+    "ACTOR_REVOKED",
+    "COMPUTE_DRIVER_MISMATCH",
+    "DEPENDENCY_UNAVAILABLE",
+    "HARNESS_DESCRIPTOR_MISMATCH",
+    "LEASE_EXPIRED",
+    "NAMESPACE_NOT_READY",
+    "REPOSITORY_BINDING_CHANGED",
+    "REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED",
+    "REPOSITORY_DRIVER_MISMATCH",
+  ];
+  // These name no step: the banner adds the generic logs advice.
+  const none = [
+    "AGENT_GATEWAY_UNAVAILABLE",
+    "KUBERNETES_API_UNAVAILABLE",
+    "SANDBOX_ADMISSION_LIMIT_REACHED",
+    "SANDBOX_GATEWAY_UNAVAILABLE",
+    "SANDBOX_HARNESS_UNSUPPORTED",
+    "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
+    // The API's catch-all message.
+    "UNLISTED_FAILURE_CODE",
+  ];
+  const named = [
+    "AGENT_GATEWAY_UNAUTHORIZED",
+    "AUTHORIZATION_DENIED",
+    "BACKEND_UNAVAILABLE",
+    "CONVERGENCE_DEADLINE_EXCEEDED",
+    "CREDENTIAL_GATEWAY_MISMATCH",
+    "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT",
+    "CREDENTIAL_SOURCE_UNAVAILABLE",
+    "CREDENTIAL_WITHDRAWN",
+    "HARNESS_AUTH_REQUIRED",
+    "HARNESS_AUTH_SOURCE_CHANGED",
+    "HARNESS_AUTH_SOURCE_UNAVAILABLE",
+    "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED",
+    "HARNESS_CREDENTIAL_BOOTSTRAP_TIMEOUT",
+    "REPOSITORY_BINDING_UNAVAILABLE",
+    "REPOSITORY_RUNTIME_UNSUPPORTED",
+    "RUNTIME_AUTHENTICATION_FAILED",
+    "RUNTIME_CPU_STARVED",
+    "RUNTIME_LOGIN_FAILED",
+    "RUNTIME_MODEL_PROBE_FAILED",
+    "RUNTIME_MODEL_PROBE_TIMEOUT",
+    "RUNTIME_STARTUP_FAILED",
+    "SANDBOX_GATEWAY_UNAUTHORIZED",
+    "SECRET_BINDING_UNAVAILABLE",
+    "SECRET_DRIVER_MISMATCH",
+    "SERVICE_ACCOUNT_BACKEND_MISMATCH",
+    "WORKSPACE_SETUP_REFUSED",
+    "WORKSPACE_SETUP_UNSUPPORTED",
+  ];
+  for (const [expected, codes] of [
+    ["deploy-again", deployAgain],
+    [null, none],
+    ["named", named],
+  ]) {
+    for (const code of codes) {
+      const { message } = persistedDeploymentError(code);
+      assert.equal(deploymentFailureStep(message), expected, `${code}: ${message}`);
+    }
+  }
+  assert.equal(deploymentFailureStep(""), null);
+  assert.equal(deploymentFailureStep(undefined), null);
+});
+
+// A message that names no step keeps the generic advice after it.
+test("A failed deployment's banner keeps the logs advice when the message names no step", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "No step", "No Step Agent");
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, revision, "AGENT_GATEWAY_UNAVAILABLE");
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery
+    .getByText(
+      `v1 did not deploy successfully. ${persistedDeploymentError("AGENT_GATEWAY_UNAVAILABLE").message} Check the failed version’s logs before deploying a new version.`,
+      { exact: true },
+    )
+    .waitFor();
+  await recovery.getByRole("link", { name: "Open v1 Logs" }).waitFor();
+  assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
+});
+
+// A draft whose Configuration this caller cannot read builds no Deploy new version, so Deploy
+// again would lead nowhere and push the usable Logs link down.
+test("A failed deployment's banner offers no Deploy again once the Configuration read is denied", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Deploy again unreadable",
+    "Unreadable Configuration Agent",
+  );
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, revision, "DEPENDENCY_UNAVAILABLE");
+  const configurationPath = `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  await page.route(configurationPath, (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({
+          status: 403,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "FORBIDDEN", message: "Access denied." },
+            meta: { requestId: "req_test_recovery_configuration_denied" },
+          }),
+        })
+      : route.fallback(),
+  );
+  const denied = page.waitForResponse(
+    (response) => response.url() === configurationPath && response.status() === 403,
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await denied;
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery
+    .getByText(persistedDeploymentError("DEPENDENCY_UNAVAILABLE").message, { exact: false })
+    .waitFor();
+  const logs = recovery.getByRole("link", { name: "Open v1 Logs" });
+  await logs.waitFor();
+  await page.waitForFunction(
+    () =>
+      globalThis.document.querySelector(".deployment-recovery-actions .overview-primary")
+        ?.textContent === "Open v1 Logs",
+  );
+  assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).count(), 0);
+});
+
+// From the current version's page, Deploy again opens the draft at its deploy step too.
+test("A failed deployment's Deploy again opens the draft's deploy step from another version", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Deploy again elsewhere");
+  const agent = await fixture.createAgent(namespace.id, "Elsewhere Agent", nativeValues("v1"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // v1 keeps serving; the v2 redeploy failed.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await routeFailedRecord(page, fixture, namespace, agent, revision, "DEPENDENCY_UNAVAILABLE");
+
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const again = page
+    .getByRole("region", { name: "Deployment needs attention" })
+    .getByRole("link", { name: "Deploy again" });
+  await again.waitFor();
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  await again.click();
+  await page.waitForURL((next) => next.searchParams.get("revision") === "draft");
+  await page.waitForFunction(() => {
+    const active = globalThis.document.activeElement;
+    const box = active?.getBoundingClientRect();
+    return (
+      active?.textContent === "Deploy new version" &&
+      box.top >= 0 &&
+      box.bottom <= globalThis.innerHeight
+    );
+  });
+});
+
+// Deploy again leads to the draft's deploy, so a caller who cannot deploy is not offered it.
+test("A failed deployment's banner offers Deploy again only with deploy permission", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(
+    t,
+    "Deploy again denied",
+    "No Deploy Agent",
+  );
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  // v1 keeps serving; the v2 redeploy failed.
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  await routeFailedRecord(page, fixture, namespace, agent, revision, "DEPENDENCY_UNAVAILABLE");
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: { update: true, deploy: false, operate: true, delete: true },
+          meta: { requestId: "req_test_recovery_no_deploy" },
+        }),
+      }),
+  );
+
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery
+    .getByText(persistedDeploymentError("DEPENDENCY_UNAVAILABLE").message, { exact: false })
+    .waitFor();
+  const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
+  await logs.waitFor();
+  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
 });
 
 function line(second, raw) {
@@ -697,7 +1011,7 @@ test("opening the Logs tab by click does not move the cards below it", async (t)
     await page.getByRole("button", { name: "Stop Agent" }).waitFor();
     await page.evaluate(() => globalThis.document.fonts.ready);
     // A reader scrolls the tabs into view, then selects Logs once the page is still.
-    const logsTab = page.getByRole("button", { name: "Logs", exact: true });
+    const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
     await logsTab.evaluate((tab) => tab.scrollIntoView({ block: "center" }));
     await waitForIdleFetches(page);
     await nextFrames(page);
@@ -772,11 +1086,9 @@ test("a failed version's banner does not move the overview on a slow link", asyn
         ),
       );
     assert.equal(await leadsOverview(), true);
-    const plugins = page
-      .locator(".agent-tabs")
-      .getByRole("button", { name: "Plugins", exact: true });
+    const plugins = page.locator(".agent-tabs").getByRole("tab", { name: "Plugins", exact: true });
     await plugins.click();
-    await page.locator('.agent-tabs [aria-current="page"]', { hasText: "Plugins" }).waitFor();
+    await page.locator('.agent-tabs [aria-selected="true"]', { hasText: "Plugins" }).waitFor();
     assert.equal(await leadsOverview(), true, "a tab change keeps the card above the overview");
   }
 });
@@ -793,7 +1105,7 @@ function versionDetailInView() {
 const focusedTab = (page) =>
   page.evaluate(() => {
     const active = globalThis.document.activeElement;
-    return active?.closest(".agent-tabs") && active.getAttribute("aria-current") === "page"
+    return active?.closest(".agent-tabs") && active.getAttribute("aria-selected") === "true"
       ? active.textContent
       : null;
   });

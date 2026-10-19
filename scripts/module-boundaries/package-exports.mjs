@@ -21,13 +21,15 @@ export function selectPackageExport(exports, subpath, conditions) {
       } catch {
         return invalid();
       }
+      // Node checks slash-delimited segments of the written target. Query or
+      // fragment text alone is not a segment; slashes within it still count.
       if (
         /%2f|%5c/i.test(selected) ||
         decoded.includes("\\") ||
         decoded
           .slice(2)
-          .split(/[/?#]/)
-          .some((part) => ["..", ".", "node_modules"].includes(part))
+          .split("/")
+          .some((part) => ["..", ".", "node_modules"].includes(part.toLowerCase()))
       ) {
         return invalid();
       }

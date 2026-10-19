@@ -68,7 +68,7 @@ Stories reach error states through real controls after loading fixture data.
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                                                              |
 | Credentials             | Named Secret selection and creation, API-key and Slack Secret switching, denied metadata and grants, partially missing tokens, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, pending grants, and unknown authentication saves.                                                                                                                          |
 | Native admin            | Available launch, stopped, UI configuration required, assigned role missing, insufficient pairing permissions, unsupported Compute transport, administrator self-assignment and explicit Refresh recovery, disabled panel hidden, and ordinary-user denial hidden. The launch target is an explanatory fixture page.                                                                                              |
-| Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome.                                                                                                                                                                                                                                                                                                                |
+| Workspace               | Four editable deployed files, undeployed Agent, denied reads, missing file, unknown write outcome, rereads after a version change.                                                                                                                                                                                                                                                                                |
 | Stop Agent              | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                                                                      |
 | Deletion                | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                                                                      |
 
@@ -158,7 +158,7 @@ choices, denied or unverified authorization, and reselection after a rejected sa
 In **Locale-stable repository search**, search `ibm`, select `acme/platform`, and
 confirm reference `IBM-platform`. Simulated data does not prove GitHub App access
 or credential delivery.
-In **Repository choices unavailable**, follow the setup link or retry; creation
+In **Repository choices unavailable**, follow the setup link (no retry); creation
 without repository access stays available. The recovery story keeps its saved
 Configuration and needs a current nonempty repository selection to retry.
 The fixture does not verify operator prerequisites: GitHub App setup, Namespace
@@ -192,8 +192,8 @@ or Namespaces, and return with Back/Forward. Check empty and invalid text, then
 explicit Cancel or Reload. The Configuration story keeps deployment disabled;
 workspace Save changes only the selected simulated file.
 
-In **Flows → Restart Agent creation**, fill a default starter form, leave, and
-re-enter: initial choices and an empty form appear.
+In **Flows → Keep an Agent draft**, fill a default starter form, leave, and
+re-enter, also after a refused Create: it returns; Cancel clears it.
 
 In **Pages/Create Agent → Preset with an invalid field**, Use Preset names
 `agent.executionMode` and keeps the chooser. **Agent creation needs an

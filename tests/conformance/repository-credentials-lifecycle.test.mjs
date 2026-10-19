@@ -663,7 +663,7 @@ test("expiry-only acquisitions refused after capture free their slot for the nex
     const pending = lifecycle.acquire(1000, waiter.signal);
     await tick();
     waiter.abort();
-    await assert.rejects(pending);
+    await assert.rejects(pending, { message: "CANCELLED" });
     release();
     await tick();
     await tick();

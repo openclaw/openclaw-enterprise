@@ -3,28 +3,18 @@ import test from "node:test";
 import {
   assertConsoleSignIn,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   currentSession,
   githubSignIn,
   githubUpgradeSettings,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "attach-recovery@example.test";
 const password = "attach-member-password";
-const authSecret = "attach-admin-auth-test-secret-at-least-32-bytes";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "attach-client-id",
-  "occ-github-login/client-secret": "attach-client-secret",
-};
 const adminSubject = "9100001";
 const secondSubject = "9100002";
 
@@ -35,22 +25,26 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    const github = await startFakeGitHub(t);
+    const { pool, state, github, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "attach-recovery@example.test",
+        password,
+        secrets: {
+          "occ-auth/secret": "attach-admin-auth-test-secret-at-least-32-bytes",
+          "occ-github-login/client-id": "attach-client-id",
+          "occ-github-login/client-secret": "attach-client-secret",
+        },
+      },
+    );
     const address = clientAddresses();
     // Password onboarding on the default install: a second administrator and a reader.
     const {
       admin,
       roles,
       accounts: { second, member },
-    } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    } = await onboard({
       remoteAddress: address(),
       accounts: {
         second: { email: "attach-second@example.test", role: "admin" },
@@ -58,11 +52,7 @@ test(
       },
     });
     let adminHeaders;
-    app = await composeProductionSignIn(t, {
-      databaseUrl,
-      settings: githubUpgradeSettings(admin.id),
-      secrets,
-    });
+    app = await composeApp(githubUpgradeSettings(admin.id));
     const attach = (headers, userId, subject, expectedVersion) =>
       app.inject({
         method: "POST",

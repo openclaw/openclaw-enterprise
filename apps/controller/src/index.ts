@@ -558,6 +558,7 @@ function operationTarget(
   }
   if (
     (operation.operationId === "createAgent" ||
+      operation.operationId === "validateAgentCreate" ||
       operation.operationId === "provisionAgent" ||
       operation.operationId === "listRepositoryOptions") &&
     namespaceId
@@ -4111,7 +4112,9 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
         url: operation.path,
         ...(operation.operationId === "putAgentWorkspaceFile"
           ? { bodyLimit: WORKSPACE_FILE_BODY_LIMIT }
-          : operation.operationId === "createAgent" || operation.operationId === "provisionAgent"
+          : operation.operationId === "createAgent" ||
+              operation.operationId === "validateAgentCreate" ||
+              operation.operationId === "provisionAgent"
             ? { bodyLimit: options.maxBodyBytes ?? AGENT_CREATE_BODY_LIMIT }
             : operation.operationId === "createPreset" || operation.operationId === "updatePreset"
               ? { bodyLimit: options.maxBodyBytes ?? PRESET_BODY_LIMIT }

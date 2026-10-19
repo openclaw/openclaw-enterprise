@@ -15517,6 +15517,148 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/validate": {
+      "post": {
+        "description": "Requires create permission for Agent resources in the requested Namespace.",
+        "operationId": "validateAgentCreate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "configuration": {
+                    "additionalProperties": false,
+                    "description": "The Agent Configuration the caller will save, not yet saved.",
+                    "properties": {
+                      "kind": { "const": "agent", "type": "string" },
+                      "values": {
+                        "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                        "description": "A native OpenClaw configuration document.",
+                        "properties": {},
+                        "type": "object"
+                      }
+                    },
+                    "required": ["kind", "values"],
+                    "type": "object"
+                  },
+                  "executionMode": {
+                    "anyOf": [
+                      { "const": "embedded", "type": "string" },
+                      { "const": "dedicated", "type": "string" }
+                    ]
+                  },
+                  "initialWorkspaceFiles": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "AGENTS.md": {
+                        "maxLength": 16384,
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      },
+                      "IDENTITY.md": {
+                        "maxLength": 16384,
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      },
+                      "SOUL.md": {
+                        "maxLength": 16384,
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      },
+                      "USER.md": {
+                        "maxLength": 16384,
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                  "plugins": { "$ref": "#/components/schemas/def-6" }
+                },
+                "required": ["configuration"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": { "description": "Default Response" },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}": {
       "delete": {
         "description": "Requires delete permission on the requested Agent.",

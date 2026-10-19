@@ -222,7 +222,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   const loginsBeforeBrowse = gateway.calls.filter(
     (call) => call.operation === "startDeviceAuthorization",
   ).length;
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal(
     await page.getByRole("button", { name: "Sign in with OAuth", exact: true }).count(),
     0,
@@ -280,7 +280,7 @@ test("Codex OAuth console saves a credential source and reuses it for plugin edi
   assert.equal(withOtherSource.status, 200, JSON.stringify(withOtherSource.body));
 
   // Reconnection is a separate, explicit authentication save with a newly completed login.
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "credential_source");
   await signInReady(page, advanceApiClock);
   assert.deepEqual((await fixture.request("GET", agentPath)).data.harnessAuth, originalAuth);

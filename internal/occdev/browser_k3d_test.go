@@ -130,3 +130,19 @@ func parseDevelopmentCertificate(t *testing.T, data []byte) *x509.Certificate {
 	}
 	return certificate
 }
+
+func TestDevelopmentBrowserOriginOmitsTheDefaultHTTPSPort(t *testing.T) {
+	console, _, _ := developmentBrowserHosts("occ-dev-example")
+	for port, want := range map[int]string{
+		443:  "https://console.occ-dev-example.oce.localhost",
+		8443: "https://console.occ-dev-example.oce.localhost:8443",
+		444:  "https://console.occ-dev-example.oce.localhost:444",
+	} {
+		if got := developmentBrowserOrigin(console, port); got != want {
+			t.Fatalf("developmentBrowserOrigin(%d) = %q, want %q", port, got, want)
+		}
+	}
+	if got, want := developmentKeycloakRedirectURI("occ-dev-example", 443), "https://console.occ-dev-example.oce.localhost/api/auth/providers/oidc/callback"; got != want {
+		t.Fatalf("redirect URI = %q, want %q", got, want)
+	}
+}

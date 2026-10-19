@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { element, button, setFieldError, statusBlock, validateFields } from "../dom.mjs";
 
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 
@@ -24,17 +24,32 @@ function fileError(error, writing) {
   return text + (error.requestId ? ` Request ID: ${error.requestId}` : "");
 }
 
+// Only this answer confirms the file itself is absent. A resource or scope 404 does not establish
+// the native file's current state.
+function confirmsMissingFile(error) {
+  return (
+    error.status === 404 &&
+    error.code === "NOT_FOUND" &&
+    error.serverMessage === "The requested workspace file was not found."
+  );
+}
+
+// Returns the section and `refresh`, which rereads the files in place after another version
+// becomes current.
 export function renderWorkspaceFiles(context, agent, path) {
+  const refreshers = [];
   const section = element(
     "section",
     { className: "workspace-files" },
     element("h2", {}, "Workspace files"),
   );
   section.append(
-    element(
-      "p",
-      { className: "notice" },
+    statusBlock(
+      "info",
+      null,
       "These files belong to the Agent's live workspace. Saving replaces one file immediately and does not change Configuration or Agent versions. Concurrent writes use the last saved contents.",
+      [],
+      { role: null },
     ),
   );
   if (!agent.activeRevisionId) {
@@ -45,7 +60,7 @@ export function renderWorkspaceFiles(context, agent, path) {
         "Workspace files require a deployed Agent with a current version and a reachable gateway.",
       ),
     );
-    return section;
+    return { section, refresh: () => {} };
   }
   for (const name of filenames) {
     const draftKey = `workspace:${name}`;
@@ -60,13 +75,18 @@ export function renderWorkspaceFiles(context, agent, path) {
       "aria-describedby": `workspace-${name}-hint`,
     });
     const status = element("p", { className: "hint", role: "status" }, `Loading ${name}…`);
-    const error = element("p", { className: "error", role: "alert" });
+    const error = statusBlock("danger", null, null);
     let pending = false;
     let loaded = false;
     let baseline;
     let outcomeUnknown = retained?.outcomeUnknown ?? false;
     let writing = false;
     let initialized = false;
+    // Counts reads and saves, so an in-place reread never overwrites a later answer.
+    let operations = 0;
+    let refreshAfterPending = false;
+    // Set while the status says a reread failed, so a later good reread clears it (finding 1878).
+    let rereadFailed = false;
     context.drafts.track(draftKey, () => {
       if (!loaded && !initialized) {
         return retained;
@@ -77,13 +97,13 @@ export function renderWorkspaceFiles(context, agent, path) {
     });
     const save = element(
       "button",
-      { type: "submit", className: "primary", disabled: true },
+      { type: "submit", className: "button button--primary", disabled: true },
       `Save ${name}`,
     );
     const reload = button(`Reload ${name}`, () => void load(true));
     const form = element(
       "form",
-      { className: "agent-card agent-form" },
+      { className: "agent-card agent-form", novalidate: "" },
       element(
         "div",
         { className: "form-field" },
@@ -112,7 +132,9 @@ export function renderWorkspaceFiles(context, agent, path) {
       if (pending || !context.isCurrent()) {
         return;
       }
+      operations += 1;
       pending = true;
+      rereadFailed = false;
       updateControls();
       error.textContent = "";
       status.textContent = `Loading ${name}…`;
@@ -124,7 +146,9 @@ export function renderWorkspaceFiles(context, agent, path) {
         editor.value = file.content;
         // Compare edits in the textarea's LF representation; reading never rewrites the file.
         baseline = editor.value;
+        // A file read without an input event drops the last check's error with its validity.
         editor.setCustomValidity("");
+        setFieldError(editor, "");
         loaded = true;
         outcomeUnknown = false;
         status.textContent = `${name} loaded.`;
@@ -146,18 +170,14 @@ export function renderWorkspaceFiles(context, agent, path) {
           return;
         }
         // Explicit Reload can settle an unknown write only when the API confirms file absence.
-        // A resource/scope 404 does not establish the native file's current state.
-        const missingReadback =
-          discard &&
-          cause.status === 404 &&
-          cause.code === "NOT_FOUND" &&
-          cause.serverMessage === "The requested workspace file was not found.";
+        const missingReadback = discard && confirmsMissingFile(cause);
         // A missing file can be created through PUT. Other read failures never enable a blank overwrite.
         if (cause.status === 404 && (!outcomeUnknown || missingReadback)) {
           editor.value = !discard && retained ? retained.text : "";
           baseline = !discard && retained ? retained.baseline : undefined;
           initialized = true;
           editor.setCustomValidity("");
+          setFieldError(editor, "");
           loaded = true;
           if (missingReadback) {
             outcomeUnknown = false;
@@ -165,13 +185,21 @@ export function renderWorkspaceFiles(context, agent, path) {
         } else {
           loaded = false;
         }
-        status.textContent = missingReadback ? `${name} is missing. Save to create it.` : "";
-        error.textContent = missingReadback ? "" : fileError(cause, false);
+        // Any read the API confirms as file absence, first load included, says so plainly once
+        // the file is editable (finding 1909).
+        const missingFile = loaded && confirmsMissingFile(cause);
+        status.textContent = missingFile ? `${name} is missing. Save to create it.` : "";
+        error.textContent = missingFile ? "" : fileError(cause, false);
       } finally {
         if (context.isCurrent()) {
           pending = false;
           writing = false;
           updateControls();
+          // A version change during this request may have been answered by the old version.
+          if (refreshAfterPending) {
+            refreshAfterPending = false;
+            void refresh();
+          }
         }
       }
     }
@@ -195,11 +223,14 @@ export function renderWorkspaceFiles(context, agent, path) {
         editor.setCustomValidity(
           "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.",
         );
-        editor.reportValidity();
+        // The error goes under the file, without the browser's bubble (UX plan C3).
+        validateFields([editor]);
         return;
       }
+      operations += 1;
       pending = true;
       writing = true;
+      rereadFailed = false;
       updateControls();
       error.textContent = "";
       status.textContent = `Saving ${name}…`;
@@ -227,11 +258,107 @@ export function renderWorkspaceFiles(context, agent, path) {
           pending = false;
           writing = false;
           updateControls();
+          // A version change during this request may have been answered by the old version.
+          if (refreshAfterPending) {
+            refreshAfterPending = false;
+            void refresh();
+          }
         }
       }
     });
+    // Rereads a file the reader has not changed without disabling its editor, so focus and caret
+    // stay; unsaved edits and an unknown save outcome are kept as they are (finding 1836).
+    async function refresh() {
+      if (!context.isCurrent()) {
+        return;
+      }
+      if (pending) {
+        refreshAfterPending = true;
+        return;
+      }
+      if (!loaded) {
+        // A first read that failed is retried. After an explicit Reload failed, an unknown save
+        // outcome still waits for the reader's next Reload.
+        if (!initialized) {
+          await load();
+        }
+        return;
+      }
+      const shown = editor.value;
+      if (outcomeUnknown || shown !== (baseline ?? "")) {
+        return;
+      }
+      // Only a file read as missing (404) is loaded without a baseline; its status says so when the
+      // API confirmed the absence, otherwise its error.
+      const missing = baseline === undefined;
+      const started = (operations += 1);
+      let file;
+      try {
+        file = await context.request(endpoint);
+      } catch (cause) {
+        if (!context.isCurrent() || operations !== started) {
+          return;
+        }
+        if (cause.status === 401) {
+          context.onExpired();
+          return;
+        }
+        if (missing && confirmsMissingFile(cause)) {
+          // Still missing, and nothing new failed (finding 1878). After a Reload the status, not
+          // the error, says the file is missing, so unless an error is shown, a failed reread's
+          // status gives way to that notice again rather than to nothing (finding 1885).
+          if (rereadFailed) {
+            rereadFailed = false;
+            status.textContent = error.textContent ? "" : `${name} is missing. Save to create it.`;
+          }
+          return;
+        }
+        // The file stays as last read, and the reader learns it may be out of date.
+        status.textContent = `${name} could not be reread. Reload to check its current contents.`;
+        rereadFailed = true;
+        return;
+      }
+      if (!context.isCurrent() || operations !== started || pending || editor.value !== shown) {
+        return;
+      }
+      // An identical value leaves the caret where it was. A different one moves it to the end, where
+      // the next key would land, so a reader who clicked into the file without editing gets caret
+      // and scroll back at the same offsets; setSelectionRange clamps them to the new length
+      // (finding 1889).
+      const focused = editor.ownerDocument.activeElement === editor;
+      const { selectionStart, selectionEnd, selectionDirection, scrollTop } = editor;
+      editor.value = file.content;
+      if (focused && editor.value !== shown) {
+        editor.setSelectionRange(selectionStart, selectionEnd, selectionDirection);
+        editor.scrollTop = scrollTop;
+      }
+      baseline = editor.value;
+      if (missing || baseline !== shown) {
+        error.textContent = "";
+        status.textContent = `${name} reloaded with its current contents.`;
+        rereadFailed = false;
+        updateControls();
+      } else {
+        clearRereadFailure();
+      }
+    }
+    // A reread that answered clears the status left by an earlier failed one.
+    function clearRereadFailure() {
+      if (rereadFailed) {
+        rereadFailed = false;
+        status.textContent = "";
+      }
+    }
+    refreshers.push(refresh);
     section.append(form);
     void load();
   }
-  return section;
+  return {
+    section,
+    refresh: () => {
+      for (const refresh of refreshers) {
+        void refresh();
+      }
+    },
+  };
 }
