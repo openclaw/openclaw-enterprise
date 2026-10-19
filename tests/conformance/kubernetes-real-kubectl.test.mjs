@@ -515,6 +515,109 @@ test("a timed-out Namespace delete still fails when the Namespace is gone or the
   });
 });
 
+// Finding 2027/2028: the listing has its own bound (40 s by default, so the 120 s delete and the
+// listing fit the teardown step), and a listing cut short keeps what it read: the Namespace's
+// phase, finalizers and conditions are what explain a stuck delete.
+test("a Namespace listing past its deadline keeps the conditions it read", async () => {
+  const held = {
+    "get namespace": JSON.stringify({
+      spec: { finalizers: ["kubernetes"] },
+      status: {
+        phase: "Terminating",
+        conditions: [
+          {
+            type: "NamespaceFinalizersRemaining",
+            status: "True",
+            reason: "SomeFinalizersRemain",
+            message: "Some content in the namespace has finalizers remaining",
+          },
+        ],
+      },
+    }),
+    "api-resources --namespaced=true": "pods\n",
+  };
+  const expected = [
+    "\nNamespace oce-held remains: phase Terminating, finalizers [kubernetes]",
+    "condition NamespaceFinalizersRemaining=True SomeFinalizersRemain: Some content in the namespace has finalizers remaining",
+    "listing what remains timed out",
+  ].join("\n  ");
+  const remains = (error) => error.message.slice(error.message.indexOf("\nNamespace oce-held"));
+  // The object listing never answers, as a get through a hung aggregated API.
+  function stalledAt(stall) {
+    const reads = namespaceKubectl(held);
+    let reached;
+    const stalled = new Promise((resolve) => {
+      reached = resolve;
+    });
+    const kubectl = (...args) => {
+      if (`${args[0]} ${args[1]}` === stall) {
+        reached();
+        return new Promise(() => {});
+      }
+      return reads.kubectl(...args);
+    };
+    return { kubectl, stalled };
+  }
+
+  // The deadline's timer is held until released, so the default bound is read, not waited for.
+  const listing = stalledAt("get pods");
+  const sleeps = [];
+  let release;
+  const sleep = (ms, value, { signal }) => {
+    sleeps.push(ms);
+    return new Promise((resolve, reject) => {
+      release = () => resolve(value);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  };
+  const failure = deleteNamespaceExplained(listing.kubectl, "oce-held", { sleep }).then(
+    () => assert.fail("the delete resolved"),
+    (error) => error,
+  );
+  await listing.stalled;
+  assert.deepEqual(sleeps, [40_000]);
+  release();
+  assert.equal(remains(await failure), expected);
+
+  // The same with the real timer and a short bound; a Namespace read that stalls keeps nothing.
+  const late = stalledAt("get pods");
+  await assert.rejects(
+    deleteNamespaceExplained(late.kubectl, "oce-held", { listTimeoutMs: 20 }),
+    (error) => remains(error) === expected,
+  );
+  const unread = stalledAt("get namespace");
+  await assert.rejects(
+    deleteNamespaceExplained(unread.kubectl, "oce-held", { listTimeoutMs: 20 }),
+    (error) => remains(error) === "\nNamespace oce-held remains: listing what remains timed out",
+  );
+});
+
+// Finding 2027: the listing is bounded in size too, since it joins a test failure message: at most
+// 40 objects, and a failed read's first stderr line cut to 300 characters.
+test("a Namespace listing caps its objects and a failed read's error", async () => {
+  const objects = Array.from({ length: 45 }, (_, index) => `Pod/p-${index} finalizers= deleting=`);
+  const reason = `error: ${"y".repeat(400)}`;
+  const { kubectl } = namespaceKubectl({
+    "get namespace": JSON.stringify({ spec: {}, status: { phase: "Terminating" } }),
+    "api-resources --namespaced=true": "pods\n",
+    "get pods": Object.assign(kubectlFailure(`${reason}\nsecond line of detail\n`), {
+      stdout: `${objects.join("\n")}\n`,
+    }),
+  });
+  await assert.rejects(deleteNamespaceExplained(kubectl, "oce-held"), (error) => {
+    assert.equal(
+      error.message.slice(error.message.indexOf("\nNamespace oce-held")),
+      [
+        "\nNamespace oce-held remains: phase Terminating, finalizers []",
+        `listing objects failed: ${reason.slice(0, 300)}`,
+        ...Array.from({ length: 40 }, (_, index) => `Pod/p-${index}`),
+        "and 5 more objects",
+      ].join("\n  "),
+    );
+    return true;
+  });
+});
+
 test("a failed outage recovery says why without replacing its failure", async () => {
   const written = [];
   const write = (text) => written.push(text);
