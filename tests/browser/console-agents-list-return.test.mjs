@@ -954,6 +954,9 @@ const unbrokenNameCases = [
   { name: "\ud55c\uad6d\uc5b4".repeat(10), unbroken: false },
   { name: "\u{1F680}".repeat(25), unbroken: false },
   { name: `${"a".repeat(15)}\u4e2d${"b".repeat(15)}`, unbroken: false },
+  // A word joiner or zero-width joiner holds the ideograph or emoji before it.
+  { name: "\u4e2d\u2060".repeat(100), unbroken: true },
+  { name: "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}".repeat(8), unbroken: false },
 ];
 
 test("Agents list marks names with no break opportunity, hyphen and dash runs included", async (t) => {

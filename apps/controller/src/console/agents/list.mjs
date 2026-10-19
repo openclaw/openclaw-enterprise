@@ -280,8 +280,11 @@ const UNBROKEN_CHARACTER = [
   String.raw`[${WIDE_SPACES}${DASHES}](?=\p{M}*["'|${CLOSING}])`,
   // - a hyphen or dash (an em dash too) before any of them but an em dash (LB21);
   String.raw`[\u2010\u2012-\u2014](?=[\u2010\u2012\u2013-])`,
-  // - a hyphen, figure dash or en dash that starts a word, before a letter (LB20a).
+  // - a hyphen, figure dash or en dash that starts a word, before a letter (LB20a);
   String.raw`(?<=^|[ \u200b])[\u2010\u2012\u2013](?=\p{L})`,
+  // - any character but a space or an em dash before a word joiner or zero-width joiner, an
+  //   ideograph or emoji included (LB11, LB9). What follows a joiner keeps its own rules.
+  String.raw`[^ \u200b\u2014](?=\p{M}*[\u2060\u200d])`,
 ].join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
