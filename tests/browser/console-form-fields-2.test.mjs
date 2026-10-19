@@ -98,6 +98,8 @@ for (const viewport of consoleViewports) {
     await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
     assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
     await assertShownError(pluginJson, PLUGIN_JSON_ERROR);
+    // The status line does not repeat the error.
+    assert.equal(await page.getByText(PLUGIN_JSON_ERROR, { exact: true }).count(), 1);
     assert.deepEqual(nonAuthWriteRequests(requests), []);
     // An edit clears the error.
     await pluginJson.fill("{}");

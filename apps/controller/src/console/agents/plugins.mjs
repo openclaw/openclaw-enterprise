@@ -296,9 +296,10 @@ export function renderAgentPlugins(
       }
     } catch {
       input.setCustomValidity("Enter a valid Plugin selections JSON object.");
-      // The error goes under the field, opening its section, without the browser's bubble.
+      // The error goes under the field, opening its section, without the browser's bubble; the
+      // status line does not repeat it.
       validateFields([input]);
-      feedback.textContent = "Enter a valid Plugin selections JSON object.";
+      feedback.textContent = "";
       return;
     }
     pending = true;
