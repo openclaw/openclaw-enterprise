@@ -17,6 +17,7 @@ const joinerNames = {
   "a thin space, then word joiners": `\u2009${"\u2060".repeat(19)} `.repeat(10),
   "an ideograph, then word joiners": `\u4e2d${"\u2060".repeat(19)} `.repeat(10),
   "combining marks between word joiners": `a${"\u0301\u2060".repeat(19)} `.repeat(10),
+  "hyphens before Arabic-Indic digits": `${"\u2060-\u0660".repeat(6)}\u2060\u2060 `.repeat(10),
   "word joiners, 1,050 characters": `${"\u2060".repeat(20)} `.repeat(50),
 };
 

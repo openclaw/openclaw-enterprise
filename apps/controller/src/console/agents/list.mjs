@@ -275,7 +275,7 @@ const UNBROKEN_CHARACTER = [
   // - a hyphen-minus before closing punctuation, "$", an Arabic-Indic digit, or a hyphen, figure
   //   dash or en dash; and before any digit when no letter or digit precedes it ("-5");
   String.raw`-(?=\p{M}*[$\u0660-\u0669\u06f0-\u06f9\u2010\u2012\u2013${CLOSING}])`,
-  String.raw`(?<![\p{L}\p{N}\p{M}])-(?=\p{Nd})`,
+  String.raw`(?<![\p{L}\p{N}\p{M}])-(?=\p{Nd})(?![\u0660-\u0669\u06f0-\u06f9])`,
   // - a wide space, soft hyphen or dash before closing punctuation, a quote or a vertical bar;
   String.raw`[${WIDE_SPACES}${DASHES}](?=\p{M}*["'|${CLOSING}])`,
   // - a hyphen or dash (an em dash too) before any of them but an em dash (LB21);
@@ -285,9 +285,10 @@ const UNBROKEN_CHARACTER = [
   // - an ideograph or emoji before a word joiner or zero-width joiner (LB11, LB9). The other
   //   characters a joiner holds already count: ordinary ones always, and a hyphen, dash or wide
   //   space because CLOSING lists the joiners. What follows a joiner keeps its own rules.
-  // No character may match two of these, nor a combining mark start one: each overlap doubles the
-  // ways to split a run, so a failing test of a joiner-run name backtracked for seconds (finding
-  // 1999). The test in tests/conformance/console-agent-name-runs.test.mjs bounds it.
+  // No character may match two of these (the Arabic-Indic digits after a hyphen-minus are the
+  // line above's, not the "-5" line's), nor a combining mark start one: each overlap doubles the
+  // ways to split a run, so a failed match on a joiner-run name backtracked for seconds (finding
+  // 1999). tests/conformance/console-agent-name-runs.test.mjs bounds it.
   String.raw`[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
 ].join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
