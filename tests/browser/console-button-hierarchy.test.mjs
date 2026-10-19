@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
+import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   assertControlEdge,
@@ -276,6 +278,37 @@ test("Stop, Delete and Save Configuration show busy, not only disabled, while th
   });
   patch.release();
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
+});
+
+test("a permanently disabled button says not allowed, not busy", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Disabled cursor", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "API-key plugin Agent",
+    nativeValues("api-key-cursor", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  assert.equal(agent.harnessAuth.method, "api_key");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
+  await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
+  // An API key can never browse the catalog, so Load plugins stays disabled: nothing is pending.
+  const load = dialog.getByRole("button", { name: "Load plugins" });
+  assert.equal(await load.isDisabled(), true);
+  assert.deepEqual(
+    await load.evaluate((node) => {
+      const style = globalThis.getComputedStyle(node);
+      return [style.cursor, style.opacity];
+    }),
+    ["not-allowed", "0.6"],
+  );
 });
 
 const refusal = (status, code, message) => ({

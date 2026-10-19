@@ -6,6 +6,7 @@ import { CodexPluginDriver } from "../../apps/controller/src/drivers/plugin/inde
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
+  consoleViewports,
   detailUrl,
   fileBrowser,
   login,
@@ -13,6 +14,7 @@ import {
   newPage,
   repositoryCheckbox,
   selectSecret,
+  settledView,
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
@@ -22,11 +24,6 @@ import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
-const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
-const widths = [
-  { width: 1440, height: 900 },
-  { width: 390, height: 844 },
-];
 
 // The two rings the design tokens describe (--focus-ring at --focus-offset, and at
 // --focus-offset-inset for rows and items inside a scroller), resolved through a probe so the
@@ -52,96 +49,120 @@ const tokenRings = (page) =>
     return { outer: ring("--focus-offset"), inset: ring("--focus-offset-inset") };
   });
 
+// The rows that draw a second ring around their focused control, a small checkbox or radio, and
+// the ring each draws.
+const FRAMES = {
+  ".repository-result": "inset",
+  ".repository-option": "outer",
+  ".repository-profile": "outer",
+};
+
 // The focused control, the ring drawn for it, and every scrolling ancestor that cuts into that
 // ring. A borderless input's ring is drawn by its wrapper, so the ring belongs to the nearest
 // element, the control or one of its two closest ancestors, that has an outline. `selector`
 // measures an element that shows focus without holding it, such as an aria-activedescendant option.
 const focusedRing = (page, selector = null) =>
-  page.evaluate((selector) => {
-    const document = globalThis.document;
-    const focused = selector ? document.querySelector(selector) : document.activeElement;
-    if (!focused || focused === document.body) {
-      return null;
-    }
-    const labelledBy = (focused.getAttribute("aria-labelledby") ?? "")
-      .split(/\s+/)
-      .map((id) => document.getElementById(id)?.textContent ?? "")
-      .join(" ");
-    const name = (
-      focused.getAttribute("aria-label") ||
-      labelledBy.trim() ||
-      focused.labels?.[0]?.textContent ||
-      focused.textContent ||
-      focused.tagName
-    )
-      .trim()
-      .replace(/\s+/g, " ")
-      .slice(0, 40);
-    const tag = focused.getAttribute("role") === "tab" ? "tab" : focused.tagName.toLowerCase();
-    let owner = focused;
-    for (let depth = 0; owner && depth < 3; depth += 1) {
-      if (globalThis.getComputedStyle(owner).outlineStyle !== "none") {
-        break;
+  page.evaluate(
+    ([selector, frameSelectors]) => {
+      const document = globalThis.document;
+      const focused = selector ? document.querySelector(selector) : document.activeElement;
+      if (!focused || focused === document.body) {
+        return null;
       }
-      owner = owner.parentElement;
-    }
-    if (!owner || globalThis.getComputedStyle(owner).outlineStyle === "none") {
-      return { name, tag, ring: "none", clipped: [] };
-    }
-    const style = globalThis.getComputedStyle(owner);
-    const ring = [style.outlineStyle, style.outlineWidth, style.outlineColor, style.outlineOffset];
-    // The outline reaches offset + width past the border box; a scroller clips at its client box
-    // (inside its borders and scrollbars). This walks DOM ancestors, which is right for everything
-    // the test visits; a fixed or top-layer element would need its containing blocks instead.
-    const reach = Number.parseFloat(style.outlineOffset) + Number.parseFloat(style.outlineWidth);
-    const box = owner.getBoundingClientRect();
-    const clipped = [];
-    for (
-      let scroller = owner.parentElement;
-      scroller && scroller !== document.documentElement;
-      scroller = scroller.parentElement
-    ) {
-      const edge = globalThis.getComputedStyle(scroller);
-      if (edge.overflowX === "visible" && edge.overflowY === "visible") {
-        continue;
+      const labelledBy = (focused.getAttribute("aria-labelledby") ?? "")
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" ");
+      const name = (
+        focused.getAttribute("aria-label") ||
+        labelledBy.trim() ||
+        focused.labels?.[0]?.textContent ||
+        focused.textContent ||
+        focused.tagName
+      )
+        .trim()
+        .replace(/\s+/g, " ")
+        .slice(0, 40);
+      const tag = focused.getAttribute("role") === "tab" ? "tab" : focused.tagName.toLowerCase();
+      let owner = focused;
+      for (let depth = 0; owner && depth < 3; depth += 1) {
+        if (globalThis.getComputedStyle(owner).outlineStyle !== "none") {
+          break;
+        }
+        owner = owner.parentElement;
       }
-      const rect = scroller.getBoundingClientRect();
-      const left = rect.left + scroller.clientLeft;
-      const top = rect.top + scroller.clientTop;
-      // clientWidth and clientHeight round to whole pixels, so the far edges come from the
-      // fractional box, less its borders and its (whole-pixel) scrollbars.
-      const right = rect.right - Number.parseFloat(edge.borderRightWidth);
-      const bottom = rect.bottom - Number.parseFloat(edge.borderBottomWidth);
-      // A gap under 2px is the rounding alone: any real scrollbar is wider.
-      const gapX = right - left - scroller.clientWidth;
-      const gapY = bottom - top - scroller.clientHeight;
-      const barWidth = gapX >= 2 ? Math.round(gapX) : 0;
-      const barHeight = gapY >= 2 ? Math.round(gapY) : 0;
-      const cut = Math.max(
-        left - (box.left - reach),
-        top - (box.top - reach),
-        box.right + reach - (right - barWidth),
-        box.bottom + reach - (bottom - barHeight),
-      );
-      // Scroll offsets snap to whole pixels, so a scrolled-to row can overhang its scroller by
-      // a fraction of a pixel; only a whole pixel or more counts as hidden.
-      if (cut >= 1) {
-        clipped.push(`.${[...scroller.classList].join(".")} hides ${cut.toFixed(1)}px`);
+      if (!owner || globalThis.getComputedStyle(owner).outlineStyle === "none") {
+        return { name, tag, ring: "none", clipped: [] };
       }
-    }
-    // A row that frames its focused control draws a second ring around the whole row.
-    const frame = owner.parentElement?.closest(".repository-result");
-    const frameStyle = frame ? globalThis.getComputedStyle(frame) : null;
-    const framed = frameStyle
-      ? [
-          frameStyle.outlineStyle,
-          frameStyle.outlineWidth,
-          frameStyle.outlineColor,
-          frameStyle.outlineOffset,
-        ].join(" ")
-      : undefined;
-    return { name, tag, ring: ring.join(" "), clipped, ...(frame ? { framed } : {}) };
-  }, selector);
+      const style = globalThis.getComputedStyle(owner);
+      const ring = [
+        style.outlineStyle,
+        style.outlineWidth,
+        style.outlineColor,
+        style.outlineOffset,
+      ];
+      // The outline reaches offset + width past the border box; a scroller clips at its client box
+      // (inside its borders and scrollbars). This walks DOM ancestors, which is right for everything
+      // the test visits; a fixed or top-layer element would need its containing blocks instead.
+      const reach = Number.parseFloat(style.outlineOffset) + Number.parseFloat(style.outlineWidth);
+      const box = owner.getBoundingClientRect();
+      const clipped = [];
+      for (
+        let scroller = owner.parentElement;
+        scroller && scroller !== document.documentElement;
+        scroller = scroller.parentElement
+      ) {
+        const edge = globalThis.getComputedStyle(scroller);
+        if (edge.overflowX === "visible" && edge.overflowY === "visible") {
+          continue;
+        }
+        const rect = scroller.getBoundingClientRect();
+        const left = rect.left + scroller.clientLeft;
+        const top = rect.top + scroller.clientTop;
+        // clientWidth and clientHeight round to whole pixels, so the far edges come from the
+        // fractional box, less its borders and its (whole-pixel) scrollbars.
+        const right = rect.right - Number.parseFloat(edge.borderRightWidth);
+        const bottom = rect.bottom - Number.parseFloat(edge.borderBottomWidth);
+        // A gap under 2px is the rounding alone: any real scrollbar is wider.
+        const gapX = right - left - scroller.clientWidth;
+        const gapY = bottom - top - scroller.clientHeight;
+        const barWidth = gapX >= 2 ? Math.round(gapX) : 0;
+        const barHeight = gapY >= 2 ? Math.round(gapY) : 0;
+        const cut = Math.max(
+          left - (box.left - reach),
+          top - (box.top - reach),
+          box.right + reach - (right - barWidth),
+          box.bottom + reach - (bottom - barHeight),
+        );
+        // Scroll offsets snap to whole pixels, so a scrolled-to row can overhang its scroller by
+        // a fraction of a pixel; only a whole pixel or more counts as hidden.
+        if (cut >= 1) {
+          clipped.push(`.${[...scroller.classList].join(".")} hides ${cut.toFixed(1)}px`);
+        }
+      }
+      // Every other ring around the stop: an ancestor that draws an outline frames it. Only the
+      // rows that frame a small control may, and the test names those (finding 1960).
+      const frames = [];
+      for (let node = owner.parentElement; node; node = node.parentElement) {
+        const frameStyle = globalThis.getComputedStyle(node);
+        if (frameStyle.outlineStyle !== "none") {
+          frames.push({
+            frame:
+              frameSelectors.find((frame) => node.matches(frame)) ??
+              `${node.tagName.toLowerCase()}.${[...node.classList].join(".")}`,
+            ring: [
+              frameStyle.outlineStyle,
+              frameStyle.outlineWidth,
+              frameStyle.outlineColor,
+              frameStyle.outlineOffset,
+            ].join(" "),
+          });
+        }
+      }
+      return { name, tag, ring: ring.join(" "), clipped, frames };
+    },
+    [selector, Object.keys(FRAMES)],
+  );
 
 // Tab from the current focus until focus leaves the document (or `until` matches a stop), and
 // record every stop.
@@ -184,6 +205,12 @@ async function assertVisibleRings(page, label, stops) {
   assert.deepEqual(off, [], `${label}: every stop shows "${outer}" or "${inset}"`);
   const hidden = stops.filter(({ clipped }) => clipped.length > 0);
   assert.deepEqual(hidden, [], `${label}: no scroller hides part of a focus ring`);
+  // One ring per stop: a second ring comes only from a listed row frame, in its token ring.
+  const rings = { outer, inset };
+  const framed = stops.filter(({ frames }) =>
+    frames.some(({ frame, ring }) => rings[FRAMES[frame]] !== ring),
+  );
+  assert.deepEqual(framed, [], `${label}: no stop has a second ring beyond its row's frame`);
 }
 
 function logLine(index) {
@@ -235,7 +262,7 @@ test("every keyboard stop on Agents, Agent detail, its logs and Create Agent sho
       "button",
     ],
   ];
-  for (const viewport of widths) {
+  for (const viewport of consoleViewports) {
     for (const [title, path, role, landmark, tag] of pages) {
       const label = `${title} at ${viewport.width}`;
       // Each page gets its own tab: tabbing past the last stop leaves the window, and returning
@@ -320,7 +347,7 @@ test("repository rows and the Slack people search on Create Agent show an unclip
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
   const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
-  for (const viewport of widths) {
+  for (const viewport of consoleViewports) {
     const label = `Create Agent at ${viewport.width}`;
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     // Only the provider directory is simulated: one person matches any search.
@@ -351,17 +378,43 @@ test("repository rows and the Slack people search on Create Agent show an unclip
       repositories.some(({ name }) => name.includes("example/app")),
       `${label}: Tab reaches example/app (${repositories.map(({ name }) => name).join(", ")})`,
     );
+    // A selected repository's access options frame their checkbox and radios with the outer
+    // ring (finding 1960).
+    await repositoryCheckbox(page, "example/app").check();
+    const toggle = page.getByRole("button", { name: "Access for example/app", exact: true });
+    await toggle.click();
+    await toggle.focus();
+    const access = await tabStops(page, ({ name }) => name === "Use Agent default");
+    // Customizing the access adds the profile radios after the checkbox.
+    await page.keyboard.press("Space");
+    await page.locator(".repository-profile input").first().waitFor();
+    access.push(
+      ...(await tabStops(page, ({ frames }) =>
+        frames.some(({ frame }) => frame === ".repository-profile"),
+      )),
+    );
+    const accessFrames = access.flatMap(({ frames }) => frames.map(({ frame }) => frame));
+    for (const frame of [".repository-option", ".repository-profile"]) {
+      assert.ok(
+        accessFrames.includes(frame),
+        `${label}: an access option is framed by ${frame} (${JSON.stringify(access)})`,
+      );
+    }
     await openAdvancedSettings(page);
     await page.getByLabel("Default plugin approvers mode").selectOption("chosen");
     // The people search input has no outline of its own; its chip field draws the ring.
     await page.getByLabel("Default plugin approvers mode").focus();
     const people = await tabStops(page, ({ name }) => name === "Default plugin approvers people");
     assert.equal(people.at(-1).name, "Default plugin approvers people");
-    await assertVisibleRings(page, label, [...repositories, ...people]);
+    await assertVisibleRings(page, label, [...repositories, ...access, ...people]);
     // The 18 px checkbox alone is easy to miss, so its whole result row draws the inset ring.
     const { inset } = await tokenRings(page);
     const app = repositories.find(({ name }) => name.includes("example/app"));
-    assert.equal(app.framed, inset, `${label}: the example/app row draws the inset ring`);
+    assert.deepEqual(
+      app.frames,
+      [{ frame: ".repository-result", ring: inset }],
+      `${label}: the example/app row draws the inset ring`,
+    );
     // The arrowed-to result keeps focus in the search input, so measure the active option itself
     // against its results scroller (finding 1963).
     await selectSecret(page, "Slack bot token Secret for people search", bot);
@@ -393,7 +446,7 @@ test("every stop in the Configure plugins dialog shows an unclipped token ring",
     // No API key: Codex serves plugins only to ChatGPT logins.
     { executionMode: "dedicated", harnessAuth: null },
   );
-  for (const viewport of widths) {
+  for (const viewport of consoleViewports) {
     const label = `Configure plugins at ${viewport.width}`;
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
@@ -415,35 +468,4 @@ test("every stop in the Configure plugins dialog shows an unclipped token ring",
     }
     await assertVisibleRings(page, label, stops);
   }
-});
-
-test("a permanently disabled button says not allowed, not busy", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const driver = new CodexPluginDriver({ catalogSource: "openai-curated" });
-  fixture.controller.registerDriver(driver);
-  fixture.controller.selectDriver("plugin", driver.id);
-  const namespace = await fixture.createNamespace("Disabled cursor", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "API-key plugin Agent",
-    nativeValues("api-key-cursor", { harnessId: "codex" }),
-    { executionMode: "dedicated" },
-  );
-  assert.equal(agent.harnessAuth.method, "api_key");
-  const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
-  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
-  await dialog.getByText("Plugin browsing is unavailable with API-key authentication.").waitFor();
-  // An API key can never browse the catalog, so Load plugins stays disabled: nothing is pending.
-  const load = dialog.getByRole("button", { name: "Load plugins" });
-  assert.equal(await load.isDisabled(), true);
-  assert.deepEqual(
-    await load.evaluate((node) => {
-      const style = globalThis.getComputedStyle(node);
-      return [style.cursor, style.opacity];
-    }),
-    ["not-allowed", "0.6"],
-  );
 });
