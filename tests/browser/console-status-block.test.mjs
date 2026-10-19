@@ -14,6 +14,7 @@ import {
 import {
   createRepositoryLaunchFixture,
   openAdvancedSettings,
+  withholdPermissionSummary,
 } from "./console-agents-test-support.mjs";
 
 // Errors, warnings and notices share one status block (UX plan C1): a stripe and wash in the
@@ -538,8 +539,9 @@ function createAgentMember(fixture, namespace, name, agentActions) {
   });
 }
 
-// Resolves once the page has read the Agent's permission answer, failed or not. The console reads
-// it in the same task as the body, so a control it decides is settled by then.
+// Resolves once the page has read the Agent's permission answer, failed or not. The count goes up
+// one microtask before the console acts on the answer, and the console decides its controls in the
+// same microtask chain; waitForFunction checks in a later task, so they are settled by then.
 async function watchPermissionAnswer(page, agentId) {
   await page.addInitScript((suffix) => {
     const json = globalThis.Response.prototype.json;
@@ -612,18 +614,7 @@ for (const caller of [
     const answered = await watchPermissionAnswer(page, agent.id);
     const runs = await answerDiagnostics(page, active.revision.id);
     if (caller.withheld) {
-      await page.route(
-        `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`,
-        (route) =>
-          route.fulfill({
-            status: 503,
-            contentType: "application/json",
-            body: JSON.stringify({
-              error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." },
-              meta: { requestId: "req_test_permissions" },
-            }),
-          }),
-      );
+      await withholdPermissionSummary(page, fixture, namespace.id, agent.id);
     }
     await login(
       page,
