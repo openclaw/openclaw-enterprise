@@ -12,13 +12,14 @@ import {
   nativeValues,
   newPage,
   nonAuthWriteRequests,
-  selectSecret,
 } from "./console-agents-browser-helpers.mjs";
 
-// The forms #2907 left on the browser's check (finding 1979): Plugin selections, Slack channel
-// credentials, the authentication source form and the workspace file editor. Each now checks
-// its fields itself (UX plan C3): no transient bubble, a persistent error under the field, linked
-// with aria-describedby and aria-invalid, and focus on the first field to fix.
+// The forms #2907 left on the browser's check (finding 1979): Plugin selections, the
+// authentication source form and the workspace file editor. Each now checks its fields itself
+// (UX plan C3): no transient bubble, a persistent error under the field, linked with
+// aria-describedby and aria-invalid, and focus on the first field to fix. Slack channel
+// credentials switched too, but Save stays disabled until both tokens are bound, and a bound
+// picker passes, so no supported state reaches its check.
 
 const browser = fileBrowser();
 
@@ -107,58 +108,6 @@ for (const viewport of consoleViewports) {
     assert.equal(await pluginJson.getAttribute("aria-invalid"), null);
   });
 }
-
-// A Slack token binding the picker cannot show (a Secret in another Namespace, which the API no
-// longer accepts but an older Configuration may hold) is a missing value to the picker, while
-// Save stays enabled for the other token's change.
-test("Slack channel credentials show a missing token under its field", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Slack fields", { ready: true });
-  const other = await fixture.createNamespace("Slack fields elsewhere", { ready: true });
-  const slack = {
-    enabled: true,
-    mode: "socket",
-    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
-    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
-    dmPolicy: "allowlist",
-    groupPolicy: "allowlist",
-    allowFrom: ["U123"],
-    channels: { C123: { requireMention: true } },
-  };
-  const values = nativeValues("slack-fields", { harnessId: "codex", channels: { slack } });
-  const app = await fixture.createSecret(namespace.id, "Slack app token", "xapp-x");
-  const bot = await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-new");
-  const env = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
-  const agent = await fixture.createAgent(namespace.id, "Slack Fields", values, {
-    executionMode: "dedicated",
-    secretBindings: { SLACK_APP_TOKEN: env(app) },
-  });
-  const { page } = await newPage(t, fixture, { browser });
-  await page.route(
-    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-    async (route) => {
-      const response = await route.fetch();
-      const body = await response.json();
-      if (route.request().method() === "GET" && body.data?.secretBindings?.SLACK_APP_TOKEN) {
-        body.data.secretBindings.SLACK_APP_TOKEN.source.namespaceId = other.id;
-      }
-      await route.fulfill({ response, json: body });
-    },
-  );
-  const invalidEvents = await countInvalidEvents(page);
-  const requests = apiRequests(page, fixture.origin);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
-  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
-  await selectSecret(page, "Slack bot token", bot);
-  await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
-  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
-  await assertShownError(
-    page.getByLabel("Slack app token", { exact: true }),
-    "Slack app token is required.",
-  );
-  assert.deepEqual(nonAuthWriteRequests(requests), []);
-});
 
 test("the authentication source form shows a missing Secret under its field", async (t) => {
   const fixture = await createConsoleAppFixture(t);

@@ -19,5 +19,13 @@ each story at 1440 and at 390.
 4. Open **Pages / Agent detail / Share Agent required fields**. The Principal
    ID shows "Existing person’s Principal ID is required." and has focus; the
    acknowledgement shows "Check this box to continue." under it.
-5. With a screen reader, focus each field with an error: it reads the label,
+5. Open **Pages / Agent detail / Plugin selections JSON error**. The JSON
+   shows "Enter a valid Plugin selections JSON object." under it and has
+   focus; the status line below Save does not repeat it.
+6. Open **Authentication source required fields**. The API key Secret field
+   shows "API key Secret is required." and has focus. Press Escape to close
+   its list and read the error. Choose another source: the error goes.
+7. Open **Workspace file too large**. AGENTS.md shows the 16 KiB error and has
+   focus. Save again: the same error, no bubble. Reload AGENTS.md clears it.
+8. With a screen reader, focus each field with an error: it reads the label,
    then the error and the help.

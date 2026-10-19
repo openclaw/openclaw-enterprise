@@ -3183,6 +3183,39 @@ export const scenarios = {
     description:
       "Share Agent with no Principal ID and no acknowledgement: both fields show their errors and focus moves to the Principal ID, with no browser bubble.",
   },
+  agentPluginsRequiredFields: {
+    group: "Pages/Agent detail",
+    name: "Plugin selections JSON error",
+    path: `${draft}&tab=plugins`,
+    actions: [{ selector: "#agent-plugins", value: "[]" }, click("Save plugin selections")],
+    description:
+      "Save with Plugin selections JSON that is not an object: the error shows under the JSON and focus moves to it, with no browser bubble.",
+  },
+  agentAuthenticationRequiredFields: {
+    group: "Pages/Agent detail",
+    name: "Authentication source required fields",
+    path: `${draft}&tab=credentials`,
+    auth: null,
+    actions: [
+      { selector: "#harness-auth-method", value: "api_key" },
+      click("Save authentication source"),
+    ],
+    description:
+      "API key with no Secret: the API key Secret field shows its error under the control and takes focus, with no browser bubble.",
+  },
+  agentWorkspaceRequiredFields: {
+    group: "Pages/Agent detail",
+    name: "Workspace file too large",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    actions: [
+      { selector: '[id="workspace-AGENTS.md"]', value: "a".repeat(16_385) },
+      click("Save AGENTS.md"),
+    ],
+    description:
+      "Save a file over 16 KiB: the error shows under AGENTS.md and focus moves to it, with no browser bubble. Reload clears it.",
+    gap: "Simulated files; no live Agent gateway.",
+  },
   configurationEditor: {
     group: "Pages/Agent detail",
     name: "Edit Configuration",
