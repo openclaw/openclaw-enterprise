@@ -251,10 +251,10 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-Saving creates an independent Agent without a Preset reference or variable-input
-map; rendered values become Agent and Configuration settings. Credential preparation
+Saving creates an Agent without a Preset reference or variable-input map; rendered
+values become Agent and Configuration settings. Credential preparation
 and [revision admission](configuration-driver/persistence-and-revisions.md) read
-those resources. Later Preset changes affect neither drafts nor admitted revisions.
+those resources. Preset changes affect neither drafts nor revisions.
 
 ## Debugging and Verification
 
