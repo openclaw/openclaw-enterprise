@@ -1833,6 +1833,21 @@ export const scenarios = {
     description:
       "The create form opens the same modal before an Agent exists. The default simulated Secret name follows the current Agent name.",
   },
+  createSecretRequiredFields: {
+    group: "Pages/Create Agent",
+    name: "Create Secret required fields",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Slack launch demo" },
+      click("Configure Slack"),
+      { selector: "#slack-dm-policy", value: "disabled" },
+      { selector: "#slack-secret-slack-app-token", value: "__openclaw_create_secret__" },
+      click("Create Secret"),
+    ],
+    description:
+      "Create Secret with no value: the Value field shows its error under the control and takes focus, with no browser bubble.",
+  },
   createSlackSecretStaged: {
     group: "Pages/Create Agent",
     name: "Slack Secret bindings staged",
@@ -2536,6 +2551,19 @@ export const scenarios = {
       "Use Preset with an empty Model stops at the required Model field. Variables with defaults stay optional.",
     gap: "All credentials and API responses in this preview are simulated.",
   },
+  createPresetRequiredFields: {
+    group: "Pages/Create Agent",
+    name: "Preset required fields",
+    path: create,
+    standardCodexPreset: true,
+    actions: [
+      { selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" },
+      click("Use Preset"),
+    ],
+    description:
+      "Use Preset with every variable empty: each field shows its own error under the control, linked to it, and focus moves to Name. The browser's validation bubble never shows.",
+    gap: "All credentials and API responses in this preview are simulated.",
+  },
   createPasswordPresetDraft: {
     group: "Pages/Create Agent",
     name: "Standard Codex password draft",
@@ -3113,6 +3141,14 @@ export const scenarios = {
       "Review the native-access disclosure, acknowledge it, and share.",
       "Remove the direct binding; Namespace discovery remains available.",
     ],
+  },
+  agentSharingRequiredFields: {
+    group: "Pages/Agent detail",
+    name: "Share Agent required fields",
+    path: draft,
+    actions: [click("Share Agent")],
+    description:
+      "Share Agent with no Principal ID and no acknowledgement: both fields show their errors and focus moves to the Principal ID, with no browser bubble.",
   },
   agentSharingGranted: {
     group: "Pages/Agent detail",

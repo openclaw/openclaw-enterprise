@@ -133,6 +133,7 @@ export const RevisionCredentialsMissing = {
 };
 
 export const Sharing = { ...story("agentSharing") };
+export const SharingRequiredFields = { ...story("agentSharingRequiredFields") };
 export const SharingGranted = { ...story("agentSharingGranted") };
 export const SharingRemoved = { ...story("agentSharingRemoved") };
 export const SharingDenied = { ...story("agentSharingDenied") };
