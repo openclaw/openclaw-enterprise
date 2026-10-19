@@ -520,6 +520,7 @@ for (const viewport of consoleViewports) {
     await token.pressSequentially("Label");
     assert.equal(await token.getAttribute("aria-expanded"), "true");
     await page.getByRole("option", { name: "Label model key", exact: true }).click();
+    await page.getByText("Secret selected. Create Agent binds it.", { exact: true }).waitFor();
     assert.equal(await errorPlacement(token), null, "the required error is gone");
   });
 }
