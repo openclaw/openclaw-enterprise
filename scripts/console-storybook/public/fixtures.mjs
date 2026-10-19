@@ -192,6 +192,7 @@ function candidateDeploymentError(scenario, checkedAt) {
 
 export function installFixture(scenario, evidence) {
   const rules = structuredClone(scenario.rules ?? []);
+  const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
@@ -770,6 +771,16 @@ export function installFixture(scenario, evidence) {
       });
     }
     if (path === "/namespaces" && method === "GET") {
+      // Once the story's actions ran, each read takes the next recheck answer: a status for the
+      // story's Namespace, or an HTTP status to fail with. The last one repeats.
+      if (evidence.ready && namespaceRechecks.length) {
+        const next =
+          namespaceRechecks.length > 1 ? namespaceRechecks.shift() : namespaceRechecks[0];
+        if (typeof next === "number") {
+          return error(next);
+        }
+        namespaces[0].status = next;
+      }
       return response(namespaces);
     }
     if (path === "/backends" && method === "GET") {

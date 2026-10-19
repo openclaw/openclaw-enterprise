@@ -1811,9 +1811,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   // Every step of a provisioning plan needs a ready Namespace, so the API would refuse it; a
   // draft plan still saves (finding 2007, #2867).
   const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
-  // A Namespace that turns failed or deleting while the form is open takes no new Agent, draft
-  // or not, and never becomes ready by waiting (finding 2022).
+  // A Namespace that takes no new Agent, draft or not: an adopted one still provisioning, which
+  // becomes ready by waiting, or one that turned failed or deleting while the form was open,
+  // which never does (finding 2022).
   const namespaceRefusesAgents = () => Boolean(notReady?.blocked);
+  const namespaceEnded = () =>
+    namespaceRefusesAgents() && ["failed", "deleting"].includes(context.namespace?.status);
   // The Namespace can become ready while the form is open. Reread only its status, on refocus
   // and while Create Agent waits for it, and update just the note and the gate: the draft,
   // focus and field values stay (finding 2012). A failed read keeps the 10 s wait going
@@ -1823,8 +1826,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const namespaceGateShown = () =>
     !savedAgent &&
     !provisioningAttempt &&
-    !namespaceRefusesAgents() &&
-    provisioningWaitsForNamespace();
+    !namespaceEnded() &&
+    (provisioningWaitsForNamespace() || namespaceRefusesAgents());
   const recheckNamespace = async () => {
     clearTimeout(namespaceTimer);
     namespaceTimer = null;
@@ -1868,6 +1871,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       const replacement = next ? namespaceNote(next) : namespaceReadyNote();
       if (notReadyNote) {
         replacement.style.minHeight = `${notReadyNote.getBoundingClientRect().height}px`;
+        // A new width reflows the form anyway; the reserved space would then only stay empty.
+        window.addEventListener("resize", () => replacement.style.removeProperty("min-height"), {
+          once: true,
+        });
         notReadyNote.replaceWith(replacement);
       }
       notReadyNote = replacement;
@@ -1997,8 +2004,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
     if (capabilityDiscoveryDone) {
       let nextStatus = "";
-      if (namespaceRefusesAgents()) {
-        nextStatus = "This Namespace cannot hold new Agents, so Create Agent is unavailable.";
+      if (!savedAgent && namespaceRefusesAgents()) {
+        nextStatus = namespaceEnded()
+          ? "This Namespace cannot hold new Agents, so Create Agent is unavailable."
+          : "Create Agent is unavailable until this Namespace is ready.";
       } else if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady

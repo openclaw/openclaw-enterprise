@@ -1041,6 +1041,38 @@ export const scenarios = {
     description:
       "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created. Create Agent stays disabled, described by that line; an Embedded OpenClaw draft still saves.",
   },
+  createFormNamespaceBecomesReady: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace becomes ready after a failed check",
+    path: create,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: [503, "ready"],
+    actions: [
+      click("Start without Preset"),
+      { selector: "#agent-auth-method", value: "api_key" },
+      { selector: "#agent-name", value: "Release notes Agent", focus: true },
+    ],
+    description:
+      "The open form rechecks a provisioning Namespace every 10 s while Create Agent waits for it. The first recheck fails and the next one still runs; when the Namespace reads ready, a success note takes the warning's place at the same height, so the field being typed in does not move, and Create Agent is enabled.",
+    steps: [
+      'Keep the caret in Agent name. Within about 20 s the warning note above the form becomes "Namespace status: Ready. Agents created here can be deployed now."',
+      'Confirm Agent name did not move and keeps its text and focus, the status line reads "Dedicated Agents are provisioned and deployed when created.", and Create Agent is enabled.',
+    ],
+  },
+  createFormNamespaceFailed: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace turns failed",
+    path: create,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["failed"],
+    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    description:
+      'A Namespace that fails while the form is open never becomes ready by waiting. The next recheck shows its failed status, ends the recheck, and Create Agent stays disabled for every plan, described by "This Namespace cannot hold new Agents, so Create Agent is unavailable."',
+    steps: [
+      'Within about 10 s the note reads "Namespace status: Failed." and the status line says the Namespace cannot hold new Agents.',
+      "Switch Harness to OpenClaw: Create Agent stays disabled. No further Namespace reads happen.",
+    ],
+  },
   createStart: {
     group: "Pages/Create Agent",
     name: "Choose a starting point",

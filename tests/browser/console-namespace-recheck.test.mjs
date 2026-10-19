@@ -27,14 +27,15 @@ const DRAFT_PLAN =
 const NOT_READY = /This Namespace is not ready yet\. Check its status on the Namespaces page/;
 const READY_NOTE = "Namespace status: Ready. Agents created here can be deployed now.";
 const REFUSES = "This Namespace cannot hold new Agents, so Create Agent is unavailable.";
+const ADOPTED_WAITS = "Create Agent is unavailable until this Namespace is ready.";
 
 const browser = fileBrowser();
 
 // Answers GET /namespaces from the real API with the Namespace's status replaced while `status`
-// is set. `fail` answers that many reads with a 503; `hold()` keeps the next reads unanswered
+// is set, and `fields` merged in. `fail` answers that many reads with a 503; `hold()` keeps the next reads unanswered
 // until its release. `reads` counts the reads the page started.
 async function routeNamespace(page, namespaceId) {
-  const state = { status: "provisioning", fail: 0, reads: 0, held: null };
+  const state = { status: "provisioning", fields: {}, fail: 0, reads: 0, held: null };
   state.hold = () => {
     let release;
     state.held = new Promise((resolve) => {
@@ -61,7 +62,9 @@ async function routeNamespace(page, namespaceId) {
       const response = await route.fetch();
       const body = await response.json();
       body.data = body.data.map((item) =>
-        item.id === namespaceId && state.status ? { ...item, status: state.status } : item,
+        item.id === namespaceId && state.status
+          ? { ...item, ...state.fields, status: state.status }
+          : item,
       );
       await route.fulfill({ response, json: body });
     },
@@ -175,9 +178,12 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
   const team = await createReadyConsoleNamespace(t, "team");
 
   await t.test("a failed read keeps the recheck going at its 10 s cadence", async (t) => {
-    const { view, create, name, namespaces, poll } = await openGatedForm(t, team);
+    const { page, view, create, name, namespaces, poll } = await openGatedForm(t, team);
     namespaces.fail = 1;
+    const answered = await settledFetches(page, "/namespaces");
     await poll();
+    // The page has read the failed answer's body, so its next check is already scheduled.
+    await waitForSettledFetches(page, "/namespaces", answered + 1);
     await view.getByText(WAITS, { exact: true }).waitFor();
     assert.equal(await create.isDisabled(), true);
     namespaces.status = null;
@@ -187,23 +193,48 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await assertDraftIntact(name);
   });
 
-  await t.test("a Namespace that turns failed ends the recheck and says why", async (t) => {
-    const { view, create, name, namespaces, poll, idle } = await openGatedForm(t, team);
-    namespaces.status = "failed";
-    await poll();
-    await view.getByRole("status").filter({ hasText: "Namespace status: Failed." }).waitFor();
-    await view.getByText(REFUSES, { exact: true }).waitFor();
-    assert.equal(await view.getByText(WAITS).count(), 0);
-    assert.equal(await create.isDisabled(), true);
-    assert.equal(await create.getAttribute("aria-describedby"), "create-agent-capability-status");
-    await assertDraftIntact(name);
-    // It never becomes ready by waiting, and it takes no draft either.
-    await idle();
-    await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
-    await view.getByText(REFUSES, { exact: true }).waitFor();
-    assert.equal(await create.isDisabled(), true);
-    await idle();
-  });
+  for (const status of ["failed", "deleting"]) {
+    const label = `${status[0].toUpperCase()}${status.slice(1)}`;
+    await t.test(`a Namespace that turns ${status} ends the recheck and says why`, async (t) => {
+      const { view, create, name, namespaces, poll, idle } = await openGatedForm(t, team);
+      namespaces.status = status;
+      await poll();
+      await view
+        .getByRole("status")
+        .filter({ hasText: `Namespace status: ${label}.` })
+        .waitFor();
+      await view.getByText(REFUSES, { exact: true }).waitFor();
+      assert.equal(await view.getByText(WAITS).count(), 0);
+      assert.equal(await create.isDisabled(), true);
+      assert.equal(await create.getAttribute("aria-describedby"), "create-agent-capability-status");
+      await assertDraftIntact(name);
+      // It never becomes ready by waiting, and it takes no draft either.
+      await idle();
+      await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+      await view.getByText(REFUSES, { exact: true }).waitFor();
+      assert.equal(await create.isDisabled(), true);
+      await idle();
+    });
+  }
+
+  await t.test(
+    "an adopted Namespace still provisioning takes no draft but is rechecked",
+    async (t) => {
+      const { view, create, namespaces, poll } = await openGatedForm(t, team);
+      // It takes no Configuration until it is ready, so no Agent at all, but it becomes ready.
+      namespaces.fields = { existingNamespace: "team" };
+      await poll();
+      await view.getByText(ADOPTED_WAITS, { exact: true }).waitFor();
+      await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+      await view.getByText(ADOPTED_WAITS, { exact: true }).waitFor();
+      assert.equal(await create.isDisabled(), true);
+      await poll();
+      namespaces.status = null;
+      await poll();
+      await view.getByText(DRAFT_PLAN, { exact: true }).waitFor();
+      assert.equal(await create.isDisabled(), false);
+    },
+  );
 
   await t.test("the note changes in place, so the field being edited stays put", async (t) => {
     const { page, view, create, name, namespaces, poll } = await openGatedForm(t, team, {
