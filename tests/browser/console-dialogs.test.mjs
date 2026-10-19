@@ -3,18 +3,19 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  consoleViewports,
   detailUrl,
   fileBrowser,
   login,
   nativeValues,
   newPage,
+  settledView,
 } from "./console-agents-browser-helpers.mjs";
 import { openCreateSecretDialog } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
-const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
 
 // The open modal dialog's chrome and box, read once its open animation has finished, and whether
 // it holds focus.
@@ -157,10 +158,7 @@ test("Stop, Delete, Plugins, Slack and Secret dialogs share one chrome, become b
   ];
 
   const seen = {};
-  for (const viewport of [
-    { width: 1440, height: 900 },
-    { width: 390, height: 844 },
-  ]) {
+  for (const viewport of consoleViewports) {
     await page.setViewportSize(viewport);
     for (const { name, open } of cases) {
       const opener = await open();

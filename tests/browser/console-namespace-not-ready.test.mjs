@@ -6,10 +6,12 @@ import { InMemoryPlatformState } from "../../packages/occ/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
+  fileBrowser,
   login,
   nativeValues,
   newPage,
   secretPostRequests,
+  settledView,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
@@ -21,7 +23,9 @@ const NOT_READY = /This Namespace is not ready yet\. Check its status on the Nam
 const DRAFTS =
   "Until then, Agents can be saved as drafts that need no new Secret or sign-in, but none can be deployed.";
 const INVITATION = "Create an Agent in this Namespace using an editable Configuration template.";
-const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
+
+// One Chromium for the file; each test still gets its own context.
+const browser = fileBrowser();
 
 // A bootstrapped Installation: its only Namespace is "default", still provisioning, plus any
 // named ones (also provisioning).
@@ -56,7 +60,7 @@ async function reportNamespaces(page, patches) {
 
 test("a first run's provisioning Namespace names its status and still offers drafts", async (t) => {
   const { fixture } = await firstRun(t);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, "/console/");
   const view = page.locator(settledView);
   await view.getByRole("heading", { name: "No Agents yet", exact: true }).waitFor();
@@ -71,7 +75,7 @@ test("a first run's provisioning Namespace names its status and still offers dra
 
 test("Create Agent names a provisioning Namespace's status before any start", async (t) => {
   const { fixture, namespaces } = await firstRun(t);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespaces.default.id}`);
   const view = page.locator(settledView);
   const start = view.getByRole("button", { name: "Start without Preset" });
@@ -127,7 +131,7 @@ test("a provisioning Namespace saves an Agent draft from a seeded runtime-auth P
   const seeded = await fixture.request("GET", `/namespaces/${namespace.id}/presets`);
   const seededPreset = seeded.data.find((item) => item.name === preset.name);
   assert.ok(seededPreset, "Namespace creation seeds the Installation's Presets");
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const view = page.locator(settledView);
@@ -151,7 +155,7 @@ test("a Namespace that takes no new Agent disables Create Agent with its reason"
   // A provisioning Namespace that adopts an existing Kubernetes namespace takes no Configuration
   // until it is ready.
   const { fixture, namespaces } = await firstRun(t);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await reportNamespaces(page, new Map([[namespaces.default.id, { existingNamespace: "team-a" }]]));
   await login(page, fixture, "/console/");
   const view = page.locator(settledView);
@@ -180,7 +184,7 @@ test("a Namespace that takes no new Agent disables Create Agent with its reason"
 test("a deleting Namespace is never the default pick while another remains", async (t) => {
   // Sorted by name, the deleting Namespace comes first; none is ready.
   const { fixture, namespaces } = await firstRun(t, ["alpha"]);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await reportNamespaces(page, new Map([[namespaces.alpha.id, { status: "deleting" }]]));
   await login(page, fixture, "/console/");
   await page.locator(settledView).getByRole("heading", { name: "No Agents yet" }).waitFor();
@@ -190,7 +194,7 @@ test("a deleting Namespace is never the default pick while another remains", asy
 
 test("with only a deleting Namespace, the pick names it and offers no wait", async (t) => {
   const { fixture, namespaces } = await firstRun(t);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await reportNamespaces(page, new Map([[namespaces.default.id, { status: "deleting" }]]));
   await login(page, fixture, "/console/");
   const view = page.locator(settledView);
@@ -207,7 +211,7 @@ test("with only a deleting Namespace, the pick names it and offers no wait", asy
 
 test("a return to the Agents list and Create Agent shows a Namespace that became ready", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   // The Namespace reads as an adopted, provisioning one until it is released.
   const patches = new Map([[namespace.id, { status: "provisioning", existingNamespace: "team" }]]);
   await reportNamespaces(page, patches);
