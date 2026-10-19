@@ -52,6 +52,28 @@ test("columns count characters as the reader sees them, not UTF-16 units (findin
   assert.equal(jsonObjectProblem('{\n  "\u{1F600}": 1,\n  x\n}'), at(3, 3));
 });
 
+test("an uppercase exponent and an escaped slash are valid JSON before a later error (finding 1950)", () => {
+  assert.equal(jsonObjectProblem('{"a": 1E5, x}'), at(1, 12));
+  assert.equal(jsonObjectProblem('{"a": -2.5E-3, x}'), at(1, 16));
+  // PHP and some other encoders escape every slash in a URL.
+  assert.equal(jsonObjectProblem('{"url": "https:\\/\\/example.test\\/", x}'), at(1, 37));
+});
+
+test("without Intl.Segmenter, columns still count code points, not UTF-16 units (finding 1950)", async () => {
+  // The segmenter is read when the module loads, so this loads a second copy without it.
+  const segmenter = Object.getOwnPropertyDescriptor(Intl, "Segmenter");
+  delete Intl.Segmenter;
+  let fallback;
+  try {
+    fallback = await import("../../apps/controller/src/console/dom.mjs?no-segmenter");
+  } finally {
+    Object.defineProperty(Intl, "Segmenter", segmenter);
+  }
+  assert.equal(typeof Intl.Segmenter, "function");
+  // Each emoji is one code point, two UTF-16 units: the stray x is the 16th character.
+  assert.equal(fallback.jsonObjectProblem('{"name": "\u{1F600}\u{1F680}", x}'), at(1, 16));
+});
+
 test("CRLF and lone CR end a line; a tab is one column", () => {
   assert.equal(jsonObjectProblem('{\r\n  "a": 1,\r\n}'), at(3, 1));
   assert.equal(jsonObjectProblem('{\r  "a": 1,\r}'), at(3, 1));
@@ -89,8 +111,8 @@ test("the scan agrees with the engine wherever the engine names a position", () 
   // of the grammar: the scan finds an error exactly when JSON.parse throws, and at the same
   // offset whenever V8's message names one.
   const base =
-    '{\n  "a": [1, -2.5e+3, 0, true, false, null, "x\\n\\u00e9\\"y"],\n  "b": {"c": {}, "d": []}\n}';
-  const characters = [...'"{}[],:x01-.e\\ \t\nt', "\u0001", "\uFEFF"];
+    '{\n  "a": [1, -2.5e+3, 4E-1, 0, true, false, null, "x\\n\\u00e9\\"y\\/\\r"],\n  "b": {"c": {}, "d": []}\r\n}';
+  const characters = [...'"{}[],:x01-.eE+/u\\ \t\n\rt', "\u0001", "\uFEFF"];
   const variants = new Set();
   for (let index = 0; index <= base.length; index += 1) {
     variants.add(base.slice(0, index));
