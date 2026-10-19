@@ -109,6 +109,10 @@
                     "label": "Console"
                   },
                   {
+                    "page": "guides/console/create-namespace",
+                    "label": "Create a Namespace"
+                  },
+                  {
                     "page": "guides/console/agent-details",
                     "label": "Console Walkthrough"
                   },

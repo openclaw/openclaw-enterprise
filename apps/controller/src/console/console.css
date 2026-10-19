@@ -1490,6 +1490,21 @@ select:not([multiple])[size="1"] {
   flex-wrap: wrap;
   margin-top: 20px;
 }
+.namespace-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+.namespace-toolbar p {
+  flex: 1 1 18rem;
+  margin: 0;
+}
+.namespace-toolbar button {
+  flex-shrink: 0;
+}
 .repository-selection {
   margin: 24px 0;
   padding: 20px;

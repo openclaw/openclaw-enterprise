@@ -868,7 +868,7 @@ export const scenarios = {
     name: "No readable Namespaces",
     emptyNamespaces: true,
     description: "Agent pages need an accessible Namespace.",
-    gap: "Provisioning a Namespace and granting access happen outside the console.",
+    gap: "Create a Namespace from Namespaces; granting access still requires an administrator.",
   },
   namespaceMissing: {
     group: "Pages/Agents",
@@ -972,7 +972,11 @@ export const scenarios = {
     name: "Ready and provisioning",
     path: "/console/namespaces",
     description:
-      "Installation-wide Namespace identity and status cards, without a Namespace selector. Each card opens that Namespace's Agents; status badges read Ready or Provisioning with a tone.",
+      "Installation-wide Namespace cards and Create Namespace, without a Namespace selector. Each card opens that Namespace's Agents; status badges read Ready or Provisioning.",
+    steps: [
+      "Select Create Namespace, enter a unique name, and submit. The success dialog explains provisioning; Open Agents selects the created Namespace.",
+      "Reset, then cancel a new form with Escape. No Namespace is created and focus returns to Create Namespace.",
+    ],
   },
   namespacesUnavailable: {
     group: "Pages/Namespaces",
@@ -1003,7 +1007,104 @@ export const scenarios = {
     name: "Empty",
     path: "/console/namespaces",
     emptyNamespaces: true,
-    description: "No accessible Namespaces. Provisioning and IAM are external prerequisites.",
+    description:
+      "No accessible Namespaces. Create Namespace remains available; the API decides whether creation is permitted.",
+  },
+  namespaceCreate: {
+    group: "Pages/Namespaces",
+    name: "Create Namespace",
+    path: "/console/namespaces",
+    actions: [{ click: "Create Namespace" }],
+    description:
+      "A name-only dialog uses the shared field and modal patterns. No credentials or infrastructure configuration are required in this form.",
+    steps: [
+      "Enter a unique name and create. Inspect the provisioning explanation, then select Done to see the new Namespace or Open Agents to use it.",
+    ],
+  },
+  namespaceCreateMobile: {
+    group: "Pages/Namespaces",
+    name: "Create Namespace on mobile",
+    path: "/console/namespaces",
+    mobile: true,
+    emptyNamespaces: true,
+    actions: [{ click: "Create Namespace" }],
+    description:
+      "The empty list offers creation. On a phone the form becomes a bottom sheet with reachable actions.",
+  },
+  namespaceCreateRequired: {
+    group: "Pages/Namespaces",
+    name: "Create name required",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "Submitting an empty name shows a persistent inline error and focuses the field without sending a request.",
+  },
+  namespaceCreateConflict: {
+    group: "Pages/Namespaces",
+    name: "Create name conflict",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Engineering" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "An existing name is refused. The entered name remains editable; choose another name and submit again.",
+  },
+  namespaceCreateDenied: {
+    group: "Pages/Namespaces",
+    name: "Create permission denied",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "A creation denial explains the missing Installation permission and disables resubmission. Cancel returns to the empty list.",
+  },
+  namespaceCreatePending: {
+    group: "Pages/Namespaces",
+    name: "Create pending",
+    path: "/console/namespaces",
+    rules: [{ path: "/namespaces", method: "POST", hold: true }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "While creation waits, the field and actions are disabled and Escape cannot dismiss the form. After the client timeout, inspect the unknown-outcome recovery.",
+  },
+  namespaceCreateUnknown: {
+    group: "Pages/Namespaces",
+    name: "Create outcome unknown",
+    path: "/console/namespaces",
+    rules: [{ path: "/namespaces", method: "POST", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "An unconfirmed write blocks resubmission. Check Namespaces rereads the list before a deliberate new attempt; this fixture does not establish whether the write committed.",
+  },
+  namespaceCreateSuccess: {
+    group: "Pages/Namespaces",
+    name: "Namespace created",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "Creation succeeded in the simulated fixture. The dialog distinguishes provisioning from readiness and offers the new Namespace's Agents.",
   },
   namespacesDenied: {
     group: "Pages/Namespaces",

@@ -2015,7 +2015,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   assert.equal(new URL(page.url()).searchParams.get("namespace"), beta.id);
 
   // Include the bootstrapped default Namespace when revoking every remaining scope.
-  // With no alternatives, recovery must explain the access requirement.
+  // Losing read access must still offer creation and explain how to regain existing scopes.
   fixture.policy.restrictions.push({
     id: "deny-all-namespace-read",
     resourceKind: "namespace",
@@ -2025,10 +2025,15 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
   await page
-    .getByText("Ask an administrator to provision resources or grant access, then refresh.", {
-      exact: true,
-    })
+    .getByText(
+      "Create a Namespace to get started, or ask an administrator for access to an existing one.",
+      { exact: true },
+    )
     .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Create Namespace", exact: true }).isEnabled(),
+    true,
+  );
   assert.equal(await page.getByRole("combobox").count(), 0);
   assert.equal(
     await page.getByRole("button", { name: "Switch Namespace", exact: true }).count(),
