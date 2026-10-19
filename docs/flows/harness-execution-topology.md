@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-17
-last_updated_session: authoring-run/418e14ce-c099-4838-a0a7-875952f826f2
+updated: 2026-10-19
+last_updated_session: Codex/01a12fe8-d0c6-7df1-937d-364a1301566a
 ---
 
 # Harness Execution Topology Flow
@@ -295,15 +295,12 @@ owns claim sizes, mount paths, StorageClass requirements, and final teardown.
 
 ## Changelog
 
-- 2026-10-17 19:01: Refresh native plugin policy with current credential and execution flows. (authoring-run/418e14ce-c099-4838-a0a7-875952f826f2 - 47ca11ef4)
+- 2026-10-19 22:50: Reject native plugin policies that block the selected Harness or OpenClaw provider during admission, including stored provisioning replay and retry. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - 09065abd2)
 
 - 2026-10-16 17:02: Persist worktrees and Git sources. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496 - 68b95a2514f183b194a478e72d734b719bf4c2e8)
 
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)
 
-- 2026-10-15 13:32: Check provider policy at Harness admission. (authoring-run/5b16e286-0433-48fc-bd50-db5195cf9c98 - 1a5de45c2)
-
-- 2026-10-13 15:58: Reject Codex policy conflicts. (authoring-run/b6795ba9-f6ca-4258-9c2e-e964cd0860de - 438103e91)
 - 2026-10-10 04:41: Reconcile endpoint validation and routing with credential refresh, native approval and readiness contracts. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 90268463bbd255c3c13a0e0bdeb437728189eb1a)
 
 - 2026-10-10 02:49: Refuse native listener TLS before deployment work. (authoring-run/8446b4d7-87ac-43ab-9323-5fc7f6953628 - 5d303757fb488fe34c8cbb9e7b6b975921fc1061)

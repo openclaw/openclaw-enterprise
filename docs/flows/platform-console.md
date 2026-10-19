@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-10-19
-last_updated_session: authoring-run/c30935eb-39f4-405e-afe8-17bf6598e5cd
+last_updated_session: Codex/01a12fe8-d0c6-7df1-937d-364a1301566a
 ---
 
 # Platform console request flow
@@ -379,7 +379,7 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-19 14:06: Preserve native policy alongside create preflight; refresh provisioning fixtures. (authoring-run/c30935eb-39f4-405e-afe8-17bf6598e5cd - e1d2c83ba)
+- 2026-10-19 22:50: Preserve authored native plugin permissions across Harness selection and refuse conflicts before Console writes. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - 09065abd2)
 
 - 2026-10-18 15:02: Honor an explicit higher identity weight when serving static scripts and styles. (authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 
