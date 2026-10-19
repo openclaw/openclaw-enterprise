@@ -339,8 +339,20 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByRole("link", { name: "Pending leave Agent" }).click();
-  await page.getByRole("tab", { name: "Channels", exact: true }).click();
-  await page.waitForURL((url) => url.searchParams.get("tab") === "channels");
+  const openTab = async (name, id) => {
+    await page.getByRole("tab", { name, exact: true }).click();
+    await page.waitForURL((url) => url.searchParams.get("tab") === id);
+  };
+  await openTab("Channels", "channels");
+  // Channels kept while Repositories is open comes back as the same DOM, and with it its own
+  // note, not the Repositories editor's (finding 1962).
+  const disableSlack = page.getByRole("button", { name: "Disable Slack" });
+  await disableSlack.evaluate((node) => {
+    node.dataset.retained = "true";
+  });
+  await openTab("Repositories", "repositories");
+  await openTab("Channels", "channels");
+  assert.equal(await disableSlack.getAttribute("data-retained"), "true");
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
   const held = await holdRequests(
@@ -349,7 +361,7 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
     { method: "PATCH" },
   );
-  await page.getByRole("button", { name: "Disable Slack" }).click();
+  await disableSlack.click();
   await held.requested;
   const pageUrl = page.url();
   const note = page.getByText(
@@ -362,13 +374,13 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     assert.equal(page.url(), pageUrl);
     await sidebarLink(page, "Namespaces").click();
     assert.equal(page.url(), pageUrl);
-    // So does Back to another page (the Agents list, before the Agent and its Channels tab):
-    // the page stays and its URL is restored before the history event ends.
+    // So does Back to another page (the Agents list, before the Agent and its three tab
+    // changes): the page stays and its URL is restored before the history event ends.
     await page.evaluate(
       () =>
         new Promise((resolve) => {
           globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), { once: true });
-          globalThis.history.go(-2);
+          globalThis.history.go(-4);
         }),
     );
     assert.equal(page.url(), pageUrl);

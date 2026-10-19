@@ -4339,6 +4339,25 @@ export const scenarios = {
     description:
       "One “Deploying…” status covers the whole request and appears only if it outlasts 250 ms. It holds keyboard focus while the request runs.",
   },
+  deployHoldsNavigation: {
+    group: "Pages/Agent detail",
+    name: "Deployment holds navigation",
+    path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/deploy",
+        method: "POST",
+        delayMs: 3600,
+      },
+    ],
+    actions: [click("Deploy new version"), { selector: 'a[data-nav="agents"]', click: true }],
+    description:
+      "The story selects Deploy new version, then Agents in the sidebar. The page stays, and a note under “Deploying…” says why until the simulated request answers 3.6 s later.",
+    steps: [
+      "While the note “This page stays open until the deploy request finishes.” shows, select ← Agents or Agents again: the page stays. Select Reset story to replay the hold.",
+      "When the request answers, the note goes and the new version opens; Agents in the sidebar now leaves.",
+    ],
+  },
   deployRefusedBeforeAdmission: {
     group: "Pages/Agent detail",
     name: "Deployment refused before admission",
@@ -5330,6 +5349,28 @@ export const scenarios = {
     actions: [click("Save authentication source")],
     description:
       "Authentication is saved while the grant is pending. Saving and deployment remain disabled; a timeout reports partial success.",
+  },
+  authSaveHoldsNavigation: {
+    group: "Components/Credentials",
+    name: "Authentication save holds navigation",
+    path: `${draft}&tab=credentials`,
+    rules: [
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        delayMs: 3600,
+      },
+    ],
+    actions: [
+      click("Save authentication source"),
+      { selector: 'a[data-nav="agents"]', click: true },
+    ],
+    description:
+      "The story selects Save authentication source, then Agents in the sidebar. The page stays, and a note in the authentication form says why until the simulated save answers 3.6 s later.",
+    steps: [
+      "While the note “This page stays open until the authentication save finishes.” shows, select ← Agents or Agents again: the page stays. Select Reset story to replay the hold.",
+      "When the save answers, the note goes; Agents in the sidebar now leaves.",
+    ],
   },
   authSaveUnknown: {
     group: "Components/Credentials",
