@@ -459,7 +459,7 @@ const { publicPanel, renderRows, switchNamespace } = shellUI;
 const request = createApiClient({
   lifetime,
   hasSession: () => session !== null,
-  onExpired: () => showLogin("Your session has expired."),
+  onExpired: () => showExpiredLogin(),
   sessionKey: () => pinnedSessionKey,
 });
 const retainedViews = new Map();
@@ -792,6 +792,13 @@ function clearDrafts() {
   discardCreationOnExit = null;
   drafts.clear();
   draftUserId = null;
+}
+
+function showExpiredLogin() {
+  const current = route();
+  // Keep only a validated read destination; reset private views and drafts in showLogin.
+  const destination = pendingIntent ?? captureIntent(pageUrl(current.target, current.namespace));
+  showLogin("Your session has expired.", destination);
 }
 
 function showLogin(message = "", destination = null) {
@@ -1301,7 +1308,6 @@ async function loadPage({
     }
   }
   try {
-    const hadSession = session !== null || pinnedSessionKey !== null;
     const previousOwner = sessionOwnerKey(session);
     const resolvedSession = await request("/api/auth/session");
     if (!lifetime.isCurrent(active)) {
@@ -1311,13 +1317,13 @@ async function loadPage({
       pinSessionKey(resolvedSession.sessionKey);
     } else if (resolvedSession !== null && resolvedSession.sessionKey !== pinnedSessionKey) {
       // The controller rejects a mismatched key; never act on another session regardless.
-      showLogin("Your session has expired.");
+      showExpiredLogin();
       return;
     }
     session = resolvedSession;
     if (session === null) {
       const destination =
-        providerError !== null || current.feature === "login" || hadSession
+        providerError !== null || current.feature === "login"
           ? null
           : (pendingIntent ?? captureIntent(pageUrl(current.target, current.namespace)));
       showLogin(
@@ -1761,7 +1767,7 @@ async function loadPage({
       },
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
-          showLogin("Your session has expired.");
+          showExpiredLogin();
         }
       },
       setTitle: (title) => {
@@ -1979,7 +1985,7 @@ async function loadPage({
     forgetRetainedView(taken);
     shownStandIn = null;
     if (error.status === 401) {
-      showLogin("Your session has expired.");
+      showExpiredLogin();
       return;
     }
     if (!accessResolved) {
@@ -2218,7 +2224,7 @@ async function revalidateMountedAgent(current) {
       return;
     }
     if (resolvedSession === null) {
-      showLogin("Your session has expired.");
+      showExpiredLogin();
       return;
     }
     if (sessionOwnerKey(resolvedSession) !== owner) {
@@ -2276,7 +2282,7 @@ async function revalidateMountedAgent(current) {
       return;
     }
     if (error.status === 401) {
-      showLogin("Your session has expired.");
+      showExpiredLogin();
       return;
     }
     resetReads();

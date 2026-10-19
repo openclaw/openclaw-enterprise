@@ -7,11 +7,10 @@ covers bootstrap, password sessions, request origin, provisioning, and failures.
 
 ## Console sign-in destinations
 
-After sign-in, the console returns to the requested supported page and Namespace
-when available. Access is checked again; sign-out and failed external sign-in
-clear the pending destination. A new sign-in after an active session expires
-starts at Agents. An Agent recovery link can return to its console page after
-authorization, where opening the native UI remains a separate action.
+Sign-in restores the validated page, Namespace, and Agent tab or version after
+expiry, then rechecks access. It clears private views and drafts and never
+replays writes. Logout or failed external sign-in clears the destination. Agent
+recovery ends at its console page; opening native UI remains a separate action.
 
 ## GitHub sign-in for existing accounts
 

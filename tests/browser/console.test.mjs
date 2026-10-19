@@ -1174,13 +1174,13 @@ test("a session replaced by another tab signs this tab out instead of being adop
   assert.equal(await page.locator("#agent-name").count(), 0);
   assert.equal(await page.locator(".content [inert]").count(), 0);
 
-  // A fresh sign-in does not inherit the old session's route or draft.
+  // A fresh sign-in restores the validated route, never the old session's draft.
   await page.getByLabel("Username").fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
-  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
-  assert.equal(new URL(page.url()).pathname, "/console/agents");
-  await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/agents/new");
+  assert.equal(new URL(page.url()).searchParams.get("namespace"), namespace.id);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).click();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).inputValue(), "");
 });
@@ -2462,33 +2462,27 @@ test("Agent recovery survives a transient session check and tab refocus", async 
   await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
 });
 
-test("a naturally expired session does not carry its route into another sign-in", async (t) => {
+test("a naturally expired session returns to the requested page after sign-in", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Expired session", { ready: true });
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
-  await page.route(
-    "**/api/auth/session",
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ data: null, meta: { requestId: "browser-expiry" } }),
-      }),
-    { times: 1 },
-  );
+  // Expire the actual session: the controller must reject it before returning to login.
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByLabel("Username").waitFor();
   await page.getByLabel("Username").fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
-  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
-  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/namespaces");
 });
 
-test("session expiry after a failed check does not restore the previous route", async (t) => {
+test("session expiry after a failed check returns to the requested page", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Interrupted expiry", { ready: true });
@@ -2507,20 +2501,51 @@ test("session expiry after a failed check does not restore the previous route", 
   );
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByText("Session unavailable", { exact: true }).waitFor();
-  await page.route(
-    "**/api/auth/session",
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({ data: null, meta: { requestId: "browser-expiry-retry" } }),
-      }),
-    { times: 1 },
-  );
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
   await page.getByRole("button", { name: "Retry" }).click();
   await page.getByLabel("Username").fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Login" }).click();
-  await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
-  assert.equal(new URL(page.url()).pathname, "/console/agents");
+  await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname, "/console/namespaces");
+});
+
+test("expiry on an active Agent page returns safely and rechecks denied access", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Active expiry", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Expired page Agent");
+  const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
+  const requests = apiRequests(page, fixture.origin);
+  const target = `/console/agents/${agent.id}?namespace=${namespace.id}&tab=configuration`;
+  await login(page, fixture, target);
+  await page.getByRole("heading", { name: "Expired page Agent", exact: true }).waitFor();
+  await waitForSettledView(page);
+
+  // A foreground recheck discovers real expiry without navigating away from this Agent.
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await page.getByText("Your session has expired").waitFor();
+  await expectNoText(page, /Expired page Agent/);
+  fixture.policy.restrictions.push({
+    id: "deny-expired-agent-read",
+    namespaceId: namespace.id,
+    resourceKind: "agent",
+    resourceId: agent.id,
+    action: "read",
+    effect: "deny",
+  });
+  const writes = requests.filter((request) => request.method !== "GET").length;
+  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
+  assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, target);
+  assert.equal(requests.filter((request) => request.method !== "GET").length, writes + 1);
+  assert.equal(await page.getByLabel("Password").count(), 0, "403 must not restart login");
 });

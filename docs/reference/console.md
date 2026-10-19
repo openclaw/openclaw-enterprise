@@ -19,9 +19,9 @@ Installation, see the
 [quickstart](../guides/quickstart.md#open-the-platform-console) or
 [deployment guide](../guides/deploy.md#open-the-platform-console).
 
-The console uses the [email/password session contract](authentication.md) with
-same-origin cookies. It does not store tokens or accept service keys. A
-missing or expired session clears private content and asks you to sign in again.
+The console uses [session cookies](authentication.md); it never stores tokens or
+accepts service keys. Expiry clears private content and drafts. Sign in again to
+return to the validated page after access checks.
 See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
 
 ## Identify the control-plane build

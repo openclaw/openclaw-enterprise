@@ -658,6 +658,10 @@ export const scenarios = {
     signedOut: true,
     description:
       "A protected deep link with no session redirects to sign-in and retains the return destination.",
+    steps: [
+      "Sign in with the fixture credentials and confirm the Agent draft page returns.",
+      "Confirm no draft is saved or deployment started by signing in.",
+    ],
   },
   sessionUnavailable: {
     group: "Pages/Sign in",
@@ -818,12 +822,13 @@ export const scenarios = {
   navigationExpired: {
     group: "Pages/Navigation",
     name: "Return session expired",
-    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1200, status: 401 }],
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1200, status: 401, once: true }],
     description:
-      "Session expiry clears private content and retained navigation state. The fixture supplies a delayed unauthorized response.",
+      "Session expiry clears private content and retains only the validated destination. The fixture supplies a delayed unauthorized response.",
     steps: [
       "Wait for Agents, then select Refresh or navigate to Namespaces.",
-      "When the session check fails, confirm the sign-in form replaces all private content. Browser Back must not restore the collection.",
+      "When the session check fails, confirm the sign-in form replaces all private content.",
+      "Sign in again and confirm the requested collection returns without replaying a write.",
     ],
   },
   observabilityLink: {
