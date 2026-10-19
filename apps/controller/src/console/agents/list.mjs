@@ -261,15 +261,15 @@ const READING_SHOWN_MS = 150;
 // rule follows the break points Chromium was measured to use (finding 1982), not all of UAX #14.
 // A run ends where a line can break: after a breaking space, a zero-width space, a soft hyphen,
 // or a hyphen or dash (a name holds no control or line-separator characters). No-break spaces
-// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. A hyphen between digits
-// does break ("1000-1001"). Combining marks count with the letter they sit on. Ideographs, kana,
+// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. A hyphen-minus between
+// ASCII digits does break ("1000-1001"). Combining marks count with the letter they sit on. Ideographs, kana,
 // Hangul syllables and most emoji break on both sides; other scripts (Thai, for one) count per
 // character, which can only over-mark: a marked name still shows in full, in a narrower box.
 const WIDE_SPACES = String.raw`\u1680\u2000-\u2006\u2008-\u200a\u205f\u3000`;
 const DASHES = String.raw`\u00ad\u2010\u2012\u2013`; // soft hyphen, hyphen, figure and en dash
 const CLOSING = String.raw`!),./:;\]}\u00bb\u2019\u201d\u2060\u200d`; // and joiners (ZWJ last: lint)
-// Opening quotes and the other characters Chromium keeps after a hyphen, dash or wide space
-// (finding 2001).
+// Opening quotes, the infix separators U+037E, U+0589, U+060C and U+2044, and the no-break U+FEFF:
+// Chromium keeps them after a hyphen, dash or wide space too (finding 2001).
 const OPENING = String.raw`\u00ab\u037e\u0589\u060c\u2018\u201c\u2039\u203a\u2044\ufeff`;
 const IDEOGRAPHIC = String.raw`\p{Ideographic}\u3041-\u3096\u30a1-\u30fa\uac00-\ud7a3\p{Emoji_Presentation}`;
 // Emoji whose line-break class is AL, unlike the rest: Chromium keeps them with their neighbours,
@@ -283,9 +283,10 @@ const UNBROKEN_CHARACTER = [
   //   or en dash;
   String.raw`-(?=\p{M}*[$\u2010\u2012\u2013${OPENING}${CLOSING}])`,
   // - a hyphen-minus before a digit, unless the digit is fullwidth, or ASCII after an ASCII letter
-  //   or digit: "1000-1001" and "a-1" break; "x -5", "\u00e9-1" and "a-\u0967" do not (2000);
-  String.raw`(?<![A-Za-z0-9])-(?=\p{Nd})(?![\uff10-\uff19])`,
-  String.raw`(?<=[A-Za-z0-9])-(?=\p{Nd})(?![0-9\uff10-\uff19])`,
+  //   or digit: "1000-1001" and "a-1" break; "x -5", an accented letter before "-1", and "a-"
+  //   before a Devanagari digit do not (finding 2000). A mark on the hyphen holds an ASCII digit too;
+  String.raw`(?<![A-Za-z0-9])-(?=\p{M}*\p{Nd})(?!\p{M}*[\uff10-\uff19])`,
+  String.raw`(?<=[A-Za-z0-9])-(?=\p{M}*\p{Nd})(?![0-9]|\p{M}*[\uff10-\uff19])`,
   // - a wide space, soft hyphen or dash before closing punctuation, an opening quote, a quote or a
   //   vertical bar;
   String.raw`[${WIDE_SPACES}${DASHES}](?=\p{M}*["'|${OPENING}${CLOSING}])`,

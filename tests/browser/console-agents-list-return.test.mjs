@@ -906,9 +906,9 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
 // A name the browser cannot wrap sets the desktop table's width unless it is marked to break
 // anywhere (finding 1955). Each row is a break point Chromium was measured to use (finding 1982),
 // and the test measures it again: each name is marked exactly when the longest run the browser
-// keeps on one line (spaces aside) has 21 or more characters. A hyphen between digits is a break
-// ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is not, nor
-// is a hyphen before a digit or a dash that starts a word. A run of em dashes breaks only at its
+// keeps on one line (spaces aside) has 21 or more characters. A hyphen-minus between ASCII digits is
+// a break ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is
+// not, nor is a hyphen-minus before most other digits or a dash that starts a word. A run of em dashes breaks only at its
 // ends (finding 1971).
 const groups = (part, separator, count = 6) =>
   Array.from({ length: count }, () => part).join(separator);
@@ -971,7 +971,8 @@ const unbrokenNameCases = [
   },
   { name: `${"a".repeat(18)}\u{1f532}\u{1f53d}b`, unbroken: true },
   { name: "build\u26a1deploy\u26a1monitor\u26a1agent", unbroken: true },
-  // Opening quotes and the like stay after a hyphen, soft hyphen, dash or wide space (2001).
+  // Opening quotes, separators and closing punctuation stay after a hyphen, soft hyphen, dash or
+  // wide space (finding 2001).
   { name: "a-\u00aba-\u037ea-\u0589a-\u060ca-\u2018a-\u201ca-\u2039", unbroken: true },
   { name: "a-\u203aa-\u2044a-\ufeffa-$aaaaaaaaa", unbroken: true },
   { name: `${"a".repeat(19)}-\u2012`, unbroken: true },
@@ -996,8 +997,9 @@ const unbrokenNameCases = [
   { name: "aaaaa\u00ad\"aaaaa\u00ad'aaaaa\u00ad|", unbroken: true },
   { name: "a-!a-)a-,a-.a-/a-:a-;", unbroken: true },
   { name: "a-]a-}a-\u00bba-\u2019a-\u201da-\u2060a-\u200d", unbroken: true },
-  // A hyphen-minus before a digit breaks only between ASCII letters or digits and an ASCII digit,
-  // or before a fullwidth digit; Cyrillic, Devanagari and Arabic-Indic digits hold (finding 2000).
+  // A hyphen-minus before a digit breaks only between an ASCII letter or digit and an ASCII digit,
+  // or before a fullwidth digit. After Cyrillic letters, and before Devanagari or Arabic-Indic
+  // digits, it holds, and so does one with a mark on it (finding 2000).
   {
     name: "\u0435\u0436\u0435\u043a\u0432\u0430\u0440\u0442\u0430\u043b\u044c\u043d\u044b\u0439\u043e\u0442\u0447\u0451\u0442-2026",
     unbroken: true,
@@ -1011,6 +1013,10 @@ const unbrokenNameCases = [
   { name: `${"x".repeat(18)}A-\u0663`, unbroken: true },
   { name: `${"x".repeat(18)}a-\u0663`, unbroken: true },
   { name: `${"x".repeat(18)}0-\u0967`, unbroken: true },
+  { name: `${"x".repeat(18)}\u00e9-\u0301\u0663`, unbroken: true },
+  { name: `${"x".repeat(18)}a-\u03011`, unbroken: true },
+  { name: `${"x".repeat(18)}\u00e9-\u0301\uff11`, unbroken: false },
+  { name: `${"x".repeat(18)}a-\u0301\uff11`, unbroken: false },
   { name: `x -\uff11y${"a".repeat(18)}`, unbroken: false },
   // Dashes held before other dashes, and a dash that starts a word after a no-break space.
   { name: `${"a".repeat(19)}\u2010-`, unbroken: true },
