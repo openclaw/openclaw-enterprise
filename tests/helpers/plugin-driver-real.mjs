@@ -658,8 +658,11 @@ const sessionEvidenceScript = String.raw`
 // Codex's automatic reviewer reports a judgement as approved or denied with a risk level
 // and user authorization. When the review itself cannot finish (session, parse or prompt
 // errors) Codex fails closed: "denied" with no risk or authorization and a rationale that
-// starts with this prefix. A review that ran out of time reports "timed_out".
+// starts with this prefix. A review that ran out of time reports "timed_out". A changed
+// authorization fails closed the same way but may be the policy's own change, so it is
+// kept apart and never treated as a reviewer error.
 const reviewerFailedRationale = "Automatic approval review failed: ";
+const staleAuthorizationRationale = `${reviewerFailedRationale}authorization changed before approval could be applied`;
 
 export function approvalReviewKind(review) {
   if (review?.status === "timed_out") {
@@ -671,12 +674,18 @@ export function approvalReviewKind(review) {
   if (typeof review.riskLevel === "string" || typeof review.userAuthorization === "string") {
     return "judged-deny";
   }
-  return typeof review.rationale === "string" &&
-    review.rationale.startsWith(reviewerFailedRationale)
+  if (typeof review.rationale !== "string") {
+    return "denied-unclassified";
+  }
+  if (review.rationale.startsWith(staleAuthorizationRationale)) {
+    return "stale-authorization";
+  }
+  return review.rationale.startsWith(reviewerFailedRationale)
     ? "reviewer-error"
     : "denied-unclassified";
 }
 
+// One line per failure: rationales (session and parse errors among them) can span lines.
 export function describeApprovalReviews(results) {
   const reviews = results.flatMap((result) => result.approvalReviews ?? []);
   if (reviews.length === 0) {
@@ -688,21 +697,23 @@ export function describeApprovalReviews(results) {
         review.riskLevel && `risk: ${review.riskLevel}`,
         review.userAuthorization && `authorization: ${review.userAuthorization}`,
       ].filter(Boolean);
-      const reason = review.rationale ? `: ${review.rationale}` : "";
+      const reason = review.rationale ? `: ${review.rationale.replace(/\s+/g, " ").trim()}` : "";
       return `${approvalReviewKind(review)}${facts.length ? ` (${facts.join(", ")})` : ""}${reason}`;
     })
     .join("; ");
 }
 
-// True only when every recorded review of a failed call is a reviewer error, so no
-// judgement (deny, approve or unclassified) was reached for that call.
+// True only when the call failed and every review of it is a reviewer error, so no
+// judgement (deny, approve or unclassified) was reached for it.
 export function automaticReviewerErrored(results) {
-  const reviews = results.flatMap((result) => result.approvalReviews ?? []);
   return (
     results.length > 0 &&
-    results.every((result) => result.isError === true) &&
-    reviews.length > 0 &&
-    reviews.every((review) => approvalReviewKind(review) === "reviewer-error")
+    results.every(
+      (result) =>
+        result.isError === true &&
+        (result.approvalReviews ?? []).length > 0 &&
+        result.approvalReviews.every((review) => approvalReviewKind(review) === "reviewer-error"),
+    )
   );
 }
 
@@ -1287,6 +1298,7 @@ export function createNativePluginAssertions({
         operator: "==",
       });
       error.automaticReviewerErrored = automaticReviewerErrored(evidence.results);
+      error.approvalReviewSummary = describeApprovalReviews(evidence.results);
       throw error;
     }
     const result = evidence.results.find(

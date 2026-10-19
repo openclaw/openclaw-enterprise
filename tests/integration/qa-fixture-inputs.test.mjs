@@ -1451,6 +1451,14 @@ test("approval review evidence tells a reviewer error from a deny judgement", as
     approvalReviewKind({ ...failedClosed, userAuthorization: "unknown" }),
     "judged-deny",
   );
+  // A changed authorization may be the policy's own change, not reviewer trouble.
+  const staleAuthorization = {
+    id: "review-stale",
+    status: "denied",
+    rationale:
+      "Automatic approval review failed: authorization changed before approval could be applied",
+  };
+  assert.equal(approvalReviewKind(staleAuthorization), "stale-authorization");
 
   const failedResult = (reviews) => [
     { toolCallId: "call-1", isError: true, approvalReviews: reviews },
@@ -1462,6 +1470,15 @@ test("approval review evidence tells a reviewer error from a deny judgement", as
   assert.equal(automaticReviewerErrored(failedResult([{ id: "d", status: "denied" }])), false);
   assert.equal(automaticReviewerErrored(failedResult([])), false, "no review, no reviewer error");
   assert.equal(automaticReviewerErrored([]), false, "no call, no reviewer error");
+  assert.equal(automaticReviewerErrored(failedResult([staleAuthorization])), false);
+  assert.equal(
+    automaticReviewerErrored([
+      ...failedResult([failedClosed]),
+      { toolCallId: "call-2", isError: true, approvalReviews: [] },
+    ]),
+    false,
+    "every failed call needs its own reviewer error",
+  );
   assert.equal(
     automaticReviewerErrored([
       { toolCallId: "call-1", isError: false, approvalReviews: [failedClosed] },
@@ -1479,6 +1496,15 @@ test("approval review evidence tells a reviewer error from a deny judgement", as
     `reviewer-error: ${failedClosed.rationale}`,
   );
   assert.equal(describeApprovalReviews(failedResult([])), "no approval review recorded");
+  assert.equal(
+    describeApprovalReviews(
+      failedResult([
+        { ...failedClosed, rationale: `${failedClosed.rationale}\n  caused by: eof\n` },
+      ]),
+    ),
+    `reviewer-error: ${failedClosed.rationale} caused by: eof`,
+    "a multi-line rationale stays on the failure's first line",
+  );
 });
 
 function calendarEvidence(reviews) {
@@ -1533,6 +1559,7 @@ test("a failed reviewed read names the review outcome before the evidence", asyn
       (error) => {
         assert.equal(error.name, "AssertionError");
         assert.equal(error.automaticReviewerErrored, errored);
+        assert.ok(error.approvalReviewSummary.startsWith(reason), error.approvalReviewSummary);
         const [head] = error.message.split(": {");
         assert.ok(head.includes(`(approval reviews: ${reason}`), head);
         assert.match(error.message, /"approvalReviews":\[\{"id":"review-/);
@@ -1548,6 +1575,7 @@ test("an automatically reviewed Calendar read runs again once, only after a revi
     new assert.AssertionError({ message: "reviewer errored: {}" }),
     {
       automaticReviewerErrored: true,
+      approvalReviewSummary: "reviewer-error: Automatic approval review failed: eof",
     },
   );
   const judged = Object.assign(new assert.AssertionError({ message: "judged deny: {}" }), {
@@ -1608,7 +1636,7 @@ test("an automatically reviewed Calendar read runs again once, only after a revi
     assert.equal(logs.length, 1);
     assert.match(
       logs[0],
-      /automatic reviewer errored .* running the read once more: reviewer errored$/,
+      /automatic reviewer errored .* running the read once more: reviewer-error: Automatic approval review failed: eof$/,
     );
   });
   await t.test("deny judgement: fails without another turn", async () => {

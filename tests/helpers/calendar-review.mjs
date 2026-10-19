@@ -50,7 +50,7 @@ export async function automaticallyReviewedRead(
         throw error;
       }
       log(
-        `automatic reviewer errored on ${sessionKey}; running the read once more: ${String(error.message).split(": {")[0]}`,
+        `automatic reviewer errored on ${sessionKey}; running the read once more: ${error.approvalReviewSummary}`,
       );
     }
   }
