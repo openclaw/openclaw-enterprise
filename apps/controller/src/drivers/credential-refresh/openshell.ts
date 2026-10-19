@@ -1,3 +1,7 @@
+import {
+  validateConfiguration as validateDriverConfiguration,
+  requireConfiguration,
+} from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialRefreshDriver,
@@ -88,13 +92,19 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
     properties: {},
   });
 
-  static validateConfiguration(configuration: unknown): void {
-    const record = asRecord(configuration);
-    if (record === undefined || Object.keys(record).length > 0) {
-      throw new OpenShellCredentialRefreshFailure(
-        "OpenShell Credential Refresh configuration must be an empty object.",
-      );
-    }
+  static validateConfiguration(configuration: unknown) {
+    return validateDriverConfiguration<Readonly<Record<string, unknown>>>(
+      OpenShellCredentialRefreshDriver.configurationSchema,
+      configuration,
+      (configuration) => {
+        const record = asRecord(configuration);
+        if (record === undefined || Object.keys(record).length > 0) {
+          throw new OpenShellCredentialRefreshFailure(
+            "OpenShell Credential Refresh configuration must be an empty object.",
+          );
+        }
+      },
+    );
   }
 
   readonly id: string;
@@ -103,7 +113,7 @@ export class OpenShellCredentialRefreshDriver implements CredentialRefreshDriver
   private readonly backend: Backend<OpenShellGateway>;
 
   constructor(configuration: unknown, selection: OpenShellCredentialRefreshSelection) {
-    OpenShellCredentialRefreshDriver.validateConfiguration(configuration);
+    requireConfiguration(OpenShellCredentialRefreshDriver, configuration);
     this.id = selection.id ?? "credential-refresh-openshell";
     this.implementation = selection.implementation ?? "openshell";
     if (this.implementation !== "openshell") {

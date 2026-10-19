@@ -167,7 +167,11 @@ implementations, plus channel and optional service-account, plugin, repository, 
 Credential Gateway integrations. [Driver development](contributing/driver-development.md)
 links to contracts; [selection](reference/drivers/selection.md) defines trusted
 package loading. [Backends](reference/backends.md) supply authenticated clients
-to related Drivers within their documented experimental scope.
+to related Drivers within their documented experimental scope. Driver-owned
+configuration definitions share schemas and validation across startup and Agent
+settings. A contribution registry binds them to existing resource owners, which
+retain authorization, persistence, and save/apply lifecycle; see
+[configuration discovery](reference/drivers/selection.md#configuration-definitions-and-discovery).
 
 Compute owns Namespace infrastructure and each Agent's gateway and workload
 lifecycle: preparation, readiness, activation, stop, retirement, and deletion.

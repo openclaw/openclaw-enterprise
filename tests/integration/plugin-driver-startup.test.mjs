@@ -73,9 +73,6 @@ test("Installation rejects untrusted PluginDriver packages, unknown selections a
       },
     },
   ]) {
-    await assert.rejects(
-      load(t, selection),
-      /drivers\.plugin|codexHome|requestTimeoutMs|catalogSource/,
-    );
+    await assert.rejects(load(t, selection), /drivers\.plugin|Configuration validation failed/);
   }
 });

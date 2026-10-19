@@ -1,3 +1,7 @@
+import {
+  validateConfiguration as validateDriverConfiguration,
+  requireConfiguration,
+} from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialAttachmentStatus,
@@ -812,8 +816,14 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     },
   });
 
-  static validateConfiguration(configuration: unknown): void {
-    validateOptions(configuration as OpenShellCredentialGatewayOptions);
+  static validateConfiguration(configuration: unknown) {
+    return validateDriverConfiguration<OpenShellCredentialGatewayOptions>(
+      OpenShellCredentialGatewayDriver.configurationSchema,
+      configuration,
+      (configuration) => {
+        validateOptions(configuration as OpenShellCredentialGatewayOptions);
+      },
+    );
   }
 
   readonly id: string;
@@ -828,7 +838,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     options: OpenShellCredentialGatewayOptions,
     selection: OpenShellCredentialGatewaySelection,
   ) {
-    validateOptions(options);
+    options = requireConfiguration(OpenShellCredentialGatewayDriver, options);
     this.id = selection.id ?? "credential-gateway-openshell";
     this.implementation = selection.implementation ?? "openshell";
     if (this.implementation !== "openshell") {

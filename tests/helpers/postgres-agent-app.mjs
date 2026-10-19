@@ -101,19 +101,23 @@ export async function createPostgresAgentApp(
     controller.registerDriver(sandboxDriver);
     controller.selectDriver("sandbox", sandboxDriver.id);
   }
-  const app = createFastifyApp({
-    controller,
-    iamDriver,
-    computeDriver,
-    configurationDriver,
-    secretDriver,
-    resolveHarness: resolveApprovedHarness,
-    auditSink: createAuditSink(state.auditSink),
-    auth,
-    development: { enabled: false },
-    ...appOptions,
-  });
-  t.after(() => app.close());
+  function createApp(selectedController = controller) {
+    const created = createFastifyApp({
+      controller: selectedController,
+      iamDriver,
+      computeDriver,
+      configurationDriver,
+      secretDriver,
+      resolveHarness: resolveApprovedHarness,
+      auditSink: createAuditSink(state.auditSink),
+      auth,
+      development: { enabled: false },
+      ...appOptions,
+    });
+    t.after(() => created.close());
+    return created;
+  }
+  const app = createApp();
 
   const signIn = await app.inject({
     method: "POST",
@@ -127,8 +131,8 @@ export async function createPostgresAgentApp(
     origin,
     cookie: cookieHeaderFromSetCookie(Array.isArray(setCookie) ? setCookie : [setCookie]),
   };
-  const inject = (method, url, body) =>
-    app.inject({
+  const inject = (method, url, body, selectedApp = app) =>
+    selectedApp.inject({
       method,
       url,
       headers: {
@@ -182,5 +186,5 @@ export async function createPostgresAgentApp(
     return { namespace, secretRef, agent, revision };
   }
 
-  return { pool, state, controller, computeDriver, app, principal, inject, deployAgent };
+  return { pool, state, controller, computeDriver, app, createApp, principal, inject, deployAgent };
 }

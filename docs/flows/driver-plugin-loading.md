@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-18
-last_updated_session: authoring-run/6e734247-4639-4e34-8432-e2d0f546353f
+updated: 2026-10-19
+last_updated_session: authoring-run/9b1f7ddf-52fe-46c8-9fa9-fa7a1acfa64a
 ---
 
 # Installation Driver Package Loading Flow
@@ -68,7 +68,11 @@ it has no package-loading path. The
 [operator installation guide](../reference/drivers/selection.md) defines the package,
 pinning, registry, and configuration contract. TypeBox checks each selected
 Driver's closed schema before implementation-owned semantic validation;
-invalid package exports, identity, capability, or lifecycle wiring reject
+the validator returns typed data or safe structured errors without transforming
+input. Composition retains each definition with its selection, registers startup
+and named contributions in `packages/occ/src/configuration-registry.ts`, and
+rejects missing owner bindings, duplicate identities, or unsupported schemas before
+construction. Invalid package exports, identity, capability, or lifecycle wiring reject
 startup without fallback. The package root export resolver follows Node's
 `import()` resolution: `"."` selects a subpath only at the top level (nested, it
 is an unmatched condition name), conditions are Node's defaults (`node`,
@@ -147,7 +151,10 @@ composition validates persisted policy, creates the selected IAM Driver with
 platform state, and selects the exact common Driver identities with OCC. The API
 also registers its selected ServiceAccount Driver after composition. Worker
 startup checks persisted identities, including Secret and optional Sandbox,
-and attaches selected lifecycle owners once.
+and attaches selected lifecycle owners once. Both processes pass the retained
+definitions into OCC; the worker also resolves the current policy contribution
+before live application. `discoverConfigurations` exposes only authorized schemas
+and resource-owned action URLs, never startup values or executable validators.
 The bundled IAM Driver loads current policy for identity lookup and
 authorization; installed IAM Drivers must honor the same contract. Neither is
 rebuilt or replaced after account or policy changes.
@@ -180,6 +187,8 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-19 20:34: Trace shared definitions, contextual discovery, and preview admission in the accompanying implementation. (authoring-run/9b1f7ddf-52fe-46c8-9fa9-fa7a1acfa64a - 7fa0a561df615296a612126d430a4bbfa1124d9c)
 
 - 2026-10-18: Note the upgrade hook's Installation check runs this loader.
 - 2026-10-16 13:47: Preserve selected export URL query and fragment after realpath validation. (authoring-run/6e734247-4639-4e34-8432-e2d0f546353f - 591feb34bdbaaf7f316607347a02f7335ee816c0)

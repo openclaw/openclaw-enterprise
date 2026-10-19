@@ -89,6 +89,8 @@ const reviewedImports = {
     "node:fs/promises": ["lstat", "open"],
   },
   "composition/repository-credentials/platform.ts": {
+    // Shared, synchronous JSON validation has no credential or I/O access.
+    "@openclaw-enterprise/contracts": ["requireConfiguration"],
     "node:fs": ["constants"],
     "node:fs/promises": ["open", "stat"],
     "node:tls": ["createSecureContext"],
@@ -108,6 +110,7 @@ const reviewedImports = {
   // Standalone grants hash only nonsecret configuration/profile policy, never key material.
   "drivers/repo/github/credentials/grants.ts": { "node:crypto": ["createHash"] },
   "drivers/repo/github/driver.ts": {
+    "@openclaw-enterprise/contracts": ["validateConfiguration"],
     "@openclaw-enterprise/occ": ["DependencyUnavailableError", "ScopeViolationError"],
   },
   // The isolated image probe reports only a synthetic binding and failure kind.

@@ -5,18 +5,15 @@ export const configurationSchema = Object.freeze({
 });
 
 export function validateConfiguration(configuration) {
-  if (
-    typeof configuration !== "object" ||
-    configuration === null ||
-    Array.isArray(configuration) ||
-    Object.keys(configuration).length !== 0
-  ) {
-    throw new Error("The test IAM Driver requires an empty configuration object.");
+  if (configuration === null || typeof configuration !== "object" || Array.isArray(configuration) || Object.keys(configuration).length !== 0) {
+    return { success: false, error: { details: [{ path: "", code: "INVALID_VALUE", message: "Use an empty configuration object." }] } };
   }
+  return { success: true, data: configuration };
 }
 
 export function createDriver({ id, implementation, configuration, platformState }) {
-  validateConfiguration(configuration);
+  const admitted = validateConfiguration(configuration);
+  if (!admitted.success) {throw new Error("Driver configuration refused.");}
   if (typeof platformState?.loadNativeIAMState !== "function") {
     throw new Error("The test IAM Driver requires platform state.");
   }

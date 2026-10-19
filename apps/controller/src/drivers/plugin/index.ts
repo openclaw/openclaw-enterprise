@@ -1,3 +1,7 @@
+import {
+  validateConfiguration as validateDriverConfiguration,
+  requireConfiguration,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
   type JSONSchema,
@@ -359,12 +363,18 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     this.validate("openclaw", selections, defaultApprovers);
   }
 
-  static validateConfiguration(configuration: unknown): void {
-    validateEmptyConfiguration(configuration, "OpenClaw Plugin Driver");
+  static validateConfiguration(configuration: unknown) {
+    return validateDriverConfiguration<Readonly<Record<string, unknown>>>(
+      OCCPluginDriver.configurationSchema,
+      configuration,
+      (configuration) => {
+        validateEmptyConfiguration(configuration, "OpenClaw Plugin Driver");
+      },
+    );
   }
 
   constructor(configuration: ConfigurationRecord = {}, selection: PluginDriverSelection = {}) {
-    OCCPluginDriver.validateConfiguration(configuration);
+    requireConfiguration(OCCPluginDriver, configuration);
     super(selection, { id: OCC_DRIVER_ID, implementation: OCC_IMPLEMENTATION });
   }
 
@@ -432,8 +442,14 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   private readonly catalogSource: "hosted" | "openai-curated";
   readonly discoveryCredential: "required" | "none";
 
-  static validateConfiguration(configuration: unknown): void {
-    validateCodexConfiguration(configuration);
+  static validateConfiguration(configuration: unknown) {
+    return validateDriverConfiguration<Readonly<Record<string, unknown>>>(
+      CodexPluginDriver.configurationSchema,
+      configuration,
+      (configuration) => {
+        validateCodexConfiguration(configuration);
+      },
+    );
   }
 
   async discoverCatalog(
@@ -477,7 +493,9 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
     selection: PluginDriverSelection = {},
     catalogReader?: CodexPluginCatalogReader,
   ) {
-    const discovery = validateCodexConfiguration(configuration);
+    const discovery = validateCodexConfiguration(
+      requireConfiguration(CodexPluginDriver, configuration),
+    );
     super(selection, { id: CODEX_DRIVER_ID, implementation: CODEX_IMPLEMENTATION });
     this.catalogSource = discovery.catalogSource;
     this.discoveryCredential = discovery.catalogSource === "openai-curated" ? "none" : "required";

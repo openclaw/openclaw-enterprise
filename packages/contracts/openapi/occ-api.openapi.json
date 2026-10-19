@@ -801,9 +801,12 @@
                         { "const": "INVALID_FORMAT", "type": "string" },
                         { "const": "INVALID_VALUE", "type": "string" },
                         { "const": "TOO_LONG", "type": "string" },
-                        { "const": "TOO_DEEP", "type": "string" }
+                        { "const": "TOO_DEEP", "type": "string" },
+                        { "const": "INVALID_RANGE", "type": "string" },
+                        { "const": "OUTSIDE_CEILING", "type": "string" }
                       ]
                     },
+                    "message": { "maxLength": 512, "type": "string" },
                     "path": {
                       "maxLength": 512,
                       "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1328,9 +1331,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1385,9 +1391,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1442,9 +1451,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1499,9 +1511,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1556,9 +1571,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1613,9 +1631,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1670,9 +1691,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1794,9 +1818,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1851,9 +1878,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1908,9 +1938,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -1965,9 +1998,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2022,9 +2058,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2079,9 +2118,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2200,9 +2242,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2257,9 +2302,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2314,9 +2362,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2371,9 +2422,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2428,9 +2482,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2485,9 +2542,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2542,9 +2602,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2599,9 +2662,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2720,9 +2786,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2777,9 +2846,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2834,9 +2906,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2891,9 +2966,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -2948,9 +3026,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3005,9 +3086,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3062,9 +3146,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3119,9 +3206,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3230,9 +3320,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3287,9 +3380,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3344,9 +3440,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3401,9 +3500,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3458,9 +3560,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3515,9 +3620,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3642,9 +3750,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3699,9 +3810,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3756,9 +3870,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3813,9 +3930,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3870,9 +3990,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3927,9 +4050,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -3984,9 +4110,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4041,9 +4170,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4163,9 +4295,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4220,9 +4355,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4277,9 +4415,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4334,9 +4475,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4391,9 +4535,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4448,9 +4595,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4505,9 +4655,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4562,9 +4715,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4684,9 +4840,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4741,9 +4900,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4798,9 +4960,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4855,9 +5020,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4912,9 +5080,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -4969,9 +5140,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5026,9 +5200,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5083,9 +5260,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5205,9 +5385,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5262,9 +5445,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5319,9 +5505,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5376,9 +5565,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5433,9 +5625,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5490,9 +5685,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5547,9 +5745,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5604,9 +5805,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5725,9 +5929,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5782,9 +5989,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5839,9 +6049,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5896,9 +6109,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -5953,9 +6169,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6010,9 +6229,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6067,9 +6289,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6124,9 +6349,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6240,9 +6468,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6297,9 +6528,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6417,9 +6651,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6474,9 +6711,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6531,9 +6771,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6588,9 +6831,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6645,9 +6891,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6702,9 +6951,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6800,9 +7052,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6857,9 +7112,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -6914,9 +7172,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7034,9 +7295,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7091,9 +7355,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7148,9 +7415,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7205,9 +7475,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7262,9 +7535,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7319,9 +7595,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7417,9 +7696,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7474,9 +7756,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7531,9 +7816,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7651,9 +7939,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7708,9 +7999,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7765,9 +8059,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7822,9 +8119,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7879,9 +8179,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -7936,9 +8239,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8034,9 +8340,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8091,9 +8400,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8148,9 +8460,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8247,9 +8562,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8304,9 +8622,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8361,9 +8682,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8418,9 +8742,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8475,9 +8802,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8593,9 +8923,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8650,9 +8983,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8707,9 +9043,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8764,9 +9103,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8821,9 +9163,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8878,9 +9223,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8935,9 +9283,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -8992,9 +9343,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9123,9 +9477,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9180,9 +9537,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9237,9 +9597,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9294,9 +9657,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9351,9 +9717,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9408,9 +9777,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9465,9 +9837,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9522,9 +9897,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9631,9 +10009,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9688,9 +10069,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9745,9 +10129,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9802,9 +10189,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9859,9 +10249,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -9916,9 +10309,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10032,9 +10428,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10146,9 +10545,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10203,9 +10605,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10260,9 +10665,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10317,9 +10725,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10374,9 +10785,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10431,9 +10845,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10488,9 +10905,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10578,9 +10998,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10635,9 +11058,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -10692,9 +11118,12 @@
                                   { "const": "INVALID_FORMAT", "type": "string" },
                                   { "const": "INVALID_VALUE", "type": "string" },
                                   { "const": "TOO_LONG", "type": "string" },
-                                  { "const": "TOO_DEEP", "type": "string" }
+                                  { "const": "TOO_DEEP", "type": "string" },
+                                  { "const": "INVALID_RANGE", "type": "string" },
+                                  { "const": "OUTSIDE_CEILING", "type": "string" }
                                 ]
                               },
+                              "message": { "maxLength": 512, "type": "string" },
                               "path": {
                                 "maxLength": 512,
                                 "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
@@ -11668,6 +12097,212 @@
           }
         },
         "summary": "Get the complete authorized Agent deployment inventory",
+        "tags": ["Installation"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "installation", "scope": "requested" }
+        ]
+      }
+    },
+    "/installation/driver-configurations": {
+      "get": {
+        "description": "Requires administer permission on the requested Installation.",
+        "operationId": "discoverInstallationConfigurations",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "configurations": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actions": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "apply": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "available": { "type": "boolean" },
+                                      "href": {
+                                        "maxLength": 2048,
+                                        "pattern": "^/[^/]",
+                                        "type": "string"
+                                      },
+                                      "method": {
+                                        "anyOf": [
+                                          { "const": "GET", "type": "string" },
+                                          { "const": "POST", "type": "string" },
+                                          { "const": "PUT", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["method", "href", "available"],
+                                    "type": "object"
+                                  },
+                                  "read": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "available": { "type": "boolean" },
+                                      "href": {
+                                        "maxLength": 2048,
+                                        "pattern": "^/[^/]",
+                                        "type": "string"
+                                      },
+                                      "method": {
+                                        "anyOf": [
+                                          { "const": "GET", "type": "string" },
+                                          { "const": "POST", "type": "string" },
+                                          { "const": "PUT", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["method", "href", "available"],
+                                    "type": "object"
+                                  },
+                                  "save": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "available": { "type": "boolean" },
+                                      "href": {
+                                        "maxLength": 2048,
+                                        "pattern": "^/[^/]",
+                                        "type": "string"
+                                      },
+                                      "method": {
+                                        "anyOf": [
+                                          { "const": "GET", "type": "string" },
+                                          { "const": "POST", "type": "string" },
+                                          { "const": "PUT", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["method", "href", "available"],
+                                    "type": "object"
+                                  },
+                                  "validate": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "available": { "type": "boolean" },
+                                      "href": {
+                                        "maxLength": 2048,
+                                        "pattern": "^/[^/]",
+                                        "type": "string"
+                                      },
+                                      "method": {
+                                        "anyOf": [
+                                          { "const": "GET", "type": "string" },
+                                          { "const": "POST", "type": "string" },
+                                          { "const": "PUT", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["method", "href", "available"],
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "binding": {
+                                "anyOf": [
+                                  { "const": "installation-startup", "type": "string" },
+                                  { "const": "sandbox-policy", "type": "string" }
+                                ]
+                              },
+                              "capability": { "type": "string" },
+                              "configurationSchema": {
+                                "additionalProperties": {},
+                                "type": "object"
+                              },
+                              "driverId": { "type": "string" },
+                              "implementation": { "type": "string" },
+                              "key": { "type": "string" },
+                              "scope": {
+                                "anyOf": [
+                                  { "const": "installation", "type": "string" },
+                                  { "const": "agent", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "capability",
+                              "driverId",
+                              "implementation",
+                              "scope",
+                              "key",
+                              "configurationSchema",
+                              "binding",
+                              "actions"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": ["configurations"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Inspect selected Driver startup configuration schemas",
         "tags": ["Installation"],
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "installation", "scope": "requested" }
@@ -20158,6 +20793,232 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/driver-configurations": {
+      "get": {
+        "description": "Requires read permission on the requested Agent.",
+        "operationId": "discoverAgentConfigurations",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "configurations": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "actions": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "apply": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "available": { "type": "boolean" },
+                                      "href": {
+                                        "maxLength": 2048,
+                                        "pattern": "^/[^/]",
+                                        "type": "string"
+                                      },
+                                      "method": {
+                                        "anyOf": [
+                                          { "const": "GET", "type": "string" },
+                                          { "const": "POST", "type": "string" },
+                                          { "const": "PUT", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["method", "href", "available"],
+                                    "type": "object"
+                                  },
+                                  "read": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "available": { "type": "boolean" },
+                                      "href": {
+                                        "maxLength": 2048,
+                                        "pattern": "^/[^/]",
+                                        "type": "string"
+                                      },
+                                      "method": {
+                                        "anyOf": [
+                                          { "const": "GET", "type": "string" },
+                                          { "const": "POST", "type": "string" },
+                                          { "const": "PUT", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["method", "href", "available"],
+                                    "type": "object"
+                                  },
+                                  "save": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "available": { "type": "boolean" },
+                                      "href": {
+                                        "maxLength": 2048,
+                                        "pattern": "^/[^/]",
+                                        "type": "string"
+                                      },
+                                      "method": {
+                                        "anyOf": [
+                                          { "const": "GET", "type": "string" },
+                                          { "const": "POST", "type": "string" },
+                                          { "const": "PUT", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["method", "href", "available"],
+                                    "type": "object"
+                                  },
+                                  "validate": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "available": { "type": "boolean" },
+                                      "href": {
+                                        "maxLength": 2048,
+                                        "pattern": "^/[^/]",
+                                        "type": "string"
+                                      },
+                                      "method": {
+                                        "anyOf": [
+                                          { "const": "GET", "type": "string" },
+                                          { "const": "POST", "type": "string" },
+                                          { "const": "PUT", "type": "string" }
+                                        ]
+                                      }
+                                    },
+                                    "required": ["method", "href", "available"],
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              },
+                              "binding": {
+                                "anyOf": [
+                                  { "const": "installation-startup", "type": "string" },
+                                  { "const": "sandbox-policy", "type": "string" }
+                                ]
+                              },
+                              "capability": { "type": "string" },
+                              "configurationSchema": {
+                                "additionalProperties": {},
+                                "type": "object"
+                              },
+                              "driverId": { "type": "string" },
+                              "implementation": { "type": "string" },
+                              "key": { "type": "string" },
+                              "scope": {
+                                "anyOf": [
+                                  { "const": "installation", "type": "string" },
+                                  { "const": "agent", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "capability",
+                              "driverId",
+                              "implementation",
+                              "scope",
+                              "key",
+                              "configurationSchema",
+                              "binding",
+                              "actions"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": ["configurations"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Discover authorized Agent Driver configuration contributions",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/native-admin": {
       "get": {
         "description": "Requires a human session with administer permission on the exact Agent. Service API keys cannot launch or inspect native admin UI access.",
@@ -21893,18 +22754,26 @@
                                 "additionalProperties": false,
                                 "properties": {
                                   "binary": {
+                                    "description": "Absolute path of the executable receiving access.",
                                     "maxLength": 512,
                                     "minLength": 2,
                                     "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                    "title": "Executable path",
                                     "type": "string"
                                   },
                                   "host": {
+                                    "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
                                     "maxLength": 253,
                                     "minLength": 1,
                                     "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                    "title": "Destination hostname",
                                     "type": "string"
                                   },
-                                  "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                                  "id": {
+                                    "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                                    "title": "Rule ID",
+                                    "type": "string"
+                                  },
                                   "ports": {
                                     "items": {
                                       "additionalProperties": false,
@@ -21912,15 +22781,22 @@
                                         "from": {
                                           "maximum": 65535,
                                           "minimum": 1,
+                                          "title": "Start port",
                                           "type": "integer"
                                         },
-                                        "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                        "to": {
+                                          "maximum": 65535,
+                                          "minimum": 1,
+                                          "title": "End port",
+                                          "type": "integer"
+                                        }
                                       },
                                       "required": ["from", "to"],
                                       "type": "object"
                                     },
                                     "maxItems": 16,
                                     "minItems": 1,
+                                    "title": "Port ranges",
                                     "type": "array"
                                   }
                                 },
@@ -22456,30 +23332,49 @@
                             "additionalProperties": false,
                             "properties": {
                               "binary": {
+                                "description": "Absolute path of the executable receiving access.",
                                 "maxLength": 512,
                                 "minLength": 2,
                                 "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                "title": "Executable path",
                                 "type": "string"
                               },
                               "host": {
+                                "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
                                 "maxLength": 253,
                                 "minLength": 1,
                                 "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                "title": "Destination hostname",
                                 "type": "string"
                               },
-                              "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                              "id": {
+                                "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                                "title": "Rule ID",
+                                "type": "string"
+                              },
                               "ports": {
                                 "items": {
                                   "additionalProperties": false,
                                   "properties": {
-                                    "from": { "maximum": 65535, "minimum": 1, "type": "integer" },
-                                    "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                    "from": {
+                                      "maximum": 65535,
+                                      "minimum": 1,
+                                      "title": "Start port",
+                                      "type": "integer"
+                                    },
+                                    "to": {
+                                      "maximum": 65535,
+                                      "minimum": 1,
+                                      "title": "End port",
+                                      "type": "integer"
+                                    }
                                   },
                                   "required": ["from", "to"],
                                   "type": "object"
                                 },
                                 "maxItems": 16,
                                 "minItems": 1,
+                                "title": "Port ranges",
                                 "type": "array"
                               }
                             },
@@ -22487,7 +23382,127 @@
                             "type": "object"
                           },
                           "maxItems": 32,
+                          "title": "Network rules",
                           "type": "array"
+                        },
+                        "configuration": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "actions": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "apply": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "available": { "type": "boolean" },
+                                    "href": {
+                                      "maxLength": 2048,
+                                      "pattern": "^/[^/]",
+                                      "type": "string"
+                                    },
+                                    "method": {
+                                      "anyOf": [
+                                        { "const": "GET", "type": "string" },
+                                        { "const": "POST", "type": "string" },
+                                        { "const": "PUT", "type": "string" }
+                                      ]
+                                    }
+                                  },
+                                  "required": ["method", "href", "available"],
+                                  "type": "object"
+                                },
+                                "read": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "available": { "type": "boolean" },
+                                    "href": {
+                                      "maxLength": 2048,
+                                      "pattern": "^/[^/]",
+                                      "type": "string"
+                                    },
+                                    "method": {
+                                      "anyOf": [
+                                        { "const": "GET", "type": "string" },
+                                        { "const": "POST", "type": "string" },
+                                        { "const": "PUT", "type": "string" }
+                                      ]
+                                    }
+                                  },
+                                  "required": ["method", "href", "available"],
+                                  "type": "object"
+                                },
+                                "save": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "available": { "type": "boolean" },
+                                    "href": {
+                                      "maxLength": 2048,
+                                      "pattern": "^/[^/]",
+                                      "type": "string"
+                                    },
+                                    "method": {
+                                      "anyOf": [
+                                        { "const": "GET", "type": "string" },
+                                        { "const": "POST", "type": "string" },
+                                        { "const": "PUT", "type": "string" }
+                                      ]
+                                    }
+                                  },
+                                  "required": ["method", "href", "available"],
+                                  "type": "object"
+                                },
+                                "validate": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "available": { "type": "boolean" },
+                                    "href": {
+                                      "maxLength": 2048,
+                                      "pattern": "^/[^/]",
+                                      "type": "string"
+                                    },
+                                    "method": {
+                                      "anyOf": [
+                                        { "const": "GET", "type": "string" },
+                                        { "const": "POST", "type": "string" },
+                                        { "const": "PUT", "type": "string" }
+                                      ]
+                                    }
+                                  },
+                                  "required": ["method", "href", "available"],
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "binding": {
+                              "anyOf": [
+                                { "const": "installation-startup", "type": "string" },
+                                { "const": "sandbox-policy", "type": "string" }
+                              ]
+                            },
+                            "capability": { "type": "string" },
+                            "configurationSchema": { "additionalProperties": {}, "type": "object" },
+                            "driverId": { "type": "string" },
+                            "implementation": { "type": "string" },
+                            "key": { "type": "string" },
+                            "scope": {
+                              "anyOf": [
+                                { "const": "installation", "type": "string" },
+                                { "const": "agent", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "capability",
+                            "driverId",
+                            "implementation",
+                            "scope",
+                            "key",
+                            "configurationSchema",
+                            "binding",
+                            "actions"
+                          ],
+                          "type": "object"
                         },
                         "defaults": {
                           "anyOf": [
@@ -22508,18 +23523,26 @@
                                 "additionalProperties": false,
                                 "properties": {
                                   "binary": {
+                                    "description": "Absolute path of the executable receiving access.",
                                     "maxLength": 512,
                                     "minLength": 2,
                                     "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                    "title": "Executable path",
                                     "type": "string"
                                   },
                                   "host": {
+                                    "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
                                     "maxLength": 253,
                                     "minLength": 1,
                                     "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                    "title": "Destination hostname",
                                     "type": "string"
                                   },
-                                  "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                                  "id": {
+                                    "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                                    "title": "Rule ID",
+                                    "type": "string"
+                                  },
                                   "ports": {
                                     "items": {
                                       "additionalProperties": false,
@@ -22527,15 +23550,22 @@
                                         "from": {
                                           "maximum": 65535,
                                           "minimum": 1,
+                                          "title": "Start port",
                                           "type": "integer"
                                         },
-                                        "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                        "to": {
+                                          "maximum": 65535,
+                                          "minimum": 1,
+                                          "title": "End port",
+                                          "type": "integer"
+                                        }
                                       },
                                       "required": ["from", "to"],
                                       "type": "object"
                                     },
                                     "maxItems": 16,
                                     "minItems": 1,
+                                    "title": "Port ranges",
                                     "type": "array"
                                   }
                                 },
@@ -22543,6 +23573,7 @@
                                 "type": "object"
                               },
                               "maxItems": 32,
+                              "title": "Network rules",
                               "type": "array"
                             },
                             "agentId": {
@@ -22736,30 +23767,49 @@
                       "additionalProperties": false,
                       "properties": {
                         "binary": {
+                          "description": "Absolute path of the executable receiving access.",
                           "maxLength": 512,
                           "minLength": 2,
                           "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                          "title": "Executable path",
                           "type": "string"
                         },
                         "host": {
+                          "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
                           "maxLength": 253,
                           "minLength": 1,
                           "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                          "title": "Destination hostname",
                           "type": "string"
                         },
-                        "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                        "id": {
+                          "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                          "title": "Rule ID",
+                          "type": "string"
+                        },
                         "ports": {
                           "items": {
                             "additionalProperties": false,
                             "properties": {
-                              "from": { "maximum": 65535, "minimum": 1, "type": "integer" },
-                              "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                              "from": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "Start port",
+                                "type": "integer"
+                              },
+                              "to": {
+                                "maximum": 65535,
+                                "minimum": 1,
+                                "title": "End port",
+                                "type": "integer"
+                              }
                             },
                             "required": ["from", "to"],
                             "type": "object"
                           },
                           "maxItems": 16,
                           "minItems": 1,
+                          "title": "Port ranges",
                           "type": "array"
                         }
                       },
@@ -22767,6 +23817,7 @@
                       "type": "object"
                     },
                     "maxItems": 32,
+                    "title": "Network rules",
                     "type": "array"
                   },
                   "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
@@ -22793,30 +23844,49 @@
                             "additionalProperties": false,
                             "properties": {
                               "binary": {
+                                "description": "Absolute path of the executable receiving access.",
                                 "maxLength": 512,
                                 "minLength": 2,
                                 "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                "title": "Executable path",
                                 "type": "string"
                               },
                               "host": {
+                                "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
                                 "maxLength": 253,
                                 "minLength": 1,
                                 "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                "title": "Destination hostname",
                                 "type": "string"
                               },
-                              "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                              "id": {
+                                "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                                "title": "Rule ID",
+                                "type": "string"
+                              },
                               "ports": {
                                 "items": {
                                   "additionalProperties": false,
                                   "properties": {
-                                    "from": { "maximum": 65535, "minimum": 1, "type": "integer" },
-                                    "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                    "from": {
+                                      "maximum": 65535,
+                                      "minimum": 1,
+                                      "title": "Start port",
+                                      "type": "integer"
+                                    },
+                                    "to": {
+                                      "maximum": 65535,
+                                      "minimum": 1,
+                                      "title": "End port",
+                                      "type": "integer"
+                                    }
                                   },
                                   "required": ["from", "to"],
                                   "type": "object"
                                 },
                                 "maxItems": 16,
                                 "minItems": 1,
+                                "title": "Port ranges",
                                 "type": "array"
                               }
                             },
@@ -22824,6 +23894,7 @@
                             "type": "object"
                           },
                           "maxItems": 32,
+                          "title": "Network rules",
                           "type": "array"
                         },
                         "agentId": {
@@ -23050,30 +24121,49 @@
                             "additionalProperties": false,
                             "properties": {
                               "binary": {
+                                "description": "Absolute path of the executable receiving access.",
                                 "maxLength": 512,
                                 "minLength": 2,
                                 "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                "title": "Executable path",
                                 "type": "string"
                               },
                               "host": {
+                                "description": "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
                                 "maxLength": 253,
                                 "minLength": 1,
                                 "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                "title": "Destination hostname",
                                 "type": "string"
                               },
-                              "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                              "id": {
+                                "pattern": "^[a-z][a-z0-9-]{0,47}$",
+                                "title": "Rule ID",
+                                "type": "string"
+                              },
                               "ports": {
                                 "items": {
                                   "additionalProperties": false,
                                   "properties": {
-                                    "from": { "maximum": 65535, "minimum": 1, "type": "integer" },
-                                    "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                    "from": {
+                                      "maximum": 65535,
+                                      "minimum": 1,
+                                      "title": "Start port",
+                                      "type": "integer"
+                                    },
+                                    "to": {
+                                      "maximum": 65535,
+                                      "minimum": 1,
+                                      "title": "End port",
+                                      "type": "integer"
+                                    }
                                   },
                                   "required": ["from", "to"],
                                   "type": "object"
                                 },
                                 "maxItems": 16,
                                 "minItems": 1,
+                                "title": "Port ranges",
                                 "type": "array"
                               }
                             },
@@ -23081,6 +24171,7 @@
                             "type": "object"
                           },
                           "maxItems": 32,
+                          "title": "Network rules",
                           "type": "array"
                         },
                         "agentId": {
@@ -23635,6 +24726,205 @@
         "x-openclaw-permissions": [
           { "action": "administer", "resourceKind": "agent", "scope": "requested" },
           { "action": "administer", "resourceKind": "installation", "scope": "installation" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/validate": {
+      "post": {
+        "description": "Requires manage_policy permission on the requested Agent.",
+        "operationId": "validateAgentSandboxPolicy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "facet",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                { "const": "networking", "type": "string" },
+                { "const": "filesystem", "type": "string" },
+                { "const": "process", "type": "string" }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "additions": {},
+                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
+                },
+                "required": ["expectedVersion", "additions"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "anyOf": [
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "data": {},
+                            "success": { "const": true, "type": "boolean" }
+                          },
+                          "required": ["success", "data"],
+                          "type": "object"
+                        },
+                        {
+                          "additionalProperties": false,
+                          "properties": {
+                            "error": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "details": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "code": {
+                                        "anyOf": [
+                                          { "const": "REQUIRED", "type": "string" },
+                                          { "const": "UNKNOWN_FIELD", "type": "string" },
+                                          { "const": "INVALID_TYPE", "type": "string" },
+                                          { "const": "INVALID_FORMAT", "type": "string" },
+                                          { "const": "INVALID_VALUE", "type": "string" },
+                                          { "const": "TOO_LONG", "type": "string" },
+                                          { "const": "TOO_DEEP", "type": "string" },
+                                          { "const": "INVALID_RANGE", "type": "string" },
+                                          { "const": "OUTSIDE_CEILING", "type": "string" }
+                                        ]
+                                      },
+                                      "message": { "maxLength": 512, "type": "string" },
+                                      "path": {
+                                        "maxLength": 512,
+                                        "pattern": "^(?:/(?:[^~/]|~0|~1)*)*$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["path", "code"],
+                                    "type": "object"
+                                  },
+                                  "maxItems": 32,
+                                  "minItems": 1,
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["details"],
+                              "type": "object"
+                            },
+                            "success": { "const": false, "type": "boolean" }
+                          },
+                          "required": ["success", "error"],
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Preview Agent network policy admission without saving or applying",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },

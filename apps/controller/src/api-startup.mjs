@@ -17,7 +17,7 @@ import { composeProduction } from "./composition/production.ts";
 import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
+import { startupDependencyFailure, startupPolicyNameFailure, startupConfigurationFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
@@ -96,6 +96,7 @@ function startupFailureCode(error) {
 export function startupFailureFields(error) {
   return (
     startupDependencyFailure(error) ??
+    startupConfigurationFailure(error) ??
     startupPolicyNameFailure(error) ?? { code: startupFailureCode(error) }
   );
 }

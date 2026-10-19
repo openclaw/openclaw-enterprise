@@ -1,3 +1,4 @@
+import { validateConfiguration as validateDriverConfiguration } from "@openclaw-enterprise/contracts";
 import { isImmutableSnapshot, isNonEmptyString } from "@openclaw-enterprise/utils";
 import { randomUUID } from "node:crypto";
 import {
@@ -1082,17 +1083,23 @@ export class NativeIAMDriver implements IAMDriver {
     additionalProperties: false,
   });
 
-  static validateConfiguration(configuration: unknown): void {
-    if (
-      typeof configuration !== "object" ||
-      configuration === null ||
-      Array.isArray(configuration) ||
-      (Object.getPrototypeOf(configuration) !== Object.prototype &&
-        Object.getPrototypeOf(configuration) !== null) ||
-      Reflect.ownKeys(configuration).length !== 0
-    ) {
-      throw new TypeError("Native IAM Driver configuration must be an empty object.");
-    }
+  static validateConfiguration(configuration: unknown) {
+    return validateDriverConfiguration<Readonly<Record<string, unknown>>>(
+      NativeIAMDriver.configurationSchema,
+      configuration,
+      (configuration) => {
+        if (
+          typeof configuration !== "object" ||
+          configuration === null ||
+          Array.isArray(configuration) ||
+          (Object.getPrototypeOf(configuration) !== Object.prototype &&
+            Object.getPrototypeOf(configuration) !== null) ||
+          Reflect.ownKeys(configuration).length !== 0
+        ) {
+          throw new TypeError("Native IAM Driver configuration must be an empty object.");
+        }
+      },
+    );
   }
 
   readonly id: string;

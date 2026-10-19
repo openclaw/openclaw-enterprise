@@ -597,6 +597,13 @@ async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
   );
   const forwardedPort = Number(new URL(forwarding.url).port);
   const relayName = `oce-openshell-routing-${hash(randomUUID())}`;
+  // Bind/startup failure must still close the forwarding process and owned relay.
+  context.after(async () => {
+    await Promise.allSettled([
+      forwarding.stop(),
+      executeFile(containerEngine, ["stop", "--timeout", "2", relayName]),
+    ]);
+  });
   const relayProgram = [
     'const net = require("node:net");',
     "const targetPort = Number(process.argv[1]);",
@@ -657,12 +664,8 @@ async function startWorkspaceGatewayHostRelay(context, workspaceGateway) {
     }
     return callback(null, "127.0.0.1", 4);
   };
-  context.after(async () => {
+  context.after(() => {
     dns.lookup = originalLookup;
-    await Promise.allSettled([
-      forwarding.stop(),
-      executeFile(containerEngine, ["stop", "--timeout", "2", relayName]),
-    ]);
   });
   await waitForLoopbackPort(endpointPort);
   await waitForWorkspaceGatewayTls(gatewayHostname, endpointPort);
@@ -2287,6 +2290,20 @@ async function prepareProductionInstallation(
   // model route, must refuse it before a request or credential reaches it.
   const untrustedTls = harnessId === "codex" ? await startUntrustedTlsObserver(context) : undefined;
   if (tokenEcho !== undefined) {
+    // Startup defaults allow the control port; the adjacent port needs an Agent-owned addition.
+    configuration.sandboxNetworkPolicyCeiling = [
+      {
+        id: "python-demo",
+        binary: "/usr/bin/python3.11",
+        host: tokenEcho.host,
+        ports: [{ from: tokenEcho.port, to: tokenEcho.port }],
+      },
+    ];
+    configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
+      name: "python-control",
+      binaries: [{ path: "/usr/bin/python3.11" }],
+      endpoints: [{ host: tokenEcho.host, ports: [8082], tls: "skip" }],
+    });
     configuration.drivers.credential_gateway.configuration.toolBinaries = ["/usr/bin/curl"];
     // The refresh role must belong to the gateway's Backend, whose provider records it refreshes.
     configuration.backend[0].drivers.credential_refresh = "credential-refresh-openshell-kubernetes";
@@ -2990,6 +3007,7 @@ async function startTokenEcho(context, issuerJwks) {
     "    jwt: jwt(authorization),",
     "  }));",
     '}).listen(8080, "0.0.0.0");',
+    'http.createServer((request, response) => response.end(JSON.stringify({ path: request.url }))).listen(8082, "0.0.0.0");',
   ].join("\n");
   await kubectl(
     "run",
@@ -3025,6 +3043,23 @@ async function startTokenEcho(context, issuerJwks) {
     "--for=condition=Ready",
     "pod/token-echo",
     "--timeout=180s",
+  );
+  await kubectl(
+    "patch",
+    "service",
+    "token-echo",
+    "--namespace",
+    namespace,
+    "--type=merge",
+    "-p",
+    JSON.stringify({
+      spec: {
+        ports: [
+          { name: "target", port: 8080, targetPort: 8080 },
+          { name: "control", port: 8082, targetPort: 8082 },
+        ],
+      },
+    }),
   );
   async function readToolAReceipt() {
     const output = await kubectl(
@@ -5020,13 +5055,30 @@ async function assertAuthenticatedNativePolicyScopes(topology) {
 async function assertAgentNetworkPolicyLifecycle(topology) {
   const base = `/namespaces/${topology.namespaceId}/agents/${topology.agent.id}`;
   const policyPath = `${base}/sandbox-policy/networking`;
+  const installationDiscovery = await topology.request(
+    "GET",
+    "/installation/driver-configurations",
+  );
+  assert.equal(installationDiscovery.status, 200, JSON.stringify(installationDiscovery.error));
+  const startup = installationDiscovery.data.configurations.find(
+    (entry) => entry.capability === "sandbox",
+  );
+  assert.ok(startup);
+  assert.equal(startup.scope, "installation");
+  assert.equal(startup.key, "startup");
+  assert.deepEqual(startup.actions, {});
+  assert.equal(
+    Object.hasOwn(startup, "configuration"),
+    false,
+    "discovery must not expose startup values",
+  );
   const grant = {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
-    host: "example.org",
-    ports: [{ from: 443, to: 443 }],
+    host: topology.tokenEcho.host,
+    ports: [{ from: topology.tokenEcho.port, to: topology.tokenEcho.port }],
   };
-  const python = async (agentId = topology.agent.id) => {
+  const python = async (agentId = topology.agent.id, port = topology.tokenEcho.port) => {
     const pods = await resources("pods", topology.gatewayPlacement);
     const gateway = pods.find(
       (pod) =>
@@ -5036,13 +5088,13 @@ async function assertAgentNetworkPolicyLifecycle(topology) {
     assert.ok(gateway);
     // HTTP error responses still prove connectivity; sandbox refusal remains an uncaught URLError.
     const command = `/usr/bin/python3.11 - <<'PYTHON'
-import urllib.request, urllib.error
+import urllib.request, urllib.error, json
 try:
-    response = urllib.request.urlopen("https://example.org", timeout=20)
+    response = urllib.request.urlopen("http://${grant.host}:${port}/policy-probe", timeout=20)
 except urllib.error.HTTPError as error:
     response = error
 print("HTTP", response.code)
-print(response.read(160).decode("utf-8", errors="replace"))
+print("POLICY_PROBE", json.loads(response.read())["path"])
 PYTHON`;
     const result = await requestCodexTurnFromGatewayPod({
       namespace: topology.gatewayPlacement,
@@ -5059,6 +5111,25 @@ PYTHON`;
     assert.ok(executed, "the real Agent must execute the Python command");
     return executed;
   };
+  // Prove both listeners and cluster DNS independently before interpreting a policy denial.
+  const reachable = await kubectl(
+    "exec",
+    "pod/token-echo",
+    "--namespace",
+    topology.tokenEcho.namespace,
+    "--",
+    "node",
+    "-e",
+    `fetch("http://${grant.host}:${topology.tokenEcho.port}/policy-probe").then(async r => { if (r.status !== 200 || (await r.json()).path !== "/policy-probe") process.exit(1); console.log("reachable"); })`,
+  );
+  assert.match(reachable, /reachable/);
+  const control = await python(topology.agent.id, 8082);
+  assert.equal(
+    control.exitCode,
+    0,
+    "the Installation default permits the real Agent's control request",
+  );
+  assert.match(control.aggregatedOutput ?? "", /POLICY_PROBE \/policy-probe/);
   // Before any additions, enforcement denies the actual interpreter request.
   const denied = await python();
   assert.notEqual(denied.exitCode, 0);
@@ -5105,6 +5176,7 @@ PYTHON`;
       );
   for (const [action, kind, id] of [
     ["manage_policy", "agent", topology.agent.id],
+    ["operate", "agent", topology.agent.id],
     ["update", "sandbox_policy", initial.data.policy.id],
   ]) {
     const saved = await topology.request("PUT", policyPath, {
@@ -5191,6 +5263,26 @@ PYTHON`;
     }
   }
   const change = async (additions, interruptAfterWrite = false) => {
+    const discovered = await topology.request("GET", `${base}/driver-configurations`);
+    assert.equal(discovered.status, 200, JSON.stringify(discovered.error));
+    const descriptor = discovered.data.configurations.find(
+      (entry) => entry.actions.read.href === policyPath,
+    );
+    assert.ok(descriptor);
+    assert.equal(descriptor.driverId, startup.driverId);
+    const before = await topology.request("GET", policyPath);
+    const preview = await topology.request(
+      descriptor.actions.validate.method,
+      descriptor.actions.validate.href,
+      { expectedVersion: version, additions },
+    );
+    assert.equal(preview.status, 200, JSON.stringify(preview.error));
+    assert.deepEqual(preview.data, { success: true, data: { additions } });
+    assert.deepEqual(
+      (await topology.request("GET", policyPath)).data.policy,
+      before.data.policy,
+      "preview must not save or queue work",
+    );
     const saved = await topology.request("PUT", policyPath, {
       expectedVersion: version,
       additions,
@@ -5298,6 +5390,11 @@ PYTHON`;
     topology.agent.harnessAuth.sourceId,
     [],
   );
+  assert.equal(
+    (await python(second.agent.id, 8082)).exitCode,
+    0,
+    "the second Agent retains Installation-default access",
+  );
   const isolated = await python(second.agent.id);
   assert.notEqual(isolated.exitCode, 0, "another Agent must remain denied");
   assert.match(isolated.aggregatedOutput ?? "", /Permission denied|Errno 13/);
@@ -5332,6 +5429,11 @@ PYTHON`;
   const revoked = await python();
   assert.notEqual(revoked.exitCode, 0, "explicit removal must restore enforcement");
   assert.match(revoked.aggregatedOutput ?? "", /Permission denied|Errno 13/);
+  assert.equal(
+    (await python(topology.agent.id, 8082)).exitCode,
+    0,
+    "revoking an addition must preserve Installation-default access",
+  );
 }
 
 async function assertOpenShellToolFilesystemAndNetworkEnforcement(topology) {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 const scenarioPresets = {
+  "sandbox-policy": ["Codex"],
   "model-ui": ["OpenClaw", "Codex"],
   calendar: ["Codex"],
   "git-full": ["OpenClaw", "Codex"],
@@ -20,7 +21,10 @@ export function selectQaMatrix(env = process.env) {
   assert.ok(["all", "OpenClaw", "Codex"].includes(preset), "invalid QA preset selection");
   const allScenarios = Object.keys(scenarioPresets);
   const input = env.OCC_TEST_QA_SCENARIOS ?? "all";
-  const scenarios = input === "all" ? allScenarios : input.split(",").map((name) => name.trim());
+  const scenarios =
+    input === "all"
+      ? allScenarios.filter((name) => name !== "sandbox-policy")
+      : input.split(",").map((name) => name.trim());
   assert.ok(
     scenarios.length > 0 && scenarios.every((name) => allScenarios.includes(name)),
     "invalid QA scenario selection",
@@ -39,11 +43,18 @@ export function selectQaMatrix(env = process.env) {
       cell: `${value}/${name}`,
       installation: value,
       preset: name,
-      scenarios: scenarios.filter((scenario) => scenarioPresets[scenario].includes(name)),
-      unselected: allScenarios.filter(
-        (scenario) => scenarioPresets[scenario].includes(name) && !scenarios.includes(scenario),
+      scenarios: scenarios.filter(
+        (scenario) => scenario !== "sandbox-policy" && scenarioPresets[scenario].includes(name),
       ),
-      notApplicable: allScenarios.filter((scenario) => !scenarioPresets[scenario].includes(name)),
+      unselected: allScenarios.filter(
+        (scenario) =>
+          scenario !== "sandbox-policy" &&
+          scenarioPresets[scenario].includes(name) &&
+          !scenarios.includes(scenario),
+      ),
+      notApplicable: allScenarios.filter(
+        (scenario) => scenario !== "sandbox-policy" && !scenarioPresets[scenario].includes(name),
+      ),
     })),
   );
   const activePresets = presets.filter((name) =>
@@ -54,6 +65,13 @@ export function selectQaMatrix(env = process.env) {
   const requiredEnv = activePresets.map((name) =>
     name === "Codex" ? "OCC_TEST_QA_CODEX_TOKEN_FILE" : "OCC_TEST_QA_OPENAI_KEY_FILE",
   );
+  const sandboxPolicy = scenarios.includes("sandbox-policy");
+  if (sandboxPolicy) {
+    if (!requiredEnv.includes("OCC_TEST_QA_CODEX_TOKEN_FILE")) {
+      requiredEnv.push("OCC_TEST_QA_CODEX_TOKEN_FILE");
+    }
+    requiredEnv.push("OCC_TEST_QA_SANDBOX_ENV");
+  }
   if (activeScenarios.includes("calendar")) {
     requiredEnv.push("OCC_TEST_CODEX_CALENDAR_TOOL_NAME", "OCC_TEST_CODEX_CALENDAR_RESULT_EXPECT");
   }
@@ -79,13 +97,14 @@ export function selectQaMatrix(env = process.env) {
   }
   return {
     installations,
+    sandboxPolicy,
     cells,
     scenarios,
     requiredEnv,
     repository,
     browser: activeScenarios.includes("model-ui"),
     scope:
-      installation === "all" && preset === "all" && scenarios.length === allScenarios.length
+      installation === "all" && preset === "all" && scenarios.length === allScenarios.length - 1
         ? "full"
         : "partial:selected",
   };

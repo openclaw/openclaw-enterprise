@@ -28,8 +28,12 @@ Missing prerequisites fail rather than skip.
 ## Agent network policy
 
 The policy scenario uses the production HTTP admission path, PostgreSQL worker,
-and real OpenShell policy RPCs. It exercises a Python denial, an explicitly
-applied grant, removal, and isolation from a second Agent. Denial logs and native
+and real OpenShell policy RPCs. It uses a disposable echo Service with two ports: trusted Installation defaults
+allow the Python control request, while the target port requires a runtime grant.
+The fixture proves target reachability independently, then exercises the actual
+Agent's Python denial, descriptor discovery, write-free preview, save, confirmed
+application, removal, and isolation from a second Agent. The allowed default
+control remains reachable after revocation. Denial logs and native
 recommendations are checked separately.
 
 It revokes each required permission after work is queued and checks failure
@@ -128,3 +132,22 @@ same process to fail. It accepts any turn failure, so it does not yet tell a
 credential rejection from a transport error or a restarted process. The
 [complete OpenShell advisory lane](ci.md#qa-matrix) runs on every push to `main` and on
 trusted pull requests when a maintainer requests it with the `full-qa` label.
+
+### QA matrix selector
+
+The explicit `sandbox-policy` scenario runs this same real OpenShell workflow;
+it is separate from the matrix's default Sandbox-free installations. Prepare the
+OpenShell lane and its Sandbox test file first, then provide that file's private
+`--github-env` output as `OCC_TEST_QA_SANDBOX_ENV` and the authorized token file as
+`OCC_TEST_QA_CODEX_TOKEN_FILE`:
+
+```sh
+OCC_TEST_QA_MATRIX=1 OCC_TEST_QA_INSTALLATION=kubernetes \
+OCC_TEST_QA_PRESET=Codex OCC_TEST_QA_SCENARIOS=sandbox-policy \
+  node --test tests/integration/qa-matrix-real.test.mjs
+```
+
+The selected workflow must pass without skips. Its sanitized runtime log is
+written to the matrix artifacts directory. Cleanup remains with the owner of the
+prepared OpenShell lane; run the documented cleanup even on failure. The existing
+OpenShell advisory job exercises this workflow with the rest of its runtime suite.

@@ -1,3 +1,5 @@
+import { Check } from "typebox/value";
+import { ErrorDetail } from "@openclaw-enterprise/contracts";
 import { normalizeLoggingLevel, type LoggingLevel } from "@openclaw-enterprise/contracts";
 import pino, { type Logger } from "pino";
 
@@ -50,6 +52,7 @@ const ALLOWED_FIELDS = new Set([
   "computeDriverId",
   "deployPasses",
   "dependency",
+  "details",
   "durationMs",
   "elapsedMs",
   "errorClass",
@@ -294,6 +297,24 @@ function sanitizedEvent(
   const result: Record<string, unknown> = { event: eventName };
   for (const [key, value] of Object.entries(event)) {
     if (key === "event" || !ALLOWED_FIELDS.has(key)) {
+      continue;
+    }
+    if (key === "details") {
+      if (
+        (eventName === "startup-error" || eventName === "worker.startup-error") &&
+        event.code === "DRIVER_CONFIGURATION_INVALID" &&
+        Array.isArray(value)
+      ) {
+        result.details = value
+          .slice(0, 32)
+          .filter(
+            (detail) =>
+              Check(ErrorDetail, detail) &&
+              !resemblesCredential(`${detail.path} ${detail.message ?? ""}`) &&
+              !/\p{Cc}/u.test(`${detail.path}${detail.message ?? ""}`),
+          )
+          .map((detail) => ({ path: detail.path, code: detail.code, message: detail.message }));
+      }
       continue;
     }
     if (

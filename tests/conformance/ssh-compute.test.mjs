@@ -1,3 +1,7 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 // Runs the real Driver and host helper. SSH and systemd are replaced by fixtures;
 // only tests/integration/ssh-compute-real.test.mjs provides opt-in host proof.
 import assert from "node:assert/strict";
@@ -481,14 +485,22 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       setOption(candidate, keys, value);
     }
     assert.equal(Check(schema, candidate), false, keys.join("."));
-    assert.throws(() => SshComputeDriver.validateConfiguration(candidate), refusal, keys.join("."));
-    assert.throws(() => new SshComputeDriver(candidate), refusal, keys.join("."));
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      SharedConfigurationValidationError,
+      keys.join("."),
+    );
+    assert.throws(
+      () => new SshComputeDriver(candidate),
+      SharedConfigurationValidationError,
+      `${keys.join(".")}: ${refusal}`,
+    );
   }
   const reversed = options();
   reversed.network.gatewayPortRange = { start: 2000, end: 1999 };
   assert.throws(
-    () => SshComputeDriver.validateConfiguration(reversed),
-    /start must not exceed end/,
+    () => requireConfiguration(SshComputeDriver, reversed),
+    SharedConfigurationValidationError,
   );
   const optional = options();
   optional.ssh.connectTimeoutSeconds = 2;

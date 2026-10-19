@@ -92,6 +92,36 @@ Runtime Backend injection is limited to those bundled Drivers. Installed factory
 arguments remain the contract below; Backend loading or injection into
 installed packages is deferred.
 
+## Configuration definitions and discovery
+
+Each selected implementation supplies `ConfigurationDefinition<T>`: a serializable
+`configurationSchema` and synchronous `validateConfiguration(input)` returning
+`{ success: true, data: T }` or `{ success: false, error: { details } }`.
+The installed TypeBox evaluator and its JSON Schema 2020-12 meta-schema check
+registration. Unknown formats and unresolved references are refused. TypeBox
+collects structural errors before Driver semantic checks. Validation does
+not coerce, insert defaults, strip fields, perform I/O, or transform the submitted
+value. Invalid results and unexpected exceptions stop construction. Configuration
+errors include bounded JSON Pointer paths, uppercase codes, and safe messages;
+submitted secrets and sensitive dynamic keys never belong in diagnostics.
+
+Composition registers startup as `(capability, driverId, installation, startup)`.
+An implementation can also export `configurationContributions`, with a stable
+`scope` and `key` on each definition. `startup` is reserved. Unknown scopes,
+duplicate identities, unsupported schemas, and missing resource-owner bindings
+fail registration. The current runtime binding is Sandbox
+`(agent, sandbox-network-policy)`; its owner is
+[SandboxPolicy](../sandbox-policies.md). The Configuration Driver still owns
+native configuration rendering. The registry introduces no persistence layer.
+
+Installation administrators can inspect schemas in **Settings**, or call
+`GET /installation/driver-configurations`. This returns contextual descriptors
+without startup values, validators, or mutation actions. Agent discovery uses
+`GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`; the exact
+Agent and contribution owner's read permissions determine the returned sections.
+Owner bindings supply same-origin actions and availability. Actions always
+reauthorize; discovery is not an authorization capability.
+
 ## Package identity and factory exports
 
 The reviewed package is a direct dependency of
@@ -151,6 +181,8 @@ manifest or public plugin SDK. The controller validates its closed JSON Schema
 with TypeBox, then applies the Driver's own semantic validation:
 
 ```js
+import { validateConfiguration as validateDriverConfiguration } from "@openclaw-enterprise/contracts";
+
 export const configurationSchema = {
   type: "object",
   additionalProperties: false,
@@ -159,7 +191,10 @@ export const configurationSchema = {
 };
 
 export function validateConfiguration(configuration) {
-  // Reject options that violate this Driver's semantic requirements.
+  return validateDriverConfiguration(configurationSchema, configuration, (value) => {
+    // Return safe ErrorDetail entries for semantic refusals; never include submitted values.
+    return [];
+  });
 }
 
 export function createDriver({

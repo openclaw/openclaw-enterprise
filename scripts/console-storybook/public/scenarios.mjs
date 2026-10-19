@@ -1296,9 +1296,10 @@ export const scenarios = {
     name: "Account",
     path: "/console/settings",
     description:
-      "An account card with initials, name and email, and a Session card with Sign out. There are no editable settings in this release.",
+      "An account card with initials, name and email, and a Session card with Sign out. Administrators can inspect read-only Installation Driver schemas. There are no editable settings in this release.",
     steps: [
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
+      "Inspect Installation Driver schemas below the cards; no startup values or mutation controls are shown.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
       "At a phone width, Sign out spans the Session card.",
     ],
@@ -7238,6 +7239,21 @@ export const scenarios = {
 
 for (const [id, state, name] of [
   ["policyDenials", "ready", "Policy denials and reviewed network additions"],
+  [
+    "policyConfigurationAlternate",
+    "alternate",
+    "Another Driver renders enum fields from its schema",
+  ],
+  ["policyConfigurationLoading", "discoveryLoading", "Configuration discovery loading"],
+  ["policyConfigurationDenied", "discoveryDenied", "Configuration discovery denied"],
+  ["policyConfigurationStale", "stalePreview", "A superseded preview preserves the newer draft"],
+  [
+    "policyConfigurationHidden",
+    "ownerDenied",
+    "Policy hidden while independent logs remain visible",
+  ],
+  ["policyConfigurationInvalid", "invalid", "Configuration preview field errors"],
+  ["policyConfigurationConflict", "conflict", "Configuration version conflict retains draft"],
   ["policyDenialsEmpty", "empty", "No denials in the loaded window"],
   ["policyDenialsDisabled", "disabled", "Policy editing disabled"],
   ["policyDenialsUnsupported", "unsupported", "Sandbox policy capability unavailable"],
@@ -7267,11 +7283,18 @@ for (const [id, state, name] of [
     deployed: true,
     candidateDeploymentStatus: "succeeded",
     policyState: state,
+    ...(state === "discoveryLoading"
+      ? { rules: [{ suffix: "/driver-configurations", hold: true }] }
+      : {}),
+    ...(state === "discoveryDenied"
+      ? { rules: [{ suffix: "/driver-configurations", status: 403 }] }
+      : {}),
+    ...(state === "stalePreview" ? { rules: [{ suffix: "/validate", delayMs: 3000 }] } : {}),
     description:
       "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
     steps: [
       "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
-      "Use + to add a proposed rule and × to remove it. Confirm these local edits do not save. Review changes and return with Back to editing.",
+      "Use the schema field Add and Remove controls to edit proposed rules. Confirm these local edits do not save. Review changes and return with Back to editing.",
       "Compare Save (current revision unchanged) with Save and apply to current revision (pending, then confirmed with a provider version). Apply saved policy to current revision is unavailable while a proposal has unsaved edits.",
       "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
@@ -7287,7 +7310,7 @@ for (const [id, state, name] of [
       ? {
           steps: [
             "Review the suggested outside.example.org addition and compare it with the Installation delegation ceiling.",
-            "Choose Review changes and Save and apply to current revision. The ceiling rejection must be announced and brought into view, with the attempted addition preserved for correction.",
+            "Choose Review changes. The preview ceiling rejection must be announced and brought into view, with the attempted addition preserved for correction.",
             "Confirm the saved policy version and additions are unchanged. This preview simulates the API rejection; the browser integration exercises actual OCC admission.",
           ],
         }

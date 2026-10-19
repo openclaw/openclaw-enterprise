@@ -173,6 +173,11 @@ explains these jobs; the PR-controlled workflow is not independent trusted enfor
 
 ### QA matrix
 
+The explicit `sandbox-policy` selector exercises shared configuration discovery,
+preview, and the real OpenShell network-policy lifecycle. It requires a prepared
+OpenShell file environment; see [policy proof setup](openshell-coverage.md#qa-matrix-selector).
+The OpenShell advisory job covers the same workflow automatically.
+
 The matrix creates disposable Compose and Kubernetes control planes, both with
 Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does
 not use existing clusters or change the default kubeconfig. The exact test list

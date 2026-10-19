@@ -1,3 +1,9 @@
+import {
+  validateConfiguration as validateDriverConfiguration,
+  requireConfiguration,
+  SandboxNetworkPolicyConfiguration,
+  ConfigurationValidationError,
+} from "@openclaw-enterprise/contracts";
 import { openShellLogDecision } from "./openshell-log-decisions.ts";
 import {
   AGENT_POLICY_PREFIX,
@@ -2446,13 +2452,23 @@ function verifyExistingSandbox(
   }
 }
 
-export function validateConfiguration(configuration: unknown): void {
+function checkStartupConfiguration(configuration: unknown): void {
   const options = asRecord(configuration);
   if (options === undefined) {
     throw new OpenShellSandboxConfigurationFailure("OpenShell configuration is required.");
   }
   validateOptions(options as unknown as OpenShellSandboxDriverOptions);
 }
+
+export function validateConfiguration(configuration: unknown) {
+  return validateDriverConfiguration<OpenShellSandboxDriverOptions>(
+    configurationSchema,
+    configuration,
+    checkStartupConfiguration,
+  );
+}
+
+export const configurationContributions = Object.freeze([SandboxNetworkPolicyConfiguration]);
 
 export class OpenShellSandboxDriver implements SandboxDriver {
   static readonly configurationSchema = configurationSchema;
@@ -2463,16 +2479,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
   // environment() sets HOME to this for every Sandbox it creates.
   readonly harnessHome = OPENSHELL_HOME;
+  static readonly configurationContributions = configurationContributions;
   readonly networkPolicy = Object.freeze({ wildcards: true, portRanges: true, live: true });
   private readonly options: OpenShellSandboxDriverOptions;
   private readonly backend: Backend<OpenShellGateway>;
 
-  static validateConfiguration(configuration: unknown): void {
-    validateConfiguration(configuration);
+  static validateConfiguration(configuration: unknown) {
+    return validateConfiguration(configuration);
   }
 
   constructor(options: OpenShellSandboxDriverOptions, selection: OpenShellSandboxDriverSelection) {
-    validateOptions(options);
+    requireConfiguration(OpenShellSandboxDriver, options);
     this.id = nonempty(selection.id ?? "sandbox-openshell-local", "OpenShell Sandbox Driver ID");
     this.implementation = nonempty(
       selection.implementation ?? "openshell",
@@ -3229,7 +3246,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     version: number,
     defaults?: SandboxPolicySnapshot["defaults"],
   ): SandboxPolicySnapshot {
-    openShellAgentNetworkRules(additions);
+    requireConfiguration(SandboxNetworkPolicyConfiguration, { additions });
+    try {
+      openShellAgentNetworkRules(additions);
+    } catch {
+      throw new ConfigurationValidationError([
+        {
+          path: "/additions",
+          code: "INVALID_VALUE",
+          message: "OpenShell cannot represent these network grants.",
+        },
+      ]);
+    }
     const rules = defaults ?? networkPolicies(this.options);
     if (Object.keys(rules).some((name) => name.startsWith(AGENT_POLICY_PREFIX))) {
       throw new Error("Default policy uses a reserved Agent policy name.");

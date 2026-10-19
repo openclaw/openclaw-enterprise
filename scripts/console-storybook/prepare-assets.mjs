@@ -1,3 +1,4 @@
+import { SandboxNetworkPolicyConfiguration } from "../../packages/contracts/src/index.ts";
 import { createHash } from "node:crypto";
 import { cp, mkdir, copyFile, rm, readFile, writeFile, readdir } from "node:fs/promises";
 
@@ -24,6 +25,11 @@ await copyFile(
 await writeFile(
   new URL("agents/plugin-fields.mjs", assets),
   await readFile(new URL("./plugin-fields.storybook-wrapper.mjs", import.meta.url), "utf8"),
+);
+
+await writeFile(
+  new URL("network-policy-schema.mjs", assets),
+  `export default ${JSON.stringify(SandboxNetworkPolicyConfiguration.configurationSchema)};\n`,
 );
 
 // Preview shipped Presets so screenshots follow their current contracts.

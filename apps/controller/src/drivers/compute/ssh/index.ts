@@ -1,3 +1,7 @@
+import {
+  validateConfiguration as validateDriverConfiguration,
+  requireConfiguration,
+} from "@openclaw-enterprise/contracts";
 import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import type {
@@ -291,70 +295,82 @@ export class SshComputeDriver implements ComputeDriver {
     },
   });
 
-  static validateConfiguration(configuration: unknown): void {
-    const options = closed(configuration, ["ssh", "hosts", "runtime", "network"], "SSH options");
-    const ssh = closed(
-      options.ssh,
-      ["identityFile", "knownHostsFile", "connectTimeoutSeconds"],
-      "ssh",
-    );
-    path(ssh.identityFile, "ssh.identityFile");
-    path(ssh.knownHostsFile, "ssh.knownHostsFile");
-    if (
-      ssh.connectTimeoutSeconds !== undefined &&
-      !isPositiveSafeInteger(ssh.connectTimeoutSeconds)
-    ) {
-      throw new ConfigurationFailure("ssh.connectTimeoutSeconds must be a positive safe integer.");
-    }
-    const runtime = closed(
-      options.runtime,
-      ["nodePath", "openclawPath", "user", "root", "systemdUnitDirectory"],
-      "runtime",
-    );
-    for (const key of ["nodePath", "openclawPath", "root"]) {
-      path(runtime[key], `runtime.${key}`);
-    }
-    if (runtime.systemdUnitDirectory !== undefined) {
-      path(runtime.systemdUnitDirectory, "runtime.systemdUnitDirectory");
-    }
-    if (!ACCOUNT.test(required(runtime.user, "runtime.user"))) {
-      throw new ConfigurationFailure("runtime.user must be a non-root account-name prefix.");
-    }
-    const hosts = asRecord(options.hosts);
-    if (hosts === undefined || Object.keys(hosts).length === 0) {
-      throw new ConfigurationFailure("hosts must map exact Namespace names to SSH hosts.");
-    }
-    for (const [name, value] of Object.entries(hosts)) {
-      required(name, "Namespace name");
-      const host = closed(
-        value,
-        ["address", "port", "user", "nodePath", "openclawPath"],
-        "SSH host",
-      );
-      if (!ADDRESS.test(required(host.address, "Host address"))) {
-        throw new ConfigurationFailure("Host address must be a hostname or IP address.");
-      }
-      if (host.user !== "root") {
-        throw new ConfigurationFailure(
-          "SSH hosts require user root; non-root SSH and sudo are unsupported.",
+  static validateConfiguration(configuration: unknown) {
+    return validateDriverConfiguration<SshComputeDriverOptions>(
+      SshComputeDriver.configurationSchema,
+      configuration,
+      (configuration) => {
+        const options = closed(
+          configuration,
+          ["ssh", "hosts", "runtime", "network"],
+          "SSH options",
         );
-      }
-      if (host.port !== undefined) {
-        port(host.port, 1, "Host port");
-      }
-      for (const key of ["nodePath", "openclawPath"]) {
-        if (host[key] !== undefined) {
-          path(host[key], `Host ${key}`);
+        const ssh = closed(
+          options.ssh,
+          ["identityFile", "knownHostsFile", "connectTimeoutSeconds"],
+          "ssh",
+        );
+        path(ssh.identityFile, "ssh.identityFile");
+        path(ssh.knownHostsFile, "ssh.knownHostsFile");
+        if (
+          ssh.connectTimeoutSeconds !== undefined &&
+          !isPositiveSafeInteger(ssh.connectTimeoutSeconds)
+        ) {
+          throw new ConfigurationFailure(
+            "ssh.connectTimeoutSeconds must be a positive safe integer.",
+          );
         }
-      }
-    }
-    const network = closed(options.network, ["gatewayPortRange"], "network");
-    const range = closed(network.gatewayPortRange, ["start", "end"], "gatewayPortRange");
-    const start = port(range.start, 1024, "Gateway port range start");
-    const end = port(range.end, 1024, "Gateway port range end");
-    if (start > end) {
-      throw new ConfigurationFailure("Gateway port range start must not exceed end.");
-    }
+        const runtime = closed(
+          options.runtime,
+          ["nodePath", "openclawPath", "user", "root", "systemdUnitDirectory"],
+          "runtime",
+        );
+        for (const key of ["nodePath", "openclawPath", "root"]) {
+          path(runtime[key], `runtime.${key}`);
+        }
+        if (runtime.systemdUnitDirectory !== undefined) {
+          path(runtime.systemdUnitDirectory, "runtime.systemdUnitDirectory");
+        }
+        if (!ACCOUNT.test(required(runtime.user, "runtime.user"))) {
+          throw new ConfigurationFailure("runtime.user must be a non-root account-name prefix.");
+        }
+        const hosts = asRecord(options.hosts);
+        if (hosts === undefined || Object.keys(hosts).length === 0) {
+          throw new ConfigurationFailure("hosts must map exact Namespace names to SSH hosts.");
+        }
+        for (const [name, value] of Object.entries(hosts)) {
+          required(name, "Namespace name");
+          const host = closed(
+            value,
+            ["address", "port", "user", "nodePath", "openclawPath"],
+            "SSH host",
+          );
+          if (!ADDRESS.test(required(host.address, "Host address"))) {
+            throw new ConfigurationFailure("Host address must be a hostname or IP address.");
+          }
+          if (host.user !== "root") {
+            throw new ConfigurationFailure(
+              "SSH hosts require user root; non-root SSH and sudo are unsupported.",
+            );
+          }
+          if (host.port !== undefined) {
+            port(host.port, 1, "Host port");
+          }
+          for (const key of ["nodePath", "openclawPath"]) {
+            if (host[key] !== undefined) {
+              path(host[key], `Host ${key}`);
+            }
+          }
+        }
+        const network = closed(options.network, ["gatewayPortRange"], "network");
+        const range = closed(network.gatewayPortRange, ["start", "end"], "gatewayPortRange");
+        const start = port(range.start, 1024, "Gateway port range start");
+        const end = port(range.end, 1024, "Gateway port range end");
+        if (start > end) {
+          throw new ConfigurationFailure("Gateway port range start must not exceed end.");
+        }
+      },
+    );
   }
 
   readonly supportsWorkspaceSetup = true;
@@ -369,7 +385,7 @@ export class SshComputeDriver implements ComputeDriver {
   private lifecycleStarted = false;
 
   constructor(options: SshComputeDriverOptions, selection: SshComputeSelection = {}) {
-    SshComputeDriver.validateConfiguration(options);
+    options = requireConfiguration(SshComputeDriver, options);
     this.options = immutableCopy(options);
     this.id = identity(selection.id ?? "compute-ssh", "SSH Compute Driver ID");
     this.implementation = identity(

@@ -1,4 +1,4 @@
-import { renderAgentSandboxPolicy } from "./sandbox-policy.mjs";
+import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
   button,
   element,
@@ -3880,7 +3880,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     if (tab === "policy") {
       state.reusable = false;
-      content.append(renderAgentSandboxPolicy(tabContext, { agent, revisionId: selected }));
+      content.append(renderAgentDriverConfigurations(tabContext, { agent, revisionId: selected }));
       state.loading = false;
       content.style.minHeight = "";
       return;

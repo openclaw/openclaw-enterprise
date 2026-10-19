@@ -1,3 +1,4 @@
+import { ConfigurationValidationError as SharedConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -323,7 +324,15 @@ function codexPlugin(appServer) {
 async function rejectsAtStartup(t, change, expected, base = sandboxInstallation) {
   const configuration = base();
   change(configuration);
-  await assert.rejects(loadInstallationFile(t, configuration), expected);
+  await assert.rejects(loadInstallationFile(t, configuration), (error) => {
+    if (error instanceof SharedConfigurationValidationError) {
+      assert.ok(error.error.details.length > 0);
+      assert.ok(error.error.details.every((detail) => typeof detail.message === "string"));
+    } else {
+      assert.match(error.message, expected);
+    }
+    return true;
+  });
 }
 
 /** An installation whose OpenShell Backend dials `endpoint` over a declared NetworkPolicy. */
@@ -3353,7 +3362,7 @@ test("startup rejects invalid bundled OpenShell configuration before invoking an
 
   await assert.rejects(
     loadInstallationFile(t, configuration, options),
-    /drivers\.sandbox\.configuration does not match its Driver configuration schema/,
+    SharedConfigurationValidationError,
   );
   assert.equal(invokedFactory, false);
   // Control: the same factory is reached once the configuration is valid.
@@ -3469,8 +3478,9 @@ test("shipped startup names a rejected OpenShell policy without logging its name
     { ...template, name: planted },
   ]);
   const duplicateEvent = diagnostic(duplicate);
-  assert.equal(duplicateEvent.code, "OPENSHELL_NETWORK_POLICY_NAME_REJECTED");
-  assert.equal(duplicateEvent.reason, "rename-or-merge");
+  assert.equal(duplicateEvent.code, "DRIVER_CONFIGURATION_INVALID");
+  assert.ok(duplicateEvent.details.length > 0);
+  assert.equal(duplicateEvent.reason, undefined);
   assert.equal(`${duplicate.stdout}${duplicate.stderr}`.includes(planted), false);
 
   const reserved = await start([
@@ -3478,8 +3488,9 @@ test("shipped startup names a rejected OpenShell policy without logging its name
     { ...template, name: "workspace-node-enrollment" },
   ]);
   const reservedEvent = diagnostic(reserved);
-  assert.equal(reservedEvent.code, "OPENSHELL_NETWORK_POLICY_NAME_REJECTED");
-  assert.equal(reservedEvent.reason, "rename-or-merge");
+  assert.equal(reservedEvent.code, "DRIVER_CONFIGURATION_INVALID");
+  assert.ok(reservedEvent.details.length > 0);
+  assert.equal(reservedEvent.reason, undefined);
   assert.equal(`${reserved.stdout}${reserved.stderr}`.includes("workspace-node-enrollment"), false);
 });
 
@@ -3934,7 +3945,7 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
           },
         },
       ),
-    /toolBinaries must be a nonempty list of absolute paths/,
+    SharedConfigurationValidationError,
   );
 
   const { calls, context, deletedProfiles, driver, input, profiles, providers } =

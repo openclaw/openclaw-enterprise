@@ -175,3 +175,13 @@ export const PolicyDenialsSuggestionsUnavailable = story("policyDenialsSuggestio
 export const PolicyDenialsReadDenied = story("policyDenialsReadDenied");
 export const PolicyDenialsLoading = story("policyDenialsLoading");
 export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");
+
+export const ConfigurationInvalid = story("policyConfigurationInvalid");
+export const ConfigurationConflict = story("policyConfigurationConflict");
+
+export const ConfigurationAlternateDriver = story("policyConfigurationAlternate");
+export const ConfigurationDiscoveryLoading = story("policyConfigurationLoading");
+export const ConfigurationDiscoveryDenied = story("policyConfigurationDenied");
+export const ConfigurationStalePreview = story("policyConfigurationStale");
+
+export const ConfigurationOwnerDenied = story("policyConfigurationHidden");

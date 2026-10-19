@@ -53,11 +53,19 @@ type responseEnvelope struct {
 	Meta jsontext.Value `json:"meta"`
 }
 
+// ConfigurationErrorDetail identifies a rejected configuration field without its value.
+type ConfigurationErrorDetail struct {
+	Path    string `json:"path"`
+	Code    string `json:"code"`
+	Message string `json:"message,omitempty"`
+}
+
 // APIError is an OCC error response. RetryAfter is set when OCC sent Retry-After.
 // Location is the absolute redirect target of a 3xx response, without userinfo,
 // query, or fragment; occ never follows redirects, so the service key is only
 // ever sent to the configured origin.
 type APIError struct {
+	Details    []ConfigurationErrorDetail
 	Status     int
 	Code       string
 	Message    string
@@ -96,8 +104,9 @@ func (err *APIError) Error() string {
 
 type errorEnvelope struct {
 	Error struct {
-		Code    string `json:"code"`
-		Message string `json:"message"`
+		Code    string                     `json:"code"`
+		Message string                     `json:"message"`
+		Details []ConfigurationErrorDetail `json:"details,omitempty"`
 	} `json:"error"`
 }
 
@@ -274,6 +283,7 @@ func (client *Client) apiError(status int, header http.Header, body []byte) erro
 	if err := json.Unmarshal(body, &envelope); err == nil && envelope.Error.Code != "" {
 		result.Code = envelope.Error.Code
 		result.Message = envelope.Error.Message
+		result.Details = envelope.Error.Details
 	}
 	if seconds, err := strconv.ParseUint(header.Get("retry-after"), 10, 64); err == nil && seconds > 0 && seconds <= 3600 {
 		result.RetryAfter = time.Duration(seconds) * time.Second
