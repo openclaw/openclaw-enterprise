@@ -3142,14 +3142,6 @@ export const scenarios = {
       "Remove the direct binding; Namespace discovery remains available.",
     ],
   },
-  agentSharingRequiredFields: {
-    group: "Pages/Agent detail",
-    name: "Share Agent required fields",
-    path: draft,
-    actions: [click("Share Agent")],
-    description:
-      "Share Agent with no Principal ID and no acknowledgement: both fields show their errors and focus moves to the Principal ID, with no browser bubble.",
-  },
   agentSharingGranted: {
     group: "Pages/Agent detail",
     name: "Agent shared",
@@ -3182,6 +3174,14 @@ export const scenarios = {
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
     description:
       "A failed mutation response leaves the outcome uncertain. Refresh current policy before explicitly retrying; no automatic replay occurs.",
+  },
+  agentSharingRequiredFields: {
+    group: "Pages/Agent detail",
+    name: "Share Agent required fields",
+    path: draft,
+    actions: [click("Share Agent")],
+    description:
+      "Share Agent with no Principal ID and no acknowledgement: both fields show their errors and focus moves to the Principal ID, with no browser bubble.",
   },
   configurationEditor: {
     group: "Pages/Agent detail",
