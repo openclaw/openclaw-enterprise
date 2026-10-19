@@ -8,14 +8,14 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
 
 ## Tests
 
-| Check                             | When it runs                            | Blocks merge               | GitHub Actions                                                                                                     |
-| --------------------------------- | --------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| CI                                | Every PR                                | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| First Agent Smoke (job within CI) | [Every PR](#special-cases)              | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| QA Matrix Advisory                | [`main`; PR with `full-qa`](#qa-matrix) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
-| Full Integration                  | Manual                                  | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
-| Observability Demo                | [Every PR](#special-cases)              | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
-| Publish private documentation     | Manual                                  | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
+| Check                             | When it runs                                       | Blocks merge               | GitHub Actions                                                                                                     |
+| --------------------------------- | -------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| CI                                | Every PR                                           | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| First Agent Smoke (job within CI) | [Every PR](#special-cases)                         | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| QA Matrix Advisory                | [`main`; every 6 h; PR with `full-qa`](#qa-matrix) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
+| Full Integration                  | Manual                                             | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
+| Observability Demo                | [Every PR](#special-cases)                         | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
+| Publish private documentation     | Manual                                             | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
 
 <a id="pr-exceptions"></a>
 
@@ -185,8 +185,8 @@ use the failed run's commit and retained results. These jobs do not block merge 
 For changes to OpenShell, image pins, Helm installation or another live integration, a maintainer
 can add the `full-qa` label to a reviewed, same-repository pull request. Create that repository
 label once before enabling this workflow. Adding it starts those three jobs on GitHub's PR merge
-commit, plus the hosted local installation rehearsal. A manual dispatch on `main` also includes
-that rehearsal. Check the run's commit and results before merging; skipped jobs provide no live QA
+commit, plus the hosted local installation rehearsal. A manual dispatch on `main` and the
+schedule (every 6 hours, at minute 17) also run the whole matrix with that rehearsal. Check the run's commit and results before merging; skipped jobs provide no live QA
 result. As long as the label remains, pushing a new revision replaces the previous run. Removing
 it stops selection on future pushes; cancel an active run separately. Forks and Dependabot PRs are
 ineligible. This is trusted code with real credentials, under the [existing environment policy](#environments).
