@@ -1,5 +1,13 @@
 import defaultCodexPreset from "../default-codex-preset.mjs";
-import { button, element, fieldError, jsonObjectProblem, setText, statusBlock } from "../dom.mjs";
+import {
+  button,
+  element,
+  fieldError,
+  jsonObjectProblem,
+  setStatusTone,
+  setText,
+  statusBlock,
+} from "../dom.mjs";
 import { WORKSPACE_DEFAULTS, WORKSPACE_DEFAULTS_ID } from "../workspace-defaults.mjs";
 import { configuredHarnessId, harnessAuthDescription } from "./harness-auth.mjs";
 import { createDeviceLogin } from "./device-login.mjs";
@@ -1241,8 +1249,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let savedConfiguration = draft.savedConfiguration;
   let savedAgent;
   let stagedChannelSecrets = draft.stagedChannelSecrets ?? [];
-  const feedback = statusBlock("danger", null, null);
+  const feedback = element("p", { className: "error", role: "alert" });
   const savedStatus = element("p", { className: "hint", role: "status" });
+  // Create's refusals show in the danger status block (UX plan C1). The line above keeps its
+  // markup so open changes to the lines around it still merge.
+  setStatusTone(feedback, "danger");
   const submit = element(
     "button",
     { type: "submit", form: formId, className: "button button--primary" },

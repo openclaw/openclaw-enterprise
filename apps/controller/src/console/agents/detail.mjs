@@ -1090,6 +1090,8 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
                 : error.status === 503
                   ? "Current-runtime diagnostics are unavailable. This Compute Driver may not support them, or the runtime may be unreachable. Check the runtime and try again."
                   : message(error),
+              [],
+              describedOutcome(),
             ),
           ]
         : []),

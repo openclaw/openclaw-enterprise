@@ -470,10 +470,6 @@ p {
 .form-field [aria-invalid="true"] {
   border-color: var(--color-danger);
 }
-/* An Agent stopped by its owner during creation: guidance, not an error (finding 1375). */
-.error .provisioning-stopped {
-  color: var(--text);
-}
 /* Status block (UX plan C1): an error, warning or notice. A stripe in the tone's colour on its
    subtle wash; the text stays in the body colour, and only the label takes the tone. Built by
    statusBlock() in dom.mjs; data-tone is info, success, warning or danger. */
@@ -509,6 +505,11 @@ p {
 .status[data-tone="danger"] {
   --status-tone: var(--color-danger);
   --status-wash: var(--color-danger-subtle);
+}
+/* An Agent stopped by its owner during creation: guidance, not an error (finding 1375). */
+.status:has(> .provisioning-stopped) {
+  --status-tone: var(--color-info);
+  --status-wash: var(--color-info-subtle);
 }
 .status-label {
   margin: 0 0 var(--space-1);
