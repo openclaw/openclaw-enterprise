@@ -93,13 +93,45 @@ export async function issueServingCertificate(
   return { caPem: await readFile(path("ca.crt"), "utf8") };
 }
 
-export function realmDocument({ clientSecret, password, accessTokenLifespan }) {
+export function realmDocument({ clientSecret, password, accessTokenLifespan, scopedClients = {} }) {
   return {
     realm: keycloakRealm,
     enabled: true,
     accessTokenLifespan,
     ssoSessionIdleTimeout: 3600,
     clients: [
+      ...Object.entries(scopedClients).map(([clientId, scopes]) => ({
+        clientId,
+        enabled: true,
+        protocol: "openid-connect",
+        publicClient: false,
+        secret: clientSecret,
+        serviceAccountsEnabled: true,
+        standardFlowEnabled: false,
+        directAccessGrantsEnabled: false,
+        protocolMappers: [
+          {
+            name: "OpenShell audience",
+            protocol: "openid-connect",
+            protocolMapper: "oidc-audience-mapper",
+            config: {
+              "included.custom.audience": "openshell-cli",
+              "access.token.claim": "true",
+            },
+          },
+          {
+            name: "OpenShell scopes",
+            protocol: "openid-connect",
+            protocolMapper: "oidc-hardcoded-claim-mapper",
+            config: {
+              "claim.name": "oce_scopes",
+              "claim.value": JSON.stringify(scopes),
+              "jsonType.label": "JSON",
+              "access.token.claim": "true",
+            },
+          },
+        ],
+      })),
       {
         // A confidential service client for the client-credentials source.
         clientId: keycloakServiceClient,
@@ -148,6 +180,7 @@ export async function startKeycloak({
   startPortForwardTarget,
   image = defaultKeycloakImage,
   accessTokenLifespan = 360,
+  scopedClients = {},
 }) {
   const namespace = `oce-keycloak-${randomUUID().slice(0, 8)}`;
   const host = `keycloak.${namespace}.svc.cluster.local`;
@@ -186,7 +219,7 @@ export async function startKeycloak({
           metadata: { name: "keycloak-bootstrap", namespace },
           stringData: {
             "realm.json": JSON.stringify(
-              realmDocument({ clientSecret, password, accessTokenLifespan }),
+              realmDocument({ clientSecret, password, accessTokenLifespan, scopedClients }),
             ),
             "admin-password": adminPassword,
           },
@@ -370,6 +403,23 @@ export async function startKeycloak({
     /** Public signing keys only; the echo service verifies tokens with them. */
     jwks: Object.freeze({ keys: certs.body.keys }),
     clientSecret,
+    /** A real signed token with the audience and scopes declared by the test realm. */
+    async scopedClientToken(clientId) {
+      if (!Object.hasOwn(scopedClients, clientId)) {
+        throw new Error("The scoped client was not provisioned in the test realm.");
+      }
+      const response = await call("POST", tokenPath(keycloakRealm), {
+        form: {
+          grant_type: "client_credentials",
+          client_id: clientId,
+          client_secret: clientSecret,
+        },
+      });
+      if (response.status !== 200 || typeof response.body?.access_token !== "string") {
+        throw new Error(`Keycloak client sign-in failed (HTTP ${response.status}).`);
+      }
+      return response.body.access_token;
+    },
     /** A completed user sign-in, whose refresh token seeds an oauth2-refresh-token source. */
     async signInRefreshToken() {
       const response = await call("POST", tokenPath(keycloakRealm), {

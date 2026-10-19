@@ -6546,3 +6546,70 @@ export const scenarios = {
     gap: "The console reports deletion status but provides no detailed cleanup-progress view. Configurations and Secrets remain Namespace-owned and need separate management.",
   },
 };
+
+for (const [id, state, name] of [
+  ["policyDenials", "ready", "Policy denials and reviewed network additions"],
+  ["policyDenialsEmpty", "empty", "No denials in the loaded window"],
+  ["policyDenialsDisabled", "disabled", "Policy editing disabled"],
+  ["policyDenialsUnsupported", "unsupported", "Sandbox policy capability unavailable"],
+  ["policyDenialsGap", "gap", "Policy denial window has a buffer gap"],
+  ["policyDenialsMissingMetadata", "missingMetadata", "Policy denial with unknown metadata"],
+  ["policyDenialsFailed", "failed", "Policy application unconfirmed"],
+  ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
+  ["policyDenialsEditDenied", "editDenied", "Independent policy permission denied"],
+  ["policyDenialsCeilingDenied", "ceilingDenied", "Policy addition exceeds the delegation ceiling"],
+  [
+    "policyDenialsSuggestionsUnavailable",
+    "suggestionsUnavailable",
+    "Manual policy editing without suggestions",
+  ],
+  ["policyDenialsReadDenied", "readDenied", "Policy logs denied but policy remains editable"],
+  ["policyDenialsLoading", "loading", "Policy decisions loading"],
+  [
+    "policyDenialsNoCredential",
+    "noCredential",
+    "Policy logs unavailable without runtime credentials",
+  ],
+]) {
+  scenarios[id] = {
+    group: "Pages/Agent detail",
+    name,
+    path: `${candidateVersion}&tab=policy`,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    policyState: state,
+    description:
+      "Observed denial records, aggregated provider suggestions, and governed policy additions remain distinct.",
+    steps: [
+      "Expand a denial to inspect the sanitized log. Review its exact executable and endpoint before saving an addition.",
+      "Use + to add a proposed rule and × to remove it. Confirm these local edits do not save. Review changes and return with Back to editing.",
+      "Compare Save (current revision unchanged) with Save and apply to current revision (pending, then confirmed with a provider version). Apply saved policy to current revision is unavailable while a proposal has unsaved edits.",
+      "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
+    ],
+    gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+    ...(state === "ceilingDenied"
+      ? {
+          steps: [
+            "Review the suggested outside.example.org addition and compare it with the Installation delegation ceiling.",
+            "Choose Review changes and Save and apply to current revision. The ceiling rejection must be announced and brought into view, with the attempted addition preserved for correction.",
+            "Confirm the saved policy version and additions are unchanged. This preview simulates the API rejection; the browser integration exercises actual OCC admission.",
+          ],
+        }
+      : {}),
+    ...(state === "applyRejected"
+      ? {
+          steps: [
+            "Review a suggestion, then choose Review changes and Save and apply to current revision.",
+            "Confirm the alert states the policy was saved but application was not confirmed. The saved version increases and the rule remains saved; do not infer live enforcement.",
+          ],
+        }
+      : {}),
+    ...(state === "readDenied"
+      ? { rules: [{ suffix: "/runtime/logs", status: 403, code: "AUTHORIZATION_DENIED" }] }
+      : {}),
+    ...(state === "loading" ? { rules: [{ suffix: "/runtime/logs", hold: true }] } : {}),
+    ...(state === "noCredential"
+      ? { rules: [{ suffix: "/runtime/logs", status: 503, code: "DEPENDENCY_UNAVAILABLE" }] }
+      : {}),
+  };
+}

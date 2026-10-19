@@ -235,7 +235,7 @@ export interface ControllerWork {
   readonly namespaceTarget?: "ready" | "deleted";
   /** See `CREDENTIAL_WITHDRAWAL_TARGET` for the revision-scoped target. */
   readonly agentTarget?:
-    "stopped" | "deleted" | "provisioned" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
+    "stopped" | "deleted" | "provisioned" | "sandbox_policy" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
   readonly state: ControllerWorkState;
   readonly availableAt: Date;
   readonly attemptCount: number;
@@ -286,7 +286,7 @@ export interface EnqueueWork {
   readonly namespaceTarget?: "ready" | "deleted";
   /** See `CREDENTIAL_WITHDRAWAL_TARGET` for the revision-scoped target. */
   readonly agentTarget?:
-    "stopped" | "deleted" | "provisioned" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
+    "stopped" | "deleted" | "provisioned" | "sandbox_policy" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
   readonly availableAt?: Date | string;
 }
 

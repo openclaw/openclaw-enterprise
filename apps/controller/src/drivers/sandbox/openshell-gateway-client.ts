@@ -104,6 +104,7 @@ export interface OpenShellServiceRequest {
 }
 
 export interface OpenShellSandboxResponse {
+  readonly resourceVersion?: string;
   readonly name: string;
   readonly id?: string;
   readonly workspace?: string;
@@ -306,8 +307,38 @@ export function openShellSandboxObserver(
   });
 }
 
+export interface OpenShellPolicyRequest {
+  readonly workspace: string;
+  readonly sandbox: string;
+}
+export interface OpenShellPolicyStatus {
+  readonly version: number;
+  readonly activeVersion: number;
+  readonly state: string;
+  readonly policy: Readonly<Record<string, unknown>>;
+}
+
 export interface OpenShellGatewayClient
   extends OpenShellSandboxLogReader, OpenShellSandboxObserver {
+  getPolicyStatus?(
+    request: OpenShellPolicyRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellPolicyStatus>;
+  updatePolicy?(
+    request: OpenShellPolicyRequest & {
+      readonly policy: Readonly<Record<string, unknown>>;
+      readonly expectedResourceVersion: string;
+      readonly requestId: string;
+    },
+    signal: AbortSignal,
+  ): Promise<void>;
+  getPolicyDrafts?(
+    request: OpenShellPolicyRequest,
+    signal: AbortSignal,
+  ): Promise<{
+    readonly chunks: readonly Readonly<Record<string, unknown>>[];
+    readonly version: string;
+  }>;
   health(signal: AbortSignal): Promise<void>;
   getWorkspace(name: string, signal: AbortSignal): Promise<OpenShellWorkspaceResponse | undefined>;
   createWorkspace(
@@ -464,6 +495,9 @@ export interface OpenShellGatewayClient
 }
 
 type OpenShellMethod =
+  | "GetSandboxPolicyStatus"
+  | "UpdateConfig"
+  | "GetDraftPolicy"
   | "ConfigureProviderRefresh"
   | "RotateProviderCredential"
   | "GetProviderRefreshStatus"
@@ -892,6 +926,9 @@ function sandboxResponse(
   const restartCount = status?.restart_count;
   return Object.freeze({
     name,
+    ...(metadata?.resource_version === undefined
+      ? {}
+      : { resourceVersion: String(metadata.resource_version) }),
     ...(typeof metadata?.id === "string" && metadata.id.length > 0 ? { id: metadata.id } : {}),
     ...(typeof metadata?.workspace === "string" && metadata.workspace.length > 0
       ? { workspace: metadata.workspace }
@@ -1124,6 +1161,77 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         ? {}
         : { rootCertificate: this.serviceRootCertificate }),
     };
+  }
+
+  async getPolicyStatus(
+    request: OpenShellPolicyRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellPolicyStatus> {
+    const response = await this.unary(
+      "GetSandboxPolicyStatus",
+      { sandbox: request.sandbox, workspace_scope: { workspace: request.workspace } },
+      signal,
+    );
+    const revision = asRecord(response.revision);
+    const policy = asRecord(revision?.policy);
+    if (
+      policy === undefined ||
+      !Number.isSafeInteger(revision?.version) ||
+      typeof revision?.status !== "string"
+    ) {
+      throw new OpenShellGatewayFailure("Invalid Sandbox policy status.");
+    }
+    return {
+      version: revision!.version as number,
+      activeVersion: Number(response.active_version ?? 0),
+      state: revision!.status as string,
+      policy,
+    };
+  }
+
+  async updatePolicy(
+    request: OpenShellPolicyRequest & {
+      readonly policy: Readonly<Record<string, unknown>>;
+      readonly expectedResourceVersion: string;
+      readonly requestId: string;
+    },
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!/^[1-9][0-9]*$/.test(request.expectedResourceVersion)) {
+      throw new OpenShellGatewayFailure("A nonzero expected resource version is required.");
+    }
+    await this.unary(
+      "UpdateConfig",
+      {
+        sandbox: request.sandbox,
+        workspace_scope: { workspace: request.workspace },
+        policy: request.policy,
+        expected_resource_version: request.expectedResourceVersion,
+        request_id: request.requestId,
+      },
+      signal,
+    );
+  }
+
+  async getPolicyDrafts(
+    request: OpenShellPolicyRequest,
+    signal: AbortSignal,
+  ): Promise<{
+    readonly chunks: readonly Readonly<Record<string, unknown>>[];
+    readonly version: string;
+  }> {
+    const response = await this.unary(
+      "GetDraftPolicy",
+      { sandbox: request.sandbox, workspace_scope: { workspace: request.workspace } },
+      signal,
+    );
+    if (response.chunks === undefined) {
+      return { chunks: [], version: String(response.draft_version ?? "0") };
+    }
+    if (!Array.isArray(response.chunks)) {
+      throw new OpenShellGatewayFailure("Invalid policy recommendations.");
+    }
+    return { chunks: response.chunks, version: String(response.draft_version ?? "0") };
   }
 
   async health(signal: AbortSignal): Promise<void> {

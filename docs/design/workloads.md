@@ -130,7 +130,10 @@ revision startup.
 
 Editing an Agent or one of its referenced resources changes only
 the inputs available to a future deployment; it does not change an existing
-`AgentRevision` or running Agent workload.
+`AgentRevision` or running Agent workload. An explicit, separately authorized
+[network policy application](../reference/sandbox-policies.md) can update the
+active Sandbox in place when its Driver supports live changes; its confirmed
+application evidence is separate from the immutable deployment snapshot.
 
 Deploying an Agent follows one path.
 
