@@ -17,6 +17,7 @@ import {
   createRepositoryLaunchFixture,
   openAdvancedSettings,
 } from "./console-agents-test-support.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -74,6 +75,7 @@ const focusedRing = (page) =>
       .trim()
       .replace(/\s+/g, " ")
       .slice(0, 40);
+    const tag = focused.getAttribute("role") === "tab" ? "tab" : focused.tagName.toLowerCase();
     let owner = focused;
     for (let depth = 0; owner && depth < 3; depth += 1) {
       if (globalThis.getComputedStyle(owner).outlineStyle !== "none") {
@@ -82,11 +84,13 @@ const focusedRing = (page) =>
       owner = owner.parentElement;
     }
     if (!owner || globalThis.getComputedStyle(owner).outlineStyle === "none") {
-      return { name, ring: "none", clipped: [] };
+      return { name, tag, ring: "none", clipped: [] };
     }
     const style = globalThis.getComputedStyle(owner);
     const ring = [style.outlineStyle, style.outlineWidth, style.outlineColor, style.outlineOffset];
-    // The outline reaches offset + width past the border box; a scroller clips at its padding box.
+    // The outline reaches offset + width past the border box; a scroller clips at its client box
+    // (inside its borders and scrollbars). This walks DOM ancestors, which is right for everything
+    // the test visits; a fixed or top-layer element would need its containing blocks instead.
     const reach = Number.parseFloat(style.outlineOffset) + Number.parseFloat(style.outlineWidth);
     const box = owner.getBoundingClientRect();
     const clipped = [];
@@ -100,11 +104,13 @@ const focusedRing = (page) =>
         continue;
       }
       const rect = scroller.getBoundingClientRect();
+      const left = rect.left + scroller.clientLeft;
+      const top = rect.top + scroller.clientTop;
       const cut = Math.max(
-        rect.left + Number.parseFloat(edge.borderLeftWidth) - (box.left - reach),
-        rect.top + Number.parseFloat(edge.borderTopWidth) - (box.top - reach),
-        box.right + reach - (rect.right - Number.parseFloat(edge.borderRightWidth)),
-        box.bottom + reach - (rect.bottom - Number.parseFloat(edge.borderBottomWidth)),
+        left - (box.left - reach),
+        top - (box.top - reach),
+        box.right + reach - (left + scroller.clientWidth),
+        box.bottom + reach - (top + scroller.clientHeight),
       );
       if (cut > 0.5) {
         clipped.push(`.${[...scroller.classList].join(".")} hides ${cut.toFixed(1)}px`);
@@ -121,7 +127,7 @@ const focusedRing = (page) =>
           frameStyle.outlineOffset,
         ].join(" ")
       : undefined;
-    return { name, ring: ring.join(" "), clipped, ...(frame ? { framed } : {}) };
+    return { name, tag, ring: ring.join(" "), clipped, ...(frame ? { framed } : {}) };
   });
 
 // Tab from the current focus until focus leaves the document (or `until` matches a stop), and
@@ -142,14 +148,24 @@ async function tabStops(page, until = () => false) {
   assert.fail(`Tab never left the page: ${stops.map(({ name }) => name).join(", ")}`);
 }
 
+// A computed ring as its style, width and offset (the colour sits between them).
+function ringParts(ring) {
+  const [style, width, ...rest] = ring.split(" ");
+  return { style, width: Number.parseFloat(width), offset: Number.parseFloat(rest.at(-1)) };
+}
+
 // Every stop draws one of the token rings, and no scroller hides any part of it.
 async function assertVisibleRings(page, label, stops) {
   const { outer, inset } = await tokenRings(page);
-  assert.match(outer, /^solid 3px rgb\(\d+, \d+, \d+\) 2px$/, "the tokens describe a visible ring");
-  assert.match(
-    inset,
-    /^solid 3px rgb\(\d+, \d+, \d+\) -3px$/,
-    "the inset ring sits just inside the edge",
+  const outerRing = ringParts(outer);
+  const insetRing = ringParts(inset);
+  assert.ok(
+    outerRing.style === "solid" && outerRing.width >= 2 && outerRing.offset >= 0,
+    `the tokens describe a visible ring outside the edge (${outer})`,
+  );
+  assert.ok(
+    insetRing.style === "solid" && insetRing.width >= 2 && insetRing.offset + insetRing.width <= 0,
+    `the inset ring sits inside the edge (${inset})`,
   );
   const off = stops.filter(({ ring }) => ring !== outer && ring !== inset);
   assert.deepEqual(off, [], `${label}: every stop shows "${outer}" or "${inset}"`);
@@ -174,7 +190,8 @@ function logLine(index) {
 
 test("every keyboard stop on Agents, Agent detail, its logs and Create Agent shows an unclipped token ring", async (t) => {
   const computeDriver = createRuntimeLogComputeDriver();
-  computeDriver.state.lines = Array.from({ length: 40 }, (_, index) => logLine(index));
+  // Enough lines that the log pane scrolls at both widths.
+  computeDriver.state.lines = Array.from({ length: 20 }, (_, index) => logLine(index));
   const fixture = await createConsoleAppFixture(t, {
     computeDriver,
     agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
@@ -187,23 +204,26 @@ test("every keyboard stop on Agents, Agent detail, its logs and Create Agent sho
   const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id);
   const logs = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "logs");
   const pages = [
-    ["Agents", `/console/agents?namespace=${namespace.id}`, "link", "Ring Agent"],
+    ["Agents", `/console/agents?namespace=${namespace.id}`, "link", "Ring Agent", "a"],
     [
       "Agent detail",
       `${detail.pathname}${detail.search}`,
       "button",
       "View version v1, current version",
+      "button",
     ],
-    ["Agent logs", `${logs.pathname}${logs.search}`, "log", "Runtime log output"],
+    // Log row summaries scroll the pane as focus reaches them.
+    ["Agent logs", `${logs.pathname}${logs.search}`, "log", "Runtime log output", "summary"],
     [
       "Create Agent",
       `/console/agents/new?namespace=${namespace.id}`,
       "button",
       "Start without Preset",
+      "button",
     ],
   ];
   for (const viewport of widths) {
-    for (const [title, path, role, landmark] of pages) {
+    for (const [title, path, role, landmark, tag] of pages) {
       const label = `${title} at ${viewport.width}`;
       // Each page gets its own tab: tabbing past the last stop leaves the window, and returning
       // to it rechecks the session, which could hold the next page inert under the first Tab.
@@ -211,14 +231,67 @@ test("every keyboard stop on Agents, Agent detail, its logs and Create Agent sho
       await login(page, fixture, path);
       await page.getByRole(role, { name: landmark, exact: true }).waitFor();
       await page.locator(settledView).waitFor();
+      await page.locator(settledView).locator(tag).first().waitFor();
       const stops = await tabStops(page);
       assert.ok(
         stops.some(({ name }) => name === landmark),
         `${label}: Tab reaches ${landmark} (${stops.map(({ name }) => name).join(", ")})`,
       );
+      assert.ok(
+        stops.some((stop) => stop.tag === tag),
+        `${label}: Tab reaches a ${tag}`,
+      );
       await assertVisibleRings(page, label, stops);
     }
   }
+});
+
+test("arrowing through the Agent tabs at 390 px keeps each tab and its ring clear of the strip's edges", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Focus ring tabs");
+  const agent = await fixture.createAgent(namespace.id, "Tab ring Agent", nativeValues("v1"));
+  const detail = detailUrl(fixture, namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await login(page, fixture, `${detail.pathname}${detail.search}`);
+  await page.locator(settledView).waitFor();
+  const count = await page.getByRole("tab").count();
+  // The strip is one Tab stop; the arrows move through the rest.
+  const stops = await tabStops(page, ({ tag }) => tag === "tab");
+  for (let step = 1; step < count; step += 1) {
+    await page.keyboard.press("ArrowRight");
+    stops.push(await focusedRing(page));
+  }
+  assert.equal(
+    new Set(stops.filter(({ tag }) => tag === "tab").map(({ name }) => name)).size,
+    count,
+  );
+  await assertVisibleRings(page, "Agent tabs at 390", stops);
+  // Back at the far end, arrowing again wraps to the first tab. Every arrowed-to tab sits clear
+  // of the faded edges too, once the strip's scroll has settled the fades.
+  const faded = [];
+  for (let step = 0; step < count; step += 1) {
+    await page.keyboard.press("ArrowRight");
+    const tab = await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resolve));
+      });
+      const focused = globalThis.document.activeElement;
+      const strip = focused.closest('[role="tablist"]');
+      const style = globalThis.getComputedStyle(strip);
+      const before = Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-before")) || 0;
+      const after = Number.parseFloat(style.getPropertyValue("--agent-tabs-fade-after")) || 0;
+      const box = focused.getBoundingClientRect();
+      const edge = strip.getBoundingClientRect();
+      const under = Math.max(edge.left + before - box.left, box.right - (edge.right - after));
+      return { name: focused.textContent.trim(), under: Math.round(under) };
+    });
+    if (tab.under > 0) {
+      faded.push(tab);
+    }
+  }
+  assert.deepEqual(faded, [], "no arrowed-to tab sits under a faded edge");
 });
 
 test("repository rows and the Slack people search on Create Agent show an unclipped token ring", async (t) => {

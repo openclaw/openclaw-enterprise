@@ -1462,7 +1462,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     for (const other of tabControls.values()) {
       other.tabIndex = other === control ? 0 : -1;
     }
-    control.focus();
+    // focus() leaves a partly visible tab where it is; scrolling it into view honours the strip's
+    // scroll padding, so the tab and its ring clear the faded edge.
+    control.focus({ preventScroll: true });
+    control.scrollIntoView({ block: "nearest", inline: "nearest" });
   });
   // Tabbing back in lands on the selected tab, wherever the arrows left focus. Checked once focus
   // has moved: a window losing focus leaves it on the tab, so the arrowed-to stop stays.
