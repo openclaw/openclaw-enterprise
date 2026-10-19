@@ -274,6 +274,67 @@ test("Recovery on another version offers Deploy again only after the Configurati
   assert.equal(await again.getAttribute("class"), "overview-primary");
 });
 
+// WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
+function contrast(a, b) {
+  const luminance = (rgb) => {
+    const [r, g, bl] = rgb.map((value) => {
+      const channel = value / 255;
+      return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+// A secondary recovery action is a white button on the card's warning tint, so its edge is what
+// marks it as a control: it needs 3:1 against both the tint as painted and the button's own fill
+// (WCAG 1.4.11, finding 1958).
+test("The recovery card's secondary action has an edge of at least 3:1 against the card and its own fill", async (t) => {
+  const { fixture, namespace, agent, active, page } = await failedRedeploy(t, "Recovery edge");
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const recovery = recoveryOf(page);
+  await recovery.getByRole("link", { name: "Deploy again" }).waitFor();
+  const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
+  assert.notEqual(await logs.getAttribute("class"), "overview-primary");
+  const { edge, fill, card } = await logs.evaluate((link) => {
+    const rgba = (value) => {
+      const [r, g, b, a = 1] = value.match(/[\d.]+/g).map(Number);
+      return { rgb: [r, g, b], a };
+    };
+    // The card's tint composited over the first opaque background behind it.
+    const layers = [];
+    for (let node = link.closest(".deployment-recovery"); node; node = node.parentElement) {
+      const layer = rgba(globalThis.getComputedStyle(node).backgroundColor);
+      layers.push(layer);
+      if (layer.a === 1) {
+        break;
+      }
+    }
+    let painted = [255, 255, 255];
+    for (const layer of layers.reverse()) {
+      painted = painted.map((value, index) => layer.rgb[index] * layer.a + value * (1 - layer.a));
+    }
+    const style = globalThis.getComputedStyle(link);
+    return {
+      edge: { ...rgba(style.borderTopColor), width: style.borderTopWidth },
+      fill: rgba(style.backgroundColor),
+      card: painted,
+    };
+  });
+  assert.equal(edge.a, 1);
+  assert.equal(edge.width, "1px");
+  const ratio = contrast(edge.rgb, card);
+  assert.ok(ratio >= 3, `edge ${edge.rgb} on card ${card.map(Math.round)}: ${ratio.toFixed(2)}:1`);
+  assert.equal(fill.a, 1);
+  const fillRatio = contrast(edge.rgb, fill.rgb);
+  assert.ok(fillRatio >= 3, `edge ${edge.rgb} on fill ${fill.rgb}: ${fillRatio.toFixed(2)}:1`);
+});
+
 // Opens Deploy again from v1's Configuration tab with the draft's own Configuration read held, and
 // waits until the draft page shows while that read is still out: its Deploy new version card does
 // not exist yet, so the link's focus waits for it.
