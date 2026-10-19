@@ -577,7 +577,8 @@ class OpenShellGatewayRequestFailure extends DependencyUnavailableError {
 // not clear by themselves (at the pinned OpenShell, resource admission's Kubernetes 401/403/TLS
 // errors, credential driver errors, finding 2042). Only the first is an outage. The list is an
 // allowlist on purpose: anything else, including a TLS failure (an untrusted gateway certificate,
-// a refused client certificate), is an ordinary failed request on the attempt budget.
+// a refused client certificate, a connection closed during the handshake) and an HTTP status from
+// a proxy in front of the gateway, is an ordinary failed request on the attempt budget.
 const UNANSWERED_REQUEST_DETAILS: readonly RegExp[] = [
   // The connection closed or was reset under an in-flight call (the gateway process is gone).
   /^Connection dropped$/u,

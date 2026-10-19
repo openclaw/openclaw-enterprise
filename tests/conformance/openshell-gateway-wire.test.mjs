@@ -1560,14 +1560,16 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
       needsIpv6: true,
     },
     // A gateway certificate the client's CA does not vouch for: a configuration error, not an
-    // outage, so it fails within the attempt budget (finding 2042). The listener takes every
-    // address localhost resolves to, so no refused address hides the certificate error.
+    // outage, so it fails within the attempt budget (finding 2042). The dual-stack listener takes
+    // every address localhost resolves to, so no refused address hides the certificate error
+    // (grpc-js reports only the last address's error).
     {
       name: "untrusted-dns",
       san: "DNS:localhost",
-      bind: ipv6 ? "::" : "127.0.0.1",
+      bind: "::",
       host: "localhost",
       untrusted: true,
+      needsIpv6: true,
     },
     { name: "wrong-ip", san: "IP:127.0.0.2", bind: "127.0.0.1", host: "127.0.0.1" },
     // A name certificate does not vouch for an IP endpoint, even one that resolves there.
