@@ -504,7 +504,7 @@ test("failed repeat deletion preserves feedback when a poll was rearmed during i
   }
 });
 
-test("an in-flight deletion status read cannot overlap confirmed repeat admission", async (t) => {
+test("a repeat confirmed during a deletion status read waits for it, shows as sending, then sends once", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Read before repeat", { ready: true });
@@ -551,19 +551,33 @@ test("an in-flight deletion status read cannot overlap confirmed repeat admissio
   await page.clock.fastForward(DELETION_POLL_MS);
   await pending;
   await confirm.click();
+  // The confirmed repeat waits for the read instead of being dropped (finding 1975), and says so.
+  const sending = page.getByRole("dialog").getByRole("button", { name: "Deleting…", exact: true });
+  await sending.waitFor();
+  assert.equal(await sending.getAttribute("aria-busy"), "true");
+  assert.equal(await sending.isDisabled(), true);
+  assert.equal(
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Cancel", exact: true })
+      .isDisabled(),
+    true,
+  );
+  await page.keyboard.press("Escape");
+  assert.equal(await page.getByRole("dialog").isVisible(), true, "Escape keeps a confirmed repeat");
   assert.equal(writes, 0, "pending read prevents delete admission");
+  const accepted = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + path && response.request().method() === "DELETE",
+  );
   release();
+  assert.equal((await accepted).status(), 202);
+  await page.getByRole("dialog").waitFor({ state: "detached" });
   await page.waitForFunction(() =>
     [...globalThis.document.querySelectorAll("button")].some(
       (node) => node.textContent === "Refresh deletion status" && !node.disabled,
     ),
   );
-  const accepted = page.waitForResponse(
-    (response) =>
-      response.url() === fixture.origin + path && response.request().method() === "DELETE",
-  );
-  await confirm.click();
-  assert.equal((await accepted).status(), 202);
   assert.equal(writes, 1);
 });
 
