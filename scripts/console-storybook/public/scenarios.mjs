@@ -1039,7 +1039,7 @@ export const scenarios = {
     namespaceStatus: "provisioning",
     actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
     description:
-      "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created.",
+      "The Create form keeps the provisioning Namespace's warning note, and says a Dedicated Agent can be created once the Namespace is ready instead of promising it deploys when created. Create Agent stays disabled, described by that line; an Embedded OpenClaw draft still saves.",
   },
   createStart: {
     group: "Pages/Create Agent",
@@ -3792,6 +3792,18 @@ export const scenarios = {
       "A name of 200 em dashes. A browser does not break a line between two em dashes, so the name wraps within the width of its ID.",
     steps: [
       "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+    ],
+  },
+  agentsLongNameJoiners: {
+    group: "Pages/Agents",
+    name: "Long name of word-joiner runs",
+    deployed: true,
+    agentName: `Joiners ${`${"\u2060".repeat(20)} `.repeat(9)}`.trimEnd(),
+    actions: [{ selector: 'input[type="search"]', value: "Joiners" }],
+    description:
+      "A 196-character name of word-joiner (U+2060) runs of 20, each just short of the long-name threshold, found by a search. Checking such a name took seconds and froze the list on load and on each search keystroke (finding 1999); the check is now linear, so search answers at once and the name wraps as before.",
+    steps: [
+      "Clear Search Agents, then type Joiners one letter at a time. Each letter filters the list at once, and the Agent stays listed.",
     ],
   },
   agentsLongNamePhone: {

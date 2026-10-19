@@ -89,6 +89,7 @@
     "tests/conformance/utils.test.mjs",
     "tests/conformance/console-api-client.test.mjs",
     "tests/conformance/console-carry.test.mjs",
+    "tests/conformance/console-agent-name-runs.test.mjs",
     "tests/conformance/console-json-errors.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
@@ -112,6 +113,9 @@
     },
     {
       "path": "tests/conformance/filesystem-configuration.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-agent-name-runs.test.mjs"
     },
     {
       "path": "tests/conformance/console-api-client.test.mjs"

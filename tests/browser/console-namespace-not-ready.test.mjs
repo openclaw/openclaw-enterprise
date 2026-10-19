@@ -126,10 +126,25 @@ test("Create Agent names a provisioning Namespace's status before any start", as
   assert.deepEqual(await warningBlock(formNote), WARNING);
   await view
     .getByText(
-      "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first.",
+      "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then.",
       { exact: true },
     )
     .waitFor();
+  // Every step of that plan needs a ready Namespace, so the API would refuse it: Create Agent
+  // waits, described by why (finding 2007).
+  const create = view.getByRole("button", { name: "Create Agent", exact: true });
+  assert.equal(await create.isDisabled(), true);
+  assert.equal(await create.getAttribute("aria-describedby"), "create-agent-capability-status");
+  // An Embedded OpenClaw draft still saves (#2867).
+  await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await view
+    .getByText(
+      "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await create.isDisabled(), false);
+  assert.equal(await create.getAttribute("aria-describedby"), null);
 });
 
 test("a provisioning Namespace saves an Agent draft from a seeded runtime-auth Preset", async (t) => {
