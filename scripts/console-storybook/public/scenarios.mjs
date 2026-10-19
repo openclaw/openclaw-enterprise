@@ -1673,6 +1673,20 @@ export const scenarios = {
       "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
+  createPending: {
+    group: "Pages/Create Agent",
+    name: "Create pending",
+    path: create,
+    rules: [
+      { suffix: "/agents/provision", method: "POST", hold: true },
+      { suffix: "/agents/validate", method: "POST", hold: true },
+    ],
+    actions: [...readyForm, click("Create Agent")],
+    description:
+      "The Create request is held, so Create Agent stays disabled and busy: it sets aria-busy and shows the progress pointer. Other controls' requests disable it without marking it busy (finding 1961).",
+    steps: ["Hover Create Agent: the pointer is progress, not not-allowed."],
+    gap: "The request never answers; this story does not verify Agent creation.",
+  },
   createDeploymentNamedWait: {
     group: "Pages/Create Agent",
     name: "Initial deployment names its wait",
