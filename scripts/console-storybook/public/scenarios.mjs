@@ -3682,7 +3682,20 @@ export const scenarios = {
       .join("-")
       .slice(0, 200),
     description:
-      "A 200-character name of digit groups joined by hyphens. A browser does not break a line at a hyphen before a digit, so the console treats the name as unbroken and it wraps within the width of its ID.",
+      "A 200-character name of digit groups joined by hyphens. A browser breaks a line after each hyphen, so the name wraps at its hyphens like any hyphenated name.",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+    ],
+  },
+  agentsLongNamePunctuation: {
+    group: "Pages/Agents",
+    name: "Long name with punctuation after hyphens",
+    deployed: true,
+    agentName: Array.from({ length: 50 }, () => "abc")
+      .join("-.5")
+      .slice(0, 200),
+    description:
+      "A 200-character name of letter groups joined by a hyphen, a full stop and a digit. A browser does not break a line at a hyphen before closing punctuation, so the console treats the name as unbroken and it wraps within the width of its ID.",
     steps: [
       "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
     ],
