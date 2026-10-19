@@ -261,42 +261,65 @@ const READING_SHOWN_MS = 150;
 // rule follows the break points Chromium was measured to use (finding 1982), not all of UAX #14.
 // A run ends where a line can break: after a breaking space, a zero-width space, a soft hyphen,
 // or a hyphen or dash (a name holds no control or line-separator characters). No-break spaces
-// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. A hyphen between digits
-// does break ("1000-1001"). Combining marks count with the letter they sit on. Ideographs, kana,
-// Hangul syllables and emoji break on both sides; other scripts (Thai, for one) count per
+// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. A hyphen-minus between
+// ASCII digits does break ("1000-1001"). Combining marks count with the letter they sit on. Ideographs, kana,
+// Hangul syllables and most emoji break on both sides; other scripts (Thai, for one) count per
 // character, which can only over-mark: a marked name still shows in full, in a narrower box.
 const WIDE_SPACES = String.raw`\u1680\u2000-\u2006\u2008-\u200a\u205f\u3000`;
 const DASHES = String.raw`\u00ad\u2010\u2012\u2013`; // soft hyphen, hyphen, figure and en dash
 const CLOSING = String.raw`!),./:;\]}\u00bb\u2019\u201d\u2060\u200d`; // and joiners (ZWJ last: lint)
+// Opening quotes, the infix separators U+037E, U+0589, U+060C and U+2044, and the no-break U+FEFF:
+// Chromium keeps them after a hyphen, dash or wide space too (finding 2001).
+const OPENING = String.raw`\u00ab\u037e\u0589\u060c\u2018\u201c\u2039\u203a\u2044\ufeff`;
 const IDEOGRAPHIC = String.raw`\p{Ideographic}\u3041-\u3096\u30a1-\u30fa\uac00-\ud7a3\p{Emoji_Presentation}`;
-const UNBROKEN_CHARACTER = [
+// Emoji whose line-break class is AL, unlike the rest: Chromium keeps them with their neighbours,
+// as it does letters (finding 2001).
+const LETTER_EMOJI = String.raw`\u23e9-\u23ec\u25fd\u25fe\u2648-\u2653\u2693\u26a1\u26aa\u26ab\u26ce\u2705\u2728\u274c\u274e\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55\u{1f18e}\u{1f191}-\u{1f19a}\u{1f3b5}\u{1f3b6}\u{1f3bc}\u{1f4a0}\u{1f4a2}\u{1f4a4}\u{1f4af}\u{1f4b1}\u{1f4b2}\u{1f500}-\u{1f506}\u{1f517}-\u{1f524}\u{1f532}-\u{1f53d}`;
+export const UNBROKEN_ALTERNATIVES = [
   String.raw`[^ ${WIDE_SPACES}\u200b${DASHES}\u2014\p{M}${IDEOGRAPHIC}-]`,
+  String.raw`[${LETTER_EMOJI}]`,
   // Where a break character holds the next one on its line:
-  // - a hyphen-minus before closing punctuation, "$", an Arabic-Indic digit, or a hyphen, figure
-  //   dash or en dash; and before any digit when no letter or digit precedes it ("-5");
-  String.raw`-(?=\p{M}*[$\u0660-\u0669\u06f0-\u06f9\u2010\u2012\u2013${CLOSING}])`,
-  String.raw`(?<![\p{L}\p{N}\p{M}])-(?=\p{Nd})`,
-  // - a wide space, soft hyphen or dash before closing punctuation, a quote or a vertical bar;
-  String.raw`[${WIDE_SPACES}${DASHES}](?=\p{M}*["'|${CLOSING}])`,
+  // - a hyphen-minus before closing punctuation, an opening quote, "$", or a hyphen, figure dash
+  //   or en dash;
+  String.raw`-(?=\p{M}*[$\u2010\u2012\u2013${OPENING}${CLOSING}])`,
+  // - a hyphen-minus before a digit, unless the digit is fullwidth, or ASCII after an ASCII letter
+  //   or digit: "1000-1001" and "a-1" break; "x -5", an accented letter before "-1", and "a-"
+  //   before a Devanagari digit do not (finding 2000). A mark on the hyphen holds an ASCII digit too;
+  String.raw`(?<![A-Za-z0-9])-(?=\p{M}*\p{Nd})(?!\p{M}*[\uff10-\uff19])`,
+  String.raw`(?<=[A-Za-z0-9])-(?=\p{M}*\p{Nd})(?![0-9]|\p{M}*[\uff10-\uff19])`,
+  // - a wide space, soft hyphen or dash before closing punctuation, an opening quote, a quote or a
+  //   vertical bar;
+  String.raw`[${WIDE_SPACES}${DASHES}](?=\p{M}*["'|${OPENING}${CLOSING}])`,
   // - a hyphen or dash (an em dash too) before any of them but an em dash (LB21);
   String.raw`[\u2010\u2012-\u2014](?=[\u2010\u2012\u2013-])`,
-  // - a hyphen, figure dash or en dash that starts a word, before a letter (LB20a);
-  String.raw`(?<=^|[ \u200b])[\u2010\u2012\u2013](?=\p{L})`,
-  // - any character but a space or an em dash before a word joiner or zero-width joiner, an
-  //   ideograph or emoji included (LB11, LB9). What follows a joiner keeps its own rules.
-  String.raw`[^ \u200b\u2014](?=\p{M}*[\u2060\u200d])`,
-].join("|");
+  // - a hyphen, figure dash or en dash that starts a word, before a letter (LB20a); a no-break
+  //   space or non-breaking hyphen before it starts a word too;
+  String.raw`(?<=^|[ \u00a0\u200b\u2007\u2011\u202f])[\u2010\u2012\u2013](?=\p{L})`,
+  // - an ideograph or emoji before a word joiner or zero-width joiner (LB11, LB9). The other
+  //   characters a joiner holds already count: ordinary ones always, and a hyphen, dash or wide
+  //   space because CLOSING lists the joiners. What follows a joiner keeps its own rules.
+  // No character may match two of these, nor a combining mark start one: each overlap doubles the
+  // ways to split a run, so a failed match on a joiner-run name backtracked for seconds (finding
+  // 1999). One ideograph is a combining mark (U+16FE4), and letter emoji have their own line, so
+  // the last line skips both. tests/conformance/console-agent-name-runs.test.mjs checks it.
+  String.raw`(?![\p{M}${LETTER_EMOJI}])[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
+];
+const UNBROKEN_CHARACTER = UNBROKEN_ALTERNATIVES.join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
 // The wide space, hyphen or dash a line breaks after stays on that line, so it counts too.
-const UNBROKEN_RUN = new RegExp(
+// Exported for tests/conformance/console-agent-name-runs.test.mjs, which checks its shape.
+export const UNBROKEN_RUN = new RegExp(
   String.raw`\u2014{21,}|(?:${RUN_CHARACTER}){21,}|(?:${RUN_CHARACTER}){20}[${WIDE_SPACES}${DASHES}-]`,
   "u",
 );
 
+/** Whether a name holds a run the browser cannot wrap, so it must be marked to break anywhere. */
+export const hasUnbrokenRun = (name) => UNBROKEN_RUN.test(name);
+
 function agentNameLink(item, context) {
   const node = link(item.name, `agents/${item.id}`, context);
-  if (UNBROKEN_RUN.test(item.name)) {
+  if (hasUnbrokenRun(item.name)) {
     node.classList.add("agent-name-unbroken");
   }
   return node;

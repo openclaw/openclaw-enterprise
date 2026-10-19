@@ -581,3 +581,38 @@ export async function assertControlEdge(locator, label, { opaqueFill = false } =
     );
   }
 }
+
+// A status line's look and announcement: its class, tone and role, and with `text` its text, all
+// read at one moment (finding 2006).
+export function statusTone(locator, { text = false } = {}) {
+  return locator.evaluate(
+    (node, withText) => ({
+      className: node.className,
+      tone: node.dataset.tone ?? null,
+      role: node.getAttribute("role"),
+      ...(withText ? { text: node.textContent } : {}),
+    }),
+    text,
+  );
+}
+
+// Whether the locator's element holds focus.
+export function hasFocus(locator) {
+  return locator.evaluate((node) => node === globalThis.document.activeElement);
+}
+
+// Counts the browser's `invalid` events. Its own validation fires one per refused control
+// whenever it would show its bubble (a submit without novalidate, or reportValidity); the
+// console's check reads `validity` and fires none. Install it before the page loads; the
+// returned function reads the targets so far.
+export async function countInvalidEvents(page) {
+  await page.addInitScript(() => {
+    globalThis.invalidEvents = [];
+    globalThis.document.addEventListener(
+      "invalid",
+      (event) => globalThis.invalidEvents.push(event.target.id || event.target.tagName),
+      true,
+    );
+  });
+  return () => page.evaluate(() => globalThis.invalidEvents);
+}

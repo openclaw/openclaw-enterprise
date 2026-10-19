@@ -40,6 +40,12 @@ They do not backfill an existing Installation, recreate a deleted Namespace,
 or overwrite configuration. Additional named Namespaces remain available
 through `POST /namespaces`.
 
+In the console, open **Namespaces → Create Namespace**, enter a unique name,
+and submit. The confirmation offers **Open Agents** for the new scope;
+provisioning continues asynchronously. See the
+[console workflow](../guides/console/create-namespace.md) for permissions and
+creation recovery.
+
 ## Ownership and supported operations
 
 The server assigns the Namespace's identifier and Installation ownership.

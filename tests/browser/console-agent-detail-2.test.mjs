@@ -35,6 +35,7 @@ import {
   waitForIdleFetches,
   waitForInputValue,
   waitForSettledFetches,
+  statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -59,6 +60,9 @@ test("Agent delete confirmation can be canceled without sending a write request"
   const agent = await fixture.createAgent(namespace.id, "Cancel Candidate", nativeValues("keep"));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  // A fake clock that keeps running on its own, so the check after Cancel can fire every timer
+  // the page has started instead of waiting on wall-clock time (finding 1994).
+  await page.clock.install();
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByRole("heading", { name: "Cancel Candidate" }).waitFor();
@@ -79,7 +83,8 @@ test("Agent delete confirmation can be canceled without sending a write request"
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
   // Attach the rejection check when the timed wait starts: on a loaded runner the click can
   // outlast the 300 ms window, and a wait that times out with no handler fails the test as an
-  // unhandled rejection (finding 1986). The requests check below still covers a late DELETE.
+  // unhandled rejection (finding 1986). This only catches a DELETE sent soon after Cancel; the
+  // clock run below catches one the page sends later.
   const unexpectedDelete = assert.rejects(
     page.waitForResponse(
       (response) =>
@@ -96,6 +101,14 @@ test("Agent delete confirmation can be canceled without sending a write request"
     await page.evaluate(() => globalThis.document.activeElement?.textContent),
     "Delete Agent",
   );
+
+  // A DELETE that Cancel defers to a timer would miss the window above (finding 1994). Run the
+  // fake clock 15 s ahead so every one-shot timer due by then fires (a repeating poll fires about
+  // once, since it schedules its next run only after its fetch answers), then let the page finish
+  // a fetch of its own: a DELETE the timers sent was issued before that fetch, so the requests
+  // check below sees it.
+  await page.clock.runFor(Math.max(DELETION_POLL_MS, DEPLOYMENT_POLL_MS) * 3);
+  await settlePageRequests(page);
 
   await page.getByRole("heading", { name: "Cancel Candidate" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
@@ -131,6 +144,12 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
 
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  // Queued deletion is an info notice, not a warning (finding 2006).
+  assert.deepEqual(await statusTone(page.getByText(/^Deletion was requested\. /)), {
+    className: "status",
+    tone: "info",
+    role: "status",
+  });
   await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
   // The dialog's close event arrives after the request put focus on the status check. It must
   // not move focus back to the relabelled danger button "Request deletion again" (finding 1421).
@@ -1748,6 +1767,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     "Repositories",
     "Credentials",
     "Workspace files",
+    "Policy denials",
   ];
   assert.deepEqual(await list.getByRole("tab").allTextContents(), names);
   // Which tab is selected, which one is the Tab stop, which has focus, and the URL's tab=.
@@ -1786,9 +1806,9 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   for (const [key, focused] of [
     ["ArrowLeft", "Plugins"],
     ["ArrowLeft", "Configuration"],
-    ["ArrowLeft", "Workspace files"],
+    ["ArrowLeft", "Policy denials"],
     ["ArrowRight", "Configuration"],
-    ["End", "Workspace files"],
+    ["End", "Policy denials"],
     ["Home", "Configuration"],
   ]) {
     await page.keyboard.press(key);
@@ -1869,7 +1889,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await list.getByRole("tab", { name: "Configuration", exact: true }).focus();
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
-  await page.waitForURL("**tab=workspace**");
+  await page.waitForURL("**tab=policy**");
   await page.goBack();
   await page.waitForURL("**tab=configuration**");
   await page.waitForFunction(
@@ -1883,11 +1903,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await page.keyboard.press("End");
   await page.setViewportSize({ width: 360, height: 844 });
   await frames();
-  assert.deepEqual(
-    await focusedInView(),
-    { name: "Workspace files", inView: true },
-    "after resize",
-  );
+  assert.deepEqual(await focusedInView(), { name: "Policy denials", inView: true }, "after resize");
   await page.setViewportSize({ width: 390, height: 844 });
   await strip.evaluate((node) => {
     node.scrollLeft = node.scrollWidth;
@@ -1896,7 +1912,8 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-before"),
   );
   assert.deepEqual(await edges(), { before: true, after: false, masked: true });
-  await page.setViewportSize({ width: 1440, height: 900 });
+  // Include enough desktop width for the additional policy tab to fit without scrolling.
+  await page.setViewportSize({ width: 1800, height: 900 });
   await page.waitForFunction(() => {
     const node = globalThis.document.querySelector(".agent-tabs");
     return !node.hasAttribute("data-more-before") && !node.hasAttribute("data-more-after");
@@ -3192,6 +3209,13 @@ test("a Workspace reread keeps the caret and scroll of a focused, unedited edito
   const start = before.indexOf("line 30 ");
   assert.equal(after.indexOf("line 30 "), start);
   await waitForInputValue(soul, before);
+  // The files can load while the detail view is still held back for its overview read, and a
+  // hidden editor has no scroll height and takes no focus; wait until SOUL.md is shown and
+  // overflows (finding 2034).
+  await page.waitForFunction(() => {
+    const node = globalThis.document.getElementById("workspace-SOUL.md");
+    return node?.scrollHeight > node?.clientHeight;
+  });
   // The reader clicks into line 30 and selects a word; the editor scrolls to centre that line.
   // Lines are alike, so the line's share of the text is its share of the scroll height.
   await soul.evaluate((node, offset) => {

@@ -5,6 +5,7 @@
   "fileConcurrency": 8,
   "parallelFiles": [
     "tests/integration/dev-up.test.mjs",
+    "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
     "tests/integration/stored-document-serialization.test.mjs",
     "tests/integration/list-summaries.test.mjs",
@@ -89,6 +90,7 @@
     "tests/conformance/utils.test.mjs",
     "tests/conformance/console-api-client.test.mjs",
     "tests/conformance/console-carry.test.mjs",
+    "tests/conformance/console-agent-name-runs.test.mjs",
     "tests/conformance/console-json-errors.test.mjs",
     "tests/integration/bootstrap-output.test.mjs",
     "tests/conformance/slack-configuration.test.mjs",
@@ -112,6 +114,9 @@
     },
     {
       "path": "tests/conformance/filesystem-configuration.test.mjs"
+    },
+    {
+      "path": "tests/conformance/console-agent-name-runs.test.mjs"
     },
     {
       "path": "tests/conformance/console-api-client.test.mjs"
@@ -380,16 +385,28 @@
     {
       "path": "tests/integration/dev-up.test.mjs",
       "expectedTests": [
+        "Kubernetes dev-up authenticates the Installation and cleanup uses its saved endpoint and Compose configuration",
+        "Kubernetes Compute defaults to the Compose control plane",
+        "Kubernetes dev-up rejects an unsupported control-plane selection",
+        "Kubernetes dev-up rolls back owned resources after node-dns-refused",
+        "Kubernetes dev-down preserves recovery state after incomplete cleanup and can retry",
+        "cancelling Kubernetes startup during readiness rolls back its owned resources",
+        "launcher case recovery follows real Go rollback after node-dns-refused"
+      ]
+    },
+    {
+      "path": "tests/integration/dev-up-compose.test.mjs",
+      "expectedTests": [
         "dev-up builds the default runtime only when real Compose leaves runtime images unselected",
         "dev-up preserves a selected custom runtime image and skips the quickstart build",
         "dev-up applies per-image overrides on top of the shared runtime image",
-        "Kubernetes dev-up rejects an unsupported control-plane selection",
         "dev-up rejects a public controller port rendered by real Compose",
         "dev-up refuses an existing key destination before invoking Compose",
         "dev-up fails closed when bootstrap exits unsuccessfully",
         "dev-up fails closed when the worker exits before readiness",
         "dev-up preserves a copied key when the authenticated installation check is rejected",
-        "dev-up rejects an authenticated installation response for a different Installation"
+        "dev-up rejects an authenticated installation response for a different Installation",
+        "development cleanup defaults to the Compose profile"
       ]
     },
     {

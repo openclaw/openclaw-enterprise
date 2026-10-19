@@ -255,7 +255,9 @@ to the Collector, and responses carry `Cache-Control: no-store`.
   status, proxy or TLS diagnostic). Other structured output, including
   Codex protocol traffic, payload keys such as `prompt` and `content`, and
   pretty-printed JSON spread over several lines, is withheld and counted. Retained text passes pattern redaction, which is
-  best-effort. The `content` class has no producer.
+  best-effort. The `content` class has no producer. A failed Codex login or model
+  check keeps only its `failureClass` (`network`, `tls`, `http_401_403`,
+  `http_5xx`, `http_other`, `timeout`, `empty` or `unknown`), never Codex's error output.
 - **Events.** Pod Event reasons and messages reach the `operate` audience after
   credential redaction. Node names, image references and Secret and ConfigMap
   names are masked in the standard scheduler and kubelet message shapes; the

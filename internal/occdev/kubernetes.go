@@ -347,7 +347,8 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 	gatewayResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "1792Mi"}, "limits": map[string]string{"cpu": "2", "memory": "3Gi"}}
 	harnessResources := map[string]any{"requests": map[string]string{"cpu": "100m", "memory": "768Mi"}, "limits": map[string]string{"cpu": "2", "memory": "6Gi"}}
 	config := map[string]any{
-		"occ": map[string]string{"cluster": s.Cluster}, "backend": []any{},
+		"sandboxNetworkPolicyCeiling": s.SandboxNetworkPolicyCeiling,
+		"occ":                         map[string]string{"cluster": s.Cluster}, "backend": []any{},
 		"drivers": map[string]any{
 			"configuration": map[string]any{"id": "config-kubernetes", "configuration": map[string]any{"authentication": auth}},
 			"iam":           map[string]any{"id": "native-iam", "configuration": map[string]any{}},
@@ -360,6 +361,9 @@ func writeInstallation(s *developmentState, reference string, openShell *openShe
 				"runtime":                     map[string]any{"gatewayStorageClassName": "local-path", "transportSecretPrefix": "openclaw-agent-transport", "gatewayNodeSelector": map[string]string{"kubernetes.io/hostname": "k3d-" + s.Cluster + "-server-0"}},
 			}},
 		},
+	}
+	if len(s.SandboxNetworkPolicyCeiling) == 0 {
+		delete(config, "sandboxNetworkPolicyCeiling")
 	}
 	if codexSeccompProfile != "" {
 		compute := config["drivers"].(map[string]any)["compute"].(map[string]any)["configuration"].(map[string]any)
@@ -493,11 +497,11 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 			},
 			"policy": map[string]any{
 				"process": map[string]string{"runAsUser": "1000", "runAsGroup": "1000"},
-				"networkPolicies": []any{
+				"networkPolicies": append([]any{
 					// Model egress comes from the credential source's OpenShell profile, which
 					// terminates TLS so the proxy can inject the key; an uninspected rule would conflict.
 					map[string]any{"name": "source-control", "endpoints": []any{map[string]any{"host": "github.com", "ports": []int{443}, "tls": "skip"}}, "binaries": []any{map[string]string{"path": "/usr/bin/git"}}},
-				},
+				}, s.SandboxNetworkPolicies...),
 			},
 			"sandboxNamePrefix": "os",
 		},

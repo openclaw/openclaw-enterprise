@@ -743,7 +743,8 @@ const TRANSIENT_DEPENDENCY_CODES: Readonly<Record<TransientDependency, string>> 
  * revision: the Kubernetes API timed out or answered 429/5xx, the Agent
  * Gateway's route refused or dropped a connection while it converged, the
  * Sandbox gateway refused new requests at its request admission limit, or the
- * Sandbox gateway did not answer a Harness status read through its listener. The
+ * Sandbox gateway did not answer: a Harness status read through its listener, or
+ * any request of a revision pass while it is down (`SandboxGatewayUnavailableError`). The
  * worker retries it within the deployment's convergence deadline instead of
  * spending the attempt budget, and records `code`, which names the dependency.
  * The message stays in the controller; status shows a fixed text.
@@ -879,6 +880,22 @@ export class SandboxWorkspaceSetupRefusedError extends Error {
  * its retry and the worker's exposure sweep logs it apart from a failure (finding 1696).
  */
 export const SANDBOX_DELETION_UNCONFIRMED = "SANDBOX_DELETION_UNCONFIRMED";
+
+/**
+ * The Sandbox gateway did not answer a request at all: it is down or restarting (gRPC
+ * UNAVAILABLE), so the request says nothing about the revision. It stays a
+ * DependencyUnavailableError, so every caller keeps its behavior (HTTP answers 503, other work
+ * retries within its attempt budget), except a revision pass: like a Kubernetes API that is
+ * converging, the worker waits for the gateway within the deployment's convergence deadline as
+ * `SANDBOX_GATEWAY_UNAVAILABLE` instead of spending the attempt budget (D28, findings 1658 and
+ * 2040). The message stays in the controller.
+ */
+export class SandboxGatewayUnavailableError extends DependencyUnavailableError {
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxGatewayUnavailableError";
+  }
+}
 
 /**
  * The Sandbox gateway refuses the controller's own identity in the revision's Workspace, so the

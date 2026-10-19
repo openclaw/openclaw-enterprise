@@ -298,6 +298,192 @@ test("QA command diagnostics retain the error while hiding generated and environ
   );
 });
 
+test("a failed image build keeps its failed step's output as redacted QA evidence", async () => {
+  const { imageBuildFailureOutput, recordImageBuildFailure } =
+    await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  registerQaSecret("build-private-value");
+  // BuildKit's plain progress (finding 2020's shape): steps interleave, each line prefixed by
+  // its step; the failed step's output is gone from the final summary's last lines.
+  const stderr = [
+    // An earlier build in the same dev-up that succeeded: its step numbers repeat.
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [controller 9/9] RUN node build.mjs",
+    "#41 DONE 4.0s",
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#40 [openclaw-build 13/18] COPY --from=openclaw-source /source/ ./",
+    "#41 [openclaw-build 14/18] RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts",
+    "#40 DONE 2.1s",
+    "#42 [controller 3/5] RUN pnpm install",
+    "#41 3.210  RUN  v3.2.4 /source",
+    "#41 45.12  FAIL  src/gateway/server.required-placement-scopes.test.ts > revokes placement",
+    "#41 45.13 AssertionError: expected 'build-private-value' to be undefined",
+    "#42 12.00 Done in 11.9s",
+    '#41 ERROR: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    "#42 CANCELED",
+    "------",
+    " > [openclaw-build 14/18] RUN --network=none ...:",
+    "------",
+    "Dockerfile:180",
+    "--------------------",
+    " 180 | >>> RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \\",
+    "--------------------",
+    'ERROR: failed to solve: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1" did not complete successfully: exit code: 1',
+    "Error: docker failed: exit status 1",
+    "",
+  ].join("\n");
+  const step = imageBuildFailureOutput(stderr);
+  assert.equal(step.length, 5);
+  assert.ok(step.every((line) => line.startsWith("#41 ")));
+  assert.match(step.at(-2), /AssertionError/);
+  assert.equal(imageBuildFailureOutput(stderr, { lines: 2 }).length, 2);
+
+  const records = [];
+  const record = async (name, value) => {
+    records.push({ name, value });
+    return `kubernetes-${name}.json`;
+  };
+  const file = await recordImageBuildFailure(record, stderr, { PRIVATE_INPUT: "unused" });
+  assert.match(file, /^kubernetes-image-build-failure-\d+\.json$/);
+  assert.equal(records.length, 1);
+  assert.match(
+    records[0].value.lines.join("\n"),
+    /FAIL {2}src\/gateway\/server\.required-placement/,
+  );
+  assert.doesNotMatch(JSON.stringify(records[0].value), /build-private-value/);
+
+  // A podman build has no BuildKit steps: its last lines are kept.
+  const podman = [
+    "STEP 14/18: RUN node test.mjs",
+    ...Array.from({ length: 300 }, (_, i) => `line ${i}`),
+  ];
+  podman.push('Error: building at STEP "RUN node test.mjs": while running runtime: exit status 1');
+  assert.equal(imageBuildFailureOutput(podman.join("\n")).length, 200);
+  assert.match(imageBuildFailureOutput(podman.join("\n")).at(-1), /^Error: building at STEP/);
+
+  // Newer buildx words the summary "failed to build: failed to solve".
+  assert.deepEqual(
+    imageBuildFailureOutput(
+      stderr.replace("ERROR: failed to solve: ", "ERROR: failed to build: failed to solve: "),
+    ),
+    step,
+  );
+
+  // Any other command failure records nothing.
+  assert.equal(
+    imageBuildFailureOutput('Error from server (NotFound): pods "x" not found\n'),
+    undefined,
+  );
+  assert.equal(await recordImageBuildFailure(record, "dev-up: startup timed out\n", {}), undefined);
+  assert.equal(records.length, 1);
+});
+
+// Finding 2025: the QA installation's command runner is what records a failed image build's step
+// as uploaded evidence, so it is run here with a real failing subprocess and no cluster. The
+// evidence file must exist and carry the failed step with every secret the subprocess printed
+// masked; a protected command records nothing.
+test("the QA command runner records a failed image build step as redacted evidence", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "qa-run-evidence-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const artifacts = await mkdtemp(join(directory, "artifacts-"));
+  registerQaSecret("registered-private-2025");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    // The subprocess sees the installation's environment, so it can print its private value.
+    env: { PATH: process.env.PATH, OCC_TEST_PRIVATE_INPUT: "env-private-value-2025" },
+    // The installation's own record: a confined JSON file in the uploaded artifacts directory.
+    async record(name, value) {
+      const file = `kubernetes-${name}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+      return file;
+    },
+  };
+  const longLine = "x".repeat(1_000);
+  const stderr = [
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [openclaw-build 14/18] RUN node scripts/test-projects.mts",
+    "#41 45.12  FAIL  src/gateway/placement.test.ts > keeps its token",
+    "#41 45.13 AssertionError: expected 'registered-private-2025' to be undefined",
+    "#41 45.14 env ${OCC_TEST_PRIVATE_INPUT}",
+    "#41 45.15 Authorization: Bearer fake-bearer-token-2025",
+    "#41 45.16 -----BEGIN PRIVATE KEY-----",
+    "#41 45.17 fakePemBodyLine2025AAAAAAAAAAAAAAAAAAAA",
+    "#41 45.18 -----END PRIVATE KEY-----",
+    `#41 45.19 ${longLine}`,
+    '#41 ERROR: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const script = `process.stderr.write(${JSON.stringify(stderr)}.replace("\${OCC_TEST_PRIVATE_INPUT}", process.env.OCC_TEST_PRIVATE_INPUT) + "\\n"); process.exit(1);`;
+
+  await assert.rejects(runQaCommand(f, process.execPath, ["-e", script]), (error) => {
+    assert.match(
+      error.message,
+      /; failed image build step output: kubernetes-image-build-failure-\d+\.json(?:;|$)/,
+    );
+    return true;
+  });
+  const files = (await readdir(artifacts)).filter((file) => file.includes("image-build-failure"));
+  assert.equal(files.length, 1);
+  const evidence = await readFile(join(artifacts, files[0]), "utf8");
+  const { lines } = JSON.parse(evidence);
+  assert.ok(lines.some((line) => line.includes("FAIL  src/gateway/placement.test.ts")));
+  assert.doesNotMatch(
+    evidence,
+    /registered-private-2025|env-private-value-2025|fake-bearer-token-2025|fakePemBodyLine2025/,
+  );
+  // Each line is cut to 800 characters.
+  assert.ok(lines.includes(`#41 45.19 ${longLine}`.slice(0, 800) + "... [truncated]"));
+
+  // A command whose output is protected records no evidence, even from a failed image build.
+  await assert.rejects(
+    runQaCommand(f, process.execPath, ["-e", script], { privateFailureOutput: true }),
+    (error) => {
+      assert.doesNotMatch(error.message, /failed image build step output/);
+      return true;
+    },
+  );
+  assert.deepEqual(
+    (await readdir(artifacts)).filter((file) => file.includes("image-build-failure")),
+    files,
+  );
+});
+
+// Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
+// line, must lose every body line, not only the lines the tail still shows its BEGIN for.
+test("an image build step's unterminated private key is masked past the evidence window", async () => {
+  const { recordImageBuildFailure } = await import("../helpers/qa-installation.mjs");
+  const body = Array.from(
+    { length: 250 },
+    (_, index) =>
+      `#41 ${index}.0 fakeKeyBody${String(index).padStart(3, "0")}QUJDREVGR0hJSktMTU5PUFFSU1RVVldY`,
+  );
+  const stderr = [
+    "#41 [runtime 4/9] RUN cat /run/secrets/key",
+    "#41 0.1 -----BEGIN RSA PRIVATE KEY-----",
+    ...body,
+    '#41 ERROR: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const records = [];
+  await recordImageBuildFailure(
+    async (name, value) => {
+      records.push(value);
+      return `kubernetes-${name}.json`;
+    },
+    stderr,
+    {},
+  );
+  assert.equal(records.length, 1);
+  assert.equal(records[0].lines.length, 200);
+  assert.doesNotMatch(JSON.stringify(records[0]), /fakeKeyBody/);
+});
+
 test("QA waits report the last observation when they time out", async () => {
   const { waitFor } = await import("../helpers/qa-utils.mjs");
   let observations = 0;

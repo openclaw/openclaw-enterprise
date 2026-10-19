@@ -1,4 +1,8 @@
+import assert from "node:assert/strict";
 import test from "node:test";
+import vm from "node:vm";
+import { CODEX_FAILURE_OUTPUT_CLASS_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
 import { checkCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
 
 const ready = {
@@ -941,5 +945,528 @@ test("Codex runtime retries a transient startup model probe failure once", async
     await t.test(scenario.name, (t) => {
       checkCodexStartup(t, scenario);
     });
+  }
+});
+
+// Finding 2017: a failed login or model check logs only the class of Codex's error output.
+// Fake credentials, a JWT, a bearer header and a URL with a query string in that output
+// must never reach the held status or any log line.
+const fakeSecrets = [
+  "sk-proj-FAKE0123456789abcdefghijklmnopqrstuv",
+  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlLXVzZXIifQ.ZmFrZS1zaWduYXR1cmU",
+  "at-fixture-token",
+  "code=fake-authorization-code",
+];
+const secretOutput = (text) =>
+  `${text} (https://auth.example.invalid/oauth/token?${fakeSecrets[3]}) ` +
+  `Authorization: Bearer ${fakeSecrets[1]} key ${fakeSecrets[0]} token ${fakeSecrets[2]}\n`;
+const leaked = new RegExp(
+  [
+    ...fakeSecrets.map((secret) => secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    "Bearer",
+    "example\\.invalid",
+    "://",
+    "error sending",
+    "dns error",
+    "certificate",
+    "Service Unavailable",
+  ].join("|"),
+  "i",
+);
+
+test("Codex runtime logs a failed login or model check's output class, never the output", async (t) => {
+  const loginFailed = (code = "LOGIN_FAILED") => ({
+    phases: [["codex-login", "failed"]],
+    check: "login",
+    code,
+  });
+  const probeExit = {
+    phases: [
+      ["codex-login", "ok"],
+      ["model-probe", "failed"],
+    ],
+    check: "model-probe",
+    code: "MODEL_PROBE_FAILED",
+    cause: { kind: "PROCESS_EXIT", detail: "exit-1" },
+  };
+  // The 2017 shape: Codex exits 1 before printing any event.
+  const exited = (stderr) => probe([], { status: 1, stderr });
+  const pat = { loginMode: "codex_pat" };
+  const scenarios = [
+    {
+      name: "a login transport error is network",
+      ...pat,
+      native: [
+        login({
+          status: 1,
+          stderr: secretOutput(
+            "Error logging in with access token: failed to request personal access token metadata: error sending request for url",
+          ),
+        }),
+      ],
+      expect: loginFailed(),
+      failureClass: "network",
+    },
+    {
+      name: "a login DNS failure is network",
+      ...pat,
+      native: [
+        login({
+          status: 1,
+          stderr: secretOutput("dns error: failed to lookup address information"),
+        }),
+      ],
+      expect: loginFailed(),
+      failureClass: "network",
+    },
+    {
+      name: "a login provider 5xx is http_5xx",
+      ...pat,
+      native: [
+        login({ status: 1, stderr: secretOutput("unexpected status 503 Service Unavailable") }),
+      ],
+      expect: loginFailed(),
+      failureClass: "http_5xx",
+    },
+    {
+      name: "a login credential rejection is http_401_403",
+      ...pat,
+      native: [
+        login({
+          status: 1,
+          stderr: secretOutput(
+            "personal access token metadata request failed with status 401 Unauthorized",
+          ),
+        }),
+      ],
+      expect: loginFailed("AUTHENTICATION_FAILED"),
+      failureClass: "http_401_403",
+    },
+    {
+      name: "another login 4xx is http_other",
+      ...pat,
+      native: [login({ status: 1, stderr: secretOutput("last status: 429 Too Many Requests") })],
+      expect: loginFailed(),
+      failureClass: "http_other",
+    },
+    {
+      name: "a rejected proxy certificate is tls",
+      ...pat,
+      native: [
+        login({ status: 1, stderr: secretOutput("invalid peer certificate: UnknownIssuer") }),
+      ],
+      expect: loginFailed(),
+      failureClass: "tls",
+    },
+    {
+      name: "three login timeouts are timeout",
+      ...pat,
+      native: [login(timedOut), login(timedOut), login(timedOut)],
+      expect: loginFailed(),
+      failureClass: "timeout",
+    },
+    {
+      name: "a silent login failure is empty",
+      ...pat,
+      native: [login({ status: 1, stderr: "" })],
+      expect: loginFailed(),
+      failureClass: "empty",
+    },
+    {
+      name: "unrecognized login output is unknown",
+      ...pat,
+      native: [login({ status: 1, stderr: secretOutput("something else went wrong") })],
+      expect: loginFailed(),
+      failureClass: "unknown",
+    },
+    {
+      name: "a probe that exits before any event with a transport error is network",
+      native: [login(), exited(secretOutput("Error: error sending request for url"))],
+      expect: probeExit,
+      failureClass: "network",
+    },
+    {
+      name: "a probe that exits before any event with a provider 5xx is http_5xx",
+      native: [login(), exited(secretOutput("Error: unexpected status 502 Bad Gateway"))],
+      expect: probeExit,
+      failureClass: "http_5xx",
+    },
+    {
+      name: "a probe that exits before any event with a 403 is http_401_403",
+      native: [login(), exited(secretOutput("Error: unexpected status 403 Forbidden"))],
+      expect: probeExit,
+      failureClass: "http_401_403",
+    },
+    {
+      name: "a probe that exits silently is empty",
+      native: [login(), exited("")],
+      expect: probeExit,
+      failureClass: "empty",
+    },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, (t) => {
+      const { status, diagnostics } = checkCodexStartup(t, scenario);
+      assert.doesNotMatch(JSON.stringify(status) + diagnostics.join("\n"), leaked);
+      // The held status keeps its existing shape: the class is a log field only.
+      assert.equal(JSON.stringify(status).includes("failureClass"), false);
+    });
+  }
+});
+
+function loadClassifier() {
+  // Count the characters every substring search reads, in the classifier's own realm.
+  const context = vm.createContext({});
+  vm.runInContext(
+    `const scanned = { chars: 0 };
+    const indexOf = String.prototype.indexOf;
+    const includes = String.prototype.includes;
+    String.prototype.indexOf = function (needle, from = 0) {
+      const at = indexOf.call(this, needle, from);
+      scanned.chars += (at === -1 ? this.length : at + needle.length) - Math.min(from, this.length);
+      return at;
+    };
+    String.prototype.includes = function (needle) {
+      scanned.chars += this.length;
+      return includes.call(this, needle);
+    };
+    this.scanned = scanned;
+    ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
+    this.classify = codexFailureOutputClass;
+    this.classifyProbe = codexProbeFailureClass;
+    this.eventText = codexFailureEventText;
+    this.window = CODEX_FAILURE_OUTPUT_WINDOW;`,
+    context,
+  );
+  return context;
+}
+
+test("the Codex failure output classifier maps output to a closed class", () => {
+  const { classify } = loadClassifier();
+  const cases = [
+    ["Error: error sending request for url", undefined, "network"],
+    ["connection reset by peer", undefined, "network"],
+    ["tcp connect error: Connection refused (os error 111)", undefined, "network"],
+    ["Temporary failure in name resolution", undefined, "network"],
+    ["operation timed out", { code: "ETIMEDOUT" }, "network"],
+    ["unexpected status 500 Internal Server Error", undefined, "http_5xx"],
+    ["status: 504", undefined, "http_5xx"],
+    ["HTTP 502", undefined, "http_5xx"],
+    ["status=403", undefined, "http_401_403"],
+    // A rejection outranks a server error and transport text in the same output.
+    ["status 503 then status 401 Unauthorized; connection reset", undefined, "http_401_403"],
+    ["status 404 Not Found", undefined, "http_other"],
+    ["error sending request: invalid peer certificate", undefined, "tls"],
+    ["", { code: "ETIMEDOUT" }, "timeout"],
+    ["   \n", undefined, "empty"],
+    [undefined, undefined, "empty"],
+    [null, { code: "ENOENT" }, "empty"],
+    // Near misses name no status: a process exit status, four digits, a URL scheme.
+    ["exit status 127", undefined, "unknown"],
+    ["status 4011", undefined, "unknown"],
+    ["see https://status.example.invalid/401", undefined, "unknown"],
+    ["status  : 503", undefined, "unknown"],
+    // A status word inside a URL or another word names no status.
+    ["GET /v1/x?status=500&http=503 failed", undefined, "unknown"],
+    ["httpstatus 503", undefined, "unknown"],
+    ["(status 503)", undefined, "http_5xx"],
+    [fakeSecrets.join(" "), undefined, "unknown"],
+  ];
+  for (const [output, error, expected] of cases) {
+    const actual = classify(output, error);
+    assert.equal(actual, expected, JSON.stringify(output));
+    assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(actual));
+  }
+});
+
+test("the Codex failure output classifier reads a bounded tail in linear time", () => {
+  const context = loadClassifier();
+  const { classify, scanned, window } = context;
+  // Repeated and near-miss markers, the worst shapes for a substring or status scan.
+  const adversarial = [
+    "status",
+    "status:",
+    "status 50",
+    "status 5000",
+    "http ",
+    "connection refuse",
+    "certificat",
+    "a",
+  ];
+  // Every search reads at most the window once per marker; Codex's maxBuffer is 256 KiB.
+  const budget = 32 * window;
+  for (const unit of adversarial) {
+    for (const length of [window, 262144, 1048576]) {
+      const output = unit.repeat(Math.ceil(length / unit.length));
+      scanned.chars = 0;
+      const actual = classify(output);
+      assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(actual));
+      assert.ok(
+        scanned.chars <= budget,
+        `${JSON.stringify(unit)} x ${length}: read ${scanned.chars} > ${budget}`,
+      );
+      // Only the tail is read: the result equals that of the last window alone.
+      assert.equal(actual, classify(output.slice(-window)));
+    }
+  }
+  // A marker before the tail is never read.
+  assert.equal(classify("status 503\n" + "x".repeat(window)), "unknown");
+  assert.equal(classify("x".repeat(window) + "\nstatus 503"), "http_5xx");
+});
+
+// Finding 2043: codex exec --json reports a failed turn or a fatal error on stdout, as a
+// turn.failed or error event, often with nothing on stderr. The model check's class reads
+// those events' messages too, still logging only the class.
+test("Codex runtime classifies a failed model check's stdout error events, never logging them", async (t) => {
+  const started = { type: "turn.started" };
+  const quiet = { status: 1, stderr: "" };
+  // Fake secrets without a credential marker, so a transient failure keeps its retry.
+  const transientSecrets = (text) =>
+    `${text} (https://api.example.invalid/v1/responses?key=${fakeSecrets[0]}) ` +
+    `Bearer ${fakeSecrets[1]} token ${fakeSecrets[2]}`;
+  const held = (detail, provider) => probeFailure({ kind: "PROBE_STATUS", detail }, provider);
+  const networkWait = errorEvent(
+    "Reconnecting... waiting for network (Connection failed: error sending request)",
+  );
+  const unreachable = probe([started, networkWait, networkWait], timedOut, 30000);
+  const scenarios = [
+    {
+      name: "a 401 failed turn with empty stderr is http_401_403",
+      events: [
+        started,
+        failedTurn(secretOutput("unexpected status 401 Unauthorized: Incorrect API key provided")),
+      ],
+      result: quiet,
+      expect: probeAuthenticationFailure,
+      failureClass: "http_401_403",
+    },
+    {
+      name: "a 5xx error event with empty stderr is http_5xx",
+      events: [started, errorEvent(secretOutput("unexpected status 502 Bad Gateway"))],
+      result: quiet,
+      expect: held("error-event", { status: 502 }),
+      failureClass: "http_5xx",
+    },
+    {
+      name: "a retried 5xx failed turn is http_5xx on each attempt",
+      native: [
+        login(),
+        probe(
+          [started, failedTurn(transientSecrets("unexpected status 503 Service Unavailable"))],
+          quiet,
+        ),
+        probe(
+          [started, failedTurn(transientSecrets("unexpected status 503 Service Unavailable"))],
+          quiet,
+        ),
+      ],
+      retryAfterMs: 1000,
+      expect: held("turn-failed-attempt2", { status: 503 }),
+      lastProbeCause: { kind: "PROBE_STATUS", detail: "turn-failed" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+      probeFailureClasses: ["http_5xx", "http_5xx"],
+    },
+    {
+      name: "a failed turn naming a transport error is network",
+      events: [
+        started,
+        failedTurn(
+          secretOutput("stream disconnected before completion: error sending request for url"),
+        ),
+      ],
+      result: quiet,
+      expect: held("turn-failed"),
+      failureClass: "network",
+    },
+    {
+      name: "a TLS error event is tls",
+      events: [started, errorEvent(secretOutput("invalid peer certificate: UnknownIssuer"))],
+      result: quiet,
+      expect: held("error-event"),
+      failureClass: "tls",
+    },
+    {
+      // Codex waits for the network until the wrapper's timeout: the wait names the cause.
+      name: "a network wait until the timeout is network, not timeout",
+      native: [login(), unreachable, unreachable],
+      retryAfterMs: 1000,
+      expect: held("error-event-attempt2"),
+      lastProbeCause: { kind: "PROBE_STATUS", detail: "error-event" },
+      probeCodes: ["MODEL_PROBE_FAILED", "MODEL_PROBE_FAILED"],
+      probeFailureClasses: ["network", "network"],
+    },
+    {
+      name: "a failed turn without a known marker is unknown",
+      events: [started, failedTurn(secretOutput("something else went wrong"))],
+      result: quiet,
+      expect: held("turn-failed"),
+      failureClass: "unknown",
+    },
+    {
+      // A status on stderr outranks transport text in an event, and the reverse.
+      name: "the more specific class wins across stderr and events",
+      events: [started, failedTurn(secretOutput("error sending request for url"))],
+      result: { status: 1, stderr: secretOutput("Error: unexpected status 403 Forbidden") },
+      expect: held("turn-failed"),
+      failureClass: "http_401_403",
+    },
+    {
+      // A recovered stream notice names nothing; the held error event after it does.
+      // A recovered notice is read too: the class names the output, the cause the failure.
+      name: "a recovered stream notice naming a transport error classifies a later tool event",
+      events: [
+        started,
+        errorEvent(
+          "Reconnecting... 1/3 stream disconnected before completion: error sending request for url",
+        ),
+        { type: "item.completed", item: { type: "command_execution" } },
+      ],
+      result: quiet,
+      expect: held("tool-event"),
+      failureClass: "network",
+    },
+    {
+      name: "a held error event after a recovered stream notice names its own class",
+      events: [
+        started,
+        errorEvent("Reconnecting... 1/3 stream disconnected before completion"),
+        errorEvent("Reconnecting... 2/3 error sending request"),
+      ],
+      result: quiet,
+      expect: held("error-event"),
+      failureClass: "network",
+    },
+    // Malformed stdout is not read: the class comes from stderr alone, as before.
+    {
+      name: "malformed stdout naming a status classifies stderr alone",
+      events: [],
+      result: {
+        status: 1,
+        stdout: `${JSON.stringify(failedTurn("unexpected status 401 Unauthorized"))}\nnot-json`,
+        stderr: "",
+      },
+      expect: probeFailure({ kind: "INVALID_OUTPUT", detail: "json" }),
+      failureClass: "empty",
+    },
+    {
+      name: "non-event stdout naming a status classifies stderr alone",
+      events: [],
+      result: {
+        status: 1,
+        stdout: `${JSON.stringify(failedTurn("unexpected status 401 Unauthorized"))}\nnull`,
+        stderr: secretOutput("error sending request for url"),
+      },
+      expect: probeFailure({ kind: "INVALID_OUTPUT", detail: "shape" }),
+      failureClass: "network",
+    },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, (t) => {
+      const { status, diagnostics } = checkCodexStartup(t, scenario);
+      assert.doesNotMatch(JSON.stringify(status) + diagnostics.join("\n"), leaked);
+      assert.equal(JSON.stringify(status).includes("failureClass"), false);
+    });
+  }
+});
+
+test("the Codex model check classifier reads only error event messages, most specific first", () => {
+  const { classify, classifyProbe, eventText, window } = loadClassifier();
+  const advisory = {
+    type: "item.completed",
+    item: { type: "error", message: "unexpected status 401 Unauthorized" },
+  };
+  const answer = {
+    type: "item.completed",
+    item: { type: "agent_message", text: "unexpected status 401 Unauthorized" },
+  };
+  const cases = [
+    // [stderr, events, error, expected]
+    ["", [failedTurn("unexpected status 401 Unauthorized")], undefined, "http_401_403"],
+    ["", [errorEvent("unexpected status 500")], undefined, "http_5xx"],
+    ["", [errorEvent("status 429 Too Many Requests")], undefined, "http_other"],
+    ["", [failedTurn("dns error: failed to lookup address")], undefined, "network"],
+    ["", [failedTurn("certificate verify failed")], undefined, "tls"],
+    ["", [failedTurn("odd")], undefined, "unknown"],
+    ["", [], undefined, "empty"],
+    ["", [], { code: "ETIMEDOUT" }, "timeout"],
+    // A transport marker outranks the wrapper's timeout, which outranks unknown text.
+    ["", [errorEvent("connection reset")], { code: "ETIMEDOUT" }, "network"],
+    ["odd", [errorEvent("odd")], { code: "ETIMEDOUT" }, "timeout"],
+    // Each source's most specific class competes in one precedence.
+    ["connection reset", [failedTurn("status 503")], undefined, "http_5xx"],
+    ["status 503", [failedTurn("status 401 Unauthorized")], undefined, "http_401_403"],
+    ["status 401", [failedTurn("status 503")], undefined, "http_401_403"],
+    ["certificate", [failedTurn("connection reset")], undefined, "tls"],
+    ["odd", [], undefined, "unknown"],
+    ["", [failedTurn("odd")], undefined, "unknown"],
+    // Only error and turn.failed messages are read: advisory items, answers and
+    // non-string messages name nothing, nor do events the probe never parsed.
+    ["", [advisory, answer], undefined, "empty"],
+    ["", [{ type: "error", message: { text: "status 401" } }], undefined, "empty"],
+    ["", [{ type: "turn.failed", error: "status 401" }], undefined, "empty"],
+    ["", [{ type: "turn.failed", message: "status 401" }], undefined, "empty"],
+    ["", undefined, undefined, "empty"],
+    ["connection reset", undefined, undefined, "network"],
+  ];
+  for (const [stderr, events, error, expected] of cases) {
+    const actual = classifyProbe(stderr, events, error);
+    assert.equal(actual, expected, JSON.stringify([stderr, events, error]));
+    assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(actual));
+  }
+  // The two sources rank like one output holding both texts, in either order.
+  const samples = [
+    "status 401",
+    "status 503",
+    "status 404",
+    "certificate",
+    "connection reset",
+    "odd",
+    "",
+  ];
+  for (const first of samples) {
+    for (const second of samples) {
+      assert.equal(
+        classifyProbe(first, [errorEvent(second)]),
+        classify(`${first}\n${second}`),
+        JSON.stringify([first, second]),
+      );
+    }
+  }
+  // The newest messages fill one window, each from its head; older ones are never read.
+  assert.equal(
+    classifyProbe("", [failedTurn("status 401 Unauthorized"), errorEvent("x".repeat(window))]),
+    "unknown",
+  );
+  assert.equal(classifyProbe("", [errorEvent(`status 503 ${"x".repeat(2 * window)}`)]), "http_5xx");
+  assert.equal(eventText([errorEvent("a"), { type: "turn.started" }, failedTurn("b")]), "a\nb");
+});
+
+test("the Codex model check classifier reads a bounded share of stdout events in linear time", () => {
+  const context = loadClassifier();
+  const { classifyProbe, eventText, scanned, window } = context;
+  // Two sources, each searched at most once per marker over at most one window.
+  const budget = 2 * 32 * window;
+  const shapes = [
+    // One huge message, many short ones, many empty ones and many non-error events.
+    (unit, length) => [errorEvent(unit.repeat(Math.ceil(length / unit.length)))],
+    (unit, length) =>
+      Array.from({ length: Math.ceil(length / (unit.length + 16)) }, () => failedTurn(unit)),
+    (_, length) => Array.from({ length: length / 16 }, () => errorEvent("")),
+    (_, length) => Array.from({ length: length / 16 }, () => ({ type: "turn.started" })),
+  ];
+  for (const unit of ["status", "status 50", "http ", "connection refuse", "certificat", "a"]) {
+    for (const length of [window, 262144]) {
+      for (const shape of shapes) {
+        const events = shape(unit, length);
+        assert.ok(eventText(events).length <= window);
+        scanned.chars = 0;
+        const actual = classifyProbe("", events);
+        assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(actual));
+        assert.ok(
+          scanned.chars <= budget,
+          `${JSON.stringify(unit)} x ${length}: read ${scanned.chars} > ${budget}`,
+        );
+      }
+    }
   }
 });

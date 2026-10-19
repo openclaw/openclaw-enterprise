@@ -3279,6 +3279,98 @@ function forwardCodexStderr(stream) {
 }
 `;
 
+// A failed Codex login or startup model check logs the class of Codex's error output
+// (finding 2017), so a sighting can tell a transport failure from a provider answer.
+// The output can carry provider text, URLs and the credential, so only a fixed class
+// from CODEX_FAILURE_OUTPUT_CLASSES leaves this helper. It reads at most the last
+// CODEX_FAILURE_OUTPUT_WINDOW characters and matches them with indexOf and fixed-width
+// digit reads, never a regular expression, so its work stays linear in that window.
+export const CODEX_FAILURE_OUTPUT_CLASS_HELPER = String.raw`
+const CODEX_FAILURE_OUTPUT_WINDOW = 8192;
+const CODEX_TLS_FAILURE_MARKERS = ["certificate", "tls handshake", "handshake failure", "unknown issuer"];
+const CODEX_NETWORK_FAILURE_MARKERS = [
+  "error sending request", "error trying to connect", "tcp connect error", "dns error",
+  "failed to lookup address", "name does not resolve", "name or service not known",
+  "name has no usable address", "temporary failure in name resolution",
+  "connection refused", "connection reset", "connection closed", "connection aborted",
+  "broken pipe", "unexpected eof", "network is unreachable", "host is unreachable",
+  "no route to host", "timed out", "timeout",
+];
+// The HTTP status after a "status" or "http" word: the word starts the text or follows
+// a space, tab, newline, "(" or ":" (so a URL's "?status=500" names none), then up to
+// two ":", "=" or space separators and exactly three digits. Anything else names no status.
+const CODEX_FAILURE_STATUS_WORD_STARTS = " \t\n(:";
+function codexFailureOutputStatus(text, at, start) {
+  if (at > 0 && !CODEX_FAILURE_STATUS_WORD_STARTS.includes(text[at - 1])) return 0;
+  let index = start;
+  while (index < start + 2 && (text[index] === ":" || text[index] === "=" || text[index] === " ")) index++;
+  if (index === start) return 0;
+  let status = 0;
+  for (const end = index + 3; index < end; index++) {
+    const digit = text.charCodeAt(index) - 48;
+    if (!(digit >= 0 && digit <= 9)) return 0;
+    status = status * 10 + digit;
+  }
+  const next = text.charCodeAt(index) - 48;
+  return next >= 0 && next <= 9 ? 0 : status;
+}
+function codexFailureOutputClass(output, error) {
+  const text = typeof output === "string" ? output.slice(-CODEX_FAILURE_OUTPUT_WINDOW).toLowerCase() : "";
+  let rejected = false;
+  let serverError = false;
+  let otherStatus = false;
+  for (const marker of ["status", "http"]) {
+    for (let at = text.indexOf(marker); at !== -1; at = text.indexOf(marker, at + marker.length)) {
+      const status = codexFailureOutputStatus(text, at, at + marker.length);
+      if (status === 401 || status === 403) rejected = true;
+      else if (status >= 500 && status <= 599) serverError = true;
+      else if (status >= 400 && status <= 499) otherStatus = true;
+    }
+  }
+  // A status means the provider (or a proxy) answered, so it outranks transport text.
+  if (rejected) return "http_401_403";
+  if (serverError) return "http_5xx";
+  if (otherStatus) return "http_other";
+  if (CODEX_TLS_FAILURE_MARKERS.some((marker) => text.includes(marker))) return "tls";
+  if (CODEX_NETWORK_FAILURE_MARKERS.some((marker) => text.includes(marker))) return "network";
+  if (error?.code === "ETIMEDOUT") return "timeout";
+  return text.trim() === "" ? "empty" : "unknown";
+}
+// codex exec --json reports a failed turn or a fatal error as a turn.failed or error
+// event on stdout, often with nothing on stderr (finding 2043). The model check passes
+// the events it already parsed; only their message strings are read, newest first, the
+// head of each, until one window is full. Nothing else from stdout is read. Every error
+// event counts, a recovered stream notice too: the class names the output, while the
+// held code and cause name the failure.
+function codexFailureEventText(events) {
+  const parts = [];
+  let length = 0;
+  for (let index = events.length - 1; index >= 0 && length < CODEX_FAILURE_OUTPUT_WINDOW; index--) {
+    const event = events[index];
+    const message = event?.type === "error" ? event.message
+      : event?.type === "turn.failed" ? event.error?.message : undefined;
+    if (typeof message !== "string") continue;
+    const part = message.slice(0, CODEX_FAILURE_OUTPUT_WINDOW - length);
+    parts.push(part);
+    length += part.length + 1;
+  }
+  return parts.reverse().join("\n");
+}
+// The most specific class across the check's stderr and its error events, in the
+// classifier's own precedence: a status, then TLS, network, timeout, other text, none.
+const CODEX_FAILURE_OUTPUT_PRECEDENCE = [
+  "http_401_403", "http_5xx", "http_other", "tls", "network", "timeout", "unknown", "empty",
+];
+function codexProbeFailureClass(stderr, events, error) {
+  const classes = [
+    codexFailureOutputClass(stderr, error),
+    codexFailureOutputClass(Array.isArray(events) ? codexFailureEventText(events) : "", error),
+  ];
+  // Both classes are list members, so the fallback is only defensive.
+  return CODEX_FAILURE_OUTPUT_PRECEDENCE.find((failureClass) => classes.includes(failureClass)) ?? "unknown";
+}
+`;
+
 export const AGENT_RUNTIME_ENTRYPOINT = String.raw`
 const { createHash } = require("node:crypto");
 const { mkdirSync, mkdtempSync, rmSync } = require("node:fs");
@@ -3287,6 +3379,7 @@ const { performance } = require("node:perf_hooks");
 
 ${PLUGIN_RUNTIME_HELPERS}
 ${AUTH_PROBE_FAILURE_HELPER}
+${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
 ${CODEX_STDERR_FILTER_HELPER}
 ${startupPhaseHelper("agent")}
 
@@ -3474,7 +3567,10 @@ if (loginMode === "chatgptAuthTokens") {
     }
   }
 }
-logStartupPhase("codex-login", loginStartedAt, login.status !== 0 || login.error ? "failed" : "ok");
+// A failed native login names the class of its error output, never the output.
+logStartupPhase("codex-login", loginStartedAt, login.status !== 0 || login.error ? "failed" : "ok", undefined,
+  loginMode !== "chatgptAuthTokens" && (login.status !== 0 || login.error)
+    ? codexFailureOutputClass(login.stderr, login.error) : undefined);
 if (login.status !== 0 || login.error) {
   holdFailedAuthentication(
     "login",
@@ -3542,8 +3638,14 @@ function codexProbeStatusFailure(message, detail) {
 
 function probeCodexAuthentication(timeout) {
   let result;
+  // Set once stdout parsed into well-formed events; malformed output classifies stderr only.
+  let parsedEvents;
   const finish = (failure) => ({
     ...(typeof failure === "string" ? { code: failure } : failure),
+    // A failed check that ran names the class of its error output (stderr and its
+    // error events), never the output.
+    ...(failure !== undefined && result !== undefined
+      ? { failureClass: codexProbeFailureClass(result.stderr, parsedEvents, result.error) } : {}),
     exitCode: Number.isInteger(result?.status) ? result.status : null,
     signal: ["SIGKILL", "SIGTERM", "SIGINT"].includes(result?.signal) ? result.signal : null,
   });
@@ -3608,6 +3710,7 @@ function probeCodexAuthentication(timeout) {
       return finish(probeFailure("INVALID_OUTPUT", "json"));
     }
     if (events.some((event) => typeof event?.type !== "string")) return finish(probeFailure("INVALID_OUTPUT", "shape"));
+    parsedEvents = events;
     // A failed turn caused by provider 401/403 is a deterministic credential
     // rejection; timeouts, 5xx, and transport errors keep their existing codes.
     if (events.some((event) => event.type === "turn.failed" && codexAuthenticationRejected(event.error?.message))) {
@@ -3693,6 +3796,7 @@ function startAuthenticatedCodex(attempt = 1, deadline = performance.now() + 610
     cause: result.cause,
     providerStatus: result.providerStatus,
     providerCode: result.providerCode,
+    failureClass: result.failureClass,
   }));
   if (result.code === "MODEL_PROBE_TIMEOUT" && attempt === 1 && performance.now() + 1000 < deadline) {
     setTimeout(() => startAuthenticatedCodex(2, deadline), 1000);

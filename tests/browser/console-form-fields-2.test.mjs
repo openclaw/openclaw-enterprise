@@ -5,8 +5,10 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
   consoleViewports,
+  countInvalidEvents,
   detailUrl,
   fileBrowser,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -22,20 +24,6 @@ import {
 // picker passes, so no supported state reaches its check.
 
 const browser = fileBrowser();
-
-// The browser's own validation fires `invalid` once per refused control whenever it would show
-// its bubble (a submit without novalidate, or reportValidity). The console's check fires none.
-async function countInvalidEvents(page) {
-  await page.addInitScript(() => {
-    globalThis.invalidEvents = [];
-    globalThis.document.addEventListener(
-      "invalid",
-      (event) => globalThis.invalidEvents.push(event.target.id || event.target.tagName),
-      true,
-    );
-  });
-  return () => page.evaluate(() => globalThis.invalidEvents);
-}
 
 // The control's error as a reader meets it: under the control, inside its field, in the danger
 // colour, linked to the control, which has focus.
@@ -80,33 +68,6 @@ const PLUGIN_JSON_ERROR = "Enter a valid Plugin selections JSON object.";
 async function openPluginJson(page) {
   await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
   return page.getByLabel("Plugin selections JSON", { exact: true });
-}
-
-for (const viewport of consoleViewports) {
-  test(`Plugin selections JSON shows its error under the field at ${viewport.width}px`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Plugin fields", { ready: true });
-    const agent = await fixture.createAgent(namespace.id, "Plugin Fields", nativeValues("pf"));
-    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    const invalidEvents = await countInvalidEvents(page);
-    const requests = apiRequests(page, fixture.origin);
-    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
-    const pluginJson = await openPluginJson(page);
-    await pluginJson.fill("[]");
-    // The section closes so the check must open it again.
-    await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
-    await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
-    assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
-    await assertShownError(pluginJson, PLUGIN_JSON_ERROR);
-    // The status line does not repeat the error.
-    assert.equal(await page.getByText(PLUGIN_JSON_ERROR, { exact: true }).count(), 1);
-    assert.deepEqual(nonAuthWriteRequests(requests), []);
-    // An edit clears the error.
-    await pluginJson.fill("{}");
-    assert.equal(await shownError(pluginJson), null);
-    assert.equal(await pluginJson.getAttribute("aria-invalid"), null);
-  });
 }
 
 test("the authentication source form shows a missing Secret under its field", async (t) => {
@@ -228,72 +189,204 @@ test("the workspace file editor shows an oversized file's error under the file",
   assert.equal(await editor.getAttribute("aria-invalid"), null);
 });
 
-// A Plugins save outcome takes focus only from the page or the disabled Save button: a reader
-// who moved focus while the save ran keeps it (finding 1978).
-const outcomes = [
-  {
-    name: "refusal",
-    status: 409,
-    shown: (page) =>
-      page.getByRole("alert").filter({
-        hasText:
-          "Plugin changes conflict with the current Agent state. Refresh this Agent before retrying.",
-      }),
-    takesFocus: (page) => page.getByRole("alert").filter({ hasText: "Plugin changes conflict" }),
-  },
-  {
-    name: "unknown outcome",
-    status: 500,
-    shown: (page) =>
-      page.getByText(
-        "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.",
-        { exact: true },
-      ),
-    takesFocus: (page) =>
-      page.getByRole("button", { name: "Reload plugin selections", exact: true }),
-  },
-];
+// A Reload that finds the file gone empties the editor for a new file: the refused text's error
+// goes with it, as it does on a Reload that reads the file (finding 1996).
+test("the workspace file editor drops an oversized file's error when Reload finds no file", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Workspace missing", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Workspace Missing", nativeValues("wm"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const writes = [];
+  let missing = false;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
+    (route) => {
+      if (route.request().method() !== "GET") {
+        writes.push(route.request().method());
+      }
+      return route.fulfill(
+        missing
+          ? {
+              status: 404,
+              contentType: "application/json",
+              body: JSON.stringify({
+                error: {
+                  code: "NOT_FOUND",
+                  message: "The requested workspace file was not found.",
+                },
+              }),
+            }
+          : {
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({ data: { name: "AGENTS.md", content: "before" } }),
+            },
+      );
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
+  );
+  const editor = page.getByLabel("AGENTS.md", { exact: true });
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  await editor.fill("a".repeat(16_385));
+  await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).click();
+  await assertShownError(
+    editor,
+    "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.",
+  );
+  // Removed elsewhere since it loaded.
+  missing = true;
+  await page.getByRole("button", { name: "Reload AGENTS.md", exact: true }).click();
+  await page.getByText("AGENTS.md is missing. Save to create it.", { exact: true }).waitFor();
+  assert.equal(await editor.inputValue(), "");
+  assert.equal(await shownError(editor), null);
+  assert.equal(await editor.getAttribute("aria-invalid"), null);
+  assert.deepEqual(writes, []);
+});
 
-for (const outcome of outcomes) {
-  for (const moved of [false, true]) {
-    test(`a Plugins save ${outcome.name} ${moved ? "leaves focus where the reader moved it" : "takes focus from the Save button"}`, async (t) => {
-      const fixture = await createConsoleAppFixture(t);
-      await fixture.bootstrap();
-      const namespace = await fixture.createNamespace("Plugin focus", { ready: true });
-      const agent = await fixture.createAgent(namespace.id, "Plugin Focus", nativeValues("pfo"));
-      const { page } = await newPage(t, fixture, { browser });
-      await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
-      const pluginJson = await openPluginJson(page);
-      await pluginJson.fill("{}\n");
-      const patch = await holdRequests(
-        t,
-        page,
-        `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
-        {
-          method: "PATCH",
-          fulfill: {
-            status: outcome.status,
-            contentType: "application/json",
-            body: JSON.stringify({ error: { code: "TEST", message: "Held." } }),
-          },
+// Choosing an issued ChatGPT service account without picking one is the console's check too: the
+// error under the account list, which takes focus, not only the grey status line (finding 1997).
+test("the authentication source form shows a missing service account under its field", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Account fields", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Account Fields",
+    nativeValues("acf", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: null },
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  const invalidEvents = await countInvalidEvents(page);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByLabel("Authentication source", { exact: true }).selectOption("service_account");
+  // The list is enabled once the Namespace's accounts are read; it has none.
+  await page
+    .getByText("No issued ChatGPT accounts available in this Namespace.", { exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+  await assertShownError(
+    page.getByLabel("Issued ChatGPT service account", { exact: true }),
+    "Issued ChatGPT service account is required.",
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+// Plugin selections on a draft Agent's Plugins tab: one console, an Agent for each case.
+test("Plugin selections JSON", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Plugin fields", { ready: true });
+  let agents = 0;
+  const pluginsTab = async (t, context) => {
+    agents += 1;
+    const agent = await fixture.createAgent(
+      namespace.id,
+      `Plugin Fields ${agents}`,
+      nativeValues(`pf${agents}`),
+    );
+    const { page } = await newPage(t, fixture, { browser, context });
+    return { agent, page, url: detailUrl(fixture, namespace.id, agent.id, "draft", "plugins") };
+  };
+
+  for (const viewport of consoleViewports) {
+    await t.test(
+      `Plugin selections JSON shows its error under the field at ${viewport.width}px`,
+      async (t) => {
+        const { page, url } = await pluginsTab(t, { viewport });
+        const invalidEvents = await countInvalidEvents(page);
+        const requests = apiRequests(page, fixture.origin);
+        await login(page, fixture, url);
+        const pluginJson = await openPluginJson(page);
+        await pluginJson.fill("[]");
+        // The section closes so the check must open it again.
+        await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
+        await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+        assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+        await assertShownError(pluginJson, PLUGIN_JSON_ERROR);
+        // The status line does not repeat the error.
+        assert.equal(await page.getByText(PLUGIN_JSON_ERROR, { exact: true }).count(), 1);
+        assert.deepEqual(nonAuthWriteRequests(requests), []);
+        // An edit clears the error.
+        await pluginJson.fill("{}");
+        assert.equal(await shownError(pluginJson), null);
+        assert.equal(await pluginJson.getAttribute("aria-invalid"), null);
+      },
+    );
+  }
+
+  // A Plugins save outcome takes focus only from the page or the disabled Save button: a reader
+  // who moved focus while the save ran keeps it (finding 1978).
+  const outcomes = [
+    {
+      name: "refusal",
+      status: 409,
+      shown: (page) =>
+        page.getByRole("alert").filter({
+          hasText:
+            "Plugin changes conflict with the current Agent state. Refresh this Agent before retrying.",
+        }),
+      takesFocus: (page) => page.getByRole("alert").filter({ hasText: "Plugin changes conflict" }),
+    },
+    {
+      name: "unknown outcome",
+      status: 500,
+      shown: (page) =>
+        page.getByText(
+          "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.",
+          { exact: true },
+        ),
+      takesFocus: (page) =>
+        page.getByRole("button", { name: "Reload plugin selections", exact: true }),
+    },
+  ];
+  for (const outcome of outcomes) {
+    for (const moved of [false, true]) {
+      await t.test(
+        `a Plugins save ${outcome.name} ${moved ? "leaves focus where the reader moved it" : "takes focus from the Save button"}`,
+        async (t) => {
+          const { agent, page, url } = await pluginsTab(t);
+          await login(page, fixture, url);
+          const pluginJson = await openPluginJson(page);
+          await pluginJson.fill("{}\n");
+          const patch = await holdRequests(
+            t,
+            page,
+            `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+            {
+              method: "PATCH",
+              fulfill: {
+                status: outcome.status,
+                contentType: "application/json",
+                body: JSON.stringify({ error: { code: "TEST", message: "Held." } }),
+              },
+            },
+          );
+          await page.getByRole("button", { name: "Save plugin selections", exact: true }).focus();
+          await page.keyboard.press("Enter");
+          await patch.requested;
+          if (moved) {
+            // Plugin selections JSON is read-only while the save runs, but still takes focus.
+            await pluginJson.focus();
+          }
+          patch.release();
+          await outcome.shown(page).waitFor();
+          // The outcome and its focus move are one task: once it shows, focus has settled.
+          const target = moved ? pluginJson : outcome.takesFocus(page);
+          assert.equal(
+            await hasFocus(target),
+            true,
+            moved ? "focus stays on Plugin selections JSON" : "the outcome takes focus",
+          );
         },
       );
-      await page.getByRole("button", { name: "Save plugin selections", exact: true }).focus();
-      await page.keyboard.press("Enter");
-      await patch.requested;
-      if (moved) {
-        // Plugin selections JSON is read-only while the save runs, but still takes focus.
-        await pluginJson.focus();
-      }
-      patch.release();
-      await outcome.shown(page).waitFor();
-      // The outcome and its focus move are one task: once it shows, focus has settled.
-      const target = moved ? pluginJson : outcome.takesFocus(page);
-      assert.equal(
-        await target.evaluate((node) => node === globalThis.document.activeElement),
-        true,
-        moved ? "focus stays on Plugin selections JSON" : "the outcome takes focus",
-      );
-    });
+    }
   }
-}
+});

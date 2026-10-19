@@ -14,12 +14,14 @@ import (
 
 // Options selects the checkout and output destinations for a development command.
 type Options struct {
-	Repository  string
-	KeyOutput   string
-	ComposeArgs []string
-	Volumes     bool
-	Out         io.Writer
-	Err         io.Writer
+	Repository                      string
+	KeyOutput                       string
+	SandboxNetworkPolicyFile        string
+	SandboxNetworkPolicyCeilingFile string
+	ComposeArgs                     []string
+	Volumes                         bool
+	Out                             io.Writer
+	Err                             io.Writer
 }
 
 type runner struct {

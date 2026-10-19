@@ -3,6 +3,8 @@ import {
   OpenShellAdmissionLimitError,
   OpenShellDeletionUnconfirmedError,
   OpenShellGatewayFailure,
+  OpenShellGatewayUnavailableError,
+  GRPC_UNAVAILABLE,
   OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
   OpenShellSandboxAlreadyExistsError,
@@ -102,6 +104,7 @@ export interface OpenShellServiceRequest {
 }
 
 export interface OpenShellSandboxResponse {
+  readonly resourceVersion?: string;
   readonly name: string;
   readonly id?: string;
   readonly workspace?: string;
@@ -304,8 +307,38 @@ export function openShellSandboxObserver(
   });
 }
 
+export interface OpenShellPolicyRequest {
+  readonly workspace: string;
+  readonly sandbox: string;
+}
+export interface OpenShellPolicyStatus {
+  readonly version: number;
+  readonly activeVersion: number;
+  readonly state: string;
+  readonly policy: Readonly<Record<string, unknown>>;
+}
+
 export interface OpenShellGatewayClient
   extends OpenShellSandboxLogReader, OpenShellSandboxObserver {
+  getPolicyStatus?(
+    request: OpenShellPolicyRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellPolicyStatus>;
+  updatePolicy?(
+    request: OpenShellPolicyRequest & {
+      readonly policy: Readonly<Record<string, unknown>>;
+      readonly expectedResourceVersion: string;
+      readonly requestId: string;
+    },
+    signal: AbortSignal,
+  ): Promise<void>;
+  getPolicyDrafts?(
+    request: OpenShellPolicyRequest,
+    signal: AbortSignal,
+  ): Promise<{
+    readonly chunks: readonly Readonly<Record<string, unknown>>[];
+    readonly version: string;
+  }>;
   health(signal: AbortSignal): Promise<void>;
   getWorkspace(name: string, signal: AbortSignal): Promise<OpenShellWorkspaceResponse | undefined>;
   createWorkspace(
@@ -462,6 +495,9 @@ export interface OpenShellGatewayClient
 }
 
 type OpenShellMethod =
+  | "GetSandboxPolicyStatus"
+  | "UpdateConfig"
+  | "GetDraftPolicy"
   | "ConfigureProviderRefresh"
   | "RotateProviderCredential"
   | "GetProviderRefreshStatus"
@@ -505,28 +541,73 @@ type OpenShellGrpcClient = Client &
     ): ClientReadableStream<RecordValue>;
   };
 
+/** A failed gateway request's message: the method, its gRPC status, and only a safe detail. */
+function gatewayRequestFailureMessage(
+  method: OpenShellMethod | "ExecSandbox",
+  error: unknown,
+): string {
+  const grpcStatus = rawStatusCode(error);
+  // A failure without a gRPC status (a local client error) keeps only its class: its message
+  // can be any library text, and the API logs this message for a 503 (http.dependency_unavailable).
+  const detail =
+    method === "CreateSandbox"
+      ? sanitizedErrorDetail(error)
+      : grpcStatus === undefined &&
+          error instanceof Error &&
+          /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(error.name)
+        ? error.name
+        : undefined;
+  return `OpenShell ${method} failed${
+    grpcStatus === undefined ? "" : ` with gRPC status ${grpcStatus}`
+  }${detail === undefined ? "." : `: ${detail}`}`;
+}
+
 class OpenShellGatewayRequestFailure extends DependencyUnavailableError {
   readonly grpcStatus: number | undefined;
 
   constructor(method: OpenShellMethod | "ExecSandbox", error: unknown) {
-    const grpcStatus = rawStatusCode(error);
-    // A failure without a gRPC status (a local client error) keeps only its class: its message
-    // can be any library text, and the API logs this message for a 503 (http.dependency_unavailable).
-    const detail =
-      method === "CreateSandbox"
-        ? sanitizedErrorDetail(error)
-        : grpcStatus === undefined &&
-            error instanceof Error &&
-            /^[A-Za-z][A-Za-z0-9_]{0,63}$/u.test(error.name)
-          ? error.name
-          : undefined;
-    super(
-      `OpenShell ${method} failed${
-        grpcStatus === undefined ? "" : ` with gRPC status ${grpcStatus}`
-      }${detail === undefined ? "." : `: ${detail}`}`,
-    );
-    this.grpcStatus = grpcStatus;
+    super(gatewayRequestFailureMessage(method, error));
+    this.grpcStatus = rawStatusCode(error);
   }
+}
+
+// gRPC UNAVAILABLE says two different things. grpc-js synthesises it, with these fixed details,
+// when it never reached the gateway or lost the connection under a call: the gateway did not
+// answer. The gateway also sends UNAVAILABLE itself, with its own reason, for failures that do
+// not clear by themselves (at the pinned OpenShell, resource admission's Kubernetes 401/403/TLS
+// errors, credential driver errors, finding 2042). Only the first is an outage. The list is an
+// allowlist on purpose: anything else, including a TLS failure (an untrusted gateway certificate,
+// a refused client certificate, a connection closed during the handshake) and an HTTP status from
+// a proxy in front of the gateway, is an ordinary failed request on the attempt budget.
+const UNANSWERED_REQUEST_DETAILS: readonly RegExp[] = [
+  // The connection closed or was reset under an in-flight call (the gateway process is gone).
+  /^Connection dropped$/u,
+  /^(?:read|write) (?:ECONNRESET|ETIMEDOUT)$/u,
+  // The gateway refused the stream before handling it (shutting down, or at its stream limit).
+  /^Stream refused by server$/u,
+  // No address for the gateway, or no connection to any of them: nothing listens there.
+  /^Name resolution failed for target /u,
+  /^No connection established\. Last error: (?:No addresses resolved|(?:Error: )?(?:connect (?:ECONNREFUSED|ECONNRESET|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT)|(?:read|write) (?:ECONNRESET|ETIMEDOUT|EPIPE)))\b/u,
+];
+
+/** True only for grpc-js's own UNAVAILABLE for a gateway that did not answer (finding 2042). */
+function gatewayDidNotAnswer(error: unknown): boolean {
+  const details = asRecord(error)?.details;
+  return (
+    rawStatusCode(error) === GRPC_UNAVAILABLE &&
+    typeof details === "string" &&
+    UNANSWERED_REQUEST_DETAILS.some((pattern) => pattern.test(details))
+  );
+}
+
+function gatewayRequestFailure(
+  method: OpenShellMethod | "ExecSandbox",
+  error: unknown,
+  unanswered: boolean = gatewayDidNotAnswer(error),
+): OpenShellGatewayRequestFailure | OpenShellGatewayUnavailableError {
+  return unanswered
+    ? new OpenShellGatewayUnavailableError(gatewayRequestFailureMessage(method, error))
+    : new OpenShellGatewayRequestFailure(method, error);
 }
 const CLIENT_MODULE = "@grpc/grpc-js";
 const LOADER_MODULE = "@grpc/proto-loader";
@@ -875,6 +956,9 @@ function sandboxResponse(
   const restartCount = status?.restart_count;
   return Object.freeze({
     name,
+    ...(metadata?.resource_version === undefined
+      ? {}
+      : { resourceVersion: String(metadata.resource_version) }),
     ...(typeof metadata?.id === "string" && metadata.id.length > 0 ? { id: metadata.id } : {}),
     ...(typeof metadata?.workspace === "string" && metadata.workspace.length > 0
       ? { workspace: metadata.workspace }
@@ -1109,6 +1193,77 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     };
   }
 
+  async getPolicyStatus(
+    request: OpenShellPolicyRequest,
+    signal: AbortSignal,
+  ): Promise<OpenShellPolicyStatus> {
+    const response = await this.unary(
+      "GetSandboxPolicyStatus",
+      { sandbox: request.sandbox, workspace_scope: { workspace: request.workspace } },
+      signal,
+    );
+    const revision = asRecord(response.revision);
+    const policy = asRecord(revision?.policy);
+    if (
+      policy === undefined ||
+      !Number.isSafeInteger(revision?.version) ||
+      typeof revision?.status !== "string"
+    ) {
+      throw new OpenShellGatewayFailure("Invalid Sandbox policy status.");
+    }
+    return {
+      version: revision!.version as number,
+      activeVersion: Number(response.active_version ?? 0),
+      state: revision!.status as string,
+      policy,
+    };
+  }
+
+  async updatePolicy(
+    request: OpenShellPolicyRequest & {
+      readonly policy: Readonly<Record<string, unknown>>;
+      readonly expectedResourceVersion: string;
+      readonly requestId: string;
+    },
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (!/^[1-9][0-9]*$/.test(request.expectedResourceVersion)) {
+      throw new OpenShellGatewayFailure("A nonzero expected resource version is required.");
+    }
+    await this.unary(
+      "UpdateConfig",
+      {
+        sandbox: request.sandbox,
+        workspace_scope: { workspace: request.workspace },
+        policy: request.policy,
+        expected_resource_version: request.expectedResourceVersion,
+        request_id: request.requestId,
+      },
+      signal,
+    );
+  }
+
+  async getPolicyDrafts(
+    request: OpenShellPolicyRequest,
+    signal: AbortSignal,
+  ): Promise<{
+    readonly chunks: readonly Readonly<Record<string, unknown>>[];
+    readonly version: string;
+  }> {
+    const response = await this.unary(
+      "GetDraftPolicy",
+      { sandbox: request.sandbox, workspace_scope: { workspace: request.workspace } },
+      signal,
+    );
+    if (response.chunks === undefined) {
+      return { chunks: [], version: String(response.draft_version ?? "0") };
+    }
+    if (!Array.isArray(response.chunks)) {
+      throw new OpenShellGatewayFailure("Invalid policy recommendations.");
+    }
+    return { chunks: response.chunks, version: String(response.draft_version ?? "0") };
+  }
+
   async health(signal: AbortSignal): Promise<void> {
     const response = await this.unary("Health", {}, signal);
     const status = response.status;
@@ -1169,7 +1324,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         }
       };
       const abort = () => {
-        finish(new OpenShellGatewayRequestFailure("ExecSandbox", { code: grpc.status.CANCELLED }));
+        finish(gatewayRequestFailure("ExecSandbox", { code: grpc.status.CANCELLED }));
         call?.cancel();
       };
       signal.addEventListener("abort", abort, { once: true });
@@ -1201,11 +1356,23 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           exitCode = value;
         });
         call.on("error", (error: unknown) => {
-          finish(new OpenShellGatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
+          finish(
+            gatewayRequestFailure(
+              "ExecSandbox",
+              { code: rawStatusCode(error) },
+              gatewayDidNotAnswer(error),
+            ),
+          );
         });
         call.on("end", () => finish());
       } catch (error) {
-        finish(new OpenShellGatewayRequestFailure("ExecSandbox", { code: rawStatusCode(error) }));
+        finish(
+          gatewayRequestFailure(
+            "ExecSandbox",
+            { code: rawStatusCode(error) },
+            gatewayDidNotAnswer(error),
+          ),
+        );
         call?.cancel();
       }
     });
@@ -2082,7 +2249,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
                   "DeleteProviderRefresh",
                 ].includes(method)
               ) {
-                reject(new OpenShellGatewayRequestFailure(method, error));
+                reject(gatewayRequestFailure(method, error));
               } else if (
                 code === grpc.status.RESOURCE_EXHAUSTED &&
                 typeof details === "string" &&
@@ -2101,7 +2268,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
               ) {
                 reject(error);
               } else {
-                reject(new OpenShellGatewayRequestFailure(method, error));
+                reject(gatewayRequestFailure(method, error));
               }
               return;
             }
@@ -2110,7 +2277,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         );
       } catch (error) {
         signal.removeEventListener("abort", abort);
-        throw new OpenShellGatewayRequestFailure(method, error);
+        throw gatewayRequestFailure(method, error);
       }
     });
   }
@@ -2118,7 +2285,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   private async isStatus(error: unknown, name: "NOT_FOUND" | "ALREADY_EXISTS"): Promise<boolean> {
     const { grpc } = await this.ensureClient();
     const code =
-      error instanceof OpenShellGatewayRequestFailure ? error.grpcStatus : statusCode(error);
+      error instanceof OpenShellGatewayRequestFailure ||
+      error instanceof OpenShellGatewayUnavailableError
+        ? error.grpcStatus
+        : statusCode(error);
     return code === grpc.status[name];
   }
 

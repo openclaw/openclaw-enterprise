@@ -35,13 +35,15 @@ release revision into the console HTML.
 
 The sidebar opens **Agents** or **Namespaces**; **Refresh** repeats the read.
 Configure models during creation. [Experimental Backends](backends.md) stay
-hidden; Namespace rows are read-only.
+hidden. Namespace cards open that Namespace's Agents.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
 | Agents        | Selected Namespace; Namespace `read`, then exact Agent `read` filtering.                                             |
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
+
+[Create a Namespace](../guides/console/create-namespace.md) explains creation and recovery.
 
 The Console uses light appearance and OCC-served fonts. Navigation focuses the
 destination heading; **Open navigation** opens the mobile drawer.
@@ -53,8 +55,7 @@ Slack searches, focus, and the Namespace selector; at phone width, focus in the 
 **Open navigation**. Views belong to one account, session, route,
 and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
-The header's **Namespace** selector switches readable scopes on desktop and
-mobile; the Namespaces page omits it. **OpenClaw Enterprise** at the bottom offers
+**Namespace** switches readable scopes; Namespaces omits this selector. **OpenClaw Enterprise** at the bottom offers
 **Settings**, which shows the signed-in account without configurable settings,
 and **Logout**.
 
