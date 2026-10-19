@@ -872,6 +872,16 @@ for (const mutation of ["authentication", "channel Secrets"]) {
           .count(),
         1,
       );
+      // That line is the panel's only word on the unknown outcome, so it is a danger alert
+      // (finding 2014).
+      assert.deepEqual(
+        await credentialsPanel
+          .getByText("Outcome unknown. Reload this Agent to confirm the saved Secret bindings.", {
+            exact: false,
+          })
+          .evaluate((node) => [node.getAttribute("role"), node.dataset.tone]),
+        ["alert", "danger"],
+      );
       assert.equal(
         await credentialsPanel.getByText(uncertaintyExplanation, { exact: true }).count(),
         0,

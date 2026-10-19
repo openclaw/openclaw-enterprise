@@ -275,7 +275,7 @@ const IDEOGRAPHIC = String.raw`\p{Ideographic}\u3041-\u3096\u30a1-\u30fa\uac00-\
 // Emoji whose line-break class is AL, unlike the rest: Chromium keeps them with their neighbours,
 // as it does letters (finding 2001).
 const LETTER_EMOJI = String.raw`\u23e9-\u23ec\u25fd\u25fe\u2648-\u2653\u2693\u26a1\u26aa\u26ab\u26ce\u2705\u2728\u274c\u274e\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55\u{1f18e}\u{1f191}-\u{1f19a}\u{1f3b5}\u{1f3b6}\u{1f3bc}\u{1f4a0}\u{1f4a2}\u{1f4a4}\u{1f4af}\u{1f4b1}\u{1f4b2}\u{1f500}-\u{1f506}\u{1f517}-\u{1f524}\u{1f532}-\u{1f53d}`;
-const UNBROKEN_CHARACTER = [
+export const UNBROKEN_ALTERNATIVES = [
   String.raw`[^ ${WIDE_SPACES}\u200b${DASHES}\u2014\p{M}${IDEOGRAPHIC}-]`,
   String.raw`[${LETTER_EMOJI}]`,
   // Where a break character holds the next one on its line:
@@ -301,9 +301,10 @@ const UNBROKEN_CHARACTER = [
   // No character may match two of these, nor a combining mark start one: each overlap doubles the
   // ways to split a run, so a failed match on a joiner-run name backtracked for seconds (finding
   // 1999). One ideograph is a combining mark (U+16FE4), and letter emoji have their own line, so
-  // the last line skips both. tests/conformance/console-agent-name-runs.test.mjs bounds it.
+  // the last line skips both. tests/conformance/console-agent-name-runs.test.mjs checks it.
   String.raw`(?![\p{M}${LETTER_EMOJI}])[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
-].join("|");
+];
+const UNBROKEN_CHARACTER = UNBROKEN_ALTERNATIVES.join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
 // The wide space, hyphen or dash a line breaks after stays on that line, so it counts too.

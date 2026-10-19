@@ -403,8 +403,8 @@ export function createChannelSecretsPanel({
           state.saveMessage = "";
           state.carriedNote = "";
           updateGrantWarning();
-          error.textContent = state.saveGrantWarning;
           setStatusTone(error, "warning");
+          error.textContent = state.saveGrantWarning;
           status.textContent = "";
           updateControls();
           onChange();
@@ -570,8 +570,8 @@ export function createChannelSecretsPanel({
           mutationStarted && !configurationSaved && !isDefinitiveRejection(cause);
         updateGrantWarning(state.configuration.secretBindings);
         status.textContent = "";
-        error.textContent = saveErrorText();
         setStatusTone(error, saveErrorTone());
+        error.textContent = saveErrorText();
       } finally {
         if (context.isCurrent()) {
           state.saving = false;
@@ -619,14 +619,8 @@ export function createChannelSecretsPanel({
           "Configuration changed. Reload this draft before saving channel Secrets.",
         )
       : null;
-    const unknownMessage =
-      state.outcomeUnknown && (!state.saveError || isDefinitiveRejection(state.saveError))
-        ? element(
-            "p",
-            { className: "status", "data-tone": "danger", role: "alert" },
-            "Credential changes may have been saved. Reload this draft and inspect the saved state before deploying.",
-          )
-        : null;
+    // An unknown outcome always comes with its save error, which the error line above shows as a
+    // danger alert ("Outcome unknown…"); the deploy gate names it too (finding 2014).
     const reload =
       state.outcomeUnknown || state.reloadRequired
         ? button("Reload draft", (event) => {
@@ -642,7 +636,7 @@ export function createChannelSecretsPanel({
     shown.reload = reload;
     shown.outcome = state.saveError
       ? error
-      : (reloadMessage ?? unknownMessage ?? (shown.status?.textContent ? shown.status : null));
+      : (reloadMessage ?? (shown.status?.textContent ? shown.status : null));
     if (!slackEnabled(state.values) && state.carriedNote) {
       // Shown only to say carried Secret choices were not reapplied (finding 1525).
       section.replaceChildren(
@@ -662,7 +656,6 @@ export function createChannelSecretsPanel({
         renderSlackBindings(state),
         error,
         reloadMessage,
-        unknownMessage,
         reload ? element("div", { className: "form-actions credential-actions" }, reload) : null,
         renderUnavailableReason(),
         form,
