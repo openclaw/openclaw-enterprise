@@ -403,7 +403,7 @@ for (const [scenario, heldRead, heldMs, reader] of [
         globalThis.document.activeElement?.tagName === "H1" &&
         globalThis.document.activeElement.isConnected &&
         !globalThis.document.querySelector(".agent-detail-pending, .holding, [aria-busy=true]") &&
-        globalThis.document.querySelector(".agent-tabs [aria-current=page]") !== null,
+        globalThis.document.querySelector(".agent-tabs [aria-selected=true]") !== null,
     );
     const { trail, loadingShown } = await page.evaluate(() => {
       globalThis.focusFrames.stopped = true;
@@ -831,7 +831,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     );
     if (mutation === "authentication") {
       assert.equal(
-        await page.getByRole("button", { name: "Configuration", exact: true }).isDisabled(),
+        await page.getByRole("tab", { name: "Configuration", exact: true }).isDisabled(),
         true,
       );
       // Without Slack there is no channel Secret panel to lock.
@@ -845,7 +845,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       );
       for (const label of ["Configuration", "Repositories", "Channels", "Workspace files"]) {
         assert.equal(
-          await page.getByRole("button", { name: label, exact: true }).isDisabled(),
+          await page.getByRole("tab", { name: label, exact: true }).isDisabled(),
           true,
           `${label} must not be available while credentials are saving`,
         );
@@ -880,7 +880,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
         await page
           .getByRole("button", { name: "Save authentication source" })
           .evaluate((node) => node.ownerDocument.defaultView.getComputedStyle(node).opacity),
-        "0.55",
+        "0.6",
       );
     }
     assert.equal(
@@ -892,8 +892,8 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     if (mutation === "channel Secrets") {
       assert.equal(await page.locator("#revision-selector").isEnabled(), true);
     }
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
-    await page.getByRole("button", { name: "Credentials", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     assert.equal(await deploy.isDisabled(), true);
     if (mutation === "authentication") {
       await page.getByRole("button", { name: "Reload authentication source" }).click();
@@ -916,6 +916,33 @@ for (const mutation of ["authentication", "channel Secrets"]) {
     assert.equal(pathRequests(requests, "POST", `${path}/deploy`).length, 0);
     if (mutation === "channel Secrets") {
       const configurationPath = `/namespaces/${namespace.id}/configurations/${configuration.id}`;
+      const refusalText =
+        "You do not have permission to save this Configuration. Ask an administrator for Configuration update access, plus Secret operate on each Secret it binds.";
+      // A refused check before the save keeps its own text: nothing was written (finding 1839).
+      const refusedCheck = (route) =>
+        route.request().method() === "GET"
+          ? route.fulfill({
+              status: 403,
+              contentType: "application/json",
+              body: JSON.stringify({
+                error: { code: "FORBIDDEN", message: "denied" },
+                meta: { requestId: "req_00000000-0000-4000-8000-000000000434" },
+              }),
+            })
+          : route.continue();
+      await page.route(`${fixture.origin}${configurationPath}`, refusedCheck);
+      const writesBeforeCheck = pathRequests(requests, "PATCH", configurationPath).length;
+      await selectSecret(page, "Slack app token", appSecret);
+      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+      const checkRefusal = credentialsPanel.getByText(
+        "Could not check the saved Configuration. Try again before saving channel Secrets. Request ID: req_00000000-0000-4000-8000-000000000434",
+        { exact: true },
+      );
+      await checkRefusal.first().waitFor();
+      assert.equal(await checkRefusal.count(), 1);
+      assert.equal(await credentialsPanel.getByText(refusalText).count(), 0);
+      assert.equal(pathRequests(requests, "PATCH", configurationPath).length, writesBeforeCheck);
+      await page.unroute(`${fixture.origin}${configurationPath}`, refusedCheck);
       const previousConfigurationWrites = pathRequests(requests, "PATCH", configurationPath).length;
       await page.route(`${fixture.origin}${configurationPath}`, (route) =>
         route.request().method() === "PATCH"
@@ -932,7 +959,8 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       await selectSecret(page, "Slack app token", appSecret);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
       const denial = credentialsPanel.getByText(
-        "Access denied. You do not have permission for this credential operation. Request ID: req_00000000-0000-4000-8000-000000000433",
+        // The refused Configuration update names its grants (finding 1839).
+        `${refusalText} Request ID: req_00000000-0000-4000-8000-000000000433`,
         { exact: true },
       );
       await denial.first().waitFor();
@@ -1061,9 +1089,9 @@ for (const changed of ["generation", "identity"]) {
       await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
       true,
     );
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     assert.equal(await deploy.isDisabled(), true);
-    await page.getByRole("button", { name: "Credentials", exact: true }).click();
+    await page.getByRole("tab", { name: "Credentials", exact: true }).click();
     await page.getByRole("button", { name: "Reload draft", exact: true }).click();
     if (changed === "generation") {
       // Reload draft reapplies the chosen Secret, still unsaved, so Deploy waits for its save
@@ -1119,6 +1147,7 @@ for (const action of ["disable", "drawer"]) {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace(`Pending channel ${action}`, { ready: true });
+    const otherNamespace = await fixture.createNamespace(`Other ${action}`, { ready: true });
     const agent = await createSlackBoundAgent(
       fixture,
       namespace,
@@ -1175,7 +1204,7 @@ for (const action of ["disable", "drawer"]) {
     try {
       assert.equal(await deploy.isDisabled(), true);
       assert.equal(
-        await page.getByRole("button", { name: "Configuration", exact: true }).isDisabled(),
+        await page.getByRole("tab", { name: "Configuration", exact: true }).isDisabled(),
         true,
       );
       assert.equal(
@@ -1190,6 +1219,21 @@ for (const action of ["disable", "drawer"]) {
         globalThis.dispatchEvent(new globalThis.PopStateEvent("popstate"));
       });
       assert.equal(new URL(page.url()).searchParams.get("tab"), "channels");
+      // The same note holds ← Agents and the Namespace selector (finding 1902). The open
+      // drawer is modal, so only the disable path can reach them.
+      if (action === "disable") {
+        const pageUrl = page.url();
+        await page.getByRole("link", { name: "← Agents" }).click();
+        await page
+          .getByText("Wait for channel settings save to finish before leaving the editor.")
+          .waitFor();
+        assert.equal(page.url(), pageUrl);
+        const selector = page.getByLabel("Namespace", { exact: true });
+        await selector.selectOption(otherNamespace.id);
+        assert.equal(await selector.inputValue(), namespace.id);
+        assert.equal(page.url(), pageUrl);
+        assert.equal(await page.getByRole("heading", { name: "Agents", exact: true }).count(), 0);
+      }
     } finally {
       release.resolve();
     }
@@ -1230,7 +1274,7 @@ test("Channel save with a lost response blocks deployment until the draft is rel
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
   assert.equal(
-    await page.getByRole("button", { name: "Configuration", exact: true }).isDisabled(),
+    await page.getByRole("tab", { name: "Configuration", exact: true }).isDisabled(),
     true,
   );
   await page.getByRole("button", { name: "Reload draft" }).click();
@@ -1300,7 +1344,7 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
   await selectSecret(page, "Slack bot token", slackBotSecret);
   await page.getByRole("button", { name: "Save channel Secrets" }).click();
   await patchPersisted;
-  const channelsTab = page.getByRole("button", { name: "Channels", exact: true });
+  const channelsTab = page.getByRole("tab", { name: "Channels", exact: true });
   assert.equal(await channelsTab.isDisabled(), true);
   releasePatch();
   await waitForCondition(
@@ -1435,4 +1479,39 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   // The saved binding differs from the rejected version's, so the warning clears.
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();
   assert.equal(await deploy.isEnabled(), true);
+});
+
+test("a reload asks first while an Agent editor holds unsaved work", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unsaved reload", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unsaved reload Agent",
+    nativeValues("unsaved-reload"),
+  );
+  const { page } = await newPage(t, fixture);
+  const dialogs = [];
+  page.on("dialog", async (dialog) => {
+    dialogs.push(dialog.type());
+    await dialog.accept();
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const edit = page.getByRole("button", { name: "Edit Configuration" });
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  await edit.click();
+  await editor.waitFor();
+  // An open but unchanged editor has nothing to lose (finding 1902).
+  await page.reload();
+  await edit.waitFor();
+  assert.deepEqual(dialogs, []);
+
+  await edit.click();
+  await editor.fill('{"edited": true}');
+  // The edit stays a draft while another page is shown; a reload would still lose it.
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  await page.reload();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
+  assert.deepEqual(dialogs, ["beforeunload"]);
 });

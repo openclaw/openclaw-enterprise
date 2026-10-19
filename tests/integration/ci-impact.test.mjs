@@ -25,6 +25,7 @@ import {
   eachSettled as all,
   settled,
 } from "../helpers/child-processes.mjs";
+import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
@@ -1335,47 +1336,23 @@ const hasIssue = (result, code, lane) =>
   );
 
 test("workflow selection flows through the gate and full-mode source-bound aggregate", async (t) => {
-  const lanes = [
-    "checks-baseline-1",
-    "checks-baseline-2",
-    "checks-browser",
-    "checks-browser-2",
-    "postgres",
-    "postgres-application",
-    "postgres-auth",
-    "postgres-platform",
-    "images-packaging",
-    "images-model-probes",
-    "images-runtime-startup",
-    "images-runtime-startup-2",
-    "images-runtime-startup-3",
-    "runtime-image-fixture",
-    "k3d-fixture-configuration",
-    "k3d-fixture-state",
-    "k3d-fixture-plugins",
-    "k3d-observability",
-    "logging-collector",
-    "repository-credentials-container",
-    "repository-credentials-platform",
-    "keycloak-oidc",
-  ];
   // A declared lane must actually have a runner in both full-coverage paths.
   // This catches a manifest/gate update that accidentally omits a new matrix job.
   const matrixLanes = (source) =>
     [...source.matchAll(/- lane: ([a-z0-9-]+)/g)].map((match) => match[1]);
   const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
-  assert.deepEqual([...suiteIndex.groups.ci].sort(), [...lanes].sort());
+  assert.deepEqual([...suiteIndex.groups.ci].sort(), [...expectedFullLanes].sort());
   assert.deepEqual(matrixLanes(ciWorkflow), []);
   assert.deepEqual(
     ["runtime-image-fixture", ...laneTable().map((row) => row.lane)].sort(),
-    [...lanes].sort(),
+    [...expectedFullLanes].sort(),
   );
   assert.deepEqual(
     [
       "runtime-image-fixture",
       ...matrixLanes(read(".github/workflows/full-integration.yml")),
     ].sort(),
-    [...lanes, "k3d-observability-demo"].sort(),
+    [...expectedFullLanes, "k3d-observability-demo"].sort(),
   );
   await all(["docs", "full"], async (expected) => {
     const [f, bootstrap] = await policyFixture(t, ({ put }) => {
@@ -1392,19 +1369,13 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     assert.equal((await bootstrap.run("verify", mode)).status, 0);
 
     const root = bootstrap.checkout;
-    const needs = {
-      impact: { result: "success", outputs: { mode } },
-      audit: { result: "success", outputs: {} },
-      "static-checks": { result: "success", outputs: {} },
-      "pr-safe": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
-      "runtime-image-fixture": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
-    };
+    const needs = passingGateNeeds(mode);
     const gateResult = await runGate(root, needs, mode);
     assert.equal(gateResult.status, 0, gateResult.stderr);
     const selectedNeeds = JSON.parse(readFileSync(join(root, "needs.json"), "utf8"));
     if (mode === "docs") {
       // An omitted product lane must not be represented by a successful receipt.
-      for (const lane of lanes) {
+      for (const lane of expectedFullLanes) {
         assert.notEqual(selectedNeeds[lane]?.result, "success", lane);
       }
       needs["static-checks"].result = "failure";
@@ -1416,8 +1387,11 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     }
     // Three synthetic lanes cover cross-lane aggregation and failures.
     // The inventory checks above still require every production CI lane.
-    assert.deepEqual(Object.keys(selectedNeeds).sort(), ["impact", "audit", ...lanes].sort());
-    for (const lane of lanes) {
+    assert.deepEqual(
+      Object.keys(selectedNeeds).sort(),
+      ["impact", "audit", ...expectedFullLanes].sort(),
+    );
+    for (const lane of expectedFullLanes) {
       assert.equal(selectedNeeds[lane].result, "success", lane);
     }
     const fixtureLanes = ["checks-baseline-1", "checks-baseline-2", "postgres"];

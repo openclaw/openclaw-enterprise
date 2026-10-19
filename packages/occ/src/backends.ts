@@ -332,7 +332,7 @@ function validateOpenShellBackend(
   const tls =
     endpoint === undefined
       ? (scheme ?? (rootCertificatePath === undefined ? "http" : "https")) === "https"
-      : (endpoint as string).startsWith("https://");
+      : /^https:\/\//i.test(endpoint as string);
   let operatorTls: OpenShellBackendDefinition["configuration"]["operatorTls"];
   if (configuration.operatorTls !== undefined) {
     const record = asRecord(configuration.operatorTls);

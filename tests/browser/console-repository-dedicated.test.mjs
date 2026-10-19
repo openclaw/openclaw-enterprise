@@ -111,7 +111,7 @@ for (const issuesEnabled of [true, false]) {
     // The operator grant is deliberately separate from Console authentication
     // selection. Real managed IAM writes authorize the same Agent's model Secret.
     await grantModelAccess(agent);
-    await page.getByRole("button", { name: "Channels", exact: true }).click();
+    await page.getByRole("tab", { name: "Channels", exact: true }).click();
     await page.getByRole("button", { name: "Configure Slack", exact: true }).click();
     await setSlackSelection(
       page.getByRole("combobox", { name: "Channels", exact: true }),
@@ -204,7 +204,7 @@ for (const issuesEnabled of [true, false]) {
       .locator(".deployment-outcome")
       .filter({ hasText: "Recorded status: queued" })
       .waitFor();
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page
       .getByRole("heading", { name: `Version v${revision.revision}`, exact: true })
       .waitFor();

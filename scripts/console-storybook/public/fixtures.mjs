@@ -166,6 +166,13 @@ function candidateDeploymentError(scenario, checkedAt) {
       },
     };
   }
+  if (scenario.candidateDependencyUnavailable) {
+    return {
+      code: "DEPENDENCY_UNAVAILABLE",
+      message:
+        "A dependency the controller needs stayed unavailable through every attempt. Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
+    };
+  }
   if (scenario.candidateSelected) {
     return {
       code: "REVISION_FINALIZATION_INCOMPLETE",
@@ -185,6 +192,7 @@ function candidateDeploymentError(scenario, checkedAt) {
 
 export function installFixture(scenario, evidence) {
   const rules = structuredClone(scenario.rules ?? []);
+  let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
   if (scenario.pendingGithubAttempt) {
@@ -227,7 +235,7 @@ export function installFixture(scenario, evidence) {
         {
           id: namespaceId,
           name: scenario.namespaceName ?? "Engineering",
-          status: "ready",
+          status: scenario.namespaceStatus ?? "ready",
           createdAt,
         },
         {
@@ -457,6 +465,8 @@ export function installFixture(scenario, evidence) {
             ? candidateDeploymentError(scenario, candidate.createdAt)
             : null,
         warnings: scenario.candidateDeploymentWarnings ?? [],
+        // The next status poll records success and selects v7 for service.
+        ...(scenario.candidateActivates ? { reads: 0 } : {}),
       });
     }
   }
@@ -688,7 +698,11 @@ export function installFixture(scenario, evidence) {
         );
       }
       if (rule.status) {
-        return response(null, rule.status, rule.code, {}, rule.message, rule.details);
+        const failure = response(null, rule.status, rule.code, {}, rule.message, rule.details);
+        if (rule.retryAfter !== undefined) {
+          failure.headers.set("retry-after", String(rule.retryAfter));
+        }
+        return failure;
       }
       if (rule.data !== undefined) {
         return response(rule.data);
@@ -1049,6 +1063,10 @@ export function installFixture(scenario, evidence) {
           credentials.set(saved.id, { transportConfigured: false });
           return response(saved, 201);
         }
+      }
+      // Create Agent's preflight accepts unless a scenario rule refuses it.
+      if (resource === "agents/validate" && method === "POST") {
+        return new Response(null, { status: 204 });
       }
       if (resource === "agents/provision" && method === "POST") {
         const {
@@ -1482,15 +1500,29 @@ export function installFixture(scenario, evidence) {
                   },
                 ],
           };
+          const pods = [pod];
+          if (scenario.runtimePod === "rollover") {
+            const retiring = podRolloverStatusReads++ === 0;
+            pods.push({
+              ...pod,
+              name: retiring ? "gateway-retiring" : "gateway-standby",
+              uid: pod.uid.slice(0, -1) + (retiring ? "2" : "3"),
+            });
+          }
           return response({
             revisionId,
             observedAt: "2026-09-27T12:00:00.000Z",
-            pods: [pod],
+            pods,
             sources: [
               {
                 id: "gateway",
                 kind: "container",
-                pods: [{ name: pod.name, uid: pod.uid, container: "gateway", restartCount: 1 }],
+                pods: pods.map(({ name, uid }) => ({
+                  name,
+                  uid,
+                  container: "gateway",
+                  restartCount: 1,
+                })),
                 available: true,
                 retention:
                   "Kubernetes keeps only the current and the previous instance of each container; older output and output from deleted Pods is gone.",
@@ -1567,13 +1599,18 @@ export function installFixture(scenario, evidence) {
               ],
             });
           }
+          const pod = url.searchParams.get("pod") ?? "gateway-7d9f8c-x2k4q";
+          const podSuffix =
+            pod === "gateway-retiring" ? "2" : pod === "gateway-standby" ? "3" : "1";
           const stream = {
             source: "gateway",
-            pod: "gateway-7d9f8c-x2k4q",
-            podUid: "0f3b6c1e-7d52-4f4b-9a2e-5c6d7e8f9a01",
+            pod,
+            podUid: "0f3b6c1e-7d52-4f4b-9a2e-5c6d7e8f9a0" + podSuffix,
             container: "gateway",
             restartCount: 1,
           };
+          const listeningMessage =
+            scenario.runtimePod === "rollover" ? `${pod} ready for requests` : "gateway listening";
           const line = (time, kind, level, message, extra = {}) => ({
             type: "line",
             time,
@@ -1593,7 +1630,7 @@ export function installFixture(scenario, evidence) {
               line("2026-09-27T11:40:01.120Z", "wrapper", "info", "runtime.startup_phase", {
                 fields: { container: "gateway", phase: "config", outcome: "ok", ms: 12 },
               }),
-              line("2026-09-27T11:40:03.400Z", "openclaw", "info", "gateway listening", {
+              line("2026-09-27T11:40:03.400Z", "openclaw", "info", listeningMessage, {
                 subsystem: "gateway",
               }),
               {

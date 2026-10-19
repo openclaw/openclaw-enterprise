@@ -8,6 +8,11 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-18 10:30: Count the row loading text's 150 ms from the frame it shows in. (lows-1018f)
+
+- 2026-10-17 16:30: Keep row loading text 150 ms once shown; refocus at phone width focuses Open navigation. (ui-fix-1680)
+- 2026-10-17 12:10: Keep list focus when refocusing during row reads or from sidebar and header controls. (lows-1017n)
+
 - 2026-10-17 10:50: Delay row loading text 250 ms; keep focus through sidebar navigation and list refocus. (lows-1017m)
 - 2026-10-17 10:36: Restore the reader’s focus when a tab recheck reuses the same view.
 - 2026-10-17 08:32: Show the rechecked Agents list before refreshing visible deployment cells. (fix-1644 - c29af02c98)
@@ -132,3 +137,5 @@ This record preserves the dated changes to the platform console request flow. Se
 - 2026-10-13 15:53: Preserve plugin permissions; reject conflicts. (authoring-run/b6795ba9-f6ca-4258-9c2e-e964cd0860de - 438103e91)
 - 2026-10-12 15:30: Refresh native plugin preservation against current upstream. (authoring-run/86831b3d-1b20-4d59-8b4f-e814f6bdb488 - 1c722bea21fabefffc112b23bb739c88dbcecf4b)
 - 2026-10-10 22:27: Preserve native plugin allowlists across Harness switches. (authoring-run/73ca79b6-4687-4e93-a98f-d46b194ee2ed - 80725162a946f80652b939a32a57ee4e922eeb5c)
+
+- 2026-10-17 19:01: Refresh native plugin policy with current credential and execution flows. (authoring-run/418e14ce-c099-4838-a0a7-875952f826f2 - 47ca11ef4)

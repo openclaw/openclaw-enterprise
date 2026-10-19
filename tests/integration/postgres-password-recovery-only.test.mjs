@@ -5,7 +5,6 @@ import {
   assertProviderAttached,
   assertSessionUser,
   clientAddresses,
-  composeProductionSignIn,
   consoleOrigin as origin,
   fakeGoogle,
   githubSignIn,
@@ -14,28 +13,17 @@ import {
   googleUpgradeSettings,
   loginDenialCount,
   memoryLogger,
-  onboardPasswordAccounts,
   passwordSignIn,
-  postgresSignInState,
   readAccount,
   signedInHeaders,
-  startFakeGitHub,
 } from "../helpers/production-sign-in.mjs";
 import { cookieHeaderFromSetCookie } from "../helpers/auth-session.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparePostgresSignInInstallation } from "../helpers/postgres-sign-in-installation.mjs";
 
-const adminEmail = "recovery-only-admin@example.test";
 const password = "recovery-only-member-password";
-const authSecret = "recovery-only-auth-test-secret-at-least-32-bytes";
 const googleClientId = "recovery-only.apps.googleusercontent.com";
 const googleClientSecret = "recovery-only-google-client-secret";
-const secrets = {
-  "occ-auth/secret": authSecret,
-  "occ-github-login/client-id": "recovery-only-github-client-id",
-  "occ-github-login/client-secret": "recovery-only-github-client-secret",
-  "occ-google-login/client-id": googleClientId,
-  "occ-google-login/client-secret": googleClientSecret,
-};
 const memberSubject = 8_100_001;
 const strandedSubject = 8_100_002;
 const operatorSubject = 8_100_003;
@@ -55,19 +43,25 @@ test(
   requiresPostgres,
   async (t) => {
     let app;
-    const { pool, state } = postgresSignInState(t, () => [app]);
-    await startFakeGitHub(t);
+    const { pool, state, onboard, composeApp } = await preparePostgresSignInInstallation(
+      t,
+      () => [app],
+      {
+        email: "recovery-only-admin@example.test",
+        password,
+        secrets: {
+          "occ-auth/secret": "recovery-only-auth-test-secret-at-least-32-bytes",
+          "occ-github-login/client-id": "recovery-only-github-client-id",
+          "occ-github-login/client-secret": "recovery-only-github-client-secret",
+          "occ-google-login/client-id": googleClientId,
+          "occ-google-login/client-secret": googleClientSecret,
+        },
+      },
+    );
     const google = fakeGoogle(t, { clientId: googleClientId, clientSecret: googleClientSecret });
     const address = clientAddresses("198.20");
     // Password onboarding on the default install.
-    const { admin, roles, accounts } = await onboardPasswordAccounts(t, {
-      databaseUrl,
-      state,
-      pool,
-      email: adminEmail,
-      authSecret,
-      secrets,
-      password,
+    const { admin, roles, accounts } = await onboard({
       remoteAddress: address(),
       accounts: Object.fromEntries(
         ["member", "stranded", "disabled", "operator"].map((name) => [
@@ -89,10 +83,7 @@ test(
 
     await t.test("the default setting keeps every enrolled account's password", async () => {
       const log = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: githubUpgradeSettings(admin.id),
-        secrets,
+      app = await composeApp(githubUpgradeSettings(admin.id), {
         logger: log.logger,
       });
       assert.deepEqual(await providers(app), {
@@ -124,10 +115,7 @@ test(
     let log;
     await t.test("startup warns about enabled accounts without an external identity", async () => {
       log = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: recoveryOnly(githubUpgradeSettings(admin.id)),
-        secrets,
+      app = await composeApp(recoveryOnly(githubUpgradeSettings(admin.id)), {
         logger: log.logger,
       });
       // The recovery account, the member and operator with GitHub and the disabled account
@@ -213,10 +201,7 @@ test(
       await app.close();
       app = undefined;
       const restarted = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: recoveryOnly(githubUpgradeSettings(admin.id)),
-        secrets,
+      app = await composeApp(recoveryOnly(githubUpgradeSettings(admin.id)), {
         logger: restarted.logger,
       });
       assert.deepEqual(warnings(restarted), [], "every enabled account has an identity");
@@ -227,10 +212,7 @@ test(
     await t.test("only identities of the configured providers count", async () => {
       // Google alone: GitHub identities cannot sign in, so every ordinary account is stranded.
       const googleLog = memoryLogger();
-      app = await composeProductionSignIn(t, {
-        databaseUrl,
-        settings: recoveryOnly(googleUpgradeSettings(admin.id)),
-        secrets,
+      app = await composeApp(recoveryOnly(googleUpgradeSettings(admin.id)), {
         logger: googleLog.logger,
       });
       const [warning] = warnings(googleLog);
@@ -300,7 +282,7 @@ test(
           githubUpgradeSettings(userId),
           recoveryOnly(githubUpgradeSettings(userId)),
         ]) {
-          app = await composeProductionSignIn(t, { databaseUrl, settings, secrets });
+          app = await composeApp(settings);
           const sessionsBefore = await pool.query(
             "SELECT count(*)::int AS count FROM occ.session WHERE user_id = $1",
             [userId],
@@ -350,7 +332,7 @@ test(
             supportedEmail,
             userId,
           ]);
-          app = await composeProductionSignIn(t, { databaseUrl, settings, secrets });
+          app = await composeApp(settings);
           const ordinary = await passwordSignIn(
             app,
             origin,

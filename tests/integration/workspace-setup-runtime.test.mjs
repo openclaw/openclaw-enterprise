@@ -106,11 +106,17 @@ test("workspace setup fails closed for invalid delivery, lost completed workspac
   ]) {
     failed(f.run({ ...identity, completed: false, files }));
   }
+  // An oversized or unexpected delivery, and a workspace path that is not absolute and
+  // normalized, are refused alike: every restart reads the same input.
+  const setup = { ...identity, completed: false, files: { "USER.md": "secret" } };
+  failed(f.execute(WORKSPACE_SETUP_RUNTIME, JSON.stringify(setup) + " ".repeat(400_000)));
+  failed(f.run({ ...setup, extra: true }));
+  failed(f.run(setup, { OPENCLAW_WORKSPACE_DIR: "workspace" }));
   failed(f.run({ ...identity, completed: true }));
   assert.equal(existsSync(f.workspace), false);
   mkdirSync(join(f.root, "outside"));
   symlinkSync(join(f.root, "outside"), f.workspace);
-  failed(f.run({ ...identity, completed: false, files: { "USER.md": "secret" } }));
+  failed(f.run(setup));
   assert.equal(existsSync(join(f.root, "outside", "USER.md")), false);
 });
 

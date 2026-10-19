@@ -448,13 +448,24 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   assert.equal(jobs, 2);
 });
 
-// The stopped guidance is not an error, so it does not take the error colour.
+// The stopped guidance is not an error, so neither its text nor its block's stripe takes the
+// error colour.
 async function assertNotErrorColour(locator) {
-  const [colour, errorColour] = await locator.evaluate((node) => {
+  const [colour, stripe, errorColour] = await locator.evaluate((node) => {
     const view = node.ownerDocument.defaultView;
-    return [view.getComputedStyle(node).color, view.getComputedStyle(node.closest(".error")).color];
+    const probe = node.ownerDocument.createElement("span");
+    probe.style.color = "var(--color-danger)";
+    node.ownerDocument.body.append(probe);
+    const danger = view.getComputedStyle(probe).color;
+    probe.remove();
+    return [
+      view.getComputedStyle(node).color,
+      view.getComputedStyle(node.closest(".status")).borderLeftColor,
+      danger,
+    ];
   });
   assert.notEqual(colour, errorColour);
+  assert.notEqual(stripe, errorColour);
 }
 
 // An owner's Stop during the first deployment fails provisioning with REVISION_STOPPED. A Stop
@@ -962,14 +973,16 @@ test("Dedicated Agent creation names a full Namespace Pod quota while it waits",
 // Since #2744 a job past handoff names its first deployment's wait, but Create Agent showed one
 // "Provisioning Agent…" line until the job ended, about 48 s on oce-dogfood-b (finding 1690). It
 // now adds the wait's sentence, the one the deployment status shows. A fresh deployment read's
-// quota wait comes first, a refused read clears the detail, and an unavailable one keeps the
-// job's newer wait. A member who can't read the deployment gets only the job's own pending code,
-// which adds nothing, so the line stays as is.
+// quota or image pull wait (finding 1881) comes first and stands alone, a refused read clears
+// the detail, and an unavailable one keeps the job's newer wait. A member who can't read the
+// deployment gets only the job's own pending code, which adds nothing, so the line stays as is.
 test("Dedicated Agent creation names the first deployment's wait while it provisions", async (t) => {
   const runtime = "Waiting for the runtime to become ready.";
   const node = "Workloads are ready; waiting for the workspace node to connect to the Gateway.";
   const quotaFull =
     "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+  const pullFailed =
+    "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
   const stopping =
     "The Agent was stopped; its gateway is finishing active work before the stop completes.";
   for (const reader of ["deployment reader", "member without deployment access"]) {
@@ -1015,18 +1028,23 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
       });
     });
     // Each poll: the job's named wait, then what the deployment read that follows it answers.
-    // The job hands off its first deployment, which waits for the runtime, the Pod quota and the
-    // workspace node while that read is briefly unavailable (503). Then the job still names the
-    // runtime wait while the read already reports the Pod quota, and then the reader loses access
-    // (403). A stop's gateway drain follows, then no recorded wait, and the job fails. The quota
-    // and the stop stand alone. A member can't read the deployment and gets the job's own code.
+    // The job hands off its first deployment, which waits for the runtime. The read names an
+    // image pull failure before the job does. The deployment then waits for the Pod quota, then
+    // the job names the image pull and the workspace node while the read is briefly unavailable
+    // (503). Then the job still names the runtime wait while the read already reports the Pod
+    // quota, and then the reader loses access (403). A stop's gateway drain follows, then no
+    // recorded wait, and the job fails. The image pull, the quota and the stop stand alone. A
+    // member can't read the deployment and gets the job's own code.
     const runtimeWait = { code: "REVISION_INCOMPLETE", message: runtime };
     const quotaWait = { code: "NAMESPACE_POD_QUOTA_EXCEEDED", message: quotaFull };
+    const pullWait = { code: "REVISION_IMAGE_PULL_FAILED", message: pullFailed };
     const stopWait = { code: "AGENT_STOP_YIELDED", message: stopping };
     const polls = deploymentReader
       ? [
           [runtimeWait, runtimeWait],
+          [runtimeWait, pullWait],
           [quotaWait, quotaWait],
+          [pullWait, 503],
           [{ code: "WORKSPACE_NODE_PENDING", message: node }, 503],
           [runtimeWait, quotaWait],
           [runtimeWait, 403],
@@ -1057,7 +1075,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
     await page.route(
       `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
       (route) => {
-        // Job reads 2 to 7 carry the polls; the first handed-off one and the last record no wait.
+        // Job reads from 2 on carry the polls; the first handed-off one and the last name no wait.
         const answer = deploymentReader ? (polls[read - 3]?.[1] ?? null) : 403;
         if (typeof answer === "number") {
           return route.fulfill({
@@ -1108,7 +1126,7 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
         for (const record of records) {
           if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
             const text = [...record.addedNodes].map((node) => node.textContent).join("");
-            if (text.startsWith("Provisioning") || text.startsWith("The ")) {
+            if (/^(?:Provisioning|The |Kubernetes )/.test(text)) {
               globalThis.provisioningWrites.push(text);
             }
           }
@@ -1135,7 +1153,9 @@ test("Dedicated Agent creation names the first deployment's wait while it provis
             "Provisioning queued…",
             "Provisioning Agent…",
             `Provisioning Agent… ${runtime}`,
+            pullFailed,
             quotaFull,
+            pullFailed,
             `Provisioning Agent… ${node}`,
             quotaFull,
             "Provisioning Agent…",
@@ -1256,15 +1276,41 @@ test("Agent creation rejects non-object native Configuration JSON before Configu
   await enterManualModel(page, "unused-invalid-config-key", "gpt-4.1");
   await page.getByLabel("Agent name").fill("Broken Agent");
   await openAdvancedSettings(page);
-  await page.getByLabel("Configuration JSON").fill("[]");
+  const json = page.getByLabel("Configuration JSON");
+  const jsonError = page.locator("#configuration-json-error");
+  await json.fill("[]");
   await page.getByText("Advanced settings", { exact: true }).click();
   await page.getByRole("button", { name: "Create Agent" }).click();
 
-  const validation = await page
-    .getByLabel("Configuration JSON")
-    .evaluate((node) => node.validationMessage);
-  assert.equal(validation, "Enter a valid JSON object.");
-  assert.equal(await page.getByLabel("Configuration JSON").isVisible(), true);
+  // One persistent message under the field, linked to it; no browser bubble (finding 1903).
+  await jsonError
+    .getByText("Enter a valid JSON object, not an array or a single value.", { exact: true })
+    .waitFor();
+  assert.equal(await json.evaluate((node) => node.validationMessage), "");
+  assert.equal(await json.getAttribute("aria-invalid"), "true");
+  assert.match(await json.getAttribute("aria-describedby"), /\bconfiguration-json-error\b/);
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "configuration-json",
+  );
+  assert.equal(await json.isVisible(), true);
+
+  // Editing clears the message; a parse error names its line and column.
+  await json.fill('{\n  "model": 1,\n}');
+  assert.equal(await jsonError.isHidden(), true);
+  assert.equal(await json.getAttribute("aria-invalid"), null);
+  assert.doesNotMatch(
+    (await json.getAttribute("aria-describedby")) ?? "",
+    /\bconfiguration-json-error\b/,
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await jsonError
+    .getByText("Invalid JSON at line 3, column 1. Enter a valid JSON object.", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "configuration-json",
+  );
   assert.equal(secretPostRequests(requests, namespace.id).length, 1);
   assert.equal(configurationPostRequests(requests, namespace.id).length, 0);
   assert.equal(agentPostRequests(requests, namespace.id).length, 0);

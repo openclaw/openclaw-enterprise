@@ -1,0 +1,34 @@
+import { story } from "./story.mjs";
+
+export default { title: "Components/Dialogs" };
+
+// The dialog pattern (one chrome, drawer and phone sheet) across the five modal dialogs. Each
+// story reuses the dialog's own scenario; the phone variants frame it at 390 px, where every
+// dialog is a bottom sheet. Walk them with dialog-pattern-workflow.md.
+function phone(id) {
+  const base = story(id);
+  return {
+    render() {
+      const root = base.render();
+      root.querySelector("iframe").style.maxWidth = "390px";
+      return root;
+    },
+  };
+}
+
+export const StopConfirmation = { ...story("stopConfirm"), name: "Stop confirmation" };
+export const StopConfirmationPhone = { ...phone("stopConfirm"), name: "Stop confirmation (phone)" };
+export const DeleteConfirmation = { ...story("deletionConfirm"), name: "Delete confirmation" };
+export const DeleteConfirmationPhone = {
+  ...phone("deletionConfirm"),
+  name: "Delete confirmation (phone)",
+};
+export const Plugins = { ...story("pluginsAvailable"), name: "Plugins (wide)" };
+export const PluginsPhone = { ...phone("pluginsAvailable"), name: "Plugins (phone)" };
+export const SlackDrawer = { ...story("slackDrawer"), name: "Slack editor (drawer)" };
+export const SlackDrawerPhone = { ...phone("slackDrawer"), name: "Slack editor (phone)" };
+export const CreateSecret = { ...story("slackCreateSecretModal"), name: "Create Secret" };
+export const CreateSecretPhone = {
+  ...phone("slackCreateSecretModal"),
+  name: "Create Secret (phone)",
+};

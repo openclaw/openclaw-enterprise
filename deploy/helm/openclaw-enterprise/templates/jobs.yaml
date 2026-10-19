@@ -26,6 +26,29 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
+        {{- if .Release.IsUpgrade }}
+        # The installation-check container reads what API startup reads from these.
+        - name: installation-startup
+          secret:
+            secretName: {{ .Values.installation.secretName | quote }}
+            items:
+              - key: {{ .Values.installation.key | quote }}
+                path: installation.yaml
+        {{- if .Values.repositoryCredentials.enabled }}
+        - name: repository-registry
+          configMap:
+            name: {{ .Values.repositoryCredentials.registryConfigMapName | quote }}
+            items:
+              - key: {{ .Values.repositoryCredentials.registryKey | quote }}
+                path: registry.json
+        - name: repository-public-ca
+          secret:
+            secretName: {{ .Values.repositoryCredentials.publicCaSecretName | quote }}
+            items:
+              - key: {{ .Values.repositoryCredentials.publicCaKey | quote }}
+                path: ca.crt
+        {{- end }}
+        {{- end }}
         - name: bootstrap-password-output
           persistentVolumeClaim:
             claimName: {{ .Values.bootstrap.password.claimName | quote }}
@@ -38,6 +61,38 @@ spec:
                 path: {{ .Values.database.caKey | quote }}
         {{- end }}
       initContainers:
+        {{- if .Release.IsUpgrade }}
+        # Refuses an Installation the API would refuse at startup, before migration and
+        # before Helm replaces the API Pod, so a bad change leaves the old Pods serving.
+        - name: installation-check
+          image: {{ .Values.images.controller | quote }}
+          command: ["node"]
+          args:
+            - --input-type=module
+            - -e
+            - {{ required "chart is missing files/check-installation.mjs" (.Files.Get "files/check-installation.mjs") | quote }}
+          securityContext:
+            {{- include "openclaw.containerSecurity" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: OCC_CONFIG_PATH
+              value: /etc/openclaw/installation/installation.yaml
+          volumeMounts:
+            - name: installation-startup
+              mountPath: /etc/openclaw/installation
+              readOnly: true
+            {{- if .Values.repositoryCredentials.enabled }}
+            - name: repository-registry
+              mountPath: /etc/openclaw/repository-registry
+              readOnly: true
+            - name: repository-public-ca
+              mountPath: /etc/openclaw/repository-ca
+              readOnly: true
+            {{- end }}
+        {{- end }}
         - name: migration
           image: {{ .Values.images.controller | quote }}
           args: [scripts/migrate-production.mjs]

@@ -3533,9 +3533,9 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(created.data.plugins, initialPlugins);
   assert.deepEqual(created.data.pluginApprovers, []);
   assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
-  // This Plugin Driver has no Configuration check, but Agent save checks the Agent against its
-  // Configuration as deployment would (the Harness and its execution mode), so it reads the
-  // values once, shared by every check.
+  // The Plugin Driver's Configuration check and Agent save's check of the Agent against its
+  // Configuration as deployment would (the Harness and its execution mode) read the values
+  // once, shared by every check.
   assert.equal(configurationReads, readsBeforeSave + 1);
 
   const saved = await controller.request(
@@ -3908,6 +3908,117 @@ test("the Codex Plugin Driver refuses an automatic reviewer without an on-reques
     const deployed = await deploy();
     assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
   }
+});
+
+test("the OpenClaw Plugin Driver refuses a selection whose every tool the Configuration denies at save and deployment", async () => {
+  const configurationDriver = createTestConfigurationDriver();
+  const controller = await configuredController({ configurationDriver });
+  await bootstrap(controller);
+  const namespace = await createNamespace(controller, "openclaw-plugin-tool-deny");
+  // Configuration saves do not know the Agents' plugins, so a deny-all list saves.
+  const denials = [["*"], [" DIFFS "], ["group:plugins"], ["dif*"], ["exec", "*"]];
+  const denying = [];
+  for (const deny of denials) {
+    denying.push(await createConfiguration(controller, namespace.id, { tools: { deny } }));
+  }
+  const allowed = { tools: { deny: ["exec", "diffs-*", 7] } };
+  const configuration = await createConfiguration(controller, namespace.id, allowed);
+  const pluginDriver = new OCCPluginDriver();
+  controller.fixture.controller.registerDriver(pluginDriver);
+  controller.fixture.controller.selectDriver("plugin", pluginDriver.id);
+  const plugins = { [diffsPluginId]: pluginPolicy() };
+  const assertRefused = (refused, label) => {
+    assert.equal(refused.status, 400, `${label}: ${JSON.stringify(refused.body)}`);
+    assert.equal(refused.body.error.code, "INVALID_REQUEST");
+    assert.equal(
+      refused.body.error.message,
+      `Configuration setting tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
+    );
+  };
+  // The translator adds the selected plugin to the tool allowlist, and a deny-all list then
+  // leaves no callable tool: deployment succeeded and every turn failed (finding 508). An
+  // Agent save sees both the plugins and the Configuration, so it refuses the pair.
+  for (const [index, named] of denying.entries()) {
+    const refused = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+      body: { name: "tool-deny-agent", configurationId: named.id, plugins },
+    });
+    assertRefused(refused, `create with ${JSON.stringify(denials[index])}`);
+  }
+  // Every session runs as a sole roster entry, so its tools.deny counts too (finding 1848).
+  const entryDenying = await createConfiguration(controller, namespace.id, {
+    agents: { entries: { main: { tools: { deny: ["*"] } } } },
+  });
+  const refusedEntry = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "tool-deny-agent", configurationId: entryDenying.id, plugins },
+  });
+  assert.equal(refusedEntry.status, 400, JSON.stringify(refusedEntry.body));
+  assert.equal(
+    refusedEntry.body.error.message,
+    `Configuration setting agents.entries.main.tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
+  );
+  // The primary model's tools.byProvider deny list is its own deny step (finding 1855).
+  const providerDenying = await createConfiguration(controller, namespace.id, {
+    agents: { defaults: { model: "openai/gpt-5.1" } },
+    tools: { byProvider: { openai: { deny: ["*"] } } },
+  });
+  const refusedProvider = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "tool-deny-agent", configurationId: providerDenying.id, plugins },
+  });
+  assert.equal(refusedProvider.status, 400, JSON.stringify(refusedProvider.body));
+  assert.equal(
+    refusedProvider.body.error.message,
+    `Configuration setting tools.byProvider.openai.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
+  );
+  assert.deepEqual(
+    (await controller.request("GET", `/namespaces/${namespace.id}/agents`)).data,
+    [],
+  );
+  // A disabled selection adds nothing to the allowlist, so it can stay denied.
+  const disabled = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "tool-deny-disabled",
+      configurationId: denying[0].id,
+      plugins: { [diffsPluginId]: { enabled: false } },
+    },
+  });
+  assert.equal(disabled.status, 201, JSON.stringify(disabled.body));
+  const created = await controller.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "tool-deny-agent", configurationId: configuration.id, plugins },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
+  // An update is checked with the plugins it leaves in place as well as the ones it sends.
+  for (const body of [
+    { configurationId: denying[0].id },
+    { configurationId: denying[0].id, plugins },
+  ]) {
+    const refused = await controller.request("PATCH", agentPath, { body });
+    assertRefused(refused, `update ${JSON.stringify(body)}`);
+  }
+  const unchanged = await controller.request("GET", agentPath);
+  assert.equal(unchanged.data.configurationId, configuration.id);
+  assert.deepEqual(unchanged.data.plugins, plugins);
+  await controller.fixture.controller.handleNamespaceLifecycle(
+    controller.fixture.principal.id,
+    namespace.id,
+    "ready",
+  );
+  await bindHarnessKey(controller.fixture, namespace.id, created.data);
+  const store = async (values) => {
+    const stored = configurationDriver.stored({ namespaceId: namespace.id, id: configuration.id });
+    await configurationDriver.update({ ...stored, values });
+  };
+  const deploy = () => controller.request("POST", `${agentPath}/deploy`);
+  const revisions = async () =>
+    (await controller.request("GET", `${agentPath}/revisions`)).data.length;
+  // A later Configuration save can still deny every tool under a saved Agent, so deployment
+  // checks the admitted pair again and creates no revision.
+  await store({ tools: { deny: ["*"] } });
+  assertRefused(await deploy(), "deploy with a deny-all list");
+  assert.equal(await revisions(), 0);
+  await store(allowed);
+  const deployed = await deploy();
+  assert.equal(deployed.status, 202, JSON.stringify(deployed.body));
 });
 
 test("Codex Agents refuse plugin and tool approver overrides and keep Agent-wide approvers", async () => {
@@ -6278,6 +6389,35 @@ test("Agent provisioning API validates inline configuration with existing Secret
     await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
     [],
   );
+  // The OpenClaw Plugin Driver refuses a selection whose every tool the inline Configuration
+  // denies (finding 508) before anything durable is written.
+  const openClawDriver = new OCCPluginDriver();
+  fixture.controller.registerDriver(openClawDriver);
+  fixture.controller.selectDriver("plugin", openClawDriver.id);
+  const deniedTools = provisioningRequestBody(namespace.data.id, secrets, {
+    plugins: { [diffsPluginId]: pluginPolicy() },
+  });
+  deniedTools.configuration.values = {
+    ...deniedTools.configuration.values,
+    tools: { deny: ["*"] },
+  };
+  const refusedDenial = await injectedRequest(
+    fixture.app,
+    "POST",
+    `/namespaces/${namespace.data.id}/agents/provision`,
+    { body: deniedTools },
+  );
+  assert.equal(refusedDenial.status, 400, JSON.stringify(refusedDenial.body));
+  assert.equal(refusedDenial.body.error.code, "INVALID_REQUEST");
+  assert.equal(
+    refusedDenial.body.error.message,
+    `Configuration setting tools.deny blocks every tool of plugin ${diffsPluginId}; remove the matching deny entry or deselect the plugin.`,
+  );
+  assert.deepEqual(
+    await fixture.platformState.read((view) => view.agents.listAgents(namespace.data.id)),
+    [],
+  );
+  fixture.controller.selectDriver("plugin", pluginDriver.id);
 
   const durableOnly = await injectedRequest(
     fixture.app,

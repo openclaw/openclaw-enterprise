@@ -1,4 +1,4 @@
-import { button, element } from "../dom.mjs";
+import { button, element, statusBlock } from "../dom.mjs";
 import { namespacePath } from "./list.mjs";
 
 const USER_ID = /^[UW][A-Z0-9]{1,31}$/;
@@ -201,7 +201,7 @@ export function createSlackDirectoryField({
   const nameStatus = element("p", { className: "hint", role: "status" });
   const workspace = element("p", { className: "hint slack-directory-workspace" });
   const status = element("p", { className: "hint", role: "status" });
-  const errorText = element("p", { className: "error", role: "alert" });
+  const errorText = statusBlock("danger", null, null);
   const results = element("div", {
     id: `${control.id}-results`,
     className: "slack-directory-results",
