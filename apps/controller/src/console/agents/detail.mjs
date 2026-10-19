@@ -2166,10 +2166,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
         ? DEPLOYMENT_FAILURE_LINKS[code]
         : null;
+      // Without update, the draft's only step is Deploy new version, which it builds only from a
+      // readable Configuration, so "Open version draft" waits for the same read (finding 1944).
+      const openDraftAllowed =
+        guidance === "configuration" &&
+        configurationAvailable &&
+        callerPermissions?.update !== true &&
+        callerPermissions?.deploy === true;
+      if (openDraftAllowed && readableConfigurationId !== configurationId) {
+        checkConfigurationReadable(configurationId);
+      }
       const canOpenConfiguration =
         guidance === "configuration" &&
         configurationAvailable &&
-        (callerPermissions?.update === true || callerPermissions?.deploy === true);
+        (callerPermissions?.update === true ||
+          (openDraftAllowed && readableConfigurationId === configurationId));
       const canOpenCredentials =
         guidance === "credentials" &&
         callerPermissions?.update === true &&
@@ -2198,7 +2209,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
 
   // Another version's tabs have no reason to read the Configuration, so recovery reads it once
-  // before offering Deploy again. A denial is remembered like the draft's; any other failure
+  // before offering Deploy again or Open version draft. A denial is remembered like the draft's; any other failure
   // leaves the link hidden for this page view. The draft's own read decides there.
   function checkConfigurationReadable(configurationId) {
     if (selected === "draft" || configurationCheckId === configurationId) {
