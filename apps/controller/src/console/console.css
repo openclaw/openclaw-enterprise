@@ -39,6 +39,8 @@
   --color-info: #1e3a5f;
   --color-info-subtle: rgba(30, 58, 95, 0.07);
   --color-overlay: rgba(15, 23, 42, 0.4);
+  /* Focus is navy, not accent: an accent ring on an empty required field read as an error. */
+  --color-focus: var(--color-info);
   /* Type: size and its line height. */
   --font-sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -83,7 +85,7 @@
   --duration-fast: 120ms;
   --duration-base: 200ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
-  --focus-ring: 3px solid var(--color-accent);
+  --focus-ring: 2px solid var(--color-focus);
   --focus-offset: 2px;
   --focus-offset-inset: -3px;
   --control-h: 40px;
@@ -383,14 +385,14 @@ p {
   margin: 14vh auto;
   padding: 28px;
 }
+/* The wordmark: mascot and "OpenClaw Enterprise" in ink, normal case. */
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
-  color: var(--accent);
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-strong);
   margin-bottom: 38px;
 }
 .brand img {
@@ -558,10 +560,12 @@ p {
   display: grid;
   grid-template-columns: 258px minmax(0, 1fr);
 }
+/* Warm-quiet shell (spec 3.1): the sidebar is a surface-2 panel with a hairline edge, so the white
+   cards in the content read as raised without a shadow. */
 .sidebar {
-  padding: 26px 16px 16px;
-  background: var(--bg);
-  border-right: 1px solid var(--line);
+  padding: var(--space-6) var(--space-4) var(--space-4);
+  background: var(--color-surface-2);
+  border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
   position: sticky;
@@ -570,11 +574,8 @@ p {
   z-index: 3;
 }
 .sidebar .brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px 0;
-  margin-bottom: 28px;
+  padding: var(--space-2) var(--space-3) 0;
+  margin-bottom: var(--space-6);
 }
 .occ-version {
   color: var(--muted);
@@ -611,28 +612,38 @@ p {
 }
 .nav {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .nav a {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: center;
+  min-height: 36px;
+  padding: 0 var(--space-3);
   text-decoration: none;
-  color: var(--muted);
-  padding: 10px 12px;
-  border-radius: var(--radius);
-}
-.nav a[aria-current="page"] {
-  background: var(--accent-subtle);
-  color: var(--accent);
-  font-weight: 600;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-md);
 }
 .nav a:hover {
-  background: var(--hover);
+  background: var(--color-surface-hover);
+}
+/* The current page: a white pill with a 3 px accent bar. An inset shadow, not a border, so the
+   text does not shift; the bar's side is square. */
+.nav a[aria-current="page"] {
+  background: var(--color-surface);
+  color: var(--color-text-strong);
+  font-weight: var(--weight-semibold);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+@media (forced-colors: active) {
+  .nav a[aria-current="page"] {
+    border-left: 3px solid Highlight;
+  }
 }
 .nav-icon {
-  font-size: 17px;
-  width: 20px;
+  font-size: 16px;
+  width: 16px;
   text-align: center;
 }
 .external-link-icon {
@@ -644,27 +655,61 @@ p {
 .account {
   margin-top: auto;
   position: relative;
-  padding-top: 24px;
+  padding-top: var(--space-6);
 }
+/* The account row: initials avatar, name and email, chevron. */
 .account-toggle {
   width: 100%;
   text-align: left;
-  padding: 14px 12px;
-  font-size: 13px;
-  font-weight: 550;
+  padding: var(--space-3);
+  border-color: var(--color-border);
+  font-weight: var(--weight-regular);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-3);
 }
-.account-label {
+.account-avatar {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-hover);
+  color: var(--color-text-strong);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+}
+.account-toggle:not(:disabled):hover .account-avatar {
+  background: var(--color-surface);
+}
+.account-text {
+  flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.account-name,
+.account-email {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.account-name {
+  color: var(--color-text-strong);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+  font-weight: var(--weight-medium);
+}
+.account-email {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
 .account-chevron {
   flex-shrink: 0;
+  color: var(--color-text-muted);
 }
 .menu {
   padding: 6px;
@@ -676,7 +721,7 @@ p {
 }
 .account > .menu {
   position: absolute;
-  bottom: 64px;
+  bottom: calc(100% - var(--space-6) + var(--space-2));
   left: 0;
   right: 0;
 }
@@ -892,6 +937,7 @@ p {
 .settings dd {
   margin: 0;
 }
+.topbar,
 .mobile-toggle,
 .drawer-close,
 .scrim {
@@ -904,11 +950,55 @@ p {
     display: flow-root;
   }
   .content {
-    padding: 30px 20px;
+    padding: var(--space-5) var(--space-4) var(--space-6);
   }
-  .mobile-toggle {
-    display: block;
-    margin: 16px 20px 0;
+  /* Phone top bar (spec 3.1): navigation toggle, wordmark and account avatar on a 56 px bar. */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: 56px;
+    padding: 0 var(--space-2) 0 var(--space-1);
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+    position: relative;
+    z-index: 1;
+  }
+  .mobile-toggle,
+  .topbar-avatar {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: var(--touch-min);
+    height: var(--touch-min);
+    padding: 0;
+    border-color: transparent;
+    background: transparent;
+  }
+  .topbar-avatar {
+    border-radius: var(--radius-pill);
+  }
+  .menu-icon {
+    width: 20px;
+    height: 20px;
+  }
+  .brand--bar {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    white-space: nowrap;
+  }
+  .topbar-account {
+    position: relative;
+  }
+  .topbar-account > .menu {
+    position: absolute;
+    top: calc(100% + var(--space-1));
+    right: 0;
+    z-index: 4;
+  }
+  .nav a {
+    min-height: var(--touch-min);
   }
   .sidebar {
     display: none;

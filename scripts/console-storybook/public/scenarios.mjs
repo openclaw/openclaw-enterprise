@@ -678,11 +678,11 @@ export const scenarios = {
   },
   logoutFailure: {
     group: "Pages/Sign in",
-    name: "Logout unconfirmed",
+    name: "Sign-out unconfirmed",
     rules: [{ path: "/api/auth/sign-out", method: "POST", status: 503 }],
-    actions: [...account, click("Logout")],
+    actions: [...account, click("Sign out")],
     description:
-      "Failed logout with a still-active session hides private content until revocation can be confirmed.",
+      "Failed sign-out with a still-active session hides private content until revocation can be confirmed.",
   },
   agents: {
     group: "Pages/Agents",
@@ -4881,21 +4881,32 @@ export const scenarios = {
     path: "/console/agents?debug=true",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
-      "Approved OpenClaw mech mascot beside OCE and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
+      "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
   },
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
     path: "/console/agents?debug=true",
     description:
-      "Approved OpenClaw mech mascot beside OCE with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
+      "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   },
   menu: {
     group: "Components/Navigation",
     name: "Account menu",
     actions: account,
     description:
-      "Account Settings and Logout. Namespace selection is available directly in the page header.",
+      "The account row (initials, name and email) opens Settings and Sign out. Namespace selection is available directly in the page header.",
+  },
+  menuMobile: {
+    group: "Components/Navigation",
+    name: "Mobile account menu",
+    mobile: true,
+    actions: [{ selector: '.content [aria-busy="false"]' }, { selector: ".topbar-avatar", click: true }],
+    description:
+      "390px top bar: navigation toggle, wordmark and the account avatar, which opens Settings and Sign out without the drawer.",
+    steps: [
+      "Press Escape; focus returns to the avatar. Open navigation, then check the menu closed.",
+    ],
   },
   namespaceMenu: {
     group: "Components/Navigation",
@@ -4926,7 +4937,7 @@ export const scenarios = {
     mobile: true,
     actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
     description:
-      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
+      "390px viewport with the simulated OCC revision beside the wordmark in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
     steps: [
       "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
       "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",

@@ -406,7 +406,7 @@ test("A page held for Agents keeps its own navigation and header until Agents re
   ]);
 
   // A return from Settings: the retained list revalidates while Settings is held.
-  await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
+  await page.locator(".account-toggle").click();
   await page.getByRole("menuitem", { name: "Settings" }).click();
   await page.locator(settledView).locator("dl.settings").waitFor();
   await shownFrames(page);
@@ -1492,8 +1492,8 @@ test("Logout during a first visit's hold leaves nothing private, even after Back
   const agentRead = await holdAgent(t, page, namespace, agent);
   await page.getByRole("link", { name: "Held Agent" }).click();
   await agentRead.requested;
-  await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
-  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await page.locator(".account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.getByRole("button", { name: "Login" }).waitFor();
   agentRead.release();
   await page.clock.runFor(400);
