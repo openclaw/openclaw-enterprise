@@ -274,7 +274,7 @@ test("Stop, Delete and Save Configuration show busy, not only disabled, while th
   // Idle: available, and not busy.
   assert.equal(await save.getAttribute("aria-busy"), "false");
   const configurationUrl = `${fixture.origin}/namespaces/${namespace.id}/configurations/${editable.configurationId}`;
-  // A refused save is busy while it runs and not after, so Save Again is not left with a busy
+  // A refused save is busy while it runs and not after, so Save again is not left with a busy
   // state and the progress cursor (finding 1972).
   const refused = await holdRequests(t, page, configurationUrl, {
     method: "PATCH",
@@ -285,7 +285,7 @@ test("Stop, Delete and Save Configuration show busy, not only disabled, while th
   await refused.requested;
   assert.equal(await save.getAttribute("aria-busy"), "true");
   refused.release();
-  await page.getByText("Refused for the busy test.", { exact: false }).waitFor();
+  await page.getByText("Refused for the busy test.", { exact: true }).waitFor();
   assert.deepEqual(await busyState(save), {
     busy: "false",
     cursor: "pointer",
@@ -334,7 +334,7 @@ test("Save repository access shows busy while its request runs", async (t) => {
   await page.getByText("Read-only · Custom", { exact: true }).waitFor();
   const save = page.getByRole("button", { name: "Save repository access" });
   assert.equal(await save.getAttribute("aria-busy"), "false");
-  await page.locator('[aria-describedby="repository-summary-application"]').click();
+  await page.getByRole("button", { name: "Access for example/application" }).click();
   await page.locator("#repository-override-application-git-full").check();
   await page.getByText("Contributor · Custom", { exact: true }).waitFor();
   const patch = await holdRequests(
@@ -752,7 +752,10 @@ test("Deleting and unreadable configuration badges take their tones on the list 
   }
 
   await page.goto(detailUrl(fixture, namespace.id, deleting.id).href);
-  const header = page.locator(".badge", { hasText: "Deleting" });
+  const header = page
+    .locator(settledView)
+    .locator(".badge")
+    .filter({ hasText: /^Deleting$/ });
   await header.waitFor();
   const { badge, text, tone, painted } = await badgeState(header);
   assert.deepEqual(

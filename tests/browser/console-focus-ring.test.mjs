@@ -132,12 +132,19 @@ const focusedRing = (page, selector = null) =>
         const cutY = Math.max(top - (box.top - reach), box.bottom + reach - (bottom - barHeight));
         // Scroll offsets snap to whole pixels, so a scrolled-to row can overhang its scroller by
         // a fraction of a pixel on the axis it was scrolled along; only a whole pixel or more
-        // counts as hidden there. On an axis the scroller has not scrolled along, half a pixel
-        // does (finding 1977: a 0.9px sideways cut passed).
+        // counts as hidden there. On an axis the scroller has not scrolled along the cut is
+        // layout alone, and more than half a pixel of it shows when painted (finding 1977: a
+        // 0.9px sideways cut passed).
         const hides = (cut, scrolled) => (scrolled ? cut >= 1 : cut > 0.5);
-        if (hides(cutX, scroller.scrollLeft !== 0) || hides(cutY, scroller.scrollTop !== 0)) {
-          const cut = Math.max(cutX, cutY);
-          clipped.push(`.${[...scroller.classList].join(".")} hides ${cut.toFixed(1)}px`);
+        for (const [axis, cut, scrolled] of [
+          ["x", cutX, scroller.scrollLeft !== 0],
+          ["y", cutY, scroller.scrollTop !== 0],
+        ]) {
+          if (hides(cut, scrolled)) {
+            clipped.push(
+              `.${[...scroller.classList].join(".")} hides ${cut.toFixed(1)}px (${axis})`,
+            );
+          }
         }
       }
       // Every other ring around the stop: an ancestor that draws an outline frames it. Only the
