@@ -1412,10 +1412,6 @@ select:not([multiple])[size="1"] {
   max-width: 310px;
   overflow-wrap: anywhere;
 }
-.agent-table a {
-  font-weight: 550;
-  text-decoration: none;
-}
 /* The name wraps within the width its ID takes, and a word longer than that (a name may be 200
    unbroken characters) breaks, so one long name does not widen the table (finding 1955). Only
    such a word breaks: `anywhere` would also break ordinary names where the table is at its
@@ -1424,6 +1420,10 @@ select:not([multiple])[size="1"] {
   display: inline-block;
   max-width: 310px;
   overflow-wrap: break-word;
+}
+.agent-table a {
+  font-weight: 550;
+  text-decoration: none;
 }
 .agent-tabs {
   display: flex;
