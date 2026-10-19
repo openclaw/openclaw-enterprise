@@ -52,11 +52,12 @@ const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
 const defaultModel = "codex/gpt-6-astra";
 
-// The bootstrap administrator signs in once per file (and sign-in origin): every fixture's app
-// reads the same stored session (same database and auth secret). No test ends it, and a revoked
-// administrator binding is restored at teardown. Other accounts sign in on every call.
+// The bootstrap administrator signs in once per file (and per set of sign-in options): every
+// fixture's app reads the same stored session (same database and auth secret). No test ends it,
+// and a revoked administrator binding is restored at teardown. Any other account or password
+// signs in on every call.
 function signInToControllerApp(app, credentials, ...options) {
-  if (credentials.email !== adminEmail) {
+  if (credentials.email !== adminEmail || credentials.password !== adminPassword) {
     return signInAccount(app, credentials, ...options);
   }
   const key = JSON.stringify(options);
