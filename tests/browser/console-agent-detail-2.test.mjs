@@ -19,7 +19,6 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import {
   apiRequests,
   detailUrl,
-  holdRequests,
   expectNoText,
   holdRequests,
   login,
