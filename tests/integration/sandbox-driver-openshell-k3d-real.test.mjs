@@ -32,11 +32,11 @@ import {
   createOpenShellInstallationConfiguration,
   createOpenShellKubernetesFixture,
   createOpenShellServiceLoopbackLookup,
-  failedRecoveryDiagnostic,
   OPENSHELL_KUBERNETES_WORKLOAD_IDENTITY,
   openShellAgentName,
   openShellGatewayName,
   openshellHash as hash,
+  failedRecoveryDiagnostic,
   outageAttemptRead,
   registerOpenShellInstallationCleanups,
 } from "../helpers/openshell-kubernetes-real.mjs";
