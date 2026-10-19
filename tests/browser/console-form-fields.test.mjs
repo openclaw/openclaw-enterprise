@@ -5,6 +5,7 @@ import test from "node:test";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
+  consoleViewports,
   detailUrl,
   fileBrowser,
   login,
@@ -112,10 +113,7 @@ async function assertFieldError(page, control, { name, error, help }) {
   assert.deepEqual(placement, { text: error, inField: true, below: true, danger: true }, name);
 }
 
-for (const viewport of [
-  { width: 1440, height: 900 },
-  { width: 390, height: 844 },
-]) {
+for (const viewport of consoleViewports) {
   test(`Use Preset checks its variables without the browser bubble at ${viewport.width}px`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
