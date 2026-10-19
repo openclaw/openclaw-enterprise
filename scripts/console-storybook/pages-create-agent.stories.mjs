@@ -63,6 +63,7 @@ export const CreateProvisioningSecrets = {
   name: "Provisioning with saved Secrets",
 };
 export const CreateDeploymentPending = story("createDeploymentPending");
+export const CreatePending = story("createPending");
 export const CreateDeploymentNamedWait = story("createDeploymentNamedWait");
 export const CreateDeploymentPodQuotaFull = story("createDeploymentPodQuotaFull");
 export const CreateDeploymentImagePullFailed = story("createDeploymentImagePullFailed");
