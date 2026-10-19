@@ -333,7 +333,7 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByRole("link", { name: "Pending leave Agent" }).click();
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.waitForURL((url) => url.searchParams.get("tab") === "channels");
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
@@ -461,7 +461,7 @@ test("untouched forms, unchanged drawers and search text do not ask before a rel
 
   // An open, unchanged Slack drawer has nothing to lose.
   await page.getByRole("link", { name: "Nothing to lose Agent" }).click();
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("button", { name: "Edit Slack" }).click();
   await page.getByRole("button", { name: "Save configuration" }).waitFor();
   assert.equal(await asksBeforeUnload(page), false);
