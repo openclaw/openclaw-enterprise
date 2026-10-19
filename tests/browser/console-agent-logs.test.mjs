@@ -2343,7 +2343,7 @@ for (const delayed of ["follow", "download"]) {
     logs.computeDriver.state.lines.push(line(2, "authorized before revocation"));
 
     const follow = page.getByRole("button", { name: "Follow", exact: true });
-    const download = page.getByRole("button", { name: "Download" });
+    const download = page.getByRole("button", { name: "Download", exact: true });
     const startFollow = async () => {
       await follow.click();
       await page.clock.runFor(2_000);
