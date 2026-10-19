@@ -26,7 +26,7 @@ See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-de
 
 ## Identify the control-plane build
 
-With `debug=true`, the sidebar shows **OCE** followed by the first eight
+With `debug=true`, the sidebar wordmark is followed by the first eight
 characters of the running OCC image's source commit, or **dev** for builds
 without metadata; hover for the full revision. Published images bake the checked
 release revision into the console HTML.
