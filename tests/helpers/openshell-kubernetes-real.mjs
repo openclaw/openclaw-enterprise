@@ -101,13 +101,16 @@ export async function failedRecoveryDiagnostic(
   { readWorker, describe, failure, write = (text) => process.stderr.write(text) },
   { timeoutMs = diagnosticDeadlineMs } = {},
 ) {
-  const worker = await withinDiagnosticDeadline(
+  // A worker read that failed or stalled gives `describe` no worker (an undefined timedOut
+  // would fall back to the deadline's default text).
+  const read = await withinDiagnosticDeadline(
     () =>
       Promise.resolve()
         .then(readWorker)
-        .catch(() => undefined),
-    { timeoutMs, timedOut: undefined },
+        .catch(() => null),
+    { timeoutMs, timedOut: null },
   );
+  const worker = typeof read === "object" && read !== null ? read : undefined;
   const detail = await withinDiagnosticDeadline(
     () =>
       Promise.resolve()

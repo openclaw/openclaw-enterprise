@@ -124,7 +124,13 @@ export async function withinDiagnosticDeadline(
 // phase, finalizers and status conditions, and every object still in it with its finalizers and
 // deletion time. The listing runs within the diagnostic deadline and only adds to the delete's
 // own error.
-export async function deleteNamespaceExplained(kubectl, namespace, { timeout = "120s" } = {}) {
+export async function deleteNamespaceExplained(
+  kubectl,
+  namespace,
+  // The listing's own bound keeps the delete and the listing within teardownStepLimitMs, so the
+  // teardown never abandons the step and loses the listing with it.
+  { timeout = "120s", listTimeoutMs = 40_000 } = {},
+) {
   try {
     return await kubectl(
       "delete",
@@ -137,7 +143,7 @@ export async function deleteNamespaceExplained(kubectl, namespace, { timeout = "
   } catch (error) {
     const remains = await withinDiagnosticDeadline(
       () => describeNamespaceRemains(kubectl, namespace),
-      { timedOut: "listing what remains timed out" },
+      { timeoutMs: listTimeoutMs, timedOut: "listing what remains timed out" },
     ).catch((listError) => `listing what remains failed: ${listError?.message ?? listError}`);
     error.message = `${error.message}\nNamespace ${namespace} remains: ${remains}`;
     throw error;
@@ -146,6 +152,25 @@ export async function deleteNamespaceExplained(kubectl, namespace, { timeout = "
 
 // Objects a failed Namespace delete lists, at most; the rest are counted.
 const namespaceRemainsLimit = 40;
+// Only object metadata is printed, never a Secret's or ConfigMap's data.
+const namespaceRemainsTemplate =
+  '{range .items[*]}{.kind}/{.metadata.name} finalizers={.metadata.finalizers} deleting={.metadata.deletionTimestamp}{"\\n"}{end}';
+
+// A kubectl read that printed what it could before failing (one unavailable aggregated API fails
+// discovery and a multi-kind get, but kubectl still prints the rest): its stdout, and its error's
+// first stderr line in `lines`.
+async function partialKubectlRead(kubectl, args, lines, what) {
+  try {
+    return { output: await kubectl(...args), complete: true };
+  } catch (error) {
+    const reason = String(error?.stderr || error?.message || error)
+      .trim()
+      .split("\n")[0]
+      .slice(0, 300);
+    lines.push(`${what} failed: ${reason}`);
+    return { output: String(error?.stdout ?? ""), complete: false };
+  }
+}
 
 async function describeNamespaceRemains(kubectl, namespace) {
   let state;
@@ -166,62 +191,50 @@ async function describeNamespaceRemains(kubectl, namespace) {
         `condition ${condition.type}=${condition.status} ${condition.reason ?? ""}: ${condition.message ?? ""}`,
     ),
   ];
-  const kinds = (
-    await kubectl(
-      "api-resources",
-      "--namespaced=true",
-      "--verbs=list",
-      "-o",
-      "name",
-      diagnosticRequestTimeout,
-    )
-  )
+  const discovery = await partialKubectlRead(
+    kubectl,
+    ["api-resources", "--namespaced=true", "--verbs=list", "-o", "name", diagnosticRequestTimeout],
+    lines,
+    "listing kinds",
+  );
+  const kinds = discovery.output
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean)
     // Events describe the delete, they don't hold it.
     .filter((kind) => !/^events(\.events\.k8s\.io)?$/.test(kind));
-  let listed;
-  let complete = true;
-  try {
-    listed = await kubectl(
+  if (kinds.length === 0) {
+    return lines.join("\n  ");
+  }
+  const listed = await partialKubectlRead(
+    kubectl,
+    [
       "get",
       kinds.join(","),
       "--namespace",
       namespace,
       "--ignore-not-found=true",
       "-o",
-      "json",
+      `jsonpath=${namespaceRemainsTemplate}`,
       diagnosticRequestTimeout,
-    );
-  } catch (error) {
-    // A kind that can't be listed (an unavailable aggregated API) fails the command but kubectl
-    // still prints the others.
-    complete = false;
-    listed = String(error?.stdout ?? "");
-    lines.push(`listing objects failed: ${String(error?.stderr ?? error?.message).trim()}`);
+    ],
+    lines,
+    "listing objects",
+  );
+  const objects = listed.output
+    .split("\n")
+    .map((line) =>
+      line
+        .trim()
+        .replace(/ finalizers=(?= |$)/, "")
+        .replace(/ deleting=$/, ""),
+    )
+    .filter(Boolean);
+  lines.push(...objects.slice(0, namespaceRemainsLimit));
+  if (objects.length > namespaceRemainsLimit) {
+    lines.push(`and ${objects.length - namespaceRemainsLimit} more objects`);
   }
-  let items = [];
-  try {
-    items = listed.trim() ? (JSON.parse(listed).items ?? []) : [];
-  } catch {
-    complete = false;
-    lines.push(`unreadable object list: ${listed.slice(0, 200)}`);
-  }
-  for (const item of items.slice(0, namespaceRemainsLimit)) {
-    const finalizers = item.metadata?.finalizers ?? [];
-    lines.push(
-      `${item.kind}/${item.metadata?.name}` +
-        (finalizers.length ? ` finalizers [${finalizers.join(", ")}]` : "") +
-        (item.metadata?.deletionTimestamp
-          ? ` deleting since ${item.metadata.deletionTimestamp}`
-          : ""),
-    );
-  }
-  if (items.length > namespaceRemainsLimit) {
-    lines.push(`and ${items.length - namespaceRemainsLimit} more objects`);
-  }
-  if (items.length === 0 && complete) {
+  if (objects.length === 0 && discovery.complete && listed.complete) {
     lines.push("no objects left in it");
   }
   return lines.join("\n  ");

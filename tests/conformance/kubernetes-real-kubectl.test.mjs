@@ -395,19 +395,10 @@ test("a Namespace delete that times out says what still holds the Namespace", as
     }),
     "api-resources --namespaced=true":
       "pods\nevents\nevents.events.k8s.io\nsandboxes.agents.x-k8s.io\n",
-    "get pods,sandboxes.agents.x-k8s.io": JSON.stringify({
-      items: [
-        {
-          kind: "Sandbox",
-          metadata: {
-            name: "agent-1",
-            finalizers: ["openshell.io/sandbox"],
-            deletionTimestamp: "2026-10-19T09:26:00Z",
-          },
-        },
-        { kind: "Pod", metadata: { name: "agent-1-0" } },
-      ],
-    }),
+    // kubectl prints the jsonpath template: arrays as JSON, a missing field as nothing.
+    "get pods,sandboxes.agents.x-k8s.io":
+      'Sandbox/agent-1 finalizers=["openshell.io/sandbox"] deleting=2026-10-19T09:26:00Z\n' +
+      "Pod/agent-1-0 finalizers= deleting=\n",
   });
   const error = await deleteNamespaceExplained(kubectl, "oce-held").then(
     () => assert.fail("the delete resolved"),
@@ -423,7 +414,7 @@ test("a Namespace delete that times out says what still holds the Namespace", as
     [
       "\nNamespace oce-held remains: phase Terminating, finalizers [kubernetes]",
       "condition NamespaceFinalizersRemaining=True SomeFinalizersRemain: Some content in the namespace has finalizers remaining: openshell.io/sandbox in 1 resource instances",
-      "Sandbox/agent-1 finalizers [openshell.io/sandbox] deleting since 2026-10-19T09:26:00Z",
+      'Sandbox/agent-1 finalizers=["openshell.io/sandbox"] deleting=2026-10-19T09:26:00Z',
       "Pod/agent-1-0",
     ].join("\n  "),
   );
@@ -435,10 +426,16 @@ test("a Namespace delete that times out says what still holds the Namespace", as
     "--wait=true",
     "--timeout=120s",
   ]);
-  // Every read is bounded per request.
+  // Every read is bounded per request, and the object listing prints metadata only.
   for (const call of calls.slice(1)) {
     assert.equal(call.at(-1), diagnosticRequestTimeout);
   }
+  const listing = calls.find((call) => call[0] === "get" && call[1] !== "namespace");
+  assert.match(
+    listing.at(-2),
+    /^jsonpath=\{range \.items\[\*\]\}\{\.kind\}\/\{\.metadata\.name\} /,
+  );
+  assert.doesNotMatch(listing.at(-2), /\.data|\.spec|\.status/);
 });
 
 test("a timed-out Namespace delete still fails when the Namespace is gone or the listing fails", async () => {
@@ -457,7 +454,7 @@ test("a timed-out Namespace delete still fails when the Namespace is gone or the
     "api-resources --namespaced=true": "pods\nwidgets.example.com\n",
     "get pods,widgets.example.com": Object.assign(
       kubectlFailure("error: the server is currently unable to handle the request\n"),
-      { stdout: JSON.stringify({ items: [{ kind: "Pod", metadata: { name: "left" } }] }) },
+      { stdout: "Pod/left finalizers= deleting=\n" },
     ),
   });
   await assert.rejects(deleteNamespaceExplained(partial.kubectl, "oce-held"), (error) => {
@@ -470,6 +467,42 @@ test("a timed-out Namespace delete still fails when the Namespace is gone or the
     assert.doesNotMatch(error.message, /no objects left/);
     return true;
   });
+
+  // One unavailable aggregated API fails discovery, but kubectl still prints the other kinds
+  // (a classic NamespaceDeletionDiscoveryFailure): the listing goes on with them.
+  const discovery = namespaceKubectl({
+    "get namespace": JSON.stringify({
+      spec: { finalizers: ["kubernetes"] },
+      status: {
+        phase: "Terminating",
+        conditions: [
+          {
+            type: "NamespaceDeletionDiscoveryFailure",
+            status: "True",
+            reason: "DiscoveryFailed",
+            message: "Discovery failed for some groups: metrics.k8s.io/v1beta1",
+          },
+        ],
+      },
+    }),
+    "api-resources --namespaced=true": Object.assign(
+      kubectlFailure(
+        "error: unable to retrieve the complete list of server APIs: metrics.k8s.io/v1beta1: the server is currently unable to handle the request\n",
+      ),
+      { stdout: "pods\n" },
+    ),
+    "get pods": "",
+  });
+  await assert.rejects(deleteNamespaceExplained(discovery.kubectl, "oce-held"), (error) => {
+    assert.match(error.message, /\n {2}condition NamespaceDeletionDiscoveryFailure=True /);
+    assert.match(
+      error.message,
+      /\n {2}listing kinds failed: error: unable to retrieve the complete list/,
+    );
+    assert.doesNotMatch(error.message, /no objects left/);
+    return true;
+  });
+  assert.equal(discovery.calls.at(-1)[1], "pods");
 
   const unreadable = namespaceKubectl({ "get namespace": kubectlFailure("error: EOF\n") });
   await assert.rejects(deleteNamespaceExplained(unreadable.kubectl, "oce-held"), (error) => {
@@ -535,6 +568,19 @@ test("a failed outage recovery says why without replacing its failure", async ()
     }),
     "\nRecovery diagnostic unavailable: TypeError",
   );
+  const stalledWorker = [];
+  await failedRecoveryDiagnostic(
+    {
+      readWorker: () => new Promise(() => {}),
+      describe: async (worker) => {
+        stalledWorker.push(worker);
+        return "";
+      },
+      write,
+    },
+    { timeoutMs: 50 },
+  );
+  assert.deepEqual(stalledWorker, [undefined]);
   const started = Date.now();
   const stalled = new Error("wait failed");
   assert.equal(
