@@ -1,22 +1,21 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-17
-last_updated_session: fix-1692
+updated: 2026-10-19
+last_updated_session: authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13
 ---
 
 # OpenShell Sandbox provisioning flow
 
 ## Overview
 
-Kubernetes Compute delegates dedicated Codex and native OpenClaw to OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
+Kubernetes Compute delegates dedicated Codex/OpenClaw to OpenShell. Operator mode
+owns Namespace Workspaces; managed mode fails before mutation.
 [Credential sources](credential-source-lifecycle.md) provide model access without
-Agent Secret permission. Codex authenticates Gateway requests through revision-owned
-files and OpenShell's bearer-passthrough endpoint, replacing the
-Harness Service.
+Agent Secret permission. Revision-owned files and bearer passthrough authenticate
+Codex Gateway requests, replacing the Harness Service.
 
-Development workspace-node setup exposes a scoped bootstrap token through a
-revision-owned provider file. Both local control-plane profiles install the pinned
-Gateway and workspace chart.
+Development workspace-node setup uses a scoped token in a revision-owned provider
+file.
 
 ## Entry Points
 
@@ -90,19 +89,17 @@ graph TD
 `internal/occdev/openshell.go:prepareOpenShell`,
 `internal/occdev/kubernetes.go:writeInstallation`
 
-The Installation selects the `openshell` Backend and Drivers. Model profiles allow
-Node and x64/ARM64 Codex independently of launcher architecture. The pinned runtime
-enables Dedicated OpenClaw development with mandatory Landlock.
+The `openshell` Installation profiles support Node and x64/ARM64 Codex
+independently of launcher architecture, with mandatory Landlock.
 
 `scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
 Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
-Before creating state, Kubernetes-only rejects API-port collisions and records
-engine, cluster, namespace, port and key destination. Both verify the archive,
+Before state creation, Kubernetes-only rejects API-port collisions and records
+engine, cluster, namespace, port and key destination. Both verify archives,
 package charts and import digest-pinned OpenShell images. Kubernetes-only also
 builds/selects OCE images, imports PostgreSQL and resolves cluster digests.
 
-Both profiles import OCE images before OpenShell images and workloads, preventing
-k3s garbage collection from removing idle OpenShell images during imports.
+Both import OCE images first, preventing k3s garbage collection of idle OpenShell images.
 
 After Agent Sandbox rollout failure, `prepareOpenShell` invokes
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -113,19 +110,22 @@ Limits: fresh 15-second context, three seconds and 256 KiB/command, 32 KiB/recor
 Commands are awaited; 200 ms pipe draining cannot terminate descendants. Output
 failures are ignored; writer latency/durability remain unbounded. Capture never retries.
 
-After Helm, `network.providerHarness` records Gateway ClusterIP, Pod selector
-and TCP/8080. Agent Gateways alias only the advertised hostname to that address,
-preserving HTTP Host; NetworkPolicy permits only those Pods/port.
+`network.providerHarness` records Gateway ClusterIP, Pod selector and TCP/8080.
+Agent Gateways alias only the advertised hostname, preserving HTTP Host;
+NetworkPolicy permits only those Pods/port.
 Compose runs PostgreSQL and OCC with a k3d-targeting worker; Kubernetes-only uses
 `oce-system` and in-cluster authentication. Both install private Envoy routing
 and operator Workspaces, restricting Gateway access to API, worker, supervisor
 callbacks and dedicated Agent Gateways. See [local deployment guides](../guides/deploy/local-kubernetes-development.md).
 
+`internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` validates
+bounded startup rules through the Driver before provisioning. Persisted rules
+augment generated Installation rules; see [startup network policy](../guides/deploy/local-sandbox-network-policy.md).
+
 `internal/occdev/compose_routing.go:prepareComposeRoutingFiles` sets container
 ownership for private routing files; Installation files remain `0644` in private state.
 
-Cleanup validates engine/state, deletes the named cluster/project/volumes,
-and retains recovery state after partial cleanup.
+Cleanup validates ownership, deletes cluster/project/volumes, and retains partial-failure recovery state.
 
 ### 1. Prepare the Namespace and OpenShell Workspace
 
@@ -193,10 +193,9 @@ Kubernetes, filesystem, process and binary-scoped network policy use the
 `v0.1.4` wire contract. `environment` preserves opaque
 `OCE_CODEX_CHATGPT_ACCOUNT` JSON during path relocation. Landlock is required; unsupported enums, inherited
 keys, old `passthrough` TLS spelling and missing executable paths fail before
-launch. Readiness `timeoutMs` must be a positive safe integer. The Installation
-loader names it; startup instead logs `startup-error` / `STARTUP_FAILED` before
-Kubernetes calls. Duplicate names and reserved `workspace-node-enrollment` fail
-before Driver construction. Rename them, retaining binaries and endpoints.
+launch. Readiness `timeoutMs` must be a positive safe integer. Invalid configuration
+fails before Kubernetes calls. Duplicate names and reserved
+`workspace-node-enrollment` fail before Driver construction.
 
 `provisionHarness` creates or adopts the provider with final setup. Expired setup renewal version-fences `UpdateProvider` to `node_setup_json`. For Codex, a bounded post-create delay precedes the exposed route; Compute rolls the Gateway before observing enrollment.
 
@@ -328,6 +327,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 
 ## Related docs
 
+- [Agent Sandbox policy admission and live application](agent-sandbox-policy.md)
+
 - [OpenShell Sandbox Driver](../reference/drivers/openshell-sandbox.md) and [OpenShell Credential Gateway](../reference/drivers/openshell-credential-gateway.md)
 - [Credential source lifecycle](credential-source-lifecycle.md)
 - [OpenShell tests](../testing/openshell.md)
@@ -339,6 +340,8 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-19 09:48: Preserve main and policy traces; condense prose. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
 
 - 2026-10-16 01:36: Integrate credential-independent Codex permissions while preserving external OAuth and private relay delivery. (authoring-run/3cfe533a-7ff7-4f25-ba91-7a0fc8bc35b6 - 5af46154157b7da222e2dd9839fd1bcb741c3056)
 
@@ -355,6 +358,9 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 - 2026-10-14 14:04: Scope PAT authentication and OpenShell prerequisites. (authoring-run/dba0a6cb-33d9-40fd-b38b-e20cddf4b75f - 96a2b79fa)
 
 - 2026-10-14 22:33: Exclude static Codex aliases. (authoring-run/32c91236-108c-48b8-9a06-9747c1d2d90c - f3a4d896bb51cd0d8e62bcdb29a69645b1c850dc)
+- 2026-10-15 16:14: Link frozen Agent policy admission and later live application. (authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c - a28596ab8)
+
+- 2026-10-14 14:52: Validate and snapshot startup Sandbox network policy overrides through the Driver. (authoring-run/5e9763cf-c7fd-4990-94ac-6bc267d0287a - a28596ab8cf5e028a5eb91c276feb19a3775554c)
 
 - 2026-10-14 20:27: Release refused WebSocket probes. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - 4727e9b109a2127150e03e39e859d45e0668f82f)
 

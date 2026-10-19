@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
-updated: 2026-10-17
-last_updated_session: authoring-run/77795960-6a71-4c2d-95a7-3c0c0558e489
+updated: 2026-10-19
+last_updated_session: authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13
 ---
 
 # Agent runtime logs flow
@@ -89,7 +89,7 @@ container's current termination, otherwise the prior one. Event
 reads keep only the Pod's newest 100 eligible Events across continuation pages,
 drop a settled `FailedScheduling` PVC retry, and derive `container` from
 `involvedObject.fieldPath` (`null` for Pod Events). A log read passes
-`{ source, events: false }`: one source, no Events. Each
+`{ source, events: false }`. Each
 Kubernetes call has a five-second deadline; a `403` becomes
 `RuntimeLogsForbiddenByClusterError`. `runtime-logs/description.ts:validRuntimeDescription`
 checks names, UIDs, counts and RFC 3339 UTC timestamps. A malformed, impossible
@@ -159,18 +159,16 @@ or inconsistent pairs fail as `cursor_invalid` before a Driver read. Legacy
 cursors and initial tails without observed PEM boundaries remain unknown and
 best-effort.
 
-`source=sandbox` skips the Compute description. `OpenClawController.readSandboxLogs`
-lists the source only when the selected Sandbox Driver provisioned the revision
-and implements `readSandboxLogs`, resolves Compute's placement with
-`resolveSandboxNamespace`, and runs `runtime-logs/sandbox.ts:readSandboxLogPage`.
+`source=sandbox` skips Compute description. `OpenClawController.readSandboxLogs`
+requires the provisioning Sandbox Driver's `readSandboxLogs`, resolves Compute
+placement through `resolveSandboxNamespace`, then runs
+`runtime-logs/sandbox.ts:readSandboxLogPage`.
 `OpenShellSandboxDriver.readSandboxLogs` derives the Sandbox name from the
 revision and calls `GetSandboxLogs` through `openShellSandboxLogReader`, which
-exposes nothing else. The client rejects impossible `since_time` dates before
-gRPC dispatch. OpenShell stamps supervisor lines when recorded but batches them,
-and filters `since_time` by that stamp, so a resume sends a time
-`SANDBOX_LOG_OVERLAP_MS` (5 s) behind the newest delivered line; the cursor
-keeps one hash per line delivered since then (up to 48), and each re-read line
-consumes one. First pages retain the requested window start.
+exposes nothing else. The client rejects impossible `since_time` dates before gRPC. OpenShell batches
+timestamped supervisor lines and filters by those timestamps. Resume overlaps
+`SANDBOX_LOG_OVERLAP_MS` (5 s); the cursor retains up to 48 delivered line hashes,
+consumed on reread. First pages retain the requested window start.
 Signed checkpoints retain prefix digest/count, query floor and baseline, with
 2-second container overlap. Timed windows resume progress; changed tails or
 ambiguous replacements reset with gaps. Sandbox pins short/unordered windows,
@@ -185,7 +183,7 @@ anchors or overflowing timestamp groups report gaps. gRPC `NOT_FOUND` (absent
 Sandbox, or concealed from a non-member) maps to
 `RUNTIME_LOGS_SANDBOX_NOT_FOUND`, never to an empty page. Lines naming two
 Sandbox IDs are refused; a new Sandbox ID emits `stream_replaced`.
-`sanitizeSandboxLogLines` parses the OCSF shorthand into allowlisted fields.
+OpenShell decorates decisions; OCC redacts them. See [policy evidence](agent-sandbox-policy.md).
 
 Downloads (`download=true`) force `tailLines=1000`, reject cursors (`400`), and start
 a new view; `apps/controller/src/index.ts:auditAction`
@@ -232,6 +230,8 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 
 ## Changelog
 
+- 2026-10-19 09:48: Preserve main and policy traces; condense prose. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
+
 - 2026-10-17 22:06: Align log output with status-driven selection changes. (authoring-run/77795960-6a71-4c2d-95a7-3c0c0558e489 - ee93918670368e1f34ae39b7a5f32744d8fae78e)
 
 - 2026-10-17 18:04: Use monotonic request-bucket time. (authoring-run/5775742a-69b2-4b9b-947e-198df50d9f40 - 4c15e69650b440b8b4bbd995bb61669f69d1d049)
@@ -249,6 +249,7 @@ Driver failures use fixed `RUNTIME_LOGS_*` codes; requests have ten-second deadl
 - 2026-10-15 09:08: Select newer provider Harness status before revision Pods exist. (authoring-run/7163351c-af75-410f-bd45-a2809e178c9e - 422cb3fe407204d4add49ea8494f0fd0ce49be52)
 
 - 2026-10-15 09:25: Honor HTTP-date Retry-After in CLI follow. (authoring-run/613fa018-dc4e-4c4d-b05b-f2f8f79e3244 - 422cb3fe407204d4add49ea8494f0fd0ce49be52)
+- 2026-10-15 16:14: Move OpenShell decision parsing into its Driver; redact shared metadata. (authoring-run/43cb74b9-e1fe-4fc2-adde-9d932b061d7c - a28596ab8)
 
 - 2026-10-13: Key cursor hashes; `v1` cursors expire. (#2274)
 

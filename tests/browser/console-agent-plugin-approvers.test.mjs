@@ -17,6 +17,7 @@ import {
   newPage,
   pathRequests,
   selectSecret,
+  statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
@@ -147,6 +148,11 @@ test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   await page.evaluate(() => globalThis.showPluginPage2("["));
   await dialog.getByText(invalid, { exact: true }).waitFor();
   assert.deepEqual(await liveWrites(), [invalid]);
+  assert.deepEqual(await statusTone(dialog.getByText(invalid, { exact: true })), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+  });
   await page.evaluate(() => globalThis.showPluginPage2("["));
   assert.deepEqual(await liveWrites(), []);
 });
@@ -494,6 +500,12 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await picker
     .getByText("This bot belongs to workspace TTEST123. Enter a user in that workspace.")
     .waitFor();
+  assert.deepEqual(
+    await statusTone(
+      picker.getByText("This bot belongs to workspace TTEST123. Enter a user in that workspace."),
+    ),
+    { className: "status", tone: "danger", role: "alert" },
+  );
   directoryAvailable = false;
   await people.fill("UTEST999");
   await picker.getByText("Slack directory lookup is unavailable.").waitFor();

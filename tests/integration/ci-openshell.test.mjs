@@ -121,6 +121,32 @@ test("OpenShell outage proof rereads a deployment the worker claimed again betwe
   }
 });
 
+// Finding 2040: a pass that waited on the stopped gateway gives its attempt back, so the work is
+// queued with no attempt counted; only its last attempt's code shows that the pass ran.
+test("OpenShell outage proof counts a pass that waited on the gateway without an attempt", async () => {
+  const waited = {
+    state: "queued",
+    reason_code: null,
+    attempt_count: 0,
+    last_attempt_code: "SANDBOX_GATEWAY_UNAVAILABLE",
+  };
+  let statusReads = 0;
+  const read = (work) =>
+    outageAttemptRead({
+      readWork: async () => work,
+      readStatus: async () => {
+        statusReads += 1;
+        return "queued";
+      },
+    })();
+  // Not claimed yet, or a pass that waited on something else: no proof, and no status read.
+  assert.equal(await read({ ...waited, last_attempt_code: null }), undefined);
+  assert.equal(await read({ ...waited, last_attempt_code: "REVISION_INCOMPLETE" }), undefined);
+  assert.equal(statusReads, 0);
+  assert.deepEqual(await read(waited), { work: waited, status: "queued" });
+  assert.equal(statusReads, 1);
+});
+
 test("OpenShell host probes retain the exposed hostname while connecting to loopback", async (t) => {
   const serviceHostname = "default--sb-review.openshell.localhost";
   let observedHost;

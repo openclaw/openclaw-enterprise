@@ -1,7 +1,6 @@
 # Console Storybook
 
-Browse Console pages, components, and Agent workflows with an
-in-memory fixture. Previews contact no services and run no workloads. Use dummy
+Browse Console pages and Agent workflows with an in-memory fixture. Previews contact no services and run no workloads. Use dummy
 credentials.
 
 ## Run locally
@@ -13,9 +12,7 @@ npm run storybook:install
 npm run storybook
 ```
 
-Open `http://127.0.0.1:6006`. Each story starts an independent fixture, ignoring
-existing Installations and other tabs' sessions; **Reset story** discards its
-changes.
+Open `http://127.0.0.1:6006`. **Reset story** discards the isolated fixture changes.
 
 To build and serve a static copy:
 
@@ -366,3 +363,6 @@ shows organization-wide policy restrictions. Missing-credential, read-only, and
 save-failure stories cover surrounding states. Capture final interactions and
 native values outside the repository; attach screenshots and video to the task
 and PR.
+
+For policy-denial states and the reviewed-addition walkthrough, follow the
+[Agent policy storyboard](../../scripts/console-storybook/policy-workflow.md).

@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vm from "node:vm";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
 
 const nodeRequire = createRequire(import.meta.url);
 const transportToken = "fixture-transport-token";
@@ -346,6 +347,7 @@ export function checkCodexStartup(t, scenario) {
     JSON.stringify(status) + runtime.diagnostics.join("\n"),
     /fixture-api-key|at-fixture-token|fixture-transport-token|openshell:resolve:env|Bad Request|Unauthorized|Unavailable|Reconnecting|usage limit|Too Many|quota exceeded/i,
   );
+  return { status, diagnostics: runtime.diagnostics };
 }
 
 function checkStartupDiagnostics(runtime, scenario) {
@@ -367,6 +369,20 @@ function checkStartupDiagnostics(runtime, scenario) {
     assert.equal(diagnostic.event, "codex.model_probe");
     assert.equal(diagnostic.attempt, index + 1);
     assert.ok(diagnostic.elapsedMs >= 0);
+    if (diagnostic.code === "READY") {
+      assert.equal(Object.hasOwn(diagnostic, "failureClass"), false);
+    } else {
+      assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(diagnostic.failureClass));
+    }
+  }
+  if (scenario.probeFailureClasses !== undefined) {
+    assert.deepEqual(
+      probes.map(({ failureClass }) => failureClass),
+      scenario.probeFailureClasses,
+    );
+  }
+  if (expected.check === "model-probe" && scenario.failureClass !== undefined) {
+    assert.equal(probes.at(-1)?.failureClass, scenario.failureClass);
   }
   // Startup timing reports fixed phase names and outcomes only: no model,
   // provider, credential or path value can appear in these lines.
@@ -374,7 +390,10 @@ function checkStartupDiagnostics(runtime, scenario) {
     phases.map(({ phase, outcome }) => [phase, outcome]),
     expected.phases,
   );
+  // A failed native login, like a failed probe that ran, adds only the closed-list
+  // class of Codex's error output (finding 2017).
   for (const phase of phases) {
+    const classified = phase.phase === "codex-login" && phase.outcome === "failed";
     assert.deepEqual(Object.keys(phase), [
       "event",
       "container",
@@ -382,7 +401,14 @@ function checkStartupDiagnostics(runtime, scenario) {
       "outcome",
       "ms",
       "sinceStartMs",
+      ...(classified ? ["failureClass"] : []),
     ]);
+    if (classified) {
+      assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(phase.failureClass));
+      if (scenario.failureClass !== undefined) {
+        assert.equal(phase.failureClass, scenario.failureClass);
+      }
+    }
     assert.equal(phase.container, "agent");
     assert.ok(Number.isInteger(phase.ms) && phase.ms >= 0);
     assert.ok(phase.sinceStartMs >= phase.ms);

@@ -29,6 +29,7 @@ import {
   trackSettledFetches,
   waitForInputValue,
   waitForSettledFetches,
+  statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -1759,6 +1760,11 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   });
   await page.reload();
   await page.getByText(/Secrets unavailable/).waitFor();
+  assert.deepEqual(await statusTone(page.getByText(/Secrets unavailable/)), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+  });
   const unreadableSecret = page.getByLabel("API key Secret", { exact: true });
   assert.equal(await unreadableSecret.inputValue(), "Bound Secret");
   await unreadableSecret.click();
@@ -2377,6 +2383,11 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   await page.getByRole("tab", { name: "Workspace files" }).click();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  // The standing explainer is quiet: an info block that announces nothing.
+  assert.deepEqual(
+    await statusTone(page.getByText(/^These files belong to the Agent's live workspace\./)),
+    { className: "status", tone: "info", role: null },
+  );
 
   const cleared = await state.transact((unit) =>
     unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
@@ -2725,6 +2736,52 @@ test("An uncertain repeated Stop offers only Refresh stop status", async (t) => 
   assert.deepEqual(await stopRegion.getByRole("button").allTextContents(), ["Refresh stop status"]);
 });
 
+// A Stop whose answer was lost before it reached the API leaves the Agent running; the readback
+// says so as information, not a warning, and offers Stop again (finding 2035).
+test("an uncertain Stop the API never received reads back as still requested to run", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Unsent stop");
+  const agent = await fixture.createAgent(namespace.id, "Unsent Stop", nativeValues("unsent"), {
+    harnessAuth: { method: "runtime" },
+  });
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const stopPath = `/namespaces/${namespace.id}/agents/${agent.id}/stop`;
+  const { page } = await newPage(t, fixture);
+  await page.route(`**${stopPath}`, (route, request) =>
+    request.method() === "POST"
+      ? route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked stop response" },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000002035" },
+          }),
+        })
+      : route.continue(),
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  const stopRegion = page.getByRole("region", { name: "Stop Agent", exact: true });
+  await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Stop this Agent?" })
+    .getByRole("button", { name: "Stop Agent" })
+    .click();
+  await stopRegion.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
+  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(current.data.desiredRuntimeState, "running");
+  await stopRegion.getByRole("button", { name: "Refresh stop status", exact: true }).click();
+  const notice = stopRegion.getByText("The Agent is still requested to run.", { exact: true });
+  await notice.waitFor();
+  assert.deepEqual(await statusTone(notice), { className: "status", tone: "info", role: "status" });
+  assert.equal(
+    await stopRegion.getByRole("button", { name: "Stop Agent", exact: true }).isEnabled(),
+    true,
+  );
+});
+
 test("Agent stop denial keeps the Agent running with permission feedback", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Stop denial");
   const agent = await fixture.createAgent(
@@ -2830,6 +2887,10 @@ test("a read-only principal sees Agent mutation controls disabled before any den
   await openDraft.waitFor();
   assert.equal(await openDraft.isEnabled(), true);
   await page.getByText("Your access does not include stopping this Agent.").waitFor();
+  assert.deepEqual(
+    await statusTone(page.getByText("Your access does not include stopping this Agent.")),
+    { className: "status", tone: "info", role: "status" },
+  );
   assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
   await page.getByText("Your access does not include deleting this Agent.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
