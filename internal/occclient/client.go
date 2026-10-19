@@ -502,3 +502,28 @@ func (client *Client) DeleteAgent(namespaceID, agentID string) (any, error) {
 		nil,
 	)
 }
+
+// GetAgentSandboxPolicy reads desired policy and confirmed application evidence.
+func (client *Client) GetAgentSandboxPolicy(namespaceID, agentID, facet string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet)
+}
+
+// UpdateAgentSandboxPolicy saves an expected-version replacement without applying it.
+func (client *Client) UpdateAgentSandboxPolicy(namespaceID, agentID, facet string, body jsontext.Value) (any, error) {
+	return client.send(http.MethodPut, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet}, body)
+}
+
+// ApplyAgentSandboxPolicy requests live application; acknowledgement is not enforcement evidence.
+func (client *Client) ApplyAgentSandboxPolicy(namespaceID, agentID, facet, revisionID string, expectedVersion int) (any, error) {
+	return client.send(http.MethodPost, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "apply"}, map[string]any{"revisionId": revisionID, "expectedVersion": expectedVersion})
+}
+
+// TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing changes future edit permission admission, preserving grants.
+func (client *Client) TEMPORARY_API_WILL_BREAK_IN_FUTURE_SetAgentSandboxPolicyEditing(namespaceID, agentID, facet string, enabled bool) (any, error) {
+	return client.send(http.MethodPatch, []string{"namespaces", namespaceID, "agents", agentID, "sandbox-policy", facet, "editing"}, map[string]any{"enabled": enabled})
+}
+
+// GetAgentSandboxRecommendations reads bounded provider suggestions, independently of logs.
+func (client *Client) GetAgentSandboxRecommendations(namespaceID, agentID, facet, revisionID string) (any, error) {
+	return client.get("namespaces", namespaceID, "agents", agentID, "revisions", revisionID, "sandbox-policy", facet, "recommendations")
+}

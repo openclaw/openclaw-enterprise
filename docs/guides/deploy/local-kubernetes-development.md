@@ -158,6 +158,8 @@ set
 `OCC_DEVELOPMENT_OPENSHELL_WORKSPACE_HELM_CHART`, and
 `OCC_DEVELOPMENT_OPENSHELL_AGENT_SANDBOX_MANIFEST` to absolute paths.
 
+For additional binary and endpoint rules, see [startup network policy](local-sandbox-network-policy.md).
+
 Set `OCC_DEVELOPMENT_CONTAINER_ENGINE=podman` or `docker` to select the host
 engine. Kubernetes-only startup rejects Compose arguments. Keep profile exports
 for cleanup; otherwise startup defaults to Compose with Docker Compute.

@@ -42,7 +42,59 @@ import {
   isSandboxFacet,
   normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
+  sandboxNetworkGrantsWithinCeiling,
+  validateSandboxNetworkGrants,
 } from "../../packages/contracts/src/index.ts";
+
+test("network delegation covers every requested host label and port without broadening executables", () => {
+  const grant = {
+    id: "python",
+    binary: "/usr/bin/python3.11",
+    host: "api.example.org",
+    ports: [{ from: 443, to: 445 }],
+  };
+  const ceiling = [
+    { ...grant, id: "first", host: "*.example.org", ports: [{ from: 443, to: 444 }] },
+    { ...grant, id: "second", host: "*.example.org", ports: [{ from: 445, to: 445 }] },
+  ];
+  assert.equal(sandboxNetworkGrantsWithinCeiling([grant], ceiling), true);
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling([{ ...grant, host: "*.example.org" }], ceiling),
+    true,
+  );
+  // A wildcard covers exactly one label; sampling a subdomain cannot authorize the apex or deeper names.
+  for (const host of [
+    "example.org",
+    "deep.api.example.org",
+    "*.api.example.org",
+    "api.example.net",
+  ]) {
+    assert.equal(sandboxNetworkGrantsWithinCeiling([{ ...grant, host }], ceiling), false, host);
+  }
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling([{ ...grant, binary: "/usr/bin/python3" }], ceiling),
+    false,
+  );
+  assert.equal(
+    sandboxNetworkGrantsWithinCeiling(
+      [grant],
+      [ceiling[0], { ...ceiling[1], ports: [{ from: 446, to: 446 }] }],
+    ),
+    false,
+  );
+  assert.equal(sandboxNetworkGrantsWithinCeiling([grant], []), false);
+  for (const invalid of [
+    [{ ...grant, binary: "/usr/bin/../python3.11" }],
+    [{ ...grant, host: "api..example.org" }],
+    [{ ...grant, ports: [{ from: 445, to: 443 }] }],
+    [grant, grant],
+  ]) {
+    assert.throws(() => validateSandboxNetworkGrants(invalid), {
+      message:
+        "Network grants require unique IDs, normalized paths, DNS hosts, and ordered port ranges.",
+    });
+  }
+});
 
 test("the Driver contract exposes the supported platform capabilities", () => {
   assert.deepEqual(DRIVER_CAPABILITIES, [
@@ -197,6 +249,7 @@ test("the singleton platform resource model keeps Namespace ownership explicit",
     "agent",
     "agent_revision",
     "credential_source",
+    "sandbox_policy",
   ]);
   assert.equal(Object.isFrozen(RESOURCE_KINDS), true);
 
