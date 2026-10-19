@@ -1834,6 +1834,7 @@ async function loadPage({
         node.classList.add("page-view-actions");
         viewState.pageActions = node;
         if (!shownStandIn && shell.actions?.isConnected) {
+          shell.actions.querySelector(":scope > .page-view-actions")?.remove();
           shell.actions.append(node);
         }
       },
