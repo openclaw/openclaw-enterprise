@@ -13,6 +13,7 @@ import { createNavigation, pages } from "./navigation.mjs";
 import { createShell, panel, sorted } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
+import { renderNamespaces } from "./namespaces.mjs";
 
 const app = document.querySelector("#app");
 const lifetime = createViewLifetime();
@@ -1958,6 +1959,8 @@ async function loadPage({
     if (current.feature === "agents") {
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });
       showChatLinkFailure(shell.view, chatLinkFailure);
+    } else if (current.feature === "namespaces") {
+      renderNamespaces({ ...agentContext, reload: () => loadPage() }, items, renderRows);
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;

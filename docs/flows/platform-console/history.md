@@ -8,6 +8,10 @@ This record preserves the dated changes to the platform console request flow. Se
 
 ## Changelog
 
+- 2026-10-19 14:08: Preserve role-catalog recovery alongside updated Console behavior and move older entries into the flow history. (authoring-run/0a964265-43ea-4512-b547-2175d1d28e72 - 22c5ee8f85e33efab6d80045df8ea0dfbd3b1458)
+
+- 2026-10-18 15:02: Honor an explicit higher identity weight when serving static scripts and styles. (authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
+
 - 2026-10-17 19:17: Use main's retained-view handling and preserve role-catalog recovery. (authoring-run/dc9ec1fb-19a3-4d2b-8e27-d5596378b7d2 - f87c00ca0ae71d6cd7f263761cc9be3aa6624852)
 
 - 2026-10-16 13:04: Combine held-page navigation and first reads with completed read-outcome revalidation. (authoring-run/b88902de-ac9a-4c44-98a7-073323cfb09b - ff0edc4f28ab3fa423cc1f331ba209d1cda04372)

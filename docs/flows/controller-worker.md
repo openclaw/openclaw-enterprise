@@ -237,8 +237,8 @@ and [Docker execution flow](docker-compose-development.md).
 When `prepareRevision` rejects, the worker asks Compute for an optional bounded
 failure description (Kubernetes names the stage and maps only reviewed
 classifications, status codes, and messages), emits
-`worker.compute-prepare-failed`, and keeps the retry behavior. A Sandbox gateway
-answering gRPC `UNAVAILABLE` here or in a predecessor stop defers the pass as
+`worker.compute-prepare-failed`, and keeps the retry behavior. An unreachable
+Sandbox gateway here or in a predecessor stop defers the pass as
 `SANDBOX_GATEWAY_UNAVAILABLE`, refunding the attempt, until the deadline fails it
 with that code; non-revision work keeps its attempt budget.
 

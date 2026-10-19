@@ -796,6 +796,14 @@ export function installFixture(scenario, evidence) {
         },
       });
     }
+    if (path === "/namespaces" && method === "POST") {
+      if (namespaces.some((item) => item.name === body.name)) {
+        return error(409, "RESOURCE_CONFLICT");
+      }
+      const created = { id: nextId("ns"), name: body.name, status: "provisioning", createdAt };
+      namespaces.push(created);
+      return response(created, 201);
+    }
     if (path === "/namespaces" && method === "GET") {
       // Once the story's actions ran, each read takes the next recheck answer: a status for the
       // story's Namespace, "missing" to leave it out of the list, or an HTTP status to fail
@@ -825,6 +833,9 @@ export function installFixture(scenario, evidence) {
     if (match) {
       const [, ns, resource] = match;
       if (ns !== namespaceId) {
+        if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
+          return response({ agents: { create: true } });
+        }
         return response([]);
       }
       const deviceLogin = resource.match(
