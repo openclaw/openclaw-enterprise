@@ -1164,6 +1164,10 @@ test("the Codex failure output classifier maps output to a closed class", () => 
     ["status 4011", undefined, "unknown"],
     ["see https://status.example.invalid/401", undefined, "unknown"],
     ["status  : 503", undefined, "unknown"],
+    // A status word inside a URL or another word names no status.
+    ["GET /v1/x?status=500&http=503 failed", undefined, "unknown"],
+    ["httpstatus 503", undefined, "unknown"],
+    ["(status 503)", undefined, "http_5xx"],
     [fakeSecrets.join(" "), undefined, "unknown"],
   ];
   for (const [output, error, expected] of cases) {

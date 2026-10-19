@@ -3296,9 +3296,12 @@ const CODEX_NETWORK_FAILURE_MARKERS = [
   "broken pipe", "unexpected eof", "network is unreachable", "host is unreachable",
   "no route to host", "timed out", "timeout",
 ];
-// The HTTP status after a "status" or "http" marker: up to two ":", "=" or space
-// separators, then exactly three digits. Anything else names no status.
-function codexFailureOutputStatus(text, start) {
+// The HTTP status after a "status" or "http" word: the word starts the text or follows
+// a space, tab, newline, "(" or ":" (so a URL's "?status=500" names none), then up to
+// two ":", "=" or space separators and exactly three digits. Anything else names no status.
+const CODEX_FAILURE_STATUS_WORD_STARTS = " \t\n(:";
+function codexFailureOutputStatus(text, at, start) {
+  if (at > 0 && !CODEX_FAILURE_STATUS_WORD_STARTS.includes(text[at - 1])) return 0;
   let index = start;
   while (index < start + 2 && (text[index] === ":" || text[index] === "=" || text[index] === " ")) index++;
   if (index === start) return 0;
@@ -3318,7 +3321,7 @@ function codexFailureOutputClass(output, error) {
   let otherStatus = false;
   for (const marker of ["status", "http"]) {
     for (let at = text.indexOf(marker); at !== -1; at = text.indexOf(marker, at + marker.length)) {
-      const status = codexFailureOutputStatus(text, at + marker.length);
+      const status = codexFailureOutputStatus(text, at, at + marker.length);
       if (status === 401 || status === 403) rejected = true;
       else if (status >= 500 && status <= 599) serverError = true;
       else if (status >= 400 && status <= 499) otherStatus = true;
