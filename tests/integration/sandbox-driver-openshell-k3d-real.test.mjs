@@ -41,6 +41,7 @@ import {
 } from "../helpers/openshell-kubernetes-real.mjs";
 import {
   boundedTeardown,
+  deleteNamespaceExplained,
   diagnosticDeadlineMs,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
@@ -2335,14 +2336,7 @@ async function prepareProductionInstallation(
     observerPool: () => observerPool.end(),
     workloadNamespace: async () => {
       if (placement !== undefined) {
-        await kubectl(
-          "delete",
-          "namespace",
-          placement,
-          "--ignore-not-found=true",
-          "--wait=true",
-          "--timeout=120s",
-        );
+        await deleteNamespaceExplained(kubectl, placement);
       }
     },
     temporaryDirectory: () => rm(directory, { recursive: true, force: true }),
