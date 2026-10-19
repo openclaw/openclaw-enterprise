@@ -30,6 +30,7 @@ import {
   settlePageRequests,
   repositoryCheckbox,
   waitForInputValue,
+  statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import {
   STARTER_CONTROL_UI,
@@ -683,6 +684,12 @@ test("Agent creation distinguishes unavailable repository choices from denied Ag
   await login(deniedPage, deniedFixture, `/console/agents/new?namespace=${deniedNamespace.id}`);
   await deniedPage.getByRole("button", { name: "Start with default Preset" }).click();
   await deniedPage.getByText(/Repository choices are denied/).waitFor();
+  // A refusal is a danger alert, not a quiet hint (finding 2006).
+  assert.deepEqual(await statusTone(deniedPage.getByText(/Repository choices are denied/)), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+  });
   // The disabled state must reflect both reads' outcome, not a read still pending.
   await waitForCreateFormReads(deniedPage);
   assert.equal(await deniedPage.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
@@ -986,7 +993,12 @@ test("Agent creation recovers from stale authoritative admission without replaci
   await page.getByRole("button", { name: "Reload repository choices" }).click();
   await page
     .getByRole("alert")
-    .filter({ hasText: /Repository choices could not be reloaded/ })
+    .filter({ hasText: /^Repository choices could not be reloaded\. Configuration / })
+    .waitFor();
+  // The repository picker's own line is a danger block, so an alert too (finding 2005).
+  await page
+    .getByRole("alert")
+    .filter({ hasText: /^Repository choices could not be reloaded\. Service unavailable\./ })
     .waitFor();
   await page.unroute(repositoryOptionsPath, failRepositoryReload);
   assert.equal(
@@ -1017,7 +1029,7 @@ test("Agent creation recovers from stale authoritative admission without replaci
   await page.getByRole("button", { name: "Reload repository choices" }).click();
   await page
     .getByRole("alert")
-    .filter({ hasText: /Repository choices could not be reloaded/ })
+    .filter({ hasText: /^Repository choices could not be reloaded\. Configuration / })
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
   await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
@@ -1038,10 +1050,13 @@ test("Agent creation recovers from stale authoritative admission without replaci
   await page.getByRole("button", { name: "Reload repository choices" }).click();
   await page
     .getByRole("alert")
-    .filter({ hasText: /Namespace no longer accepts new Agents/ })
+    .filter({
+      hasText:
+        /^Repository choices could not be reloaded because this Namespace no longer accepts new Agents\. /,
+    })
     .waitFor();
   await page
-    .getByRole("status")
+    .getByRole("alert")
     .getByText("This Namespace no longer accepts new Agents.", { exact: true })
     .waitFor();
   await page.unroute(repositoryOptionsPath, conflictRepositoryReload);

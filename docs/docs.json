@@ -53,7 +53,9 @@
                 ]
               }
             ],
-            "hidden": ["guides/README"]
+            "hidden": [
+              "guides/README"
+            ]
           },
           {
             "tab": "Topics",
@@ -105,6 +107,10 @@
                   {
                     "page": "reference/console",
                     "label": "Console"
+                  },
+                  {
+                    "page": "guides/console/create-namespace",
+                    "label": "Create a Namespace"
                   },
                   {
                     "page": "guides/console/agent-details",
@@ -711,7 +717,9 @@
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding"]
+            "hidden": [
+              "reference/postgres-auth-binding"
+            ]
           },
           {
             "tab": "Contribute",
@@ -931,6 +939,7 @@
               "contributing/rfc-template",
               "guides/deploy/local-repository-credentials",
               "guides/deploy/local-compose-kubernetes",
+              "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
               "reference/settings/development",
               "design/resources",
@@ -1000,7 +1009,10 @@
               "flows/repository-credentials",
               "flows/repository-credential-configuration",
               "testing/repository-credentials",
-              "flows/agent-presets"
+              "flows/agent-presets",
+              "reference/sandbox-policies",
+              "guides/topics/agent-sandbox-policy",
+              "flows/agent-sandbox-policy"
             ]
           }
         ]

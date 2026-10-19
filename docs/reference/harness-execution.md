@@ -1,8 +1,7 @@
 # Harness execution
 
-A Harness calls models and runs Agent tools. Bundled deployments run OpenClaw
-inside the gateway or OpenClaw or Codex in a separate runtime. Select the Agent's
-execution mode and a compatible model and Harness in its Configuration.
+A Harness calls models and runs Agent tools. Select a compatible execution mode,
+model and Harness in Agent Configuration.
 
 ## Supported topology
 
@@ -61,10 +60,10 @@ Codex plugin is explicitly enabled with `websocket` app-server transport.
 Its Gateway renders the main workspace as `/home/node/workspace`; Codex executes
 in the separate Harness workspace.
 
-Kubernetes Compute rejects Agent save, provisioning and deployment when policy
-blocks required `codex` or OpenClaw’s `openai`/`anthropic` plugin through disablement,
-duplicate normalized entries, denial or allowlist exclusion. Missing/empty
-allowlists are unrestricted. Admission preserves policy.
+Kubernetes Compute preserves policy, refusing Agent save, provisioning and deployment
+when required `codex` or OpenClaw `openai`/`anthropic` plugins are disabled, denied,
+excluded from nonempty allowlists, or duplicated after normalization.
+Missing/empty allowlists are unrestricted.
 
 Selectable model catalogs and fallbacks under Agent defaults or entries
 must retain the selected provider. Additional catalog models need an
@@ -159,7 +158,7 @@ reaches its model over Responses WebSocket by default (embedded OpenClaw uses
 HTTP streaming), so an egress proxy or firewall before that model host must
 allow the WebSocket upgrade. Compatible endpoints use HTTPS Responses streaming, including the probe.
 Secret-backed Codex uses [Compute configuration](drivers/kubernetes-compute.md#configuration);
-OpenShell sources supply their own endpoint. Probes never log native output. Dedicated Codex retries a confirmed
+OpenShell sources supply their own endpoint. Dedicated Codex retries a confirmed
 subprocess timeout once after one second. Each attempt has a 30-second cap within
 one 61-second budget, including the delay. A transient failure (provider 5xx or
 overload, dropped stream or connection, external kill) shares that one retry;
@@ -174,7 +173,8 @@ final code (`READY`, `MODEL_PROBE_TIMEOUT`, `MODEL_PROBE_FAILED`,
 `AUTHENTICATION_FAILED`, or `UNAVAILABLE`). Both probe logs add a
 `MODEL_PROBE_FAILED` [cause](agents/deployment.md#model-check-failure-cause)
 (`causeKind` and `causeDetail` in `occ agent logs` and the console Logs tab) and
-omit credentials and raw provider output. The runtime failure status is
+omit credentials and raw provider output; a failed Codex probe or login logs only
+its closed `failureClass`, such as `network`. The runtime failure status is
 published only after retries end.
 
 `AUTHENTICATION_FAILED` means the provider rejected the credential: OpenClaw

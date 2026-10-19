@@ -51,6 +51,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     "repositories",
     "credentials",
     "workspace",
+    "policy",
     "logs",
   ]);
 

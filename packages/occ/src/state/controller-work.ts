@@ -149,7 +149,7 @@ export function deploymentProgressForWork(
     case "SANDBOX_GATEWAY_UNAVAILABLE":
       code = attempt.code;
       message =
-        "The Sandbox gateway did not answer the controller's read of the Harness status yet. The controller will retry until the deployment deadline.";
+        "The Sandbox gateway did not answer the controller yet. The controller will retry until the deployment deadline.";
       break;
     case "ACTIVE_REVISION_CHANGED":
       code = attempt.code;
@@ -235,7 +235,7 @@ export interface ControllerWork {
   readonly namespaceTarget?: "ready" | "deleted";
   /** See `CREDENTIAL_WITHDRAWAL_TARGET` for the revision-scoped target. */
   readonly agentTarget?:
-    "stopped" | "deleted" | "provisioned" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
+    "stopped" | "deleted" | "provisioned" | "sandbox_policy" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
   readonly state: ControllerWorkState;
   readonly availableAt: Date;
   readonly attemptCount: number;
@@ -286,7 +286,7 @@ export interface EnqueueWork {
   readonly namespaceTarget?: "ready" | "deleted";
   /** See `CREDENTIAL_WITHDRAWAL_TARGET` for the revision-scoped target. */
   readonly agentTarget?:
-    "stopped" | "deleted" | "provisioned" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
+    "stopped" | "deleted" | "provisioned" | "sandbox_policy" | typeof CREDENTIAL_WITHDRAWAL_TARGET;
   readonly availableAt?: Date | string;
 }
 
@@ -737,7 +737,7 @@ function deploymentErrorMessage(code: string): string {
     case "SANDBOX_ADMISSION_LIMIT_REACHED":
       return "The Sandbox gateway still refused new requests from the controller (request admission limit reached) at the deployment deadline.";
     case "SANDBOX_GATEWAY_UNAVAILABLE":
-      return "The Sandbox gateway still did not answer the controller's read of the Harness status at the deployment deadline.";
+      return "The Sandbox gateway still did not answer the controller at the deployment deadline.";
     default:
       return "Deployment reconciliation failed.";
   }

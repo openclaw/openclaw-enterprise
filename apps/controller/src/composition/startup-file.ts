@@ -131,7 +131,16 @@ export async function startupConfiguration(
   }
   closed(
     configuration,
-    ["occ", "drivers", "backend", "logging", "presets", "observability", "runtime"],
+    [
+      "occ",
+      "drivers",
+      "backend",
+      "logging",
+      "presets",
+      "observability",
+      "runtime",
+      "sandboxNetworkPolicyCeiling",
+    ],
     "Installation startup configuration",
   );
   return { configuration, path };

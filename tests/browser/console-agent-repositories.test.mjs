@@ -18,6 +18,7 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
+  statusTone,
   waitForCondition,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -252,8 +253,16 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   await page.reload();
   const chooseAccess = page.getByText("Choose approved access", { exact: true });
   await chooseAccess.waitFor();
-  // Red only for a real refusal: this choice is not approved (finding 1970).
+  // Red only for a real refusal: this choice is not approved (finding 1970). The
+  // per-repository notes are danger blocks with no role on purpose: they are rebuilt on each
+  // render, so an alert would be announced again every time; the picker's status line does the
+  // announcing (finding 2006).
   assert.equal(await chooseAccess.getAttribute("data-tone"), "danger");
+  assert.deepEqual(await statusTone(page.getByText(/^Choose approved access: /)), {
+    className: "status",
+    tone: "danger",
+    role: null,
+  });
   assert.equal(await page.locator("#repository-inherit-documentation").isVisible(), true);
   await page.locator("#repository-override-documentation-git-full").check();
   const issues = page.locator("#repository-access-documentation .repository-customize summary");
@@ -299,6 +308,11 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   assert.equal(await awaiting.getAttribute("data-tone"), "info");
   optionsHeld.resolve();
   await page.getByText(/Retry repository choices before saving repository access/).waitFor();
+  assert.deepEqual(await statusTone(page.getByText(/^Repository choices could not be loaded\. /)), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+  });
   await awaiting.waitFor();
   // A failed read is a warning with its own Retry, not a refusal.
   assert.equal(await awaiting.getAttribute("data-tone"), "warning");
@@ -308,6 +322,12 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
       .getByText("Repository availability cannot be verified. Retry repository choices.")
       .count(),
     1,
+  );
+  assert.deepEqual(
+    await statusTone(
+      page.getByText("Repository availability cannot be verified. Retry repository choices."),
+    ),
+    { className: "status", tone: "danger", role: null },
   );
   assert.equal(await page.getByText(/You can save a draft without repository access/).count(), 0);
   assert.equal(
@@ -323,10 +343,23 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
       namespaces: [{ namespaceId: namespace.id, profiles: ["git-write"] }],
     },
   ]);
+  // While the retry is held, the refusal gives way to a quiet loading hint.
+  const retryHeld = Promise.withResolvers();
+  t.after(() => retryHeld.resolve());
+  await page.route(optionsPath, async (route) => {
+    await retryHeld.promise;
+    await route.continue();
+  });
   await page.getByRole("button", { name: "Retry repository choices" }).click();
-  await page
-    .getByText("This repository is no longer available. Remove it or retry discovery.")
-    .waitFor();
+  const loading = page.getByText("Loading approved repositories…", { exact: true });
+  await loading.waitFor();
+  assert.deepEqual(await statusTone(loading), { className: "hint", tone: null, role: "status" });
+  retryHeld.resolve();
+  const gone = page.getByText(
+    "This repository is no longer available. Remove it or retry discovery.",
+  );
+  await gone.waitFor();
+  assert.deepEqual(await statusTone(gone), { className: "status", tone: "danger", role: null });
 });
 
 test("Agent repository tab keeps Save disabled for an existing binding while repository options are unavailable", async (t) => {

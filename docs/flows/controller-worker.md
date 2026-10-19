@@ -74,11 +74,10 @@ available Compute preflight before emitting `worker.started` and entering `run()
 
 Metrics scrapes read lifecycle and backlog state over one read-only connection
 through `packages/occ/src/state/postgres-metrics.ts:PostgresMetricsSnapshot.collect`,
-without runtime probes; a failed collection discards its connection, as the
-[metrics contract](../reference/metrics.md#shared-snapshots-and-outages) states.
-Transport loss during release also rejects an otherwise successful snapshot. The
-collector's error listener is removed only after release returns, so it stays
-attached if release throws. Metrics follow finalization independently of logging.
+without runtime probes; a failed collection discards its connection
+([metrics contract](../reference/metrics.md#shared-snapshots-and-outages)).
+Transport loss during release rejects the snapshot; the error listener stays
+attached until release returns. Metrics follow finalization independently of logging.
 
 ### 2. Commit API admission and the durable work record
 
@@ -86,7 +85,7 @@ attached if release throws. Metrics follow finalization independently of logging
 `packages/occ/src/index.ts:OpenClawController`,
 `packages/occ/src/state/postgres-state.ts:operations.append`
 
-After authentication and authorization, controller operations call
+After authentication and authorization, operations call
 `operations.append`, which verifies exact ownership and invokes
 `PostgresWorkQueue.enqueue`. State, admission audit and work commit or roll back
 together.
@@ -107,9 +106,9 @@ state before the worker invokes Compute.
 For an already-deleting Agent, `OpenClawController.deleteAgent` leaves active
 work unchanged. After terminal failure, `operations.retryFailedAgentDeletion`
 checks delete permission and resets only the stopped, deleting Agent's terminal
-work, keeping prior audits; [Agent deletion](../reference/agents.md#deletion)
-defines who can retry; a takeover becomes the work's actor, audited as
-`takeover`. The worker reauthorizes normally.
+work, keeping prior audits ([who can retry](../reference/agents.md#deletion)); a
+takeover becomes the work's actor, audited as `takeover`, and the worker
+reauthorizes normally.
 `deleteNamespace` recovers Namespace teardown the same way via
 `retryFailedNamespaceDeletion`.
 
@@ -224,10 +223,10 @@ the worker invokes neither independently.
 duration, so sequences of short effects cannot starve renewal. Lease loss,
 heartbeat failure, or shutdown aborts Compute and raises `WorkClaimLostError`;
 expired or replaced claim tokens cannot publish results. A renewal that gets no
-answer, such as on a database connection that went silent, cannot extend the
-claim: Compute is aborted when the last confirmed lease runs out, measured from
-when that renewal was sent. That is no later than the moment another worker
-could recover the claim; a request already in flight can still complete. Successful renewals
+answer, as on a silent database connection, cannot extend the claim: Compute is
+aborted when the last confirmed lease runs out, measured from when that renewal
+was sent, so no later than another worker could recover the claim; an in-flight
+request can still complete. Successful renewals
 request throttled health updates without delaying effects or renewal; health
 failure does not imply lease loss.
 
@@ -238,7 +237,10 @@ and [Docker execution flow](docker-compose-development.md).
 When `prepareRevision` rejects, the worker asks Compute for an optional bounded
 failure description (Kubernetes names the stage and maps only reviewed
 classifications, status codes, and messages), emits
-`worker.compute-prepare-failed`, and keeps the original retry behavior.
+`worker.compute-prepare-failed`, and keeps the retry behavior. An unreachable
+Sandbox gateway here or in a predecessor stop defers the pass as
+`SANDBOX_GATEWAY_UNAVAILABLE`, refunding the attempt, until the deadline fails it
+with that code; non-revision work keeps its attempt budget.
 
 ### 6. Persist the result and finish revision activation
 
@@ -378,9 +380,7 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
   current IAM state for `ACTOR_REVOKED` or `AUTHORIZATION_DENIED`; `DEPENDENCY_UNAVAILABLE`
   retries within `OCC_WORKER_MAX_ATTEMPTS`; `CLAIM_LOST` ends publication ownership. A
   revision pass [deferred](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-  on `AGENT_GATEWAY_UNAVAILABLE`, `KUBERNETES_API_UNAVAILABLE`,
-  `SANDBOX_ADMISSION_LIMIT_REACHED` or `SANDBOX_GATEWAY_UNAVAILABLE` logs `dependency` and
-  `cause` (`unreachable`, `timeout` or `unavailable`); other failures log their error class in
+  on a dependency logs `dependency` and `cause` (`unreachable`, `timeout` or `unavailable`); other failures log their error class in
   `cause` and, for HTTP errors, `status`.
 - `worker.compute-prepare-failed` names the failed Driver stage without the raw
   exception; match its `workId` or `revisionId` to the next `worker.completed`.

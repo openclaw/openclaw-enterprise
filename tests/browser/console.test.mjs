@@ -89,6 +89,39 @@ test("a collection body disconnected after headers shows interruption and Retry 
   );
 });
 
+// Waits up to settleMs for the locator's element to hold focus. Returns what held focus at the
+// first and the last check (role, accessible text, class, connected), so a failed check names
+// the element that took focus instead of saying `false !== true` (finding 2016).
+async function focusSettles(locator, settleMs = 1000) {
+  const deadline = Date.now() + settleMs;
+  let first;
+  for (;;) {
+    const sample = await locator.evaluate((node) => {
+      const active = globalThis.document.activeElement;
+      const describe = (element) => {
+        if (!element || element === globalThis.document.body) {
+          return element ? "<body>" : "nothing";
+        }
+        const role = element.getAttribute("role");
+        // getAttribute, not className: an SVG element's className is an object.
+        const className = element.getAttribute("class");
+        const name = (element.getAttribute("aria-label") ?? element.textContent ?? "").trim();
+        return (
+          `<${element.localName}${role ? ` role=${role}` : ""}` +
+          `${className ? ` class="${className}"` : ""}> "${name.slice(0, 60)}"` +
+          `${element.isConnected ? "" : " (detached)"}`
+        );
+      };
+      return { held: node === active, active: describe(active), target: describe(node) };
+    });
+    first ??= sample;
+    if (sample.held || Date.now() >= deadline) {
+      return { ...sample, first: first.active };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function openShellMenu(page) {
   await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
 }
@@ -843,20 +876,28 @@ for (const focus of ["navigation link", "account menu"]) {
       focused = page.getByRole("menuitem", { name: "Settings", exact: true });
     }
     await focused.waitFor();
-    assert.equal(
-      await focused.evaluate((node) => node === globalThis.document.activeElement),
-      true,
-    );
+    const opened = await focusSettles(focused);
+    if (opened.held && opened.first !== opened.active) {
+      t.diagnostic(`focus settled on the ${focus} after ${opened.first}`);
+    }
+    if (!opened.held) {
+      assert.fail(
+        `The opened drawer focuses its ${focus} ${opened.target}; focus is on ${opened.active}` +
+          ` (first check: ${opened.first}; drawer ${await toggle.getAttribute("aria-expanded")})`,
+      );
+    }
     await releaseHeldRoute(page, namespacesPattern, namespacesHold);
     await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
 
     assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
     assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
+    // No settling here: the re-render must not move focus at all.
+    const kept = await focusSettles(focused, 0);
     assert.equal(
-      await focused.evaluate((node) => node === globalThis.document.activeElement),
+      kept.held,
       true,
-      `The re-rendered drawer keeps focus on its ${focus}`,
+      `The re-rendered drawer keeps focus on its ${focus} ${kept.target}; focus is on ${kept.active}`,
     );
     await focused.click();
     const destination = focus === "account menu" ? "Settings" : "Agents";
@@ -1974,7 +2015,7 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   assert.equal(new URL(page.url()).searchParams.get("namespace"), beta.id);
 
   // Include the bootstrapped default Namespace when revoking every remaining scope.
-  // With no alternatives, recovery must explain the access requirement.
+  // Losing read access must still offer creation and explain how to regain existing scopes.
   fixture.policy.restrictions.push({
     id: "deny-all-namespace-read",
     resourceKind: "namespace",
@@ -1984,10 +2025,15 @@ test("Namespaces recovers stale selection inline and handles losing all readable
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
   await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
   await page
-    .getByText("Ask an administrator to provision resources or grant access, then refresh.", {
-      exact: true,
-    })
+    .getByText(
+      "Create a Namespace to get started, or ask an administrator for access to an existing one.",
+      { exact: true },
+    )
     .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Create Namespace", exact: true }).isEnabled(),
+    true,
+  );
   assert.equal(await page.getByRole("combobox").count(), 0);
   assert.equal(
     await page.getByRole("button", { name: "Switch Namespace", exact: true }).count(),

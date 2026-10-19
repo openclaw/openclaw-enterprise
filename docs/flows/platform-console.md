@@ -9,19 +9,12 @@ last_updated_session: Codex/01a12fe8-d0c6-7df1-937d-364a1301566a
 ## Overview
 
 `/console/` renders session-authorized resources.
-The [console reference](../reference/console.md) owns behavior;
-API and IAM authorize access.
+The [console reference](../reference/console.md) owns user-visible behavior.
 
 ## Entry Points
 
 - Browser entry: `apps/controller/src/console/console.mjs` composes the session,
   request client, view lifetime, navigation, and shell.
-- `api-client.mjs` owns cancellation and session expiry; `view-lifetime.mjs`
-  owns generation and abort state; `navigation.mjs` owns return paths and history;
-  `shell.mjs` owns navigation and collections.
-- `agents/{list,create,detail}.mjs` own Agent views;
-  `channels/{slack,shared-ui}.mjs` own Slack editing. `agents.mjs` and
-  `channels.mjs` compose them.
 - HTTP: `apps/controller/src/index.ts:createFastifyApp`.
 - Startup: `apps/controller/src/composition/production.ts:composeProduction`
   and `development-postgres.ts:composePostgresDevelopment`.
@@ -46,6 +39,7 @@ graph TD
     D -->|debug=true| DBG["Read accessible Agents and runtime image metadata"]
     DBG --> F
     D --> E["Request current page resource"]
+    E --> NC["Create Namespace"]
     E --> E1["Edit starter JSON and select associations"]
     E1 --> S1["Select Secret or open creation modal"]
     S1 -->|select| S3["Stage binding until Apply"]
@@ -59,6 +53,7 @@ graph TD
     E --> F["Authenticate and authorize exact scope"]
     F -->|Agents or Namespaces| G["OCC reads and filters by IAM"]
     F -->|Backends and Installation admin| H["Project loaded Backend IDs and types"]
+    NC --> NPOST["POST authorizes, persists and queues provisioning"]
     S1 -->|create| S2["POST stores Namespace Secret immediately"]
     S2 --> S3
     E1 -->|draft runtime| M1["POST creates Configuration with staged bindings"]
@@ -74,6 +69,11 @@ graph TD
   subgraph Result["Browser result"]
     G --> I["Accept only current navigation response"]
     H --> I
+    NPOST -->|201| NSUCCESS["Creation accepted"]
+    NPOST -->|unconfirmed| NUNKNOWN["Inspect before retry"]
+    NPOST -->|refused| K
+    NUNKNOWN --> D
+    NSUCCESS --> D
     M2 --> I
     M4 --> I
     N --> I
@@ -185,10 +185,16 @@ Installation-wide collection. No readable selection skips Agent requests.
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
+`apps/controller/src/console/namespaces.mjs:renderNamespaces` sends validated
+names through tracked `POST /namespaces`. `OpenClawController.createNamespace`
+authorizes creation and queues provisioning; `perform` audits it.
+Success offers Agents or refresh. Pending writes block dismissal.
+Conflicts retain input; denials block resubmission. Unconfirmed responses require
+list inspection before retry, never substituting creation responses for authorized lists.
+
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
 is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;
-OCC still authorizes every write. Changing Provider or Harness resets incompatible
-credentials and model choices, preserving unrelated JSON. See
+OCC still authorizes every write. See
 [Agent creation](../reference/console/create-and-deploy.md) for inputs and recovery.
 
 `apps/controller/src/console/agents/create.mjs:updateModelConfiguration` preserves
@@ -379,8 +385,8 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-19 22:50: Preserve authored native plugin permissions across Harness selection and refuse conflicts before Console writes. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - 09065abd2)
+- 2026-10-19 23:29: Preserve authored native plugin permissions across Harness selection and refuse conflicts before Console writes. (Codex/01a12fe8-d0c6-7df1-937d-364a1301566a - bf8951601)
 
-- 2026-10-18 15:02: Honor an explicit higher identity weight when serving static scripts and styles. (authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
+- 2026-10-19 15:16: Namespace creation and recovery. (authoring-run/e988d724-dd95-4e63-a711-5fd44393f211 - 141515257737cccdb75137fabbeec707915856af)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
