@@ -1,0 +1,304 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import {
+  apiRequests,
+  consoleViewports,
+  detailUrl,
+  fileBrowser,
+  holdRequests,
+  login,
+  nativeValues,
+  newPage,
+  nonAuthWriteRequests,
+  selectSecret,
+} from "./console-agents-browser-helpers.mjs";
+
+// The forms #2907 left on the browser's check (finding 1979): Plugin selections, Slack channel
+// credentials, the authentication source form and the workspace file editor. Each now checks
+// its fields itself (UX plan C3): no transient bubble, a persistent error under the field, linked
+// with aria-describedby and aria-invalid, and focus on the first field to fix.
+
+const browser = fileBrowser();
+
+// The browser's own validation fires `invalid` once per refused control whenever it would show
+// its bubble (a submit without novalidate, or reportValidity). The console's check fires none.
+async function countInvalidEvents(page) {
+  await page.addInitScript(() => {
+    globalThis.invalidEvents = [];
+    globalThis.document.addEventListener(
+      "invalid",
+      (event) => globalThis.invalidEvents.push(event.target.id || event.target.tagName),
+      true,
+    );
+  });
+  return () => page.evaluate(() => globalThis.invalidEvents);
+}
+
+// The control's error as a reader meets it: under the control, inside its field, in the danger
+// colour, linked to the control, which has focus.
+const shownError = (control) =>
+  control.evaluate((node) => {
+    const error = globalThis.document.getElementById(`${node.id}-error`);
+    if (!error || error.hidden) {
+      return null;
+    }
+    // Plugin selections JSON is a textarea in its own disclosure, not a labelled field.
+    const field = node.closest(".field, .form-field, .channel-field, details.plugin-json");
+    const probe = globalThis.document.createElement("span");
+    probe.style.color = "var(--color-danger)";
+    globalThis.document.body.append(probe);
+    const danger = globalThis.getComputedStyle(probe).color;
+    probe.remove();
+    return {
+      text: error.textContent,
+      inField: Boolean(field?.contains(error)),
+      below: error.getBoundingClientRect().top >= node.getBoundingClientRect().bottom,
+      danger: globalThis.getComputedStyle(error).color === danger,
+      linked:
+        node.getAttribute("aria-invalid") === "true" &&
+        (node.getAttribute("aria-describedby") ?? "").split(/\s+/).includes(error.id),
+      focused: globalThis.document.activeElement === node,
+    };
+  });
+
+async function assertShownError(control, text) {
+  assert.deepEqual(await shownError(control), {
+    text,
+    inField: true,
+    below: true,
+    danger: true,
+    linked: true,
+    focused: true,
+  });
+}
+
+const PLUGIN_JSON_ERROR = "Enter a valid Plugin selections JSON object.";
+
+async function openPluginJson(page) {
+  await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
+  return page.getByLabel("Plugin selections JSON", { exact: true });
+}
+
+for (const viewport of consoleViewports) {
+  test(`Plugin selections JSON shows its error under the field at ${viewport.width}px`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Plugin fields", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Plugin Fields", nativeValues("pf"));
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    const invalidEvents = await countInvalidEvents(page);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+    const pluginJson = await openPluginJson(page);
+    await pluginJson.fill("[]");
+    // The section closes so the check must open it again.
+    await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
+    await page.getByRole("button", { name: "Save plugin selections", exact: true }).click();
+    assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+    await assertShownError(pluginJson, PLUGIN_JSON_ERROR);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    // An edit clears the error.
+    await pluginJson.fill("{}");
+    assert.equal(await shownError(pluginJson), null);
+    assert.equal(await pluginJson.getAttribute("aria-invalid"), null);
+  });
+}
+
+// A Slack token binding the picker cannot show (a Secret in another Namespace, which the API no
+// longer accepts but an older Configuration may hold) is a missing value to the picker, while
+// Save stays enabled for the other token's change.
+test("Slack channel credentials show a missing token under its field", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Slack fields", { ready: true });
+  const other = await fixture.createNamespace("Slack fields elsewhere", { ready: true });
+  const slack = {
+    enabled: true,
+    mode: "socket",
+    appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+    botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+    dmPolicy: "allowlist",
+    groupPolicy: "allowlist",
+    allowFrom: ["U123"],
+    channels: { C123: { requireMention: true } },
+  };
+  const values = nativeValues("slack-fields", { harnessId: "codex", channels: { slack } });
+  const app = await fixture.createSecret(namespace.id, "Slack app token", "xapp-x");
+  const bot = await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-new");
+  const env = (secret) => ({ source: secret.ref, delivery: { type: "env" } });
+  const agent = await fixture.createAgent(namespace.id, "Slack Fields", values, {
+    executionMode: "dedicated",
+    secretBindings: { SLACK_APP_TOKEN: env(app) },
+  });
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (route.request().method() === "GET" && body.data?.secretBindings?.SLACK_APP_TOKEN) {
+        body.data.secretBindings.SLACK_APP_TOKEN.source.namespaceId = other.id;
+      }
+      await route.fulfill({ response, json: body });
+    },
+  );
+  const invalidEvents = await countInvalidEvents(page);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByRole("heading", { name: "Channel Secrets" }).waitFor();
+  await selectSecret(page, "Slack bot token", bot);
+  await page.getByRole("button", { name: "Save channel Secrets", exact: true }).click();
+  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+  await assertShownError(
+    page.getByLabel("Slack app token", { exact: true }),
+    "Slack app token is required.",
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("the authentication source form shows a missing Secret under its field", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Auth fields", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Auth Fields", nativeValues("af"), {
+    harnessAuth: null,
+  });
+  const { page } = await newPage(t, fixture, { browser });
+  const invalidEvents = await countInvalidEvents(page);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  const method = page.getByLabel("Authentication source", { exact: true });
+  const save = page.getByRole("button", { name: "Save authentication source", exact: true });
+  await method.selectOption("api_key");
+  await save.click();
+  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+  await assertShownError(
+    page.getByLabel("API key Secret", { exact: true }),
+    "API key Secret is required.",
+  );
+  // A source without a Secret field drops the error with the field.
+  await method.selectOption("runtime");
+  assert.equal(await page.locator("#harness-auth-secret-error:not([hidden])").count(), 0);
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
+test("the workspace file editor shows an oversized file's error under the file", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Workspace fields", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Workspace Fields", nativeValues("wf"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const invalidEvents = await countInvalidEvents(page);
+  const writes = [];
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
+    (route) => {
+      if (route.request().method() !== "GET") {
+        writes.push(route.request().method());
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: { name: "AGENTS.md", content: "before" } }),
+      });
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
+  );
+  const editor = page.getByLabel("AGENTS.md", { exact: true });
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  await editor.fill("a".repeat(16_385));
+  const save = page.getByRole("button", { name: "Save AGENTS.md", exact: true });
+  const error = "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.";
+  // A second Save without an edit is checked the same way, not by the browser.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await save.click();
+    assert.deepEqual(await invalidEvents(), [], `no browser validation bubble (${attempt})`);
+    await assertShownError(editor, error);
+  }
+  assert.deepEqual(writes, []);
+  // Its help stays linked beside the error, and an edit clears the error.
+  assert.match(
+    await editor.getAttribute("aria-describedby"),
+    /\bworkspace-AGENTS\.md-hint\b/,
+    "help stays linked",
+  );
+  await editor.fill("after");
+  assert.equal(await shownError(editor), null);
+});
+
+// A Plugins save outcome takes focus only from the page or the disabled Save button: a reader
+// who moved focus while the save ran keeps it (finding 1978).
+const outcomes = [
+  {
+    name: "refusal",
+    status: 409,
+    shown: (page) =>
+      page.getByRole("alert").filter({
+        hasText:
+          "Plugin changes conflict with the current Agent state. Refresh this Agent before retrying.",
+      }),
+    takesFocus: (page) => page.getByRole("alert").filter({ hasText: "Plugin changes conflict" }),
+  },
+  {
+    name: "unknown outcome",
+    status: 500,
+    shown: (page) =>
+      page.getByText(
+        "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.",
+        { exact: true },
+      ),
+    takesFocus: (page) =>
+      page.getByRole("button", { name: "Reload plugin selections", exact: true }),
+  },
+];
+
+for (const outcome of outcomes) {
+  for (const moved of [false, true]) {
+    test(`a Plugins save ${outcome.name} ${moved ? "leaves focus where the reader moved it" : "takes focus from the Save button"}`, async (t) => {
+      const fixture = await createConsoleAppFixture(t);
+      await fixture.bootstrap();
+      const namespace = await fixture.createNamespace("Plugin focus", { ready: true });
+      const agent = await fixture.createAgent(namespace.id, "Plugin Focus", nativeValues("pfo"));
+      const { page } = await newPage(t, fixture, { browser });
+      await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+      const pluginJson = await openPluginJson(page);
+      await pluginJson.fill("{}\n");
+      const patch = await holdRequests(
+        t,
+        page,
+        `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+        {
+          method: "PATCH",
+          fulfill: {
+            status: outcome.status,
+            contentType: "application/json",
+            body: JSON.stringify({ error: { code: "TEST", message: "Held." } }),
+          },
+        },
+      );
+      await page.getByRole("button", { name: "Save plugin selections", exact: true }).focus();
+      await page.keyboard.press("Enter");
+      await patch.requested;
+      if (moved) {
+        // Plugin selections JSON is read-only while the save runs, but still takes focus.
+        await pluginJson.focus();
+      }
+      patch.release();
+      await outcome.shown(page).waitFor();
+      // The outcome and its focus move are one task: once it shows, focus has settled.
+      const target = moved ? pluginJson : outcome.takesFocus(page);
+      assert.equal(
+        await target.evaluate((node) => node === globalThis.document.activeElement),
+        true,
+        moved ? "focus stays on Plugin selections JSON" : "the outcome takes focus",
+      );
+    });
+  }
+}
