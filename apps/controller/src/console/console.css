@@ -489,7 +489,16 @@ p {
   /* A refusal scrolled into view keeps room for its focus ring. */
   scroll-margin-block: var(--space-4);
 }
+/* An empty block shows nothing. One that is a live region (alert or status) keeps its place in
+   the accessibility tree with no box, so the message later written into the same node is
+   announced; display: none would drop it from the tree. One without a live role goes. An
+   explicit hidden attribute still hides either. */
 .status:empty {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.status:empty:not([role="alert"], [role="status"]) {
   display: none;
 }
 /* An error keeps the gap .error gave it from the control above. :where() leaves a component's

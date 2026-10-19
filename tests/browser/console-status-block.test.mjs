@@ -208,3 +208,53 @@ test("warning and info notices use their tone's token colours with readable text
   assert.equal(await info.getAttribute("role"), "status");
   assertPaint(await statusPaint(info), "info", "version notice");
 });
+
+// An empty live block keeps its place in the accessibility tree with no box: a live region
+// announces a change only if it was in the tree before the change. The sign-in alert stays empty
+// while the request runs, then the same node takes the refusal.
+test("an empty alert block stays in the accessibility tree until its refusal arrives", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  const cdp = await page.context().newCDPSession(page);
+  // The sign-in alert's DOM node and its node in Chromium's accessibility tree, if it has one.
+  const signInAlert = async () => {
+    const { root } = await cdp.send("DOM.getDocument", { depth: 0 });
+    const { nodeId } = await cdp.send("DOM.querySelector", {
+      nodeId: root.nodeId,
+      selector: "form p.status[role=alert]",
+    });
+    const { node } = await cdp.send("DOM.describeNode", { nodeId });
+    const { nodes } = await cdp.send("Accessibility.getFullAXTree");
+    const exposed = nodes.find(
+      (candidate) => candidate.backendDOMNodeId === node.backendNodeId && !candidate.ignored,
+    );
+    return { backendNodeId: node.backendNodeId, role: exposed?.role?.value ?? null };
+  };
+  await page.goto(new URL("/console/login", fixture.origin).href);
+  // The sign-in request is held until the empty alert has been read.
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  const reached = new Promise((resolve) => {
+    void page.route("**/api/auth/sign-in/email", async (route) => {
+      resolve();
+      await held;
+      await route.continue();
+    });
+  });
+  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill("not-the-password");
+  await page.getByRole("button", { name: "Login" }).click();
+  await reached;
+  const pending = await signInAlert();
+  assert.equal(await page.locator("form p.status[role=alert]").textContent(), "");
+  assert.equal(pending.role, "alert", "the empty alert is in the accessibility tree");
+  const box = await page.locator("form p.status[role=alert]").boundingBox();
+  assert.equal(box?.height, 0, "the empty alert takes no space");
+  release();
+  await page.getByText("Could not sign in. Check your username and password.").waitFor();
+  const refused = await signInAlert();
+  assert.deepEqual(refused, { backendNodeId: pending.backendNodeId, role: "alert" });
+});
