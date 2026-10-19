@@ -10,7 +10,13 @@ export async function verifyQaSandboxPolicy(artifacts) {
   const token = await protectedText(process.env.OCC_TEST_QA_CODEX_TOKEN_FILE, "Codex credential");
   const envFile = process.env.OCC_TEST_QA_SANDBOX_ENV;
   assert.ok(envFile, "OCC_TEST_QA_SANDBOX_ENV must select the prepared OpenShell file environment");
-  const env = { ...process.env, CODEX_ACCESS_TOKEN: token, OCC_TEST_OPENSHELL_K3D_REAL: "1" };
+  const env = {
+    ...process.env,
+    CODEX_ACCESS_TOKEN: token,
+    OCC_TEST_OPENSHELL_K3D_REAL: "1",
+    OCC_TEST_OPENSHELL_HARNESS: "codex",
+    OCC_TEST_OPENSHELL_SCENARIO: "network-policy",
+  };
   // This is a separate test process, not a recursive run inside the matrix worker.
   delete env.NODE_TEST_CONTEXT;
   const args = [
@@ -34,7 +40,7 @@ export async function verifyQaSandboxPolicy(artifacts) {
       const lines = progress.split("\n");
       progress = lines.pop();
       for (const line of lines) {
-        if (line.startsWith("# OpenShell integration:") || line.startsWith("not ok ")) {
+        if (line.startsWith("# OpenShell ") || line.startsWith("not ok ")) {
           process.stderr.write(`${redactedQaTail(line, env, { lines: 1, lineChars: 800 })[0]}\n`);
         }
       }
@@ -51,6 +57,7 @@ export async function verifyQaSandboxPolicy(artifacts) {
   const evidence = resolve(artifacts, "sandbox-policy-runtime.log");
   await writeFile(evidence, text, { mode: 0o600 });
   assert.equal(failed, false, `OpenShell workflow failed; see ${evidence}`);
+  assert.match(text, /ok 1 - OpenShell Agent network policy lifecycle/);
   assert.match(text, /# pass 1\b/);
   assert.match(text, /# skipped 0\b/);
   return { evidence, outcome: "real Agent defaults, preview, save, apply, revoke and isolation" };

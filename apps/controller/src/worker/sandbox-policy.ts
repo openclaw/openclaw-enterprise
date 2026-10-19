@@ -55,7 +55,6 @@ async function authority(
 ): Promise<boolean> {
   for (const [action, kind, id] of [
     ["manage_policy", "agent", claim.agentId!],
-    ["operate", "agent", claim.agentId!],
     ["update", "sandbox_policy", policy.id],
   ] as const) {
     const request: AuthorizationRequest = {

@@ -55,17 +55,33 @@ worker rechecks are implemented locally; verification and review remain in progr
 Current local proof: startup integration passed 87 tests without skips;
 PostgreSQL policy integration passed 3, including reduced-ceiling rechecks;
 real HTTP browser workflows passed 4, including conflict reload and draft retention.
-Broader selected Driver/profile checks passed 465 with 12 optional infrastructure
-skips, and credential-boundary regression checks passed 93 without skips.
+Broader selected checks passed 201 Driver cases and 465 Compute/profile/QA cases.
+The formerly skipped native initializer and all 12 Helm cases subsequently passed
+with prepared prerequisites. Credential-boundary checks passed 93; all four real
+Kubernetes fixture cases passed without skips and their resources were removed.
 Storybook was rebuilt and inspected, with screenshots and an interaction video
 captured outside the repository. These are simulated UI evidence. Native GitHub
 media attachments remain unavailable through the current upload tooling.
 
-The real OpenShell QA scenario is in progress against a disposable enforcing
-cluster and pinned images. Initial attempts found and corrected child test-runner
-context inheritance and a fixture listener collision; an interrupted attempt's
-stale relay was removed. Independent review stopped at authentication and produced
-no assessment. Neither runtime enforcement nor independent review is complete.
+The focused real OpenShell QA scenario passed on 2026-10-19: one runtime test and
+its two-test matrix wrapper, both with zero failures or skips. It used a disposable
+enforcing cluster, digest-pinned runtime images, and authorized model execution.
+The Agent reached the Installation-default control on port 8082 and was denied
+the independently reachable target on port 8083. Discovery/preview/save/apply
+permitted that target; a second Agent remained denied; removal restored denial
+while preserving default access. Native provider decisions corroborated the
+commands. The worker recovered an interrupted write without repeating it, and
+both required permission revocations prevented native writes. Revision snapshots
+remained immutable. The test's cleanup hooks completed.
+Owned disposable clusters and databases and the private test credential copy were
+removed after preserving the redacted proof and UI captures outside the checkout.
+
+The broader suite separately hit an external TLS control failure and an unrelated
+OAuth refresh interruption; its existing coverage remains intact. The focused
+selector excludes those unrelated phases without omitting required policy checks.
+The merged `manage_policy`/policy `update` authority is unchanged. Independent
+review stopped at authentication and produced no assessment. Native media uploads
+and review remain delivery blockers.
 No implementation PR or merge has occurred.
 
 Required proof through existing real callers:

@@ -1374,6 +1374,13 @@ export function installFixture(scenario, evidence) {
             "service.example.org",
           ];
         }
+        if (scenario.policyState === "json") {
+          policyDescriptor.configurationSchema = structuredClone(networkPolicySchema);
+          policyDescriptor.configurationSchema.properties.additions.items.properties.host = {
+            title: "Destination hostname",
+            anyOf: [{ const: "example.org" }, { const: "service.example.org" }],
+          };
+        }
         if (suffix === "/driver-configurations" && method === "GET") {
           return response({
             configurations:

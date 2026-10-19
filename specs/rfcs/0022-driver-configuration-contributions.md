@@ -217,8 +217,9 @@ UI fixtures alone do not establish runtime enforcement.
 
 The accompanying implementation provides both scopes, shared validation, owner
 bindings, and schema-driven editing. [TASK-0046](../plans/0046-driver-configuration-contributions.md)
-records verification and remaining delivery work; implementation does not establish
-release readiness or live enforcement.
+records the focused real Agent policy lifecycle passing without skips and the
+remaining delivery work. Independent review, media publication, and merge remain
+separate gates; local implementation and proof do not establish release readiness.
 
 ## Manual Notes
 

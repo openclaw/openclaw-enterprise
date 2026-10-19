@@ -17,6 +17,9 @@ components with simulated API state; they do not prove persistence or enforcemen
   a destination from the schema's enum. The owner controls remain the same.
 - **A superseded preview preserves the newer draft:** start a preview, edit the
   rule before it returns, and confirm the old response does not open Save.
+- **Complex fields retain invalid JSON for correction:** review a suggestion,
+  enter incomplete JSON for its destination, and confirm preview stays unavailable
+  until the JSON is corrected. Expand **Schema** to inspect the field's constraints.
 - **Configuration discovery loading/denied:** inspect the loading message and
   retry control. **Policy hidden while independent logs remain visible** keeps
   denial logs available without showing policy editing controls.

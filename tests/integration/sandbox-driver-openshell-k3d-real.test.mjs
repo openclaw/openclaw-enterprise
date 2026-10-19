@@ -64,6 +64,9 @@ import {
 } from "../helpers/keycloak-real.mjs";
 
 const executeFile = promisify(execFile);
+const selectedScenario = process.env.OCC_TEST_OPENSHELL_SCENARIO ?? "full";
+assert.ok(["full", "network-policy"].includes(selectedScenario), "Unknown OpenShell scenario.");
+const networkPolicyOnly = selectedScenario === "network-policy";
 
 const kubeconfigPath = process.env.OCC_TEST_KUBERNETES_KUBECONFIG;
 const kubernetesContext = process.env.OCC_TEST_KUBERNETES_CONTEXT;
@@ -2296,7 +2299,7 @@ async function prepareProductionInstallation(
         id: "python-demo",
         binary: "/usr/bin/python3.11",
         host: tokenEcho.host,
-        ports: [{ from: tokenEcho.port, to: tokenEcho.port }],
+        ports: [{ from: tokenEcho.policyPort, to: tokenEcho.policyPort }],
       },
     ];
     configuration.drivers.sandbox.configuration.policy.networkPolicies.push({
@@ -2614,7 +2617,7 @@ async function prepareProductionInstallation(
           url: `https://${untrustedTls.host}/untrusted`,
         };
   const refreshSources =
-    keycloak === undefined
+    keycloak === undefined || networkPolicyOnly
       ? undefined
       : await registerRefreshSources(request, namespaceId, tokenEcho, keycloak, placement);
 
@@ -3008,6 +3011,8 @@ async function startTokenEcho(context, issuerJwks) {
     "  }));",
     '}).listen(8080, "0.0.0.0");',
     'http.createServer((request, response) => response.end(JSON.stringify({ path: request.url }))).listen(8082, "0.0.0.0");',
+    // Policy additions use an uncredentialed port, independent of the tool-source TLS metadata.
+    'http.createServer((request, response) => response.end(JSON.stringify({ path: request.url }))).listen(8083, "0.0.0.0");',
   ].join("\n");
   await kubectl(
     "run",
@@ -3057,6 +3062,7 @@ async function startTokenEcho(context, issuerJwks) {
         ports: [
           { name: "target", port: 8080, targetPort: 8080 },
           { name: "control", port: 8082, targetPort: 8082 },
+          { name: "policy", port: 8083, targetPort: 8083 },
         ],
       },
     }),
@@ -3082,6 +3088,7 @@ async function startTokenEcho(context, issuerJwks) {
     namespace,
     host: `token-echo.${namespace}.svc.cluster.local`,
     port: 8080,
+    policyPort: 8083,
     readToolAReceipt,
   };
 }
@@ -5076,9 +5083,9 @@ async function assertAgentNetworkPolicyLifecycle(topology) {
     id: "python-demo",
     binary: "/usr/bin/python3.11",
     host: topology.tokenEcho.host,
-    ports: [{ from: topology.tokenEcho.port, to: topology.tokenEcho.port }],
+    ports: [{ from: topology.tokenEcho.policyPort, to: topology.tokenEcho.policyPort }],
   };
-  const python = async (agentId = topology.agent.id, port = topology.tokenEcho.port) => {
+  const python = async (agentId = topology.agent.id, port = topology.tokenEcho.policyPort) => {
     const pods = await resources("pods", topology.gatewayPlacement);
     const gateway = pods.find(
       (pod) =>
@@ -5109,6 +5116,8 @@ PYTHON`;
         (item) => item?.type === "commandExecution" && item.command?.includes("urllib.request"),
       );
     assert.ok(executed, "the real Agent must execute the Python command");
+    assert.ok(executed.command.includes("/usr/bin/python3.11"));
+    assert.ok(executed.command.includes(`http://${grant.host}:${port}/policy-probe`));
     return executed;
   };
   // Prove both listeners and cluster DNS independently before interpreting a policy denial.
@@ -5120,7 +5129,7 @@ PYTHON`;
     "--",
     "node",
     "-e",
-    `fetch("http://${grant.host}:${topology.tokenEcho.port}/policy-probe").then(async r => { if (r.status !== 200 || (await r.json()).path !== "/policy-probe") process.exit(1); console.log("reachable"); })`,
+    `fetch("http://${grant.host}:${topology.tokenEcho.policyPort}/policy-probe").then(async r => { if (r.status !== 200 || (await r.json()).path !== "/policy-probe") process.exit(1); console.log("reachable"); })`,
   );
   assert.match(reachable, /reachable/);
   const control = await python(topology.agent.id, 8082);
@@ -5139,10 +5148,24 @@ PYTHON`;
     `${base}/deployments/${topology.revision.id}/runtime/logs?source=sandbox&tailLines=1000`,
   );
   assert.equal(logs.status, 200, JSON.stringify(logs.error));
+  const blocked = logs.data.records.find(
+    ({ decision }) =>
+      decision?.decision === "denied" &&
+      decision.enforcement === "blocked" &&
+      decision.binary === grant.binary &&
+      decision.port === topology.tokenEcho.policyPort,
+  );
+  assert.ok(blocked, "the provider must record the exact executable and denied target port");
+  // An unmapped port is logged against the synthetic policy IP. Bind it to the real DNS
+  // mapping rather than treating an unrelated denial or a failed DNS lookup as enforcement.
   assert.ok(
-    logs.data.records.some(
-      (row) => row.decision?.decision === "denied" && row.decision.host === grant.host,
-    ),
+    blocked.decision.host === grant.host ||
+      logs.data.records.some(
+        ({ message }) =>
+          message?.includes(`Policy DNS mapped ${grant.host} `) &&
+          message.includes(`synthetic=${blocked.decision.host} `),
+      ),
+    "the denied address must map to the requested destination",
   );
   const suggestions = await topology.request(
     "GET",
@@ -5176,7 +5199,6 @@ PYTHON`;
       );
   for (const [action, kind, id] of [
     ["manage_policy", "agent", topology.agent.id],
-    ["operate", "agent", topology.agent.id],
     ["update", "sandbox_policy", initial.data.policy.id],
   ]) {
     const saved = await topology.request("PUT", policyPath, {
@@ -5365,7 +5387,11 @@ PYTHON`;
   assert.equal(allowedLogs.status, 200, JSON.stringify(allowedLogs.error));
   assert.ok(
     allowedLogs.data.records.some(
-      (row) => row.decision?.decision === "allowed" && row.decision.host === grant.host,
+      (row) =>
+        row.decision?.decision === "allowed" &&
+        row.decision.host === grant.host &&
+        row.decision.binary === grant.binary &&
+        row.decision.port === topology.tokenEcho.policyPort,
     ),
     "the provider confirms the real connection was allowed",
   );
@@ -7114,6 +7140,9 @@ async function observeExposedCodexAuthenticationBoundary(serviceUrl, appServerTo
 }
 
 const selectedHarness = process.env.OCC_TEST_OPENSHELL_HARNESS ?? "codex";
+if (networkPolicyOnly) {
+  assert.equal(selectedHarness, "codex", "The network-policy scenario requires Codex.");
+}
 assert.match(
   selectedHarness,
   /^(?:codex|openclaw)$/,
@@ -7124,7 +7153,9 @@ if (demoStatePath !== undefined) {
 }
 
 test(
-  "OpenShell enforces provider delivery and authenticated Codex exposure",
+  networkPolicyOnly
+    ? "OpenShell Agent network policy lifecycle"
+    : "OpenShell enforces provider delivery and authenticated Codex exposure",
   {
     ...requiresOpenShellK3d,
     ...(demoStatePath === undefined ? { timeout: 2_400_000 } : {}),
@@ -7141,7 +7172,7 @@ test(
       });
     }
     {
-      process.stderr.write("OpenShell integration: selected real provider-delivery proof.\n");
+      process.stderr.write(`OpenShell integration: selected real ${selectedScenario} workflow.\n`);
       const topology = await prepareProductionInstallation(context, {
         harnessId: selectedHarness,
         ...(demoStatePath === undefined ? {} : { controllerPort: demoConsolePort }),
@@ -7216,17 +7247,17 @@ test(
         "OpenShell integration: exposed Codex initialized; starting real shell turns through the Agent Gateway.\n",
       );
       await requestGatewayTurns(context, topology, "codex");
-      process.stderr.write(
-        "OpenShell integration: regular Gateway shell turns passed; testing actual filesystem and network enforcement.\n",
-      );
-      await assertOpenShellToolFilesystemAndNetworkEnforcement(topology);
+      process.stderr.write("OpenShell integration: regular Gateway shell turns passed.\n");
+      if (!networkPolicyOnly) {
+        await assertOpenShellToolFilesystemAndNetworkEnforcement(topology);
+      }
       process.stderr.write("OpenShell integration: testing Agent network policy lifecycle.\n");
       try {
         await assertAgentNetworkPolicyLifecycle(topology);
       } catch (error) {
         // Teardown may take minutes; preserve the failure before removing its resources.
         const message = redactLogLine(
-          String(error?.message),
+          String(error?.stack ?? error?.message).replaceAll("\n", " "),
           failureSecrets([
             process.env,
             { modelCredential, appServerToken: topology.appServerToken },
@@ -7237,6 +7268,12 @@ test(
           `OpenShell integration: Agent network policy lifecycle failed: ${message}\n`,
         );
         throw error;
+      }
+      if (networkPolicyOnly) {
+        process.stderr.write(
+          "OpenShell integration: Installation defaults, denied endpoint, preview/save/apply, second-Agent isolation, and revocation passed.\n",
+        );
+        return;
       }
       process.stderr.write(
         "OpenShell integration: tool filesystem and egress verified; testing the credential route.\n",

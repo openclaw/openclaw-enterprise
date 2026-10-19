@@ -48,7 +48,11 @@ export function configurationFields(
       definition.oneOf ||
       definition.allOf ||
       definition.$ref ||
-      definition.patternProperties;
+      definition.patternProperties ||
+      definition.prefixItems ||
+      definition.if ||
+      definition.dependentSchemas ||
+      definition.enum?.some((item) => item !== null && typeof item === "object");
     if (
       !complex &&
       definition.type === "object" &&

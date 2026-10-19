@@ -6875,7 +6875,6 @@ export class OpenClawController {
       id: policy.id,
       namespaceId: agent.namespaceId,
     });
-    const operate = await this.authorizationDecision(principalId, "operate", resource);
     const editable =
       agent.status === "active" &&
       agent.sandboxPolicyEditing === true &&
@@ -6883,7 +6882,6 @@ export class OpenClawController {
     const canSave = editable && manage.decision.allowed && update.decision.allowed;
     const canApply =
       canSave &&
-      operate.decision.allowed &&
       driver.networkPolicy.live &&
       agent.desiredRuntimeState === "running" &&
       revision?.sandboxPolicy !== undefined &&
@@ -7163,11 +7161,6 @@ export class OpenClawController {
   ): Promise<Readonly<SandboxPolicy>> {
     this.requireNetworkPolicyFacet(facet);
     await this.authorize(principalId, "manage_policy", { kind: "agent", id: agentId, namespaceId });
-    await this.authorize(principalId, "update", {
-      kind: "sandbox_policy",
-      id: `sbp_${agentId.slice(4)}`,
-      namespaceId,
-    });
     await this.authorize(principalId, "update", {
       kind: "sandbox_policy",
       id: `sbp_${agentId.slice(4)}`,

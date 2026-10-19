@@ -7247,6 +7247,7 @@ for (const [id, state, name] of [
   ["policyConfigurationLoading", "discoveryLoading", "Configuration discovery loading"],
   ["policyConfigurationDenied", "discoveryDenied", "Configuration discovery denied"],
   ["policyConfigurationStale", "stalePreview", "A superseded preview preserves the newer draft"],
+  ["policyConfigurationJson", "json", "Complex fields retain invalid JSON for correction"],
   [
     "policyConfigurationHidden",
     "ownerDenied",
