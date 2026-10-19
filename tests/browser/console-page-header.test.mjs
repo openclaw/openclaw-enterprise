@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   detailUrl,
   fileBrowser,
+  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -250,4 +251,44 @@ test("Create Agent leads with ← Agents and puts the Namespace under its title"
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByRole("heading", { name: "Agents", exact: true, level: 1 }).waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/agents");
+});
+
+// Create new version lives in the header, outside the page view, so the Agent page's refocus
+// recheck holds it inert with the page and gives its focus back afterwards, unless the reader
+// moved elsewhere meanwhile (finding 1654's rule for the view's own controls).
+test("a refocus recheck holds the header's Create new version with the page and keeps its focus", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Header refocus");
+  const agent = await fixture.createAgent(namespace.id, "Refocus Agent", nativeValues("refocus"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, active.revision.id).href);
+  const header = page.locator(".content .page-header");
+  const create = header.getByRole("button", { name: "Create new version", exact: true });
+  await create.waitFor();
+  await page.locator(settledView).waitFor();
+  const isFocused = (control) =>
+    control.evaluate((node) => node === globalThis.document.activeElement);
+  const navigation = page.getByRole("link", { name: "Namespaces", exact: true });
+  for (const expectedFocus of [create, navigation]) {
+    await create.focus();
+    assert.equal(await isFocused(create), true);
+    const read = await holdRequests(t, page, "**/api/auth/session", { once: true });
+    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+    await read.requested;
+    // The page and its header action are held together.
+    await header.locator(".page-view-actions[inert]").waitFor({ state: "attached" });
+    await page.locator('.content [aria-live="polite"][inert]').waitFor({ state: "attached" });
+    if (expectedFocus === navigation) {
+      await navigation.focus();
+    }
+    read.release();
+    await header.locator(".page-view-actions:not([inert])").waitFor({ state: "attached" });
+    await page.locator(settledView).waitFor();
+    await page.waitForFunction(
+      () => globalThis.document.activeElement !== globalThis.document.body,
+      null,
+      { timeout: 5_000 },
+    );
+    assert.equal(await isFocused(expectedFocus), true, "the reader's place after the check");
+  }
 });

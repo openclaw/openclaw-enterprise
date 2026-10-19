@@ -4082,6 +4082,46 @@ export const scenarios = {
     ],
     gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
   },
+  agentHeader: {
+    group: "Pages/Agent detail",
+    name: "Page header with a long name",
+    path: currentVersion,
+    deployed: true,
+    agentName: "Quarterly release review and signoff bot",
+    description:
+      "The Agent page header: ← Agents, the name with Refresh and Create new version at its right, then the Agent ID, Copy Agent ID and the compact Namespace control in the row under it.",
+    steps: [
+      "At 1440 and 1024 the 40-character name wraps on the left; Refresh and Create new version stay on its first line and nothing overlaps.",
+      "Select Copy Agent ID. The ID is on the clipboard and Copied shows beside the button for two seconds.",
+      "Choose Research in the Namespace control; the console opens Research's Agents list, as the header selector always has. Go Back.",
+      "Select Create new version; the draft opens and its header shows Refresh only.",
+      "On the draft, select Edit Configuration and change a value, then select ← Agents. The page stays and says why, as the sidebar does.",
+    ],
+  },
+  agentHeaderMobile: {
+    group: "Pages/Agent detail",
+    name: "Page header at 390px",
+    path: currentVersion,
+    deployed: true,
+    mobile: true,
+    description:
+      "At 390px the header is four rows: ← Agents with Refresh and Create new version, the name, the Agent ID with Copy Agent ID, then the Namespace control at full width. It ends by 240px.",
+    steps: [
+      "Check that the ID row has no trailing separator and the Namespace control spans the row.",
+      "Leave the window and come back while the access recheck runs: Create new version is held with the page, and focus returns to it afterwards.",
+    ],
+  },
+  agentHeaderNoClipboard: {
+    group: "Pages/Agent detail",
+    name: "Copy Agent ID without clipboard access",
+    path: currentVersion,
+    deployed: true,
+    clipboard: "unavailable",
+    actions: [{ selector: ".page-meta-copy", click: true }],
+    description:
+      "Where the browser offers no clipboard (an http origin, say), Copy Agent ID selects the ID instead, so it can be copied by hand.",
+    steps: ["Check that the Agent ID is selected and no Copied status appears."],
+  },
   deploymentFailedLogsFromDraft: {
     group: "Pages/Agent detail",
     name: "Failed deployment logs from draft",
@@ -4900,7 +4940,8 @@ export const scenarios = {
   namespaceMenu: {
     group: "Components/Navigation",
     name: "Namespace switcher",
-    description: "The header selector shows the current Namespace and readable alternatives.",
+    description:
+      "The header's compact Namespace control (its label is the muted prefix inside the box) shows the current Namespace and readable alternatives.",
     steps: [
       "Choose Research in the Namespace selector; the URL changes and its empty Agents collection appears.",
       "Choose Engineering to return to its Agents, then use browser Back to restore Research.",
@@ -4915,7 +4956,7 @@ export const scenarios = {
     description:
       "Choose a Namespace directly from the header at 390px, without opening navigation.",
     steps: [
-      "Check that the long Namespace name truncates before the inset chevron.",
+      "Check that the compact control stays 32px tall and the long Namespace name truncates before the inset chevron.",
       "Choose Research, then return to the long Namespace and check the selection.",
     ],
   },

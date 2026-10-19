@@ -2245,7 +2245,14 @@ async function revalidateMountedAgent(current) {
     routeKey(route()) === key &&
     view.isConnected;
   const path = `/namespaces/${encodeURIComponent(selectedNamespace)}/agents/${encodeURIComponent(agent.id)}`;
-  const focused = view.contains(document.activeElement) ? document.activeElement : null;
+  // The page's own header actions (Create new version) hold with it, and give focus back too.
+  const pageActions = mountedViewState?.pageActions?.isConnected
+    ? mountedViewState.pageActions
+    : null;
+  const focused =
+    view.contains(document.activeElement) || pageActions?.contains(document.activeElement)
+      ? document.activeElement
+      : null;
   const selection =
     typeof focused?.selectionStart === "number"
       ? [focused.selectionStart, focused.selectionEnd]
@@ -2253,9 +2260,6 @@ async function revalidateMountedAgent(current) {
   let checking = "session";
   // Block stale controls during admission without losing an editor's caret on return.
   view.inert = true;
-  const pageActions = mountedViewState?.pageActions?.isConnected
-    ? mountedViewState.pageActions
-    : null;
   if (pageActions) {
     pageActions.inert = true;
   }
