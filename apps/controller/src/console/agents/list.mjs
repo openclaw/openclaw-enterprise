@@ -1,4 +1,4 @@
-import { element, button, statusBlock } from "../dom.mjs";
+import { element, button } from "../dom.mjs";
 
 export const displayDate = (value) => new Date(value).toLocaleString();
 export const shortId = (value) => `${value.slice(0, 12)}…${value.slice(-6)}`;
@@ -307,10 +307,17 @@ export function renderAgentList(context) {
     element("div", { className: "agent-toolbar" }, search, create),
     ...(notReady
       ? [
-          statusBlock("warning", null, notReady.note, [], {
-            role: "status",
-            id: "namespace-not-ready",
-          }),
+          // A warning status block (dom.mjs statusBlock's markup), a polite status on load.
+          element(
+            "p",
+            {
+              className: "status",
+              "data-tone": "warning",
+              role: "status",
+              id: "namespace-not-ready",
+            },
+            notReady.note,
+          ),
         ]
       : []),
     ...(createDenied
