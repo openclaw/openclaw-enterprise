@@ -5,8 +5,8 @@ import { after } from "node:test";
 
 // Local runs share one TMPDIR across every lane and pin loop, so a directory a test
 // leaves behind stays there. This hook is added when the module is imported, so it
-// belongs to the test file rather than to whichever test is running: import this
-// module statically.
+// runs after the file's last test (after the last file with --test-isolation=none)
+// rather than after whichever test is running: import this module statically.
 const fileDirectories = new Set();
 after(() => {
   for (const directory of fileDirectories) {

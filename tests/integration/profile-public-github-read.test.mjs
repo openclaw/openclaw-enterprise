@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -151,7 +151,7 @@ function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraAr
 test(
   "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer",
   { skip: helmSkip },
-  (t) => {
+  () => {
     const clusterIP = "10.43.0.19";
     const output = render(
       "codex",
@@ -159,7 +159,6 @@ test(
         publicGithubRead: { enabled: true, clusterIP, upstreamCidrs: ["192.0.2.20/32"] },
       }),
     );
-    t.after(() => rmSync(output.directory, { recursive: true, force: true }));
     const compute = loadYaml(output.installation).drivers.compute.configuration;
     assert.equal(compute.network.publicGithubRead.address, clusterIP);
     assert.match(output.values, /publicGithubRead:\n {2}enabled: true/);
