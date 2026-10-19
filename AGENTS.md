@@ -273,9 +273,12 @@ an ordinary document does not exempt that document.
 
 ## Documentation editing
 
-Use [technical-writing](.agents/skills/technical-writing/SKILL.md) when creating,
-editing, or reviewing documentation and specifications. It bundles the relevant
-writing guidance locally; no personal skill installation is required.
+Before creating, updating, or reviewing documentation and specifications, read
+and apply [technical-writing](.agents/skills/technical-writing/SKILL.md).
+Use ASD-STE100 (Simplified Technical English) and complete its required
+[terminology and limits pass](.agents/skills/technical-writing/references/terminology-and-limits.md).
+The skill bundles the writing guidance locally; no personal skill installation
+is required.
 Follow its [page-scope guidance](.agents/skills/technical-writing/SKILL.md#choose-the-smallest-useful-page)
 to keep main guides focused and route edge-case diagnostics to troubleshooting.
 
