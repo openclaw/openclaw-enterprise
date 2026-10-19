@@ -703,20 +703,126 @@ p {
   max-width: 1300px;
   width: 100%;
 }
+/* Page header (UX spec 3.2). Collections: the title and its scope line at the left, the actions
+   (compact Namespace control, Refresh) at the right on the title block's last line. */
 .page-header {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  align-items: start;
-  gap: 20px;
+  align-items: end;
+  gap: var(--space-4) var(--space-6);
   margin-bottom: 28px;
+}
+.page-title {
+  min-width: 0;
+}
+.page-header h1 {
+  margin-bottom: var(--space-1);
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl--line-height);
+  letter-spacing: var(--tracking-tight);
+  overflow-wrap: anywhere;
 }
 .page-actions {
   display: flex;
-  align-items: end;
-  gap: 12px;
+  align-items: center;
+  gap: var(--space-3);
   flex-wrap: wrap;
   max-width: 100%;
+}
+/* An Agent's page and Create Agent: ← Agents, the title with the actions at its right, then the
+   meta row (ID, Namespace) across the width. The Agent's name is the page's largest type. */
+.page-header--subpage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "back back"
+    "title actions"
+    "meta meta";
+  align-items: start;
+  gap: var(--space-2) var(--space-6);
+}
+.page-back {
+  grid-area: back;
+  justify-self: start;
+  /* The arrow lines up with the title, not the ghost button's padding. */
+  margin-left: calc(-1 * var(--space-3));
+  color: var(--color-text-muted);
+}
+.page-header--subpage h1 {
+  grid-area: title;
+  justify-self: start;
+}
+.page-header--subpage .page-actions {
+  grid-area: actions;
+  justify-content: end;
+}
+.page-header--agent h1 {
+  margin-bottom: 0;
+  font-size: var(--text-display);
+  line-height: var(--text-display--line-height);
+}
+.page-header--create h1 {
+  margin-bottom: 0;
+}
+.page-meta {
+  grid-area: meta;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.page-meta-id {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.page-meta-id .resource-id {
+  font-size: var(--text-xs);
+}
+/* The separator before the Namespace control; none when the control is hidden. */
+.page-meta-id::after {
+  content: "·" / "";
+  margin-left: var(--space-1);
+}
+.page-meta:not(:has(> .namespace-selector:not([hidden]))) .page-meta-id::after {
+  content: none;
+}
+/* Below 1100 px the row can wrap, and a wrapped separator would trail the ID. */
+@media (max-width: 1100px) {
+  .page-meta-id::after {
+    content: none;
+  }
+}
+.page-meta-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h-sm);
+  padding: 0;
+  color: var(--color-text-muted);
+}
+.copy-icon {
+  width: 16px;
+  height: 16px;
+}
+.page-meta-copied:empty {
+  display: none;
+}
+@media (max-width: 760px) {
+  /* Phone: ← Agents shares its row with the actions, so the header is the back row, the title
+     and the meta row (spec 3.2 and 4: header bottom <= 240 px at 390). */
+  .page-header--subpage {
+    grid-template-areas:
+      "back actions"
+      "title title"
+      "meta meta";
+    align-items: center;
+  }
 }
 .checking-status {
   margin: 0;
@@ -740,6 +846,59 @@ p {
   border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   text-overflow: ellipsis;
+}
+/* The header's compact control: one 32 px box, "Namespace" as a muted prefix inside it, as wide
+   as the selection up to 240 px. The box draws the focus ring for its borderless select. */
+.namespace-selector--compact {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  max-width: min(240px, 100%);
+  height: var(--control-h-sm);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+}
+.namespace-selector--compact label {
+  flex: none;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  color: var(--color-text-muted);
+  font-weight: var(--weight-regular);
+  white-space: nowrap;
+}
+.namespace-selector--compact select:not([multiple]):not([size]) {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0 var(--space-8) 0 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  background-position:
+    right 18px center,
+    right 12px center;
+  color: var(--color-text-strong);
+  font-weight: var(--weight-medium);
+}
+.namespace-selector--compact select:focus-visible {
+  outline: none;
+}
+.namespace-selector--compact:has(select:focus-visible) {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+.namespace-selector--compact:has(select:disabled) {
+  opacity: 0.6;
+}
+@media (max-width: 760px) {
+  .page-meta .namespace-selector--compact {
+    width: 100%;
+    max-width: 100%;
+  }
 }
 .scope {
   margin: 0;
@@ -1005,32 +1164,8 @@ select:not([multiple])[size="1"] {
   gap: 12px;
   flex-wrap: wrap;
 }
-.page-header:has(+ div .agent-overview-toolbar) h1 {
-  font-size: clamp(27px, 3vw, 36px);
-  letter-spacing: -0.045em;
-  line-height: 1.12;
-}
-.agent-overview-toolbar {
-  border-bottom: 1px solid var(--line);
-  gap: 10px;
-  padding-bottom: 14px;
-  margin: 0 0 22px;
-}
-.agent-overview-identity {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  min-width: 0;
-}
-.agent-overview-identity a,
 .overview-text-button:not(:hover) {
   color: var(--muted);
-}
-.agent-overview-identity .resource-id {
-  font-size: 11px;
-  margin: 0;
-  overflow-wrap: anywhere;
 }
 .agent-overview-status,
 .native-admin-access,
