@@ -1320,6 +1320,8 @@ test(
         "/run/openclaw-worker",
         "/var/run/openclaw-worker", // The controller image links /var/run to /run.
         "/var/run/../var/lib/openclaw/bootstrap", // Dot segments apply after the link.
+        "/var/lock/../openclaw-worker", // The image links /var/lock to /run/lock, so this is /run.
+        "/run/lock/../openclaw-worker",
         "/var/lib/openclaw/bootstrap",
         "/etc/openclaw/gateway-api-key",
         "/etc/openclaw/gateway-ca",
