@@ -1,4 +1,8 @@
+import assert from "node:assert/strict";
 import test from "node:test";
+import vm from "node:vm";
+import { CODEX_FAILURE_OUTPUT_CLASS_HELPER } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
+import { CODEX_FAILURE_OUTPUT_CLASSES } from "../../packages/contracts/src/runtime-failure.mjs";
 import { checkCodexStartup, login, probe, timedOut } from "../fixtures/codex-native-startup.mjs";
 
 const ready = {
@@ -942,4 +946,264 @@ test("Codex runtime retries a transient startup model probe failure once", async
       checkCodexStartup(t, scenario);
     });
   }
+});
+
+// Finding 2017: a failed login or model check logs only the class of Codex's error output.
+// Fake credentials, a JWT, a bearer header and a URL with a query string in that output
+// must never reach the held status or any log line.
+const fakeSecrets = [
+  "sk-proj-FAKE0123456789abcdefghijklmnopqrstuv",
+  "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlLXVzZXIifQ.ZmFrZS1zaWduYXR1cmU",
+  "at-fixture-token",
+  "code=fake-authorization-code",
+];
+const secretOutput = (text) =>
+  `${text} (https://auth.example.invalid/oauth/token?${fakeSecrets[3]}) ` +
+  `Authorization: Bearer ${fakeSecrets[1]} key ${fakeSecrets[0]} token ${fakeSecrets[2]}\n`;
+const leaked = new RegExp(
+  [
+    ...fakeSecrets.map((secret) => secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    "Bearer",
+    "example\\.invalid",
+    "://",
+    "error sending",
+    "dns error",
+    "certificate",
+    "Service Unavailable",
+  ].join("|"),
+  "i",
+);
+
+test("Codex runtime logs a failed login or model check's output class, never the output", async (t) => {
+  const loginFailed = (code = "LOGIN_FAILED") => ({
+    phases: [["codex-login", "failed"]],
+    check: "login",
+    code,
+  });
+  const probeExit = {
+    phases: [
+      ["codex-login", "ok"],
+      ["model-probe", "failed"],
+    ],
+    check: "model-probe",
+    code: "MODEL_PROBE_FAILED",
+    cause: { kind: "PROCESS_EXIT", detail: "exit-1" },
+  };
+  // The 2017 shape: Codex exits 1 before printing any event.
+  const exited = (stderr) => probe([], { status: 1, stderr });
+  const pat = { loginMode: "codex_pat" };
+  const scenarios = [
+    {
+      name: "a login transport error is network",
+      ...pat,
+      native: [
+        login({
+          status: 1,
+          stderr: secretOutput(
+            "Error logging in with access token: failed to request personal access token metadata: error sending request for url",
+          ),
+        }),
+      ],
+      expect: loginFailed(),
+      failureClass: "network",
+    },
+    {
+      name: "a login DNS failure is network",
+      ...pat,
+      native: [
+        login({
+          status: 1,
+          stderr: secretOutput("dns error: failed to lookup address information"),
+        }),
+      ],
+      expect: loginFailed(),
+      failureClass: "network",
+    },
+    {
+      name: "a login provider 5xx is http_5xx",
+      ...pat,
+      native: [
+        login({ status: 1, stderr: secretOutput("unexpected status 503 Service Unavailable") }),
+      ],
+      expect: loginFailed(),
+      failureClass: "http_5xx",
+    },
+    {
+      name: "a login credential rejection is http_401_403",
+      ...pat,
+      native: [
+        login({
+          status: 1,
+          stderr: secretOutput(
+            "personal access token metadata request failed with status 401 Unauthorized",
+          ),
+        }),
+      ],
+      expect: loginFailed("AUTHENTICATION_FAILED"),
+      failureClass: "http_401_403",
+    },
+    {
+      name: "another login 4xx is http_other",
+      ...pat,
+      native: [login({ status: 1, stderr: secretOutput("last status: 429 Too Many Requests") })],
+      expect: loginFailed(),
+      failureClass: "http_other",
+    },
+    {
+      name: "a rejected proxy certificate is tls",
+      ...pat,
+      native: [
+        login({ status: 1, stderr: secretOutput("invalid peer certificate: UnknownIssuer") }),
+      ],
+      expect: loginFailed(),
+      failureClass: "tls",
+    },
+    {
+      name: "three login timeouts are timeout",
+      ...pat,
+      native: [login(timedOut), login(timedOut), login(timedOut)],
+      expect: loginFailed(),
+      failureClass: "timeout",
+    },
+    {
+      name: "a silent login failure is empty",
+      ...pat,
+      native: [login({ status: 1, stderr: "" })],
+      expect: loginFailed(),
+      failureClass: "empty",
+    },
+    {
+      name: "unrecognized login output is unknown",
+      ...pat,
+      native: [login({ status: 1, stderr: secretOutput("something else went wrong") })],
+      expect: loginFailed(),
+      failureClass: "unknown",
+    },
+    {
+      name: "a probe that exits before any event with a transport error is network",
+      native: [login(), exited(secretOutput("Error: error sending request for url"))],
+      expect: probeExit,
+      failureClass: "network",
+    },
+    {
+      name: "a probe that exits before any event with a provider 5xx is http_5xx",
+      native: [login(), exited(secretOutput("Error: unexpected status 502 Bad Gateway"))],
+      expect: probeExit,
+      failureClass: "http_5xx",
+    },
+    {
+      name: "a probe that exits before any event with a 403 is http_401_403",
+      native: [login(), exited(secretOutput("Error: unexpected status 403 Forbidden"))],
+      expect: probeExit,
+      failureClass: "http_401_403",
+    },
+    {
+      name: "a probe that exits silently is empty",
+      native: [login(), exited("")],
+      expect: probeExit,
+      failureClass: "empty",
+    },
+  ];
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, (t) => {
+      const { status, diagnostics } = checkCodexStartup(t, scenario);
+      assert.doesNotMatch(JSON.stringify(status) + diagnostics.join("\n"), leaked);
+      // The held status keeps its existing shape: the class is a log field only.
+      assert.equal(JSON.stringify(status).includes("failureClass"), false);
+    });
+  }
+});
+
+function loadClassifier() {
+  // Count the characters every substring search reads, in the classifier's own realm.
+  const context = vm.createContext({});
+  vm.runInContext(
+    `const scanned = { chars: 0 };
+    const indexOf = String.prototype.indexOf;
+    const includes = String.prototype.includes;
+    String.prototype.indexOf = function (needle, from = 0) {
+      const at = indexOf.call(this, needle, from);
+      scanned.chars += (at === -1 ? this.length : at + needle.length) - Math.min(from, this.length);
+      return at;
+    };
+    String.prototype.includes = function (needle) {
+      scanned.chars += this.length;
+      return includes.call(this, needle);
+    };
+    this.scanned = scanned;
+    ${CODEX_FAILURE_OUTPUT_CLASS_HELPER}
+    this.classify = codexFailureOutputClass;
+    this.window = CODEX_FAILURE_OUTPUT_WINDOW;`,
+    context,
+  );
+  return context;
+}
+
+test("the Codex failure output classifier maps output to a closed class", () => {
+  const { classify } = loadClassifier();
+  const cases = [
+    ["Error: error sending request for url", undefined, "network"],
+    ["connection reset by peer", undefined, "network"],
+    ["tcp connect error: Connection refused (os error 111)", undefined, "network"],
+    ["Temporary failure in name resolution", undefined, "network"],
+    ["operation timed out", { code: "ETIMEDOUT" }, "network"],
+    ["unexpected status 500 Internal Server Error", undefined, "http_5xx"],
+    ["status: 504", undefined, "http_5xx"],
+    ["HTTP 502", undefined, "http_5xx"],
+    ["status=403", undefined, "http_401_403"],
+    // A rejection outranks a server error and transport text in the same output.
+    ["status 503 then status 401 Unauthorized; connection reset", undefined, "http_401_403"],
+    ["status 404 Not Found", undefined, "http_other"],
+    ["error sending request: invalid peer certificate", undefined, "tls"],
+    ["", { code: "ETIMEDOUT" }, "timeout"],
+    ["   \n", undefined, "empty"],
+    [undefined, undefined, "empty"],
+    [null, { code: "ENOENT" }, "empty"],
+    // Near misses name no status: a process exit status, four digits, a URL scheme.
+    ["exit status 127", undefined, "unknown"],
+    ["status 4011", undefined, "unknown"],
+    ["see https://status.example.invalid/401", undefined, "unknown"],
+    ["status  : 503", undefined, "unknown"],
+    [fakeSecrets.join(" "), undefined, "unknown"],
+  ];
+  for (const [output, error, expected] of cases) {
+    const actual = classify(output, error);
+    assert.equal(actual, expected, JSON.stringify(output));
+    assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(actual));
+  }
+});
+
+test("the Codex failure output classifier reads a bounded tail in linear time", () => {
+  const context = loadClassifier();
+  const { classify, scanned, window } = context;
+  // Repeated and near-miss markers, the worst shapes for a substring or status scan.
+  const adversarial = [
+    "status",
+    "status:",
+    "status 50",
+    "status 5000",
+    "http ",
+    "connection refuse",
+    "certificat",
+    "a",
+  ];
+  // Every search reads at most the window once per marker; Codex's maxBuffer is 256 KiB.
+  const budget = 32 * window;
+  for (const unit of adversarial) {
+    for (const length of [window, 262144, 1048576]) {
+      const output = unit.repeat(Math.ceil(length / unit.length));
+      scanned.chars = 0;
+      const actual = classify(output);
+      assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(actual));
+      assert.ok(
+        scanned.chars <= budget,
+        `${JSON.stringify(unit)} x ${length}: read ${scanned.chars} > ${budget}`,
+      );
+      // Only the tail is read: the result equals that of the last window alone.
+      assert.equal(actual, classify(output.slice(-window)));
+    }
+  }
+  // A marker before the tail is never read.
+  assert.equal(classify("status 503\n" + "x".repeat(window)), "unknown");
+  assert.equal(classify("x".repeat(window) + "\nstatus 503"), "http_5xx");
 });

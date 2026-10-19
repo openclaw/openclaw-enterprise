@@ -5,12 +5,13 @@ const STARTUP_PHASE_EVENT = "runtime.startup_phase";
 
 // One stderr JSON line per startup phase, for deploy-time measurement. Callers
 // pass fixed phase names only: never provider, model, credential or path values.
-// A failed phase may add a fixed upper-case cause code, which the Collector exports.
+// A failed phase may add a fixed upper-case cause code, which the Collector exports,
+// and a fixed lower-case class of a native process's error output (finding 2017).
 // Date.now() keeps this usable in every wrapper, including stubbed test contexts.
 export function startupPhaseHelper(container: "gateway" | "agent"): string {
   return String.raw`
 const startupPhaseOrigin = Date.now();
-function logStartupPhase(phase, startedAt, outcome = "ok", code) {
+function logStartupPhase(phase, startedAt, outcome = "ok", code, failureClass) {
   const now = Date.now();
   const failed = outcome !== "ok";
   console.error(JSON.stringify({
@@ -21,6 +22,7 @@ function logStartupPhase(phase, startedAt, outcome = "ok", code) {
     ms: now - startedAt,
     sinceStartMs: now - startupPhaseOrigin,
     ...(failed && typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code) ? { code } : {}),
+    ...(failed && typeof failureClass === "string" && /^[a-z][a-z0-9_]{0,31}$/.test(failureClass) ? { failureClass } : {}),
   }));
 }
 async function timeStartupPhase(phase, run) {
