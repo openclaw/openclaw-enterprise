@@ -1220,8 +1220,7 @@ test("the Codex failure output classifier reads a bounded tail in linear time", 
 test("Codex runtime classifies a failed model check's stdout error events, never logging them", async (t) => {
   const started = { type: "turn.started" };
   const quiet = { status: 1, stderr: "" };
-  const held = (detail, provider) =>
-    probeFailure({ kind: "PROBE_STATUS", detail }, provider);
+  const held = (detail, provider) => probeFailure({ kind: "PROBE_STATUS", detail }, provider);
   const networkWait = errorEvent(
     "Reconnecting... waiting for network (Connection failed: error sending request)",
   );
@@ -1395,14 +1394,8 @@ test("the Codex model check classifier reads only error event messages, most spe
     classifyProbe("", [failedTurn("status 401 Unauthorized"), errorEvent("x".repeat(window))]),
     "unknown",
   );
-  assert.equal(
-    classifyProbe("", [errorEvent(`status 503 ${"x".repeat(2 * window)}`)]),
-    "http_5xx",
-  );
-  assert.equal(
-    eventText([errorEvent("a"), { type: "turn.started" }, failedTurn("b")]),
-    "a\nb",
-  );
+  assert.equal(classifyProbe("", [errorEvent(`status 503 ${"x".repeat(2 * window)}`)]), "http_5xx");
+  assert.equal(eventText([errorEvent("a"), { type: "turn.started" }, failedTurn("b")]), "a\nb");
 });
 
 test("the Codex model check classifier reads a bounded share of stdout events in linear time", () => {
