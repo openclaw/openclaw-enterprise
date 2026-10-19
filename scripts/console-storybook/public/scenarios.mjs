@@ -1999,7 +1999,7 @@ export const scenarios = {
     description:
       "An uncertain registration leaves a visible deleting source. Creation stays blocked until its gateway copy is removed; the model Secret remains saved for the next registration.",
     steps: [
-      "Select Remove failed credential registration and confirm that the model Secret remains saved.",
+      "Remove failed credential registration is a red-edged destructive button: it deletes the registration at once. Select it and confirm that the model Secret remains saved.",
       "Create the Agent again. A fresh source registration uses the same model Secret before provisioning.",
     ],
   },
@@ -3111,7 +3111,7 @@ export const scenarios = {
     steps: [
       "Enter person-demo as the existing Principal ID.",
       "Review the native-access disclosure, acknowledge it, and share.",
-      "Remove the direct binding; Namespace discovery remains available.",
+      "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
     ],
   },
   agentSharingGranted: {
@@ -3523,6 +3523,25 @@ export const scenarios = {
       "The Installation has no Repo Driver: the tab names the setup step, links the runbook, offers no Retry, and keeps Save repository access disabled.",
     gap: "Simulated UI proof only; this preview does not configure a Repo Driver.",
   },
+  repositoryEditorLoading: {
+    group: "Pages/Agent detail",
+    name: "Repository access while choices load",
+    path: `${draft}&tab=repositories`,
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/repository-options",
+        hold: true,
+      },
+    ],
+    description:
+      "Repository choices are still loading. The selected repository's summary reads “Access awaiting verification” in a blue badge: nothing is wrong yet, so it is not red.",
+    gap: "The simulated repository choices never answer in this story.",
+  },
   repositoryEditorUpdateDenied: {
     group: "Pages/Agent detail",
     name: "Repository access, viewer cannot update the Agent",
@@ -3617,6 +3636,30 @@ export const scenarios = {
     steps: [
       "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
       "Tab to the long name and press Enter: the Agent opens.",
+    ],
+  },
+  agentsLongNameDigits: {
+    group: "Pages/Agents",
+    name: "Long name of digit groups",
+    deployed: true,
+    agentName: Array.from({ length: 40 }, (_, index) => String(1000 + index))
+      .join("-")
+      .slice(0, 200),
+    description:
+      "A 200-character name of digit groups joined by hyphens. A browser does not break a line at a hyphen before a digit, so the console treats the name as unbroken and it wraps within the width of its ID.",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+    ],
+  },
+  agentsLongNameDashes: {
+    group: "Pages/Agents",
+    name: "Long name of em dashes",
+    deployed: true,
+    agentName: "\u2014".repeat(200),
+    description:
+      "A name of 200 em dashes. A browser does not break a line between two em dashes, so the name wraps within the width of its ID.",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
     ],
   },
   agentsLongNamePhone: {
@@ -4383,6 +4426,7 @@ export const scenarios = {
       "The story selects Deploy new version, then Agents in the sidebar. The page stays, and a note under “Deploying…” says why until the simulated request answers 3.6 s later.",
     steps: [
       "While the note “This page stays open until the deploy request finishes.” shows, select ← Agents or Agents again: the page stays. Select Reset story to replay the hold.",
+      "Double-click Agents while the note shows: its text is written once, so a screen reader reads it once.",
       "When the request answers, the note goes and the new version opens; Agents in the sidebar now leaves.",
     ],
   },

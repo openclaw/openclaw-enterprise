@@ -5,6 +5,8 @@ export default { title: "Pages/Agents" };
 export const Agents = { ...story("agents"), name: "Populated" };
 export const UnreadableConfiguration = story("agentsUnreadableConfiguration");
 export const LongName = story("agentsLongName");
+export const LongNameDigits = story("agentsLongNameDigits");
+export const LongNameDashes = story("agentsLongNameDashes");
 export const LongNamePhone = story("agentsLongNamePhone");
 export const AgentsEmpty = { ...story("agentsEmpty"), name: "Empty" };
 export const AgentsSearch = { ...story("agentsSearch"), name: "No search matches" };
