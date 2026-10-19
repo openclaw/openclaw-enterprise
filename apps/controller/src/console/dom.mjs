@@ -342,8 +342,9 @@ const graphemes =
     : undefined;
 
 // Characters that render as nothing: zero-width spaces and joiners, direction marks, the soft
-// hyphen, the word joiner, a byte order mark (finding 1949).
-const INVISIBLE = /^\p{Default_Ignorable_Code_Point}+$/u;
+// hyphen, the word joiner, a byte order mark (finding 1949). The Hangul fillers U+3164 and U+FFA0
+// are default-ignorable too, but fonts draw them as blank full-width cells, so they keep a column.
+const INVISIBLE = /^(?:(?![\u3164\uFFA0])\p{Default_Ignorable_Code_Point})+$/u;
 
 // Columns count characters as the reader sees them: an emoji, or a letter with a combining
 // accent, is one column, not the two UTF-16 units the engine's own column counts, and an

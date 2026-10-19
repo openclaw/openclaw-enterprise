@@ -61,6 +61,9 @@ test("invisible characters earlier on the line take no column (finding 1949)", (
   // A joined emoji sequence stays one column, and a non-breaking space, which shows as a space,
   // still takes one.
   assert.equal(jsonObjectProblem('{"a": "\u{1F469}\u200D\u{1F4BB}\u00A0", x}'), at(1, 13));
+  // The Hangul fillers show as blank full-width cells, so each still takes a column.
+  assert.equal(jsonObjectProblem('{"a": "\u3164", x}'), at(1, 12));
+  assert.equal(jsonObjectProblem('{"a": "\uFFA0", x}'), at(1, 12));
 });
 
 test("an uppercase exponent and an escaped slash are valid JSON before a later error (finding 1950)", () => {
