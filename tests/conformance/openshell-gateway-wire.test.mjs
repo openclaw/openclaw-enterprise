@@ -9,11 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import {
-  constants as http2Constants,
-  createServer as createH2cServer,
-  createSecureServer,
-} from "node:http2";
+import { createSecureServer } from "node:http2";
 import test from "node:test";
 import {
   GrpcOpenShellGatewayClient,
@@ -26,10 +22,7 @@ import {
   openShellProviderName,
   openShellWorkspaceName,
 } from "../../apps/controller/src/backends/openshell.ts";
-import {
-  SandboxGatewayUnavailableError,
-  TransientDependencyError,
-} from "../../packages/occ/src/index.ts";
+import { TransientDependencyError } from "../../packages/occ/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -1353,6 +1346,9 @@ test("OpenShell client retries setup after a failed first connection", async (t)
 // Kubernetes 403/401/TLS errors, credential driver errors) and every other failure keep the
 // ordinary class, so they spend the attempt budget and fail within it.
 test("OpenShell client names only an unanswered gateway request a Sandbox gateway outage", async (t) => {
+  // The class the worker's revision pass waits on.
+  const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
+  const { constants: http2Constants, createServer: createH2cServer } = await import("node:http2");
   const proto = await loader.load(
     join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
@@ -1532,6 +1528,7 @@ async function tlsHealthGateway(keyPath, certPath, bind, seen) {
 }
 
 test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP and sends no SNI", async (t) => {
+  const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
   const directory = await mkdtemp(join(tmpdir(), "openshell-grpc-tls-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   // IPv6 loopback is optional on CI hosts; without it the IPv6 cases are skipped.
