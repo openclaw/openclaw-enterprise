@@ -610,7 +610,7 @@ export function createChannelSecretsPanel({
     const reloadMessage = state.reloadRequired
       ? element(
           "p",
-          { className: "status", "data-tone": "danger", role: "status" },
+          { className: "status", "data-tone": "danger", role: "alert" },
           "Configuration changed. Reload this draft before saving channel Secrets.",
         )
       : null;
@@ -618,7 +618,7 @@ export function createChannelSecretsPanel({
       state.outcomeUnknown && (!state.saveError || isDefinitiveRejection(state.saveError))
         ? element(
             "p",
-            { className: "status", "data-tone": "danger", role: "status" },
+            { className: "status", "data-tone": "danger", role: "alert" },
             "Credential changes may have been saved. Reload this draft and inspect the saved state before deploying.",
           )
         : null;

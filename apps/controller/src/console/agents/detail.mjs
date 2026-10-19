@@ -3607,8 +3607,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       // Progress stays a quiet hint; a refusal is a danger block that takes focus, and a save
       // whose Secret access is unconfirmed a warning (finding 1966).
       const say = (text, tone = null) => {
-        feedback.textContent = text;
+        // The tone first: a refusal or warning is written into an alert (finding 2010).
         setStatusTone(feedback, tone);
+        feedback.textContent = text;
         if (tone) {
           revealStatus(feedback, form);
         }
@@ -3703,15 +3704,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       if (savedAuthentication) {
         save.textContent = "Retry credential access";
         auth.setDisabled(true);
+        setStatusTone(feedback, "warning");
         feedback.textContent =
           "Authentication source saved. Retry credential access to confirm this Agent can use the selected Secret.";
-        setStatusTone(feedback, "warning");
       }
       if (outcomeUnknown) {
         save.disabled = true;
         auth.setDisabled(true);
-        feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
         setStatusTone(feedback, "danger");
+        feedback.textContent = "Outcome unknown. Reload authentication source before saving again.";
       }
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
@@ -3907,8 +3908,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const feedback = element("p", { className: "hint", role: "status" }, savedNotice);
     // A refused save is a danger block that takes focus; other notes stay a hint (finding 1966).
     const refuse = (text) => {
-      feedback.textContent = text;
       setStatusTone(feedback, "danger");
+      feedback.textContent = text;
       revealStatus(feedback, feedback.closest("section") ?? undefined);
     };
     // Reload and Cancel reread the Agent and rebuild this tab in place (finding 1445's rest).
@@ -4284,14 +4285,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       enableGatewayPassword.disabled = pending || outcomeUnknown || reloadRequired;
       editor.readOnly = pending || outcomeUnknown || reloadRequired;
       if (outcomeUnknown) {
+        setStatusTone(feedback, "danger");
         feedback.textContent =
           "Outcome unknown. Configuration may have been saved. Reload this draft before saving again.";
-        setStatusTone(feedback, "danger");
         feedbackLocked = true;
       } else if (reloadRequired) {
         if (!feedbackLocked) {
-          feedback.textContent = "Reload this draft before saving again.";
           setStatusTone(feedback, "danger");
+          feedback.textContent = "Reload this draft before saving again.";
         }
         feedbackLocked = true;
       } else if (pending) {
@@ -4365,8 +4366,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           freshAgent.configurationId !== baseline.id ||
           freshConfig.generation !== baseline.generation
         ) {
-          feedback.textContent = CONFIGURATION_CHANGED;
+          // An alert before its text is written (finding 2010).
           setStatusTone(feedback, "danger");
+          feedback.textContent = CONFIGURATION_CHANGED;
           feedbackLocked = true;
           reloadRequired = true;
           return;
@@ -4402,16 +4404,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           refusedSave(error, "configuration", mutationStarted);
         }
         if (isStaleGeneration(error) && mutationStarted && !configurationSaved) {
-          feedback.textContent = CONFIGURATION_CHANGED;
           setStatusTone(feedback, "danger");
+          feedback.textContent = CONFIGURATION_CHANGED;
           feedbackLocked = true;
           reloadRequired = true;
           return;
         }
+        setStatusTone(feedback, "danger");
         feedback.textContent =
           configurationConflictMessage(error, mutationStarted && !configurationSaved) ??
           rejectionMessage(error, mutationStarted);
-        setStatusTone(feedback, "danger");
         feedbackLocked = true;
         outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
       } finally {

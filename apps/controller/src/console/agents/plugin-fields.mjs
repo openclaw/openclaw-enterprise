@@ -128,7 +128,7 @@ export function createPluginFields({
   });
   const searchLabel = element("label", { for: search.id }, "Search plugins");
   const status = element("p", { className: "hint", role: "status" });
-  const feedback = element("p", { className: "status", "data-tone": "danger", role: "status" });
+  const feedback = element("p", { className: "status", "data-tone": "danger", role: "alert" });
   const policyStatus = element("p", { className: "hint", role: "status" });
   const summary = element("p", { className: "hint" });
   const list = element("div", { className: "plugin-list" });
@@ -855,7 +855,7 @@ export function createPluginFields({
           details.append(
             element(
               "p",
-              { className: "status", "data-tone": "danger", role: "status" },
+              { className: "status", "data-tone": "danger", role: "alert" },
               entry.toolError,
             ),
           );
