@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -82,7 +82,7 @@ function codexInput(overrides = {}) {
 function render(
   profile,
   input,
-  directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`)),
+  directory = fileTemporaryDirectory(`oce-profile-${profile}-`),
   root = repository,
   dnsServer,
 ) {
