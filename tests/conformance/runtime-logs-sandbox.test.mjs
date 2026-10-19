@@ -1,3 +1,4 @@
+import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import assert from "node:assert/strict";
 import { createHmac, randomUUID } from "node:crypto";
 import test from "node:test";
@@ -1094,11 +1095,14 @@ test("sandbox sanitization masks credentials passed as command-line arguments", 
   ];
   for (const [command, expected] of cases) {
     // Extracted `[cmd:` field, and the fallback where the command stays in the message.
-    const { records } = sanitizeSandboxLogLines({ source: "sandbox", sandbox: "sb-1" }, [
-      sandboxLine(1, `PROC:LAUNCH [INFO] x(1) [cmd:${command}]`),
-      sandboxLine(2, `PROC:LAUNCH [INFO] x(1) ${command}`),
-      sandboxLine(3, "exec", { level: "INFO", target: "t", fields: { cmd_line: command } }),
-    ]);
+    const { records } = sanitizeSandboxLogLines(
+      { source: "sandbox", sandbox: "sb-1" },
+      [
+        sandboxLine(1, `PROC:LAUNCH [INFO] x(1) [cmd:${command}]`),
+        sandboxLine(2, `PROC:LAUNCH [INFO] x(1) ${command}`),
+        sandboxLine(3, "exec", { level: "INFO", target: "t", fields: { cmd_line: command } }),
+      ].map(openShellLogDecision),
+    );
     assert.equal(records[0].fields.cmd_line, expected, command);
     assert.equal(records[1].message, `PROC:LAUNCH [INFO] x(1) ${expected}`, command);
     assert.equal(records[2].fields.cmd_line, expected, command);
@@ -1149,8 +1153,10 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
       `HTTP:GET [INFO] ALLOWED curl(42) -> GET https://api.example.com/items/${index}?page=${"x".repeat(900)} [policy:web engine:opa]`,
     ),
   );
+  // The Driver decorates before the provider-neutral OCC page budget is measured.
+  const decorated = lines.map(openShellLogDecision);
   const stream = { source: "sandbox", sandbox: "sb-0123" };
-  const once = cpuTimeMs(() => sanitizeSandboxLogLines(stream, lines));
+  const once = cpuTimeMs(() => sanitizeSandboxLogLines(stream, decorated));
   const binding = {
     principalId: "synthetic-person",
     agentId: "agent-test",
@@ -1170,7 +1176,7 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
       binding,
       now: () => Date.parse("2026-09-30T12:10:00Z"),
       admitView: async () => {},
-      readLogs: async () => ({ sandbox: "sb-0123", lines, bufferTotal: 1000 }),
+      readLogs: async () => ({ sandbox: "sb-0123", lines: decorated, bufferTotal: 1000 }),
     });
   });
   const delivered = page.records.filter(({ type }) => type === "line").length;

@@ -62,7 +62,14 @@ async function ensureBootstrap(t, { label, authSecret }) {
  */
 export async function createPostgresAgentApp(
   t,
-  { label, authSecret, createAuditSink = (persisted) => persisted, appOptions },
+  {
+    label,
+    authSecret,
+    createAuditSink = (persisted) => persisted,
+    appOptions,
+    controllerOptions,
+    sandboxDriver,
+  },
 ) {
   await ensureBootstrap(t, { label, authSecret });
   const pool = new pg.Pool({ connectionString: databaseUrl, max: 6 });
@@ -81,10 +88,18 @@ export async function createPostgresAgentApp(
   const computeDriver = createRuntimeLogComputeDriver({ id: `${label}-pg-compute` });
   const configurationDriver = createTestConfigurationDriver({ id: `${label}-pg-config` });
   const secretDriver = createTestSecretDriver({ id: `${label}-pg-secret` });
-  const controller = new OpenClawController(installation, { state, recordOperations: false });
+  const controller = new OpenClawController(installation, {
+    state,
+    recordOperations: false,
+    ...controllerOptions,
+  });
   for (const driver of [iamDriver, computeDriver, configurationDriver, secretDriver]) {
     controller.registerDriver(driver);
     controller.selectDriver(driver.capability, driver.id);
+  }
+  if (sandboxDriver !== undefined) {
+    controller.registerDriver(sandboxDriver);
+    controller.selectDriver("sandbox", sandboxDriver.id);
   }
   const app = createFastifyApp({
     controller,
@@ -137,7 +152,10 @@ export async function createPostgresAgentApp(
     await controller.handleNamespaceLifecycle(principal.id, namespace.id, "ready");
     const configuration = await inject("POST", `/namespaces/${namespace.id}/configurations`, {
       kind: "agent",
-      values: createHarnessConfiguration("openclaw", "gpt-4.1"),
+      values: createHarnessConfiguration(
+        sandboxDriver === undefined ? "openclaw" : "codex",
+        "gpt-4.1",
+      ),
     });
     assert.equal(configuration.statusCode, 201, configuration.body);
     const secret = await inject("POST", `/namespaces/${namespace.id}/secrets`, {
@@ -148,6 +166,7 @@ export async function createPostgresAgentApp(
     const secretRef = secret.json().data.ref;
     const createdAgent = await inject("POST", `/namespaces/${namespace.id}/agents`, {
       name: `${name} ${randomUUID()}`,
+      ...(sandboxDriver === undefined ? {} : { executionMode: "dedicated" }),
       configurationId: configuration.json().data.id,
       harnessAuth: { method: "api_key", source: secretRef },
     });

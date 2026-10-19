@@ -40,6 +40,7 @@ import {
   DependencyUnavailableError,
   ResourceConflictError,
   ResourceStateConflictError,
+  SandboxGatewayUnavailableError,
   SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
@@ -1902,6 +1903,13 @@ test("Kubernetes Sandbox provisioning fails a revision at once when the provider
   failure = new Error("OpenShell workspace initialization failed.");
   await assert.rejects(prepare(), /OpenShell workspace initialization failed/);
   assert.equal(provisions.length, 2);
+  // Finding 2040: a gateway that does not answer reaches the worker as the same error, which
+  // waits for the gateway instead of spending the attempt budget.
+  failure = new SandboxGatewayUnavailableError(
+    "OpenShell CreateSandbox failed with gRPC status 14.",
+  );
+  await assert.rejects(prepare(), (error) => error === failure);
+  assert.equal(provisions.length, 3);
 });
 
 // Finding 1671: the node Secret is the Agent's, so a redeploy found a recorded device from its
@@ -14878,9 +14886,13 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
       assert.fail("stop must not provision a Harness workload");
     },
     async cleanup() {
+      if (cleanupFailure !== undefined) {
+        throw cleanupFailure;
+      }
       cleanupComplete = true;
     },
   };
+  let cleanupFailure;
   const driver = new KubernetesComputeDriver(options(), { sandboxDriver });
   const revision = routedRevision(driver, {
     id: "revision-provider-stop",
@@ -14988,7 +15000,14 @@ test("stopping a provider-owned Kubernetes revision waits for Sandbox workload t
     async () => false,
     () => withYieldingComputeStop(() => driver.stopRevision(revision)),
   );
-  assert.equal(podObservations, 2);
+  assert.equal(podObservations, 2); // Finding 2040: a gateway that does not answer the Sandbox cleanup reaches the worker as the
+  // same error, so an exclusive predecessor's stop waits for the gateway in the revision pass.
+  cleanupComplete = false;
+  cleanupFailure = new SandboxGatewayUnavailableError(
+    "OpenShell GetSandbox failed with gRPC status 14.",
+  );
+  await assert.rejects(driver.stopRevision(revision), (error) => error === cleanupFailure);
+  assert.equal(cleanupComplete, false);
 });
 
 test("stop and retirement end credential-source access through Sandbox cleanup", async () => {

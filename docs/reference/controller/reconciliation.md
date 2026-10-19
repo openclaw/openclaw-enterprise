@@ -199,7 +199,8 @@ connection while it converges (`AGENT_GATEWAY_UNAVAILABLE`), a Kubernetes API
 request that timed out, never reached the API server, or got 429 or 5xx
 (`KUBERNETES_API_UNAVAILABLE`), an OpenShell gateway refusing new requests at
 its durable request admission limit (`SANDBOX_ADMISSION_LIMIT_REACHED`), or not
-answering a Harness status read (`SANDBOX_GATEWAY_UNAVAILABLE`). Each such
+answering while it is down or restarting (`SANDBOX_GATEWAY_UNAVAILABLE`: gRPC
+`UNAVAILABLE`, or a Harness status read left unanswered). Each such
 pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.

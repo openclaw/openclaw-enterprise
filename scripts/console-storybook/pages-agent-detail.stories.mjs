@@ -149,3 +149,18 @@ export const SharingUnknown = { ...story("agentSharingUnknown") };
 
 export const BootstrapFailureCleanupPending = story("deploymentBootstrapCleanup");
 export const BootstrapContainerStatusAndLogs = story("runtimeBootstrapContainers");
+
+export const PolicyDenials = story("policyDenials");
+export const PolicyDenialsEmpty = story("policyDenialsEmpty");
+export const PolicyDenialsDisabled = story("policyDenialsDisabled");
+export const PolicyDenialsUnsupported = story("policyDenialsUnsupported");
+export const PolicyDenialsGap = story("policyDenialsGap");
+export const PolicyDenialsMissingMetadata = story("policyDenialsMissingMetadata");
+export const PolicyDenialsFailed = story("policyDenialsFailed");
+export const PolicyDenialsApplyRejected = story("policyDenialsApplyRejected");
+export const PolicyDenialsEditDenied = story("policyDenialsEditDenied");
+export const PolicyDenialsCeilingDenied = story("policyDenialsCeilingDenied");
+export const PolicyDenialsSuggestionsUnavailable = story("policyDenialsSuggestionsUnavailable");
+export const PolicyDenialsReadDenied = story("policyDenialsReadDenied");
+export const PolicyDenialsLoading = story("policyDenialsLoading");
+export const PolicyDenialsNoCredential = story("policyDenialsNoCredential");

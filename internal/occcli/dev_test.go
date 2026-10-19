@@ -6,9 +6,24 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestDevUpRejectsUnsupportedOrEmptySandboxPolicyFlag(t *testing.T) {
+	t.Setenv("OCC_DEVELOPMENT_COMPUTE_DRIVER", "docker")
+	for _, test := range []struct{ value, message string }{
+		{"", "must name a Sandbox network policy file"},
+		{"policy.yaml", "requires Kubernetes Compute"},
+	} {
+		command := New(&bytes.Buffer{}, &bytes.Buffer{})
+		command.SetArgs([]string{"dev", "up", "--sandbox-network-policy-file=" + test.value})
+		if err := command.Execute(); err == nil || !strings.Contains(err.Error(), test.message) {
+			t.Fatalf("expected %q, got %v", test.message, err)
+		}
+	}
+}
 
 // Interrupting occ dev up must let scripts/dev-up run its EXIT trap, which
 // removes the private temporary directory holding the rendered Compose

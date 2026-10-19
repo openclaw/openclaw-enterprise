@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
@@ -1582,7 +1583,8 @@ test("the Sandbox source shows redacted policy decisions without a Pod picker", 
       return {
         sandbox: `sb-${context.revision.id.slice(4, 12)}`,
         observedAt: "2026-09-30T12:00:05.000Z",
-        lines: sandboxState.lines,
+        // Native OCSF decoding belongs to the Driver; OCC sanitizes the shared records.
+        lines: sandboxState.lines.map(openShellLogDecision),
         bufferTotal: sandboxState.lines.length,
       };
     },

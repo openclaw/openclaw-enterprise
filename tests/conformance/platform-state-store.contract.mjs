@@ -86,6 +86,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     backendId: null,
     harnessAuth: apiKeyBinding,
     executionMode: "embedded",
+    sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     desiredRuntimeState: "stopped",
     // Both adapters force a created Agent to `active` rather than honoring a
@@ -147,7 +148,9 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
       configuration.id,
     ]);
     await transaction.secrets.createSecret(harnessSecret);
-    assert.deepEqual(await transaction.agents.createAgent(agent), agent);
+    // Creation defaults editing to disabled; reloads must preserve the same Agent shape.
+    const { sandboxPolicyEditing: _editing, ...agentWithoutEditing } = agent;
+    assert.deepEqual(await transaction.agents.createAgent(agentWithoutEditing), agent);
     assertCreatedRevision(await transaction.revisions.createRevision(revision), revision);
     await transaction.audit.append(audit);
     await transaction.operations.append(operation);
@@ -254,7 +257,11 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
   };
   await store.transact(async (transaction) => {
     await transaction.configurations.createConfiguration(backendConfiguration);
-    await transaction.agents.createAgent(providerAgent);
+    // Creation cannot enable editing; the separately authorized setter owns that change.
+    assert.deepEqual(
+      await transaction.agents.createAgent({ ...providerAgent, sandboxPolicyEditing: true }),
+      providerAgent,
+    );
   });
   await assert.rejects(
     store.transact((transaction) =>
@@ -912,6 +919,7 @@ export async function verifyPlatformStateStoreContract(store, options = {}) {
     configurationId: accountConfiguration.id,
     backendId: null,
     executionMode: "dedicated",
+    sandboxPolicyEditing: false,
     servicePrincipalId: identifier("service-agent"),
     harnessAuth: {
       method: "codex_pat",
