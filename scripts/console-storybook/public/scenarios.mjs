@@ -3607,6 +3607,27 @@ export const scenarios = {
     description:
       "Inspect v6 details while the newest deployment, v7, is still in progress. Browsing does not change selection.",
   },
+  agentsLongName: {
+    group: "Pages/Agents",
+    name: "Long unbroken name",
+    deployed: true,
+    agentName: "ResearchAssistantForTheQuarterlyReleaseReviewAndSignOff".repeat(4).slice(0, 200),
+    description:
+      "One Agent has the longest allowed name, 200 characters with no space. The name wraps within the width of its ID, so the other columns keep their places.",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+      "Tab to the long name and press Enter: the Agent opens.",
+    ],
+  },
+  agentsLongNamePhone: {
+    group: "Pages/Agents",
+    name: "Long unbroken name (phone)",
+    deployed: true,
+    mobile: true,
+    agentName: "ResearchAssistantForTheQuarterlyReleaseReviewAndSignOff".repeat(4).slice(0, 200),
+    description:
+      "The same 200-character name at 390 px wraps inside its stacked row, and the page does not scroll sideways.",
+  },
   agentsDeploymentFailed: {
     group: "Pages/Agents",
     name: "Latest deployment failed",

@@ -1565,6 +1565,14 @@ select:not([multiple])[size="1"] {
   max-width: 310px;
   overflow-wrap: anywhere;
 }
+/* A name with a run too long to wrap (list.mjs marks it; a name may be 200 unbroken characters)
+   breaks anywhere within the width its ID takes, so it does not widen the table (finding 1955).
+   Other names wrap as before. */
+.agent-table .agent-name-unbroken {
+  display: inline-block;
+  max-width: 310px;
+  overflow-wrap: anywhere;
+}
 .agent-table a {
   font-weight: 550;
   text-decoration: none;
@@ -1719,6 +1727,9 @@ select:not([multiple])[size="1"] {
     opacity: 0;
   }
 }
+/* The sheet sits on the bottom of the visible area: an on-screen keyboard shrinks only that area,
+   which dom.mjs `trackVisualViewport` mirrors into these insets (finding 1957). They are 0 unless
+   a keyboard or zoom is up, and resolve against the layout viewport the fixed dialog sits in. */
 @media (max-width: 760px) {
   .dialog,
   .dialog--wide,
@@ -1727,14 +1738,20 @@ select:not([multiple])[size="1"] {
     width: 100%;
     max-width: 100%;
     height: fit-content;
-    max-height: calc(100% - var(--space-8));
+    top: var(--visual-viewport-top, 0px);
+    bottom: var(--visual-viewport-bottom, 0px);
+    max-height: calc(
+      100% - var(--visual-viewport-top, 0px) - var(--visual-viewport-bottom, 0px) - var(--space-8)
+    );
     margin: auto 0 0;
     padding: var(--space-4);
     border-bottom: 0;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
   .dialog--wide {
-    height: calc(100% - var(--space-8));
+    height: calc(
+      100% - var(--visual-viewport-top, 0px) - var(--visual-viewport-bottom, 0px) - var(--space-8)
+    );
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -1822,6 +1839,10 @@ select:not([multiple])[size="1"] {
   .agent-table .resource-id {
     margin-top: var(--space-2);
     max-width: none;
+  }
+  .agent-table .agent-name-unbroken {
+    display: inline;
+    overflow-wrap: inherit;
   }
   .agent-table .agent-deployment-note {
     margin-top: 0;

@@ -4,6 +4,8 @@ export default { title: "Pages/Agents" };
 
 export const Agents = { ...story("agents"), name: "Populated" };
 export const UnreadableConfiguration = story("agentsUnreadableConfiguration");
+export const LongName = story("agentsLongName");
+export const LongNamePhone = story("agentsLongNamePhone");
 export const AgentsEmpty = { ...story("agentsEmpty"), name: "Empty" };
 export const AgentsSearch = { ...story("agentsSearch"), name: "No search matches" };
 export const NoNamespaces = { ...story("noNamespaces"), name: "No readable Namespaces" };

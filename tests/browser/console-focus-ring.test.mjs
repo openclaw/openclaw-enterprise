@@ -12,6 +12,7 @@ import {
   nativeValues,
   newPage,
   repositoryCheckbox,
+  selectSecret,
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
@@ -53,11 +54,12 @@ const tokenRings = (page) =>
 
 // The focused control, the ring drawn for it, and every scrolling ancestor that cuts into that
 // ring. A borderless input's ring is drawn by its wrapper, so the ring belongs to the nearest
-// element, the control or one of its two closest ancestors, that has an outline.
-const focusedRing = (page) =>
-  page.evaluate(() => {
+// element, the control or one of its two closest ancestors, that has an outline. `selector`
+// measures an element that shows focus without holding it, such as an aria-activedescendant option.
+const focusedRing = (page, selector = null) =>
+  page.evaluate((selector) => {
     const document = globalThis.document;
-    const focused = document.activeElement;
+    const focused = selector ? document.querySelector(selector) : document.activeElement;
     if (!focused || focused === document.body) {
       return null;
     }
@@ -106,13 +108,24 @@ const focusedRing = (page) =>
       const rect = scroller.getBoundingClientRect();
       const left = rect.left + scroller.clientLeft;
       const top = rect.top + scroller.clientTop;
+      // clientWidth and clientHeight round to whole pixels, so the far edges come from the
+      // fractional box, less its borders and its (whole-pixel) scrollbars.
+      const right = rect.right - Number.parseFloat(edge.borderRightWidth);
+      const bottom = rect.bottom - Number.parseFloat(edge.borderBottomWidth);
+      // A gap under 2px is the rounding alone: any real scrollbar is wider.
+      const gapX = right - left - scroller.clientWidth;
+      const gapY = bottom - top - scroller.clientHeight;
+      const barWidth = gapX >= 2 ? Math.round(gapX) : 0;
+      const barHeight = gapY >= 2 ? Math.round(gapY) : 0;
       const cut = Math.max(
         left - (box.left - reach),
         top - (box.top - reach),
-        box.right + reach - (left + scroller.clientWidth),
-        box.bottom + reach - (top + scroller.clientHeight),
+        box.right + reach - (right - barWidth),
+        box.bottom + reach - (bottom - barHeight),
       );
-      if (cut > 0.5) {
+      // Scroll offsets snap to whole pixels, so a scrolled-to row can overhang its scroller by
+      // a fraction of a pixel; only a whole pixel or more counts as hidden.
+      if (cut >= 1) {
         clipped.push(`.${[...scroller.classList].join(".")} hides ${cut.toFixed(1)}px`);
       }
     }
@@ -128,7 +141,7 @@ const focusedRing = (page) =>
         ].join(" ")
       : undefined;
     return { name, tag, ring: ring.join(" "), clipped, ...(frame ? { framed } : {}) };
-  });
+  }, selector);
 
 // Tab from the current focus until focus leaves the document (or `until` matches a stop), and
 // record every stop.
@@ -306,9 +319,28 @@ test("repository rows and the Slack people search on Create Agent show an unclip
   const driver = new CodexPluginDriver();
   fixture.controller.registerDriver(driver);
   fixture.controller.selectDriver("plugin", driver.id);
+  const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
   for (const viewport of widths) {
     const label = `Create Agent at ${viewport.width}`;
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    // Only the provider directory is simulated: one person matches any search.
+    await page.route(
+      `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
+      (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            data: {
+              workspaceId: "TTEST123",
+              workspaceName: "Test workspace",
+              candidates: [{ id: "UTEST123", name: "freeman", displayName: "Freeman Example" }],
+              complete: true,
+            },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000001963" },
+          }),
+        }),
+    );
     await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await repositoryCheckbox(page, "example/app").waitFor();
@@ -330,6 +362,20 @@ test("repository rows and the Slack people search on Create Agent show an unclip
     const { inset } = await tokenRings(page);
     const app = repositories.find(({ name }) => name.includes("example/app"));
     assert.equal(app.framed, inset, `${label}: the example/app row draws the inset ring`);
+    // The arrowed-to result keeps focus in the search input, so measure the active option itself
+    // against its results scroller (finding 1963).
+    await selectSecret(page, "Slack bot token Secret for people search", bot);
+    const search = page.getByRole("combobox", {
+      name: "Default plugin approvers people",
+      exact: true,
+    });
+    await search.fill("free");
+    await page.getByRole("option", { name: /Freeman Example/ }).waitFor();
+    await search.press("ArrowDown");
+    const result = await focusedRing(page, ".slack-directory-result.active");
+    assert.match(result?.name ?? "", /Freeman Example/, `${label}: ArrowDown activates a result`);
+    assert.equal(result.ring, inset, `${label}: the active result draws the inset ring`);
+    await assertVisibleRings(page, `${label} people results`, [result]);
   }
 });
 
@@ -355,6 +401,11 @@ test("every stop in the Configure plugins dialog shows an unclipped token ring",
     await page.getByRole("button", { name: "Configure plugins", exact: true }).press("Enter");
     const dialog = page.getByRole("dialog", { name: "Configure plugins", exact: true });
     await dialog.getByRole("button", { name: "Linear", exact: true }).waitFor();
+    // Walk the settled dialog, so a slow run and a fast one measure the same layout. Only the
+    // dialog's own open animation: a spinner inside it never finishes.
+    await dialog.evaluate(async (node) => {
+      await Promise.all(node.getAnimations().map((animation) => animation.finished));
+    });
     const stops = [await focusedRing(page), ...(await tabStops(page))];
     for (const name of ["Search plugins", "Linear"]) {
       assert.ok(

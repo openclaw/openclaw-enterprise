@@ -256,6 +256,22 @@ const readingDeployment = (className = "delayed-status") =>
 // ms, finding 1683), so once shown it stays at least READING_SHOWN_MS.
 const READING_SHOWN_MS = 150;
 
+// A run of more characters than any ordinary word cannot wrap, so it would set the table's width
+// (finding 1955). Only a name with one breaks anywhere (console.css); others wrap as before. The
+// run ends only where a line can break: a breaking space, a zero-width space, a soft hyphen or a
+// hyphen or dash (a name holds no control or line-separator characters). No-break spaces
+// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it.
+const UNBROKEN_RUN =
+  /[^ \u1680\u2000-\u2006\u2008-\u200b\u205f\u3000\u00ad\u2010\u2012-\u2014-]{21,}/u;
+
+function agentNameLink(item, context) {
+  const node = link(item.name, `agents/${item.id}`, context);
+  if (UNBROKEN_RUN.test(item.name)) {
+    node.classList.add("agent-name-unbroken");
+  }
+  return node;
+}
+
 export function renderAgentList(context) {
   const { view, items } = context;
   const search = element("input", {
@@ -477,7 +493,7 @@ export function renderAgentList(context) {
           element(
             "td",
             {},
-            link(item.name, `agents/${item.id}`, context),
+            agentNameLink(item, context),
             element("span", { className: "resource-id" }, item.id),
             item.status === "deleting"
               ? element("span", { className: "badge", "data-tone": "warning" }, "Deleting")
