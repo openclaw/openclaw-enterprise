@@ -3964,20 +3964,20 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       context,
       (changed) => {
         if (changed) {
+          setStatusTone(feedback, null);
           feedback.textContent = fields.isDirty()
             ? "Save or cancel repository changes before deploying."
             : "No repository changes to save.";
-          setStatusTone(feedback, null);
         }
         update();
       },
       { ...agent, agentId: agent.id },
     );
     showDraftEditorNavigationBlock = () => {
+      setStatusTone(feedback, null);
       feedback.textContent = draftEditorSaving
         ? draftEditorNavigationBlock
         : "Save or cancel repository changes before leaving this tab.";
-      setStatusTone(feedback, null);
     };
     async function submit() {
       if (save.disabled || !fields.validate()) {
@@ -4321,9 +4321,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     });
     showDraftEditorNavigationBlock = () => {
       if (draftEditorNavigationBlock) {
-        feedback.textContent = draftEditorNavigationBlock;
         setStatusTone(feedback, null);
         feedback.setAttribute("role", "status");
+        feedback.textContent = draftEditorNavigationBlock;
         feedbackLocked = true;
       }
     };
@@ -4338,9 +4338,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         return;
       }
       pending = true;
-      feedback.textContent = "Checking Configuration…";
       setStatusTone(feedback, null);
       feedback.setAttribute("role", "status");
+      feedback.textContent = "Checking Configuration…";
       feedbackLocked = true;
       const saveFocused = document.activeElement === save;
       updateState();

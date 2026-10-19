@@ -846,11 +846,7 @@ test("Create Agent discovers hosted plugins with a transient PAT through the sel
   } finally {
     detailRelease.resolve();
   }
-  // A danger block, so an alert (finding 2005).
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /credential was rejected or cannot access plugins/ })
-    .waitFor();
+  await dialog.getByText(/credential was rejected or cannot access plugins/).waitFor();
   assert.equal(await heading.evaluate((node) => node === node.ownerDocument.activeElement), true);
   assert.equal((await dialog.textContent()).includes("private upstream response"), false);
   failTools = false;

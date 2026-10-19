@@ -79,9 +79,6 @@ test("Plugin details refresh preserves the user's current keyboard focus", async
   }
 });
 
-// Each redraw (tool details arriving, for one) used to rewrite the dialog's status lines with the
-// same words, so screen readers could announce "Page 1 · 2 plugins" again (finding 1890). Live
-// regions change only when their text does.
 // The look and announcement of a status line: its class, tone and role (finding 2006).
 function statusTone(locator) {
   return locator.evaluate((node) => ({
@@ -91,6 +88,9 @@ function statusTone(locator) {
   }));
 }
 
+// Each redraw (tool details arriving, for one) used to rewrite the dialog's status lines with the
+// same words, so screen readers could announce "Page 1 · 2 plugins" again (finding 1890). Live
+// regions change only when their text does.
 test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

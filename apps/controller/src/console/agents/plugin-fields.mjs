@@ -855,7 +855,9 @@ export function createPluginFields({
           details.append(
             element(
               "p",
-              { className: "status", "data-tone": "danger", role: "alert" },
+              // A status, not an alert: the pane is rebuilt on every redraw (search typing, say),
+              // and an alert would be announced again each time.
+              { className: "status", "data-tone": "danger", role: "status" },
               entry.toolError,
             ),
           );
