@@ -3216,7 +3216,7 @@ test("a Workspace reread keeps the caret and scroll of a focused, unedited edito
   // overflows (finding 2034).
   await page.waitForFunction(() => {
     const node = globalThis.document.getElementById("workspace-SOUL.md");
-    return node.scrollHeight > node.clientHeight;
+    return node?.scrollHeight > node?.clientHeight;
   });
   // The reader clicks into line 30 and selects a word; the editor scrolls to centre that line.
   // Lines are alike, so the line's share of the text is its share of the scroll height.

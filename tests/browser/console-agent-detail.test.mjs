@@ -2770,6 +2770,8 @@ test("an uncertain Stop the API never received reads back as still requested to 
     .getByRole("button", { name: "Stop Agent" })
     .click();
   await stopRegion.getByText("Outcome unknown. Stop may have been accepted.").waitFor();
+  const current = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  assert.equal(current.data.desiredRuntimeState, "running");
   await stopRegion.getByRole("button", { name: "Refresh stop status", exact: true }).click();
   const notice = stopRegion.getByText("The Agent is still requested to run.", { exact: true });
   await notice.waitFor();
