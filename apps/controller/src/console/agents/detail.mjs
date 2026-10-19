@@ -1646,7 +1646,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   });
   // On a narrow screen the strip scrolls sideways; an edge with more tabs past it fades.
   const fadeTabEdges = () => {
-    tabs.toggleAttribute("data-more-before", tabs.scrollLeft > 0);
+    // Both edges tolerate the same one-pixel rounding in scrollWidth/clientWidth.
+    tabs.toggleAttribute("data-more-before", tabs.scrollLeft > 1);
     tabs.toggleAttribute(
       "data-more-after",
       tabs.scrollLeft + tabs.clientWidth < tabs.scrollWidth - 1,

@@ -3125,6 +3125,7 @@ export const scenarios = {
     slack: true,
     steps: [
       "Review required Slack destinations.",
+      "Use Home and End in the tab strip, then resize: overflow fades disappear when the tabs fit within one pixel.",
       "Choose selected hosts and enter backend.composio.dev.",
       "Save network access, reload, and verify the saved draft.",
       "Deploy and inspect its immutable network selection.",

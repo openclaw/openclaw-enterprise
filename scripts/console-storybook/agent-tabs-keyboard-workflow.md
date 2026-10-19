@@ -9,8 +9,8 @@ Enter to open. Use the keyboard, not the mouse.
 2. Shift+Tab back to **Configuration**. Press Right, Right, Left, End and Home.
    Focus moves between tabs and wraps at either end, but no tab opens and the
    address keeps its `tab=`.
-3. Press End, then Enter. **Workspace files** opens, the address shows
-   `tab=workspace`, and the strip marks it selected.
+3. Press End, then Enter. **Policy denials** opens, the address shows
+   `tab=policy`, and the strip marks it selected.
 4. Go Back. **Configuration** is selected again and focus moves to it.
 5. Press End, then Tab and Shift+Tab. Focus returns to the selected tab, not
    the one the arrows last reached.
@@ -18,6 +18,9 @@ Enter to open. Use the keyboard, not the mouse.
    fades while more tabs are past it, and after scrolling to the end only the
    left edge fades. Press End: the focused tab scrolls into view clear of the
    fade, and stays in view if you resize again.
+7. Widen the frame until every tab fits. Neither edge fades, including when
+   browser rounding leaves one scrollable pixel after End. Wider overflow still
+   fades at the edge with hidden tabs.
 
 ## Gateway network access
 

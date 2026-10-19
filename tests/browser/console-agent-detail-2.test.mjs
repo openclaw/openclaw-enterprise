@@ -1922,6 +1922,24 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     return !node.hasAttribute("data-more-before") && !node.hasAttribute("data-more-after");
   });
   assert.equal((await edges()).masked, false, "a strip that fits does not fade");
+  // Chromium rounds scrollWidth/clientWidth to integers. A one-pixel remainder can scroll
+  // left even when every tab fits within that rounding tolerance; neither edge should fade.
+  await strip.evaluate((node) => {
+    const first = node.firstElementChild.getBoundingClientRect();
+    const last = node.lastElementChild.getBoundingClientRect();
+    node.style.width = `${Math.ceil(last.right - first.left) - 1}px`;
+    node.scrollLeft = node.scrollWidth;
+  });
+  await frames();
+  assert.deepEqual(
+    await strip.evaluate((node) => ({
+      overflow: node.scrollWidth - node.clientWidth,
+      left: node.scrollLeft,
+    })),
+    { overflow: 1, left: 1 },
+    "exercise real browser rounding at the scrollable end",
+  );
+  assert.deepEqual(await edges(), { before: false, after: false, masked: false });
 });
 
 test("Agent sharing grants existing people exact discovery and native access, then removes only the selected binding", async (t) => {

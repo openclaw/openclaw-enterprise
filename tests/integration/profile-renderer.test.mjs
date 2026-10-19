@@ -2637,7 +2637,12 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ],
     ["https://@models.example.com/v1", "must not contain user info or an @ before the host."],
     [
-      "https://user:pass@models.example.com/v1",
+      syntheticCredentialUrl({
+        username: "user",
+        password: "pass",
+        host: "models.example.com",
+        pathname: "/v1",
+      }),
       "must not contain user info or an @ before the host.",
     ],
     ["http://models.example.com/v1", general],
