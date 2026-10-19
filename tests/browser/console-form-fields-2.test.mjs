@@ -233,6 +233,15 @@ test("the workspace file editor shows an oversized file's error under the file",
   );
   await editor.fill("after");
   assert.equal(await shownError(editor), null);
+  // Reload replaces the file without an input event; the error goes with the refused text.
+  await editor.fill("a".repeat(16_385));
+  await save.click();
+  await assertShownError(editor, error);
+  await page.getByRole("button", { name: "Reload AGENTS.md", exact: true }).click();
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  assert.equal(await editor.inputValue(), "before");
+  assert.equal(await shownError(editor), null);
+  assert.equal(await editor.getAttribute("aria-invalid"), null);
 });
 
 // A Plugins save outcome takes focus only from the page or the disabled Save button: a reader

@@ -1,4 +1,4 @@
-import { element, button, statusBlock, validateFields } from "../dom.mjs";
+import { element, button, setFieldError, statusBlock, validateFields } from "../dom.mjs";
 
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 
@@ -146,7 +146,9 @@ export function renderWorkspaceFiles(context, agent, path) {
         editor.value = file.content;
         // Compare edits in the textarea's LF representation; reading never rewrites the file.
         baseline = editor.value;
+        // A file read without an input event drops the last check's error with its validity.
         editor.setCustomValidity("");
+        setFieldError(editor, "");
         loaded = true;
         outcomeUnknown = false;
         status.textContent = `${name} loaded.`;
@@ -175,6 +177,7 @@ export function renderWorkspaceFiles(context, agent, path) {
           baseline = !discard && retained ? retained.baseline : undefined;
           initialized = true;
           editor.setCustomValidity("");
+          setFieldError(editor, "");
           loaded = true;
           if (missingReadback) {
             outcomeUnknown = false;
