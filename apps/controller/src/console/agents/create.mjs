@@ -1802,7 +1802,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
   // The Namespace can become ready while the form is open. Reread only its status, on refocus
   // and while Create Agent waits for it, and update just the note and the gate: the draft,
-  // focus and field values stay (finding 2012). A failed read stops the wait until a refocus.
+  // focus and field values stay (finding 2012). A failed read stops the wait until a refocus,
+  // and a form that Start over replaced stops for good.
   let namespaceTimer = null;
   let namespaceReading = false;
   const namespaceGateShown = () =>
@@ -1810,7 +1811,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const recheckNamespace = async () => {
     clearTimeout(namespaceTimer);
     namespaceTimer = null;
-    if (!context.isCurrent()) {
+    if (!context.isCurrent() || !form.isConnected) {
       if (recheckOpenForm === recheckNamespace) {
         recheckOpenForm = null;
       }
@@ -1829,8 +1830,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     } finally {
       namespaceReading = false;
     }
-    if (!context.isCurrent()) {
+    if (!context.isCurrent() || !form.isConnected) {
       return;
+    }
+    if (namespace) {
+      // Start over renders from this context again.
+      context.namespace = namespace;
     }
     const next = namespace ? namespaceCreation(namespace) : notReady;
     if (next?.note !== notReady?.note) {

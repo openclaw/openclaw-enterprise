@@ -350,14 +350,47 @@ test("a refocus re-enables Create Agent once the Namespace is ready, keeping the
 
 test("an open form waiting on the Namespace sees it become ready without a refocus", async (t) => {
   const { page, view, create, name, release } = await openGatedForm(t, { clock: true });
+  // One poll: its read must arrive, so its answer, not the absence of one, keeps the gate.
+  const poll = async () => {
+    const read = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/namespaces",
+    );
+    await page.clock.runFor(10_000);
+    await read;
+  };
   // A Namespace still provisioning keeps the gate.
-  await page.clock.runFor(10_000);
+  await poll();
   await view.getByText(WAITS, { exact: true }).waitFor();
   assert.equal(await create.isDisabled(), true);
   release();
-  await page.clock.runFor(10_000);
+  await poll();
   await view.getByText(READY_PLAN, { exact: true }).waitFor();
   assert.equal(await create.isDisabled(), false);
   assert.equal(await view.getByText(NOT_READY).count(), 0);
   await assertDraftIntact(name);
+});
+
+test("Start over leaves one Namespace poll, not one per form", async (t) => {
+  const { page, view } = await openGatedForm(t, { clock: true });
+  page.once("dialog", (dialog) => void dialog.accept());
+  await view.getByRole("button", { name: "Start over", exact: true }).click();
+  await view.getByRole("button", { name: "Start without Preset" }).click();
+  await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  await view.getByText(WAITS, { exact: true }).waitFor();
+  const reads = [];
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/namespaces") {
+      reads.push(response);
+    }
+  });
+  // Two polls: by the time the second one's read arrives, a read any replaced form started on
+  // the first one has arrived too.
+  for (let poll = 0; poll < 2; poll += 1) {
+    const read = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/namespaces",
+    );
+    await page.clock.runFor(10_000);
+    await read;
+  }
+  assert.equal(reads.length, 2);
 });
