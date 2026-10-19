@@ -82,8 +82,9 @@ block direct Secret-backed model and environment projection.
 
 Before saving, forms and Preset variables survive navigation; passwords clear.
 **Cancel** and **Start over** discard the draft, confirming once changed. Saved Agents
-and Secrets remain. Sign-out clears drafts; a reload asks first. A refused save stays a draft
-reusing saved resources; uncertain outcomes follow save recovery below.
+and Secrets remain. Sign-out clears drafts; a reload asks first. A refused Create stays a draft
+reusing saved resources, except a repository-policy refusal; uncertain outcomes follow save
+recovery below.
 
 For Codex plugins, open **Configure plugins**. With the
 [OpenAI curated catalog](../drivers/plugin-bundled.md#selection-and-catalogs),

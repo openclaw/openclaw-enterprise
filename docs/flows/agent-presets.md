@@ -192,8 +192,9 @@ capability and repository discovery. A confirmed **Cancel** removes creation and
 channel snapshots and the retained view; re-entry opens the chooser and preserves
 saved resources. `beforeunload` asks first while any capture holds changes. Invalid JSON stays text; passwords
 and discovery results are excluded. Start over, session loss, logout, user change or
-page exit clears captures, not a failed `/namespaces` read. A known save refusal keeps
-the capture and its saved resources.
+page exit clears captures, not a failed `/namespaces` read. A known Create refusal keeps
+the capture and its saved resources, unless repository policy refused it or an Agent,
+provisioning job or credential registration exists.
 
 `agents/create.mjs:updateModelConfiguration` retains ordered fallbacks and
 model metadata referenced by defaults or entries. Only an unreferenced replaced

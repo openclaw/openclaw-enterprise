@@ -2895,10 +2895,16 @@ export const scenarios = {
         message: "The requested platform resource already exists.",
         once: true,
       },
+      // The first Namespace check after the refusal fails; the refused draft survives it.
+      { path: "/namespaces", skip: 1, status: 503, code: "DEPENDENCY_UNAVAILABLE", once: true },
     ],
     actions: [...readyForm, click("Create Agent")],
     description:
       "Provisioning admission conflicts before any separate Configuration save. The refusal replaces the submitting status and takes focus. Edit the request and retry from the same draft.",
+    steps: [
+      "Select the Agents link: the simulated Namespace check fails once. Select Retry.",
+      "Choose Create Agent: the refused form returns with its name, model, and Secret.",
+    ],
   },
   createRefusalReason: {
     group: "Pages/Create Agent",
@@ -3056,6 +3062,14 @@ export const scenarios = {
     group: "Pages/Agent detail",
     name: "Keep Configuration edits",
     path: draft,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        delayMs: 3000,
+        once: true,
+      },
+    ],
     actions: [
       click("Edit Configuration"),
       { selector: "#configuration-json", value: '{"unfinished":' },
@@ -3065,6 +3079,7 @@ export const scenarios = {
     steps: [
       "Visit Channels, then Configuration and confirm the unfinished text remains.",
       "Open Namespaces and return with Back. Cancel discards the edit without saving.",
+      "Edit again, enter {} and select Save configuration. During the 3-second simulated save, a sidebar link keeps the page and says to wait; once saved, it leaves.",
     ],
     gap: "Simulated UI proof; no deployment or real persistence.",
   },
@@ -5694,11 +5709,22 @@ export const scenarios = {
     group: "Flows",
     name: "Keep an Agent draft",
     path: create,
+    rules: [
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/provision",
+        method: "POST",
+        status: 409,
+        code: "RESOURCE_CONFLICT",
+        message: "The requested platform resource already exists.",
+        once: true,
+      },
+    ],
     description:
-      "Leave a default starter Agent form and return to it, then discard it with Cancel.",
+      "Leave a default starter Agent form and return to it, keep it after a refused Create, then discard it with Cancel.",
     steps: [
       "Choose Start with default Preset and enter an Agent name.",
       "Select the Agents link, then choose Create Agent again: the form returns with the name.",
+      "Choose a listed model, create a model Secret, and select Create Agent: a simulated conflict refuses it once. Leave and return the same way: the name, model, and Secret return, ready to retry.",
       "Select Cancel and confirm Discard this draft. Choose Create Agent: the initial choices are shown.",
     ],
     gap: "The fixture demonstrates simulated console state; it does not verify a live backend or deployment.",
