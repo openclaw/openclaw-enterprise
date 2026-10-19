@@ -13,6 +13,7 @@ import {
   type OpenClawConfigurationDocument,
 } from "@openclaw-enterprise/contracts";
 import {
+  ConfigurationHarnessError,
   NotImplementedError,
   PluginDiscoveryError,
   PluginPolicyValidationError,
@@ -26,6 +27,7 @@ import {
 } from "./runtime-translator.ts";
 import { NativeCodexPluginCatalogReader } from "./stdio-catalog-reader.ts";
 import { discoverHostedPlugins, getHostedPlugin } from "./hosted-catalog.ts";
+import { deniedOpenClawSelection, openClawToolDenialMessage } from "./openclaw-tool-denial.ts";
 import { validateCodexAutomaticReviewerPolicy } from "../../gateway/codex-approval-policy.ts";
 
 type ConfigurationRecord = Readonly<Record<string, unknown>>;
@@ -369,6 +371,16 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
   async listCatalog(context: PluginDriverContext): Promise<readonly PluginCatalogEntry[]> {
     ensureHarness(context, "embedded");
     return this.catalog(OCC_CATALOG);
+  }
+
+  validateAgentConfiguration(
+    selections: PluginDesiredState,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    const denied = deniedOpenClawSelection(OCC_CATALOG, selections, configuration);
+    if (denied !== undefined) {
+      throw new ConfigurationHarnessError(openClawToolDenialMessage(denied));
+    }
   }
 }
 

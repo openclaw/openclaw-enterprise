@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { delimiter, join } from "node:path";
 import test from "node:test";
 
 import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
@@ -7,6 +10,7 @@ import {
   agentStopDiagnostic,
   observeAgentStop,
   waitFor,
+  watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
 
 const revision = "rev_00000000-0000-4000-8000-000000000001";
@@ -233,4 +237,41 @@ test("diagnostics project only fixed lifecycle fields", async () => {
     activeRevisionId: "invalid",
     status: "unknown",
   });
+});
+
+// Run the real watcher with real timers and no cluster. A `k3d` stand-in on PATH
+// records each lookup and fails, as it does once `occ dev up` deletes its cluster.
+async function withRecordedK3d(operation) {
+  const directory = await mkdtemp(join(tmpdir(), "first-agent-smoke-k3d-"));
+  const calls = join(directory, "calls");
+  await writeFile(join(directory, "k3d"), `#!/bin/sh\necho "$@" >> '${calls}'\nexit 1\n`, {
+    mode: 0o755,
+  });
+  const path = process.env.PATH;
+  process.env.PATH = `${directory}${delimiter}${path}`;
+  try {
+    const started = Date.now();
+    await operation();
+    return {
+      seconds: (Date.now() - started) / 1000,
+      calls: await readFile(calls, "utf8").catch(() => ""),
+    };
+  } finally {
+    process.env.PATH = path;
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+test("a successful setup stops an idle watcher at once without another capture", async () => {
+  const { seconds, calls } = await withRecordedK3d(() => watchCluster()());
+  // The watcher idles for 30 seconds between captures; stopping must not wait for one.
+  assert.ok(seconds < 5, `stop took ${seconds}s`);
+  assert.equal(calls, "");
+});
+
+test("a failed setup stops the watcher at once with one final capture", async () => {
+  const { seconds, calls } = await withRecordedK3d(() => watchCluster()({ finalCapture: true }));
+  // The final snapshot keeps diagnostics for the failure without the idle wait.
+  assert.ok(seconds < 5, `stop took ${seconds}s`);
+  assert.equal(calls, "kubeconfig get occ-dev-first-agent-smoke\n");
 });

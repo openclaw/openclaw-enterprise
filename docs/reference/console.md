@@ -89,7 +89,7 @@ saves a draft: provide model and channel credentials when prompted, then select
 **Deploy new version**. If the Compute Driver requires them, OCC generates
 missing connection credentials during that first deployment.
 See [Create and deploy Agents](console/create-and-deploy.md) for the full
-workflow, channel constraints, and partial-write recovery.
+workflow, [Namespace status](namespaces.md#lifecycle) rules, channel constraints, and partial-write recovery.
 Plugin selections follow the API's Agent create/update contract: an omitted map
 is preserved, `{}` clears it, and deployment startup reports unsupported catalog
 or policy choices.
@@ -99,8 +99,8 @@ or policy choices.
 Agent tabs change only their panel; Back/Forward restores the selected tab.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
 Preset variables, and Agent search survive in-document navigation as drafts
-scoped to user, Namespace, and Agent. Passwords clear; reload and sign-out
-clear drafts.
+scoped to user, Namespace, and Agent. Passwords clear; reload warns; sign-out
+clears drafts.
 
 **Cancel**, **Start over**, and **Reload** discard edits; **Refresh** retains them.
 Saving clears drafts. Concurrent changes require reload; unsaved edits block

@@ -1,4 +1,12 @@
-import { element, button, dismissOnBackdrop, focusSaveOutcome } from "../dom.mjs";
+import {
+  element,
+  button,
+  dismissOnBackdrop,
+  field as formField,
+  focusSaveOutcome,
+  statusBlock,
+  validateOnSubmit,
+} from "../dom.mjs";
 import { renderSecretReference } from "../agents/secret-picker.mjs";
 import { carryList, carryValue } from "../carry.mjs";
 
@@ -13,13 +21,7 @@ export const refsEqual = (left, right) =>
   left.id === right.id;
 
 export function field(label, control, hint) {
-  return element(
-    "div",
-    { className: "channel-field" },
-    element("label", { for: control.id }, label),
-    control,
-    hint ? element("p", { className: "hint", id: `${control.id}-hint` }, hint) : null,
-  );
+  return formField({ label, control, help: hint, className: "channel-field" });
 }
 
 export function checkbox(id, label, checked, disabled = false) {
@@ -175,7 +177,7 @@ function renderCard(section, state, provider) {
           : button(action, () => openDrawer(section, state, provider), actionAttrs),
         canDisable
           ? button(`Disable ${provider.name}`, () => void disableProvider(state, provider), {
-              className: "danger",
+              tone: "danger",
             })
           : null,
       ),
@@ -214,10 +216,10 @@ function renderCard(section, state, provider) {
       ),
     );
   } else if (blockReason) {
-    card.append(element("p", { className: "error" }, blockReason));
+    card.append(element("p", { className: "status", "data-tone": "danger" }, blockReason));
   } else if (!support.supported) {
     card.append(
-      element("p", { className: "error" }, support.reason),
+      element("p", { className: "status", "data-tone": "danger" }, support.reason),
       nativeDocument(`${provider.name} native configuration`, support.config),
     );
   }
@@ -260,6 +262,12 @@ function draftChanges(draft) {
   return { fields: Object.fromEntries(fields.map((id) => [id, draft.fields[id]])), secrets };
 }
 
+// Whether the editor holds a change a reload or tab close would lose (finding 1902).
+function unsavedChannelDraft(draft) {
+  const changes = draftChanges(draft);
+  return Object.keys(changes.fields).length > 0 || changes.secrets.length > 0;
+}
+
 // A save conflict keeps the editor's changes: Reload draft reopens them over the reread
 // settings instead of dropping them with the closed editor (finding 1504).
 function carryDraft(state, dialog, provider) {
@@ -276,6 +284,7 @@ function carryDraft(state, dialog, provider) {
   const carried = { ...draft, carried: true, unresolved: false };
   state.carriedDraft = carried;
   state.drawerContext.drafts?.track("channels", () => carried);
+  state.drawerContext.drafts?.unsavedWhen("channels", unsavedChannelDraft);
 }
 
 function carriedNotice(draft, provider) {
@@ -335,9 +344,9 @@ async function save(state, values, dialog, targetError, secretBindingUpdate, pro
       dialog?.remove();
     }
     (sectionError ? state.error : errorNode).replaceChildren(
-      element(
-        "p",
-        { className: "error", role: "alert" },
+      statusBlock(
+        "danger",
+        null,
         errorText(error) +
           (state.reloadRequired ? carriedNotice(state.carriedDraft, provider) : ""),
       ),
@@ -465,7 +474,7 @@ function openDrawer(section, state, provider, retained) {
   }
   section.querySelector("dialog")?.remove();
   const dialog = element("dialog", {
-    className: "channel-dialog",
+    className: "dialog dialog--drawer channel-dialog",
     "aria-label": `${statusOf(providerConfig(state.values, provider.id)).label === "Not configured" ? "Configure" : "Edit"} ${provider.name}`,
   });
   const config = isRecord(support.config) ? support.config : {};
@@ -504,6 +513,7 @@ function openDrawer(section, state, provider, retained) {
     config.enabled !== false,
   );
   const body = element("form", { method: "dialog", className: "channel-drawer-form" });
+  validateOnSubmit(body);
   const carriedNote = carried
     ? element("p", { className: "hint", role: "status", id: `${provider.id}-carried-edits` })
     : null;
@@ -526,7 +536,7 @@ function openDrawer(section, state, provider, retained) {
   const cancel = button("Cancel", discard);
   const submit = element(
     "button",
-    { type: "submit", className: "primary" },
+    { type: "submit", className: "button button--primary" },
     state.copy.saveLabel ?? "Save configuration",
   );
   body.append(
@@ -540,9 +550,9 @@ function openDrawer(section, state, provider, retained) {
       ),
       button("Close", discard),
     ),
-    element(
-      "p",
-      { className: "notice", role: "status" },
+    statusBlock(
+      "info",
+      null,
       state.copy.drawerNotice ??
         "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before first deploy.",
     ),
@@ -651,12 +661,13 @@ function openDrawer(section, state, provider, retained) {
   state.captureDraft = captureDraft;
   state.carriedDraft = null;
   state.drawerContext.drafts?.track("channels", captureDraft);
+  state.drawerContext.drafts?.unsavedWhen("channels", unsavedChannelDraft);
   if (stale || unresolved) {
     submit.disabled = true;
     feedback.append(
-      element(
-        "p",
-        { className: "error", role: "alert" },
+      statusBlock(
+        "danger",
+        null,
         unresolved
           ? "Outcome unknown. Cancel this editor and reload the page to inspect saved settings before saving again."
           : "The saved Configuration changed while you were editing. Cancel this editor to use current settings.",
@@ -666,7 +677,7 @@ function openDrawer(section, state, provider, retained) {
   if (state.copy.drawerFootnote) {
     body.append(element("p", { className: "muted" }, state.copy.drawerFootnote));
   }
-  body.append(feedback, element("div", { className: "form-actions" }, cancel, submit));
+  body.append(feedback, element("div", { className: "dialog-actions" }, cancel, submit));
   body.addEventListener("submit", (event) => {
     event.preventDefault();
     if (state.pending || stale || unresolved) {
@@ -677,19 +688,13 @@ function openDrawer(section, state, provider, retained) {
       body.querySelector(`#${provider.id}-enabled`).checked
     ) {
       feedback.replaceChildren(
-        element(
-          "p",
-          { className: "error", role: "alert" },
-          "Channels require Dedicated execution.",
-        ),
+        statusBlock("danger", null, "Channels require Dedicated execution."),
       );
       return;
     }
     const validationError = provider.validate?.(body);
     if (validationError) {
-      feedback.replaceChildren(
-        element("p", { className: "error", role: "alert" }, validationError),
-      );
+      feedback.replaceChildren(statusBlock("danger", null, validationError));
       return;
     }
     const nextValues = provider.updatedValues(state.values, body);

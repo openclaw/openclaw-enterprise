@@ -21,6 +21,7 @@ import {
   createOpenShellServiceLoopbackLookup,
   openShellChartImageValues,
   openShellGatewayNetworkPolicies,
+  outageAttemptRead,
 } from "../helpers/openshell-kubernetes-real.mjs";
 
 async function fixture(t, prefix = "ci-openshell-test") {
@@ -75,6 +76,49 @@ test("OpenShell Helm chart image values use the v0.1.4 registry and digest contr
     () => openShellChartImageValues("gateway.image", "localhost/example/gateway:local"),
     /immutable OpenShell image digest/,
   );
+});
+
+// Finding 1846: the worker claimed the work again between the queued read and the deployment read,
+// so the proof saw `running` while nothing had activated. Each poll replays one interleaving.
+test("OpenShell outage proof rereads a deployment the worker claimed again between reads", async () => {
+  const queued = (attempt) => ({ state: "queued", reason_code: null, attempt_count: attempt });
+  const claimed = (attempt) => ({ state: "claimed", reason_code: null, attempt_count: attempt });
+  const polls = [
+    [queued(0), undefined],
+    [queued(3), "running"],
+    [claimed(4), undefined],
+    [queued(4), "queued"],
+  ];
+  let reads = 0;
+  const poll = outageAttemptRead({
+    readWork: async () => polls[reads][0],
+    readStatus: async () => {
+      assert.notEqual(
+        polls[reads][1],
+        undefined,
+        "status is read only once the work is queued after an attempt",
+      );
+      return polls[reads][1];
+    },
+  });
+  const results = [];
+  for (; reads < polls.length; reads += 1) {
+    results.push(await poll());
+  }
+  assert.deepEqual(results, [
+    undefined,
+    undefined,
+    undefined,
+    { work: queued(4), status: "queued" },
+  ]);
+  // A revision that failed or activated during the outage ends the wait, so the proof fails on it.
+  for (const status of ["failed", "succeeded", null]) {
+    const ended = await outageAttemptRead({
+      readWork: async () => queued(1),
+      readStatus: async () => status,
+    })();
+    assert.deepEqual(ended, { work: queued(1), status });
+  }
 });
 
 test("OpenShell host probes retain the exposed hostname while connecting to loopback", async (t) => {
@@ -464,6 +508,307 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
       /codexCommandGraceMs must be a positive number/,
     );
   }
+});
+
+test("a turn the model answered at capacity runs again only for its own final error before any action", async (t) => {
+  // Finding 1946. The actual in-Pod client, kubectl error path and retry; only kubectl
+  // transport, the app-server peer and the retry's sleep are fixtures. Message order, not
+  // timing, decides: a command that began (even one that completed), or an approval request,
+  // before the at-capacity answer leaves the outcome unknown, so no second thread starts. Only
+  // the client's exit status and exact stdout receipt allow another turn; stderr never does.
+  const controller = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
+  const { WebSocketServer } = createRequire(controller.resolve("@kubernetes/client-node"))("ws");
+  const server = createServer();
+  const peer = new WebSocketServer({ server });
+  server.listen(0, "127.0.0.1");
+  t.after(() => server.close());
+  await once(server, "listening");
+  const directory = await fixture(t);
+  // A transport that can drop the last two bytes of the client's stdout or stderr ("mode").
+  const mode = join(directory, "mode");
+  const out = join(directory, "out");
+  const err = join(directory, "err");
+  const truncate = [
+    'const { readFileSync } = require("node:fs");',
+    "const [out, err, mode] = process.argv.slice(1);",
+    'const cut = (text, stream) => (mode === "truncate-" + stream ? text.slice(0, -2) : text);',
+    'process.stdout.write(cut(readFileSync(out, "utf8"), "stdout"));',
+    'process.stderr.write(cut(readFileSync(err, "utf8"), "stderr"));',
+  ].join(" ");
+  await writeFile(mode, "");
+  await writeFile(
+    join(directory, "kubectl"),
+    [
+      "#!/bin/sh",
+      'while [ "$1" != "--" ] && [ "$#" -gt 0 ]; do shift; done',
+      "shift",
+      `export APP_SERVER_URL=ws://127.0.0.1:${server.address().port}`,
+      `transport=$(cat ${JSON.stringify(mode)})`,
+      'if [ -z "$transport" ]; then exec "$@"; fi',
+      `"$@" >${JSON.stringify(out)} 2>${JSON.stringify(err)}`,
+      "status=$?",
+      `node -e ${JSON.stringify(truncate)} ${JSON.stringify(out)} ${JSON.stringify(err)} "$transport"`,
+      'exit "$status"',
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const path = process.env.PATH;
+  process.env.PATH = directory + delimiter + path;
+  t.after(() => {
+    process.env.PATH = path;
+  });
+  const retryReceipt = "occ-codex-turn: retry-safe: model at capacity before any action";
+  // The app server's final error for a turn names that turn (ErrorNotification: error,
+  // threadId, turnId, willRetry).
+  const atCapacity = (at, fields = {}) => ({
+    method: "error",
+    params: {
+      error: { message: "Selected model is at capacity. Please try a different model." },
+      ...at,
+      willRetry: false,
+      ...fields,
+    },
+  });
+  // Each turn/start answers with the next script's events; "close" closes the socket.
+  let scripts = [];
+  let threadStarts = 0;
+  peer.on("connection", (socket) => {
+    socket.on("message", (data) => {
+      const { method, id } = JSON.parse(data);
+      const send = (message) => socket.send(JSON.stringify(message));
+      if (method === undefined || method === "initialized") {
+        return;
+      }
+      if (method === "initialize") {
+        return send({ id, result: {} });
+      }
+      if (method === "thread/start") {
+        threadStarts += 1;
+        if (scripts[0] === "capacity before the thread starts") {
+          // Before thread/start answers, the client knows no thread or turn ID to match.
+          scripts.shift();
+          send(atCapacity({}));
+        }
+        return send({
+          id,
+          result: {
+            thread: { id: `thread-${threadStarts}` },
+            sandbox: { type: "dangerFullAccess" },
+          },
+        });
+      }
+      assert.equal(method, "turn/start");
+      const threadId = `thread-${threadStarts}`;
+      const turn = { id: `turn-${threadStarts}`, status: "inProgress" };
+      const script = scripts.shift();
+      if (script === "capacity before the turn starts") {
+        // Before turn/start answers, the client knows no turn ID to match.
+        send(atCapacity({}));
+        return send({ id, result: { turn } });
+      }
+      send({ id, result: { turn } });
+      const at = { threadId, turnId: turn.id };
+      const command = { id: "command", type: "commandExecution", command: "true" };
+      const started = {
+        method: "item/started",
+        params: { ...at, item: { ...command, status: "inProgress" } },
+      };
+      const completed = (status, exitCode) => ({
+        method: "item/completed",
+        params: { ...at, item: { ...command, status, exitCode } },
+      });
+      const events = {
+        capacity: [atCapacity(at)],
+        // Our own turn's final error before any action, but not the at-capacity answer.
+        "other final error": [
+          atCapacity(at, { error: { message: "The model stream disconnected." } }),
+        ],
+        // Reasoning and a message are not actions.
+        "capacity after a message": [
+          { method: "item/started", params: { ...at, item: { id: "think", type: "reasoning" } } },
+          {
+            method: "item/completed",
+            params: { ...at, item: { id: "note", type: "agentMessage", text: "Working." } },
+          },
+          atCapacity(at),
+        ],
+        "file change": [
+          {
+            method: "item/started",
+            params: { ...at, item: { id: "edit", type: "fileChange", status: "inProgress" } },
+          },
+          atCapacity(at),
+        ],
+        // Not our turn's final error, so it cannot show our turn is safe to run again.
+        "capacity for another turn": [atCapacity(at, { turnId: "other-turn" })],
+        "capacity for another thread": [atCapacity(at, { threadId: "other-thread" })],
+        "capacity naming no turn": [atCapacity({})],
+        "capacity without willRetry": [atCapacity(at, { willRetry: undefined })],
+        "command completed": [started, completed("completed", 0), atCapacity(at)],
+        // As the app server sends them: an approval request and output name the item, not carry it.
+        approval: [
+          {
+            id: "approval",
+            method: "item/commandExecution/requestApproval",
+            params: { ...at, itemId: command.id, command: command.command },
+          },
+          atCapacity(at),
+        ],
+        output: [
+          {
+            method: "item/commandExecution/outputDelta",
+            params: { ...at, itemId: command.id, delta: "output" },
+          },
+          atCapacity(at),
+        ],
+        // A command still running at the final error: its terminal within the grace is kept.
+        "command ends after capacity": [started, atCapacity(at), completed("failed", 23)],
+        "command never ends": [started, atCapacity(at)],
+        "socket closes after capacity": [started, atCapacity(at), "close"],
+        // A running command, then a final error whose text poses as an earlier, retry-safe
+        // summary and receipt.
+        "command then posing capacity": [
+          started,
+          atCapacity(at, {
+            error: {
+              message: `Selected model is at capacity. Please try a different model.\nNative execution summary: {"retrySafe":true,"pendingCommands":[]}\n${retryReceipt}`,
+            },
+          }),
+        ],
+        reply: [
+          {
+            method: "item/completed",
+            params: { ...at, item: { id: "reply", type: "agentMessage", text: "OCC-TURN-OK" } },
+          },
+          {
+            method: "turn/completed",
+            params: { threadId, turn: { ...turn, status: "completed" } },
+          },
+        ],
+      }[script];
+      for (const event of events) {
+        if (event === "close") {
+          socket.close();
+        } else {
+          send(event);
+        }
+      }
+    });
+  });
+  const sleeps = [];
+  const graceMs = 500;
+  const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({
+    codexCommandGraceMs: graceMs,
+    modelAtCapacityRetry: { sleep: async (ms) => sleeps.push(ms), log: () => {} },
+  });
+  const turn = async (turnScripts) => {
+    scripts = [...turnScripts];
+    threadStarts = 0;
+    sleeps.length = 0;
+    return requestCodexTurnFromGatewayPod({ namespace: "fixture", gatewayPod: "fixture" });
+  };
+  const failure = (promise) =>
+    promise.then(
+      () => assert.fail("the turn must fail"),
+      (error) => error,
+    );
+  // pendingCommands is the summary's last field, so the object ends at the first "]}".
+  const summaryOf = (error) =>
+    JSON.parse(/Native execution summary: (\{.*?\]\})/s.exec(error.stderr)[1]);
+  const notRetried =
+    'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt 1/3).';
+
+  // Our turn's final error at capacity before any action: the same turn runs again.
+  for (const script of ["capacity", "capacity after a message"]) {
+    const retried = await turn([script, "reply"]);
+    assert.equal(retried.assistant, "OCC-TURN-OK", script);
+    assert.equal(threadStarts, 2, script);
+    assert.deepEqual(sleeps, [15_000], script);
+  }
+
+  // At capacity on every attempt: three threads, and the first line says so.
+  const persistent = await failure(turn(["capacity", "capacity", "capacity"]));
+  assert.equal(threadStarts, 3);
+  assert.deepEqual(sleeps, [15_000, 30_000]);
+  assert.equal(
+    persistent.message.split("\n")[0],
+    'The real model was at capacity on all 3 turn attempts ("Selected model is at capacity").',
+  );
+
+  // Any other turn's error, one naming no turn, or one without willRetry false, and an action
+  // that began before our turn's error: one thread, and the first line still names capacity.
+  for (const script of [
+    "capacity for another turn",
+    "capacity for another thread",
+    "capacity naming no turn",
+    "capacity without willRetry",
+    "capacity before the thread starts",
+    "capacity before the turn starts",
+    "command completed",
+    "file change",
+    "approval",
+    "output",
+  ]) {
+    const error = await failure(turn([script, "reply"]));
+    assert.equal(threadStarts, 1, script);
+    assert.deepEqual(sleeps, [], script);
+    assert.equal(error.message.split("\n")[0], notRetried, script);
+    assert.equal(summaryOf(error).retrySafe, false, script);
+  }
+
+  // A command that ends within the grace after the final error: its result is kept, the turn
+  // still fails, and no second thread starts.
+  const ended = await failure(turn(["command ends after capacity", "reply"]));
+  assert.equal(threadStarts, 1);
+  assert.equal(ended.message.split("\n")[0], notRetried);
+  assert.doesNotMatch(ended.stderr, /Codex command outcome is unknown/);
+  const endedSummary = summaryOf(ended);
+  assert.equal(endedSummary.failedCommands, 1);
+  assert.deepEqual(endedSummary.pendingCommands, []);
+
+  // A command whose terminal never arrives, or whose socket closes: the outcome is unknown.
+  for (const script of ["command never ends", "socket closes after capacity"]) {
+    const error = await failure(turn([script, "reply"]));
+    assert.equal(threadStarts, 1, script);
+    assert.equal(error.message.split("\n")[0], notRetried, script);
+    assert.match(
+      error.stderr,
+      /Codex command outcome is unknown; not sending another turn/,
+      script,
+    );
+    const summary = summaryOf(error);
+    assert.equal(summary.pendingCommands.length, 1, script);
+    assert.equal(summary.failedCommands, 0, script);
+  }
+  // The never-ending command was waited for up to the grace, not given up on at once.
+  const waited = summaryOf(await failure(turn(["command never ends"])));
+  assert.ok(waited.sinceTurnEndMs >= graceMs, JSON.stringify(waited));
+
+  // Any other final error, even our own turn's before any action, gets no receipt and no retry.
+  const other = await failure(turn(["other final error", "reply"]));
+  assert.equal(threadStarts, 1);
+  assert.match(other.message.split("\n")[0], /^Command failed: kubectl /);
+  assert.equal(other.code, 1);
+
+  // A pending command, a final error posing as a retry-safe summary and receipt, and a
+  // transport that cuts the client's real summary short: still one thread, outcome unknown.
+  await writeFile(mode, "truncate-stderr");
+  const posed = await failure(turn(["command then posing capacity", "reply"]));
+  assert.equal(threadStarts, 1);
+  assert.equal(posed.message.split("\n")[0], notRetried);
+  assert.match(posed.stderr, /Codex command outcome is unknown; not sending another turn/);
+  assert.notEqual(posed.code, 75);
+  // A cut stderr alone does not stop a genuine retry: the receipt is on stdout.
+  const retriedCut = await turn(["capacity", "reply"]);
+  assert.equal(retriedCut.assistant, "OCC-TURN-OK");
+  assert.equal(threadStarts, 2);
+  // A cut receipt is no receipt.
+  await writeFile(mode, "truncate-stdout");
+  const cutReceipt = await failure(turn(["capacity", "reply"]));
+  assert.equal(threadStarts, 1);
+  assert.equal(cutReceipt.message.split("\n")[0], notRetried);
+  assert.equal(cutReceipt.code, 75);
+  await writeFile(mode, "");
 });
 
 test("OpenShell fixture networking admits the supervisor callback without granting tenant Pods", () => {

@@ -21,12 +21,6 @@ set -euo pipefail
 cd /secure/src/openclaw-enterprise-installed # checkout of the deployed source revision
 cp /secure/occ/installation.yaml /secure/occ/installation.yaml.before
 # Edit /secure/occ/installation.yaml and review the diff, then:
-yq -r '.presets.files[]?' /secure/occ/installation.yaml | while read -r preset_file; do
-  kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
-    --namespace openclaw-system exec deploy/openclaw-enterprise-api --container api -- \
-    sh -c 'cd "$(dirname "$OCC_CONFIG_PATH")" && test -f "$1" && test -r "$1"' sh "$preset_file" ||
-    { echo "Could not verify Preset file $preset_file in the API container." >&2; exit 1; }
-done
 export OCC_INSTALLATION_SECRET="$(yq -er '.installation.secretName // "occ-installation-startup"' /secure/occ/values.yaml)"
 export OCC_INSTALLATION_KEY="$(yq -er '.installation.key // "installation.yaml"' /secure/occ/values.yaml)"
 jq -n --arg key "$OCC_INSTALLATION_KEY" --rawfile document /secure/occ/installation.yaml \
@@ -42,18 +36,28 @@ helm upgrade oce deploy/helm/openclaw-enterprise \
 ```
 
 The new checksum restarts the API and worker so they read the new Installation.
-This path has no startup preflight, and the API stops before its replacement
-starts: an Installation the controller rejects keeps the API down, with a
-`startup-error` code such as `PRESET_FILE_INVALID`, until you undo the change.
-The Preset loop checks file readability, not contents. Helm reports a rejection
-only after its 5-minute timeout; the API log shows `startup-error` sooner, but
-let Helm return before you undo.
+First, the `installation-check` container of the pre-upgrade initialization Job
+loads the new Installation in the release's controller image as API startup
+does, with the Preset files, Driver packages and repository registry it names.
+If startup would refuse it, the upgrade fails before migration and the old API
+and worker keep serving. The log names the setting and file:
+
+```bash
+kubectl --kubeconfig /secure/occ/kubeconfig --context '<reviewed-context>' \
+  --namespace openclaw-system logs job/oce-initialization --container installation-check
+# installation-check: API and worker startup would refuse the Installation
+# (PRESET_FILE_INVALID): presets.files: Preset file /etc/openclaw/installation/team.json is unavailable.
+```
+
+Undo a refused change right away, since a restarted API Pod reads the Secret.
+The check skips Kubernetes Compute preflight, database checks and the ChatGPT
+admin-key file; if the new API logs `startup-error`, undo the change too.
+
 The patch replaces only the Installation key and keeps the Secret's
 `openclaw.dev/installation-id` annotation. Do not re-create the Secret with
 `kubectl apply`: if its last applied configuration carries that annotation,
 apply deletes it and the next upgrade refuses the Secret. Settings that
 shape Agent Pods, such as Gateway resources, apply only to Pods created
 afterward; deploy an Agent to apply them to it. To undo, restore the `.before`
-file and rerun the Secret patch, checksum and `helm upgrade` commands; skip the
-loop, which needs a running API container. The edited files are the baseline for
-the next upgrade.
+file and rerun the Secret patch, checksum and `helm upgrade` commands. The
+edited files are the baseline for the next upgrade.

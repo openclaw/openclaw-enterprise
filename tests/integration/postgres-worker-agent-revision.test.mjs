@@ -1313,9 +1313,11 @@ revisionTest(
     const unpaired = await fixture.agent("pending-node");
     const overQuota = await fixture.agent("pending-pod-quota");
     const setupRetrying = await fixture.agent("pending-workspace-setup");
+    const imagePull = await fixture.agent("pending-image-pull");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
     const overQuotaRevision = await fixture.revision(overQuota, 1);
     const setupRetryingRevision = await fixture.revision(setupRetrying, 1);
+    const imagePullRevision = await fixture.revision(imagePull, 1);
     // Admitted five minutes ago by PostgreSQL's clock, which judges work age (finding 1187),
     // and still inside the 900-second deadline.
     const unpairedRevision = await fixture.revision(unpaired, 1, { workAge: "300 seconds" });
@@ -1324,6 +1326,7 @@ revisionTest(
       [unpairedRevision.id, "WORKSPACE_NODE_PENDING"],
       [overQuotaRevision.id, "NAMESPACE_POD_QUOTA_EXCEEDED"],
       [setupRetryingRevision.id, "WORKSPACE_SETUP_RETRYING"],
+      [imagePullRevision.id, "WORKLOAD_IMAGE_PULL_FAILED"],
     ]);
     const delays = new Map([
       [unscheduledRevision.idempotencyKey, []],
@@ -1387,6 +1390,12 @@ revisionTest(
       code: "WORKSPACE_SETUP_RETRYING",
       message:
         "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
+    });
+    // Finding 1762: the kubelet cannot pull an image; fixed copy, never the image reference.
+    assert.deepEqual(await progress(imagePull, imagePullRevision), {
+      code: "REVISION_IMAGE_PULL_FAILED",
+      message:
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
     });
     const firstDelay = async (revision) => {
       const recorded = delays.get(revision.idempotencyKey);

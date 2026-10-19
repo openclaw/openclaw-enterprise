@@ -1,6 +1,6 @@
 ---
 created: 2026-09-23
-updated: "2026-10-12"
+updated: "2026-10-18"
 last_updated_session: "authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031"
 ---
 
@@ -164,8 +164,9 @@ If the candidate is already present after a lost response, it does not write it
 again. The candidate Installation checksum is included in both OCC Pod
 templates.
 
-A durable marker precedes `helm upgrade`. The candidate migrator and bootstrap
-run in the Helm initialization hook before API and worker rollout. If Helm
+A durable marker precedes `helm upgrade`. The Helm initialization hook checks
+the Installation, then runs the candidate migrator and bootstrap, before API and
+worker rollout. If Helm
 fails, resumption reads its current status and migration state before a retry;
 it does not start the old image to undo a committed schema change.
 
@@ -281,6 +282,7 @@ checks the exported inventory before following the recovery procedure. Empty
 
 ## Changelog
 
+- 2026-10-18: The initialization hook checks the Installation before migration.
 - 2026-10-12 15:14: Record bootstrap Job grants required by the two-cluster upgrade preflight alongside the fixture correction. (authoring-run/ebb1c629-97b2-4b9a-aa67-a5e750346031 - 9578f6f7aaff9b8545346f43043cbc5b9bcf674e)
 
 - 2026-10-10 03:30: Say that the worker's next preparation of an existing revision applies the new controller's Pod templates and rolls changed Pods once. (fix-990-991)

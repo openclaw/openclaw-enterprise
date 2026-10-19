@@ -190,13 +190,14 @@ async function loadLocalInstallation(harness, controlUi) {
       state.sandboxDriver !== "openshell" ||
       browserOrigin.protocol !== "https:" ||
       browserOrigin.hostname !== expectedBrowserHost ||
-      !browserOrigin.port ||
       browserOrigin.pathname !== "/" ||
       browserOrigin.username ||
       browserOrigin.password ||
       browserOrigin.search ||
       browserOrigin.hash ||
-      state.browserOrigin !== browserOrigin.origin ||
+      // URL drops the default port. Older Local Setup recorded port 443 explicitly.
+      (state.browserOrigin !== browserOrigin.origin &&
+        state.browserOrigin !== `${browserOrigin.origin}:443`) ||
       state.nativeAdminDomain !== expectedNativeAdminDomain
     ) {
       throw new Error("The recorded Local Setup native admin endpoint is invalid.");

@@ -71,6 +71,12 @@ export function deploymentProgressForWork(
       message =
         "The cluster has no room for this Agent's Pods yet; they are waiting to be scheduled.";
       break;
+    case "REVISION_IMAGE_PULL_FAILED":
+      // Fixed copy: never the image reference or the registry's response.
+      code = attempt.code;
+      message =
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.";
+      break;
     case "NAMESPACE_POD_QUOTA_EXCEEDED":
       // Fixed copy: never the quota's numbers or name (finding 1617).
       code = attempt.code;
@@ -567,6 +573,15 @@ export function deploymentErrorForWork(
   });
 }
 
+/**
+ * The guidance for a refusal whose next step does not depend on the operation. A stop, deletion
+ * or credential withdrawal the Sandbox gateway refused has no status of its own, so the worker
+ * logs this with the failed work, as the deployment status shows it (finding 1694).
+ */
+export function operationRefusalHint(code: string): string | undefined {
+  return code === "SANDBOX_GATEWAY_UNAUTHORIZED" ? deploymentErrorMessage(code) : undefined;
+}
+
 export function deploymentWarningsForWork(
   work: Readonly<ControllerWork>,
 ): readonly PluginDeploymentWarning[] {
@@ -700,7 +715,7 @@ function deploymentErrorMessage(code: string): string {
     case "SANDBOX_HARNESS_UNSUPPORTED":
       return "The Sandbox Driver does not support this revision's Harness.";
     case "SANDBOX_GATEWAY_UNAUTHORIZED":
-      return "The Sandbox gateway refused the controller's identity in this revision's Workspace, so the Driver could not confirm the revision's Sandbox removed, its Harness exposure withdrawn or its credentials detached. A Workspace removed outside the controller presents the same way. Restore the controller gateway identity's Workspace role (or recreate the Workspace with a deploy), then deploy, stop, delete or withdraw again.";
+      return "The Sandbox gateway refused the controller's identity in this revision's Workspace, so the Driver could not confirm the revision's Sandbox removed, its Harness exposure withdrawn or its credentials detached. A Workspace removed outside the controller presents the same way. For an authentication failure, check the controller gateway identity's token file and the gateway's signing-key refresh; for a permission denial, restore that identity's Workspace role (or recreate the Workspace with a deploy). Then deploy, stop, delete or withdraw again.";
     case "CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT":
       return "Two credential sources the Agent binds use the same environment variable. Bind only one source per variable, for example one openai source and bearer-token sources with distinct env_var values, then deploy again.";
     case "CREDENTIAL_WITHDRAWN":

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
   chmodSync,
@@ -14,11 +14,18 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
-import { availableParallelism, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test, { after } from "node:test";
 import { runInNewContext } from "node:vm";
+import {
+  captureChild,
+  concurrencyLimit,
+  eachSettled as all,
+  settled,
+} from "../helpers/child-processes.mjs";
+import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
@@ -61,54 +68,14 @@ const reasons = [
 
 // Every case spawns Git, the selector or a workflow script, so independent
 // processes run concurrently, about one per CPU (each spawns more of its own).
-const slots = { free: Math.max(2, availableParallelism()), waiting: [] };
-async function run(program, args, { encoding = "utf8", ...options } = {}) {
-  if (slots.free > 0) {
-    slots.free -= 1;
-  } else {
-    await new Promise((resolve) => slots.waiting.push(resolve));
-  }
-  try {
-    return await new Promise((resolve, reject) => {
-      const child = spawn(program, args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
-      const stdout = [];
-      const stderr = [];
-      child.stdout.on("data", (chunk) => stdout.push(chunk));
-      child.stderr.on("data", (chunk) => stderr.push(chunk));
-      child.on("error", reject);
-      child.on("close", (status) => {
-        const text = (chunks) =>
-          encoding === null ? Buffer.concat(chunks) : Buffer.concat(chunks).toString(encoding);
-        resolve({ status, stdout: text(stdout), stderr: text(stderr) });
-      });
-    });
-  } finally {
-    const next = slots.waiting.shift();
-    if (next) {
-      next();
-    } else {
-      slots.free += 1;
-    }
-  }
-}
+const limit = concurrencyLimit();
+const run = (program, args, options) => limit(() => captureChild(program, args, options));
 
 async function command(cwd, program, args) {
   const result = await run(program, args, { cwd });
   assert.equal(result.status, 0, `${program} ${args.join(" ")}: ${result.stderr}`);
   return result.stdout.trim();
 }
-
-// Like Promise.all, but waits for every check so no process outlives its
-// test's temporary directories, then rethrows the first failure.
-async function settled(promises) {
-  const results = await Promise.allSettled(promises);
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
-  }
-  return results.map((result) => result.value);
-}
-const all = (items, each) => settled(items.map(each));
 
 function tempDir(t, prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
@@ -1005,8 +972,7 @@ test("an event base that is present but not behind the tested base selects full"
   const shallow = await shallowBootstrap(f);
   for (const base of [side, f.head]) {
     f.writeEvent(pr(base, f.head));
-    await f.expect("full");
-    assert.equal(await f.select(), "mode=full\nreason=checkout_mismatch\n");
+    await f.expect("full", {}, "checkout_mismatch");
   }
   // A depth-two checkout lacks the side commit, so it is ignored like any
   // stale base: the ancestor rule can only add full selections there.
@@ -1014,8 +980,7 @@ test("an event base that is present but not behind the tested base selects full"
   await shallow.expect("docs");
   // The pull request head is in the shallow checkout and is not an ancestor.
   f.writeEvent(pr(f.head, f.head));
-  await shallow.expect("full");
-  assert.equal(await shallow.select(), "mode=full\nreason=bootstrap_checkout_mismatch\n");
+  await shallow.expect("full", {}, "bootstrap_checkout_mismatch");
   // A head that is not the tested merge's second parent still selects full.
   f.writeEvent(pr(f.base, f.mergeBase));
   await settled([f.expect("full"), shallow.expect("full")]);
@@ -1371,47 +1336,23 @@ const hasIssue = (result, code, lane) =>
   );
 
 test("workflow selection flows through the gate and full-mode source-bound aggregate", async (t) => {
-  const lanes = [
-    "checks-baseline-1",
-    "checks-baseline-2",
-    "checks-browser",
-    "checks-browser-2",
-    "postgres",
-    "postgres-application",
-    "postgres-auth",
-    "postgres-platform",
-    "images-packaging",
-    "images-model-probes",
-    "images-runtime-startup",
-    "images-runtime-startup-2",
-    "images-runtime-startup-3",
-    "runtime-image-fixture",
-    "k3d-fixture-configuration",
-    "k3d-fixture-state",
-    "k3d-fixture-plugins",
-    "k3d-observability",
-    "logging-collector",
-    "repository-credentials-container",
-    "repository-credentials-platform",
-    "keycloak-oidc",
-  ];
   // A declared lane must actually have a runner in both full-coverage paths.
   // This catches a manifest/gate update that accidentally omits a new matrix job.
   const matrixLanes = (source) =>
     [...source.matchAll(/- lane: ([a-z0-9-]+)/g)].map((match) => match[1]);
   const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
-  assert.deepEqual([...suiteIndex.groups.ci].sort(), [...lanes].sort());
+  assert.deepEqual([...suiteIndex.groups.ci].sort(), [...expectedFullLanes].sort());
   assert.deepEqual(matrixLanes(ciWorkflow), []);
   assert.deepEqual(
     ["runtime-image-fixture", ...laneTable().map((row) => row.lane)].sort(),
-    [...lanes].sort(),
+    [...expectedFullLanes].sort(),
   );
   assert.deepEqual(
     [
       "runtime-image-fixture",
       ...matrixLanes(read(".github/workflows/full-integration.yml")),
     ].sort(),
-    [...lanes, "k3d-observability-demo"].sort(),
+    [...expectedFullLanes, "k3d-observability-demo"].sort(),
   );
   await all(["docs", "full"], async (expected) => {
     const [f, bootstrap] = await policyFixture(t, ({ put }) => {
@@ -1428,19 +1369,13 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     assert.equal((await bootstrap.run("verify", mode)).status, 0);
 
     const root = bootstrap.checkout;
-    const needs = {
-      impact: { result: "success", outputs: { mode } },
-      audit: { result: "success", outputs: {} },
-      "static-checks": { result: "success", outputs: {} },
-      "pr-safe": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
-      "runtime-image-fixture": { result: mode === "docs" ? "skipped" : "success", outputs: {} },
-    };
+    const needs = passingGateNeeds(mode);
     const gateResult = await runGate(root, needs, mode);
     assert.equal(gateResult.status, 0, gateResult.stderr);
     const selectedNeeds = JSON.parse(readFileSync(join(root, "needs.json"), "utf8"));
     if (mode === "docs") {
       // An omitted product lane must not be represented by a successful receipt.
-      for (const lane of lanes) {
+      for (const lane of expectedFullLanes) {
         assert.notEqual(selectedNeeds[lane]?.result, "success", lane);
       }
       needs["static-checks"].result = "failure";
@@ -1452,8 +1387,11 @@ test("workflow selection flows through the gate and full-mode source-bound aggre
     }
     // Three synthetic lanes cover cross-lane aggregation and failures.
     // The inventory checks above still require every production CI lane.
-    assert.deepEqual(Object.keys(selectedNeeds).sort(), ["impact", "audit", ...lanes].sort());
-    for (const lane of lanes) {
+    assert.deepEqual(
+      Object.keys(selectedNeeds).sort(),
+      ["impact", "audit", ...expectedFullLanes].sort(),
+    );
+    for (const lane of expectedFullLanes) {
       assert.equal(selectedNeeds[lane].result, "success", lane);
     }
     const fixtureLanes = ["checks-baseline-1", "checks-baseline-2", "postgres"];
@@ -2119,8 +2057,7 @@ test("the pull request's own selector never decides test-only mode", async (t) =
   assert.equal(existsSync(marker), false);
   const verify = await legacy.run("verify", "tests", { EXPECTED_LANES: '["checks-baseline-1"]' });
   assert.notEqual(verify.status, 0);
-  await fallback.expect("full");
-  assert.equal(await fallback.select(), "mode=full\nreason=bootstrap_policy_unavailable\n");
+  await fallback.expect("full", {}, "bootstrap_policy_unavailable");
 });
 
 test("test-only selection is limited to pull request events", async (t) => {

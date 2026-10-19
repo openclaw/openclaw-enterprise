@@ -44,6 +44,7 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnauthorizedError,
   SandboxRevisionUnsupportedError,
+  SandboxWorkspaceSetupRefusedError,
   ScopeViolationError,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
@@ -675,8 +676,15 @@ test("startup requires protected OpenShell transport or an explicit NetworkPolic
     certificatePath: "/etc/openclaw/openshell/operator.crt",
     privateKeyPath: "/etc/openclaw/openshell/operator.key",
   };
-  protectedTransport.backend[0].configuration.operatorTls = operatorTls;
-  await load(protectedTransport);
+  // URI schemes are case-insensitive; both gateway transports parse the protocol before
+  // choosing TLS. Startup must admit the same protected connection, including operator TLS.
+  for (const scheme of ["https", "HTTPS", "hTtPs"]) {
+    protectedTransport.backend[0].configuration.endpoint = `${scheme}://openshell-gateway.openshell.svc:8080`;
+    delete protectedTransport.backend[0].configuration.operatorTls;
+    await load(protectedTransport);
+    protectedTransport.backend[0].configuration.operatorTls = operatorTls;
+    await load(protectedTransport);
+  }
   tlsOnly.backend[0].configuration.operatorTls = operatorTls;
   await assert.rejects(load(tlsOnly), /requires TLS with bearerTokenFile authentication/);
 
@@ -1045,10 +1053,13 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
   // grpc-js ServiceError shape, as unary() passes PERMISSION_DENIED (7) and UNAUTHENTICATED (16).
   const refusal = (code, details) =>
     Object.assign(new Error(`${code} refused: ${details}`), { code, details });
-  const unauthorized = (operation) =>
+  // UNAUTHENTICATED is transient (the worker retries it within its budget), PERMISSION_DENIED
+  // is not (finding 1694); both carry the code.
+  const unauthorized = (operation, transient = false) =>
     assert.rejects(operation(), (error) => {
       assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
       assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+      assert.equal(error.transient, transient);
       assert.match(error.message, /cannot be confirmed removed/);
       return true;
     });
@@ -1094,14 +1105,14 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
     gatewayClient.getWorkspace = async () => {
       throw refusal(code, "workspace");
     };
-    await unauthorized(cleanup);
+    await unauthorized(cleanup, code === 16);
   }
   // The identity is refused on the Sandbox read itself (an expired token fails every call).
   gatewayClient.getWorkspace = getWorkspace;
   gatewayClient.getSandbox = async () => {
     throw refusal(16, "token expired");
   };
-  await unauthorized(cleanup);
+  await unauthorized(cleanup, true);
   assert.deepEqual(workspaceReads, [workspace, workspace, workspace]);
   // OpenShell reports no Workspace: nothing proves the Sandbox gone, so cleanup fails closed.
   gatewayClient.getSandbox = async () => undefined;
@@ -1148,6 +1159,7 @@ test("OpenShell revision cleanup records a Sandbox removed only once OpenShell c
   };
   await assert.rejects(driver.provisionHarness({ ...context, revision, requirements }), (error) => {
     assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
+    assert.equal(error.transient, false);
     assert.match(error.message, /cannot be created or adopted/);
     return true;
   });
@@ -1184,7 +1196,12 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
     calls.push(["detachSandboxProvider", name, detached]);
     return detachAnswers.length === 0 ? detachAnswer : detachAnswers.shift();
   };
-  client.getSandboxProviderStatus = async () => ({ state: "PROVIDER_READINESS_STATE_REVOKED" });
+  // The receipts the status reads name: each settles the detach it follows.
+  const receipts = [];
+  client.getSandboxProviderStatus = async (_workspace, _sandbox, _provider, _signal, receiptId) => {
+    receipts.push(receiptId);
+    return { state: "PROVIDER_READINESS_STATE_REVOKED" };
+  };
   const withdraw = (recheck) =>
     driver.withdraw({
       namespace,
@@ -1195,10 +1212,11 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
       ...(recheck ? { recheck: true } : {}),
     });
   const refusal = (code) => Object.assign(new Error(`${code} refused`), { code, details: "ws" });
-  const unauthorized = (recheck) =>
+  const unauthorized = (recheck, transient = false) =>
     assert.rejects(withdraw(recheck), (error) => {
       assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
       assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+      assert.equal(error.transient, transient);
       assert.match(error.message, /credential of Sandbox .* cannot be confirmed withdrawn/);
       return true;
     });
@@ -1222,6 +1240,7 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   // unconfirmed, so the worker retries, and a refusal on the second read carries the code.
   calls.length = 0;
   listed = [provider];
+  receipts.length = 0;
   detachAnswers.push(undefined, { receiptId: "receipt-restored" });
   assert.deepEqual(await withdraw(false), { sourceId, state: "revoked" });
   assert.deepEqual(calls, [
@@ -1230,6 +1249,7 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
     ["getSandbox", sandbox],
     ["detachSandboxProvider", sandbox, provider],
   ]);
+  assert.deepEqual(receipts, ["receipt-restored"]);
   detachAnswers.push(undefined, undefined);
   await assert.rejects(
     withdraw(false),
@@ -1240,8 +1260,23 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   client.getSandbox = async () => {
     throw refusal(16);
   };
-  await unauthorized(false);
+  await unauthorized(false, true);
   client.getSandbox = sandboxRead;
+  // Outside a recheck only a receipt revokes: a restored Sandbox that does not list the provider
+  // is detached all the same.
+  calls.length = 0;
+  receipts.length = 0;
+  listed = ["operator-static"];
+  detachAnswers.push(undefined, { receiptId: "receipt-unlisted" });
+  assert.deepEqual(await withdraw(false), { sourceId, state: "revoked" });
+  assert.deepEqual(calls, [
+    ["detachSandboxProvider", sandbox, provider],
+    ["getWorkspace", workspace],
+    ["getSandbox", sandbox],
+    ["detachSandboxProvider", sandbox, provider],
+  ]);
+  assert.deepEqual(receipts, ["receipt-unlisted"]);
+  listed = [provider];
   // A refusal on the receipt's status read carries the code too.
   const statusRead = client.getSandboxProviderStatus;
   client.getSandboxProviderStatus = async () => {
@@ -1255,7 +1290,7 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
     client.getWorkspace = async () => {
       throw refusal(code);
     };
-    await unauthorized(false);
+    await unauthorized(false, code === 16);
   }
   client.getWorkspace = async () => undefined;
   await assert.rejects(withdraw(false), /reports no Workspace .* cannot be confirmed withdrawn/);
@@ -1308,7 +1343,7 @@ test("the OpenShell Credential Gateway reports a withdrawal absent only once the
   client.getWorkspace = async () => {
     throw refusal(16);
   };
-  await unauthorized(true);
+  await unauthorized(true, true);
   client.getSandbox = async () => {
     throw refusal(7);
   };
@@ -1552,6 +1587,7 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
       await assert.rejects(withdraw(), (error) => {
         assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
         assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+        assert.equal(error.transient, code === 16);
         assert.match(error.message, /cannot be confirmed withdrawn/);
         return true;
       });
@@ -1591,6 +1627,7 @@ test("OpenShell exposes a native OpenClaw worker's held-failure port when Comput
     await assert.rejects(withdraw(), (error) => {
       assert.ok(error instanceof SandboxGatewayUnauthorizedError, String(error));
       assert.equal(error.code, "SANDBOX_GATEWAY_UNAUTHORIZED");
+      assert.equal(error.transient, true);
       return true;
     });
   }
@@ -2672,10 +2709,46 @@ for (const harnessId of ["codex", "openclaw"]) {
     // Failed initialization and foreign Secret ownership must never report successful delivery.
     exitCode = 1;
     await assert.rejects(provision(), /workspace initialization failed/);
+    // A refusal (the runner's exit status 2) repeats on every retry, so Compute fails the
+    // deployment at once with WORKSPACE_SETUP_REFUSED (finding 1708).
+    exitCode = 2;
+    await assert.rejects(provision(), (error) => {
+      assert.ok(error instanceof SandboxWorkspaceSetupRefusedError, String(error));
+      assert.equal(error.code, "WORKSPACE_SETUP_REFUSED");
+      assert.equal(error.message, "OpenShell workspace initialization refused.");
+      return true;
+    });
     foreign = true;
     const before = executions.length;
     await assert.rejects(provision(), /workspace initialization failed/);
     assert.equal(executions.length, before);
+
+    await t.test("the setup wrapper passes the runner's refusal status through", async (t) => {
+      const root = await mkdtemp(join(tmpdir(), "openshell-workspace-wrapper-"));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const workspace = join(root, "workspace");
+      await mkdir(workspace);
+      const wrapped = (payload, environment = {}) =>
+        spawnSync(process.execPath, ["-e", execution.command[2]], {
+          input: JSON.stringify(payload),
+          encoding: "utf8",
+          timeout: 60_000,
+          env: {
+            ...process.env,
+            HOME: root,
+            OPENCLAW_STATE_DIR: join(root, "state"),
+            OPENCLAW_WORKSPACE_DIR: workspace,
+            OPENCLAW_EXECUTABLE: join(root, "absent-runtime.mjs"),
+            ...environment,
+          },
+        }).status;
+      // A completed setup whose workspace has no record refuses on every retry.
+      const { files: _files, ...record } = setup;
+      assert.equal(wrapped({ ...record, completed: true }), 2);
+      // A missing runtime may be back on a retry; a workspace path the wrapper rejects exits 1.
+      assert.equal(wrapped(setup), 1);
+      assert.equal(wrapped(setup, { OPENCLAW_WORKSPACE_DIR: "relative" }), 1);
+    });
 
     if (harnessId === "codex") {
       await t.test(

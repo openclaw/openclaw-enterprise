@@ -1,4 +1,5 @@
 import { configureNativeAdmin, nativeAdminRequested } from "./native-admin.ts";
+import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
 import {
   normalizeOpenAiBaseUrl,
   openAiBaseUrlRewritesIpv4,
@@ -126,6 +127,7 @@ import {
   RuntimeLogsForbiddenByClusterError,
   runtimeFailureCause,
   SandboxNamespaceRefusedError,
+  SandboxWorkspaceSetupRefusedError,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
   validRuntimeLogFrontierTime,
@@ -1791,9 +1793,17 @@ function cidrSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): b
 function validateDnsHostname(value: string, description: string): void {
   if (
     value.length > 253 ||
-    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(value)
+    !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
+      value,
+    ) ||
+    rewrittenIpv4Hostname(value)
   ) {
-    throw new ConfigurationFailure(`${description} must be a DNS hostname without a port or path.`);
+    const addressHint = /(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(value)
+      ? " A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers."
+      : "";
+    throw new ConfigurationFailure(
+      `${description} must be a DNS hostname without a port or path.${addressHint}`,
+    );
   }
 }
 
@@ -1802,6 +1812,12 @@ function validateDnsHostname(value: string, description: string): void {
 const SANDBOX_DOMAIN_MAX_LENGTH = 253 - "agent-.".length - 32;
 
 function validateSandboxDomain(value: string): void {
+  // This is a suffix: even canonical IPv4 is invalid after agent-<32 hex>.
+  if (/(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(value)) {
+    throw new ConfigurationFailure(
+      "Sandbox domain must be a DNS hostname usable after an Agent label; use a DNS suffix such as previews.example.com, not a numeric or 0x last label.",
+    );
+  }
   validateDnsHostname(value, "Sandbox domain");
   // Like the chart, require two labels: browsers and Node refuse a wildcard certificate
   // directly under a single label (*.localhost), so such a domain could never serve previews.
@@ -1836,13 +1852,40 @@ function validateKubernetesNamespaceName(value: string, description: string): vo
 // label. A label value stops at 63 characters, so a longer name could never be applied.
 const GATEWAY_NAME_MAX_LENGTH = 63;
 
-function validateGatewayName(value: string): void {
-  validateKubernetesResourceName(value, "Gateway routing Gateway name");
+type GatewayRoutingSetting = "Gateway routing" | "Harness routing";
+
+function validateGatewayName(value: string, setting: GatewayRoutingSetting): void {
+  validateKubernetesResourceName(value, `${setting} Gateway name`);
   if (value.length > GATEWAY_NAME_MAX_LENGTH) {
     throw new ConfigurationFailure(
-      `Gateway routing Gateway name must not exceed ${GATEWAY_NAME_MAX_LENGTH} characters, because it is also a Kubernetes label value.`,
+      `${setting} Gateway name must not exceed ${GATEWAY_NAME_MAX_LENGTH} characters, because it is also a Kubernetes label value.`,
     );
   }
+}
+
+/**
+ * Checks the Gateway and Envoy fields that the top-level gatewayRouting and a two-cluster
+ * executionCluster.harnessRouting share. `setting` is the block a refusal names.
+ */
+function validateGatewayRoutingTarget(
+  routing: Partial<KubernetesGatewayRoutingOptions>,
+  setting: GatewayRoutingSetting,
+): void {
+  validateGatewayName(required(routing.gatewayName, `${setting} Gateway name`), setting);
+  validateKubernetesNamespaceName(
+    required(routing.gatewayNamespace, `${setting} Gateway namespace`),
+    `${setting} Gateway namespace`,
+  );
+  validateKubernetesNamespaceName(
+    required(routing.envoyNamespace, `${setting} Envoy namespace`),
+    `${setting} Envoy namespace`,
+  );
+  validatePort(
+    routing.envoyHttpsTargetPort ?? 10443,
+    setting === "Harness routing"
+      ? "Harness routing Envoy HTTPS target port"
+      : "Envoy HTTPS target port",
+  );
 }
 
 function validateCodexSeccompProfile(value: unknown): string {
@@ -1891,6 +1934,25 @@ function podQuotaFull(quota: unknown): boolean {
       (compareResourceQuantities(count, limit) ?? -1) >= 0
     );
   });
+}
+
+// The kubelet's waiting reasons while it cannot pull a container image: ErrImagePull on a
+// failed pull, then ImagePullBackOff between retries (finding 1762).
+const IMAGE_PULL_WAITING_REASONS: ReadonlySet<unknown> = new Set([
+  "ErrImagePull",
+  "ImagePullBackOff",
+]);
+
+// True when one of a Pod's containers or init containers waits on an image pull.
+function podWaitsOnImagePull(pod: unknown): boolean {
+  const status = asRecord(asRecord(pod)?.status);
+  return [status?.initContainerStatuses, status?.containerStatuses].some(
+    (statuses) =>
+      Array.isArray(statuses) &&
+      statuses.some((item) =>
+        IMAGE_PULL_WAITING_REASONS.has(asRecord(asRecord(asRecord(item)?.state)?.waiting)?.reason),
+      ),
+  );
 }
 
 function observedPodMatchingSelector(
@@ -3349,6 +3411,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "Two-cluster execution requires runtime storage and an explicit CP routing hostname.",
         );
       }
+      // Checked before the execution plane's own check below, which reads the harness routing
+      // as its Gateway routing, so a refusal names the setting the operator wrote.
+      const harnessHostname: unknown = execution.harnessRouting?.hostname;
+      if (harnessHostname !== undefined && typeof harnessHostname !== "string") {
+        throw new ConfigurationFailure(
+          "Harness routing hostname must be a DNS hostname without a port or path.",
+        );
+      }
+      validateDnsHostname(
+        required(harnessHostname, "Harness routing hostname"),
+        "Harness routing hostname",
+      );
+      validateGatewayRoutingTarget(execution.harnessRouting, "Harness routing");
       const { executionCluster: _executionCluster, ...control } = options;
       const { gatewayClients: _gatewayClients, ...network } = options.network;
       KubernetesComputeDriver.validateConfiguration({
@@ -3357,10 +3432,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
         gatewayRouting: execution.harnessRouting,
         network: { ...network, dns: execution.network?.dns },
       });
-      validateDnsHostname(
-        required(execution.harnessRouting?.hostname, "Harness routing hostname"),
-        "Harness routing hostname",
-      );
       for (const [description, cidrs] of [
         ["Harness endpoint CIDR", execution.network?.harnessEndpointCidrs],
         ["Gateway endpoint CIDR", execution.network?.gatewayEndpointCidrs],
@@ -3408,16 +3479,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
       }
       validatePort(routing.endpointPort ?? 443, "Gateway routing endpoint port");
-      validateGatewayName(required(routing.gatewayName, "Gateway routing Gateway name"));
-      validateKubernetesNamespaceName(
-        required(routing.gatewayNamespace, "Gateway routing Gateway namespace"),
-        "Gateway routing Gateway namespace",
-      );
-      validateKubernetesNamespaceName(
-        required(routing.envoyNamespace, "Gateway routing Envoy namespace"),
-        "Gateway routing Envoy namespace",
-      );
-      validatePort(routing.envoyHttpsTargetPort ?? 10443, "Envoy HTTPS target port");
+      validateGatewayRoutingTarget(routing, "Gateway routing");
       if (routing.sandbox !== undefined) {
         validateSandboxDomain(required(routing.sandbox.domain, "Sandbox domain"));
         validatePort(routing.sandbox.publicPort ?? 443, "Public sandbox port");
@@ -5455,8 +5517,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     const revisionOwnership = { ...agentOwnership, revisionId: revision.id };
     const pluginOwnership = this.pluginRuntimeOwnership(revision);
     // A known pending reason is reported with the observation; otherwise a full
-    // Namespace Pod quota (finding 1617) or a Pod the scheduler cannot place explains
-    // the wait (D224).
+    // Namespace Pod quota (finding 1617), a Pod the scheduler cannot place (D224) or a
+    // container image the kubelet cannot pull (finding 1762) explains the wait.
     // A Harness that a SandboxDriver provisions has no Harness Deployment.
     const workloadDeployments = this.runtimeStatusContainers(revision)
       .filter((role) => role === "gateway" || sandboxDriver?.provisionHarness === undefined)
@@ -5469,9 +5531,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (await this.safePodQuotaObservation(workloadDeployments)) {
         return "NAMESPACE_POD_QUOTA_EXCEEDED";
       }
-      return (await this.safeUnschedulableObservation(revision, namespace))
-        ? "WORKLOAD_UNSCHEDULABLE"
-        : undefined;
+      return await this.safePodPendingObservation(revision, namespace);
     };
     const incomplete = async (pendingReason?: ComputePendingReason): Promise<ComputeReadiness> => {
       const runtimeFailure = await this.safeRuntimeFailureObservation(
@@ -6131,9 +6191,26 @@ export class KubernetesComputeDriver implements ComputeDriver {
           requirements,
           workspaceNodeEnrolled: nodeEnrolled,
         };
-        const sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
-          sandboxDriver.provisionHarness!(harnessContext),
-        );
+        let sandbox: SandboxResourceRef;
+        try {
+          sandbox = await this.prepareRevisionStage("sandbox_provision", () =>
+            sandboxDriver.provisionHarness!(harnessContext),
+          );
+        } catch (error) {
+          if (!(error instanceof SandboxWorkspaceSetupRefusedError)) {
+            throw error;
+          }
+          // The provider's private setup refused the workspace, which every retry repeats:
+          // the held failure the init container reports, so the deployment fails at once
+          // (finding 1708).
+          const runtimeFailure: RuntimeFailureEvidence = {
+            component: "agent",
+            check: "workspace-setup",
+            code: "WORKSPACE_SETUP_REFUSED",
+            checkedAt: new Date().toISOString(),
+          };
+          return { ...result, runtimeFailure };
+        }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
         if (this.options.runtime !== undefined) {
           // The Sandbox, and with it the supervisor's exact peer labels, exists only
@@ -9591,14 +9668,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
-  // True when a live Pod of this revision is unschedulable (PodScheduled False,
-  // reason Unschedulable), for example for want of node memory. Like failure
-  // evidence, an unavailable observation reports nothing.
-  private async safeUnschedulableObservation(
+  // WORKLOAD_UNSCHEDULABLE when a live Pod of this revision is unschedulable
+  // (PodScheduled False, reason Unschedulable), for example for want of node memory;
+  // otherwise WORKLOAD_IMAGE_PULL_FAILED when a live Pod's container or init container
+  // waits on ErrImagePull or ImagePullBackOff. Like failure evidence, an unavailable
+  // observation reports nothing.
+  private async safePodPendingObservation(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
-  ): Promise<boolean> {
+  ): Promise<"WORKLOAD_UNSCHEDULABLE" | "WORKLOAD_IMAGE_PULL_FAILED" | undefined> {
     const ownerSignal = currentComputeAbortSignal();
+    let imagePullFailed = false;
     try {
       for (const role of this.runtimeStatusContainers(revision)) {
         const target = role === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
@@ -9618,16 +9698,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
               );
             })
           ) {
-            return true;
+            return "WORKLOAD_UNSCHEDULABLE";
           }
+          imagePullFailed ||= podWaitsOnImagePull(pod);
         }
       }
-      return false;
+      return imagePullFailed ? "WORKLOAD_IMAGE_PULL_FAILED" : undefined;
     } catch {
       if (ownerSignal?.aborted) {
         throw ownerSignal.reason;
       }
-      return false;
+      return undefined;
     }
   }
 

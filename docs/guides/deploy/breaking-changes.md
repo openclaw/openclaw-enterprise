@@ -20,7 +20,7 @@ real Installation.
 **What breaks.** A worker with `OCC_AGENT_NATIVE_ADMIN_ENABLED=true` exits at
 startup if `OCC_AGENT_NATIVE_ADMIN_DOMAIN` or `OCC_AUTH_BASE_URL` is missing, or
 the public URL is not HTTPS. Look for `worker.startup-error`. Workers with the
-pilot disabled are unaffected; the supplied Helm chart already passes both values.
+pilot disabled are unaffected; Helm already passes both values.
 
 **Before upgrading.** In a custom deployment, set the worker's Agent host suffix
 and public HTTPS URL to the same values as the API. Do not copy
@@ -263,6 +263,24 @@ octets with no leading zeros is refused.
 decimal octets`.
 
 **Steps.** Write those four octets, then start again.
+
+## 2026-10-14: gateway hostnames must not be rewritten IPv4
+
+**What breaks.** Helm and Compute refuse rewritten or URL-parser-invalid IPv4 in
+`gatewayRouting.hostname` and harness `routing.hostname`. Sandbox suffix
+`gatewayRouting.sandbox.domain` also refuses canonical IPv4: an Agent label
+cannot precede an address. Nonfinal hex labels remain accepted.
+
+**Who is affected.** Helm values or Installation YAML using those spellings.
+
+**How to tell.** Diagnostics name the invalid field and suggest its correction.
+
+**Steps.** Use a DNS name resolving to the Gateway that its certificate covers;
+the `openclaw-enterprise` chart requests a DNS SAN, not an IP SAN. For harness
+`routing.hostname`, use a name covered by the operator's `routing.tlsSecretName`
+certificate. Use a DNS suffix such as
+`previews.example.test` for sandbox. Correct Helm/Installation values, then upgrade.
+_untested_ against a live Installation.
 
 ## 2026-10-13: image repository paths must be lowercase; no @ before URL hosts
 

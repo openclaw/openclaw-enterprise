@@ -699,7 +699,7 @@ test("Back between an Agent's tabs before its overview reveals loads the tab in 
     deploy: true,
   });
   await openAgent(page, "Tab Agent");
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.waitForURL(/tab=plugins/);
   await showNamespaces(page);
   const record = await holdOverview(t, page, namespace, agent);
@@ -717,7 +717,7 @@ test("Back between an Agent's tabs before its overview reveals loads the tab in 
   record.release();
   await agentShown(page);
   assert.equal(
-    await page.locator('.content [aria-current="page"]', { hasText: "Configuration" }).count(),
+    await page.locator('.content [aria-selected="true"]', { hasText: "Configuration" }).count(),
     1,
   );
   assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);
@@ -1518,7 +1518,7 @@ test("A Stop that lands after leaving the Agent closes its dialog, and Back rebu
     afterServer: true,
   });
   await page.getByRole("button", { name: "Stop Agent", exact: true }).first().click();
-  const dialog = page.getByRole("dialog", { name: "Stop Stopping Agent?" });
+  const dialog = page.getByRole("dialog", { name: "Stop this Agent?" });
   await dialog.getByRole("button", { name: "Stop Agent" }).click();
   await stop.requested;
   // The dialog is modal, so leave through the navigation link's own handler.
@@ -1532,10 +1532,8 @@ test("A Stop that lands after leaving the Agent closes its dialog, and Back rebu
   await page.goBack();
   await agentShown(page);
   assert.notEqual(await viewTag(page), "before-stop");
-  assert.equal(
-    await page.getByRole("button", { name: "Stop Agent", exact: true }).first().isDisabled(),
-    true,
-  );
+  await page.getByRole("button", { name: "Request Stop again", exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Stop Agent", exact: true }).count(), 0);
 });
 
 // The case above trusts holdRequests() to send a held write exactly once. A loopback origin
