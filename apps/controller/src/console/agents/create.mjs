@@ -2347,6 +2347,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       !capabilityDiscoveryDone ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
+      (!savedAgent && provisioningWaitsForNamespace()) ||
       // The console's own errors under each field, not the browser's bubble (UX plan C3).
       !validateFields([...form.elements])
     ) {
