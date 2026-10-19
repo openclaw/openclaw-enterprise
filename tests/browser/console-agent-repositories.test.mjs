@@ -66,10 +66,6 @@ test("Agent repository access labels target the right repository when references
   });
 });
 
-// The per-repository notes are danger blocks with no role on purpose: they are rebuilt on each
-// render, so an alert would be announced again every time; the picker's status line does the
-// announcing (finding 2006).
-
 test("Agent repository access preserves inheritance, custom overrides, and explicit repair through create and edit", async (t) => {
   const { fixture, namespace, replacePolicy } = await createRepositoryLaunchFixture(
     t,
@@ -255,7 +251,10 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   await page.reload();
   const chooseAccess = page.getByText("Choose approved access", { exact: true });
   await chooseAccess.waitFor();
-  // Red only for a real refusal: this choice is not approved (finding 1970).
+  // Red only for a real refusal: this choice is not approved (finding 1970). The
+  // per-repository notes are danger blocks with no role on purpose: they are rebuilt on each
+  // render, so an alert would be announced again every time; the picker's status line does the
+  // announcing (finding 2006).
   assert.equal(await chooseAccess.getAttribute("data-tone"), "danger");
   assert.deepEqual(await statusTone(page.getByText(/^Choose approved access: /)), {
     className: "status",

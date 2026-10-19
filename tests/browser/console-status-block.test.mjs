@@ -202,23 +202,23 @@ test("Share Agent refusals", async (t) => {
   const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["status-recipient"] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Status refusal");
-  const policyPath = `${fixture.origin}/namespaces/${namespace.id}/iam`;
+  // The removal case really shares, which leaves a Role that a later share in the same Namespace
+  // would reuse without the refused write; it gets a Namespace of its own.
+  const removalNamespace = await fixture.createNamespace("Status removal");
+  const iam = (target) => `${fixture.origin}/namespaces/${target.id}/iam`;
+  const policyPath = iam(namespace);
   let agents = 0;
   // An Agent page at `viewport` with its Share Agent panel's form filled in for the provisioned
   // person.
-  async function sharingPage(t, viewport) {
+  async function sharingPage(t, viewport, target = namespace) {
     agents += 1;
     const agent = await fixture.createAgent(
-      namespace.id,
+      target.id,
       `Status Agent ${agents}`,
       nativeValues(`status-${agents}`),
     );
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
-    );
+    await login(page, fixture, detailUrl(fixture, target.id, agent.id, "draft", "configuration"));
     const panel = page.getByRole("region", { name: "Share Agent", exact: true });
     await panel
       .getByLabel("Existing person’s Principal ID")
@@ -279,10 +279,10 @@ test("Share Agent refusals", async (t) => {
   await t.test(
     "a refused binding removal at 390px brings its refusal on screen with focus",
     async (t) => {
-      const { page, panel } = await sharingPage(t, { width: 390, height: 560 });
+      const { page, panel } = await sharingPage(t, { width: 390, height: 560 }, removalNamespace);
       await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
       await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
-      await page.route(`${policyPath}/access-bindings/*`, forbidden);
+      await page.route(`${iam(removalNamespace)}/access-bindings/*`, forbidden);
       const remove = panel.getByRole("button", { name: "Remove binding", exact: true }).first();
       await remove.focus();
       await page.keyboard.press("Enter");
@@ -429,11 +429,9 @@ test("Authentication source save outcomes", async (t) => {
     );
     assert.equal(changed.status, 200);
     await save.click();
-    const refusal = page
-      .getByRole("alert")
-      .filter({
-        hasText: "The Configuration changed. Reload authentication source before saving.",
-      });
+    const refusal = page.getByRole("alert").filter({
+      hasText: "The Configuration changed. Reload authentication source before saving.",
+    });
     await refusal.waitFor();
     assertPaint(await statusPaint(refusal), "danger", "authentication refusal");
     await assertFocusedInView(t, refusal);
