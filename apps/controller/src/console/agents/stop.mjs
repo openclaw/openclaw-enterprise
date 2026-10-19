@@ -82,18 +82,14 @@ export function createAgentStop(
             ),
           ]
         : []),
-      ...(state.forbidden
-        ? [element("p", { className: "notice", role: "status" }, permissionNotice)]
-        : []),
-      ...(state.notice
-        ? [element("p", { className: "notice", role: "status" }, state.notice)]
-        : []),
+      ...(state.forbidden ? [statusBlock("info", null, permissionNotice)] : []),
+      ...(state.notice ? [statusBlock("info", null, state.notice)] : []),
       ...(state.error
         ? [
             element(
               "div",
-              { className: "error", role: "alert" },
-              element("p", {}, state.error.text),
+              { className: "status", "data-tone": "danger", role: "alert" },
+              element("p", { className: "status-body" }, state.error.text),
               state.error.requestId
                 ? element("p", { className: "request-id" }, `Request ID: ${state.error.requestId}`)
                 : null,

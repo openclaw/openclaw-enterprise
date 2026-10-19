@@ -3411,7 +3411,7 @@ export const scenarios = {
       { selector: 'select[aria-label="Default plugin approvers mode"]', value: "chosen" },
       { selector: '[aria-label="Default plugin approvers people"]', focus: true },
       { selector: '[aria-label="Default plugin approvers people"]', value: "UDEMO123" },
-      { selector: ".slack-directory-panel:not([hidden]) .error:not(:empty)" },
+      { selector: ".slack-directory-panel:not([hidden]) .status:not(:empty)" },
       click("Add UDEMO123"),
       click("Save plugin selections"),
       { selector: '.content [aria-live="polite"][aria-busy="false"]' },
@@ -3591,6 +3591,31 @@ export const scenarios = {
     description:
       "The permission answer denies Agent update, so Save repository access and the repository fields are disabled (Cancel stays), and the note names the grant to ask for.",
     gap: "The permission answer is simulated; the API still authorizes every save.",
+  },
+  repositoryEditorSaveRefused: {
+    group: "Pages/Agent detail",
+    name: "Repository access save refused",
+    path: `${draft}&tab=repositories`,
+    repositoryAccess: {
+      defaultProfile: "git-full",
+      repositories: [{ repositoryRef: "application" }],
+    },
+    repositoryBindings: [{ repositoryRef: "application", profile: "git-full" }],
+    rules: [
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [
+      { selector: "#repository-default-git-read", click: true },
+      click("Save repository access"),
+    ],
+    description:
+      "The Agent update is refused. The refusal is a danger block under the editor and takes focus; the grey line keeps progress and unsaved-change notes only.",
+    gap: "The refusal is simulated; the API decides every save.",
   },
   repositoryAdmitted: {
     group: "Pages/Agent detail",
@@ -5448,6 +5473,28 @@ export const scenarios = {
       "Click Retry credential access. This fixture permits the next grant to simulate an administrator restoring authority.",
       "The form refreshes without another Agent PATCH.",
     ],
+  },
+  authSaveRefused: {
+    group: "Components/Credentials",
+    name: "Authentication save refused",
+    path: `${draft}&tab=credentials`,
+    extraSecrets: [{ id: "sec_demo_replacement", name: "Replacement model token" }],
+    rules: [
+      {
+        suffix: "/agents/agt_00000000-0000-4000-8000-000000000001",
+        method: "PATCH",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [
+      { selector: "#harness-auth-method", value: "codex_pat" },
+      { selector: "#harness-auth-secret", value: "sec_demo_replacement" },
+      click("Save authentication source"),
+    ],
+    description:
+      "The Agent update is refused. The refusal is a danger block that takes focus; progress (“Saving authentication…”) stays a grey hint.",
+    gap: "The refusal is simulated; the API decides every save.",
   },
   authSecretGrantLoading: {
     group: "Components/Credentials",

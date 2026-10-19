@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { element, button, statusBlock } from "../dom.mjs";
 
 const filenames = ["AGENTS.md", "SOUL.md", "IDENTITY.md", "USER.md"];
 
@@ -44,10 +44,12 @@ export function renderWorkspaceFiles(context, agent, path) {
     element("h2", {}, "Workspace files"),
   );
   section.append(
-    element(
-      "p",
-      { className: "notice" },
+    statusBlock(
+      "info",
+      null,
       "These files belong to the Agent's live workspace. Saving replaces one file immediately and does not change Configuration or Agent versions. Concurrent writes use the last saved contents.",
+      [],
+      { role: null },
     ),
   );
   if (!agent.activeRevisionId) {
@@ -73,7 +75,7 @@ export function renderWorkspaceFiles(context, agent, path) {
       "aria-describedby": `workspace-${name}-hint`,
     });
     const status = element("p", { className: "hint", role: "status" }, `Loading ${name}…`);
-    const error = element("p", { className: "error", role: "alert" });
+    const error = statusBlock("danger", null, null);
     let pending = false;
     let loaded = false;
     let baseline;

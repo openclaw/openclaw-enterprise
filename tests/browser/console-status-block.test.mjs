@@ -9,7 +9,9 @@ import {
   login,
   nativeValues,
   newPage,
+  selectSecret,
 } from "./console-agents-browser-helpers.mjs";
+import { createRepositoryLaunchFixture } from "./console-agents-test-support.mjs";
 
 // Errors, warnings and notices share one status block (UX plan C1): a stripe and wash in the
 // tone's design-token colours, with the text in the body colour. A refusal after a request takes
@@ -296,4 +298,71 @@ test("an empty alert block stays in the accessibility tree until its refusal arr
   await page.getByText("Could not sign in. Check your username and password.").waitFor();
   const refused = await signInAlert();
   assert.deepEqual(refused, { backendNodeId: pending.backendNodeId, role: "alert" });
+});
+
+// Saving the Credentials tab's authentication source and the Repositories editor showed their
+// refusals in the grey hint line that also carries progress, unfocused (finding 1966).
+test("a refused authentication source save is a focused danger block", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Status auth refusal", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Status auth", nativeValues("auth"));
+  const secret = await fixture.createSecret(namespace.id, "Status key", "synthetic-status-key");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByLabel("Authentication source").selectOption("api_key");
+  await selectSecret(page, "API key Secret", secret);
+  // Saved elsewhere while this tab was open: the save's preflight read refuses it.
+  const changed = await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
+    body: { configurationId: agent.configurationId, harnessAuth: null },
+  });
+  assert.equal(changed.status, 200);
+  await page.getByRole("button", { name: "Save authentication source" }).click();
+  const refusal = page
+    .getByRole("status")
+    .filter({ hasText: "The Configuration changed. Reload authentication source before saving." });
+  await refusal.waitFor();
+  assertPaint(await statusPaint(refusal), "danger", "authentication refusal");
+  const view = await refusalView(refusal);
+  assert.equal(view.focused, true, "the refusal has focus");
+  assert.equal(view.inView, true, "the refusal is on screen");
+});
+
+test("a refused repository access save is a focused danger block", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1600",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-write", "git-full"] }],
+    },
+  ]);
+  const agent = await fixture.createAgent(namespace.id, "Status repos", nativeValues("repos"));
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const access = (defaultProfile) => ({
+    configurationId: agent.configurationId,
+    repositoryAccess: { defaultProfile, repositories: [{ repositoryRef: "application" }] },
+  });
+  assert.equal(
+    (await fixture.request("PATCH", agentPath, { body: access("git-full") })).status,
+    200,
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "repositories"));
+  await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
+  // Saved elsewhere while this tab was open.
+  assert.equal(
+    (await fixture.request("PATCH", agentPath, { body: access("git-write") })).status,
+    200,
+  );
+  await page.locator("#repository-default-git-read").check();
+  await page.getByRole("button", { name: "Save repository access" }).click();
+  const refusal = page.getByRole("status").filter({
+    hasText: "Repository access changed while you were editing. Reload this draft before saving.",
+  });
+  await refusal.waitFor();
+  assertPaint(await statusPaint(refusal), "danger", "repository refusal");
+  const view = await refusalView(refusal);
+  assert.equal(view.focused, true, "the refusal has focus");
+  assert.equal(view.inView, true, "the refusal is on screen");
 });
