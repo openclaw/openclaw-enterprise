@@ -4901,7 +4901,10 @@ export const scenarios = {
     group: "Components/Navigation",
     name: "Mobile account menu",
     mobile: true,
-    actions: [{ selector: '.content [aria-busy="false"]' }, { selector: ".topbar-avatar", click: true }],
+    actions: [
+      { selector: '.content [aria-busy="false"]' },
+      { selector: ".topbar-avatar", click: true },
+    ],
     description:
       "390px top bar: navigation toggle, wordmark and the account avatar, which opens Settings and Sign out without the drawer.",
     steps: [
@@ -4935,7 +4938,10 @@ export const scenarios = {
     name: "Mobile drawer",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     mobile: true,
-    actions: [{ selector: '.content [aria-busy="false"]' }, { selector: ".mobile-toggle", click: true }],
+    actions: [
+      { selector: '.content [aria-busy="false"]' },
+      { selector: ".mobile-toggle", click: true },
+    ],
     description:
       "390px viewport with the simulated OCC revision beside the wordmark in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
     steps: [

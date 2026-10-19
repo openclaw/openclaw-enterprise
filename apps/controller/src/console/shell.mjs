@@ -237,7 +237,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       { type: "button", className: "topbar-avatar", "aria-label": `Account: ${name}` },
       element("span", { className: "account-avatar", "aria-hidden": "true" }, initials(user)),
     );
-    const side = accountControl({ id: "account-menu", rootClass: "account", toggle, menuFirst: true });
+    const side = accountControl({
+      id: "account-menu",
+      rootClass: "account",
+      toggle,
+      menuFirst: true,
+    });
     const top = accountControl({
       id: "account-menu-top",
       rootClass: "topbar-account",

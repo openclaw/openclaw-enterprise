@@ -8,6 +8,7 @@
     "tests/browser/console-retained-revalidation.test.mjs",
     "tests/browser/console-namespace-recheck.test.mjs",
     "tests/browser/console-namespace-create.test.mjs",
+    "tests/browser/console-shell.test.mjs",
     "tests/browser/console-json-error-feedback.test.mjs",
     "tests/browser/console-agent-detail-2.test.mjs",
     "tests/browser/console-agent-detail.test.mjs",
@@ -20,8 +21,7 @@
     "tests/browser/console-agent-plugin-approvers.test.mjs",
     "tests/browser/console-agent-plugin-refusals.test.mjs",
     "tests/browser/docs-compute-matrix.test.mjs",
-    "tests/browser/console-namespace-not-ready.test.mjs",
-    "tests/browser/console-shell.test.mjs"
+    "tests/browser/console-namespace-not-ready.test.mjs"
   ],
   "files": [
     {
@@ -61,6 +61,9 @@
       "path": "tests/browser/console-namespace-create.test.mjs"
     },
     {
+      "path": "tests/browser/console-shell.test.mjs"
+    },
+    {
       "path": "tests/browser/console-namespace-not-ready.test.mjs"
     },
     {
@@ -74,9 +77,6 @@
     },
     {
       "path": "tests/browser/console-agent-overview.test.mjs"
-    },
-    {
-      "path": "tests/browser/console-shell.test.mjs"
     }
   ]
 }

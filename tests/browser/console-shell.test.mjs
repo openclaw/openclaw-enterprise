@@ -34,7 +34,8 @@ const tokenColor = (page, token) =>
 
 const style = (locator, ...properties) =>
   locator.evaluate(
-    (node, names) => Object.fromEntries(names.map((name) => [name, getComputedStyle(node)[name]])),
+    (node, names) =>
+      Object.fromEntries(names.map((name) => [name, globalThis.getComputedStyle(node)[name]])),
     properties,
   );
 
@@ -88,10 +89,10 @@ test("the desktop shell shows the sidebar surface, the current-page bar and the 
   assert.equal(await account.locator(".account-email").textContent(), email);
   assert.equal(await page.locator(".topbar").isVisible(), false, "no top bar on desktop");
   await account.click();
-  assert.deepEqual(await page.getByRole("menu", { name: "Account" }).getByRole("menuitem").allTextContents(), [
-    "Settings",
-    "Sign out",
-  ]);
+  assert.deepEqual(
+    await page.getByRole("menu", { name: "Account" }).getByRole("menuitem").allTextContents(),
+    ["Settings", "Sign out"],
+  );
   await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
   await page.getByRole("button", { name: "Login", exact: true }).waitFor();
 });
@@ -161,7 +162,10 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
     assert.ok((await link.boundingBox()).height >= 44, "drawer links keep a 44 px target");
   }
   await page.keyboard.press("Escape");
-  assert.equal(await navigation.evaluate((node) => node === globalThis.document.activeElement), true);
+  assert.equal(
+    await navigation.evaluate((node) => node === globalThis.document.activeElement),
+    true,
+  );
 
   await avatar.click();
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
