@@ -64,6 +64,10 @@ export const AuthSecretReplacement = {
   ...story("authSecretReplacement"),
   name: "Replace model Secret",
 };
+export const AuthSaveRefused = {
+  ...story("authSaveRefused"),
+  name: "Authentication save refused",
+};
 export const AuthSecretGrantDenied = {
   ...story("authSecretGrantDenied"),
   name: "Authentication saved, grant denied",

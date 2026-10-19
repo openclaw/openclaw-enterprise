@@ -1409,3 +1409,253 @@ test("failed native Gateway turns capture private bounded logs for the original 
     });
   }
 });
+
+// The shapes the pinned Codex reviewer records on a tool result (finding 1980): a
+// judgement carries risk and authorization; a failed-closed review carries neither.
+const judgedDeny = {
+  id: "review-judged",
+  status: "denied",
+  riskLevel: "high",
+  userAuthorization: "low",
+  rationale: "The read targets a calendar the user did not mention.",
+};
+const failedClosed = {
+  id: "review-failed",
+  status: "denied",
+  rationale:
+    "Automatic approval review failed: guardian review completed without an assessment payload",
+};
+const timedOut = {
+  id: "review-timeout",
+  status: "timed_out",
+  rationale: "Automatic approval review timed out while evaluating the requested approval.",
+};
+
+test("approval review evidence tells a reviewer error from a deny judgement", async () => {
+  const { approvalReviewKind, automaticReviewerErrored, describeApprovalReviews } =
+    await import("../helpers/plugin-driver-real.mjs");
+  assert.equal(approvalReviewKind(judgedDeny), "judged-deny");
+  assert.equal(approvalReviewKind(failedClosed), "reviewer-error");
+  assert.equal(approvalReviewKind(timedOut), "reviewer-error");
+  assert.equal(approvalReviewKind({ id: "a", status: "approved", riskLevel: "low" }), "approved");
+  assert.equal(approvalReviewKind({ id: "c", status: "aborted" }), "aborted");
+  // Without the reviewer's own failure text, or with a judgement's risk level, a denial
+  // stays a judgement or unclassified: a rationale alone cannot claim a reviewer error.
+  assert.equal(approvalReviewKind({ id: "d", status: "denied" }), "denied-unclassified");
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, riskLevel: "high" }),
+    "judged-deny",
+    "a judged rationale that quotes the failure text is still a judgement",
+  );
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, userAuthorization: "unknown" }),
+    "judged-deny",
+  );
+  // A changed authorization may be the policy's own change, not reviewer trouble.
+  const staleAuthorization = {
+    id: "review-stale",
+    status: "denied",
+    rationale:
+      "Automatic approval review failed: authorization changed before approval could be applied",
+  };
+  assert.equal(approvalReviewKind(staleAuthorization), "stale-authorization");
+
+  const failedResult = (reviews) => [
+    { toolCallId: "call-1", isError: true, approvalReviews: reviews },
+  ];
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed])), true);
+  assert.equal(automaticReviewerErrored(failedResult([timedOut])), true);
+  assert.equal(automaticReviewerErrored(failedResult([judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed, judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([{ id: "d", status: "denied" }])), false);
+  assert.equal(automaticReviewerErrored(failedResult([])), false, "no review, no reviewer error");
+  assert.equal(automaticReviewerErrored([]), false, "no call, no reviewer error");
+  assert.equal(automaticReviewerErrored(failedResult([staleAuthorization])), false);
+  assert.equal(
+    automaticReviewerErrored([
+      ...failedResult([failedClosed]),
+      { toolCallId: "call-2", isError: true, approvalReviews: [] },
+    ]),
+    false,
+    "every failed call needs its own reviewer error",
+  );
+  assert.equal(
+    automaticReviewerErrored([
+      { toolCallId: "call-1", isError: false, approvalReviews: [failedClosed] },
+    ]),
+    false,
+    "a call that did not fail was not blocked by its reviewer",
+  );
+
+  assert.equal(
+    describeApprovalReviews(failedResult([judgedDeny])),
+    "judged-deny (risk: high, authorization: low): The read targets a calendar the user did not mention.",
+  );
+  assert.equal(
+    describeApprovalReviews(failedResult([failedClosed])),
+    `reviewer-error: ${failedClosed.rationale}`,
+  );
+  assert.equal(describeApprovalReviews(failedResult([])), "no approval review recorded");
+  assert.equal(
+    describeApprovalReviews(
+      failedResult([
+        { ...failedClosed, rationale: `${failedClosed.rationale}\n  caused by: eof\n` },
+      ]),
+    ),
+    `reviewer-error: ${failedClosed.rationale} caused by: eof`,
+    "a multi-line rationale stays on the failure's first line",
+  );
+});
+
+function calendarEvidence(reviews) {
+  return {
+    exists: true,
+    sessionId: "session-1",
+    userMarkerSeen: true,
+    assistantMarkerSeen: true,
+    assistantError: false,
+    calls: [{ seq: 5, id: "call-1", name: "calendar_read", mirrorIdentity: "t:tool:call-1:call" }],
+    results: [
+      {
+        seq: 8,
+        toolCallId: "call-1",
+        toolName: "calendar_read",
+        isError: true,
+        deniedByUser: false,
+        matchesResult: false,
+        mirrorIdentity: "t:tool:call-1:result",
+        approvalReviews: reviews,
+      },
+    ],
+    codexTurns: [],
+    diagnostics: {},
+  };
+}
+
+test("a failed reviewed read names the review outcome before the evidence", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  for (const [reviews, errored, reason] of [
+    [[failedClosed], true, `reviewer-error: ${failedClosed.rationale}`],
+    [[judgedDeny], false, "judged-deny (risk: high, authorization: low)"],
+  ]) {
+    const fixture = createNativePluginAssertions({
+      gatewayUrl: async () => assert.fail("no Gateway turn"),
+      proofMode: "codex",
+      execGateway: async () => ({
+        label: "fixture",
+        stdout: JSON.stringify(calendarEvidence(reviews)),
+      }),
+    });
+    await assert.rejects(
+      fixture.assertSessionToolCallEvidence(
+        {},
+        {
+          sessionKey: "agent:main:fixture",
+          turnMarker: "M",
+          toolName: "calendar_read",
+          resultPattern: "x",
+        },
+      ),
+      (error) => {
+        assert.equal(error.name, "AssertionError");
+        assert.equal(error.automaticReviewerErrored, errored);
+        assert.ok(error.approvalReviewSummary.startsWith(reason), error.approvalReviewSummary);
+        const [head] = error.message.split(": {");
+        assert.ok(head.includes(`(approval reviews: ${reason}`), head);
+        assert.match(error.message, /"approvalReviews":\[\{"id":"review-/);
+        return true;
+      },
+    );
+  }
+});
+
+test("an automatically reviewed Calendar read runs again once, only after a reviewer error", async (t) => {
+  const { automaticallyReviewedRead } = await import("../helpers/calendar-review.mjs");
+  const reviewerError = Object.assign(
+    new assert.AssertionError({ message: "reviewer errored: {}" }),
+    {
+      automaticReviewerErrored: true,
+      approvalReviewSummary: "reviewer-error: Automatic approval review failed: eof",
+    },
+  );
+  const judged = Object.assign(new assert.AssertionError({ message: "judged deny: {}" }), {
+    automaticReviewerErrored: false,
+  });
+  const success = { approvedReviewIds: ["review-ok"] };
+  function fixture(outcomes) {
+    const turns = [];
+    const checks = [];
+    return {
+      turns,
+      checks,
+      async normalGatewayTurn(turn) {
+        turns.push(turn);
+      },
+      async assertSessionToolCallEvidence(agent, options) {
+        checks.push(options);
+        const outcome = outcomes.shift();
+        if (outcome instanceof Error) {
+          throw outcome;
+        }
+        return outcome;
+      },
+    };
+  }
+  const read = (f, logs) =>
+    automaticallyReviewedRead(f, {
+      agent: { id: "agt" },
+      gatewayPassword: "pw",
+      sessionKey: "agent:main:codex-calendar-automatic-fixture",
+      prompt: "read",
+      toolName: "calendar_read",
+      resultPattern: "x",
+      secrets: [],
+      log: (line) => logs.push(line),
+    });
+
+  await t.test("first read passes: one turn", async () => {
+    const f = fixture([success]);
+    const logs = [];
+    assert.equal(await read(f, logs), success);
+    assert.equal(f.turns.length, 1);
+    assert.deepEqual(logs, []);
+    assert.equal(f.checks[0].requireAutomaticReview, true);
+  });
+  await t.test("reviewer error, then pass: a second turn in the same session", async () => {
+    const f = fixture([reviewerError, success]);
+    const logs = [];
+    assert.equal(await read(f, logs), success);
+    assert.equal(f.turns.length, 2);
+    assert.equal(new Set(f.turns.map((turn) => turn.sessionKey)).size, 1);
+    assert.notEqual(
+      f.checks[0].turnMarker,
+      f.checks[1].turnMarker,
+      "each turn needs a fresh marker",
+    );
+    assert.ok(f.checks.every((check) => check.requireAutomaticReview === true));
+    assert.equal(logs.length, 1);
+    assert.match(
+      logs[0],
+      /automatic reviewer errored .* running the read once more: reviewer-error: Automatic approval review failed: eof$/,
+    );
+  });
+  await t.test("deny judgement: fails without another turn", async () => {
+    const f = fixture([judged, success]);
+    await assert.rejects(read(f, []), (error) => error === judged);
+    assert.equal(f.turns.length, 1);
+  });
+  await t.test("reviewer error twice: the second failure stands", async () => {
+    const second = Object.assign(new assert.AssertionError({ message: "again: {}" }), {
+      automaticReviewerErrored: true,
+    });
+    const f = fixture([reviewerError, second, success]);
+    await assert.rejects(read(f, []), (error) => error === second);
+    assert.equal(f.turns.length, 2);
+  });
+  await t.test("other failures: no retry", async () => {
+    const other = new Error("transcript missing");
+    const f = fixture([other, success]);
+    await assert.rejects(read(f, []), (error) => error === other);
+    assert.equal(f.turns.length, 1);
+  });
+});

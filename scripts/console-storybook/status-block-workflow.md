@@ -24,3 +24,10 @@ at 390.
    select Follow. The log access refusal is a danger block.
 7. Open **Pages / Agent detail / Edit Configuration**. The line above the tab
    ("New version. Changes affect future deployments…") is an info block.
+8. Open **Components / Credentials / Authentication save refused**. The
+   refusal is a danger block with focus; "Saving authentication…" before it
+   was a grey hint.
+9. Open **Components / Credentials / Authentication saved, grant denied**.
+   The partial-save message is a warning block.
+10. Open **Pages / Agent detail / Repository access save refused**. The
+    refusal under the editor is a danger block with focus.

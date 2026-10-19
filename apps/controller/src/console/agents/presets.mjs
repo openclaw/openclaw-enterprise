@@ -1,4 +1,4 @@
-import { element, button, field as formField, validateFields } from "../dom.mjs";
+import { element, button, field as formField, statusBlock, validateFields } from "../dom.mjs";
 import {
   renderPresetTemplate,
   requiredPresetVariables,
@@ -60,7 +60,7 @@ export function createPresetFields(context, apply) {
     element("option", { value: "" }, "Choose a Preset"),
   );
   const status = element("p", { className: "hint", role: "status" }, "Loading Presets…");
-  const feedback = element("p", { className: "error", role: "alert" });
+  const feedback = statusBlock("danger", null, null);
   const inputs = element("div");
   let defaultId;
   // How the next selection change started: "shortcut" applies the default Preset at once.

@@ -1,4 +1,4 @@
-import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
+import { button, element, replaceChildrenIfChanged, setText, statusBlock } from "../dom.mjs";
 import { message } from "./list.mjs";
 
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
@@ -59,16 +59,16 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
         ? "Deletion was requested. The Agent cannot be edited or deployed. If cleanup has stopped after a failure, fix the cause and request deletion again."
         : state.notice;
     replaceChildrenIfChanged(feedback, [
-      ...(status ? [element("p", { className: "notice", role: "status" }, status)] : []),
+      ...(status ? [statusBlock("info", null, status)] : []),
       ...(state.forbidden && !state.accessEnded
-        ? [element("p", { className: "notice", role: "status" }, permissionNotice)]
+        ? [statusBlock("info", null, permissionNotice)]
         : []),
       ...(state.error
         ? [
             element(
               "div",
-              { className: "error", role: "alert" },
-              element("p", {}, state.error.text),
+              { className: "status", "data-tone": "danger", role: "alert" },
+              element("p", { className: "status-body" }, state.error.text),
               state.error.requestId
                 ? element("p", { className: "request-id" }, `Request ID: ${state.error.requestId}`)
                 : null,
