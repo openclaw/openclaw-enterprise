@@ -85,9 +85,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   const mobileLayout = window.matchMedia("(max-width: 760px)");
 
   mobileLayout.addEventListener("change", (event) => {
+    // The account menu of the layout being left is hidden; close it so it doesn't reappear open.
+    menuControls?.close();
     if (!event.matches) {
       drawerControls?.close(false);
-      menuControls?.top.close();
     }
   });
 

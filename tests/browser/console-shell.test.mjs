@@ -171,3 +171,34 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
 });
+
+// Each layout has its own account menu; the one a resize hides closes, so it does not reappear
+// open in the drawer or on a return to desktop.
+test("changing between desktop and phone layouts closes the account menu left behind", async (t) => {
+  const { fixture, page } = await openAgents(t, desktop);
+  const sideMenu = page.locator("#account-menu");
+  await page.locator(".account-toggle").click();
+  assert.equal(await sideMenu.isVisible(), true);
+  await page.setViewportSize({ width: 390, height: 844 });
+  // Checked before any click: a click outside the menu would close it anyway.
+  await page.waitForFunction(
+    () => globalThis.document.querySelector(".account-toggle").ariaExpanded === "false",
+  );
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  await page.locator("#navigation-drawer").waitFor({ state: "visible" });
+  assert.equal(await sideMenu.isVisible(), false, "the drawer opens with its menu closed");
+  await page.keyboard.press("Escape");
+
+  const avatar = page.getByRole("button", {
+    name: `Account: ${fixture.credentials.name}`,
+    exact: true,
+  });
+  await avatar.click();
+  assert.equal(await page.locator("#account-menu-top").isVisible(), true);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.waitForFunction(
+    () => globalThis.document.querySelector(".topbar-avatar").ariaExpanded === "false",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator("#account-menu-top").isVisible(), false);
+});

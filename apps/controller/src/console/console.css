@@ -636,9 +636,11 @@ p {
   box-shadow: inset 3px 0 0 var(--color-accent);
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
+/* Forced colours drop the shadow: draw the bar as a border, inside the same padding. */
 @media (forced-colors: active) {
   .nav a[aria-current="page"] {
     border-left: 3px solid Highlight;
+    padding-left: calc(var(--space-3) - 3px);
   }
 }
 .nav-icon {
