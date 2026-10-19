@@ -1,4 +1,4 @@
-import { button, element, setHidden } from "../dom.mjs";
+import { button, element, setHidden, statusBlock } from "../dom.mjs";
 import { message, shortId } from "./list.mjs";
 
 export function createAgentStop(
@@ -72,9 +72,9 @@ export function createAgentStop(
       ),
       ...(requested
         ? [
-            element(
-              "p",
-              { className: "notice", role: "status" },
+            statusBlock(
+              "info",
+              null,
               // Initial drafts and completed stops both have no selected revision.
               state.agent.activeRevisionId
                 ? "Stop requested. OCC will not start this Agent again until you deploy a new version. Runtime shutdown completion is not exposed in Console."

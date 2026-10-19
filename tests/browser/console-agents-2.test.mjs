@@ -447,13 +447,24 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   assert.equal(jobs, 2);
 });
 
-// The stopped guidance is not an error, so it does not take the error colour.
+// The stopped guidance is not an error, so neither its text nor its block's stripe takes the
+// error colour.
 async function assertNotErrorColour(locator) {
-  const [colour, errorColour] = await locator.evaluate((node) => {
+  const [colour, stripe, errorColour] = await locator.evaluate((node) => {
     const view = node.ownerDocument.defaultView;
-    return [view.getComputedStyle(node).color, view.getComputedStyle(node.closest(".error")).color];
+    const probe = node.ownerDocument.createElement("span");
+    probe.style.color = "var(--color-danger)";
+    node.ownerDocument.body.append(probe);
+    const danger = view.getComputedStyle(probe).color;
+    probe.remove();
+    return [
+      view.getComputedStyle(node).color,
+      view.getComputedStyle(node.closest(".status")).borderLeftColor,
+      danger,
+    ];
   });
   assert.notEqual(colour, errorColour);
+  assert.notEqual(stripe, errorColour);
 }
 
 // An owner's Stop during the first deployment fails provisioning with REVISION_STOPPED. A Stop
