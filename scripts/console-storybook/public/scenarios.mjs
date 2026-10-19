@@ -1848,6 +1848,32 @@ export const scenarios = {
     description:
       "Create Secret with no value: the Value field shows its error under the control and takes focus, with no browser bubble.",
   },
+  createSecretRefused: {
+    group: "Pages/Create Agent",
+    name: "Create Secret refused",
+    path: create,
+    rules: [{ suffix: "/secrets", method: "POST", status: 409, code: "NAMESPACE_NOT_READY" }],
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      ...createModelSecret("storybook-model-api-key"),
+    ],
+    description:
+      "Create Secret on a Namespace that is not ready: the refusal shows in the dialog and takes focus there, not on the page behind it.",
+  },
+  createModelSecretRequired: {
+    group: "Pages/Create Agent",
+    name: "Model credential Secret required",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      click("Create Agent"),
+    ],
+    description:
+      "Create Agent with Service Accounts and no Secret: the error names the Service account token Secret field and the field takes focus with its list closed, so the error stays in sight.",
+  },
   createSlackSecretStaged: {
     group: "Pages/Create Agent",
     name: "Slack Secret bindings staged",
