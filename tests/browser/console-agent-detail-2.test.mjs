@@ -102,9 +102,10 @@ test("Agent delete confirmation can be canceled without sending a write request"
   );
 
   // A DELETE that Cancel defers to a timer would miss the window above (finding 1994). Run the
-  // fake clock past several deletion and deployment poll intervals so any timer the page started
-  // fires, then let the page finish a fetch of its own: a DELETE the timers sent was issued before
-  // that fetch, so the requests check below sees it.
+  // fake clock 15 s ahead so every one-shot timer due by then fires (a repeating poll fires about
+  // once, since it schedules its next run only after its fetch answers), then let the page finish
+  // a fetch of its own: a DELETE the timers sent was issued before that fetch, so the requests
+  // check below sees it.
   await page.clock.runFor(Math.max(DELETION_POLL_MS, DEPLOYMENT_POLL_MS) * 3);
   await settlePageRequests(page);
 

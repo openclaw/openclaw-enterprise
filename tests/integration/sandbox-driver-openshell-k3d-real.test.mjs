@@ -5351,7 +5351,8 @@ async function assertCredentialRouteEnforcement(topology) {
   );
   // OpenShell refuses these connections, and curl reports that as exit 7 (could not connect).
   // Another failure, such as 6 (could not resolve host), may never have reached the policy, so it
-  // proves nothing about it (findings 1981 and 1995).
+  // proves nothing about it (findings 1981 and 1995). If OpenShell ever drops these connections
+  // instead (curl exit 28) or refuses them during TLS setup (35), update this check deliberately.
   assert.equal(
     observed.proxyBypass.deniedHostExitCode,
     7,
