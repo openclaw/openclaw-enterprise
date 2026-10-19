@@ -1698,6 +1698,15 @@ test("Dedicated OpenClaw credentials and plugins do not offer Codex-only control
   assert.equal(await page.getByLabel("Plugin selections JSON").isEnabled(), true);
 });
 
+// The look and announcement of a status line: its class, tone and role (finding 2006).
+function statusTone(locator) {
+  return locator.evaluate((node) => ({
+    className: node.className,
+    tone: node.dataset.tone ?? null,
+    role: node.getAttribute("role"),
+  }));
+}
+
 test("Agent credentials choose existing Secrets for harness authentication", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -1759,6 +1768,11 @@ test("Agent credentials choose existing Secrets for harness authentication", asy
   });
   await page.reload();
   await page.getByText(/Secrets unavailable/).waitFor();
+  assert.deepEqual(await statusTone(page.getByText(/Secrets unavailable/)), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+  });
   const unreadableSecret = page.getByLabel("API key Secret", { exact: true });
   assert.equal(await unreadableSecret.inputValue(), "Bound Secret");
   await unreadableSecret.click();
@@ -2377,6 +2391,11 @@ test("Agent stop confirmation uses the real API, preserves Agent state, and depl
   );
   await page.getByRole("tab", { name: "Workspace files" }).click();
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
+  // The standing explainer is quiet: an info block that announces nothing.
+  assert.deepEqual(
+    await statusTone(page.getByText(/^These files belong to the Agent's live workspace\./)),
+    { className: "status", tone: "info", role: null },
+  );
 
   const cleared = await state.transact((unit) =>
     unit.agents.compareAndClearActiveRevision(namespace.id, agent.id, active.revision.id),
@@ -2830,6 +2849,10 @@ test("a read-only principal sees Agent mutation controls disabled before any den
   await openDraft.waitFor();
   assert.equal(await openDraft.isEnabled(), true);
   await page.getByText("Your access does not include stopping this Agent.").waitFor();
+  assert.deepEqual(
+    await statusTone(page.getByText("Your access does not include stopping this Agent.")),
+    { className: "status", tone: "info", role: "status" },
+  );
   assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
   await page.getByText("Your access does not include deleting this Agent.").waitFor();
   assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
