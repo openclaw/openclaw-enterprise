@@ -764,8 +764,10 @@ test("Deleting and unreadable configuration badges take their tones on the list 
   }
 
   await page.goto(detailUrl(fixture, namespace.id, deleting.id).href);
+  await page.locator(settledView).waitFor();
+  // The badge sits in the page header's actions, where Create new version would be.
   const header = page
-    .locator(settledView)
+    .locator(".content .page-header .page-actions")
     .locator(".badge")
     .filter({ hasText: /^Deleting$/ });
   await header.waitFor();

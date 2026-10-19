@@ -415,10 +415,11 @@ test("A page held for Agents keeps its own navigation and header until Agents re
   await returnRead.requested;
   returnRead.release();
   await listShown(page, "Shell Agent");
-  // The first entry is the state the recorder re-reads after the previous splice.
+  // The first entry is the state the recorder re-reads after the previous splice. Settings has
+  // no Namespace scope, so it shows no selector, held or not.
   assert.deepEqual(await shownFrames(page), [
-    "none | Settings | selector | Settings",
-    "none | Settings | selector | Settings (held)",
+    "none | Settings | no selector | Settings",
+    "none | Settings | no selector | Settings (held)",
     agentsShown,
   ]);
 });
@@ -538,7 +539,7 @@ for (const c of [
     prepare: (page) => openAgent(page, "Draft Agent"),
     enter: (page) =>
       page
-        .locator(".agent-overview-toolbar")
+        .locator(".content .page-header")
         .getByRole("button", { name: "Create new version" })
         .click(),
     revision: /revision=draft/,
