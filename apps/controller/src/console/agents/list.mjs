@@ -308,7 +308,8 @@ const UNBROKEN_CHARACTER = UNBROKEN_ALTERNATIVES.join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
 // The wide space, hyphen or dash a line breaks after stays on that line, so it counts too.
-const UNBROKEN_RUN = new RegExp(
+// Exported for tests/conformance/console-agent-name-runs.test.mjs, which checks its shape.
+export const UNBROKEN_RUN = new RegExp(
   String.raw`\u2014{21,}|(?:${RUN_CHARACTER}){21,}|(?:${RUN_CHARACTER}){20}[${WIDE_SPACES}${DASHES}-]`,
   "u",
 );

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   UNBROKEN_ALTERNATIVES,
+  UNBROKEN_RUN,
   hasUnbrokenRun,
 } from "../../apps/controller/src/console/agents/list.mjs";
 
@@ -30,6 +31,12 @@ const joinerNames = {
     `${"\u00e9-\u0967".repeat(6)}\u00e9\u00e9 `.repeat(10),
   "word joiners before opening quotes": `${"\u2060\u00ab".repeat(10)} `.repeat(10),
   "word joiners, 1,050 characters": `${"\u2060".repeat(20)} `.repeat(50),
+  // Plain names too: an alternative that overlaps an ordinary letter froze these for about 2 s
+  // while every joiner name above stayed fast (finding 2031).
+  "plain lowercase letters": `${"a".repeat(20)} `.repeat(10),
+  "letters and digits": `${"a1".repeat(10)} `.repeat(10),
+  "letters before a hyphen": `${"a".repeat(19)}- `.repeat(10),
+  "digits around hyphen-minus": `${"1-".repeat(10)} `.repeat(10),
 };
 
 for (const [label, name] of Object.entries(joinerNames)) {
@@ -160,4 +167,32 @@ test("No two long-name alternatives match the same character, and no mark starts
   }
   assert.deepEqual(overlaps.slice(0, 5), [], `${overlaps.length} overlaps`);
   assert.deepEqual(markStarts.slice(0, 5), [], `${markStarts.length} marks start an alternative`);
+});
+
+// The overlap check above compares alternatives with each other, one character at a time. Two
+// shapes escape it and bring the finding-1999 freeze back on plain names (finding 2031): an
+// alternative of its own that overlaps (a second branch inside one entry, or one that consumes
+// more than one character), and anything added where the alternatives are joined into the rule.
+// So each alternative must be one character class or escape, with only lookarounds beside it.
+function atomWithoutLookarounds(source) {
+  return /^(?:\[(?:\\.|[^\]\\])*\]|\\u\{[0-9a-f]+\}|\\u[0-9a-f]{4}|\\p\{\w+\}|\\.|[^\\[\](){}|*+?.^$])$/i.test(
+    withoutLookarounds(source),
+  );
+}
+
+test("Each long-name alternative consumes one character, with no branch of its own", () => {
+  for (const source of UNBROKEN_ALTERNATIVES) {
+    assert.ok(atomWithoutLookarounds(source), `not a single character: ${source}`);
+  }
+});
+
+test("The long-name rule joins exactly those alternatives, each with its marks", () => {
+  const run = String.raw`(?:(?:${UNBROKEN_ALTERNATIVES.join("|")})\p{M}*)`;
+  const [emDashes, ...rest] = UNBROKEN_RUN.source.split(run);
+  assert.equal(emDashes, String.raw`\u2014{21,}|`);
+  assert.equal(rest.length, 2, "the rule uses the run twice");
+  assert.equal(rest[0], "{21,}|");
+  // Twenty run characters, then one break character the line keeps.
+  assert.match(rest[1], /^\{20\}\[[^\]()|]*\]$/);
+  assert.equal(UNBROKEN_RUN.flags, "u");
 });

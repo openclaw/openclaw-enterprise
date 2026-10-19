@@ -886,6 +886,12 @@ for (const mutation of ["authentication", "channel Secrets"]) {
         await credentialsPanel.getByText(uncertaintyExplanation, { exact: true }).count(),
         0,
       );
+      // The deploy status names the unknown outcome instead (finding 2032), and the Secret
+      // pickers stay locked until a reload (finding 2033).
+      await page.getByRole("status").getByText(uncertaintyExplanation, { exact: true }).waitFor();
+      for (const label of ["Slack app token", "Slack bot token"]) {
+        assert.equal(await page.getByLabel(label).isDisabled(), true, label);
+      }
       assert.equal(
         await page
           .getByRole("button", { name: "Save authentication source" })
