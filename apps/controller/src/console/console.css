@@ -486,6 +486,8 @@ p {
   line-height: var(--text-base--line-height);
   /* Refusals name long setting paths and request IDs; wrap them in a phone-width card. */
   overflow-wrap: anywhere;
+  /* A refusal scrolled into view keeps room for its focus ring. */
+  scroll-margin-block: var(--space-4);
 }
 .status:empty {
   display: none;
