@@ -1232,6 +1232,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     "Checking installation capabilities…",
   );
   let pending = false;
+  // Create's own request. `pending` also covers the recovery controls' requests, which must not
+  // mark Create busy (finding 1961).
+  let createPending = false;
   let outcomeUnknown = false;
   let rejectedAgentAttempt;
   let savedSecret = draft.savedSecret;
@@ -2038,6 +2041,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed || capabilityDiscoveryDenied;
     retryCapabilityDiscovery.disabled = pending;
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
+    submit.setAttribute("aria-busy", createPending ? "true" : "false");
+  };
+  // Every way Create's request ends clears its busy state, a navigation away included: the view
+  // it leaves may still show as an inert preview.
+  const endCreate = () => {
+    createPending = false;
+    submit.setAttribute("aria-busy", "false");
   };
   // The pressed control disables while its request runs. Keep focus on the line that reports
   // progress, then on the outcome, rather than drop it to the page (finding 1490). Focus the
@@ -2398,6 +2408,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       return;
     }
     pending = true;
+    createPending = true;
     updateControls();
     feedback.textContent = "";
     // Before anything is saved, ask the API whether Agent create would refuse these plugin
@@ -2419,6 +2430,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           },
         });
       } catch (error) {
+        endCreate();
         if (!context.isCurrent()) {
           return;
         }
@@ -2435,6 +2447,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         return;
       }
       if (!context.isCurrent()) {
+        endCreate();
         return;
       }
     }
@@ -2619,6 +2632,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       focusFeedbackLine(feedback);
       keepDraftAfterRefusal();
     } finally {
+      endCreate();
       if (context.isCurrent()) {
         pending = false;
         updateControls();
