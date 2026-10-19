@@ -2204,7 +2204,6 @@ select:not([multiple])[size="1"] {
 .plugin-list-item .badge {
   align-self: flex-start;
   margin-left: 42px;
-  font-size: 0.75rem;
 }
 .plugin-detail-empty {
   margin: 4rem 2rem;
