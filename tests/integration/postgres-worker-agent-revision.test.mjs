@@ -2516,9 +2516,12 @@ revisionTest(
       30_000,
     );
     assert.equal(waited.attempt_count, 0);
-    const during = await fixture.deploymentStatus(owner, candidate);
+    // A pass's live lease reads as `running`; read the status between passes.
+    const during = await waitFor("the deployment status between outage passes", async () => {
+      const status = await fixture.deploymentStatus(owner, candidate);
+      return status.status === "queued" ? status : undefined;
+    });
     held = false;
-    assert.equal(during.status, "queued");
     assert.deepEqual(
       {
         code: during.progress?.lastAttempt?.code,
