@@ -28,14 +28,23 @@ const NOT_READY = /This Namespace is not ready yet\. Check its status on the Nam
 const READY_NOTE = "Namespace status: Ready. Agents created here can be deployed now.";
 const REFUSES = "This Namespace cannot hold new Agents, so Create Agent is unavailable.";
 const ADOPTED_WAITS = "Create Agent is unavailable until this Namespace is ready.";
+const MISSING = "This Namespace is missing or you no longer have access. Choose another Namespace.";
+const MISSING_LINE = "Create Agent is unavailable until you choose another Namespace.";
 
 const browser = fileBrowser();
 
 // Answers GET /namespaces from the real API with the Namespace's status replaced while `status`
-// is set, and `fields` merged in. `fail` answers that many reads with a 503; `hold()` keeps the next reads unanswered
+// is set, and `fields` merged in; `absent` leaves it out of the list. `fail` answers that many reads with a 503; `hold()` keeps the next reads unanswered
 // until its release. `reads` counts the reads the page started.
 async function routeNamespace(page, namespaceId) {
-  const state = { status: "provisioning", fields: {}, fail: 0, reads: 0, held: null };
+  const state = {
+    status: "provisioning",
+    fields: {},
+    absent: false,
+    fail: 0,
+    reads: 0,
+    held: null,
+  };
   state.hold = () => {
     let release;
     state.held = new Promise((resolve) => {
@@ -61,6 +70,7 @@ async function routeNamespace(page, namespaceId) {
       }
       const response = await route.fetch();
       const body = await response.json();
+      body.data = body.data.filter((item) => !(state.absent && item.id === namespaceId));
       body.data = body.data.map((item) =>
         item.id === namespaceId && state.status
           ? { ...item, ...state.fields, status: state.status }
@@ -231,6 +241,44 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
       assert.equal(await create.isDisabled(), false);
     },
   );
+
+  await t.test(
+    "a complete list without the Namespace ends the recheck and asks for another",
+    async (t) => {
+      const { page, view, create, name, namespaces, poll, idle } = await openGatedForm(t, team);
+      // Deleted, or the reader lost access: the list says so by leaving it out.
+      namespaces.absent = true;
+      await poll();
+      await view.getByRole("status").filter({ hasText: MISSING }).waitFor();
+      await view.getByText(MISSING_LINE, { exact: true }).waitFor();
+      assert.equal(await view.getByText(NOT_READY).count(), 0);
+      assert.equal(await create.isDisabled(), true);
+      await assertDraftIntact(name);
+      await idle();
+      await view.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+      assert.equal(await create.isDisabled(), true);
+      await idle();
+      // Start over discards the draft, not what the form learned about the Namespace.
+      page.once("dialog", (dialog) => void dialog.accept());
+      await view.getByRole("button", { name: "Start over", exact: true }).click();
+      await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
+      await view.getByRole("status").filter({ hasText: MISSING }).waitFor();
+      assert.equal(await view.getByRole("button", { name: "Start without Preset" }).count(), 0);
+    },
+  );
+
+  await t.test("a refocus that finds the missing Namespace again resumes the form", async (t) => {
+    const { page, view, create, namespaces, poll } = await openGatedForm(t, team);
+    namespaces.absent = true;
+    await poll();
+    await view.getByText(MISSING_LINE, { exact: true }).waitFor();
+    namespaces.absent = false;
+    namespaces.status = null;
+    await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+    await view.getByText(READY_PLAN, { exact: true }).waitFor();
+    await view.getByRole("status").filter({ hasText: READY_NOTE }).waitFor();
+    assert.equal(await create.isDisabled(), false);
+  });
 
   await t.test("the note changes in place, so the field being edited stays put", async (t) => {
     const { page, view, create, name, namespaces, poll } = await openGatedForm(t, team, {

@@ -772,12 +772,16 @@ export function installFixture(scenario, evidence) {
     }
     if (path === "/namespaces" && method === "GET") {
       // Once the story's actions ran, each read takes the next recheck answer: a status for the
-      // story's Namespace, or an HTTP status to fail with. The last one repeats.
+      // story's Namespace, "missing" to leave it out of the list, or an HTTP status to fail
+      // with. The last one repeats.
       if (evidence.ready && namespaceRechecks.length) {
         const next =
           namespaceRechecks.length > 1 ? namespaceRechecks.shift() : namespaceRechecks[0];
         if (typeof next === "number") {
           return error(next);
+        }
+        if (next === "missing") {
+          return response(namespaces.slice(1));
         }
         namespaces[0].status = next;
       }

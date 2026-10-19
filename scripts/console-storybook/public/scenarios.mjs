@@ -1073,6 +1073,20 @@ export const scenarios = {
       "Switch Harness to OpenClaw: Create Agent stays disabled. No further Namespace reads happen.",
     ],
   },
+  createFormNamespaceMissing: {
+    group: "Pages/Create Agent",
+    name: "Form, Namespace no longer listed",
+    path: create,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    actions: [click("Start without Preset"), { selector: "#agent-auth-method", value: "api_key" }],
+    description:
+      "The Namespace list the form rereads no longer holds its Namespace: it was deleted, or the reader lost access. The recheck ends, the note asks for another Namespace, and Create Agent stays disabled for every plan. Start over keeps that answer.",
+    steps: [
+      'Within about 10 s the note reads "This Namespace is missing or you no longer have access. Choose another Namespace." and the status line reads "Create Agent is unavailable until you choose another Namespace."',
+      "Switch Harness to OpenClaw: Create Agent stays disabled. Choose Start over: Creating Agents is not available, with the same note.",
+    ],
+  },
   createStart: {
     group: "Pages/Create Agent",
     name: "Choose a starting point",

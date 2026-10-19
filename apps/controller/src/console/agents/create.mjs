@@ -394,7 +394,7 @@ export function renderCreateAgent(context, draft) {
   // The permission answer refuses up front what the API would refuse at submit (finding 1521),
   // and so does a Namespace that takes no new Agent (finding 1895). Gating only: an unknown
   // answer keeps the start page, and the API still decides.
-  const notReady = namespaceCreation(context.namespace);
+  const notReady = createNamespaceState(context);
   const unavailable =
     context.permissions?.agents?.create === false
       ? "Your access does not include creating Agents in this Namespace. Ask an administrator for access, or choose another Namespace."
@@ -463,6 +463,20 @@ export function renderCreateAgent(context, draft) {
   );
 }
 
+// A complete Namespace list the open form read without its Namespace: it was deleted, or the
+// reader lost access. Waiting changes nothing, so the reader chooses another one.
+const NAMESPACE_MISSING = {
+  blocked: true,
+  missing: true,
+  note: "This Namespace is missing or you no longer have access. Choose another Namespace.",
+};
+
+// What Create Agent knows of its Namespace: missing from a list the form read (kept for Start
+// over, which renders from the same context), otherwise its status.
+function createNamespaceState(context) {
+  return context.namespaceMissing ? NAMESPACE_MISSING : namespaceCreation(context.namespace);
+}
+
 // A Namespace that is not ready keeps its note on the start page and the form, so the first
 // sign is never a refused Secret or submit (findings 1895, 1990).
 function namespaceNote(notReady) {
@@ -483,7 +497,7 @@ function namespaceReadyNote() {
 function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const { view, request, namespaceId } = context;
   // A recheck replaces it once the Namespace becomes ready (finding 2012).
-  let notReady = namespaceCreation(context.namespace);
+  let notReady = createNamespaceState(context);
   let notReadyNote = notReady ? namespaceNote(notReady) : null;
   const agent = rendered.agent ?? {};
   const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1812,11 +1826,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   // draft plan still saves (finding 2007, #2867).
   const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
   // A Namespace that takes no new Agent, draft or not: an adopted one still provisioning, which
-  // becomes ready by waiting, or one that turned failed or deleting while the form was open,
-  // which never does (finding 2022).
+  // becomes ready by waiting, or one that turned failed or deleting, or went missing, while the
+  // form was open, which never does (finding 2022). A refocus still rechecks it.
   const namespaceRefusesAgents = () => Boolean(notReady?.blocked);
   const namespaceEnded = () =>
-    namespaceRefusesAgents() && ["failed", "deleting"].includes(context.namespace?.status);
+    Boolean(notReady?.missing) ||
+    (namespaceRefusesAgents() && ["failed", "deleting"].includes(context.namespace?.status));
   // The Namespace can become ready while the form is open. Reread only its status, on refocus
   // and while Create Agent waits for it, and update just the note and the gate: the draft,
   // focus and field values stay (finding 2012). A failed read keeps the 10 s wait going
@@ -1859,11 +1874,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       waitForNamespace();
       return;
     }
+    // Start over renders from this context again. A complete list without the Namespace is an
+    // answer too: it stops the wait instead of leaving the last status shown.
     if (namespace) {
-      // Start over renders from this context again.
       context.namespace = namespace;
     }
-    const next = namespace ? namespaceCreation(namespace) : notReady;
+    context.namespaceMissing = !namespace;
+    const next = createNamespaceState(context);
     if (next?.note !== notReady?.note) {
       notReady = next;
       // Swap the note in place and keep its height, so the field being edited below it does not
@@ -2005,9 +2022,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     if (capabilityDiscoveryDone) {
       let nextStatus = "";
       if (!savedAgent && namespaceRefusesAgents()) {
-        nextStatus = namespaceEnded()
-          ? "This Namespace cannot hold new Agents, so Create Agent is unavailable."
-          : "Create Agent is unavailable until this Namespace is ready.";
+        nextStatus = notReady.missing
+          ? "Create Agent is unavailable until you choose another Namespace."
+          : namespaceEnded()
+            ? "This Namespace cannot hold new Agents, so Create Agent is unavailable."
+            : "Create Agent is unavailable until this Namespace is ready.";
       } else if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady
