@@ -510,7 +510,7 @@ test("OpenShell probe waits for a command that outlives its turn up to the fixtu
   }
 });
 
-test("a turn the model answered at capacity runs again only if it began no action", async (t) => {
+test("a turn the model answered at capacity runs again only for its own final error before any action", async (t) => {
   // Finding 1946. The actual in-Pod client, kubectl error path and retry; only kubectl
   // transport, the app-server peer and the retry's sleep are fixtures. Message order, not
   // timing, decides: a command that began (even one that completed), or an approval request,
@@ -539,15 +539,18 @@ test("a turn the model answered at capacity runs again only if it began no actio
   t.after(() => {
     process.env.PATH = path;
   });
-  const atCapacity = {
+  // The app server's final error for a turn names that turn (ErrorNotification: error,
+  // threadId, turnId, willRetry).
+  const atCapacity = (at, fields = {}) => ({
     method: "error",
     params: {
       error: { message: "Selected model is at capacity. Please try a different model." },
+      ...at,
       willRetry: false,
+      ...fields,
     },
-  };
-  // Each turn/start answers with the next script's events, then the at-capacity error unless
-  // the script completes the turn.
+  });
+  // Each turn/start answers with the next script's events; "close" closes the socket.
   let scripts = [];
   let threadStarts = 0;
   peer.on("connection", (socket) => {
@@ -576,20 +579,22 @@ test("a turn the model answered at capacity runs again only if it began no actio
       send({ id, result: { turn } });
       const at = { threadId, turnId: turn.id };
       const command = { id: "command", type: "commandExecution", command: "true" };
+      const started = {
+        method: "item/started",
+        params: { ...at, item: { ...command, status: "inProgress" } },
+      };
+      const completed = (status, exitCode) => ({
+        method: "item/completed",
+        params: { ...at, item: { ...command, status, exitCode } },
+      });
       const events = {
-        capacity: [atCapacity],
-        "command started": [
-          { method: "item/started", params: { ...at, item: { ...command, status: "inProgress" } } },
-          atCapacity,
-        ],
-        "command completed": [
-          { method: "item/started", params: { ...at, item: { ...command, status: "inProgress" } } },
-          {
-            method: "item/completed",
-            params: { ...at, item: { ...command, status: "completed", exitCode: 0 } },
-          },
-          atCapacity,
-        ],
+        capacity: [atCapacity(at)],
+        // Not our turn's final error, so it cannot show our turn is safe to run again.
+        "capacity for another turn": [atCapacity(at, { turnId: "other-turn" })],
+        "capacity for another thread": [atCapacity(at, { threadId: "other-thread" })],
+        "capacity naming no turn": [atCapacity({})],
+        "capacity without willRetry": [atCapacity(at, { willRetry: undefined })],
+        "command completed": [started, completed("completed", 0), atCapacity(at)],
         // As the app server sends them: an approval request and output name the item, not carry it.
         approval: [
           {
@@ -597,15 +602,19 @@ test("a turn the model answered at capacity runs again only if it began no actio
             method: "item/commandExecution/requestApproval",
             params: { ...at, itemId: command.id, command: command.command },
           },
-          atCapacity,
+          atCapacity(at),
         ],
         output: [
           {
             method: "item/commandExecution/outputDelta",
             params: { ...at, itemId: command.id, delta: "output" },
           },
-          atCapacity,
+          atCapacity(at),
         ],
+        // A command still running at the final error: its terminal within the grace is kept.
+        "command ends after capacity": [started, atCapacity(at), completed("failed", 23)],
+        "command never ends": [started, atCapacity(at)],
+        "socket closes after capacity": [started, atCapacity(at), "close"],
         reply: [
           {
             method: "item/completed",
@@ -618,12 +627,18 @@ test("a turn the model answered at capacity runs again only if it began no actio
         ],
       }[scripts.shift()];
       for (const event of events) {
-        send(event);
+        if (event === "close") {
+          socket.close();
+        } else {
+          send(event);
+        }
       }
     });
   });
   const sleeps = [];
+  const graceMs = 500;
   const { requestCodexTurnFromGatewayPod } = createOpenShellKubernetesFixture({
+    codexCommandGraceMs: graceMs,
     modelAtCapacityRetry: { sleep: async (ms) => sleeps.push(ms), log: () => {} },
   });
   const turn = async (turnScripts) => {
@@ -637,8 +652,13 @@ test("a turn the model answered at capacity runs again only if it began no actio
       () => assert.fail("the turn must fail"),
       (error) => error,
     );
+  // pendingCommands is the summary's last field, so the object ends at the first "]}".
+  const summaryOf = (error) =>
+    JSON.parse(/Native execution summary: (\{.*?\]\})/s.exec(error.stderr)[1]);
+  const notRetried =
+    'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client did not report it safe to run again (it may have begun an action), so it is not run again (attempt 1/3).';
 
-  // At capacity before any action: the same turn runs again on a new thread.
+  // Our turn's final error at capacity before any action: the same turn runs again.
   const retried = await turn(["capacity", "reply"]);
   assert.equal(retried.assistant, "OCC-TURN-OK");
   assert.equal(threadStarts, 2);
@@ -653,20 +673,51 @@ test("a turn the model answered at capacity runs again only if it began no actio
     'The real model was at capacity on all 3 turn attempts ("Selected model is at capacity").',
   );
 
-  // At capacity after an action began: one thread, the outcome stays unknown, and the first
-  // line still says the model was at capacity.
-  for (const script of ["command started", "command completed", "approval", "output"]) {
+  // Any other turn's error, one naming no turn, or one without willRetry false, and an action
+  // that began before our turn's error: one thread, and the first line still names capacity.
+  for (const script of [
+    "capacity for another turn",
+    "capacity for another thread",
+    "capacity naming no turn",
+    "capacity without willRetry",
+    "command completed",
+    "approval",
+    "output",
+  ]) {
     const error = await failure(turn([script, "reply"]));
     assert.equal(threadStarts, 1, script);
     assert.deepEqual(sleeps, [], script);
-    assert.equal(
-      error.message.split("\n")[0],
-      'The real model was at capacity ("Selected model is at capacity"), and the turn may have begun an action, so its outcome is unknown and it is not run again (attempt 1/3).',
+    assert.equal(error.message.split("\n")[0], notRetried, script);
+    assert.equal(summaryOf(error).retrySafe, false, script);
+  }
+
+  // A command that ends within the grace after the final error: its result is kept, the turn
+  // still fails, and no second thread starts.
+  const ended = await failure(turn(["command ends after capacity", "reply"]));
+  assert.equal(threadStarts, 1);
+  assert.equal(ended.message.split("\n")[0], notRetried);
+  assert.doesNotMatch(ended.stderr, /Codex command outcome is unknown/);
+  const endedSummary = summaryOf(ended);
+  assert.equal(endedSummary.failedCommands, 1);
+  assert.deepEqual(endedSummary.pendingCommands, []);
+
+  // A command whose terminal never arrives, or whose socket closes: the outcome is unknown.
+  for (const script of ["command never ends", "socket closes after capacity"]) {
+    const error = await failure(turn([script, "reply"]));
+    assert.equal(threadStarts, 1, script);
+    assert.equal(error.message.split("\n")[0], notRetried, script);
+    assert.match(
+      error.stderr,
+      /Codex command outcome is unknown; not sending another turn/,
       script,
     );
-    const summary = JSON.parse(/Native execution summary: (\{.*?\]\})/s.exec(error.stderr)[1]);
-    assert.equal(summary.retrySafe, false, script);
+    const summary = summaryOf(error);
+    assert.equal(summary.pendingCommands.length, 1, script);
+    assert.equal(summary.failedCommands, 0, script);
   }
+  // The never-ending command was waited for up to the grace, not given up on at once.
+  const waited = summaryOf(await failure(turn(["command never ends"])));
+  assert.ok(waited.sinceTurnEndMs >= graceMs, JSON.stringify(waited));
 });
 
 test("OpenShell fixture networking admits the supervisor callback without granting tenant Pods", () => {

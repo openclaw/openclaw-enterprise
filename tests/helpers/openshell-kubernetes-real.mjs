@@ -93,9 +93,9 @@ export function outageAttemptRead({ readWork, readStatus }) {
 const modelAtCapacity = /^Error: Selected model is at capacity\./m;
 
 // "retry" when the model answered at capacity and the in-Pod client, which owns the turn's
-// state, reported that the turn ended before it began any action (retrySafe in its execution
-// summary); "unsafe" when it answered at capacity after an action, or with no such verdict;
-// undefined for any other failure.
+// state, reported that its own turn's final error ended the turn before it began any action
+// (retrySafe in its execution summary); "unsafe" when it answered at capacity without that
+// verdict; undefined for any other failure.
 export function modelAtCapacityOutcome(error) {
   const stderr = String(error?.stderr ?? "");
   if (!modelAtCapacity.test(stderr)) {
@@ -143,7 +143,7 @@ export async function retryModelAtCapacity(
       }
       if (outcome === "unsafe") {
         throw atCapacity(
-          `The real model was at capacity ("Selected model is at capacity"), and the turn may have begun an action, so its outcome is unknown and it is not run again (attempt ${attempt}/${attempts}).`,
+          `The real model was at capacity ("Selected model is at capacity"), but the turn's client did not report it safe to run again (it may have begun an action), so it is not run again (attempt ${attempt}/${attempts}).`,
           error,
         );
       }
@@ -1266,6 +1266,9 @@ export function createOpenShellKubernetesFixture({
       const items = [];
       const pendingCommands = new Map();
       let threadId, turnId, commandDeadline, turnCompletedAt;
+      // A final error that ended the turn while a command ran: reported once that command's
+      // terminal is observed, or with the outcome unknown when the grace expires first.
+      let finalError;
       // Start time and output volume of each command, never its output.
       const commandTimes = new Map();
       let nextId = 1;
@@ -1338,7 +1341,8 @@ export function createOpenShellKubernetesFixture({
       }
 
       function unknownCommandOutcome() {
-        fail(new Error("Codex command outcome is unknown; not sending another turn"));
+        const unknown = "Codex command outcome is unknown; not sending another turn";
+        fail(new Error(finalError === undefined ? unknown : finalError.message + "\n" + unknown));
       }
 
       function waitForCommandDeadline() {
@@ -1350,6 +1354,9 @@ export function createOpenShellKubernetesFixture({
 
       function finish() {
         clearTimeout(commandDeadline);
+        // The turn failed while a command ran; that command's terminal is now observed (and
+        // counted in the summary), and the turn still fails.
+        if (finalError !== undefined) return fail(finalError);
         finished = true;
         clearTimeout(timeout);
         // Exit once the result is flushed. Through the OpenShell service route the WebSocket
@@ -1486,7 +1493,19 @@ export function createOpenShellKubernetesFixture({
         } else if (message.method === "error" && message.params?.willRetry !== true) {
           // Codex reports retried model reconnects as errors; only a final error ends the turn,
           // and turn/completed still requires a completed status.
-          fail(new Error(message.params?.error?.message || "Codex harness turn failed"), { retrySafe: true });
+          const error = new Error(message.params?.error?.message || "Codex harness turn failed");
+          if (pendingCommands.size) {
+            // A command already started: observe its original socket for its terminal, within
+            // the same bound as after turn/completed, so the failure keeps that evidence.
+            finalError = error;
+            turnCompletedAt = performance.now();
+            waitForCommandDeadline();
+            return;
+          }
+          // Only our own turn's final error can make the turn safe to run again.
+          fail(error, {
+            retrySafe: params?.threadId === threadId && params?.turnId === turnId && params?.willRetry === false,
+          });
         }
       });
       socket.addEventListener("error", () => {

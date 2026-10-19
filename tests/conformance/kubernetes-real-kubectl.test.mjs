@@ -292,7 +292,7 @@ test("a real-model turn at capacity without the client's retry-safe verdict is n
   assert.deepEqual(sleeps, []);
   assert.equal(
     error.message.split("\n")[0],
-    'The real model was at capacity ("Selected model is at capacity"), and the turn may have begun an action, so its outcome is unknown and it is not run again (attempt 1/3).',
+    'The real model was at capacity ("Selected model is at capacity"), but the turn\'s client did not report it safe to run again (it may have begun an action), so it is not run again (attempt 1/3).',
   );
   assert.equal(error.stderr, modelAtCapacityStderr);
 });
