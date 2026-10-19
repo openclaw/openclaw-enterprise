@@ -3393,6 +3393,23 @@ export const scenarios = {
     description:
       "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
   },
+  invalidConfigurationInvisibleCharacters: {
+    group: "Pages/Agent detail",
+    name: "Invalid Configuration JSON after invisible characters",
+    path: draft,
+    actions: [
+      click("Edit Configuration"),
+      // A left-to-right mark, a soft hyphen and a word joiner, as pasted from a document.
+      { selector: "#configuration-json", value: '{"name": "a\u200Eb\u00ADc\u2060d", x}' },
+      click("Save Configuration"),
+    ],
+    description:
+      "The name hides a left-to-right mark, a soft hyphen and a word joiner, which take no visible space. The error names column 18, where the stray x appears, not the 21st character.",
+    steps: [
+      "Read the error under the editor: Invalid JSON at line 1, column 18.",
+      "Count the visible characters on the line: the x is the 18th.",
+    ],
+  },
   configurationChangedElsewhereMerged: {
     group: "Pages/Agent detail",
     name: "Configuration edits merged over another browser's save",
