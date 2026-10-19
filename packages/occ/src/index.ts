@@ -92,6 +92,7 @@ import type {
   RevisionHarnessDescriptor,
   ResourceKind,
   ResourceRef,
+  RuntimeAccessDecision,
   RuntimeDiagnosticCheck,
   Role,
   SandboxDriver,
@@ -4133,7 +4134,14 @@ export class OpenClawController {
     if (driver.authorizeRuntimeAccess === undefined) {
       throw new DependencyUnavailableError("The IAM Driver does not support runtime assignments.");
     }
-    const result = await driver.authorizeRuntimeAccess({ principalId, action: "use", resource });
+    let result: RuntimeAccessDecision;
+    try {
+      result = await driver.authorizeRuntimeAccess({ principalId, action: "use", resource });
+    } catch {
+      throw new DependencyUnavailableError(
+        "The selected authorization Driver could not verify the operation.",
+      );
+    }
     if (!result.allowed || !isNonEmptyString(result.runtimeRole)) {
       throw new AuthorizationDeniedError(result.reason, result.evidence, {
         action: "use",

@@ -371,18 +371,20 @@ test("native admin status requires an exact person/Agent runtime assignment and 
 
   // An IAM outage is a dependency failure, never an Agent lifecycle state: the console must
   // not read it as "unavailable" (deploying) for an Agent the caller may not even administer.
-  const authorize = context.fixture.iamDriver.authorize;
-  context.fixture.iamDriver.authorize = async () => {
-    throw new Error("IAM outage");
-  };
-  let iamOutage;
-  try {
-    iamOutage = await nativeStatus(context);
-  } finally {
-    context.fixture.iamDriver.authorize = authorize;
+  for (const method of ["authorize", "authorizeRuntimeAccess"]) {
+    const authorize = context.fixture.iamDriver[method];
+    context.fixture.iamDriver[method] = async () => {
+      throw new Error("IAM outage");
+    };
+    let iamOutage;
+    try {
+      iamOutage = await nativeStatus(context);
+    } finally {
+      context.fixture.iamDriver[method] = authorize;
+    }
+    assert.equal(iamOutage.status, 503, method);
+    assert.equal(iamOutage.body.error.code, "DEPENDENCY_UNAVAILABLE");
   }
-  assert.equal(iamOutage.status, 503);
-  assert.equal(iamOutage.body.error.code, "DEPENDENCY_UNAVAILABLE");
 
   const limitedSession = await createReadOperateSession(context, "native-admin-reader");
   const denied = await nativeStatus(context, { session: limitedSession });

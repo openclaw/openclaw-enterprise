@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: "2026-10-16"
-last_updated_session: "authoring-run/b88902de-ac9a-4c44-98a7-073323cfb09b"
+updated: "2026-10-19"
+last_updated_session: "authoring-run/d8ce5783-eee5-4fb5-94e1-d6f87dd05219"
 ---
 
 # Agent Native Admin UI Flow
@@ -95,7 +95,7 @@ Tab `sessionStorage` caches audited `403` paths per session owner. **Refresh acc
 
 `apps/controller/src/http/native-admin.ts:nativeAdminStatusOperation`
 
-`createNativeAdminAccess` owns the host interceptor, upgrade listener and socket shutdown hook. It reads the current controller through a getter so an app created before bootstrap uses the initialized controller on later requests. Shared route admission remains in `apps/controller/src/index.ts`.
+`createNativeAdminAccess` owns the host interceptor, upgrade listener and socket shutdown hook. Its controller getter lets apps created before bootstrap use the initialized controller. Shared route admission remains in `apps/controller/src/index.ts`.
 
 `GET /namespaces/:namespaceId/agents/:agentId/native-admin` admits a human session through the ordinary `admit` and `resolveIdentity` middleware. When enabled, it requires exact Agent `use` and a runtime assignment; `read` or `operate` alone cannot admit the caller. When disabled, it requires exact Agent `administer` and existence before returning `disabled`, without requiring a runtime assignment.
 
@@ -110,8 +110,9 @@ Enabled access requires a public origin and native domain.
 stopped Agent without an active revision raises `ResourceStateConflictError`
 and returns `stopped`, including before first deployment.
 `NoActiveAgentRevisionError` returns `unavailable` while a desired-running Agent
-awaits activation. Other dependency failures return `503`; authorization denial
-returns `403` with human IAM audit evidence. The panel reports the active revision.
+awaits activation. Dependency failures, including IAM Driver errors caught by
+`authorizeAgentRuntimeAccess`, return `503`; authorization denial returns `403`
+with human IAM audit evidence. The panel reports the active revision.
 
 A newer successor on a Compute Driver requiring stopped predecessors also produces `unavailable`: the worker removes the old workload before starting its replacement. A failed replacement leaves the old revision recorded as active without a serving workload. Both status and proxy admission check this boundary.
 
@@ -229,6 +230,8 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-19 18:15: Map runtime IAM failures to `503`. (authoring-run/d8ce5783-eee5-4fb5-94e1-d6f87dd05219 - 57e6bcd87f06abd13ca4092b15f764d7c284d1d6)
 
 - 2026-10-16 13:04: Use runtime assignments for copied-link recovery and retain the updated Agent overview. (authoring-run/b88902de-ac9a-4c44-98a7-073323cfb09b - ff0edc4f28ab3fa423cc1f331ba209d1cda04372)
 
