@@ -1029,8 +1029,10 @@ select:not([multiple])[size="1"] {
   gap: 8px;
   margin-top: 16px;
 }
+/* The warning tint darkens the card, so the input edge falls below 3:1 there; the muted text
+   colour keeps a white secondary action's edge at 4.6:1 (finding 1958). */
 .deployment-recovery-actions a {
-  border: 1px solid var(--color-border-strong);
+  border: 1px solid var(--color-text-muted);
   color: var(--text-strong);
   background: var(--surface);
 }
