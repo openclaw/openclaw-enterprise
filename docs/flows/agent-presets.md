@@ -251,11 +251,10 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-The saved Agent has a new identity and no Preset reference. Variable inputs are
-not stored as a separate map. Rendered values are ordinary Agent/Configuration
-settings. Credential preparation and [revision admission](configuration-driver/persistence-and-revisions.md)
-read those resources, not the Preset. Later Preset changes cannot change a draft
-or an immutable admitted revision.
+Saving creates an independent Agent without a Preset reference or variable-input
+map; rendered values become Agent and Configuration settings. Credential preparation
+and [revision admission](configuration-driver/persistence-and-revisions.md) read
+those resources. Later Preset changes affect neither drafts nor admitted revisions.
 
 ## Debugging and Verification
 
