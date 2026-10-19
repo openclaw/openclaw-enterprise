@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import test from "node:test";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 
@@ -337,8 +338,28 @@ test("console scripts and styles are compressed when accepted; the shell and bin
   const host = new URL(fixture.origin).host;
   const consoleFile = (path) =>
     readFile(new URL(`../../apps/controller/src/console/${path}`, import.meta.url));
+  // Read the wire bytes: Fetch decodes content codings before exposing its body.
   const fetchRaw = (url, headers = {}, method = "GET") =>
-    fixture.app.inject({ method, url, headers: { host, ...headers } });
+    new Promise((resolve, reject) => {
+      const request = httpRequest(
+        new URL(url, fixture.origin),
+        { method, headers: { host, ...headers } },
+        (response) => {
+          const chunks = [];
+          response.on("data", (chunk) => chunks.push(chunk));
+          response.on("error", reject);
+          response.on("end", () =>
+            resolve({
+              statusCode: response.statusCode,
+              headers: response.headers,
+              rawPayload: Buffer.concat(chunks),
+            }),
+          );
+        },
+      );
+      request.on("error", reject);
+      request.end();
+    });
 
   const script = await consoleFile("agents/detail.mjs");
   const plain = await fetchRaw("/console/agents/detail.mjs");
@@ -353,6 +374,9 @@ test("console scripts and styles are compressed when accepted; the shell and bin
     ["gzip", "gzip", gunzipSync],
     ["gzip, deflate, br, zstd", "br", brotliDecompressSync],
     ["br;q=0.5, gzip;q=1", "gzip", gunzipSync],
+    ["identity;q=0.5, gzip;q=1", "gzip", gunzipSync],
+    ["identity;q=0, gzip;q=0.5", "gzip", gunzipSync],
+    ["identity;q=1, br;q=1, gzip;q=1", "br", brotliDecompressSync],
     ["*", "br", brotliDecompressSync],
   ]) {
     const result = await fetchRaw("/console/agents/detail.mjs", {
@@ -371,7 +395,15 @@ test("console scripts and styles are compressed when accepted; the shell and bin
     assert.equal(result.headers["x-content-type-options"], "nosniff");
   }
 
-  for (const acceptEncoding of ["identity", "br;q=0, gzip;q=0", "deflate", "*;q=0"]) {
+  for (const acceptEncoding of [
+    "identity",
+    "br;q=0, gzip;q=0",
+    "deflate",
+    "*;q=0",
+    "identity;q=1, gzip;q=0.5",
+    "br;q=0.5, identity;q=1",
+    "identity;q=1, *;q=0.5",
+  ]) {
     const result = await fetchRaw("/console/console.css", { "accept-encoding": acceptEncoding });
     assert.equal(result.headers["content-encoding"], undefined, acceptEncoding);
     assert.equal(result.headers.vary, "Accept-Encoding", acceptEncoding);
@@ -386,6 +418,18 @@ test("console scripts and styles are compressed when accepted; the shell and bin
   assert.equal(head.headers["content-encoding"], "gzip");
   assert.equal(head.headers["content-length"], gzipGet.headers["content-length"]);
   assert.equal(head.rawPayload.length, 0);
+  const identityHead = await fetchRaw(
+    "/console/console.css",
+    { "accept-encoding": "identity;q=1, gzip;q=0.5" },
+    "HEAD",
+  );
+  assert.equal(identityHead.statusCode, 200);
+  assert.equal(identityHead.headers["content-encoding"], undefined);
+  assert.equal(
+    identityHead.headers["content-length"],
+    String((await consoleFile("console.css")).length),
+  );
+  assert.equal(identityHead.rawPayload.length, 0);
   const ranged = await fetchRaw("/console/console.css", {
     "accept-encoding": "gzip",
     range: "bytes=0-9",
