@@ -1324,36 +1324,40 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
     }
   });
-  const removeCredentialRegistration = button("Remove failed credential registration", async () => {
-    if (!failedCredentialSource || pending) {
-      return;
-    }
-    pending = true;
-    updateControls();
-    try {
-      await request(
-        `${namespacePath(namespaceId)}/credential-sources/${encodeURIComponent(failedCredentialSource.id)}`,
-        { method: "DELETE", expectedStatus: 204 },
-      );
-      if (!context.isCurrent()) {
+  const removeCredentialRegistration = button(
+    "Remove failed credential registration",
+    async () => {
+      if (!failedCredentialSource || pending) {
         return;
       }
-      failedCredentialSource = null;
-      credentialRegistration = null;
-      outcomeUnknown = false;
-      feedback.textContent =
-        "Failed credential registration removed. Select Create Agent to retry with the saved model Secret.";
-    } catch (error) {
-      if (context.isCurrent()) {
-        feedback.textContent = `${message(error)} Retry removal when the Credential Gateway is available; the model Secret remains saved.`;
+      pending = true;
+      updateControls();
+      try {
+        await request(
+          `${namespacePath(namespaceId)}/credential-sources/${encodeURIComponent(failedCredentialSource.id)}`,
+          { method: "DELETE", expectedStatus: 204 },
+        );
+        if (!context.isCurrent()) {
+          return;
+        }
+        failedCredentialSource = null;
+        credentialRegistration = null;
+        outcomeUnknown = false;
+        feedback.textContent =
+          "Failed credential registration removed. Select Create Agent to retry with the saved model Secret.";
+      } catch (error) {
+        if (context.isCurrent()) {
+          feedback.textContent = `${message(error)} Retry removal when the Credential Gateway is available; the model Secret remains saved.`;
+        }
+      } finally {
+        if (context.isCurrent()) {
+          pending = false;
+          updateControls();
+        }
       }
-    } finally {
-      if (context.isCurrent()) {
-        pending = false;
-        updateControls();
-      }
-    }
-  });
+    },
+    { tone: "danger" },
+  );
   const retryCapabilityDiscovery = button("Retry capability check", () => {
     void loadInstallationCapabilities();
   });

@@ -177,7 +177,9 @@ export function renderAgentAccess(context, agent) {
       const permissions =
         role?.permissions.map((item) => `${item.resourceKind}: ${item.action}`).join(", ") ??
         "Role unavailable";
+      // Removal deletes the binding at once, so it takes the destructive tone (finding 1967).
       const remove = button("Remove binding", () => void removeBinding(binding), {
+        tone: "danger",
         disabled: blocked,
       });
       grants.append(

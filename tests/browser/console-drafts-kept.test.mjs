@@ -522,6 +522,37 @@ for (const pending of [
         true,
         `the note sits beside ${pending.beside}`,
       );
+      // A double click writes the note's text once, so a screen reader reads it once, and the
+      // first refusal's delayed write does not repeat it (finding 1976).
+      await reason.evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+      await page.evaluate((text) => {
+        globalThis.leaveNoteWrites = 0;
+        globalThis.leaveNoteObserver = new globalThis.MutationObserver((records) => {
+          for (const record of records) {
+            for (const node of record.addedNodes) {
+              if (node.textContent === text) {
+                globalThis.leaveNoteWrites += 1;
+              }
+            }
+          }
+        });
+        globalThis.leaveNoteObserver.observe(globalThis.document.body, {
+          childList: true,
+          subtree: true,
+        });
+      }, pending.reason);
+      await sidebarLink(page, "Agents").dblclick();
+      await reason.waitFor();
+      // Outlasts the note's 100 ms delayed write: a timer set later with a longer delay runs after it.
+      await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 150)));
+      assert.equal(
+        await page.evaluate(() => {
+          globalThis.leaveNoteObserver.disconnect();
+          return globalThis.leaveNoteWrites;
+        }),
+        1,
+      );
+      assert.equal(page.url(), pageUrl);
     } finally {
       held.release();
     }

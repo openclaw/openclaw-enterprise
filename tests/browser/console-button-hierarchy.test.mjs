@@ -634,7 +634,8 @@ test("The current version, Slack token bindings and Namespace rows use the badge
     },
   );
 
-  // The current version shows a Current badge after a visible space.
+  // The current version shows a Current badge after a visible space. Info, not success: Current
+  // means only that OCC selected the version, which may be stopped or failed (finding 1969).
   for (const viewport of consoleViewports) {
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
     await login(page, fixture, detailUrl(fixture, namespace.id, versioned.id));
@@ -646,7 +647,7 @@ test("The current version, Slack token bindings and Namespace rows use the badge
     const state = await badgeState(version.locator(".badge"));
     assert.deepEqual(
       { ...state, gap: state.gap >= 4 },
-      { badge: true, text: "Current", tone: "success", gap: true, sameLine: true, painted: true },
+      { badge: true, text: "Current", tone: "info", gap: true, sameLine: true, painted: true },
       `badge at ${viewport.width}: ${JSON.stringify(state)}`,
     );
     // Rendered text: the badge follows the version number after a space.

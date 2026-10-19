@@ -14,8 +14,9 @@ Check each story at 1440 and at 390.
 2. Open **Pages / Backends / Configured**. Each Backend row is a card, and its
    type badge ("ChatGPT", "GitHub", "OpenShell") is neutral.
 3. Open **Pages / Agent detail / New version failed**. In the Versions card,
-   the current version's row reads "v6", a space, then a green "Current"
-   badge, with the date on the next line. Its row is as tall as the other
+   the current version's row reads "v6", a space, then a blue "Current"
+   badge, with the date on the next line. Current is blue, not green: it means
+   only that OCC selected the version, which can be stopped or failed. Its row is as tall as the other
    versions' rows. A screen reader still announces "View version v6, current
    version".
 4. Open **Components / Credentials / One Slack token missing**. The bound
@@ -24,7 +25,10 @@ Check each story at 1440 and at 390.
 5. Open **Pages / Create Agent / Repositories using the Agent default**. Each
    selected repository's access summary ("Read-only · Agent default") is a
    blue badge that wraps rather than overflowing at 390. A repository whose
-   access conflicts with policy shows its summary in a red badge.
+   access conflicts with policy shows its summary in a red badge. In
+   **Pages / Agent detail / Repository access while choices load**, "Access
+   awaiting verification" is blue; in **Repository access without a Repo
+   Driver** it is amber. Red is only for a choice that is not approved.
 6. Open **Components / Dialogs / Plugins (phone)**. Each plugin's state
    ("Enabled", "Disabled", "Not selected", "Unavailable") is a neutral badge
    under its name. Tab through the list: no badge pushes a plugin's focus ring

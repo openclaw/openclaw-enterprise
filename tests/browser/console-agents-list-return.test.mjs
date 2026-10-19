@@ -902,3 +902,57 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       .waitFor();
   }
 });
+
+// A name the browser cannot wrap sets the desktop table's width unless it is marked to break
+// anywhere (finding 1955). A hyphen-minus before a digit and a run of em dashes are not line
+// breaks (UAX #14 LB25 and LB17), so names made of them must be marked too (finding 1971). A
+// hyphen before a letter still breaks, so a date-stamped name with words wraps as before.
+test("Agents list marks names with no break opportunity, hyphen and dash runs included", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbroken Agent names");
+  const digitGroups = Array.from({ length: 40 }, (_, index) => String(1000 + index))
+    .join("-")
+    .slice(0, 200);
+  const cases = [
+    { name: digitGroups, unbroken: true },
+    { name: "\u2014".repeat(200), unbroken: true },
+    { name: `Release ${"\u2013".repeat(40)}`, unbroken: true },
+    // The threshold: 21 characters with no break are marked, 20 are not (finding 1974), and a
+    // mid-length run (about 600 px unmarked) stays within the column too.
+    { name: `Run ${"W".repeat(21)}`, unbroken: true },
+    { name: `Run ${"W".repeat(20)}`, unbroken: false },
+    { name: `Run ${"W".repeat(40)}`, unbroken: true },
+    { name: "nightly-build-2026-10-19-release-candidate", unbroken: false },
+  ];
+  for (const [index, entry] of cases.entries()) {
+    // The default harness Secret is named after its Agent, so it would exceed the name limit.
+    const secret = await fixture.createSecret(namespace.id, `Unbroken name ${index}`, "test-key");
+    await fixture.createAgent(namespace.id, entry.name, nativeValues(`unbroken-${index}`), {
+      harnessAuth: { method: "api_key", source: secret.ref },
+    });
+  }
+  for (const width of [1024, 1440]) {
+    const { page } = await newPage(t, fixture, { context: { viewport: { width, height: 900 } } });
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    const table = page.locator(settledView).getByRole("table", { name: "Agents" });
+    await table.getByRole("link", { name: cases.at(-1).name, exact: true }).waitFor();
+    for (const entry of cases) {
+      const shown = await table
+        .getByRole("link", { name: entry.name, exact: true })
+        .evaluate((node) => ({
+          marked: node.classList.contains("agent-name-unbroken"),
+          width: node.getBoundingClientRect().width,
+        }));
+      assert.equal(shown.marked, entry.unbroken, `${width}: ${entry.name.slice(0, 24)}… marked`);
+      if (entry.unbroken) {
+        assert.ok(shown.width <= 310.5, `${width}: the unbroken name is ${shown.width} px`);
+      }
+    }
+    if (width === 1440) {
+      const fits = await table.evaluate((node) => {
+        const scroll = node.closest(".table-scroll");
+        return scroll.scrollWidth <= scroll.clientWidth;
+      });
+      assert.equal(fits, true, `${width}: the table scrolls sideways`);
+    }
+  }
+});
