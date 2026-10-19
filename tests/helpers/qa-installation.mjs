@@ -15,6 +15,7 @@ import {
   registerQaSecret,
   grantQaSecret,
   qaCommandFailureDetail,
+  redactedQaTail,
 } from "./qa-secrets.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 
@@ -51,6 +52,35 @@ export function launcherEnvironment() {
     }
   }
   return env;
+}
+
+// The output of the image build step that failed, from a docker (BuildKit) or podman build's
+// stderr, at most `lines` lines; undefined when stderr shows no failed image build. A failed
+// build's own error keeps only its last lines, which name the step but not why it failed (an
+// upstream test run inside the runtime image build, finding 2020). BuildKit prefixes every line
+// of a step's output with "#<step> " and interleaves steps, so the failed step is the one whose
+// "#<step> ERROR:" line comes last; without one (podman), the last lines of stderr.
+export function imageBuildFailureOutput(stderr, { lines = 200 } = {}) {
+  const text = String(stderr ?? "").trimEnd();
+  if (!/^ERROR: failed to solve: |^Error: building at STEP /m.test(text)) {
+    return undefined;
+  }
+  const all = text.split("\n");
+  const step = all.findLast((line) => /^#\d+ ERROR: /.test(line))?.match(/^#\d+ /)[0];
+  return (step ? all.filter((line) => line.startsWith(step)) : all).slice(-lines);
+}
+
+// Records a failed image build step's output, redacted like any QA command output, as a QA
+// evidence file (the cell uploads its *.json evidence; the private state directory is not
+// uploaded). Returns the file's name, or undefined when stderr shows no failed image build.
+export async function recordImageBuildFailure(record, stderr, env) {
+  const output = imageBuildFailureOutput(stderr);
+  if (output === undefined) {
+    return undefined;
+  }
+  return record(`image-build-failure-${Date.now()}`, {
+    lines: redactedQaTail(output.join("\n"), env, { lines: output.length, lineChars: 800 }),
+  });
 }
 
 export async function createQaInstallation(
@@ -178,9 +208,14 @@ export async function createQaInstallation(
         const detail = privateFailureOutput
           ? ""
           : qaCommandFailureDetail(error.stderr, executeOptions.env ?? env);
+        const buildOutput = privateFailureOutput
+          ? undefined
+          : await recordImageBuildFailure(f.record, error.stderr, executeOptions.env ?? env).catch(
+              (recordError) => `not recorded (${recordError?.message ?? recordError})`,
+            );
         // execFile errors embed argv and output, potentially containing tokens.
         // Keep arguments/stdout private; include only redacted stderr for diagnosis.
-        error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${stateDirectory}${detail ? `; stderr: ${detail}` : ""}`;
+        error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
         delete error.cmd;
         delete error.stdout;
         delete error.stderr;

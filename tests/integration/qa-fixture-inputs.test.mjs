@@ -298,6 +298,73 @@ test("QA command diagnostics retain the error while hiding generated and environ
   );
 });
 
+test("a failed image build keeps its failed step's output as redacted QA evidence", async () => {
+  const { imageBuildFailureOutput, recordImageBuildFailure } =
+    await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  registerQaSecret("build-private-value");
+  // BuildKit's plain progress (finding 2020's shape): steps interleave, each line prefixed by
+  // its step; the failed step's output is gone from the final summary's last lines.
+  const stderr = [
+    "#40 [openclaw-build 13/18] COPY --from=openclaw-source /source/ ./",
+    "#41 [openclaw-build 14/18] RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts",
+    "#40 DONE 2.1s",
+    "#42 [controller 3/5] RUN pnpm install",
+    "#41 3.210  RUN  v3.2.4 /source",
+    "#41 45.12  FAIL  src/gateway/server.required-placement-scopes.test.ts > revokes placement",
+    "#41 45.13 AssertionError: expected 'build-private-value' to be undefined",
+    "#42 12.00 Done in 11.9s",
+    '#41 ERROR: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    "#42 CANCELED",
+    "------",
+    " > [openclaw-build 14/18] RUN --network=none ...:",
+    "------",
+    "Dockerfile:180",
+    "--------------------",
+    " 180 | >>> RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \\",
+    "--------------------",
+    'ERROR: failed to solve: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1" did not complete successfully: exit code: 1',
+    "Error: docker failed: exit status 1",
+    "",
+  ].join("\n");
+  const step = imageBuildFailureOutput(stderr);
+  assert.equal(step.length, 5);
+  assert.ok(step.every((line) => line.startsWith("#41 ")));
+  assert.match(step.at(-2), /AssertionError/);
+  assert.equal(imageBuildFailureOutput(stderr, { lines: 2 }).length, 2);
+
+  const records = [];
+  const record = async (name, value) => {
+    records.push({ name, value });
+    return `kubernetes-${name}.json`;
+  };
+  const file = await recordImageBuildFailure(record, stderr, { PRIVATE_INPUT: "unused" });
+  assert.match(file, /^kubernetes-image-build-failure-\d+\.json$/);
+  assert.equal(records.length, 1);
+  assert.match(
+    records[0].value.lines.join("\n"),
+    /FAIL {2}src\/gateway\/server\.required-placement/,
+  );
+  assert.doesNotMatch(JSON.stringify(records[0].value), /build-private-value/);
+
+  // A podman build has no BuildKit steps: its last lines are kept.
+  const podman = [
+    "STEP 14/18: RUN node test.mjs",
+    ...Array.from({ length: 300 }, (_, i) => `line ${i}`),
+  ];
+  podman.push('Error: building at STEP "RUN node test.mjs": while running runtime: exit status 1');
+  assert.equal(imageBuildFailureOutput(podman.join("\n")).length, 200);
+  assert.match(imageBuildFailureOutput(podman.join("\n")).at(-1), /^Error: building at STEP/);
+
+  // Any other command failure records nothing.
+  assert.equal(
+    imageBuildFailureOutput('Error from server (NotFound): pods "x" not found\n'),
+    undefined,
+  );
+  assert.equal(await recordImageBuildFailure(record, "dev-up: startup timed out\n", {}), undefined);
+  assert.equal(records.length, 1);
+});
+
 test("QA waits report the last observation when they time out", async () => {
   const { waitFor } = await import("../helpers/qa-utils.mjs");
   let observations = 0;
