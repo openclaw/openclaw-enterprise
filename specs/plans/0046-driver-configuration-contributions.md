@@ -82,7 +82,9 @@ selector excludes those unrelated phases without omitting required policy checks
 The merged `manage_policy`/policy `update` authority is unchanged. Independent
 review stopped at authentication and produced no assessment. Native media uploads
 and review remain delivery blockers.
-No implementation PR or merge has occurred.
+Implementation is in [draft PR #2980](https://github.com/openclaw/openclaw-enterprise/pull/2980).
+The runtime proof covers implementation commit `4d57c6eda955a37643cb0d8e9818f09994b29b1f`;
+the subsequent delivery-record update changes documentation only. No merge has occurred.
 
 Required proof through existing real callers:
 
