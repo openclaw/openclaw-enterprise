@@ -387,7 +387,9 @@ export function renderCreateAgent(context, draft) {
         "section",
         { className: "state-panel" },
         element("h2", {}, "Creating Agents is not available"),
-        element("p", { role: "status" }, unavailable),
+        unavailable === notReady?.note
+          ? namespaceNote(notReady)
+          : element("p", { role: "status" }, unavailable),
       ),
     );
     // Start over re-enters here from the form; keep focus on the page, not the document.
@@ -1879,7 +1881,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady
-            ? "Dedicated Agents are provisioned and deployed when created, so one can be created here once this Namespace is ready."
+            ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first."
             : "Dedicated Agents are provisioned and deployed when created."
           : mode.value === "embedded"
             ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."

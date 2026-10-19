@@ -126,7 +126,7 @@ test("Create Agent names a provisioning Namespace's status before any start", as
   assert.deepEqual(await warningBlock(formNote), WARNING);
   await view
     .getByText(
-      "Dedicated Agents are provisioned and deployed when created, so one can be created here once this Namespace is ready.",
+      "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first.",
       { exact: true },
     )
     .waitFor();
@@ -207,10 +207,9 @@ test("a Namespace that takes no new Agent disables Create Agent with its reason"
     new URL(`/console/agents/new?namespace=${namespaces.default.id}`, fixture.origin).href,
   );
   await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
-  assert.match(
-    await view.getByRole("status").filter({ hasText: NOT_READY }).textContent(),
-    /^Namespace status: Provisioning\. /,
-  );
+  const panelNote = view.getByRole("status").filter({ hasText: NOT_READY });
+  assert.match(await panelNote.textContent(), /^Namespace status: Provisioning\. /);
+  assert.deepEqual(await warningBlock(panelNote), WARNING);
   assert.equal(await view.getByRole("button", { name: "Start without Preset" }).count(), 0);
   assert.equal(await page.getByRole("dialog").count(), 0);
 });
@@ -238,6 +237,10 @@ test("with only a deleting Namespace, the pick names it and offers no wait", asy
     "Namespace status: Deleting. This Namespace is being deleted, so it cannot hold new Agents. Choose another Namespace.",
   );
   await view.getByText("Agents cannot be created in this Namespace.").waitFor();
+  assert.deepEqual(
+    await warningBlock(view.getByRole("status").filter({ hasText: "Namespace status: Deleting." })),
+    WARNING,
+  );
   const create = view.getByRole("button", { name: "Create Agent" });
   assert.equal(await create.isDisabled(), true);
   assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
@@ -249,6 +252,7 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   // The Namespace reads as an adopted, provisioning one until it is released.
   const patches = new Map([[namespace.id, { status: "provisioning", existingNamespace: "team" }]]);
   await reportNamespaces(page, patches);
+  await routeInstallationProvisioning(page, fixture);
   const view = page.locator(settledView);
   // Both views are kept for a return while the Namespace is provisioning.
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -264,6 +268,12 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   await view.getByText(INVITATION).waitFor();
   assert.equal(await view.getByText(NOT_READY).count(), 0);
   await view.getByRole("button", { name: "Create Agent" }).click();
-  await view.getByRole("button", { name: "Start without Preset" }).waitFor();
+  await view.getByRole("button", { name: "Start without Preset" }).click();
   assert.equal(await view.getByText("Creating Agents is not available").count(), 0);
+  // A ready Namespace's form keeps its plain promise and shows no note.
+  await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+  await view
+    .getByText("Dedicated Agents are provisioned and deployed when created.", { exact: true })
+    .waitFor();
+  assert.equal(await view.getByText(NOT_READY).count(), 0);
 });
