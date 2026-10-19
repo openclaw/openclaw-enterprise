@@ -65,9 +65,11 @@ test("Joiners still hold the character before them", () => {
 // alternatives can consume needs no further check. The few that remain are tried between
 // characters that satisfy each lookaround.
 const CONTEXTS = [
-  ...["", " ", "a", "Z", "5", "é", "-", "‐", "–", "—", " ", "​"],
-  ...["‑", " ", "中", "́", "٠", "१", "１", "⁠", "‍"],
-  ...["«", '"', "'", "|", ")", "$", "⚡", "\u{1f600}", "　", "­", "﻿"],
+  ...["", " ", "a", "Z", "5", "\u00e9", "-", "\u2010", "\u2013", "\u2014", "\u2009", "\u200b"],
+  ...["\u2011", "\u00a0", "\u4e2d", "\u0301", "\u0660", "\u0967", "\uff11", "\u2060", "\u200d"],
+  ...["\u00ab", '"', "'", "|", ")", "$", "\u26a1", "\u{1f600}", "\u3000", "\u00ad", "\ufeff"],
+  // A mark before what a lookahead looks for (\p{M}*).
+  ...["\u03015", "\u0301\u0660", "\u0301\u2060", "\u0301-", "\u0301\u00ab", "\u0301)"],
 ];
 const sticky = (source) => new RegExp(source, "uy");
 const alternatives = UNBROKEN_ALTERNATIVES.map(sticky);
