@@ -3237,6 +3237,22 @@ export const scenarios = {
       "Edit and save once more. Move focus to the Agents link before the save finishes; focus stays on the link.",
     ],
   },
+  configurationSaveRefused: {
+    group: "Pages/Agent detail",
+    name: "Edit Configuration refused",
+    path: draft,
+    rules: [
+      {
+        method: "PATCH",
+        suffix: "/configurations/cfg_00000000-0000-4000-8000-000000000001",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    actions: [click("Enable gateway password access"), click("Save Configuration")],
+    description:
+      "A viewer without Configuration update saves: the refusal is an alert that takes focus and comes into view.",
+  },
   gatewayPasswordAccess: {
     group: "Pages/Agent detail",
     name: "Enable gateway password access",
@@ -4137,6 +4153,28 @@ export const scenarios = {
     ],
     description:
       "Diagnostics that answer within 250 ms replace the panel's result directly, without painting the waiting line or moving focus.",
+  },
+  diagnosticsReader: {
+    group: "Pages/Agent detail",
+    name: "Current observations for a reader without operate",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
+    description:
+      "Diagnostics need Agent operate. For a viewer whose permission answer denies it, Run diagnostics is disabled and says why, as Stop Agent does.",
+    gap: "The permission answer is simulated; the API still authorizes every request.",
+  },
+  diagnosticsRefused: {
+    group: "Pages/Agent detail",
+    name: "Current observations refused",
+    path: candidateVersion,
+    deployed: true,
+    candidateDeploymentStatus: "succeeded",
+    rules: [{ suffix: "/diagnostics", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [click("Run diagnostics for this version")],
+    description:
+      "The API refuses diagnostics. The refusal comes into view below the button, which keeps focus.",
   },
   diagnosticsUnknown: {
     group: "Pages/Agent detail",

@@ -900,9 +900,18 @@ function createVersionDeploymentRecord(
 // it never shows the waiting line (finding 1714).
 const DIAGNOSTICS_WAITING_DELAY_MS = 250;
 
-function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus = () => null) {
+function createVersionDiagnosticsPanel(
+  context,
+  path,
+  revisionId,
+  recordedStatus = () => null,
+  operateAllowed = null,
+) {
   const section = element("section", { className: "agent-card version-diagnostics" });
   let diagnostics = null;
+  // Set when the caller's permission answer denies Agent operate, which diagnostics need: the
+  // button is disabled with the reason, as Stop and Delete are (finding 1992).
+  let operateDenied = false;
   let error = null;
   let loading = false;
   // Set once a run outlasts DIAGNOSTICS_WAITING_DELAY_MS: the waiting line replaces the last
@@ -985,6 +994,10 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
             : section.lastElementChild.firstElementChild;
           focusSaveOutcome(section, [runButton], outcome);
           outcomeId = runButton.getAttribute("aria-describedby") ? outcome.id : null;
+          // Focus stays on the button; a refusal below it still comes into view (finding 1992).
+          if (error) {
+            outcome?.scrollIntoView({ block: "nearest" });
+          }
         }
       }
     }
@@ -1093,10 +1106,19 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
         // below is the one announcement, and a changed label inside the Agent view's live
         // region was announced as well (finding 1698).
         button("Run diagnostics for this version", () => void run(), {
-          disabled: waitingShown,
+          disabled: waitingShown || operateDenied,
           ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
         }),
       ),
+      ...(operateDenied
+        ? [
+            statusBlock(
+              "info",
+              null,
+              "Your access does not include running diagnostics for this Agent.",
+            ),
+          ]
+        : []),
       element(
         "p",
         { className: "muted" },
@@ -1127,6 +1149,12 @@ function createVersionDiagnosticsPanel(context, path, revisionId, recordedStatus
   }
 
   render();
+  void operateAllowed?.then((permitted) => {
+    if (permitted === false && context.isCurrent()) {
+      operateDenied = true;
+      render();
+    }
+  });
   return { section, render };
 }
 
@@ -2621,8 +2649,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         () => diagnosticsPanel?.render(),
         { shared: activityRevisionId === selected && !latestDeploymentError },
       );
-      diagnosticsPanel = createVersionDiagnosticsPanel(context, path, selected, () =>
-        versionRecord.current(),
+      diagnosticsPanel = createVersionDiagnosticsPanel(
+        context,
+        path,
+        selected,
+        () => versionRecord.current(),
+        callerPermissionsRead.then((permissions) => permissions?.operate),
       );
       versionEvidence.append(versionRecord.section, diagnosticsPanel.section);
       if (latestDeploymentRecord?.revisionId === selected) {
@@ -4280,6 +4312,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       editorError.clear();
       feedback.textContent = "";
       setStatusTone(feedback, null);
+      feedback.setAttribute("role", "status");
       feedbackLocked = false;
       reloadRequired = false;
       updateState();
@@ -4288,6 +4321,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       if (draftEditorNavigationBlock) {
         feedback.textContent = draftEditorNavigationBlock;
         setStatusTone(feedback, null);
+        feedback.setAttribute("role", "status");
         feedbackLocked = true;
       }
     };
@@ -4304,6 +4338,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       pending = true;
       feedback.textContent = "Checking Configuration…";
       setStatusTone(feedback, null);
+      feedback.setAttribute("role", "status");
       feedbackLocked = true;
       const saveFocused = document.activeElement === save;
       updateState();
@@ -4381,10 +4416,19 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           pending = false;
           updateState();
           render();
-          if (container.isConnected) {
+          const refused = feedback.dataset.tone === "danger";
+          feedback.setAttribute("role", refused ? "alert" : "status");
+          if (container.isConnected && refused && !outcomeUnknown && !reloadRequired) {
+            // A refusal Reload cannot fix (a 403, say) is an alert that takes focus and comes
+            // into view; under the fold, nothing seemed to happen (finding 1991).
+            revealStatus(feedback, container);
+          } else if (container.isConnected) {
             // A conflict or failure leaves Reload draft (or Save again) as the next step
             // (finding 1481).
             focusSaveOutcome(container, [reload, save], feedback);
+            if (refused) {
+              feedback.scrollIntoView({ block: "nearest" });
+            }
           }
         }
       }
