@@ -185,12 +185,12 @@ Installation-wide collection. No readable selection means no Agent request.
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
-`apps/controller/src/console/namespaces.mjs:renderNamespaces` sends validated
-names through tracked `POST /namespaces`. `OpenClawController.createNamespace`
-authorizes creation and queues provisioning; `perform` audits it.
-Success offers Agents or refresh. Pending writes block dismissal.
-Conflicts retain input; denials block resubmission. Unconfirmed responses require
-list inspection before retry, never substituting creation responses for authorized lists.
+`apps/controller/src/console/namespaces.mjs:renderNamespaces` sends Name-rule-valid names
+through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
+and queues provisioning; `perform` audits. Open Agents needs the Namespace in the
+reread list; closing refocuses the opener. Pending writes block dismissal; 400s mark
+names. Conflicts retain input; denials block resubmission. Unconfirmed responses
+require list inspection.
 
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
 is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;
