@@ -105,10 +105,8 @@ Driver activation. Requests do not reread configuration or credentials.
 and the shared HTML shell with MIME types and same-origin CSP. Unknown console
 paths return the shell with `404`; API routes retain JSON errors.
 `encodedAsset` compresses static scripts and styles once (brotli or gzip, per
-`Accept-Encoding`, with `Vary`). An explicit `identity` weight higher than both
-compression weights selects the original bytes; compression wins equal weights.
-Without an explicit identity preference, supported compression stays preferred.
-The shell, which also answers sign-in, stays identity.
+`Accept-Encoding`, with `Vary`), unless an explicit `identity` weight beats both
+encodings. The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
 `OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
