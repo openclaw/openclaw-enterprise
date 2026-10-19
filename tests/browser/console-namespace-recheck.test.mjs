@@ -305,12 +305,14 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     // space would only stay empty (finding 2039).
     const minHeight = () => note.evaluate((node) => node.style.minHeight);
     assert.notEqual(await minHeight(), "");
-    const resized = page.evaluate(
-      () =>
-        new Promise((resolve) => globalThis.addEventListener("resize", resolve, { once: true })),
-    );
+    // Listen before resizing; the product's listener, added earlier, runs first.
+    await page.evaluate(() => {
+      globalThis.resized = new Promise((resolve) =>
+        globalThis.addEventListener("resize", resolve, { once: true }),
+      );
+    });
     await page.setViewportSize({ width: 390, height: 900 });
-    await resized;
+    await page.evaluate(() => globalThis.resized);
     assert.equal(await minHeight(), "");
   });
 
