@@ -1911,7 +1911,8 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     globalThis.document.querySelector(".agent-tabs").hasAttribute("data-more-before"),
   );
   assert.deepEqual(await edges(), { before: true, after: false, masked: true });
-  await page.setViewportSize({ width: 1440, height: 900 });
+  // Leave room for every tab beside both navigation columns with Linux and macOS fonts.
+  await page.setViewportSize({ width: 1920, height: 900 });
   await page.waitForFunction(() => {
     const node = globalThis.document.querySelector(".agent-tabs");
     return !node.hasAttribute("data-more-before") && !node.hasAttribute("data-more-after");
