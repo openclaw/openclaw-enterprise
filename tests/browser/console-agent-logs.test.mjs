@@ -128,7 +128,7 @@ test("a failed deployment's Logs link opens its version in view without reloadin
     await pane.getByText("startup failed before activation").waitFor();
     assert.equal(await page.evaluate(() => globalThis.document.logsNavigationMarker), true);
     await page.waitForFunction(() => {
-      const tab = globalThis.document.querySelector('.agent-tabs button[aria-current="page"]');
+      const tab = globalThis.document.querySelector('.agent-tabs button[aria-selected="true"]');
       const panel = globalThis.document.querySelector(".agent-logs");
       if (!tab || !panel) {
         return false;
@@ -166,7 +166,7 @@ for (const viewport of [
     );
     await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
-    const logsTab = page.getByRole("button", { name: "Logs", exact: true });
+    const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
     // The strip sits in the middle of the viewport, as after reading the overview.
     await page.evaluate(() => {
       const strip = globalThis.document.querySelector(".agent-tabs").getBoundingClientRect();
@@ -259,11 +259,11 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   }
 
   async function assertSelectedTabVisible(name) {
-    const selected = page.locator('.agent-tabs button[aria-current="page"]');
+    const selected = page.locator('.agent-tabs button[aria-selected="true"]');
     assert.equal(await selected.textContent(), name);
     await page.waitForFunction(() => {
-      const button = globalThis.document.querySelector('.agent-tabs button[aria-current="page"]');
-      const strip = button.closest("nav").getBoundingClientRect();
+      const button = globalThis.document.querySelector('.agent-tabs button[aria-selected="true"]');
+      const strip = button.closest(".agent-tabs").getBoundingClientRect();
       const bounds = button.getBoundingClientRect();
       // Scroll extents are integer CSS pixels; DOMRects retain subpixels.
       // Keep the visibility check strict beyond that rounding uncertainty.
@@ -280,7 +280,7 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   await resize(390, 844);
   await assertSelectedTabVisible("Logs");
   assert.equal(await output.evaluate((node) => node.isConnected), true);
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText("View admitted native configuration", { exact: true }).click();
   await waitForIdleFetches(page);
   const disclosure = await page.locator(".native-document").elementHandle();
@@ -307,7 +307,7 @@ test("phone-width routes, resizing and history keep the selected Agent tab visib
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
   assert.equal(await strip.evaluate((node) => node.isConnected), false);
   await page.goBack();
-  await page.locator('.agent-tabs button[aria-current="page"]:enabled').waitFor();
+  await page.locator('.agent-tabs button[aria-selected="true"]:enabled').waitFor();
   assert.equal(await strip.evaluate((node) => node.isConnected), true);
   await resize(390, 844);
   await assertSelectedTabVisible("Logs");
@@ -395,8 +395,8 @@ test("the Logs tab shows runtime status, sanitized output and follows with a cur
 
   // Drafts have no runtime and no Logs tab.
   await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "logs").href);
-  await page.getByRole("button", { name: "Configuration", exact: true }).waitFor();
-  assert.equal(await page.getByRole("button", { name: "Logs", exact: true }).count(), 0);
+  await page.getByRole("tab", { name: "Configuration", exact: true }).waitFor();
+  assert.equal(await page.getByRole("tab", { name: "Logs", exact: true }).count(), 0);
 });
 
 test("log timestamps distinguish the repeated hour when daylight saving time ends", async (t) => {
@@ -1281,8 +1281,8 @@ test("a log reader without operate reads log text in the Logs tab without runtim
   const statusReads = () =>
     requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length;
   const before = statusReads();
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "Logs", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
   await pane.getByText("log reader can see this").waitFor();
   assert.equal(await page.locator("#runtime-log-source").isDisabled(), false);
   assert.equal(statusReads(), before);
@@ -1780,8 +1780,8 @@ test("a reader without operate learns what log text needs and is asked for statu
   assert.equal(statusReads(), 1);
 
   // Every denied read is an audited authorization denial: reopening the tab does not ask again.
-  await page.getByRole("button", { name: "Configuration", exact: true }).click();
-  await page.getByRole("button", { name: "Logs", exact: true }).click();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByRole("tab", { name: "Logs", exact: true }).click();
   // The reopened tab shows this text only after its status decision, so a repeat read has started.
   await page.getByText(/Log text needs Agent read_logs/).waitFor();
   await settlePageRequests(page);
@@ -2757,8 +2757,8 @@ test("a Logs tab rebuilt after an operate grant reads status again without a pag
   const permissionReads = () =>
     requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
   const reopenLogs = async () => {
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
-    await page.getByRole("button", { name: "Logs", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Logs", exact: true }).click();
   };
   assert.equal(statusReads(), 1);
 
@@ -2790,8 +2790,8 @@ test("a status refusal after a revocation the page did not read is asked again o
   await page.locator(".runtime-pod").first().waitFor();
   await waitForIdleFetches(page);
   const reopenLogs = async () => {
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
-    await page.getByRole("button", { name: "Logs", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Logs", exact: true }).click();
   };
 
   changeGrant(role, "operate", false);
@@ -2821,8 +2821,8 @@ test("a status refusal taken while operate is allowed is asked again after a new
   const permissionReads = () =>
     requests.filter(({ path }) => path.endsWith(`/agents/${logs.agent.id}/permissions`)).length;
   const reopenLogs = async () => {
-    await page.getByRole("button", { name: "Configuration", exact: true }).click();
-    await page.getByRole("button", { name: "Logs", exact: true }).click();
+    await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+    await page.getByRole("tab", { name: "Logs", exact: true }).click();
     await page.getByText(/Runtime status requires Agent operate/).waitFor();
     await waitForIdleFetches(page);
   };

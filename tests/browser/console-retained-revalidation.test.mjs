@@ -699,7 +699,7 @@ test("Back between an Agent's tabs before its overview reveals loads the tab in 
     deploy: true,
   });
   await openAgent(page, "Tab Agent");
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.waitForURL(/tab=plugins/);
   await showNamespaces(page);
   const record = await holdOverview(t, page, namespace, agent);
@@ -717,7 +717,7 @@ test("Back between an Agent's tabs before its overview reveals loads the tab in 
   record.release();
   await agentShown(page);
   assert.equal(
-    await page.locator('.content [aria-current="page"]', { hasText: "Configuration" }).count(),
+    await page.locator('.content [aria-selected="true"]', { hasText: "Configuration" }).count(),
     1,
   );
   assert.equal(await page.locator('.content [aria-live="polite"]').count(), 1);

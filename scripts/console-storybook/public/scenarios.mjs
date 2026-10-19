@@ -3012,6 +3012,7 @@ export const scenarios = {
     path: draft,
     steps: [
       "Resize through desktop, tablet, and phone widths. Prepare this version keeps each numbered step on its own row, with continuation lines aligned under the step text.",
+      "Focus the selected tab and press Left, Right, Home and End: focus moves between tabs without opening one. Enter opens the focused tab. Tab leaves the strip and Shift+Tab returns to the selected tab. At phone width the edge with more tabs past it fades.",
     ],
     description:
       "An Agent without a version can edit saved settings and deploy its first immutable version.",

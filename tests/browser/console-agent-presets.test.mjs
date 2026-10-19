@@ -1693,7 +1693,7 @@ test("Presets render variables into independent Agent drafts and keep partial-sa
   );
 
   await page.waitForURL((url) => url.pathname === `/console/agents/${created.data.id}`);
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Service account token Secret").waitFor();
   assert.equal(await page.getByLabel("Authentication source").inputValue(), "codex_pat");
   await waitForInputValue(page.getByLabel("Service account token Secret"), secret.name);

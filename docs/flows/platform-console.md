@@ -307,13 +307,13 @@ rejected cursors clear rows.
 
 After full-page navigation settles, `loadPage` focuses the destination heading if
 focus fell to the body, using `preventScroll` to preserve return position. An Agent
-opened from the list focuses its heading when the title renders. Tabs and
-focused controls keep focus. Navigation, Namespace changes, and logout invalidate
+opened from the list focuses its heading when the title renders. Tabs (one Tab
+stop; arrows move) and focused controls keep focus. Navigation, Namespace changes, and logout invalidate
 reads; generations reject late responses. Refocus coalesces events. Agent detail
 rechecks access in place, preserving controls, input, and saves; failures clear it.
 Other pages revalidate before reuse, including a shown 403 or 404; forms defer the check.
-Returning to the tab restores focus after the unchanged view is admitted, if the control is still
-present and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
+Returning to the tab restores focus after the unchanged view is admitted, if the control
+remains and the reader hasn’t moved on. Draft save baselines and Namespace scopes stay separate.
 
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state. `pagehide` clears

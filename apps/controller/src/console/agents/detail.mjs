@@ -1404,15 +1404,26 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const blocked = Boolean(draftEditorBlocksNavigation());
     for (const [id, control] of tabControls) {
       control.disabled = blocked && id !== selectedTab;
+      // A disabled tab cannot hold the list's one Tab stop.
+      if (blocked) {
+        control.tabIndex = id === selectedTab ? 0 : -1;
+      }
     }
     for (const [control, originallyDisabled] of revisionControls) {
       control.disabled = blocked || originallyDisabled;
     }
   }
-  const tabs = element("nav", {
+  // A tab list (UX plan C7): one Tab stop on the selected tab, Left/Right (and Home/End) move
+  // focus between tabs, Enter or Space opens one. Opening still changes the URL's `tab=`.
+  const tabIds = `agent-tabs-${crypto.randomUUID()}`;
+  const tabs = element("div", {
     className: "agent-tabs",
+    role: "tablist",
     "aria-label": "Agent configuration views",
   });
+  content.id = `${tabIds}-panel`;
+  content.setAttribute("role", "tabpanel");
+  content.setAttribute("aria-labelledby", `${tabIds}-${selectedTab}`);
   for (const [id, label] of [
     ["configuration", "Configuration"],
     ["plugins", "Plugins"],
@@ -1439,12 +1450,55 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         change(selected, id);
       },
       {
-        ...(id === selectedTab ? { "aria-current": "page" } : {}),
+        id: `${tabIds}-${id}`,
+        role: "tab",
+        "aria-controls": content.id,
+        "aria-selected": String(id === selectedTab),
+        tabindex: id === selectedTab ? "0" : "-1",
       },
     );
     tabControls.set(id, control);
     tabs.append(control);
   }
+  tabs.addEventListener("keydown", (event) => {
+    const enabled = [...tabControls.values()].filter((control) => !control.disabled);
+    const at = enabled.indexOf(document.activeElement);
+    const next = {
+      ArrowLeft: at - 1,
+      ArrowRight: at + 1,
+      Home: 0,
+      End: enabled.length - 1,
+    }[event.key];
+    if (at === -1 || next === undefined || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    const control = enabled[(next + enabled.length) % enabled.length];
+    for (const other of tabControls.values()) {
+      other.tabIndex = other === control ? 0 : -1;
+    }
+    control.focus();
+  });
+  // Tabbing back in lands on the selected tab, wherever the arrows left focus. Checked once focus
+  // has moved: a window losing focus leaves it on the tab, so the arrowed-to stop stays.
+  tabs.addEventListener("focusout", () => {
+    queueMicrotask(() => {
+      if (!tabs.contains(document.activeElement)) {
+        for (const [id, control] of tabControls) {
+          control.tabIndex = id === selectedTab ? 0 : -1;
+        }
+      }
+    });
+  });
+  // On a narrow screen the strip scrolls sideways; an edge with more tabs past it fades.
+  const fadeTabEdges = () => {
+    tabs.toggleAttribute("data-more-before", tabs.scrollLeft > 0);
+    tabs.toggleAttribute(
+      "data-more-after",
+      tabs.scrollLeft + tabs.clientWidth < tabs.scrollWidth - 1,
+    );
+  };
+  tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
   detailPane.append(detailHeading, versionEvidence, tabs, content);
   const nativeAdmin = renderNativeAdminAccess(context, path);
   const recoveryTitle = element("h2");
@@ -1576,7 +1630,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   revealTimer = setTimeout(showDetail, FIRST_ACTIVITY_WAIT_MS);
   function revealSelectedTab() {
     const strip = tabs.getBoundingClientRect();
-    const bounds = tabControls.get(selectedTab).getBoundingClientRect();
+    // A tab that has focus (moved there with the arrows) stays in view over the selected one.
+    const shown = tabs.contains(document.activeElement)
+      ? document.activeElement
+      : tabControls.get(selectedTab);
+    const bounds = shown.getBoundingClientRect();
     if (bounds.left < strip.left) {
       tabs.scrollLeft += Math.floor(bounds.left - strip.left);
     } else if (bounds.right > strip.right) {
@@ -1589,6 +1647,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       return;
     }
     revealSelectedTab();
+    fadeTabEdges();
   });
   tabResize.observe(tabs);
   // Detached views stop observing; Back's retained view re-arms the strip.
@@ -3044,15 +3103,20 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
     }
     const tab = selectedTab;
+    const focusInStrip = tabs.contains(document.activeElement);
     for (const [index, id] of tabsForSelection.entries()) {
       const control = tabs.children[index];
-      if (id === tab) {
-        control.setAttribute("aria-current", "page");
-      } else {
-        control.removeAttribute("aria-current");
-      }
+      control.setAttribute("aria-selected", String(id === tab));
+      control.tabIndex = id === tab ? 0 : -1;
+    }
+    content.setAttribute("aria-labelledby", `${tabIds}-${tab}`);
+    // History can select another tab while focus is in the strip; focus follows the selection,
+    // so the focused tab is the one revealed and the Tab stop.
+    if (focusInStrip && document.activeElement !== tabControls.get(tab)) {
+      tabControls.get(tab).focus({ preventScroll: true });
     }
     revealSelectedTab();
+    fadeTabEdges();
     refreshDeployControls();
     const retained = retainedTabs.get(tab);
     retainedTabs.delete(tab);
