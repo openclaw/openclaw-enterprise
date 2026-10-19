@@ -890,7 +890,7 @@ for (const mutation of ["authentication", "channel Secrets"]) {
       // pickers stay locked until a reload (finding 2033).
       await page.getByRole("status").getByText(uncertaintyExplanation, { exact: true }).waitFor();
       for (const label of ["Slack app token", "Slack bot token"]) {
-        assert.equal(await page.getByLabel(label).isDisabled(), true, label);
+        assert.equal(await page.getByLabel(label, { exact: true }).isDisabled(), true, label);
       }
       assert.equal(
         await page

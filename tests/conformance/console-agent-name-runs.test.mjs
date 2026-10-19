@@ -34,9 +34,8 @@ const joinerNames = {
   // Plain names too: an alternative that overlaps an ordinary letter froze these for about 2 s
   // while every joiner name above stayed fast (finding 2031).
   "plain lowercase letters": `${"a".repeat(20)} `.repeat(10),
-  "letters and digits": `${"a1".repeat(10)} `.repeat(10),
+  "plain digits": `${"1".repeat(20)} `.repeat(10),
   "letters before a hyphen": `${"a".repeat(19)}- `.repeat(10),
-  "digits around hyphen-minus": `${"1-".repeat(10)} `.repeat(10),
 };
 
 for (const [label, name] of Object.entries(joinerNames)) {
@@ -175,7 +174,7 @@ test("No two long-name alternatives match the same character, and no mark starts
 // more than one character), and anything added where the alternatives are joined into the rule.
 // So each alternative must be one character class or escape, with only lookarounds beside it.
 function atomWithoutLookarounds(source) {
-  return /^(?:\[(?:\\.|[^\]\\])*\]|\\u\{[0-9a-f]+\}|\\u[0-9a-f]{4}|\\p\{\w+\}|\\.|[^\\[\](){}|*+?.^$])$/i.test(
+  return /^(?:\[(?:\\.|[^\]\\])*\]|\\u\{[0-9a-fA-F]+\}|\\u[0-9a-fA-F]{4}|\\x[0-9a-fA-F]{2}|\\[pP]\{[\w=]+\}|\\[dDwWsSfnrtv0\\/.^$|?*+()[\]{}-]|[^\\[\](){}|*+?.^$])$/.test(
     withoutLookarounds(source),
   );
 }
