@@ -20,7 +20,7 @@ from each trace; for commands to run locally, see [Testing](../testing/README.md
 - [Agent provisioning](../flows/agent-provisioning.md): separate Secret saving, queued setup, resource creation, safe retries, and first deployment handoff
 - [Agent native admin UI](../flows/agent-native-admin.md): console access, shared-session admission, and private gateway proxying
 - [Agent runtime logs](../flows/agent-runtime-logs.md): tiered authorization, view audit, Kubernetes Pod and log reads, and the sanitizer
-- [Configuration Driver](../flows/configuration-driver.md) and [configuration persistence and revision admission](../flows/configuration-driver/persistence-and-revisions.md)
+- [Configuration Driver](../flows/configuration-driver.md) and [configuration persistence and version admission](../flows/configuration-driver/persistence-and-revisions.md)
 - [Harness execution topology](../flows/harness-execution-topology.md)
 - [Workspace files](../flows/workspace-files.md) and [Agent plugins](../flows/agent-plugins.md)
 - [Production terminal interface](../flows/production-tui.md) and [native client behavior](../flows/production-tui/native-client.md)

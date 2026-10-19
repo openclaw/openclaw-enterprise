@@ -38,8 +38,8 @@ native OpenClaw.
 ## Deployment and availability
 
 A deployment creates a new [Agent Revision](agent-revisions.md). The control
-plane queues work and can select the new revision while activation is still in
-progress. Neither the accepted request nor the console's selected revision
+plane queues work and can select the new version while activation is still in
+progress. Neither the accepted request nor the console's selected version
 shows live health. Use [Troubleshoot](agent-troubleshoot.md) for status checks.
 For a real model response, follow the [local Kubernetes first-Agent guide](../first-agent.md)
 or the [production Kubernetes verification guide](../operate/model-verification.md).

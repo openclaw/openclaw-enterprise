@@ -51,7 +51,7 @@ Compare [before](../assets/console-style/agents-before.png),
 [walkthrough](../assets/console-style/walkthrough.mp4): simulated Storybook
 evidence, not live backend or deployment proof. The
 [reference screen](../assets/console-style/openclaw-reference-light.png) shows
-OpenClaw's disconnected gateway screen at the revision above.
+OpenClaw's disconnected gateway screen at the commit above.
 
 ## Pages and components
 
@@ -66,7 +66,7 @@ Stories reach error states through real controls after loading fixture data.
 | Settings and navigation | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                                                              |
 | Create Agent            | Installed default, missing/loading/denied Presets, Preset variables, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
 | Agent detail            | First and later drafts, version details, native JSON and plugin editors, immutable plugin snapshot, queued/running/succeeded/failed activity, exact-version diagnostics, error and permission states.                                                                                                                                                                                                             |
-| Navigation components   | Account menu, Namespace switcher, mobile drawer, admin link and denial, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                                              |
+| Navigation components   | Account menu, Namespace switcher, mobile drawer, admin link and denial, OCE branding, simulated OCC version, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                                               |
 | Channels                | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                                                              |
 | Credentials             | Named Secret selection and creation, API-key and Slack Secret switching, denied metadata and grants, partially missing tokens, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, pending grants, and unknown authentication saves.                                                                                                                          |
 | Native admin            | Available launch, stopped or unsupported runtime, denied panel hidden. The launch target is an explanatory fixture page.                                                                                                                                                                                                                                                                                          |
@@ -202,7 +202,9 @@ clear. Revisit the Agents list to check its search filter. Denied, loading,
 missing-file, and uncertain-write stories verify retention never bypasses the
 editor's access or recovery controls.
 
-### Choose and switch revision Secrets
+<a id="choose-and-switch-revision-secrets" class="anchor-alias"></a>
+
+### Choose and switch version Secrets
 
 **Slack token switch** blocks Deploy until you save or reselect the saved Secret.
 In **Discard an unsaved Secret choice**, that Secret isn’t listed; reload to discard unsaved edits.
@@ -216,14 +218,16 @@ arrows and Enter. **Slack create Secret modal** shows Name and masked value.
 In **Slack duplicate Secret name**, rename and retry without reentering the value;
 browser tests cover controller rejection.
 
-### Inspect bound Secrets in revisions
+<a id="inspect-bound-secrets-in-revisions" class="anchor-alias"></a>
 
-In **Components/Channels → Revision read only**, inspect Slack Secret identities;
+### Inspect bound Secrets in versions
+
+In **Components/Channels → `Revision read only`**, inspect Slack Secret identities;
 switch to **Configuration** for Harness authentication. Values never appear.
 
-The **Revision Secret metadata** denied, missing, and loading stories retain IDs
+The **`Revision Secret metadata`** denied, missing, and loading stories retain IDs
 during failed or pending reads.
-**Revision without Slack bindings** shows **No Secret bound**.
+**`Revision without Slack bindings`** shows **No Secret bound**.
 
 ### Discover and configure plugins
 
@@ -261,8 +265,7 @@ and can be cleared to inherit. Tool IDs match the JSON keys.
 
 **Pages/Agent detail → Edit plugins in new version** starts with Calendar saved;
 **Plugins** preloads the catalog with its Service Accounts Secret. In **Configure
-plugins**, add Documents, change Calendar's policy, save, and deploy. **Plugins in
-admitted revision** shows the frozen snapshot.
+plugins**, add Documents, change Calendar's policy, save, and deploy. The deployment details show the saved plugin settings.
 
 ### Update
 
@@ -280,7 +283,7 @@ tab and log rows stay visible. [Lose and regain log or Pod access](../../scripts
 to check Follow, Download, and permission changes. These stories use simulated responses.
 
 Unreadable Configuration does not hide version metadata. Check the [draft and
-revision banners](../../scripts/console-storybook/unreadable-configuration-workflow.md)
+version banners](../../scripts/console-storybook/unreadable-configuration-workflow.md)
 and their navigation.
 
 **Current observations** starts without a request. Compare v7, unknown v6, and

@@ -15,7 +15,7 @@ principal receives `operate` on the source only, not on the Secret.
 
 The default Codex scenario uses the production Driver path. Compute sends only
 `APP_TOKEN_SHA`; OpenShell supplies `runtime.json`, `config.toml`, and the
-one-shot node setup credential through a revision-owned provider. The test
+one-shot node setup credential through a provider for that Agent revision. The test
 checks that the raw app-server token and model key are absent from Pod specs and
 nonsecret provider data. It then verifies missing, incorrect, and correct bearer
 requests through the exposed route. Two HTTP chat turns through the Agent Gateway
@@ -61,7 +61,7 @@ asserting:
   source's own token again once the Service is restored.
 - **Model provider.** For a DNS endpoint, cluster DNS sends the model host to a
   Service with no endpoints. The turn must fail without exposing the model
-  credential, and the same revision must serve the next turn once DNS is
+  credential, and the same version must serve the next turn once DNS is
   restored. An IP endpoint reports this check as not run.
 - **OpenShell gateway.** The Namespace's gateway StatefulSet is scaled to zero.
   While it is down, the running Agent cannot serve a turn, a source read
@@ -82,7 +82,7 @@ attaches one of the tool sources. When the first Agent withdraws that source,
 the second Agent still receives its token. The scenario then checks that:
 
 - no Pod of the Agent mounts or references the stored source Secret;
-- the Pod specs, the Agent- and revision-owned Secrets, and the workspace PVC
+- the Pod specs, the Secrets for the Agent and its Agent revisions, and the workspace PVC
   files hold no upstream credential. Files are matched outside the Pod, so no
   credential-derived value enters it;
 - deployment diagnostics, runtime status and logs, and the Namespace's audit

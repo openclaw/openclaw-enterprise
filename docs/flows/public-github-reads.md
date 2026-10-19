@@ -9,13 +9,13 @@ last_updated_session: authoring-run/ea23f0cb-8736-4898-b5fc-92737486fb72
 ## Overview
 
 An Installation can let a dedicated Codex Agent inspect a known public GitHub
-repository. Compute owns the revision's skill and exact network peer. The separate
+repository. Compute owns the Agent revision's skill and exact network peer. The separate
 reader knows no credentials; GitHub owns visibility at the time of the read.
 
 ## Entry Points
 
 - `scripts/render-installation-profile.mjs:buildRendered` pairs Helm and Compute configuration.
-- `apps/controller/src/drivers/compute/kubernetes/index.ts:pluginRuntimeSnapshot` prepares the revision.
+- `apps/controller/src/drivers/compute/kubernetes/index.ts:pluginRuntimeSnapshot` prepares the Agent revision.
 - A user asks the deployed Agent to read a known public repository.
 
 ## Flow
@@ -23,33 +23,35 @@ reader knows no credentials; GitHub owns visibility at the time of the read.
 ```mermaid
 graph TD
   Profile["Operator enables reader"] --> Service["Private Service and reader policy"]
-  Profile --> Compute["Freeze eligible reader peer at revision admission"]
-  Compute -->|not selected or denied| Ordinary["Revision without reader grant or skill"]
-  Compute -->|exact reader IP allowed by revision| Revision["Mount managed skill and allow exact peer"]
+  Profile --> Compute["Freeze eligible reader peer at Agent revision admission"]
+  Compute -->|not selected or denied| Ordinary["Agent revision without reader grant or skill"]
+  Compute -->|exact reader IP allowed by Agent revision| Revision["Mount managed skill and allow exact peer"]
   Revision --> Proxy["Agent reads through its limited native proxy"]
   Proxy --> Service
   Service --> Github["Anonymous HTTPS GET to api.github.com"]
-  Github --> Result["Bounded data, opaque 404, or explicit failure"]
-  Revision -->|revision stopped or retired| Retire["Remove only its policy and skill snapshot"]
-  Revision -->|peer changed and revision reobserved| Narrow["Remove revision policy"]
+  Github --> Result["Data within response size limits, opaque 404, or explicit failure"]
+  Revision -->|Agent revision stopped or retired| Retire["Remove only its policy and skill snapshot"]
+  Revision -->|peer changed and Agent revision reobserved| Narrow["Remove Agent revision policy"]
   Narrow --> Stop["Stop exact Harness and wait for Pods"]
   Stop --> Withdraw["Verify withdrawal and fail preparation"]
 ```
 
 ## Execution Trace
 
-### 1. Compose a private Service and an eligible revision
+<span id="1-compose-a-private-service-and-an-eligible-revision" class="anchor-alias"></span>
+
+### 1. Compose a private Service and an eligible Agent revision
 
 `packages/occ/src/index.ts` asks the selected Compute Driver for side-effect-free
-admission facts before storing the revision. Kubernetes Compute freezes a digest of
-the configured reader peer only for a dedicated Codex revision with an explicit
+admission facts before storing the Agent revision. Kubernetes Compute freezes a digest of
+the configured reader peer only for a dedicated Codex Agent revision with an explicit
 IP allow in its authored proxy. A deny that might match withholds the capability.
 `apps/controller/src/drivers/compute/kubernetes/index.ts:publicGithubReadForRevision`
-requires the stored fact to match the current peer. An older revision without the
-fact stays unselected, including when its runtime projection is rebuilt. For a selected revision,
+requires the stored fact to match the current peer. An older version without the
+fact does not gain reader access, including when its runtime projection is rebuilt. For an eligible Agent revision,
 Compute creates the managed skill's parent as the runtime user in both Gateway
 and Harness, then projects the same read-only file from the immutable plugin-runtime
-snapshot. It also writes a revision-owned egress policy to the exact reader Pod
+snapshot. It also writes an egress policy for that Agent revision to the exact reader Pod
 peer and port.
 
 ### 2. Resolve the skill and use the actual tool network
@@ -75,13 +77,15 @@ no completed representation, bearer, repository session or durable state is kept
 List links retain the original local path and filters; issue links carry a validated
 provider cursor. An unsafe or out-of-range next link reports an incomplete listing.
 
-### 4. Retire the revision's access
+<span id="4-retire-the-revisions-access" class="anchor-alias"></span>
+
+### 4. Retire the Agent revision's access
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:deleteRetiredRevisionArtifacts`
-removes the revision's reader policy and skill snapshot after its Pods have
+removes the Agent revision's reader policy and skill snapshot after its Pods have
 terminated. Preparing or activating a successor does not change that grant.
 If preparation or activation observes that the operator disabled or changed the
-admitted peer, `revokeUnavailablePublicGithubRead` removes the revision policy to
+admitted peer, `revokeUnavailablePublicGithubRead` removes the Agent revision policy to
 narrow new connections. The immutable reader admission identifies a Compute-owned
 Harness even if its pinned Sandbox is now unavailable or has changed. Compute
 checks the exact Deployment ownership and ordinary workload profile, then
@@ -91,14 +95,14 @@ error. An incomplete observation leaves withdrawal unfinished. Policy deletion
 alone does not guarantee existing connections close; an in-flight GET may drain
 before Pod termination completes. Reconfiguring the peer
 alone does not schedule a reconciliation; the operator can stop the Agent or deploy
-an unselected successor and retire the old revision. Stop and retirement fence
+an unselected successor and retire the old version. Stop and retirement fence
 the admitted Compute-owned Harness before resolving the current Sandbox; an
 unavailable or changed Sandbox still leaves ancillary cleanup unfinished and
-reports an error. A new revision is needed to select a replacement peer.
+reports an error. A new Agent revision is needed to select a replacement peer.
 
 ## Debugging and Verification
 
-- Inspect the revision's skill mount, proxy domain and egress policy, then the reader's policy and Service IP.
+- Inspect the Agent revision's skill mount, proxy domain and egress policy, then the reader's policy and Service IP.
 - Reader readiness checks `/healthz` locally; a successful Agent read must also reach GitHub.
 - Ordinary Image Runtime Startup requires stock Codex to read the projected skill and recover a title present only at its TLS provider.
 - The gateway-routing integration uses a public pull title absent from its prompt and substitutes only the external provider.

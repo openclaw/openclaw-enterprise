@@ -6,7 +6,7 @@ Create Agents and supported Dedicated runtimes with the
 to deploy; while it provisions, drafts needing no new Secret or sign-in still save, unless it
 [adopts](../namespaces.md#lifecycle) an existing namespace. Creating tokens requires Secret creation permission. Provisioning grants accepted
 Secret access; drafts also require permission to grant Agent key access. After deployment, [verify the same
-Agent and revision](../../guides/deploy/production-agents.md#verify-production-workloads).
+Agent and version](../../guides/deploy/production-agents.md#verify-production-workloads).
 The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
 
 ## Create an Agent
@@ -72,7 +72,7 @@ block direct Secret-backed model and environment projection.
    repositories, and workspace files for supported Dedicated provisioning.
    Provisioning waits for deployment activation or failure, naming the deployment's current wait
    when you can read the deployment.
-   Success opens Agent details. Failure links to the same Agent and revision;
+   Success opens Agent details. Failure links to the same Agent and version;
    correct its cause and deploy again through **Deployment activity**. If the
    first deployment was stopped, no repair is needed before deploying again.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
@@ -187,11 +187,11 @@ The server resolves selections against current Namespace policy on save and
 deployment. Push and PR permissions remain bundled; see
 [access levels](../repository-credentials/access-levels.md) for token permissions,
 merges, and the API contract. Edit saved drafts in **Create new version** >
-**Repositories**; admitted revisions stay unchanged. Save or cancel edits before
+**Repositories**; saved versions stay unchanged. Save or cancel edits before
 navigating away; returning to the tab can refresh the session and discard them.
-An interrupted save may still complete; inspect the saved draft before retrying.
+An interrupted save may complete; inspect the saved draft before retrying.
 
-Failed rediscovery retains unsaved repository choices for retry and across
+Failed rediscovery keeps unsaved repository choices for retry and
 navigation in explicitly selected Preset forms.
 **Create Agent** stays blocked until discovery succeeds and filters choices against
 current policy.
@@ -202,10 +202,9 @@ Other failures, including generic `503`, throttling and connection errors, block
 both writes and offer retry. Denial and Namespace lifecycle conflict remain
 distinct. Each subsequent write rechecks authorization.
 
-If Agent creation is rejected after the Configuration saves, correct an ordinary
-zero-binding Agent's editable fields and retry directly. The
-retry reuses the saved Configuration and does not depend on repository choices
-or a Repo Driver.
+If Agent creation is rejected after Configuration saves, correct the ordinary
+zero-binding Agent's editable fields and retry. The retry reuses Configuration
+and needs no repository choices or Repo Driver.
 
 After a known repository-scoped Agent rejection, **Reload repository choices** clears
 selections/search, resets pagination, reveals results, and refreshes Namespace
@@ -226,7 +225,7 @@ Configure Slack and select its saved token Secrets in the creation form, then
 choose a compatible model-authentication source. With supported provisioning and successful repository discovery, **Create Agent**
 follows setup and deployment. The worker creates Configuration and Agent, grants
 final Secret access, and provisions transport credentials.
-Check that the returned revision belongs to this Agent and retains its repository
+Check that the returned Agent revision belongs to this Agent and retains its repository
 selections. An ordinary draft requires model and channel credential setup and **Deploy new version**
 from its detail page.
 
@@ -235,15 +234,15 @@ Operators must prepare the
 Namespace approvals, runtime images, networking, model credential and exact-Agent
 grant, plus a Slack app with Socket Mode and channel membership. Slack requires a
 [channel proxy](../drivers/kubernetes-compute/networking-and-isolation.md).
-Verify this Agent and revision: admission proves neither channel connectivity nor
+Verify this Agent and version: admission proves neither channel connectivity nor
 repository operations. Repository permissions do not change Harness filesystem or
 approval policy; review both before demonstrating edits.
 
 ## Initial runtime credentials
 
 Select model authentication and bind Slack tokens as Namespace Secrets. When
-Compute requires them, OCC creates missing transport credentials before first
-revision admission; supported Dedicated provisioning does so during creation.
+Compute requires them, OCC creates missing transport credentials before saving the first
+version; supported Dedicated provisioning does so during creation.
 Neither path creates the selected `harnessAuth` model credential or channel tokens.
 
 Kubernetes generates an app-server token and local gateway password, never
@@ -261,10 +260,10 @@ Generation creates missing whole Secrets before any AgentRevision. It never
 rotates existing values and reuses complete, owned groups on retry. Secret
 names, shapes, password projection, and delivery per execution mode are in
 [Kubernetes runtime credentials](../drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials).
-Unexpected keys, foreign ownership, or malformed values cause a conflict. Failed generation creates no revision;
-retries reread status. A lost deployment reply requires revision-history
-readback. Created Secrets remain after later storage or audit failure. Missing
-credentials after a historical revision require investigation, not regeneration.
+Unexpected keys, foreign ownership, or malformed values cause a conflict. Failed generation creates no Agent revision;
+retries reread status. After a lost deployment reply, read version
+history. Created Secrets remain after later storage or audit failure. Missing
+credentials after an earlier Agent revision require investigation, not regeneration.
 
 On the **Credentials** tab, Slack token fields use the same Secret picker as
 creation; [Channel Secrets](../../guides/console/channels-and-credentials.md#channel-secrets)
@@ -279,14 +278,16 @@ provider acceptance, runtime readiness, or a channel connection.
 
 <span id="deploy-a-saved-draft"></span>
 
-## Deploy a new revision
+<a id="deploy-a-new-revision" class="anchor-alias"></a>
+
+## Deploy a new version
 
 Open **Create new version** and select **Deploy new version** after storing
 credentials, saving channel Secret bindings, and selecting harness authentication.
 To change plugins, edit **Plugins**, select **Save plugin selections**, then
-deploy. This action uses the saved Configuration and Agent plugin map; it does
-not redeploy or roll back a viewed snapshot. Every accepted request creates an
-immutable revision, even at the same Configuration generation. Earlier versions
+deploy. Deployment uses saved Configuration and the Agent plugin map; it does
+not redeploy or roll back viewed snapshots. Every accepted request creates an
+immutable Agent revision, even with unchanged Configuration generation. Earlier versions
 retain their snapshots; see the
 [Agent detail guide](../../guides/console/agent-details.md#plugins-tab).
 
@@ -296,19 +297,19 @@ These reads are not atomic with admission.
 Teams-enabled drafts cannot deploy through this console path because Teams credential
 readiness is not exposed; use the operator deployment workflow for those Agents.
 
-A refused deployment creates no revision. The console shows the API's reason when
-it names one, such as a Configuration setting Compute cannot serve or a grant the
+A refused deployment creates no Agent revision. The console shows any reason
+the API names, such as a Configuration setting Compute cannot serve or a grant the
 Agent's service principal lacks. Your own denial and unexplained conflicts keep
 the console's guidance.
 
 After a lost response, inspect **Versions** before retrying; the console does not
 repeat uncertain requests. **Deployment activity** follows the latest visible
 deployment; use the
-[deployment status API](../agents.md#deployment-status) for an exact revision.
+[deployment status API](../agents.md#deployment-status) for a specific Agent revision.
 Missing startup evidence leaves the cause unspecified. Stored evidence and
 [on-demand diagnostics](../../guides/console/agent-details.md#browse-versions-or-create-a-new-version)
 (Slack configuration, authentication, and connectivity when supported) do not
-prove serving or a model response. Give your operator Namespace ID, Agent ID, and the full revision ID from the URL's
+prove serving or a model response. Give your operator Namespace ID, Agent ID, and the full Agent revision ID from the URL's
 `revision` query parameter. Ask them to
 [verify that exact workload and get a real model response](../../guides/deploy/production-agents.md#verify-production-workloads).
 Do not create another Agent to verify this one.

@@ -83,33 +83,33 @@ input is not supported. The server validates document fields against the
 | `occ service-key revoke ID`                            | Revokes a service key.                                                                                                                                                                                                                                                                                                                                                                            |
 | `occ agent delete ID`                                  | Begins asynchronous Agent deletion, including its owned runtime state.                                                                                                                                                                                                                                                                                                                            |
 | `occ agent list`                                       | Lists authorized Agents in the selected Namespace.                                                                                                                                                                                                                                                                                                                                                |
-| `occ agent get ID`                                     | Reads an Agent's desired state and active revision.                                                                                                                                                                                                                                                                                                                                               |
+| `occ agent get ID`                                     | Reads an Agent's desired state and selected version.                                                                                                                                                                                                                                                                                                                                              |
 | `occ agent create --file FILE`                         | Creates an Agent draft.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ agent update ID --file FILE`                      | Updates editable Agent fields; the body must include `configurationId`.                                                                                                                                                                                                                                                                                                                           |
-| `occ agent deploy ID`                                  | Requests deployment and creates an immutable revision.                                                                                                                                                                                                                                                                                                                                            |
-| `occ agent revisions ID`                               | Lists the Agent's immutable revisions (deployment IDs), newest first, with configuration generation, deployment status, and `*` on the active one. Pages hold 50 (`--limit` up to 100); `--cursor` continues with older ones.                                                                                                                                                                     |
-| `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest revision you can read, and says on stderr how it relates to the active revision. The table shows the error as `CODE: message`; `--output json` keeps its data.                                                                                                       |
+| `occ agent deploy ID`                                  | Requests deployment and creates an immutable version.                                                                                                                                                                                                                                                                                                                                             |
+| `occ agent revisions ID`                               | Lists the Agent's immutable versions (deployment IDs), newest first, with configuration generation, deployment status, and `*` on the active one. Pages hold 50 (`--limit` up to 100); `--cursor` continues with older ones.                                                                                                                                                                      |
+| `occ agent deployment-status ID [DEPLOYMENT_ID]`       | Reads the durable status, error, and plugin startup warnings of one Agent deployment; without `DEPLOYMENT_ID`, of the latest version you can read, and says on stderr how it relates to the selected version. The table shows the error as `CODE: message`; `--output json` keeps its data.                                                                                                       |
 | `occ agent runtime-credentials get ID`                 | Reads whether generated runtime credentials are configured for the Agent.                                                                                                                                                                                                                                                                                                                         |
 | `occ agent runtime-credentials provision ID`           | Creates the initial generated runtime credential bundle (empty request body).                                                                                                                                                                                                                                                                                                                     |
-| `occ agent credential-withdrawal request ID SOURCE_ID` | Revokes a credential source from the Agent's active revision; see [withdrawal](credential-sources/withdrawal.md).                                                                                                                                                                                                                                                                                 |
+| `occ agent credential-withdrawal request ID SOURCE_ID` | Revokes a credential source from the Agent's selected version; see [withdrawal](credential-sources/withdrawal.md).                                                                                                                                                                                                                                                                                |
 | `occ agent credential-withdrawal get ID SOURCE_ID`     | Shows whether that withdrawal is `pending` or `revoked`, who requested it, and the reason code of the latest attempt.                                                                                                                                                                                                                                                                             |
-| `occ agent stop ID`                                    | Requests a stop while retaining revisions and persistent state; `occ agent deploy ID` starts it again.                                                                                                                                                                                                                                                                                            |
-| `occ agent runtime ID`                                 | Reads Pod status, restarts, last termination, log sources and Events for a revision. See [runtime logs](#runtime-status-and-logs).                                                                                                                                                                                                                                                                |
+| `occ agent stop ID`                                    | Requests a stop while retaining versions and persistent state; `occ agent deploy ID` starts it again.                                                                                                                                                                                                                                                                                             |
+| `occ agent runtime ID`                                 | Reads Pod status, restarts, last termination, log sources and Events for a version. See [runtime logs](#runtime-status-and-logs).                                                                                                                                                                                                                                                                 |
 | `occ agent logs ID --source SOURCE`                    | Prints one redacted page of container output, or follows it. See [runtime logs](#runtime-status-and-logs).                                                                                                                                                                                                                                                                                        |
 
 Use the [HTTP API](api.md) to work with ServiceAccounts and configured
 Backends, and to create or update [Presets](presets.md#crud-and-permissions);
 the CLI has no commands for these. Neither the CLI nor the HTTP API
-offers Configuration listing. An accepted deploy returns a revision; `agent get`
+offers Configuration listing. An accepted deploy returns a version; `agent get`
 shows desired state, `LIFECYCLE` (`active` or `deleting`), and the selected
-revision, not runtime health. Run `occ agent deployment-status ID` for the
+version, not runtime health. Run `occ agent deployment-status ID` for the
 latest deployment's status and error, and verify the model separately.
 
 For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
 `agent get` and `agent list` retain metadata and show
 `CONFIGURATION ERROR` with the affected field. JSON and YAML retain the typed
-`configurationReadError`. Revision history lists summaries, so it leaves
-deployment status null for an unreadable revision and names it on stderr; if
+`configurationReadError`. Version history lists summaries, so it leaves
+deployment status null for an unreadable version and names it on stderr; if
 the Agent itself is unreadable, it skips all status reads and explains why. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
 
 `service-key create --out FILE` sets the new file to `0600` before requesting a
@@ -128,10 +128,10 @@ instead.
 
 `installation deployment-inventory` requires Installation `administer`, exact
 `read` access to every Namespace and Agent, exact `read` access to each selected
-Agent's active revision, and exact `deploy` access to every running Agent that is
+Agent's selected version, and exact `deploy` access to every running Agent that is
 eligible for coordinated deployment. It fails instead of silently omitting an
 unauthorized resource. JSON and YAML output include each Agent's desired runtime
-state, execution mode, active revision, and whether deployment work is queued or
+state, execution mode, selected version, and whether deployment work is queued or
 claimed.
 
 ## Runtime status and logs
@@ -142,23 +142,23 @@ a candidate with Pods is read unless exact active metadata proves it older.
 Unreadable or invalid active metadata does not exclude that Pod candidate.
 A candidate with only provider Harness status (`running`, `starting`, or `lost`)
 needs to be proven newer; `unknown` alone is not runtime evidence. Otherwise
-both read the active revision, else the latest revision. They print the revision they
+both read the selected version, else the latest version. They print the Agent revision ID they
 read to stderr; a reader without Agent `operate` cannot probe runtime status, so the
-notice names the other readable revision to pass. Notices call any other revision newer or
-older only when the active revision's metadata proves it. `runtime` accepts `-o table|json|yaml`
-and needs Agent `operate` and `read` plus `read` on the revision. Its table output
+notice names the other readable version to pass. Notices call any other version newer or
+older only when the selected version's metadata proves it. `runtime` accepts `-o table|json|yaml`
+and needs Agent `operate` and `read` plus `read` on the Agent revision. Its table output
 ends with each Pod's Events (`POD`, `CONTAINER`, `TYPE`, `REASON`, `COUNT`,
 `LAST SEEN`, `MESSAGE`); `CONTAINER` is `-` for Pod-level Events. `logs` needs
-Agent `read_logs` (or `administer`) and `read`, which cover every revision, and
-each view is audited. Default revision selection lists only revisions you can
-`read`: without revision grants, `logs` reads the active revision without
-checking for a newer one, and an Agent with no active revision needs
+Agent `read_logs` (or `administer`) and `read`, which cover every version, and
+each view is audited. Default version selection lists only Agent revisions you can
+`read`: without Agent revision grants, `logs` reads the selected version without
+checking for a newer one, and an Agent with no selected version needs
 `--revision ID`.
 
 | `occ agent logs` flag  | Meaning                                                                                                                                                                                                    |
 | ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--source SOURCE`      | Required: `gateway`, `agent` (dedicated Harness container) or `sandbox` (OpenShell policy decisions; no `--pod` or `--previous`).                                                                          |
-| `--revision ID`        | Revision to read; defaults as described above.                                                                                                                                                             |
+| `--revision ID`        | Version to read; defaults as described above.                                                                                                                                                              |
 | `--pod NAME`           | Pod to read when the source has more than one.                                                                                                                                                             |
 | `--previous`           | Read the container instance before the last restart.                                                                                                                                                       |
 | `--tail N`             | Lines from the end of the stream, 1 to 1000 (default 200).                                                                                                                                                 |

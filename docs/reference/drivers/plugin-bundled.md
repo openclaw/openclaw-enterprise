@@ -260,12 +260,15 @@ including tool denies and profiles, is retained.
 
 ## Preparation and security
 
-Revision plugin state carries only requested IDs/policies and selected Driver
-identity. Compute resolves current native metadata and applies the resulting
-nonsecret configuration inside the exact revision workload before readiness. Codex installation is verified through native API metadata and effective configuration. Codex owns its private cache layout and integrity; Enterprise does not parse its cache records or version directories.
+Agent revision plugin state carries only requested IDs/policies and selected
+Driver identity. Compute resolves current native metadata and applies the
+resulting nonsecret configuration inside the workload with the same Agent
+revision ID before readiness. Codex installation is verified through native API
+metadata and effective configuration. Codex owns its private cache layout and
+integrity; Enterprise does not parse its cache records or version directories.
 Package files/configuration are revision-private. In Kubernetes, the native
 installation registry remains in the persistent Agent-owned OpenClaw state
-database. A different active revision keeps running during embedded-gateway
+database. A different selected version keeps running during embedded-gateway
 preparation; activation replaces it with a `Recreate` Deployment, so the new
 process installs only after the old gateway stops. This reuses the serialized
 lifecycle, with no database copy or plugin-specific coordinator.

@@ -52,7 +52,7 @@ not database reachability.
 Change database CA material only during stopped maintenance, then replace the Pod.
 
 The init container combines the IdP bundle with the Gateway CA, when selected, in a
-bounded memory volume. The API reads it through `NODE_EXTRA_CA_CERTS`, extending
+memory volume with a 4 MiB size limit. The API reads it through `NODE_EXTRA_CA_CERTS`, extending
 Node's public roots process-wide for API clients using default trust, including
 token/JWKS requests. Clients with an explicit CA store keep that store. IdP roots
 are not added to workers, Jobs or Agents: the chart also sets `OCC_GATEWAY_CA_PATH`

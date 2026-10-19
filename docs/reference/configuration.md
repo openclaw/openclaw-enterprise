@@ -192,7 +192,9 @@ dependency conflicts `409`, and unavailable authorization or storage `503`.
 
 Never put plaintext credentials in Configuration values. Use unresolved native SecretRefs and authorized same-Namespace Secret bindings for gateway credentials; select model credentials through Agent `harnessAuth`. See [Configuration secrets and channels](configuration/secrets.md) for binding permissions, complete examples, runtime delivery, and supported Slack/Teams settings.
 
-## Agent references and immutable revisions
+<a id="agent-references-and-immutable-revisions" class="anchor-alias"></a>
+
+## Agent references and immutable versions
 
 An Agent references one Configuration in its own Namespace:
 
@@ -210,12 +212,12 @@ permission for the exact referenced Configuration. Deployment deeply
 snapshots its admitted native document, including unresolved inline SecretRefs,
 into the immutable `AgentRevision.configuration` field and records
 `configurationId`, `configurationKind`, and `configurationGeneration` as
-separate revision fields. A selected [SandboxDriver](drivers/sandbox.md) may
+separate Agent revision fields. A selected [SandboxDriver](drivers/sandbox.md) may
 transform a copy through `configureAgent` before admission; the reusable
 Configuration and its generation remain unchanged. The snapshot contains that
 effective document, and its metadata identifies the source generation.
 Subsequent Configuration updates do not change a
-running gateway or existing revision; only a later explicit deployment observes
+running gateway or existing version; only a later explicit deployment observes
 the next generation. Deleting a Configuration still referenced by an Agent
 returns `409`.
 
@@ -223,7 +225,7 @@ Native OpenClaw provider settings in `values.channels` follow the same
 Configuration ownership and immutable Agent deployment lifecycle.
 
 Database constraints require the supported Configuration kind, a positive
-generation, matching Agent ownership, and a valid immutable admitted revision
+generation, matching Agent ownership, and a valid immutable saved version
 snapshot. The native configuration document keeps its existing root-object
 shape without a wrapper, reserved persistence key, or reconstruction from
 environment-variable names. `secretBindings` remain separate from `values` so
@@ -233,12 +235,12 @@ the native OpenClaw document.
 AgentRevisions retain their selected Compute Driver identity and immutable
 Configuration snapshot. Compute runtime settings are loaded from Installation
 startup YAML and are not copied into that snapshot. See the
-[Agent revision contract](agents/deployment.md#revisions-and-deployment) for the fields
+[Agent revision contract](agents/deployment.md#versions-and-deployment) for the fields
 admission freezes; immutable Configuration does not freeze all Driver settings.
 
 ## Kubernetes storage
 
-The Kubernetes Configuration Driver stores live native documents in tenant ConfigMaps. Compute creates separate immutable revision snapshots. See [Kubernetes Configuration storage](configuration/kubernetes.md) for placement, readiness, ownership, and exact RBAC requirements.
+The Kubernetes Configuration Driver stores live native documents in tenant ConfigMaps. Compute creates separate immutable version snapshots. See [Kubernetes Configuration storage](configuration/kubernetes.md) for placement, readiness, ownership, and exact RBAC requirements.
 
 ## Failure semantics and limitations
 
@@ -278,7 +280,7 @@ The Kubernetes Configuration Driver stores live native documents in tenant Confi
 - [Controller and PostgreSQL configuration](settings.md)
 - [Controller worker lifecycle](controller.md)
 - [Update and deploy Agent revisions](../guides/topics/agent-revisions.md)
-- [Agent Configuration, revisions, and deployment](agents.md)
+- [Agent Configuration, versions, and deployment](agents.md)
 - [Kubernetes Compute Driver](drivers/kubernetes-compute.md)
 - [Identity and access management](authorization.md)
 - [Configuration lifecycle implementation](../../packages/occ/src/index.ts)

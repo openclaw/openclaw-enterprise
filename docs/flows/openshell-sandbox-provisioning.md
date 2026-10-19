@@ -10,13 +10,11 @@ last_updated_session: fix-1692
 
 Kubernetes Compute delegates dedicated Codex and native OpenClaw to OpenShell. Operator mode owns Namespace Workspaces; managed mode fails before mutation.
 [Credential sources](credential-source-lifecycle.md) provide model access without
-Agent Secret permission. Codex authenticates Gateway requests through revision-owned
-files and OpenShell's bearer-passthrough endpoint, replacing the
+Agent Secret permission. Codex authenticates Gateway requests through files owned by the Agent revision and OpenShell's bearer-passthrough endpoint, replacing the
 Harness Service.
 
-Development workspace-node setup exposes a scoped bootstrap token through a
-revision-owned provider file. Both local control-plane profiles install the pinned
-Gateway and workspace chart.
+Development workspace-node setup exposes a scoped bootstrap token in the
+Agent revision's provider file. Both profiles install the pinned Gateway and workspace chart.
 
 ## Entry Points
 
@@ -33,7 +31,7 @@ Gateway and workspace chart.
 
 ```mermaid
 graph TD
-  A["<b>Reconcile revision</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
+  A["<b>Reconcile Agent revision</b><br/>Worker selects Drivers"] --> B["<b>Prepare Namespace</b><br/>Kubernetes isolation"]
   B --> C{"<b>Workspace mode</b><br/>Installation setting"}
   C -- "managed" --> X["<b>Reject configuration</b><br/>Before mutation"]
   C -- "operator" --> D["<b>Reconcile resources</b><br/>Labels and workspace chart"]
@@ -66,7 +64,7 @@ graph TD
   S -- "ready" --> Z{"<b>Active Harness</b>"}
   Z -- "Codex" --> L["<b>Run model turn</b><br/>Gateway to Codex"]
   Z -- "OpenClaw" --> U["<b>Run native turn</b>"]
-  L --> N["<b>Delete Sandbox</b><br/>Revision cleanup"]
+  L --> N["<b>Delete Sandbox</b><br/>Version cleanup"]
   U --> N
   N --> O["<b>Delete Workspace</b><br/>Namespace cleanup"]
   O --> P["<b>Delete Namespace</b><br/>Compute cleanup"]
@@ -91,18 +89,18 @@ graph TD
 `internal/occdev/kubernetes.go:writeInstallation`
 
 The Installation selects the `openshell` Backend and Drivers. Model profiles allow
-Node and x64/ARM64 Codex independently of launcher architecture. The pinned runtime
+Node and x64/ARM64 Codex regardless of launcher architecture. The pinned runtime
 enables Dedicated OpenClaw development with mandatory Landlock.
 
 `scripts/dev-up` validates Kubernetes/OpenShell and invokes `occ dev up`.
 Compose is default; `OCC_DEVELOPMENT_CONTROL_PLANE=kubernetes` selects Kubernetes-only.
-Before creating state, Kubernetes-only rejects API-port collisions and records
+Before state creation, Kubernetes-only rejects API-port collisions and records
 engine, cluster, namespace, port and key destination. Both verify the archive,
 package charts and import digest-pinned OpenShell images. Kubernetes-only also
 builds/selects OCE images, imports PostgreSQL and resolves cluster digests.
 
-Both profiles import OCE images before OpenShell images and workloads, preventing
-k3s garbage collection from removing idle OpenShell images during imports.
+Both profiles import OCE images before OpenShell images and workloads to prevent
+k3s garbage collection of idle OpenShell images.
 
 After Agent Sandbox rollout failure, `prepareOpenShell` invokes
 `internal/occdev/agent_sandbox_rollout_diagnostics.go:captureAgentSandboxRollout`
@@ -110,8 +108,8 @@ once, preserving the original error for rollback. It records Deployment,
 UID-linked ReplicaSets/Pods and Warning reasons without messages, environment,
 full labels or logs; unavailable, malformed or oversized results are marked.
 Limits: fresh 15-second context, three seconds and 256 KiB/command, 32 KiB/record.
-Commands are awaited; 200 ms pipe draining cannot terminate descendants. Output
-failures are ignored; writer latency/durability remain unbounded. Capture never retries.
+Commands are awaited; 200 ms pipe draining cannot terminate descendants.
+Output failures are ignored. The writer has no timeout or persistence guarantee. Capture never retries.
 
 After Helm, `network.providerHarness` records Gateway ClusterIP, Pod selector
 and TCP/8080. Agent Gateways alias only the advertised hostname to that address,
@@ -158,7 +156,7 @@ when enabled, OpenShell rejects before Gateway mutation because its pinned API
 cannot preserve the exact Agent ServiceAccount/token.
 
 For `credential_source`, Compute renders the catalog login mode without a model
-Secret and passes revision and `attachForRevision` provider names through
+Secret and passes version and `attachForRevision` provider names through
 `requirements.credentialAttachments`. For `chatgptAuthTokens`, OpenShell omits
 static `CODEX_ACCESS_TOKEN`, retaining account metadata. Codex receives only `APP_TOKEN_SHA` from its exact Agent transport
 Secret. Compute converts the admitted plugin snapshot into `runtime.json` and
@@ -168,7 +166,7 @@ Secret. Compute converts the admitted plugin snapshot into `runtime.json` and
 login modes and removes `appServer.networkProxy`.
 `deploy/runtime/openclaw-codex-full-access-profile.patch` sends the endpoint's
 `:danger-full-access` profile for threads/turns; constrained threads fail
-before a turn. First Agent warns: prior PAT `workspace-write` revisions break
+before a turn. First Agent warns: prior PAT `workspace-write` versions break
 shell tools; `--replace-key` deploys current policy.
 OpenShell blocks nested bubblewrap; model readiness does not prove shell execution.
 
@@ -176,7 +174,7 @@ PAT bootstrap (`prepareHarnessAuth`;
 `apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:AGENT_RUNTIME_ENTRYPOINT`)
 writes an opaque placeholder to private `auth.json`, clears the child override,
 and validates native login status. Scoped [PAT routes](../reference/drivers/openshell-credential-gateway.md#source-type-catalog)
-admit bootstrap/model traffic; failure keeps revisions inactive.
+admit bootstrap/model traffic; failure keeps versions inactive.
 API-key profiles bind immutable `config.base_url` plus `/**` (default OpenAI `/v1`),
 preserving prefixes including `/api/v1`. [Registration validation](credential-source-lifecycle.md#1-admit-the-registration-request)
 rejects invalid endpoints.
@@ -188,47 +186,45 @@ selects a named provider and HTTPS Responses transport.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:provisionHarness`
 
-Only dedicated Codex or OpenClaw revisions pinned to this Driver are accepted.
+Only dedicated Codex or OpenClaw versions pinned to this Driver qualify.
 Kubernetes, filesystem, process and binary-scoped network policy use the
 `v0.1.4` wire contract. `environment` preserves opaque
 `OCE_CODEX_CHATGPT_ACCOUNT` JSON during path relocation. Landlock is required; unsupported enums, inherited
 keys, old `passthrough` TLS spelling and missing executable paths fail before
 launch. Readiness `timeoutMs` must be a positive safe integer. The Installation
-loader names it; startup instead logs `startup-error` / `STARTUP_FAILED` before
+loader names it; startup logs `startup-error` / `STARTUP_FAILED` before
 Kubernetes calls. Duplicate names and reserved `workspace-node-enrollment` fail
 before Driver construction. Rename them, retaining binaries and endpoints.
 
-`provisionHarness` creates or adopts the provider with final setup. Expired setup renewal version-fences `UpdateProvider` to `node_setup_json`. For Codex, a bounded post-create delay precedes the exposed route; Compute rolls the Gateway before observing enrollment.
+`provisionHarness` creates or adopts the provider with final setup. Renewal checks the provider version and updates only `node_setup_json` through `UpdateProvider`. For Codex, a configured post-create delay of at most 120 seconds precedes route exposure. Compute rolls the Gateway before checking enrollment.
 
-Dedicated Codex requires one lowercase `APP_TOKEN_SHA`, no `APP_SERVER_TOKEN`,
-and two bounded plugin-free runtime inputs. Selected plugins, repository broker
+Dedicated Codex requires one lowercase `APP_TOKEN_SHA` and two runtime files
+without plugins, each at most 65,536 bytes. `APP_SERVER_TOKEN` is forbidden. Selected plugins, repository broker
 configuration, malformed files, and other Secret-backed environment fail before
 Gateway mutation.
 
-Revision providers use `oce-codex-runtime` or `oce-openclaw-runtime`. Both supply read-only setup and Gateway CA files; Codex requires `runtime.json` and `config.toml`, which native OpenClaw refuses. The validated setup Secret's complete expiring envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: OpenClaw signs the literal token in its device proof.
-Before renewal, the Driver requires the same endpoint and TLS fingerprint, an
-expired stored envelope, a later live expiry, and unchanged runtime and CA
-configuration. The Sandbox network policy limits the connection to the exact
-Gateway endpoint and `/usr/local/bin/node`. Foreign ownership or drift fails
-before Sandbox creation.
+Providers use `oce-codex-runtime` or `oce-openclaw-runtime`. Both supply read-only setup and Gateway CA files; Codex requires `runtime.json` and `config.toml`, which native OpenClaw refuses. The validated setup Secret's complete expiring envelope, including `bootstrapToken`, becomes `node-setup.json`. WebSocket rewriting is unsupported: OpenClaw signs the literal token in its device proof.
+Renewal requires the same endpoint, TLS fingerprint, runtime, and CA configuration.
+Renewal requires an expired stored envelope and a later live expiry. The Sandbox network policy limits the connection to the exact
+Gateway endpoint and `/usr/local/bin/node`. Foreign ownership or drift prevents Sandbox creation.
 
-The Driver mounts revision state at `/sandbox/.openclaw-runtime` and persistent
+The Driver mounts version state at `/sandbox/.openclaw-runtime` and persistent
 subpaths below `/sandbox/.openclaw-mounts`. Admitted `/home/node` paths move under
-the runtime home, declared as `harnessHome` for native hook credentials. Codex
+runtime `harnessHome` for native hook credentials. Codex
 hooks trust the provider-file Gateway CA and require node-reachable routing.
 `OPENCLAW_NODE_STATE_DIR` uses a process-created `state` child to avoid atomic
 replacement through symlinks/root-owned mounts. Workspace, node identity, sessions
 and images stay separate. The supervisor probes `/tmp`; native `TMPDIR` is a
-private runtime-home `tmp` child.
+private `tmp` child under the runtime home.
 
-`prepareNativeWorkspace` uses a restricted revision-owned Deployment to privatize
-writable PVC subpaths, preserving retained entries. Verification checks mode and
-process ownership before UID-fenced foreground deletion and writer Pod termination.
+`prepareNativeWorkspace` uses a restricted Deployment for the Agent revision to privatize
+writable PVC subpaths, preserving retained entries. Mode and process ownership checks precede
+UID-fenced foreground deletion and writer Pod termination.
 Preparation requires `userNamespaces: false` and the pinned Gateway's default
-identity. It adds no model credential, ServiceAccount token, capability or direct
+identity, without model credentials, ServiceAccount tokens, capabilities, or direct
 Pod creation.
 
-Initial document delivery remains separate from native subpath preparation.
+Document delivery is separate from native subpath preparation.
 After Sandbox readiness, `initializeWorkspace` checks the private setup Secret's
 Namespace, Agent and setup identity, then sends the shared initializer and JSON
 stdin through authenticated `ExecSandbox`. A workspace `flock` serializes attempts;
@@ -236,37 +232,35 @@ the Harness waits for its completion marker. See [workspace initialization](work
 
 Credential attachments require OCC `oce-cs-` names without static-provider duplicates.
 Model profiles bind access to the selected Codex/Node executable. Production
-qualification remains outstanding.
+qualification is incomplete.
 
 ### 4. Call the versioned gateway contract
 
 `apps/controller/src/drivers/sandbox/openshell-gateway-client.ts:createSandbox`
 
-The client sends Sandbox identity/spec, Workspace scope and one of 16 `request_id`
-values: revision UUID, then 15 derived IDs. After `REQUEST_OUTCOME_UNCERTAIN`,
+The client sends Sandbox identity/spec, Workspace scope, and one of 16
+`request_id` values: Agent revision UUID, then 15 derived IDs. After `REQUEST_OUTCOME_UNCERTAIN`,
 `REQUEST_ID_PAYLOAD_MISMATCH` or `REQUEST_REPLAY_UNAVAILABLE` it advances once
 `getSandbox` finds nothing. Unresolved IDs never expire; completed records do
 after 24 hours. Names are Workspace-unique. At 1,000 live/unresolved
 records, `RESOURCE_EXHAUSTED` becomes transient `SANDBOX_ADMISSION_LIMIT_REACHED`:
-revision preparation waits without spending attempts until its convergence
+Preparation waits without spending attempts until its convergence
 deadline; Namespace work retries. Each Harness takes one unnamed
 bearer-passthrough `APP_SERVER_PORT` exposure (Codex transport, native held
-failure); only Codex returns a URL. The Driver reads first and adopts an existing
-or `ALREADY_EXISTS` Sandbox only with exact Workspace, labels, annotations, spec,
-neither stopped nor deleting. Workspace `sandbox:write` permits replacement and
+failure); only Codex returns a URL. The Driver reads first. It adopts an existing or `ALREADY_EXISTS` Sandbox only
+when Workspace, labels, annotations, and spec match exactly and it is neither stopped nor deleting. Workspace `sandbox:write` permits replacement and
 bounds trust. Native exposure ends once a post-enrollment pass confirms its
 delete, by `withdrawHarnessExposure`, adoption or recreation with
 `workspaceNodeEnrolled`.
 
-The Backend reuses clients, retrying setup. Cancellation is
-checked after setup/credential preparation, so stalled initialization/file reads
-remain unbounded. After dispatch, cancellation stops local gRPC; remote mutations
+The Backend reuses clients, retrying setup. Cancellation is checked after
+setup/credential preparation; stalled initialization/file reads have no cancellation deadline. After dispatch, cancellation stops local gRPC; remote mutations
 may continue, requiring recovery.
 
-`GetService` separates the control URL from advertised workload host/port.
-`harnessEndpoint` returns its WebSocket origin and configured
-`sandboxDataMount.mountPath` (default `/sandbox/enterprise`). Native-hook storage
-uses `harnessHome`, mode `0700`. Invalid or changed exposure fails closed.
+`GetService` separates control URL and advertised workload host/port.
+`harnessEndpoint` returns WebSocket origin and configured
+`sandboxDataMount.mountPath` (default `/sandbox/enterprise`). Native hooks
+use `harnessHome`, mode `0700`. Invalid or changed exposure fails closed.
 
 `apps/controller/src/drivers/sandbox/openshell.ts:harnessStatus` probes the
 authenticated WebSocket handshake before reading a held-failure document;
@@ -274,20 +268,18 @@ unanswered reads are transient `SANDBOX_GATEWAY_UNAVAILABLE`.
 `apps/controller/src/drivers/sandbox/openshell-service-transport.ts:serviceWebSocketHandshake`
 destroys HTTP refusals at once, releasing their connections.
 
-Provider files use reported absolute paths; Gateway failure prevents
-readiness. Revision providers survive uncertain creates; cleanup deletes their
-Sandbox first.
+Provider files use reported absolute paths. Gateway failure blocks readiness.
+Providers survive uncertain creates; cleanup deletes their Sandbox first.
 
-OpenShell's supervisor opens the node connection. Kubernetes-only uses the
-in-cluster WSS route; Compose uses the Agent Gateway Service URL. In both cases,
-policy binds the executable/supervisor to that destination. When process-group
-signaling returns `EPERM`, the supervisor uses direct signaling.
+The OpenShell supervisor connects through in-cluster WSS on Kubernetes or the
+Agent Gateway Service URL on Compose. Policy binds the executable/supervisor to
+that destination. On process-group `EPERM`, the supervisor signals the process directly.
 
 ### 5. Observe readiness or clean up
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`
 
-Compute verifies revision ownership. For Codex, `harnessEndpoint` replaces
+Compute checks the deployment's Namespace, Agent, ServicePrincipal, and Agent revision IDs. For Codex, `harnessEndpoint` replaces
 fail-closed transport with `APP_SERVER_URL`, `OPENCLAW_REMOTE_WORKSPACE_ROOT` and
 `OPENCLAW_CODEX_PROVIDER_PERMISSION_PROFILE`; owned k3d pins the provider host
 alias. `gatewayConfigurationDocument` keeps Gateway workspace `/home/node/workspace`;
@@ -299,31 +291,31 @@ preserves a serving predecessor; activation resolves the candidate again. Withou
 `harnessEndpoint`, Codex retains Kubernetes transport and `/home/node/workspace`.
 Native OpenClaw enrolls outbound into its admitted workspace.
 
-Compute waits for the provider Harness Pod and this revision's enrolled node
-(named in the Secret); missing enrollment keeps it inactive. The Codex supervisor
+Compute awaits the Harness Pod and the Secret's enrolled node.
+Missing enrollment prevents activation. The Codex supervisor
 rereads the provider setup before every node retry, keeping the latest valid
 value while the projection is unavailable. It relaunches the workspace-node
 process one second after every exit, uncapped, so Gateway rollout does not
-strand the Sandbox. Shutdown stops the loop.
+strand the Sandbox. Shutdown stops retries.
 
 Compute checks sources through `attachmentStatus`/`GetSandboxProviderStatus`:
 `pending` or missing status retries; `failed`, `withheld`, `revoked` or `absent`
-fails preparation. Shutdown calls revision `cleanup`: `GetSandbox`, then
+fails preparation. Shutdown calls `cleanup` for the version: `GetSandbox`, then
 `DeleteSandbox` (absence needs `GetWorkspace` and a second `GetSandbox`), then
 deletes the runtime provider. `cleanupNativeWorkspace` retires
 interrupted preparers without a Sandbox, refusing foreign/replaced resources. Namespace cleanup
 removes unused runtime profiles.
 
-After revisions retire, Namespace `cleanup` verifies Workspace ownership, removes
+After retirement, Namespace `cleanup` verifies Workspace ownership, removes
 owned providers/profile, sends idempotent `DeleteWorkspace`, then removes chart
-resources/NetworkPolicies in reverse order. A terminating Workspace retries after
-a lost response. Compute deletes the Kubernetes namespace only after cleanup succeeds.
+resources/NetworkPolicies in reverse order. Terminating Workspaces retry after
+lost responses. Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
 ## Debugging and verification
 
-The [testing guide](../testing/openshell.md) owns prerequisites and proof. Compose
-requires the provider ClusterIP, advertised `ws://*.openshell.localhost:8080/`
-route and inactive direct Service. Native model execution requires real runtime
+The [testing guide](../testing/openshell.md) defines prerequisites and proof. Compose
+needs the provider ClusterIP, advertised `ws://*.openshell.localhost:8080/`
+route, and inactive direct Service. Native model execution requires real runtime
 proof on a Landlock-capable host; Console admission and initialized files are insufficient.
 
 ## Related docs

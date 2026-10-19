@@ -154,7 +154,7 @@ Namespace, and a different Namespace cannot use that Agent ID to bypass
 authorization or ownership checks.
 
 Each deployed Agent owns exactly one gateway, created with its workload and
-reused across its revisions. A Namespace can therefore contain zero gateways
+reused across its versions. A Namespace can therefore contain zero gateways
 before deployment or multiple gateways for different Agents; Namespace
 readiness does not depend on a gateway. When explicitly selected, the
 Kubernetes Compute Driver uses one isolated Kubernetes namespace and,

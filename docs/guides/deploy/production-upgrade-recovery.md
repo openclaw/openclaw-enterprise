@@ -44,23 +44,23 @@ release. Prefer a reviewed forward fix; neither Helm rollback nor the helper
 reverses committed migrations.
 
 For an unknown Agent dispatch, the helper saves an Agent readback and stops
-without replaying it. Inspect the exact Agent's authorized revision history,
+without replaying it. Inspect the exact Agent's authorized version history,
 deployment status, and audit records, and allow any in-flight request to finish.
-An unchanged active revision alone does not prove rejection, and a filtered
-revision list does not prove absence. If you can identify the accepted revision,
+An unchanged selected version alone does not prove rejection, and a filtered
+version list does not prove absence. If you can identify the accepted version,
 record a private `dispatch/<same-prefix-as-intent>.json` containing its `id`;
 the helper checks that exact deployment's status on resume. If evidence proves
 the request was not accepted, deploy that Agent once with the ordinary OCC CLI
 and save its successful JSON response under that name. Preserve the `.intent`,
 error, and readback evidence. If the result is still uncertain, stop and
-investigate rather than submitting another request. For a known failed revision,
+investigate rather than submitting another request. For a known failed version,
 inspect its failure and explicitly deploy an authorized replacement before
 recording that replacement's response; preserve the original response separately.
 Each deployment snapshots current drafts.
 
-For an accepted revision, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
+For an accepted version, set `OCC_NAMESPACE` and `OCC_AGENT` to the exact
 Agent IDs, `DISPATCH_PREFIX` to the matching evidence path without `.intent` or
-`.json`, and `REVISION_ID` to the independently confirmed revision. Verify the exact Agent and deployment before recording it:
+`.json`, and `REVISION_ID` to the independently confirmed version. Verify the exact Agent and deployment before recording it:
 
 ```bash
 if test -z "$REVISION_ID"; then
@@ -95,7 +95,7 @@ the previous controller image after the check below.
 
 Before selecting an older controller or runtime image, verify it can read all
 state written by the candidate and restore compatible data if required. Never
-delete Agents, revisions, PVCs, or the bootstrap volume to force recovery.
+delete Agents, versions, PVCs, or the bootstrap volume to force recovery.
 
 ## Correct an invalid Installation name
 

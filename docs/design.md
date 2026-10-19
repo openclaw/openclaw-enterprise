@@ -38,13 +38,13 @@ planned. The two-cluster profile is experimental.
 
 Each deployment owns exactly one server-selected Installation containing isolated
 Namespaces. A Namespace is a logical tenant boundary; it can span more than one
-physical Kubernetes namespace. Each deployed Agent owns its gateway and revision
+physical Kubernetes namespace. Each deployed Agent owns its gateway and version
 history. OCC manages multiple single-Agent runtimes rather than making one
 OpenClaw gateway multi-tenant.
 
 OCC owns platform resources and immutable deployment snapshots. External systems
 retain ownership of infrastructure, provider accounts, credentials, and model
-sources. Drivers operate those systems through bounded contracts; they cannot
+sources. Drivers operate those systems through interfaces with defined responsibilities; they cannot
 grant themselves authorization or change platform-resource ownership.
 
 <a id="non-goals"></a>
@@ -122,7 +122,7 @@ flowchart TB
 Namespaces contain Configurations, ServiceAccounts, Secrets, CredentialSources,
 Presets, and Agents. Each Agent owns immutable AgentRevisions. References must
 stay within their admitted scope. Optional Agent-owned plugin selections are
-snapshotted in revisions and resolved by the selected PluginDriver at startup.
+saved in Agent revisions and resolved by the selected PluginDriver at startup.
 
 [Concepts](guides/concepts.md) explains these resources.
 [Resources and tenant boundaries](design/resources.md) records their design
@@ -172,19 +172,20 @@ to related Drivers within their documented experimental scope.
 Compute owns Namespace infrastructure and each Agent's gateway and workload
 lifecycle: preparation, readiness, activation, stop, retirement, and deletion.
 An optional SandboxDriver participates through Compute and can provision a
-dedicated Harness. Its revision and Namespace cleanup must complete before
+dedicated Harness. Its cleanup for each Agent revision and Namespace must complete before
 Compute releases the corresponding infrastructure.
 
 A CredentialGatewayDriver holds registered model credentials and supplies
-revision attachments to its paired Sandbox; activation waits for applied
+attachments for each Agent revision to its paired Sandbox; activation waits for applied
 attachments. The OpenShell development profile implements a plugin-free
 dedicated Codex path through experimental provider files and bearer passthrough.
 Real activation remains conditional on the documented identity, storage,
 admission, and gateway-authentication preconditions. See
 [Sandbox](reference/drivers/sandbox.md) and
 [OpenShell limits](reference/drivers/openshell-sandbox.md).
-Other Drivers participate through bounded
-[Compute lifecycle hooks](flows/compute-driver-lifecycle-hooks.md).
+Other Drivers participate through
+[Compute lifecycle hooks](flows/compute-driver-lifecycle-hooks.md) with defined
+startup and cleanup operations.
 
 ## Agent execution
 
@@ -211,12 +212,12 @@ AgentRevision for asynchronous provisioning. The successful path is:
 2. The worker reauthorizes the caller, ensures backing infrastructure through
    Compute, and records readiness.
 3. Authorize deployment and each protected reference; snapshot admitted inputs
-   in a revision and queue its work.
+   in an Agent revision and queue its work.
 4. The worker reauthorizes, prepares the exact Agent runtime, and checks readiness.
-5. Activate through the Driver's commit ordering, record the active revision
+5. Activate through the Driver's commit ordering, record the selected version
    under the live work claim, and retire the predecessor.
 
-Editing a draft does not change the running revision. Admission does not prove
+Editing a draft does not change the running version. Admission does not prove
 runtime readiness. Replacement may interrupt service; embedded replacement can
 stop the predecessor before replacement credentials are validated. See
 [authentication during replacement](reference/harness-execution.md#harness-authentication),
@@ -227,7 +228,7 @@ stop the predecessor before replacement credentials are validated. See
 
 IAM checks exact resources and protected references. Agent-scoped identities,
 Namespace isolation, and explicit Secret bindings constrain access. Secret
-values stay out of OCC resource responses, revisions, and audit records.
+values stay out of OCC resource responses, Agent revisions, and audit records.
 Required authorization or audit failures block mutations.
 
 Kubernetes uses restricted Pod security, scoped ServiceAccounts, and

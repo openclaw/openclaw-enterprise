@@ -117,8 +117,8 @@ provisioning rejects Configuration creation with `409` until the worker marks
 the Namespace `ready`. Compute uses the same resolved namespace for workloads,
 dedicated Agent-owned shared PersistentVolumeClaims, private gateway state
 claims, credentials, and deletion cleanup. Existing exact Namespace, Agent,
-revision, service-account, and child-resource ownership checks remain unchanged.
-Revision retirement preserves the current gateway and its owned claims; final
+version, service-account, and child-resource ownership checks remain unchanged.
+Version retirement preserves the current gateway and its owned claims; final
 gateway teardown removes the exact-owned private and shared claims by UID.
 
 ### 4. Preserve externally owned namespaces during deletion
