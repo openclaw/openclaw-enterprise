@@ -67,6 +67,9 @@ Gateway access, real model and tool turns, credential delivery, restricted
 filesystem and network access, replacement, and cleanup. Local fixture tests
 alone do not prove these outcomes. See [OpenShell coverage](openshell-coverage.md) for the individual checks.
 
+For direct Codex file runs, also provide the
+[policy fixture's migrator connection](openshell-coverage.md#agent-network-policy).
+
 The suite delivers initial workspace files through real `ExecSandbox` and reads
 them through the Agent API. Separate startup integration checks completion
 markers, uncertain acknowledgments and edit preservation with a local native
@@ -130,6 +133,10 @@ Drivers, but neither qualifies a production installation. The separate native
 Sandbox case uses a test-only compatibility bridge. Use the k3d helper below to
 run that case. The [Sandbox Driver reference](../reference/drivers/openshell-sandbox.md#qualification-contract)
 describes the remaining limits.
+
+Codex also exercises Python deny/grant/allow/revoke, loaded-version confirmation
+across a worker restart, isolation from another Agent, and disabling edits while
+preserving access. Suggestions and decorated logs are read through OCC.
 
 ### Native OpenClaw with k3d
 

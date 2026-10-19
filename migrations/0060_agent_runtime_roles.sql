@@ -36,7 +36,7 @@ GRANT UPDATE (runtime_role) ON occ.iam_access_bindings TO occ_app;
 ALTER TABLE occ.iam_restrictions DROP CONSTRAINT iam_restrictions_action_valid;
 --> statement-breakpoint
 ALTER TABLE occ.iam_restrictions ADD CONSTRAINT iam_restrictions_action_valid CHECK (
-  action IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'use')
+  action IN ('create', 'read', 'update', 'delete', 'deploy', 'operate', 'administer', 'read_logs', 'manage_policy', 'use')
 );
 --> statement-breakpoint
 -- Preserve current human native administrators as explicit, revocable assignments.

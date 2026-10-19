@@ -160,7 +160,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
   let descriptionAbort;
   const status = element(
     "p",
-    { className: "hint", role: "status", "aria-live": "polite" },
+    { className: "hint", role: "status" },
     "Loading approved repositories…",
   );
   const validation = element("p", {

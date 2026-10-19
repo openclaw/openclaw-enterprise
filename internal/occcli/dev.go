@@ -25,6 +25,8 @@ func developmentCommand() *cobra.Command {
 		{"down", "Stop the selected development stack"},
 	} {
 		var keyOutput string
+		var sandboxNetworkPolicyFile string
+		var sandboxNetworkPolicyCeilingFile string
 		var volumes bool
 		child := &cobra.Command{
 			Use:   action.name + " [-- COMPOSE_GLOBAL_OPTIONS...]",
@@ -40,7 +42,7 @@ func developmentCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				options := occdev.Options{Repository: repository, KeyOutput: keyOutput, ComposeArgs: args, Volumes: volumes, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}
+				options := occdev.Options{Repository: repository, KeyOutput: keyOutput, SandboxNetworkPolicyFile: sandboxNetworkPolicyFile, SandboxNetworkPolicyCeilingFile: sandboxNetworkPolicyCeilingFile, ComposeArgs: args, Volumes: volumes, Out: cmd.OutOrStdout(), Err: cmd.ErrOrStderr()}
 				if action.name == "down" {
 					return occdev.Down(cmd.Context(), options)
 				}
@@ -48,6 +50,9 @@ func developmentCommand() *cobra.Command {
 				case "kubernetes":
 					return occdev.Up(cmd.Context(), options)
 				case "", "docker":
+					if sandboxNetworkPolicyFile != "" || sandboxNetworkPolicyCeilingFile != "" {
+						return fmt.Errorf("Sandbox policy input requires Kubernetes Compute and a Sandbox Driver")
+					}
 					if err := occdev.CheckDevelopmentSignIn(os.Getenv); err != nil {
 						return err
 					}
@@ -83,6 +88,8 @@ func developmentCommand() *cobra.Command {
 		}
 		if action.name == "up" {
 			child.Flags().StringVar(&keyOutput, "key-output", "", "Absent absolute path in a private directory for the bootstrap service key")
+			child.Flags().StringVar(&sandboxNetworkPolicyCeilingFile, "sandbox-network-policy-ceiling-file", "", "YAML file bounding per-Agent network policy additions; grants no access")
+			child.Flags().StringVar(&sandboxNetworkPolicyFile, "sandbox-network-policy-file", "", "YAML file of additional OpenShell binary and endpoint network policies")
 		} else {
 			child.Flags().BoolVar(&volumes, "volumes", false, "Also delete Docker Compose volumes (Kubernetes cleanup always deletes its volumes)")
 		}

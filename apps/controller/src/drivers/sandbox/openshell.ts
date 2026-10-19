@@ -1,3 +1,18 @@
+import { openShellLogDecision } from "./openshell-log-decisions.ts";
+import {
+  AGENT_POLICY_PREFIX,
+  openShellAgentNetworkRules,
+  openShellPolicyCandidate,
+  sameOpenShellPolicy,
+} from "./openshell-policy.ts";
+import { immutableCopy } from "@openclaw-enterprise/utils";
+import type {
+  SandboxNetworkGrant,
+  SandboxPolicySnapshot,
+  SandboxPolicyObservation,
+  SandboxPolicyRecommendations,
+  SandboxPolicyRecommendation,
+} from "@openclaw-enterprise/contracts";
 import { asRecord, isNonEmptyString, sha256Hex } from "@openclaw-enterprise/utils";
 import {
   KubernetesObjectApi,
@@ -1973,7 +1988,8 @@ function sandboxSpec(
         run_as_group: options.policy.process.runAsGroup,
       },
       network_policies: {
-        ...networkPolicies(options),
+        ...(revision.sandboxPolicy?.defaults ?? networkPolicies(options)),
+        ...openShellAgentNetworkRules(revision.sandboxPolicy?.additions ?? []),
         ...(runtimeProvider === undefined || workspaceNodeBinding === undefined
           ? {}
           : workspaceNodeNetworkPolicy(workspaceNodeBinding)),
@@ -2134,7 +2150,47 @@ export const configurationSchema = Object.freeze({
   properties: {
     gateway: { type: "object" },
     kubernetes: { type: "object" },
-    policy: { type: "object" },
+    policy: {
+      type: "object",
+      properties: {
+        networkPolicies: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            required: ["name", "binaries", "endpoints"],
+            properties: {
+              name: { type: "string" },
+              binaries: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["path"],
+                  properties: { path: { type: "string" } },
+                },
+              },
+              endpoints: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  required: ["host", "ports"],
+                  properties: {
+                    host: { type: "string" },
+                    ports: { type: "array", items: { type: "integer" } },
+                    protocol: { type: "string" },
+                    tls: { type: "string" },
+                    enforcement: { type: "string" },
+                    access: { type: "string" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     sandboxNamePrefix: { type: "string" },
     startupDelayMs: { type: "integer", minimum: 1, maximum: MAX_SANDBOX_STARTUP_DELAY_MS },
     logLevel: { type: "string" },
@@ -2407,6 +2463,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   readonly facets = Object.freeze(["networking", "filesystem", "process"] as const);
   // environment() sets HOME to this for every Sandbox it creates.
   readonly harnessHome = OPENSHELL_HOME;
+  readonly networkPolicy = Object.freeze({ wildcards: true, portRanges: true, live: true });
   private readonly options: OpenShellSandboxDriverOptions;
   private readonly backend: Backend<OpenShellGateway>;
 
@@ -3167,6 +3224,231 @@ export class OpenShellSandboxDriver implements SandboxDriver {
    * path cannot create, delete or exec into a Sandbox. The Sandbox name is derived from
    * the revision exactly as at provisioning.
    */
+  admitNetworkPolicy(
+    additions: readonly SandboxNetworkGrant[],
+    version: number,
+    defaults?: SandboxPolicySnapshot["defaults"],
+  ): SandboxPolicySnapshot {
+    openShellAgentNetworkRules(additions);
+    const rules = defaults ?? networkPolicies(this.options);
+    if (Object.keys(rules).some((name) => name.startsWith(AGENT_POLICY_PREFIX))) {
+      throw new Error("Default policy uses a reserved Agent policy name.");
+    }
+    return immutableCopy({
+      driverId: this.id,
+      implementation: this.implementation,
+      version,
+      defaults: rules as OpenClawConfigurationDocument,
+      additions,
+    });
+  }
+
+  private async policyTarget(context: SandboxLogContext) {
+    this.requireOperatorWorkspaceMode("read or apply an Agent network policy");
+    if (
+      context.revision.namespaceId !== context.namespace.id ||
+      context.revision.sandboxDriverId !== this.id
+    ) {
+      throw new Error("Invalid policy revision scope.");
+    }
+    const ref = this.sandboxRef(context);
+    const client = this.gatewayClientForNamespace(ref.namespaceName);
+    const request = { sandbox: ref.resourceName, workspace: workspaceName(context.namespace) };
+    const sandbox = await client.getSandbox(
+      { name: request.sandbox, workspace: request.workspace },
+      context.signal,
+    );
+    if (
+      sandbox === undefined ||
+      sandbox.name !== request.sandbox ||
+      sandbox.workspace !== request.workspace ||
+      sandbox.annotations["openclaw.dev/namespace-id"] !== context.namespace.id ||
+      sandbox.annotations["openclaw.dev/agent-id"] !== context.revision.agentId ||
+      sandbox.annotations["openclaw.dev/revision-id"] !== context.revision.id ||
+      sandbox.resourceVersion === undefined
+    ) {
+      throw new Error("The Sandbox is unavailable or has different ownership.");
+    }
+    return { client, request, sandbox };
+  }
+
+  async observeNetworkPolicy(
+    context: SandboxLogContext,
+    snapshot: SandboxPolicySnapshot,
+  ): Promise<SandboxPolicyObservation> {
+    if (snapshot.driverId !== this.id || snapshot.implementation !== this.implementation) {
+      throw new Error("Unsupported policy snapshot.");
+    }
+    const { client, request, sandbox } = await this.policyTarget(context);
+    if (client.getPolicyStatus === undefined) {
+      throw new Error("Policy status is unavailable.");
+    }
+    const baseline = asRecord(sandbox.spec?.policy);
+    if (baseline === undefined) {
+      throw new Error("Missing policy baseline.");
+    }
+    const candidate = openShellPolicyCandidate(baseline, snapshot);
+    const status = await client.getPolicyStatus(request, context.signal);
+    const matches = sameOpenShellPolicy(status.policy, candidate);
+    const state =
+      status.state === "POLICY_STATUS_LOADED" && status.activeVersion === status.version
+        ? "applied"
+        : status.state === "POLICY_STATUS_FAILED" || status.state === "POLICY_STATUS_SUPERSEDED"
+          ? "failed"
+          : "pending";
+    return {
+      resourceVersion: sandbox.resourceVersion!,
+      policyVersion: String(status.version),
+      state,
+      matches,
+    };
+  }
+
+  async applyNetworkPolicy(
+    context: SandboxLogContext,
+    input: {
+      readonly snapshot: SandboxPolicySnapshot;
+      readonly expectedProviderVersion: string;
+      readonly operationId: string;
+    },
+  ): Promise<void> {
+    const { client, request, sandbox } = await this.policyTarget(context);
+    if (
+      input.snapshot.driverId !== this.id ||
+      input.snapshot.implementation !== this.implementation ||
+      client.updatePolicy === undefined
+    ) {
+      throw new Error("Live policy application is unsupported.");
+    }
+    const baseline = asRecord(sandbox.spec?.policy);
+    if (baseline === undefined) {
+      throw new Error("Missing policy baseline.");
+    }
+    await client.updatePolicy(
+      {
+        ...request,
+        policy: openShellPolicyCandidate(baseline, input.snapshot),
+        expectedResourceVersion: input.expectedProviderVersion,
+        requestId: input.operationId,
+      },
+      context.signal,
+    );
+  }
+
+  async readPolicyRecommendations(
+    context: SandboxLogContext,
+    limit: number,
+  ): Promise<SandboxPolicyRecommendations> {
+    const { client, request } = await this.policyTarget(context);
+    if (
+      client.getPolicyDrafts === undefined ||
+      !Number.isInteger(limit) ||
+      limit < 1 ||
+      limit > 32
+    ) {
+      throw new Error("Policy recommendations are unavailable.");
+    }
+    const drafts = await client.getPolicyDrafts(request, context.signal);
+    const chunks = drafts.chunks;
+    const recommendations: SandboxPolicyRecommendation[] = [];
+    let omitted = false;
+    for (const chunk of chunks) {
+      const rule = asRecord(chunk.proposed_rule);
+      const binaries = rule?.binaries;
+      const endpoints = rule?.endpoints;
+      // Only lossless, binary-scoped L4 suggestions fit this contract. Never broaden a richer rule.
+      if (
+        !Array.isArray(binaries) ||
+        binaries.length !== 1 ||
+        !Array.isArray(endpoints) ||
+        endpoints.length !== 1 ||
+        typeof chunk.id !== "string" ||
+        !["pending", "approved", "rejected"].includes(String(chunk.status))
+      ) {
+        omitted = true;
+        continue;
+      }
+      const endpoint = asRecord(endpoints[0]);
+      const binary = asRecord(binaries[0])?.path;
+      const ports = endpoint?.ports ?? (endpoint?.port ? [endpoint.port] : []);
+      if (
+        typeof binary !== "string" ||
+        typeof endpoint?.host !== "string" ||
+        !Array.isArray(ports) ||
+        ports.length === 0 ||
+        ports.length > 16 ||
+        ![undefined, "", "tcp"].includes(endpoint.protocol as string | undefined) ||
+        (endpoint.path !== undefined && endpoint.path !== "")
+      ) {
+        omitted = true;
+        continue;
+      }
+      const representable = new Set([
+        "host",
+        "port",
+        "ports",
+        "protocol",
+        "tls",
+        "enforcement",
+        "advisor_proposed",
+      ]);
+      const hasRestrictions = Object.entries(endpoint).some(([key, value]) => {
+        if (representable.has(key) || key.startsWith("_")) {
+          return false;
+        }
+        if (Array.isArray(value)) {
+          return value.length > 0;
+        }
+        return (
+          value !== undefined &&
+          value !== null &&
+          value !== "" &&
+          value !== false &&
+          value !== 0 &&
+          (typeof value !== "object" || Object.keys(value).length > 0)
+        );
+      });
+      if (
+        hasRestrictions ||
+        ![undefined, "", "NETWORK_TLS_MODE_SKIP"].includes(endpoint.tls as string | undefined) ||
+        ![
+          undefined,
+          "",
+          "NETWORK_ENFORCEMENT_MODE_UNSPECIFIED",
+          "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+        ].includes(endpoint.enforcement as string | undefined)
+      ) {
+        omitted = true;
+        continue;
+      }
+      const grant = {
+        id: `suggestion-${chunk.id}`,
+        binary,
+        host: endpoint.host,
+        ports: ports.map((port) => ({ from: Number(port), to: Number(port) })),
+      };
+      try {
+        openShellAgentNetworkRules([grant]);
+      } catch {
+        omitted = true;
+        continue;
+      }
+      if (recommendations.length === limit) {
+        omitted = true;
+        break;
+      }
+      recommendations.push({
+        id: chunk.id,
+        status: chunk.status as SandboxPolicyRecommendation["status"],
+        grant,
+        ...(Number.isSafeInteger(chunk.hit_count) && Number(chunk.hit_count) >= 0
+          ? { observations: Number(chunk.hit_count) }
+          : {}),
+      });
+    }
+    return { recommendations, truncated: omitted, providerVersion: drafts.version };
+  }
+
   async readSandboxLogs(
     context: SandboxLogContext,
     request: SandboxLogRequest,
@@ -3210,7 +3492,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     return Object.freeze({
       sandbox: sandbox.resourceName,
       observedAt: new Date().toISOString(),
-      lines: response.lines,
+      lines: response.lines.map(openShellLogDecision),
       bufferTotal: response.bufferTotal,
     });
   }

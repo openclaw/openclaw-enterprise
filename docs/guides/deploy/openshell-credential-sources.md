@@ -152,7 +152,8 @@ Create the Agent with the source as its Harness authentication:
 ```bash
 jq -n --arg configuration "$CONFIGURATION_ID" --arg source "$SOURCE_ID" \
   '{name: "openshell-codex", configurationId: $configuration, executionMode: "dedicated",
-    harnessAuth: {method: "credential_source", sourceId: $source}}' > agent.json
+    harnessAuth: {method: "credential_source", sourceId: $source},
+    credentialSources: [{sourceId: $source}]}' > agent.json
 ./bin/occ agent create --file agent.json -o json > agent-response.json
 AGENT_ID="$(jq -r .id agent-response.json)"
 ```
@@ -174,6 +175,7 @@ jq -n --arg principal "$(jq -r .servicePrincipalId agent-response.json)" \
 ## Deploy and check the result
 
 ```bash
+./bin/occ agent runtime-credentials provision "$AGENT_ID"
 DEPLOYMENT_ID="$(./bin/occ agent deploy "$AGENT_ID" -o json | jq -r .id)"
 ./bin/occ agent deployment-status "$AGENT_ID" "$DEPLOYMENT_ID"
 ```

@@ -173,17 +173,28 @@ export function createAuthPrincipalSeed(
             resourceKind,
           })),
       ),
+      { action: "read", resourceKind: "sandbox_policy" },
+      { action: "update", resourceKind: "sandbox_policy" },
       { action: "operate", resourceKind: "secret" },
       ...(["create", "read", "update", "delete", "operate"] as const).map((action) => ({
         action,
         resourceKind: "credential_source" as const,
       })),
-      ...(["create", "read", "update", "delete", "deploy", "operate", "administer"] as const).map(
-        (action) => ({
-          action,
-          resourceKind: "agent" as const,
-        }),
-      ),
+      ...(
+        [
+          "create",
+          "read",
+          "update",
+          "delete",
+          "deploy",
+          "operate",
+          "administer",
+          "manage_policy",
+        ] as const
+      ).map((action) => ({
+        action,
+        resourceKind: "agent" as const,
+      })),
       { action: "read", resourceKind: "agent_revision" },
     ],
   };
@@ -247,6 +258,7 @@ const MANAGED_RESOURCE_KINDS: readonly ManagedIAMResourceKind[] = [
   "agent_revision",
   "configuration",
   "credential_source",
+  "sandbox_policy",
   "secret",
   "service_account",
 ];
@@ -813,7 +825,7 @@ function validRequest(request: AuthorizationRequest): boolean {
     (request.resource.kind !== "service_account" ||
       isNonEmptyString(request.resource.namespaceId)) &&
     (request.resource.kind !== "secret" || isNonEmptyString(request.resource.namespaceId)) &&
-    (request.resource.kind !== "credential_source" ||
+    (!["credential_source", "sandbox_policy"].includes(request.resource.kind) ||
       isNonEmptyString(request.resource.namespaceId)) &&
     ACTIONS.includes(request.action) &&
     RESOURCE_KINDS.includes(request.resource.kind)

@@ -357,9 +357,9 @@ DNS/TLS, both Helm passes, recovery and destructive teardown.
 
 ## Debugging and Verification
 
-- `node --test tests/integration/dev-up.test.mjs` exercises profile selection,
-  generated configuration, authenticated readiness, rollback, and cleanup with
-  inert external engine and cluster commands.
+- `node --test tests/integration/dev-up-compose.test.mjs tests/integration/dev-up.test.mjs`
+  exercises profile selection, generated configuration, authenticated readiness,
+  rollback, and cleanup with inert engine and cluster commands.
 - `OCC_TEST_DEV_UP_OPENSHELL_REAL=1 node --test tests/integration/dev-up-openshell-k3d-real.test.mjs`
   selects the Kubernetes-only real-cluster proof.
 - `OCC_TEST_DEV_UP_OPENSHELL_COMPOSE_REAL=1 node --test tests/integration/dev-up-openshell-k3d-real.test.mjs`

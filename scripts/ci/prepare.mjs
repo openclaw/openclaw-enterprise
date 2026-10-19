@@ -3199,6 +3199,9 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     });
     resourceIds.push(database.resourceId);
     env.OCC_TEST_DATABASE_URL = database.appUrl;
+    if (relativeFile === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs") {
+      env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
     if (name === "postgres-application" && relativeFile === nativeIAMBarrierFile) {
       env.OCC_TEST_NATIVE_IAM_BARRIER_CI = "1";
       env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE = database.name;

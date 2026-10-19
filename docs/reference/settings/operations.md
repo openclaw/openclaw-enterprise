@@ -1,7 +1,6 @@
 # Worker, Compose, and PostgreSQL settings
 
-This reference owns worker, compose, and postgresql settings. Start with the
-[settings reference](../settings.md) for startup configuration and precedence.
+See the [settings reference](../settings.md) for startup configuration and precedence.
 
 ## PostgreSQL connection authentication
 
@@ -62,7 +61,8 @@ An exit-0 `migration.checked` record reports a reviewed history shape:
 `preOAuth`, `preCredentialWithdrawals`, `preBrokerReceiptFence`,
 `preModelProbeFailureCause`, `preProvisioningConfigurationRelease`, `preAdministratorCredentialSourceGrants`,
 `preCodexPatSources`, `preAgentCredentialSources`,
-`preCredentialWithdrawalRequester`, `preCanonicalHarnessAuth`, `preRuntimeRoles`, or `completed`.
+`preCredentialWithdrawalRequester`, `preCanonicalHarnessAuth`, `preSandboxPolicies`,
+`preSandboxPolicyAdministrator`, `preRuntimeRoles`, or `completed`.
 `prePresetsMain` means
 the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
@@ -94,9 +94,11 @@ through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
 through `0050_agent_credential_sources`; `preComputeRevisionAdmission` has 54
 through `0054_credential_source_pat`; `preHeldAuthenticationSession` has 55 through
 `0055_compute_revision_admission`; `preCanonicalHarnessAuth` has 56 through
-`0056_held_authentication_session`; `preRuntimeRoles` has 57 through
-`0057_canonical_harness_auth`. `completed` has all 58 receipts through
-`0058_agent_runtime_roles`.
+`0056_held_authentication_session`; `preSandboxPolicies` has 57 through
+`0057_canonical_harness_auth`; `preSandboxPolicyAdministrator` has 58 through
+`0058_sandbox_policies`; `preRuntimeRoles` has 59 through
+`0059_administrator_sandbox_policy_grants`. `completed` has 60 receipts through
+`0060_agent_runtime_roles`.
 The source manifest is
 [`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
 Empty schemas may be absent or have only their owner's `CREATE` and

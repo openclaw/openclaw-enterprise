@@ -1,3 +1,4 @@
+import { SandboxPolicyDecisionSchema } from "../sandbox-policy.ts";
 import { Type } from "typebox";
 import { ComputePreparationFailureEvidenceSchema } from "../compute-preparation.ts";
 
@@ -369,6 +370,7 @@ export const NamespaceSchema = Type.Object(
 
 export const AgentSchema = Type.Object(
   {
+    sandboxPolicyEditing: Type.Optional(Type.Boolean()),
     id: AgentId,
     namespaceId: NamespaceId,
     name: Name,
@@ -1500,6 +1502,7 @@ export const RuntimeLogRecordSchema = Type.Union([
         Type.Literal("unknown"),
       ]),
       message: RuntimeMessage,
+      decision: Type.Optional(SandboxPolicyDecisionSchema),
       subsystem: Type.Optional(Type.String({ maxLength: 512 })),
       fields: Type.Optional(
         Type.Record(

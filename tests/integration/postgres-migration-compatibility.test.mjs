@@ -1158,6 +1158,15 @@ async function assertCompletedHistory(db, previous = []) {
     expectedEntries.map(({ sha256, when }) => [sha256, when]),
   );
   assert.equal(catalogDigest(await migrationCatalog(db.migrator)), manifest.catalogs.completed);
+  // Pre-existing Agents receive one empty owned policy and keep delegated editing disabled.
+  const policies = await db.app.query(`SELECT bool_and(
+    NOT agent.sandbox_policy_editing AND policy.namespace_id=agent.namespace_id
+    AND policy.version=1 AND policy.document->'additions'='[]'::jsonb
+  ) AS valid, count(policy.id)::integer AS policies, count(agent.id)::integer AS agents
+  FROM occ.agents agent LEFT JOIN occ.sandbox_policies policy ON policy.agent_id=agent.id`);
+  assert.notEqual(policies.rows[0].valid, false);
+  assert.equal(policies.rows[0].policies, policies.rows[0].agents);
+
   assert.equal(
     (
       await db.app.query(
@@ -1180,7 +1189,9 @@ async function assertCompletedHistory(db, previous = []) {
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
+      ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
+      ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
       ["occ.retry_failed_namespace_deletion(text,text,text)", true],
       // The Agent trigger keeps the credential-source join table exact; occ_app cannot write it.
@@ -1189,10 +1200,10 @@ async function assertCompletedHistory(db, previous = []) {
       ["occ.validate_group_membership()", false],
       ["occ.validate_restriction_scope()", false],
       ["occ.validate_runtime_assignment()", false],
-    ].map(([identity, app_execute]) => ({
+    ].map(([identity, app_execute, searchPath = "search_path=pg_catalog, occ, pg_temp"]) => ({
       identity,
       owner: "occ_migrator",
-      proconfig: ["search_path=pg_catalog, occ, pg_temp"],
+      proconfig: [searchPath],
       app_execute,
     })),
   );
@@ -1556,6 +1567,7 @@ async function canonicalData(db) {
               "harness_auth_credential_source_id",
               "plugin_approvers",
               "credential_sources",
+              "sandbox_policy_editing",
             ]
           : table === "controller_work"
             ? ["work_kind"]
@@ -1642,7 +1654,9 @@ test(
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
       [56, "preCanonicalHarnessAuth"],
-      [57, "preRuntimeRoles"],
+      [57, "preSandboxPolicies"],
+      [58, "preSandboxPolicyAdministrator"],
+      [59, "preRuntimeRoles"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2030,7 +2044,9 @@ test(
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
       [56, "preCanonicalHarnessAuth"],
-      [57, "preRuntimeRoles"],
+      [57, "preSandboxPolicies"],
+      [58, "preSandboxPolicyAdministrator"],
+      [59, "preRuntimeRoles"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2116,7 +2132,9 @@ test(
       [54, "preComputeRevisionAdmission"],
       [55, "preHeldAuthenticationSession"],
       [56, "preCanonicalHarnessAuth"],
-      [57, "preRuntimeRoles"],
+      [57, "preSandboxPolicies"],
+      [58, "preSandboxPolicyAdministrator"],
+      [59, "preRuntimeRoles"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2128,11 +2146,12 @@ test(
         // A database-local event trigger aborts the real final DDL. Drizzle must
         // roll back every preceding SQL statement and receipt in that transaction.
         // 0051's final GRANT runs after it dropped both withdrawal triggers.
-        // 0058 grants privileges after its schema changes; abort there.
+        // 0060 grants privileges after its schema changes; abort there.
         // Abort 0056 after its function was created, before the deferred trigger exists.
         // 0057 replaces the Harness validator, so reject that function replacement.
         const rollbackTag = [
-          [57, "GRANT"],
+          [58, "GRANT"],
+          [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
           [55, "CREATE TRIGGER"],
           [54, "ALTER TABLE"],
@@ -2710,7 +2729,7 @@ test(
     let pool;
     context.after(async () => pool?.end());
     const db = await historyDatabase(context, await migrationHistoryFixture(), "runtime_admin", {
-      prefix: 57,
+      prefix: 59,
     });
     const namespaceId = await seedCanonicalData(db, { preset: true });
     const agentId = (
@@ -2846,7 +2865,7 @@ test(
       context,
       await migrationHistoryFixture(),
       "runtime_denied",
-      { prefix: 57 },
+      { prefix: 59 },
     );
     const deniedNamespace = await seedCanonicalData(denied, { preset: true });
     await denied.app.query(

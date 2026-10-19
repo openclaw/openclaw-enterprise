@@ -175,6 +175,15 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 51) {
         return "preProvisioningDeploymentOutcome";
       }
+      if (receipts.length === 59) {
+        return "preRuntimeRoles";
+      }
+      if (receipts.length === 58) {
+        return "preSandboxPolicyAdministrator";
+      }
+      if (receipts.length === 57) {
+        return "preSandboxPolicies";
+      }
       if (receipts.length === 52) {
         return "preComputePreparationFailureEvidence";
       }
@@ -190,9 +199,6 @@ function classifyReceipts(receipts, manifest) {
       if (receipts.length === 56) {
         return "preCanonicalHarnessAuth";
       }
-      if (receipts.length === 57) {
-        return "preRuntimeRoles";
-      }
       return "providerCompleted";
     }
     if (!receiptsMatchEntries(receipts, manifest.entries)) {
@@ -200,6 +206,15 @@ function classifyReceipts(receipts, manifest) {
     }
   } else {
     requireReceiptsMatchEntries(receipts, manifest.entries);
+  }
+  if (receipts.length === 59) {
+    return "preRuntimeRoles";
+  }
+  if (receipts.length === 58) {
+    return "preSandboxPolicyAdministrator";
+  }
+  if (receipts.length === 57) {
+    return "preSandboxPolicies";
   }
   if (receipts.length === 0) {
     return "empty";
@@ -302,9 +317,6 @@ function classifyReceipts(receipts, manifest) {
   }
   if (receipts.length === 56) {
     return "preCanonicalHarnessAuth";
-  }
-  if (receipts.length === 57) {
-    return "preRuntimeRoles";
   }
   refuse("an incomplete or unsupported development history is installed");
 }

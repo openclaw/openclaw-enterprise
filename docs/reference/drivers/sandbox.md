@@ -17,7 +17,7 @@ SSH, or installed Compute combinations. See [Driver selection](selection.md).
 ### Driver interface
 
 The [shared interface](../../../packages/contracts/src/index.ts) exposes the
-required `facets` and `cleanup` members, an optional `harnessHome`, and optional lifecycle methods.
+required `facets` and `cleanup` members, an optional `harnessHome`, and optional lifecycle and policy methods.
 
 | Member                                           | Contract                                                                                                                                                                                                                                                                                                                                                                       |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -110,6 +110,32 @@ gateway whether each attachment is applied before activating the revision.
 `SandboxResourceRef` contains `namespaceName`, `resourceName`, `agentId`, and
 `revisionId`. It stays stable when a controller replaces the underlying Pod;
 retirement must find the provider resource even if that Pod is already gone.
+
+## Optional network policy operations
+
+`networkPolicy` declares `wildcards`, `portRanges`, and `live` support.
+`admitNetworkPolicy(additions, version, defaults?)` validates every requested
+constraint and returns a detached snapshot of Driver identity, version, defaults,
+and additions. The snapshot is consumed by provisioning; changed startup defaults
+cannot reinterpret an admitted revision.
+
+`observeNetworkPolicy(context, snapshot)` returns the provider resource version,
+policy version, load state, and whether the complete candidate matches.
+`applyNetworkPolicy(context, {snapshot, expectedProviderVersion, operationId})`
+uses exact scope, compare-and-swap and an idempotent operation ID. Declaring live
+support requires both operations. Only a matching, loaded active version confirms
+application. Drivers that cannot preserve static/default/generated policy reject
+the change explicitly.
+
+`readPolicyRecommendations(context, limit)` is independently optional. Return
+bounded, untrusted candidate grants with stable identity, provider lifecycle and
+optional aggregate observations. Suggestions never substitute for denial events
+or OCC admission. `SandboxLogLine.decision` optionally describes an observed
+allow/deny decision and enforcement evidence; provider parsing belongs in the
+Driver. OCC validates and redacts it through the regular log path.
+
+See [per-Agent policies](../sandbox-policies.md) for ownership, authority, ceiling,
+versioning and failure semantics.
 
 ## IAM
 
