@@ -1,4 +1,4 @@
-import { element, button, trackVisualViewport } from "./dom.mjs";
+import { element, button, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
   clearResolvedSecretNames,
   noteConsoleLoad,
@@ -821,7 +821,7 @@ function showLogin(message = "", destination = null) {
     autocomplete: "current-password",
     required: "",
   });
-  const feedback = element("p", { className: "error", role: "alert" }, describe(true));
+  const feedback = statusBlock("danger", null, describe(true));
   const usernameHint = element(
     "span",
     { id: "username-hint", className: "hint" },
@@ -2142,11 +2142,10 @@ const chatLinkFailures = {
 function showChatLinkFailure(view, failure) {
   if (Object.hasOwn(chatLinkFailures, failure ?? "")) {
     view.prepend(
-      element(
-        "p",
-        { className: "notice unopened-chat-link", role: "status" },
-        chatLinkFailures[failure],
-      ),
+      statusBlock("warning", null, chatLinkFailures[failure], [], {
+        className: "unopened-chat-link",
+        role: "status",
+      }),
     );
   }
 }
