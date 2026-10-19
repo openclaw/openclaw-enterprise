@@ -1673,6 +1673,17 @@ export const scenarios = {
       "Confirm Create Agent stays disabled and the same provisioning handle is polled.",
     ],
   },
+  createPending: {
+    group: "Pages/Create Agent",
+    name: "Create pending",
+    path: create,
+    rules: [{ suffix: "/agents/provision", method: "POST", hold: true }],
+    actions: [...readyForm, click("Create Agent")],
+    description:
+      "The provisioning request is held, so Create Agent stays disabled and busy: it sets aria-busy and shows the progress pointer (finding 1961).",
+    steps: ["Hover Create Agent: the pointer is progress, not not-allowed."],
+    gap: "The real client gives up after 15 seconds and reports an unknown outcome, which ends the busy state; reset the story to replay it. Other controls' requests disable Create without marking it busy; the browser tests cover that, not this story.",
+  },
   createDeploymentNamedWait: {
     group: "Pages/Create Agent",
     name: "Initial deployment names its wait",
@@ -3392,6 +3403,23 @@ export const scenarios = {
     ],
     description:
       "Invalid JSON is reported under the editor with its line and column. The editor keeps its contents and sends no Configuration write.",
+  },
+  invalidConfigurationInvisibleCharacters: {
+    group: "Pages/Agent detail",
+    name: "Invalid Configuration JSON after invisible characters",
+    path: draft,
+    actions: [
+      click("Edit Configuration"),
+      // A left-to-right mark, a soft hyphen and a word joiner, as pasted from a document.
+      { selector: "#configuration-json", value: '{"name": "a\u200Eb\u00ADc\u2060d", x}' },
+      click("Save Configuration"),
+    ],
+    description:
+      "The name hides a left-to-right mark, a soft hyphen and a word joiner, which take no visible space. The error names column 18, where the stray x appears, not the 21st character.",
+    steps: [
+      "Read the error under the editor: Invalid JSON at line 1, column 18.",
+      "Count the visible characters on the line: the x is the 18th.",
+    ],
   },
   configurationChangedElsewhereMerged: {
     group: "Pages/Agent detail",

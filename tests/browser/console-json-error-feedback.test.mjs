@@ -132,7 +132,7 @@ test("an unknown Configuration save outcome stays an error when the editor is re
   assert.equal(await feedbackClass(page), "error");
 });
 
-test("Create Agent: Reset template clears a JSON error; a fallback mismatch focuses the JSON", async (t) => {
+test("Create Agent: Reset template clears a JSON error; a primary or fallback model mismatch focuses the JSON", async (t) => {
   const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Create JSON feedback", { ready: true });
@@ -165,10 +165,26 @@ test("Create Agent: Reset template clears a JSON error; a fallback mismatch focu
   assert.equal(await jsonError.isHidden(), true);
   assert.equal(await json.getAttribute("aria-invalid"), null);
 
+  const focusedId = () => page.evaluate(() => globalThis.document.activeElement?.id);
+  // The selected model under the OpenAI prefix, which Codex does not run: the primary-model
+  // mismatch, the most common one (finding 1951).
   const values = JSON.parse(template);
   const selected = values.agents.defaults.model;
+  const primary = typeof selected === "string" ? selected : selected.primary;
+  assert.equal(primary, "codex/gpt-4.1");
+  values.agents.defaults.model = "openai/gpt-4.1";
+  await json.fill(JSON.stringify(values, null, 2));
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page
+    .getByText(
+      "Configuration must use the selected provider and model. Update the JSON or reset the template before saving.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await focusedId(), "configuration-json");
+
   values.agents.defaults.model = {
-    primary: typeof selected === "string" ? selected : selected.primary,
+    primary,
     fallbacks: ["another-provider/model"],
   };
   await json.fill(JSON.stringify(values, null, 2));
@@ -179,8 +195,5 @@ test("Create Agent: Reset template clears a JSON error; a fallback mismatch focu
       { exact: true },
     )
     .waitFor();
-  assert.equal(
-    await page.evaluate(() => globalThis.document.activeElement?.id),
-    "configuration-json",
-  );
+  assert.equal(await focusedId(), "configuration-json");
 });

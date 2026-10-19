@@ -3095,6 +3095,13 @@ test("database CA mounts stay distinct from active production volume mounts", to
         // The controller image links /var/run to /run, and the runtime follows it.
         ...(mountPath.startsWith("/run/") ? [`/var${mountPath}`] : []),
         ...(mountPath.startsWith("/var/run/") ? [mountPath.slice("/var".length)] : []),
+        // It links /var/lock to /run/lock too, so ".." from /var/lock lands in /run, not /var.
+        ...(mountPath.startsWith("/run/")
+          ? [
+              `/var/lock/..${mountPath.slice("/run".length)}`,
+              `/run/lock/..${mountPath.slice("/run".length)}`,
+            ]
+          : []),
       ]) {
         await assert.rejects(
           render({ ...features, ...databaseCaValues, "database.caMountPath": alias }),

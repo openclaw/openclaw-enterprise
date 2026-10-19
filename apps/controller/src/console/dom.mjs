@@ -361,21 +361,24 @@ const graphemes =
     ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
     : undefined;
 
+// Characters that render as nothing: zero-width spaces and joiners, direction marks, the soft
+// hyphen, the word joiner, a byte order mark (finding 1949). The Hangul fillers U+115F, U+1160,
+// U+3164 and U+FFA0 are default-ignorable too, but fonts draw them as blank cells that advance the
+// text, so they keep a column.
+const INVISIBLE = /^(?:(?![\u115F\u1160\u3164\uFFA0])\p{Default_Ignorable_Code_Point})+$/u;
+
 // Columns count characters as the reader sees them: an emoji, or a letter with a combining
-// accent, is one column, not the two UTF-16 units the engine's own column counts. Create Agent
-// checks the JSON on every keystroke, so a plain ASCII line skips the segmenter.
+// accent, is one column, not the two UTF-16 units the engine's own column counts, and an
+// invisible character is none. Create Agent checks the JSON on every keystroke, so a plain ASCII
+// line skips the segmenter.
 function visibleLength(line) {
   if (/^[\t -~]*$/.test(line)) {
     return line.length;
   }
-  if (!graphemes) {
-    return Array.from(line).length;
-  }
-  let length = 0;
-  for (const _ of graphemes.segment(line)) {
-    length += 1;
-  }
-  return length;
+  const pieces = graphemes
+    ? Array.from(graphemes.segment(line), ({ segment }) => segment)
+    : Array.from(line);
+  return pieces.filter((piece) => !INVISIBLE.test(piece)).length;
 }
 
 // A persistent error under a form control, linked to it with aria-describedby and aria-invalid,
