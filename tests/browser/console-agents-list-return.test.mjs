@@ -689,7 +689,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     const unbroken = index === AGENTS;
     const name = unbroken
       ? "W".repeat(200)
-      : `Phone Agent ${String(index).padStart(2, "0")} coordinating the quarterly release review and sign-off`.slice(
+      : `Phone Agent ${String(index).padStart(2, "0")} documentation for the quarterly release review and sign-off`.slice(
           0,
           60,
         );

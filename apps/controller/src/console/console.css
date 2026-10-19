@@ -1414,9 +1414,10 @@ select:not([multiple])[size="1"] {
 }
 /* The name wraps within the width its ID takes and may break anywhere, as the ID does, so one
    long name (up to 200 unbroken characters) does not widen the table (finding 1955). The column
-   keeps 10rem, so ordinary names still break between words where the table is narrowest. */
+   keeps 12rem, so where the table is narrowest ordinary names still break between words (10rem
+   split "Documentation"). */
 .agent-table td:first-child {
-  min-width: 10rem;
+  min-width: 12rem;
 }
 .agent-table td:first-child > a {
   display: inline-block;
