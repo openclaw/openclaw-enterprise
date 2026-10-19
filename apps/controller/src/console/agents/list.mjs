@@ -261,7 +261,7 @@ const READING_SHOWN_MS = 150;
 // rule follows the break points Chromium was measured to use (finding 1982), not all of UAX #14.
 // A run ends where a line can break: after a breaking space, a zero-width space, a soft hyphen,
 // or a hyphen or dash (a name holds no control or line-separator characters). No-break spaces
-// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. A hyphen before a digit
+// (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. A hyphen between digits
 // does break ("1000-1001"). Combining marks count with the letter they sit on. Ideographs, kana,
 // Hangul syllables and emoji break on both sides; other scripts (Thai, for one) count per
 // character, which can only over-mark: a marked name still shows in full, in a narrower box.
@@ -271,17 +271,23 @@ const CLOSING = String.raw`!),./:;\]}\u00bb\u2019\u201d\u2060\u200d`; // and joi
 const IDEOGRAPHIC = String.raw`\p{Ideographic}\u3041-\u3096\u30a1-\u30fa\uac00-\ud7a3\p{Emoji_Presentation}`;
 const UNBROKEN_CHARACTER = [
   String.raw`[^ ${WIDE_SPACES}\u200b${DASHES}\u2014\p{M}${IDEOGRAPHIC}-]`,
-  // Where a break character does not break: a hyphen-minus before closing punctuation, "$" or
-  // an Arabic-Indic digit; a wide space or dash before closing punctuation or a quote; a hyphen
-  // or dash before another (LB21); a hyphen that starts a word (LB20a).
-  String.raw`-(?=[$\u0660-\u0669\u06f0-\u06f9${CLOSING}])`,
-  String.raw`[${WIDE_SPACES}${DASHES}](?=["'|${CLOSING}])`,
-  String.raw`[\u2010\u2012\u2013-](?=[\u2010\u2012\u2013-])`,
-  String.raw`(?<=^|[ ${WIDE_SPACES}\u200b])[\u2010-]`,
+  // Where a break character holds the next one on its line:
+  // - a hyphen-minus before closing punctuation, "$", an Arabic-Indic digit, or a hyphen, figure
+  //   dash or en dash; and before any digit when no letter or digit precedes it ("-5");
+  String.raw`-(?=\p{M}*[$\u0660-\u0669\u06f0-\u06f9\u2010\u2012\u2013${CLOSING}])`,
+  String.raw`(?<![\p{L}\p{N}\p{M}])-(?=\p{Nd})`,
+  // - a wide space, soft hyphen or dash before closing punctuation, a quote or a vertical bar;
+  String.raw`[${WIDE_SPACES}${DASHES}](?=\p{M}*["'|${CLOSING}])`,
+  // - a hyphen or dash (an em dash too) before any of them but an em dash (LB21);
+  String.raw`[\u2010\u2012-\u2014](?=[\u2010\u2012\u2013-])`,
+  // - a hyphen, figure dash or en dash that starts a word, before a letter (LB20a).
+  String.raw`(?<=^|[ \u200b])[\u2010\u2012\u2013](?=\p{L})`,
 ].join("|");
+const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
+// The wide space, hyphen or dash a line breaks after stays on that line, so it counts too.
 const UNBROKEN_RUN = new RegExp(
-  String.raw`\u2014{21,}|(?:(?:${UNBROKEN_CHARACTER})\p{M}*){21,}`,
+  String.raw`\u2014{21,}|(?:${RUN_CHARACTER}){21,}|(?:${RUN_CHARACTER}){20}[${WIDE_SPACES}${DASHES}-]`,
   "u",
 );
 

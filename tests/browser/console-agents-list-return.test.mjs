@@ -905,10 +905,11 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
 
 // A name the browser cannot wrap sets the desktop table's width unless it is marked to break
 // anywhere (finding 1955). Each row is a break point Chromium was measured to use (finding 1982),
-// and the test measures it again: a name is marked exactly when its longest run that the browser
-// keeps on one line has 21 or more characters. A hyphen before a digit is a break ("1000-1001");
-// a hyphen, dash, soft hyphen or wide space before closing punctuation is not; nor is a hyphen
-// that starts a word. A run of em dashes breaks only at its ends (finding 1971).
+// and the test measures it again: each name is marked exactly when the longest run the browser
+// keeps on one line (spaces aside) has 21 or more characters. A hyphen between digits is a break
+// ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is not, nor
+// is a hyphen before a digit or a dash that starts a word. A run of em dashes breaks only at its
+// ends (finding 1971).
 const groups = (part, separator, count = 6) =>
   Array.from({ length: count }, () => part).join(separator);
 const unbrokenNameCases = [
@@ -934,9 +935,16 @@ const unbrokenNameCases = [
   { name: groups("abcdefgh", "\u2009!"), unbroken: true },
   { name: groups("abcdefgh", "\u3000/"), unbroken: true },
   { name: groups("abcdefgh", "-("), unbroken: false },
-  // A hyphen that starts a word does not break after itself.
-  { name: `x ${groups(`-${"a".repeat(20)}`, " ", 3)}`, unbroken: true },
-  { name: `x ${groups(`-${"a".repeat(19)}`, " ", 3)}`, unbroken: false },
+  { name: groups("abcdefgh", "-\u201d"), unbroken: true },
+  // A hyphen-minus that starts a word holds a digit, not a letter; a hyphen or dash holds a letter.
+  { name: `x ${groups(`-${"1".repeat(20)}`, " ", 3)}`, unbroken: true },
+  { name: `x ${groups(`-${"a".repeat(20)}`, " ", 3)}`, unbroken: false },
+  { name: `x ${groups(`\u2010${"a".repeat(20)}`, " ", 3)}`, unbroken: true },
+  { name: `x ${groups(`\u2010${"a".repeat(19)}`, " ", 3)}`, unbroken: false },
+  // The hyphen a line breaks after stays on it; hyphen-minus pairs break between them.
+  { name: `${"a".repeat(20)}-b`, unbroken: true },
+  { name: `${"a".repeat(19)}-b`, unbroken: false },
+  { name: `Run ${"-".repeat(40)}`, unbroken: false },
   { name: groups("ab", "-\u0661", 10), unbroken: true },
   { name: groups("ab", "-\uff11", 10), unbroken: false },
   // Combining marks share their letter's place; ideographs, kana, Hangul and emoji each break.
@@ -968,7 +976,8 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
         .getByRole("link", { name: entry.name, exact: true })
         .evaluate((node) => {
           // The longest run the browser keeps on one line, set in the link's font in a box too
-          // narrow for any word; combining marks share their letter's place.
+          // narrow for any word. Combining marks share their letter's place, and a space hangs at
+          // the end of its line, so neither counts.
           const box = globalThis.document.createElement("div");
           const style = globalThis.getComputedStyle(node);
           box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
@@ -984,7 +993,7 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
             range.setEnd(box.firstChild, offset + character.length);
             offset += character.length;
             const rect = range.getClientRects()[0];
-            if (!rect || /\p{M}/u.test(character)) {
+            if (!rect || /[\p{M} ]/u.test(character)) {
               continue;
             }
             run = Math.round(rect.top) === top ? run + 1 : 1;
