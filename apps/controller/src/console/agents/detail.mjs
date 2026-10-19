@@ -1532,7 +1532,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         refreshingDraft ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
-        (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
+        (["configuration", "plugins", "repositories", "channels", "network"].includes(
+          selectedTab,
+        ) &&
           draftEditorSaving))
     );
   }

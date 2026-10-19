@@ -64,7 +64,8 @@ graph TD
 `apps/controller/src/console/navigation.mjs:createNavigation` retains the exact
 Network tab through login. `apps/controller/src/console/agents/detail.mjs:reloadDraftInPlace`
 rereads the Agent after a Network save or explicit reload, then rebuilds the editor
-in place with confirmation and focus. Unsaved changes still block deployment;
+in place with confirmation and focus. Sidebar navigation and Back wait for pending
+Network writes. Unsaved changes still block deployment;
 the backend's saved selection remains the baseline after cancel or reload.
 
 `packages/occ/src/index.ts:OpenClawController.updateAgent` validates the tagged

@@ -59,6 +59,9 @@ test("Agent delete confirmation can be canceled without sending a write request"
   const agent = await fixture.createAgent(namespace.id, "Cancel Candidate", nativeValues("keep"));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
+  // A fake clock that keeps running on its own, so the check after Cancel can fire every timer
+  // the page has started instead of waiting on wall-clock time (finding 1994).
+  await page.clock.install();
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByRole("heading", { name: "Cancel Candidate" }).waitFor();
@@ -79,7 +82,8 @@ test("Agent delete confirmation can be canceled without sending a write request"
   assert.equal(await cancel.evaluate((node) => node.ownerDocument.activeElement === node), true);
   // Attach the rejection check when the timed wait starts: on a loaded runner the click can
   // outlast the 300 ms window, and a wait that times out with no handler fails the test as an
-  // unhandled rejection (finding 1986). The requests check below still covers a late DELETE.
+  // unhandled rejection (finding 1986). This only catches a DELETE sent soon after Cancel; the
+  // clock run below catches one the page sends later.
   const unexpectedDelete = assert.rejects(
     page.waitForResponse(
       (response) =>
@@ -96,6 +100,14 @@ test("Agent delete confirmation can be canceled without sending a write request"
     await page.evaluate(() => globalThis.document.activeElement?.textContent),
     "Delete Agent",
   );
+
+  // A DELETE that Cancel defers to a timer would miss the window above (finding 1994). Run the
+  // fake clock 15 s ahead so every one-shot timer due by then fires (a repeating poll fires about
+  // once, since it schedules its next run only after its fetch answers), then let the page finish
+  // a fetch of its own: a DELETE the timers sent was issued before that fetch, so the requests
+  // check below sees it.
+  await page.clock.runFor(Math.max(DELETION_POLL_MS, DEPLOYMENT_POLL_MS) * 3);
+  await settlePageRequests(page);
 
   await page.getByRole("heading", { name: "Cancel Candidate" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
@@ -4336,4 +4348,37 @@ test("Network save and reload keep the editor in view with the saved Agent selec
     "reloading must keep the Network editor in view",
   );
   assert.equal(new URL(page.url()).searchParams.get("tab"), "network");
+
+  // Hold a real successful PATCH response: leaving now would lose its save result.
+  const held = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+    { once: true, method: "PATCH", afterServer: true },
+  );
+  await hosts.fill("pending.example.com");
+  await page.getByRole("button", { name: "Save network access", exact: true }).click();
+  await held.requested;
+  const currentUrl = page.url();
+  try {
+    await page
+      .getByRole("navigation", { name: "Main navigation" })
+      .getByRole("link", { name: "Agents", exact: true })
+      .click();
+    await settlePageRequests(page);
+    assert.equal(
+      page.url(),
+      currentUrl,
+      "sidebar navigation must wait for the Network save result",
+    );
+  } finally {
+    held.release();
+  }
+  await waitForInputValue(hosts, "pending.example.com");
+  await page.getByText("Network access saved.", { exact: true }).waitFor();
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Agents", exact: true })
+    .click();
+  await page.waitForURL((url) => url.pathname === "/console/agents");
 });
