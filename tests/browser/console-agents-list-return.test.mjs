@@ -914,7 +914,8 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     .slice(0, 200);
   const cases = [
     { name: digitGroups, unbroken: true },
-    { name: "—".repeat(200), unbroken: true },
+    { name: "\u2014".repeat(200), unbroken: true },
+    { name: `Release ${"\u2013".repeat(40)}`, unbroken: true },
     { name: "nightly-build-2026-10-19-release-candidate", unbroken: false },
   ];
   for (const [index, entry] of cases.entries()) {

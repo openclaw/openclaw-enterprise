@@ -242,7 +242,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
   }
 
   // Red only for a choice that is not approved. Loading choices is not a problem, and a failed
-  // read is a warning with its own Retry (finding 1970).
+  // read is a warning, not a refusal (finding 1970).
   function accessTone(ref) {
     if (!isSettled()) {
       return "info";

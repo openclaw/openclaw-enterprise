@@ -744,7 +744,10 @@ test("Agent sharing shows a rejected write's reason, but generic text after an a
   const bindings = await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`);
   assert.equal(bindings.data.length, 2);
   await page.route(`${policyPath}/access-bindings/*`, reject);
-  await panel.getByRole("button", { name: "Remove binding", exact: true }).click();
+  const removeBinding = panel.getByRole("button", { name: "Remove binding", exact: true });
+  // Removal deletes the binding at once, so it takes the destructive tone (finding 1967).
+  assert.match(await removeBinding.getAttribute("class"), /\bbutton--danger\b/);
+  await removeBinding.click();
   await panel.getByText(reason, { exact: false }).waitFor();
   assert.equal(await panel.getByText("Check the entered values", { exact: false }).count(), 0);
   assert.equal(await panel.getByText("Binding removed.", { exact: false }).count(), 0);

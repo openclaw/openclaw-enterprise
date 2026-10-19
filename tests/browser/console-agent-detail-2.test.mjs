@@ -2015,10 +2015,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
   await recipient.getByText("Stop requested. OCC will not start", { exact: false }).waitFor();
 
   // The stale administrator list holds the specific sharing binding, not the new operate grant.
-  const removeBinding = panel.getByRole("button", { name: "Remove binding", exact: true });
-  // Removal deletes the binding at once, so it takes the destructive tone (finding 1967).
-  assert.match(await removeBinding.getAttribute("class"), /\bbutton--danger\b/);
-  await removeBinding.click();
+  await panel.getByRole("button", { name: "Remove binding", exact: true }).click();
   await panel.getByText("Binding removed.", { exact: false }).waitFor();
   await panel.screenshot({ path: join(artifacts, "agent-sharing-removed.png") });
   const after = (await fixture.request("GET", `${policyPath}/access-bindings`)).data;
