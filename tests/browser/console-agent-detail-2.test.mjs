@@ -510,7 +510,12 @@ test("a repeat confirmed during a deletion status read waits for it, shows as se
 test("a deletion status read that ends access drops a repeat confirmed while it ran", (t) =>
   checkRepeatDuringRead(t, { endsAccess: true }));
 
-async function checkRepeatDuringRead(t, { endsAccess }) {
+// A read that fails still sends the repeat the reader confirmed, and its outcome replaces the
+// read's error (finding 1985; dropping it would bring back finding 1975's lost request).
+test("a deletion status read that fails still sends a repeat confirmed while it ran", (t) =>
+  checkRepeatDuringRead(t, { endsAccess: false, readFails: true }));
+
+async function checkRepeatDuringRead(t, { endsAccess, readFails = false }) {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Read before repeat", { ready: true });
@@ -552,6 +557,16 @@ async function checkRepeatDuringRead(t, { endsAccess }) {
         status: 403,
         contentType: "application/json",
         body: JSON.stringify({ error: { code: "FORBIDDEN", message: "Forbidden." } }),
+      });
+      return;
+    }
+    if (readFails) {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: { code: "DEPENDENCY_UNAVAILABLE", message: "Deletion status unavailable." },
+        }),
       });
       return;
     }
@@ -608,6 +623,13 @@ async function checkRepeatDuringRead(t, { endsAccess }) {
     ),
   );
   assert.equal(writes, 1);
+  if (readFails) {
+    assert.equal(
+      await page.getByText("Could not refresh deletion status.", { exact: false }).count(),
+      0,
+      "the repeat's outcome replaces the read's error",
+    );
+  }
 }
 
 test("An uncertain repeat deletion stays blocked until a successful deleting readback", async (t) => {

@@ -177,6 +177,45 @@ test("a refused binding removal at 390px brings its refusal on screen with focus
   assertPaint(await statusPaint(alert), "danger", "removal refusal");
 });
 
+// A reader who moved focus out of Share Agent while the request ran keeps it there: the refusal
+// is shown, but it does not pull focus back (finding 1984).
+test("a Share Agent refusal leaves focus where the reader moved it", async (t) => {
+  const { page, panel, policyPath } = await sharingPage(t, { width: 1440, height: 900 });
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  t.after(() => release());
+  let sent;
+  const writing = new Promise((resolve) => {
+    sent = resolve;
+  });
+  await page.route(`${policyPath}/roles`, async (route) => {
+    if (route.request().method() !== "GET") {
+      sent();
+      await held;
+    }
+    await forbidden(route);
+  });
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await writing;
+  const elsewhere = page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link")
+    .first();
+  await elsewhere.focus();
+  release();
+  const alert = panel.getByRole("alert").filter({ hasText: SHARE_REFUSAL });
+  await alert.waitFor();
+  assert.equal(
+    await elsewhere.evaluate((node) => node === globalThis.document.activeElement),
+    true,
+    "focus stays where the reader moved it",
+  );
+  assert.equal((await refusalView(alert)).focused, false, "the refusal does not take focus");
+});
+
 // A warning and an informational notice on the same tab: the API-key plugin warning and the
 // note on which version the tab edits.
 test("warning and info notices use their tone's token colours with readable text", async (t) => {

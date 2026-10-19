@@ -344,3 +344,110 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
   assert.deepEqual(await invalidEvents(), []);
 });
+
+// Choosing a Secret from the picker fires no input event, so the picker clears its own "is
+// required" error; without that, the stale error and aria-invalid stayed under the field after a
+// refused Create (finding 1983).
+test("choosing a model credential Secret by click clears its required error", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Picker fields", { ready: true });
+  await fixture.createSecret(namespace.id, "Picked model key", "synthetic-picked-key");
+  const { page } = await newPage(t, fixture, { browser });
+  const invalidEvents = await countInvalidEvents(page);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start with default Preset" }).click();
+  await waitForCreateFormReads(page);
+  await page.getByLabel("Agent name", { exact: true }).fill("Picker Agent");
+  const picker = page.getByLabel("API key Secret", { exact: true });
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+  assert.equal(await focusedId(page), "provider-credential-secret");
+  await assertFieldError(page, picker, {
+    name: "API key Secret",
+    error: "Model credential Secret is required.",
+  });
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  // Focus opened the list; picking by pointer types nothing into the field.
+  await page.getByRole("option", { name: "Picked model key", exact: true }).click();
+  await page.getByText("Secret selected. Create Agent binds it.", { exact: true }).waitFor();
+  assert.equal(await picker.getAttribute("aria-invalid"), null, "aria-invalid cleared");
+  assert.equal((await accessible(page, picker)).invalid, "false");
+  assert.equal(await errorPlacement(picker), null, "the required error is gone");
+});
+
+// No shipped form needs these two today: every form's own submit handler checks its fields
+// again, and none has a required field inside a collapsed section. So the shared helpers are
+// pinned on a form built for the test (finding 1983).
+test("the shared submit check stops a failing form and opens the collapsed section to fix", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  const { page } = await newPage(t, fixture, { browser });
+  await page.goto(new URL("/console/", fixture.origin).href);
+  const outcome = await page.evaluate(async () => {
+    const { element, validateOnSubmit } = await import("/console/dom.mjs");
+    const name = element("input", { id: "helper-name", type: "text", value: "Named" });
+    const token = element("input", { id: "helper-token", type: "text", required: true });
+    const section = element(
+      "details",
+      {},
+      element("summary", {}, "Advanced"),
+      element(
+        "div",
+        { className: "form-field" },
+        element("label", { for: "helper-token" }, "Token"),
+        token,
+      ),
+    );
+    const form = element(
+      "form",
+      {},
+      element(
+        "div",
+        { className: "form-field" },
+        element("label", { for: "helper-name" }, "Name"),
+        name,
+      ),
+      section,
+      element("button", { type: "submit" }, "Save"),
+    );
+    globalThis.document.body.append(form);
+    validateOnSubmit(form);
+    // The form's own handler, which (unlike the shipped ones) checks nothing itself.
+    const submitted = [];
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      submitted.push(token.value);
+    });
+    const state = () => ({
+      submitted: [...submitted],
+      open: section.open,
+      focused: globalThis.document.activeElement?.id ?? null,
+      invalid: token.getAttribute("aria-invalid"),
+      error: globalThis.document.getElementById("helper-token-error")?.hidden === false,
+    });
+    form.requestSubmit();
+    const refused = state();
+    token.value = "secret-free";
+    token.dispatchEvent(new Event("input", { bubbles: true }));
+    form.requestSubmit();
+    const accepted = state();
+    form.remove();
+    return { refused, accepted };
+  });
+  assert.deepEqual(outcome.refused, {
+    submitted: [],
+    open: true,
+    focused: "helper-token",
+    invalid: "true",
+    error: true,
+  });
+  assert.deepEqual(outcome.accepted, {
+    submitted: ["secret-free"],
+    open: true,
+    focused: "helper-token",
+    invalid: null,
+    error: false,
+  });
+});
