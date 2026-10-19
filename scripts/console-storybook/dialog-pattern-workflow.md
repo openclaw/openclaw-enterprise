@@ -25,7 +25,9 @@ simulated data.
 6. Turn on reduced motion (browser developer tools, Rendering, "Emulate CSS media
    feature prefers-reduced-motion: reduce") and reopen a dialog: it appears
    without the fade or slide.
-7. On a phone, open **Create Secret (phone)** and tap Name. The sheet rises
-   with the on-screen keyboard, so Cancel and Create Secret stay above it. A
-   desktop browser has no on-screen keyboard; pinch zoom shrinks the visible
-   area the same way, and the sheet follows it.
+7. On a phone, open the **Create Secret (phone)** fixture in its own tab, not
+   inside Storybook, because an iframe's visible area does not follow the
+   page's keyboard: `/storybook-fixtures/frame.html?story=slackCreateSecretModal`.
+   Tap Name. The sheet rises with the on-screen keyboard, so Cancel and Create
+   Secret stay above it. A desktop browser has no on-screen keyboard; pinch
+   zoom shrinks the visible area the same way, and the sheet follows it.
