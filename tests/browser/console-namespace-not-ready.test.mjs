@@ -12,6 +12,7 @@ import {
   newPage,
   secretPostRequests,
   settledView,
+  statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
@@ -29,13 +30,7 @@ const DRAFT_INVITATION =
 
 // The note is a warning status block (UX plan C1), still a polite status: it is there on load,
 // not the answer to an action (finding 1990).
-const warningBlock = (locator) =>
-  locator.evaluate((node) => ({
-    status: node.classList.contains("status"),
-    tone: node.dataset.tone,
-    role: node.getAttribute("role"),
-  }));
-const WARNING = { status: true, tone: "warning", role: "status" };
+const WARNING = { className: "status", tone: "warning", role: "status" };
 
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
@@ -81,7 +76,7 @@ test("a first run's provisioning Namespace names its status and still offers dra
   const note = await noteBlock.textContent();
   assert.match(note, /^Namespace status: Provisioning\. /);
   assert.ok(note.endsWith(` ${DRAFTS}`), note);
-  assert.deepEqual(await warningBlock(noteBlock), WARNING);
+  assert.deepEqual(await statusTone(noteBlock), WARNING);
   // Create Agent still saves drafts (#2867); it points at the note, and the empty state says
   // what will happen instead of the plain invitation (finding 1990).
   const create = view.getByRole("button", { name: "Create Agent" });
@@ -116,14 +111,14 @@ test("Create Agent names a provisioning Namespace's status before any start", as
   );
   assert.equal(await page.getByRole("dialog").count(), 0);
   assert.equal(await view.getByText("Creating Agents is not available").count(), 0);
-  assert.deepEqual(await warningBlock(note), WARNING);
+  assert.deepEqual(await statusTone(note), WARNING);
   // The form keeps the note, and says a Dedicated Agent waits for the Namespace instead of
   // promising it deploys when created (finding 1990).
   await start.click();
   await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
   const formNote = view.getByRole("status").filter({ hasText: NOT_READY });
   assert.match(await formNote.textContent(), /^Namespace status: Provisioning\. /);
-  assert.deepEqual(await warningBlock(formNote), WARNING);
+  assert.deepEqual(await statusTone(formNote), WARNING);
   await view
     .getByText(
       "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then.",
@@ -224,7 +219,7 @@ test("a Namespace that takes no new Agent disables Create Agent with its reason"
   await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
   const panelNote = view.getByRole("status").filter({ hasText: NOT_READY });
   assert.match(await panelNote.textContent(), /^Namespace status: Provisioning\. /);
-  assert.deepEqual(await warningBlock(panelNote), WARNING);
+  assert.deepEqual(await statusTone(panelNote), WARNING);
   assert.equal(await view.getByRole("button", { name: "Start without Preset" }).count(), 0);
   assert.equal(await page.getByRole("dialog").count(), 0);
 });
@@ -253,7 +248,7 @@ test("with only a deleting Namespace, the pick names it and offers no wait", asy
   );
   await view.getByText("Agents cannot be created in this Namespace.").waitFor();
   assert.deepEqual(
-    await warningBlock(view.getByRole("status").filter({ hasText: "Namespace status: Deleting." })),
+    await statusTone(view.getByRole("status").filter({ hasText: "Namespace status: Deleting." })),
     WARNING,
   );
   const create = view.getByRole("button", { name: "Create Agent" });
@@ -300,8 +295,7 @@ const WAITS =
   "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then.";
 const READY_PLAN = "Dedicated Agents are provisioned and deployed when created.";
 
-async function openGatedForm(t, { clock = false } = {}) {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
+async function openGatedForm(t, { fixture, namespace }, { clock = false } = {}) {
   const { page } = await newPage(t, fixture, { browser });
   if (clock) {
     await page.clock.install({ time: new Date("2026-10-19T12:00:00Z") });
@@ -336,61 +330,73 @@ async function assertDraftIntact(name) {
   );
 }
 
-test("a refocus re-enables Create Agent once the Namespace is ready, keeping the draft", async (t) => {
-  const { page, view, create, name, release } = await openGatedForm(t);
-  release();
-  await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
-  await view.getByText(READY_PLAN, { exact: true }).waitFor();
-  assert.equal(await create.isDisabled(), false);
-  assert.equal(await create.getAttribute("aria-describedby"), null);
-  assert.equal(await view.getByText(WAITS).count(), 0);
-  assert.equal(await view.getByText(NOT_READY).count(), 0);
-  await assertDraftIntact(name);
-});
+// One console for the gated-form cases; each case's page reads the Namespace as provisioning
+// until it releases it.
+test("Create Agent waiting on a provisioning Namespace", async (t) => {
+  const team = await createReadyConsoleNamespace(t, "team");
 
-test("an open form waiting on the Namespace sees it become ready without a refocus", async (t) => {
-  const { page, view, create, name, release } = await openGatedForm(t, { clock: true });
-  // One poll: its read must arrive, so its answer, not the absence of one, keeps the gate.
-  const poll = async () => {
-    const read = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/namespaces",
-    );
-    await page.clock.runFor(10_000);
-    await read;
-  };
-  // A Namespace still provisioning keeps the gate.
-  await poll();
-  await view.getByText(WAITS, { exact: true }).waitFor();
-  assert.equal(await create.isDisabled(), true);
-  release();
-  await poll();
-  await view.getByText(READY_PLAN, { exact: true }).waitFor();
-  assert.equal(await create.isDisabled(), false);
-  assert.equal(await view.getByText(NOT_READY).count(), 0);
-  await assertDraftIntact(name);
-});
+  await t.test(
+    "a refocus re-enables Create Agent once the Namespace is ready, keeping the draft",
+    async (t) => {
+      const { page, view, create, name, release } = await openGatedForm(t, team);
+      release();
+      await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
+      await view.getByText(READY_PLAN, { exact: true }).waitFor();
+      assert.equal(await create.isDisabled(), false);
+      assert.equal(await create.getAttribute("aria-describedby"), null);
+      assert.equal(await view.getByText(WAITS).count(), 0);
+      assert.equal(await view.getByText(NOT_READY).count(), 0);
+      await assertDraftIntact(name);
+    },
+  );
 
-test("Start over leaves one Namespace poll, not one per form", async (t) => {
-  const { page, view } = await openGatedForm(t, { clock: true });
-  page.once("dialog", (dialog) => void dialog.accept());
-  await view.getByRole("button", { name: "Start over", exact: true }).click();
-  await view.getByRole("button", { name: "Start without Preset" }).click();
-  await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
-  await view.getByText(WAITS, { exact: true }).waitFor();
-  const reads = [];
-  page.on("response", (response) => {
-    if (new URL(response.url()).pathname === "/namespaces") {
-      reads.push(response);
+  await t.test(
+    "an open form waiting on the Namespace sees it become ready without a refocus",
+    async (t) => {
+      const { page, view, create, name, release } = await openGatedForm(t, team, { clock: true });
+      // One poll: its read must arrive, so its answer, not the absence of one, keeps the gate.
+      const poll = async () => {
+        const read = page.waitForResponse(
+          (response) => new URL(response.url()).pathname === "/namespaces",
+        );
+        await page.clock.runFor(10_000);
+        await read;
+      };
+      // A Namespace still provisioning keeps the gate.
+      await poll();
+      await view.getByText(WAITS, { exact: true }).waitFor();
+      assert.equal(await create.isDisabled(), true);
+      release();
+      await poll();
+      await view.getByText(READY_PLAN, { exact: true }).waitFor();
+      assert.equal(await create.isDisabled(), false);
+      assert.equal(await view.getByText(NOT_READY).count(), 0);
+      await assertDraftIntact(name);
+    },
+  );
+
+  await t.test("Start over leaves one Namespace poll, not one per form", async (t) => {
+    const { page, view } = await openGatedForm(t, team, { clock: true });
+    page.once("dialog", (dialog) => void dialog.accept());
+    await view.getByRole("button", { name: "Start over", exact: true }).click();
+    await view.getByRole("button", { name: "Start without Preset" }).click();
+    await view.getByLabel("Authentication method", { exact: true }).selectOption("api_key");
+    await view.getByText(WAITS, { exact: true }).waitFor();
+    const reads = [];
+    page.on("response", (response) => {
+      if (new URL(response.url()).pathname === "/namespaces") {
+        reads.push(response);
+      }
+    });
+    // Two polls: by the time the second one's read arrives, a read any replaced form started on
+    // the first one has arrived too.
+    for (let poll = 0; poll < 2; poll += 1) {
+      const read = page.waitForResponse(
+        (response) => new URL(response.url()).pathname === "/namespaces",
+      );
+      await page.clock.runFor(10_000);
+      await read;
     }
+    assert.equal(reads.length, 2);
   });
-  // Two polls: by the time the second one's read arrives, a read any replaced form started on
-  // the first one has arrived too.
-  for (let poll = 0; poll < 2; poll += 1) {
-    const read = page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/namespaces",
-    );
-    await page.clock.runFor(10_000);
-    await read;
-  }
-  assert.equal(reads.length, 2);
 });

@@ -99,7 +99,7 @@ export const diagnosticDeadlineMs = 60_000;
 // writes (finding 1557). A diagnostic nested in another one also stops at the outer deadline.
 export async function withinDiagnosticDeadline(
   diagnostic,
-  { timeoutMs = diagnosticDeadlineMs, timedOut = "Diagnostic timed out" } = {},
+  { timeoutMs = diagnosticDeadlineMs, timedOut = "Diagnostic timed out", sleep = delay } = {},
 ) {
   const deadline = new AbortController();
   const outer = diagnosticDeadline.getStore();
@@ -108,7 +108,7 @@ export async function withinDiagnosticDeadline(
   try {
     return await Promise.race([
       diagnosticDeadline.run(signal, () => diagnostic(signal)),
-      delay(timeoutMs, undefined, { signal: timer.signal }).then(() => {
+      sleep(timeoutMs, undefined, { signal: timer.signal }).then(() => {
         deadline.abort();
         return timedOut;
       }),
@@ -123,13 +123,14 @@ export async function withinDiagnosticDeadline(
 // past the timeout, say) says before it fails what holds it (finding 2018): the Namespace's
 // phase, finalizers and status conditions, and every object still in it with its finalizers and
 // deletion time. The listing runs within the diagnostic deadline and only adds to the delete's
-// own error.
+// own error; past the deadline it keeps what it read (finding 2028).
 export async function deleteNamespaceExplained(
   kubectl,
   namespace,
   // The listing's own bound keeps the delete and the listing within teardownStepLimitMs, so the
-  // teardown never abandons the step and loses the listing with it.
-  { timeout = "120s", listTimeoutMs = 40_000 } = {},
+  // teardown never abandons the step and loses the listing with it. `sleep` stands in for the
+  // deadline's timer (withinDiagnosticDeadline's), so a test can hold it.
+  { timeout = "120s", listTimeoutMs = 40_000, sleep } = {},
 ) {
   try {
     return await kubectl(
@@ -141,10 +142,16 @@ export async function deleteNamespaceExplained(
       `--timeout=${timeout}`,
     );
   } catch (error) {
+    const read = [];
+    const timedOut = Symbol("listing timed out");
     const remains = await withinDiagnosticDeadline(
-      () => describeNamespaceRemains(kubectl, namespace),
-      { timeoutMs: listTimeoutMs, timedOut: "listing what remains timed out" },
-    ).catch((listError) => `listing what remains failed: ${listError?.message ?? listError}`);
+      () => describeNamespaceRemains(kubectl, namespace, read),
+      { timeoutMs: listTimeoutMs, timedOut, sleep },
+    ).then(
+      (listed) =>
+        listed === timedOut ? [...read, "listing what remains timed out"].join("\n  ") : listed,
+      (listError) => `listing what remains failed: ${listError?.message ?? listError}`,
+    );
     error.message = `${error.message}\nNamespace ${namespace} remains: ${remains}`;
     throw error;
   }
@@ -163,6 +170,11 @@ async function partialKubectlRead(kubectl, args, lines, what) {
   try {
     return { output: await kubectl(...args), complete: true };
   } catch (error) {
+    // A read the deadline stopped is not a failed read: the listing reports its timeout instead,
+    // and a line pushed here could race into that report.
+    if (error?.name === "AbortError" || diagnosticDeadlinePassed()) {
+      throw error;
+    }
     const reason = String(error?.stderr || error?.message || error)
       .trim()
       .split("\n")[0]
@@ -172,7 +184,8 @@ async function partialKubectlRead(kubectl, args, lines, what) {
   }
 }
 
-async function describeNamespaceRemains(kubectl, namespace) {
+// Pushes each line to `lines` as it is read, so a listing cut short by its deadline keeps them.
+async function describeNamespaceRemains(kubectl, namespace, lines) {
   let state;
   try {
     state = JSON.parse(
@@ -184,13 +197,13 @@ async function describeNamespaceRemains(kubectl, namespace) {
     }
     throw error;
   }
-  const lines = [
+  lines.push(
     `phase ${state.status?.phase ?? "unknown"}, finalizers [${(state.spec?.finalizers ?? []).join(", ")}]`,
     ...(state.status?.conditions ?? []).map(
       (condition) =>
         `condition ${condition.type}=${condition.status} ${condition.reason ?? ""}: ${condition.message ?? ""}`,
     ),
-  ];
+  );
   const discovery = await partialKubectlRead(
     kubectl,
     ["api-resources", "--namespaced=true", "--verbs=list", "-o", "name", diagnosticRequestTimeout],

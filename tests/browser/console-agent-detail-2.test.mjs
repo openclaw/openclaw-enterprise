@@ -35,6 +35,7 @@ import {
   waitForIdleFetches,
   waitForInputValue,
   waitForSettledFetches,
+  statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -144,14 +145,11 @@ test("Agent delete confirmation sends the real delete API and leaves visible que
   assert.match(page.url(), new RegExp(`/console/agents/${agent.id}`));
   await page.getByRole("status").getByText("Deletion was requested").waitFor();
   // Queued deletion is an info notice, not a warning (finding 2006).
-  assert.deepEqual(
-    await page.getByText(/^Deletion was requested\. /).evaluate((node) => ({
-      className: node.className,
-      tone: node.dataset.tone ?? null,
-      role: node.getAttribute("role"),
-    })),
-    { className: "status", tone: "info", role: "status" },
-  );
+  assert.deepEqual(await statusTone(page.getByText(/^Deletion was requested\. /)), {
+    className: "status",
+    tone: "info",
+    role: "status",
+  });
   await page.getByRole("button", { name: "Refresh deletion status" }).waitFor();
   // The dialog's close event arrives after the request put focus on the status check. It must
   // not move focus back to the relabelled danger button "Request deletion again" (finding 1421).

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  fileBrowser,
   holdRequests,
   login,
   nativeValues,
@@ -12,6 +13,9 @@ import {
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+
+// One Chromium for the file; each test still gets its own context.
+const browser = fileBrowser();
 
 // Returning to the Agents list held the Agent page, inert, until the retained list had read
 // every row's /revisions and /deployments again: two reads per Agent, so the hold grew with the
@@ -56,7 +60,7 @@ async function openTeamList(t, name, { newer = [] } = {}) {
     }
     agents.push({ ...agent, name: label, revisionId: revision.id });
   }
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   // The fixture runs no worker, so each deployment record is served as it would read once its
   // deployment succeeded.
   await page.route(deploymentsRead(namespace), (route) =>
@@ -400,7 +404,7 @@ for (const visit of ["a first visit", "a return"]) {
       await fixture.seedActiveAgentRevision(namespace.id, agent.id);
       agents.push({ ...agent, name: label });
     }
-    const { page } = await newPage(t, fixture);
+    const { page } = await newPage(t, fixture, { browser });
     await page.route(deploymentsRead(namespace), (route) =>
       route.fulfill(deploymentRecord(namespace, "succeeded")),
     );
@@ -461,7 +465,7 @@ async function returnWithHeldRows(t, name) {
     await fixture.seedActiveAgentRevision(namespace.id, agent.id);
     agents.push({ ...agent, name: label });
   }
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await page.route(deploymentsRead(namespace), (route) =>
     route.fulfill(deploymentRecord(namespace, "succeeded")),
   );
@@ -725,6 +729,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
   for (const width of [390, 360, 600, 760, 761, 1024, 1440]) {
     const desktop = width > 760;
     const { page } = await newPage(t, fixture, {
+      browser,
       context: { viewport: { width, height: desktop ? 900 : 844 } },
     });
     // Each row keeps its height when its deployment read lands (finding 1488).
@@ -1065,47 +1070,55 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     });
   }
   for (const width of [1024, 1440]) {
-    const { page } = await newPage(t, fixture, { context: { viewport: { width, height: 900 } } });
+    const { page } = await newPage(t, fixture, {
+      browser,
+      context: { viewport: { width, height: 900 } },
+    });
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     const table = page.locator(settledView).getByRole("table", { name: "Agents" });
     await table.getByRole("link", { name: cases.at(-1).name, exact: true }).waitFor();
-    for (const entry of cases) {
-      const shown = await table
-        .getByRole("link", { name: entry.name, exact: true })
-        .evaluate((node) => {
-          // The longest run the browser keeps on one line, set in the link's font in a box too
-          // narrow for any word. Combining marks share their letter's place, and a space hangs at
-          // the end of its line, so neither counts.
-          const box = globalThis.document.createElement("div");
-          const style = globalThis.getComputedStyle(node);
-          box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
-          box.textContent = node.textContent;
-          node.closest("table").after(box);
-          const range = globalThis.document.createRange();
-          let longest = 0;
-          let run = 0;
-          let top = null;
-          let offset = 0;
-          for (const character of Array.from(node.textContent)) {
-            range.setStart(box.firstChild, offset);
-            range.setEnd(box.firstChild, offset + character.length);
-            offset += character.length;
-            const rect = range.getClientRects()[0];
-            if (!rect || /[\p{M} ]/u.test(character)) {
-              continue;
-            }
-            run = Math.round(rect.top) === top ? run + 1 : 1;
-            top = Math.round(rect.top);
-            longest = Math.max(longest, run);
+    // Every listed name, measured in one pass: whether it is marked, its width, and the longest
+    // run the browser keeps on one line, set in the link's font in a box too narrow for any word.
+    // Combining marks share their letter's place, and a space hangs at the end of its line, so
+    // neither counts.
+    const measured = await table.evaluate((node) =>
+      Array.from(node.querySelectorAll("a"), (link) => {
+        const box = globalThis.document.createElement("div");
+        const style = globalThis.getComputedStyle(link);
+        box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
+        box.textContent = link.textContent;
+        node.after(box);
+        const range = globalThis.document.createRange();
+        let longest = 0;
+        let run = 0;
+        let top = null;
+        let offset = 0;
+        for (const character of Array.from(link.textContent)) {
+          range.setStart(box.firstChild, offset);
+          range.setEnd(box.firstChild, offset + character.length);
+          offset += character.length;
+          const rect = range.getClientRects()[0];
+          if (!rect || /[\p{M} ]/u.test(character)) {
+            continue;
           }
-          box.remove();
-          return {
-            marked: node.classList.contains("agent-name-unbroken"),
-            width: node.getBoundingClientRect().width,
-            longest,
-          };
-        });
+          run = Math.round(rect.top) === top ? run + 1 : 1;
+          top = Math.round(rect.top);
+          longest = Math.max(longest, run);
+        }
+        box.remove();
+        return {
+          name: link.textContent,
+          marked: link.classList.contains("agent-name-unbroken"),
+          width: link.getBoundingClientRect().width,
+          longest,
+        };
+      }),
+    );
+    for (const entry of cases) {
       const label = `${width}: ${JSON.stringify(entry.name.slice(0, 24))}…`;
+      const matches = measured.filter((link) => link.name === entry.name);
+      assert.equal(matches.length, 1, `${label} is listed once`);
+      const [shown] = matches;
       assert.equal(shown.marked, entry.unbroken, `${label} marked`);
       assert.equal(shown.longest >= 21, entry.unbroken, `${label} longest run ${shown.longest}`);
       if (entry.unbroken) {
@@ -1140,6 +1153,7 @@ test("Agents list search stays responsive with joiner-run names", async (t) => {
     });
   }
   const { page } = await newPage(t, fixture, {
+    browser,
     context: { viewport: { width: 1440, height: 900 } },
   });
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
