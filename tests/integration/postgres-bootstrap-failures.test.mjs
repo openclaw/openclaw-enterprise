@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -321,7 +321,7 @@ function passiveComputeDriver() {
   };
 }
 
-function assertBootstrapRaceOutcome(results) {
+function assertBootstrapRaceOutcome(results, sharedOutput = false) {
   const successful = results.filter((result) => result.ok === true);
   const failed = results.filter((result) => result.ok === false);
   assert.equal(successful.length, 1, "expected one successful bootstrap subprocess");
@@ -334,7 +334,12 @@ function assertBootstrapRaceOutcome(results) {
     (line) => line.event === "installation.bootstrap-failed",
   );
   assert.ok(failure, "expected an installation.bootstrap-failed event");
-  assert.ok(failure.attempt, "expected a failed bootstrap attempt");
+  if (sharedOutput && failure.code === "BOOTSTRAP_OUTPUT_EXISTS") {
+    // The winner wrote an output before the other process finished checking both destinations.
+    assert.equal(failure.attempt, undefined);
+  } else {
+    assert.ok(failure.attempt, "expected a failed bootstrap attempt");
+  }
   return { winnerIndex: results.indexOf(successful[0]), winnerEvent: bootstrapped[0] };
 }
 
@@ -391,7 +396,7 @@ for (const sharedOutput of [false, true]) {
       );
 
       const results = await Promise.all(environments.map((env) => runProductionBootstrap(env)));
-      const { winnerEvent: winner } = assertBootstrapRaceOutcome(results);
+      const { winnerEvent: winner } = assertBootstrapRaceOutcome(results, sharedOutput);
       const counts = await rowCounts();
       assertSingleDurableBootstrapSeed(counts);
       const winnerIndex = environments.findIndex(
@@ -611,6 +616,56 @@ test(
     assert.equal(existsSync(environment.OCC_BOOTSTRAP_PASSWORD_FILE), true);
     assert.equal(serviceKeyOutput.meta.installationId, failure.attempt.installationId);
     assert.equal(serviceKeyOutput.data.id, failure.attempt.serviceKeyId);
+  },
+);
+
+test(
+  "fresh production bootstrap refuses either retained credential output before creating credentials",
+  requiresFailurePostgres,
+  async (context) => {
+    const directory = await prepareBootstrapFailureFixture(context, "retained-output");
+    const env = productionEnvironment({
+      directory,
+      email: "retained-output@example.test",
+      name: "Bootstrap retained output",
+    });
+    const password = env.OCC_BOOTSTRAP_PASSWORD_FILE;
+    const serviceKey = env.OCC_BOOTSTRAP_SERVICE_KEY_FILE;
+    for (const [retained, absent] of [
+      [password, serviceKey],
+      [serviceKey, password],
+    ]) {
+      const marker = "retained-credential-sentinel";
+      await writeFile(retained, marker, { flag: "wx", mode: 0o600 });
+      const before = await lstat(retained, { bigint: true });
+
+      const result = await runProductionBootstrap(env);
+      assert.equal(result.ok, false);
+      const failure = jsonLines(result.stderr).find(
+        (line) => line.event === "installation.bootstrap-failed",
+      );
+      assert.equal(failure?.code, "BOOTSTRAP_OUTPUT_EXISTS", result.stderr);
+      assert.equal(failure.attempt, undefined);
+      assert.match(result.stderr, /preserve it and reconcile the original installation/i);
+      for (const privateValue of [directory, marker]) {
+        assert.ok(
+          !(result.stdout + result.stderr).includes(privateValue),
+          "diagnostic disclosed a path or content",
+        );
+      }
+
+      const after = await lstat(retained, { bigint: true });
+      for (const field of ["ino", "mode", "ctimeNs", "mtimeNs"]) {
+        assert.equal(after[field], before[field]);
+      }
+      assert.equal(await readFile(retained, "utf8"), marker);
+      await assert.rejects(lstat(absent), { code: "ENOENT" });
+      const counts = await rowCounts();
+      for (const [table, count] of Object.entries(counts)) {
+        assert.equal(count, 0, table);
+      }
+      await rm(retained);
+    }
   },
 );
 

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   bootstrapOutputPath,
+  requireAbsentBootstrapOutput,
   writeProtectedBootstrapFile,
 } from "../../apps/controller/src/composition/bootstrap-output.ts";
 
@@ -51,4 +52,16 @@ test("protected bootstrap output rejects oversized basenames", () => {
       ),
     /255 characters/,
   );
+});
+
+test("bootstrap distinguishes an absent output, a dangling link, and an unverified parent", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-bootstrap-preflight-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const output = join(directory, "output");
+  await requireAbsentBootstrapOutput(output);
+  await symlink("missing", output);
+  await assert.rejects(requireAbsentBootstrapOutput(output), { code: "BOOTSTRAP_OUTPUT_EXISTS" });
+  await assert.rejects(requireAbsentBootstrapOutput(join(directory, "missing", "output")), {
+    code: "BOOTSTRAP_OUTPUT_UNVERIFIED",
+  });
 });
