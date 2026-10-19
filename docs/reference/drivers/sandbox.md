@@ -91,11 +91,12 @@ resolving another credential.
 
 Optional `workspaceSetup` carries `{id, defaultsId?, secretKeyRef: {name, key}}`.
 Compute stages an Agent-owned, same-Namespace setup Secret; OCC retains
-completion state. Document contents are not part of the workload requirements. A Sandbox
-receiving the reference must initialize its approved workspace and verify the
-matching completion marker before Harness execution, or reject the handoff.
+completion state. Requirements exclude document contents. A receiving
+Sandbox must initialize the approved workspace and verify its
+completion marker before Harness execution, or reject the handoff.
 Private initialization must preserve the [workspace setup lifecycle](../../flows/workspace-files.md#2-deployment-initializes-storage-before-execution),
-including safe retries and protection of later edits.
+including safe retries and preserved later edits. Throw
+`SandboxWorkspaceSetupRefusedError` for a refusal; Compute fails at once.
 
 `credentialAttachments` holds one opaque `{ sourceId, ref }` entry per
 credential source the revision binds; it is empty otherwise. The selected
@@ -171,7 +172,12 @@ at once. The driver's own message stays in the controller:
 the controller's identity while it confirms a Harness exposure withdrawn or a
 Sandbox removed; an Agent stop, deletion or credential withdrawal fails with it
 too, so a Sandbox the identity may no longer see (the provider hides it as
-missing) is never recorded gone.
+missing) is never recorded gone. A missing role fails at once; an identity the
+provider could not authenticate (`transient`: a token file or signing key between
+refreshes) retries within the attempt budget first. The worker logs the failed
+stop, deletion or withdrawal with the same guidance the deployment status shows.
+A delete that finds nothing where the read just did is `SANDBOX_DELETION_UNCONFIRMED`:
+the sweep logs it `worker.harness-exposure-withdrawal-unconfirmed` and retries.
 
 When the provider refuses the controller's own identity during `ensureNamespace`
 or Namespace `cleanup`, a retry cannot help until an operator fixes that identity.

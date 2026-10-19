@@ -13,9 +13,9 @@
     "tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs",
     "tests/integration/postgres-worker-agent-revision-credential-sources.test.mjs",
     "tests/integration/postgres-worker-agent-revision-health.test.mjs",
+    "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
     "tests/integration/postgres-worker-agent-revision-teardown.test.mjs",
     "tests/integration/postgres-worker-harness-exposure.test.mjs",
-    "tests/integration/postgres-native-iam-policy-barrier.test.mjs",
     "tests/integration/auth-maintain.test.mjs",
     "tests/integration/occ-metrics.test.mjs"
   ],

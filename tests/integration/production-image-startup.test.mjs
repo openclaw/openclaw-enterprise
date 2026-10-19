@@ -328,6 +328,64 @@ test(
   },
 );
 
+test(
+  "production image runs the chart's pre-upgrade Installation check",
+  imageTestOptions,
+  async (t) => {
+    // The initialization hook runs this script with the chart's security context before
+    // Helm replaces the API, so a refused Installation leaves the old Pods serving.
+    const script = await readFile(
+      new URL(
+        "../../deploy/helm/openclaw-enterprise/files/check-installation.mjs",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    const fixture = await productionFixture(t);
+    const check = [
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--user",
+      "1000:1000",
+      "--mount",
+      `type=bind,src=${fixture},dst=/tmp/oce-production-image,readonly`,
+      "-e",
+      "NODE_ENV=production",
+      "-e",
+      "OCC_CONFIG_PATH=/tmp/oce-production-image/installation.json",
+      image,
+      "--input-type=module",
+      "-e",
+      script,
+    ];
+    const passed = await runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier });
+    assert.equal(passed.stdout, "installation-startup-ready\n");
+    assertNoPackagingFailure(passed.stderr);
+
+    const path = join(fixture, "installation.json");
+    const installation = JSON.parse(await readFile(path, "utf8"));
+    installation.presets = { files: ["presets/missing.json"] };
+    await writeFile(path, `${JSON.stringify(installation, undefined, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o644,
+    });
+    await assert.rejects(
+      runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.equal(
+          error.stderr,
+          "installation-check: API and worker startup would refuse the Installation (PRESET_FILE_INVALID): presets.files: Preset file /tmp/oce-production-image/presets/missing.json is unavailable.\n",
+        );
+        return true;
+      },
+    );
+  },
+);
+
 test("production image includes the OpenShell gRPC proto asset", imageTestOptions, async () => {
   const probe = String.raw`
     import assert from "node:assert/strict";

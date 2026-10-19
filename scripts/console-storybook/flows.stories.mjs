@@ -15,7 +15,7 @@ export const SlackChannelAccessFlow = {
 export const StopFlow = { ...story("stopFlow"), name: "Stop an Agent" };
 export const CreateExitFlow = {
   ...story("createExitFlow"),
-  name: "Restart Agent creation",
+  name: "Keep an Agent draft",
 };
 export const CreateWorkspaceFilesFlow = {
   ...story("createWorkspaceFlow"),

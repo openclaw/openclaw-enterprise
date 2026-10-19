@@ -1,5 +1,6 @@
-import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
+import { button, element, replaceChildrenIfChanged, setText, statusBlock } from "../dom.mjs";
 import { displayDate, namespacePath } from "./list.mjs";
+import { fitLogTimeColumn } from "./logs-view.mjs";
 import { SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
 const STATUS_POLL_MS = 10_000;
@@ -187,13 +188,19 @@ export function renderAgentLogs(
   });
   const followButton = button("Follow", () => setFollow(!following), {
     "aria-pressed": "false",
+    size: "sm",
     className: "log-follow",
     disabled: true,
   });
   const refreshButton = button("Refresh logs", () => void readLogs({ restart: true }), {
+    tone: "ghost",
+    size: "sm",
     disabled: true,
   });
-  const downloadButton = button("Download", () => void download(), { disabled: true });
+  const downloadButton = button("Download", () => void download(), {
+    size: "sm",
+    disabled: true,
+  });
   const hiddenLevels = new Set();
   const levelChips = LEVELS.map((level) =>
     button(
@@ -220,15 +227,26 @@ export function renderAgentLogs(
   filterInput.addEventListener("input", () => applyFilters());
   const filterStatus = element("p", { className: "log-filter-status", role: "status" });
   const retention = element("p", { className: "log-retention" });
-  const sourceHint = element("p", { className: "log-source-hint", role: "note", hidden: true });
+  const sourceHint = statusBlock("warning", null, null, [], {
+    className: "log-source-hint",
+    role: "note",
+    hidden: true,
+  });
   const logStatus = element("p", { className: "log-output-status", role: "status" });
-  const logError = element("p", { className: "log-error", role: "alert", hidden: true });
+  const logError = statusBlock("danger", null, null, [], { className: "log-error", hidden: true });
   const pane = element("div", {
     className: "log-pane",
     role: "log",
     tabindex: "0",
     "aria-label": "Runtime log output",
   });
+  // The view is built before it is shown: size the time column once the pane is laid out.
+  const timeColumn = new ResizeObserver(() => {
+    if (fitLogTimeColumn(pane)) {
+      timeColumn.disconnect();
+    }
+  });
+  timeColumn.observe(pane);
   // Detaching the view for Back's cache resets the pane to the top; resume restores the
   // reader's last position so follow neither stalls as "scrolled up" nor jumps. A reader
   // at the bottom returns to the bottom, even if a late scroll event or resize moved it.
@@ -259,6 +277,12 @@ export function renderAgentLogs(
   // A source, Pod or instance change while a read is in flight restarts the view after it.
   let restartPending = false;
   let rows = 0;
+  // The log query (source, Pod, instance, level floor) whose lines the pane shows, and the
+  // status line its first page set.
+  let shownSelection = null;
+  let shownStatus = "";
+  // Updates a manual read's "Try again in N seconds" once that wait has passed.
+  let retryHintTimer;
   // Set when a read is refused after this view showed output; Back rebuilds such a view.
   let outputRefused = false;
   let logsDenied = deniedLogViews.has(deniedKey);
@@ -302,6 +326,18 @@ export function renderAgentLogs(
     return Boolean(source) && (source.kind === "sandbox" || statusDenied || Boolean(selectedPod()));
   }
 
+  // Compare the selected stream, not its Pod UID or restart count: the cursor handles those.
+  function effectiveSelection() {
+    const pod = selectedPod();
+    return JSON.stringify([
+      selectedSource()?.id,
+      pod?.name,
+      pod?.container,
+      previous.checked,
+      readableSelection(),
+    ]);
+  }
+
   function logQuery(source, pod) {
     const query = new URLSearchParams({ source: source.id });
     if (source.kind !== "sandbox" && pod) {
@@ -317,7 +353,16 @@ export function renderAgentLogs(
     return query;
   }
 
+  function clearShownLines() {
+    cursor = null;
+    pane.replaceChildren();
+    rows = 0;
+    shownSelection = null;
+    applyFilters();
+  }
+
   function showLogError(text) {
+    clearTimeout(retryHintTimer);
     logError.hidden = text === null;
     logError.textContent = text ?? "";
   }
@@ -327,6 +372,13 @@ export function renderAgentLogs(
       return;
     }
     showLogError(withRequestId(runtimeErrorText(error, "logs", source.id, manualRead), error));
+    if (manualRead && error.status === 429 && error.retryAfterSeconds !== undefined) {
+      // A later error or a successful read replaces the text and cancels this (finding 1715).
+      // A view held for Back is updated too, so it never returns with a wait that has passed.
+      retryHintTimer = setTimeout(() => {
+        showLogError(withRequestId("Too many requests. You can try again now.", error));
+      }, error.retryAfterSeconds * 1000);
+    }
     if (error.status !== 403) {
       return;
     }
@@ -339,6 +391,7 @@ export function renderAgentLogs(
     cursor = null;
     pane.replaceChildren();
     rows = 0;
+    shownSelection = null;
     logStatus.textContent = "";
     applyFilters();
     setFollow(false);
@@ -504,12 +557,25 @@ export function renderAgentLogs(
         if (!current() || (superseded() && description !== null)) {
           return;
         }
+        const selection = effectiveSelection();
         description = answer;
         statusDenied = false;
         renderStrip();
         renderPickers();
         if (first && !logsDenied) {
           firstLogRead = readLogs({ restart: true });
+        } else if (!logsDenied && selection !== effectiveSelection()) {
+          // A restart normally clears the old view. Do that now if it must wait for an
+          // in-flight read (whose denial still wins), or there is no readable replacement.
+          if (reading || !readableSelection()) {
+            cursor = null;
+            pane.replaceChildren();
+            rows = 0;
+            logStatus.textContent = "";
+            applyFilters();
+          }
+          showLogError(null);
+          void readLogs({ restart: true });
         }
         if (superseded()) {
           // The newer load schedules the next poll.
@@ -703,6 +769,15 @@ export function renderAgentLogs(
     const pod = selectedPod();
     if (reading && restart) {
       restartPending = true;
+      // Lines kept for a refresh still in flight must not stay under another selection's
+      // picker while that read finishes: clear them now, as a restart for it would.
+      if (
+        shownSelection !== null &&
+        (!source || logQuery(source, pod).toString() !== shownSelection)
+      ) {
+        clearShownLines();
+        logStatus.textContent = "Reading output…";
+      }
       return;
     }
     if (!current() || reading || logsDenied || !readableSelection()) {
@@ -712,27 +787,42 @@ export function renderAgentLogs(
       return;
     }
     reading = true;
-    if (restart) {
-      cursor = null;
-      pane.replaceChildren();
-      rows = 0;
-      logStatus.textContent = "Reading output…";
-    }
     const query = logQuery(source, pod);
+    const selection = query.toString();
+    // Refreshing the lines shown keeps them until the new page arrives, so a failed or
+    // rate-limited refresh leaves them in place (finding 1715). A refusal still clears them in
+    // showLogReadError, and another selection clears them here: they belong to the old one. So
+    // do lines without a cursor (rejected, say): nothing could read on from them.
+    const keepShown = restart && cursor !== null && selection === shownSelection;
+    // A refresh that ends without a page puts back the status line of the lines still shown.
+    const restoreShownStatus = () => {
+      if (keepShown && selection === shownSelection) {
+        logStatus.textContent = shownStatus;
+      }
+    };
     if (restart) {
+      if (!keepShown) {
+        clearShownLines();
+      }
+      logStatus.textContent = "Reading output…";
       query.set("tailLines", String(TAIL_LINES));
-    }
-    if (cursor) {
+    } else if (cursor) {
       query.set("cursor", cursor);
     }
     let retryAfter = FOLLOW_POLL_MS;
     try {
       const page = await read(`${base}/logs?${query}`);
       if (!current() || restartPending || logsDenied) {
+        restoreShownStatus();
         return;
       }
       showLogError(null);
       logsAllowed = true;
+      if (restart) {
+        pane.replaceChildren();
+        rows = 0;
+        shownSelection = selection;
+      }
       cursor = page.cursor;
       appendRecords(page.records);
       if (statusDenied) {
@@ -752,9 +842,11 @@ export function renderAgentLogs(
                 : source.kind === "sandbox"
                   ? `Showing policy decisions and supervisor output of sandbox ${page.stream.sandbox ?? ""}.`
                   : `Showing ${previous.checked ? "the previous instance of " : ""}${page.stream.container} in ${page.stream.pod}.`;
+        shownStatus = logStatus.textContent;
       }
     } catch (error) {
       if (!current() || (restartPending && ![401, 403].includes(error.status))) {
+        restoreShownStatus();
         return;
       }
       if (error.status === 401) {
@@ -770,6 +862,7 @@ export function renderAgentLogs(
       }
       if (restart) {
         logStatus.textContent = "";
+        restoreShownStatus();
       }
       showLogReadError(error, source, { manualRead: !following });
       if (error.status === 501) {

@@ -93,11 +93,18 @@ test(
   },
 );
 
+// The refusal comes after dev-up builds and imports the runtime image, verifies the Codex sandbox
+// (that refusal deliberately precedes controller work), installs the routing controllers, builds
+// the controller image the network probe runs and polls the policy for up to 90 s. As the file's
+// first dev-up it pays both cold image builds: p50 947 s and max 994 s over 35 passes, one slow
+// runner past 1,100 s (finding 1709). 1,400 s is about 48% over p50 and 41% over that max.
+const refusalDevUpTimeoutMs = 1_400_000;
+
 test(
   "dev-up refuses gateway trust when Kubernetes does not enforce NetworkPolicy",
   {
     skip: selected ? false : "Set OCC_TEST_DEV_UP_K3D_REAL=1 to run the real development profile.",
-    timeout: 1_200_000,
+    timeout: refusalDevUpTimeoutMs + 100_000,
   },
   async (t) => {
     const root = await mkdtemp(join(tmpdir(), "oce-dev-policy-failure-"));
@@ -169,7 +176,7 @@ process.exit(result.status ?? 1);
       execute(join(repository, "scripts", "dev-up"), [], {
         cwd: repository,
         env: environment,
-        timeout: 1_100_000,
+        timeout: refusalDevUpTimeoutMs,
         maxBuffer: 16 * 1024 * 1024,
       }),
       (error) => {
@@ -1064,6 +1071,19 @@ test(
   },
 );
 
+// The end of a command's output for a failure message. The results artifact keeps a whole
+// message only up to 16 KiB, so each stream is bounded to leave room for both.
+const outputTailLines = 40;
+const outputTailChars = 6_000;
+function outputTail(output) {
+  return String(output ?? "")
+    .trimEnd()
+    .split("\n")
+    .slice(-outputTailLines)
+    .join("\n")
+    .slice(-outputTailChars);
+}
+
 test(
   "dev-up Keycloak second-pass failure retains recovery state until owned cleanup succeeds",
   {
@@ -1119,9 +1139,21 @@ process.exit(result.status ?? 1);
         PATH: `${fixture.root}${delimiter}${fixture.environment.PATH}`,
       }),
       (error) => {
-        assert.match(error.stdout, /Enabling Keycloak sign-in \(second Helm pass\)/);
-        assert.match(error.stderr, /injected second Helm pass failure/);
-        assert.match(error.stderr, /injected owned cluster deletion failure/);
+        // Finding 1884: dev up once failed before the second pass, and the assertion cut its
+        // stdout and never showed stderr. A mismatch now names the step dev up stopped at.
+        try {
+          assert.match(error.stdout, /Enabling Keycloak sign-in \(second Helm pass\)/);
+          assert.match(error.stderr, /injected second Helm pass failure/);
+          assert.match(error.stderr, /injected owned cluster deletion failure/);
+        } catch (mismatch) {
+          // Node's own message quotes the start of stdout; keep only its first line.
+          throw new Error(
+            `${mismatch.message.split("\n")[0].replace(/ Input:$/, "")} dev up exit ${error.code} signal ${error.signal}.` +
+              `\n--- dev up stdout, last ${outputTailLines} lines ---\n${outputTail(error.stdout)}` +
+              `\n--- dev up stderr, last ${outputTailLines} lines ---\n${outputTail(error.stderr)}`,
+            { cause: mismatch },
+          );
+        }
         return true;
       },
     );

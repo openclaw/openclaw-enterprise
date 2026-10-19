@@ -478,3 +478,106 @@ export async function takeLayoutShifts(page) {
   const shifts = await page.evaluate(() => globalThis.__layoutShifts.splice(0));
   return { shift: shifts.reduce((sum, entry) => sum + entry.value, 0), shifts };
 }
+
+// The page's main view once its reads have settled and nothing holds it inert.
+export const settledView = '.content [aria-live="polite"][aria-busy="false"]:not([inert])';
+
+// The desktop and phone sizes the console's layout checks sweep.
+export const consoleViewports = Object.freeze([
+  Object.freeze({ width: 1440, height: 900 }),
+  Object.freeze({ width: 390, height: 844 }),
+]);
+
+// Answers the browser's read of one deployment with a failed record that carries the API's own
+// error for `code`, so the Agent page shows that version's recovery card.
+export async function routeFailedDeployment(
+  page,
+  fixture,
+  { namespaceId, agentId, deploymentId, code = "DEPENDENCY_UNAVAILABLE" },
+) {
+  await page.route(
+    `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/deployments/${deploymentId}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId,
+            namespaceId,
+            agentId,
+            status: "failed",
+            error: persistedDeploymentError(code),
+            warnings: [],
+            progress: null,
+          },
+          meta: { requestId: "req_test_failed_deployment" },
+        }),
+      }),
+  );
+}
+
+// WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.
+function contrastRatio(a, b) {
+  const luminance = (rgb) => {
+    const [r, g, bl] = rgb.map((value) => {
+      const channel = value / 255;
+      return channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+    });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * bl;
+  };
+  const [light, dark] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+  return (light + 0.05) / (dark + 0.05);
+}
+
+// A control's top edge, its own fill and the surface painted behind it: every translucent
+// background up to the first opaque one, composited over it (or over white).
+const controlEdge = (locator) =>
+  locator.evaluate((node) => {
+    const rgba = (value) => {
+      const [r, g, b, a = 1] = value.match(/[\d.]+/g).map(Number);
+      return { rgb: [r, g, b], a };
+    };
+    const layers = [];
+    for (let parent = node.parentElement; parent; parent = parent.parentElement) {
+      const layer = rgba(globalThis.getComputedStyle(parent).backgroundColor);
+      layers.push(layer);
+      if (layer.a === 1) {
+        break;
+      }
+    }
+    let surface = [255, 255, 255];
+    for (const layer of layers.reverse()) {
+      surface = surface.map((value, index) => layer.rgb[index] * layer.a + value * (1 - layer.a));
+    }
+    const style = globalThis.getComputedStyle(node);
+    return {
+      edge: rgba(style.borderTopColor),
+      width: style.borderTopWidth,
+      fill: rgba(style.backgroundColor),
+      surface,
+    };
+  });
+
+// A secondary control on a light surface is marked by its edge alone, so the edge needs 3:1
+// against both its fill (as painted over the surface) and the surface behind it (WCAG 1.4.11).
+// `opaqueFill` also requires the control to paint its own fill.
+export async function assertControlEdge(locator, label, { opaqueFill = false } = {}) {
+  const { edge, width, fill, surface } = await controlEdge(locator);
+  assert.equal(width, "1px", `${label}: edge width`);
+  assert.equal(edge.a, 1, `${label}: the edge is opaque`);
+  if (opaqueFill) {
+    assert.equal(fill.a, 1, `${label}: the fill is opaque`);
+  }
+  const painted = fill.rgb.map((value, index) => value * fill.a + surface[index] * (1 - fill.a));
+  for (const [against, colour] of [
+    ["fill", painted],
+    ["surface", surface],
+  ]) {
+    const ratio = contrastRatio(edge.rgb, colour);
+    assert.ok(
+      ratio >= 3,
+      `${label}: edge ${edge.rgb} is ${ratio.toFixed(2)}:1 against its ${against} ${colour.map(Math.round)}`,
+    );
+  }
+}

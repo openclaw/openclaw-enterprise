@@ -83,7 +83,7 @@ test("draft Agent offers deployment without a generated-credential step", async 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();
   await page.getByText(/Connection credentials are generated automatically/).waitFor();
-  await page.getByRole("button", { name: "Credentials", exact: true }).click();
+  await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByRole("button", { name: "Save authentication source" }).waitFor();
   assert.equal(await page.getByRole("heading", { name: "Channel Secrets" }).count(), 0);
   await expectNoText(page, /Slack app token|Slack bot token/);

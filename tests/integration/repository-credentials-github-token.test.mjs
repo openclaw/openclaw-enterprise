@@ -33,6 +33,8 @@ import {
 // 30 s per-command limit on an overloaded host.
 const cases = [];
 const test = (...registration) => cases.push(registration);
+// The bare repository has no such ref: `git rev-parse` exits 128.
+const missingRef = { message: "command failed (exit 128)" };
 
 // Stock Git must reach the gateway under its public HTTPS name. A CONNECT proxy
 // forwards only that name to the listener; TLS still terminates at the gateway.
@@ -166,7 +168,7 @@ test("development token sessions clone, push allowed refs and call REST without 
   }
   assert.equal(await git.ref("refs/heads/main"), mainBefore);
   assert.notEqual(await git.ref("refs/heads/existing-branch"), "");
-  await assert.rejects(git.ref("refs/heads/agent/y"));
+  await assert.rejects(git.ref("refs/heads/agent/y"), missingRef);
   assert.deepEqual(
     git.trace.filter((entry) => entry.path.endsWith("/git-receive-pack")),
     pushesBefore,
@@ -253,7 +255,7 @@ test("an oversized development token push is answered 413 before the token is us
       postBuffer,
     );
   }
-  await assert.rejects(fixture.git.ref("refs/heads/agent/large"));
+  await assert.rejects(fixture.git.ref("refs/heads/agent/large"), missingRef);
 });
 
 async function committedCheckout(t, fixture, opened, label) {
@@ -340,7 +342,7 @@ test("development token pushes admit UTF-8 branch names and match the allowlist 
   });
   assert.notEqual(bypassed.code, 0);
   assert.match(bypassed.stderr, /\b400\b/);
-  await assert.rejects(fixture.git.ref(lookalike));
+  await assert.rejects(fixture.git.ref(lookalike), missingRef);
 
   // Git accepts a refname that is not UTF-8 (argv cannot carry it, so a shell spells it).
   // Under an allowed prefix, the client hook and the gateway still refuse it.
@@ -387,7 +389,7 @@ test("development token pushes admit UTF-8 branch names and match the allowlist 
     });
     assert.notEqual(refusedByGateway.code, 0, code);
     assert.match(refusedByGateway.stderr, /\b400\b/, code);
-    await assert.rejects(fixture.git.ref(ref), code);
+    await assert.rejects(fixture.git.ref(ref), missingRef, code);
   }
 
   // Git refuses a control byte itself, before any request.
@@ -415,7 +417,7 @@ test("a development token push of more than 256 refs is refused with its own cod
   assert.notEqual(refused.code, 0);
   assert.match(refused.stderr, /\b413\b/);
   assert.equal(receivePacks(fixture), before);
-  await assert.rejects(fixture.git.ref("refs/heads/agent/many-0"));
+  await assert.rejects(fixture.git.ref("refs/heads/agent/many-0"), missingRef);
 
   // The JSON answer names the limit for clients that read it.
   const lines = refspecs(257).map(

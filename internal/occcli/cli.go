@@ -822,7 +822,7 @@ func (app *application) agentCommand() *cobra.Command {
 				if command.Flags().Changed("limit") {
 					limit = fmt.Sprintf(" --limit %d", revisionLimit)
 				}
-				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ agent revisions %s%s --cursor %s\"", args[0], limit, page.NextCursor)
+				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
 			}
 			return nil
 		},
@@ -874,7 +874,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if err := app.printAgent(agent, false); err != nil {
 				return err
 			}
-			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ agent deploy %s\" to start the Agent again\n", args[0])
+			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
 			return nil
 		},
 	}
@@ -1255,7 +1255,7 @@ func (app *application) requiredNamespace() (string, error) {
 	if app.namespace == "" {
 		return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace")
 	}
-	if err := namespaceIDArg.check(app.namespace); err != nil {
+	if err := namespaceIDArg.check(app.namespace, ""); err != nil {
 		return "", fmt.Errorf("OCC_NAMESPACE or --namespace: %w", err)
 	}
 	return app.namespace, nil

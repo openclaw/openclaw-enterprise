@@ -98,28 +98,29 @@ require_docker() {
   docker version --format '{{.Server.Version}}'
 }
 
+select_linux_artifact() {
+  local platform="$1" tool="$2" version="$3" amd64_artifact="$4" arm64_artifact="$5"
+  case "${platform}" in
+    Linux-x86_64) printf '%s\n' "${amd64_artifact}" ;;
+    Linux-aarch64|Linux-arm64) printf '%s\n' "${arm64_artifact}" ;;
+    *)
+      echo "Install ${tool} v${version} manually on ${platform}." >&2
+      return 1
+      ;;
+  esac
+}
+
 install_kubectl() {
   local version="1.35.0"
   if kubectl_version_matches "${version}"; then
     kubectl version --client=true
     return
   fi
-  local arch
-  local checksum
-  case "${platform}" in
-    Linux-x86_64)
-      arch="amd64"
-      checksum="a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989"
-      ;;
-    Linux-aarch64|Linux-arm64)
-      arch="arm64"
-      checksum="58f82f9fe796c375c5c4b8439850b0f3f4d401a52434052f2df46035a8789e25"
-      ;;
-    *)
-      echo "Install kubectl v${version} manually on ${platform}." >&2
-      return 1
-      ;;
-  esac
+  local artifact arch checksum
+  artifact="$(select_linux_artifact "${platform}" kubectl "${version}" \
+    "amd64 a2e984a18a0c063279d692533031c1eff93a262afcc0afdc517375432d060989" \
+    "arm64 58f82f9fe796c375c5c4b8439850b0f3f4d401a52434052f2df46035a8789e25")" || return
+  read -r arch checksum <<< "${artifact}"
   local binary="${bin_dir}/kubectl"
   download_file \
     "https://dl.k8s.io/release/v${version}/bin/linux/${arch}/kubectl" \
@@ -135,22 +136,11 @@ install_k3d() {
     k3d version
     return
   fi
-  local arch
-  local checksum
-  case "${platform}" in
-    Linux-x86_64)
-      arch="amd64"
-      checksum="dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e"
-      ;;
-    Linux-aarch64|Linux-arm64)
-      arch="arm64"
-      checksum="0b8110f2229631af7402fb828259330985918b08fefd38b7f1b788a1c8687216"
-      ;;
-    *)
-      echo "Install k3d v${version} manually on ${platform}." >&2
-      return 1
-      ;;
-  esac
+  local artifact arch checksum
+  artifact="$(select_linux_artifact "${platform}" k3d "${version}" \
+    "amd64 dbaa79a76ace7f4ca230a1ff41dc7d8a5036a8ad0309e9c54f9bf3836dbe853e" \
+    "arm64 0b8110f2229631af7402fb828259330985918b08fefd38b7f1b788a1c8687216")" || return
+  read -r arch checksum <<< "${artifact}"
   local binary="${bin_dir}/k3d"
   download_file \
     "https://github.com/k3d-io/k3d/releases/download/v${version}/k3d-linux-${arch}" \
@@ -166,22 +156,11 @@ install_helm() {
     helm version --short
     return
   fi
-  local arch
-  local checksum
-  case "${platform}" in
-    Linux-x86_64)
-      arch="amd64"
-      checksum="2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e"
-      ;;
-    Linux-aarch64|Linux-arm64)
-      arch="arm64"
-      checksum="566e9f3a5a83a81e4b03503ae37e368edd52d699619e8a9bb1fdf21561ae0e88"
-      ;;
-    *)
-      echo "Install Helm v${version} manually on ${platform}." >&2
-      return 1
-      ;;
-  esac
+  local artifact arch checksum
+  artifact="$(select_linux_artifact "${platform}" Helm "${version}" \
+    "amd64 2114c9dea2844dce6d0ee2d792a9aae846be8cf53d5b19dc2988b5a0e8fec26e" \
+    "arm64 566e9f3a5a83a81e4b03503ae37e368edd52d699619e8a9bb1fdf21561ae0e88")" || return
+  read -r arch checksum <<< "${artifact}"
   local archive="${bin_dir}/helm-v${version}-linux-${arch}.tar.gz"
   download_file \
     "https://get.helm.sh/helm-v${version}-linux-${arch}.tar.gz" \
@@ -200,22 +179,11 @@ install_yq() {
     yq --version
     return
   fi
-  local arch
-  local checksum
-  case "${platform}" in
-    Linux-x86_64)
-      arch="amd64"
-      checksum="99df6047f5b577a9d25f969f7c3823ada3488de2e2115b30a0abb10d9324fd9f"
-      ;;
-    Linux-aarch64|Linux-arm64)
-      arch="arm64"
-      checksum="0e46b5b926a9e57c526fa2bd8f8e38b7e17fbf6e2403ff1741f3b268e3363a9e"
-      ;;
-    *)
-      echo "Install yq v${version} manually on ${platform}." >&2
-      return 1
-      ;;
-  esac
+  local artifact arch checksum
+  artifact="$(select_linux_artifact "${platform}" yq "${version}" \
+    "amd64 99df6047f5b577a9d25f969f7c3823ada3488de2e2115b30a0abb10d9324fd9f" \
+    "arm64 0e46b5b926a9e57c526fa2bd8f8e38b7e17fbf6e2403ff1741f3b268e3363a9e")" || return
+  read -r arch checksum <<< "${artifact}"
   local binary="${bin_dir}/yq"
   download_file \
     "https://github.com/mikefarah/yq/releases/download/v${version}/yq_linux_${arch}" \

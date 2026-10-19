@@ -279,6 +279,22 @@ async function stopAudit(fixture, owner) {
   return audit.rows.map(({ reason_code: code }) => code);
 }
 
+// A provisioned caller that keeps every fixture grant except delete, so a refusal comes from the
+// delete-permission check itself rather than from an unknown identity (finding 1888).
+async function deleteDeniedCaller(fixture, label) {
+  const callerId = `${label}-${randomUUID()}`;
+  await fixture.copyActorGrants(callerId, { withoutActions: ["delete"] });
+  return callerId;
+}
+
+function deleteDenied(resource) {
+  return {
+    name: "AuthorizationDeniedError",
+    message: "No explicit scoped binding grants the exact action and resource.",
+    authorization: { action: "delete", resource },
+  };
+}
+
 test(
   "an Agent stop yields to due work during its Gateway drain, across a restart and a second stop",
   requiresPostgres,
@@ -1252,10 +1268,11 @@ test(
     // A rejected caller cannot replenish the worker's attempt budget.
     await assert.rejects(
       fixture.controller.deleteAgent(
-        `unprivileged-${randomUUID()}`,
+        await deleteDeniedCaller(fixture, "unprivileged"),
         fixture.namespace.id,
         owner.id,
       ),
+      deleteDenied({ kind: "agent", id: owner.id, namespaceId: fixture.namespace.id }),
     );
     assert.deepEqual(await observe(), exhausted);
 
@@ -1371,15 +1388,13 @@ test(
 
     const otherActor = `delete-successor-${randomUUID()}`;
     await fixture.copyActorGrants(otherActor);
+    const unprivileged = await deleteDeniedCaller(fixture, "unprivileged");
     // The initiator is offboarded: it no longer holds any access.
     await removeAccessBindings(fixture, fixture.actor.id);
     // A caller without delete permission still cannot take over.
     await assert.rejects(
-      fixture.controller.deleteAgent(
-        `unprivileged-${randomUUID()}`,
-        fixture.namespace.id,
-        owner.id,
-      ),
+      fixture.controller.deleteAgent(unprivileged, fixture.namespace.id, owner.id),
+      deleteDenied({ kind: "agent", id: owner.id, namespaceId: fixture.namespace.id }),
     );
     assert.deepEqual(await observe(), exhausted);
 
@@ -1464,7 +1479,11 @@ revisionTest(
 
     // A rejected caller cannot replenish the worker's attempt budget.
     await assert.rejects(
-      fixture.controller.deleteNamespace(`unprivileged-${randomUUID()}`, namespace.id),
+      fixture.controller.deleteNamespace(
+        await deleteDeniedCaller(fixture, "unprivileged"),
+        namespace.id,
+      ),
+      deleteDenied({ kind: "namespace", id: namespace.id, namespaceId: namespace.id }),
     );
     assert.deepEqual(await observe(), exhausted);
 
@@ -1793,6 +1812,7 @@ revisionTest(
 
     const otherActor = `delete-successor-${randomUUID()}`;
     await fixture.copyActorGrants(otherActor);
+    const unprivileged = await deleteDeniedCaller(fixture, "unprivileged");
     // While the initiator still holds delete permission, it keeps ownership.
     await assert.rejects(fixture.controller.deleteNamespace(otherActor, namespace.id), {
       name: "DeletionRetryOwnedError",
@@ -1809,7 +1829,8 @@ revisionTest(
     await removeAccessBindings(fixture, fixture.actor.id);
     // A caller without delete permission still cannot take over.
     await assert.rejects(
-      fixture.controller.deleteNamespace(`unprivileged-${randomUUID()}`, namespace.id),
+      fixture.controller.deleteNamespace(unprivileged, namespace.id),
+      deleteDenied({ kind: "namespace", id: namespace.id, namespaceId: namespace.id }),
     );
     assert.deepEqual(await observe(), exhausted);
 

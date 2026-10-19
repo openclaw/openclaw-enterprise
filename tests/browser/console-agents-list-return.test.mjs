@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   holdRequests,
   login,
@@ -12,6 +11,7 @@ import {
   waitForCondition,
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Returning to the Agents list held the Agent page, inert, until the retained list had read
 // every row's /revisions and /deployments again: two reads per Agent, so the hold grew with the
@@ -45,9 +45,7 @@ function deploymentRecord(namespace, status) {
 // `newer` names the Agents (by index) with a second version deployed after the active one, so their
 // Latest deployment link differs from their Current version link.
 async function openTeamList(t, name, { newer = [] } = {}) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agents = [];
   for (let index = 1; index <= AGENTS; index += 1) {
     const label = `Team Agent ${String(index).padStart(2, "0")}`;
@@ -395,9 +393,7 @@ function measureReadingDelay(reading) {
 // never shown either way. A first visit's rows follow the same rule.
 for (const visit of ["a first visit", "a return"]) {
   test(`Rows read on ${visit} paint no "Reading deployment…" until the read is slow`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace(`Quiet rows ${visit}`, { ready: true });
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Quiet rows ${visit}`);
     const agents = [];
     for (const label of ["Quiet Agent 1", "Quiet Agent 2", "Quiet Agent 3"]) {
       const agent = await fixture.createAgent(namespace.id, label, nativeValues(label));
@@ -455,11 +451,10 @@ for (const visit of ["a first visit", "a return"]) {
 }
 
 // Opens a list of three Agents, leaves it for an Agent, and goes Back with every row's reread
-// held and the page clock paused, so the test decides when the rereads land.
+// held, the page clock paused and the rows' 250 ms delay animations paused, so the test decides
+// when the rereads land and when "Reading deployment…" shows.
 async function returnWithHeldRows(t, name) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace(name, { ready: true });
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agents = [];
   for (const label of ["Steady Agent 1", "Steady Agent 2", "Steady Agent 3"]) {
     const agent = await fixture.createAgent(namespace.id, label, nativeValues(label));
@@ -483,6 +478,15 @@ async function returnWithHeldRows(t, name) {
       landed += 1;
     }
   });
+  // The page clock does not drive CSS animations: hold the delay until the test ends it. The
+  // console's CSP refuses an inline style, not a constructed sheet.
+  await page.evaluate(() => {
+    const sheet = new globalThis.CSSStyleSheet();
+    sheet.replaceSync(
+      ".agent-deployment :is(.delayed-status, .delayed-text) { animation-play-state: paused; }",
+    );
+    globalThis.document.adoptedStyleSheets = [...globalThis.document.adoptedStyleSheets, sheet];
+  });
   const start = Date.now();
   await page.clock.install({ time: start });
   await page.clock.pauseAt(start + 1_000);
@@ -497,7 +501,35 @@ async function returnWithHeldRows(t, name) {
     namespace,
     page,
     readingCells,
-    // Lets the held rereads land after `ms` and waits until the page has handled them.
+    // Ends every row's delay animation `ms` after the last step, so "Reading deployment…" shows,
+    // and waits until the page has handled the animations' end.
+    async reveal(ms) {
+      await page.clock.runFor(ms);
+      const ended = await page.evaluate(() => {
+        const document = globalThis.document;
+        globalThis.__readingShown = 0;
+        document.addEventListener("animationend", (event) => {
+          if (event.target.closest(".agent-deployment")) {
+            globalThis.__readingShown += 1;
+          }
+        });
+        const animations = [
+          ...document.querySelectorAll(
+            '.content [aria-live="polite"]:not([inert]) .agent-deployment :is(.delayed-status, .delayed-text)',
+          ),
+        ].flatMap((label) => label.getAnimations());
+        for (const animation of animations) {
+          animation.finish();
+        }
+        return animations.length;
+      });
+      assert.equal(ended, agents.length);
+      await page.waitForFunction((count) => globalThis.__readingShown >= count, ended, {
+        timeout: 5_000,
+      });
+    },
+    // Lets the held rereads land `ms` after the last step and waits until the page has handled
+    // them.
     async land(ms) {
       await page.clock.runFor(ms);
       const before = landed;
@@ -514,15 +546,28 @@ async function returnWithHeldRows(t, name) {
 // With a dozen rows, rereads that landed just past the 250 ms delay replaced "Reading
 // deployment…" a frame or a few after it showed (16-133 ms on oce-dogfood-b, finding 1683). Once
 // shown, it now stays 150 ms; reads that land before it shows, or after that, fill the rows at
-// once. The page clock decides when each read lands and when the rows fill.
-for (const [landsAt, fillsAt] of [
-  [100, 100],
-  [300, 400],
-  [450, 450],
+// once. The 150 ms count from the frame the text shows in, which can be a frame or two either
+// side of render time plus 250 ms: counted from that estimate, a reread landing between the two
+// filled a row one frame after its text painted, or after 117-133 ms (finding 1716). The page
+// clock decides when each read lands and when the rows fill; the test ends the delay animations.
+for (const [shownAt, landsAt, fillsAt] of [
+  [undefined, 100, 100],
+  [250, 300, 400],
+  [250, 450, 450],
+  [230, 240, 380],
+  [280, 300, 430],
 ]) {
-  test(`Rows whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
-    const { page, readingCells, land } = await returnWithHeldRows(t, `Steady rows ${landsAt}`);
-    await land(landsAt);
+  test(`Rows shown at ${shownAt ?? "no"} ms whose reread lands at ${landsAt} ms fill at ${fillsAt} ms`, async (t) => {
+    const { page, readingCells, reveal, land } = await returnWithHeldRows(
+      t,
+      `Steady rows ${shownAt ?? "hidden"} ${landsAt}`,
+    );
+    if (shownAt === undefined) {
+      await land(landsAt);
+    } else {
+      await reveal(shownAt);
+      await land(landsAt - shownAt);
+    }
     if (fillsAt > landsAt) {
       assert.equal(await readingCells(), 3, "the shown text stays");
       await page.clock.runFor(fillsAt - landsAt - 1);
@@ -539,8 +584,12 @@ for (const [landsAt, fillsAt] of [
 // A refocus that resumes the list while a landed reread waits out those 150 ms starts the rows
 // reading again; the earlier answer never fills a row that reads again.
 test("A list resumed while its rows wait to fill shows only the new rereads", async (t) => {
-  const { namespace, page, readingCells, land } = await returnWithHeldRows(t, "Steady resume");
-  await land(300);
+  const { namespace, page, readingCells, reveal, land } = await returnWithHeldRows(
+    t,
+    "Steady resume",
+  );
+  await reveal(250);
+  await land(50);
   assert.equal(await readingCells(), 3);
   const rereads = await holdRowReads(t, page, namespace);
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
@@ -551,6 +600,39 @@ test("A list resumed while its rows wait to fill shows only the new rereads", as
   rereads.release();
   await page.getByText(READING).first().waitFor({ state: "detached" });
   assert.equal(await viewTag(page), "kept");
+});
+
+// Until the resume's list read revalidates, the refocus holds the same list on screen, inert,
+// with its rows' text still connected but the view no longer current: a landed reread waiting
+// out those 150 ms must not fill a row of the held page either (finding 1877).
+test("A list held by a refocus while its rows wait to fill paints no earlier answer", async (t) => {
+  const { namespace, page, reveal, land } = await returnWithHeldRows(t, "Steady held resume");
+  await reveal(250);
+  await land(50);
+  const listRead = `/namespaces/${namespace.id}/agents`;
+  const list = await holdRequests(t, page, (url) => url.pathname.endsWith(listRead), {
+    once: true,
+  });
+  const rereads = await holdRowReads(t, page, namespace);
+  await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
+  await list.requested;
+  await page.clock.runFor(200);
+  // The held view is inert, so read it directly: deploymentCells reads only the active view.
+  const held = await page.evaluate((reading) => {
+    const view = globalThis.document.querySelector('.content [aria-live="polite"]');
+    const cells = [...view.querySelectorAll(".agent-deployment")];
+    return {
+      inert: view.inert,
+      reading: cells.filter((cell) => cell.textContent === reading).length,
+    };
+  }, READING);
+  assert.deepEqual(held, { inert: true, reading: 3 }, "the held rows stay unfilled");
+  list.release();
+  await rereads.revisions.requested;
+  await page.locator(settledView).getByRole("table", { name: "Agents" }).waitFor();
+  assert.equal(await viewTag(page), "kept");
+  rereads.release();
+  await page.getByText(READING).first().waitFor({ state: "detached" });
 });
 
 // A list left again before its rows' rereads land is reused on the next return too: rows read
@@ -589,5 +671,404 @@ test("A list left again during its rows' rereads is reused on the next return an
   await page.getByText(READING).first().waitFor({ state: "detached" });
   for (const text of Object.values(await deploymentCells(page))) {
     assert.match(text, /^v1 · succeeded/);
+  }
+});
+
+// On a phone the Agents table scrolled sideways: 5 columns, the deployment one a fixed 14 rem, so
+// 2.5 columns showed and IDs broke after every character (UX plan C5). Under 760 px each Agent is
+// a stacked row: name and ID, then each cell beside its column's name. A dozen Agents with
+// 60-character names fit 390 and 360 px, every column name shows, IDs break only after a hyphen
+// or underscore, and the row still opens its Agent. At 1440 the table is unchanged.
+// Two names are the longest allowed with no break in them (200 characters, one joined by no-break
+// spaces): each wraps inside its row at every width, and above 760 px within its ID's 310 px, so
+// it does not widen the table. The other names wrap as before, only between words (findings 1955,
+// 1956).
+test("On a phone the Agents list stacks each row, fits the screen and still opens the Agent", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Phone Agents list");
+  const agents = [];
+  for (let index = 1; index <= AGENTS; index += 1) {
+    // Two names are the longest allowed with no break in them: one in a single run, one joined
+    // by no-break spaces, which do not let a line wrap either.
+    const unbroken = index >= AGENTS - 1;
+    const name = unbroken
+      ? index === AGENTS
+        ? "W".repeat(200)
+        : `W${"WWWW\u00a0".repeat(39)}WWWW`
+      : `Phone Agent ${String(index).padStart(2, "0")} documentation for the quarterly release review and sign-off`.slice(
+          0,
+          60,
+        );
+    // The default harness Secret is named after its Agent, so it would exceed the name limit.
+    const agent = await fixture.createAgent(
+      namespace.id,
+      name,
+      nativeValues(name),
+      unbroken
+        ? {
+            harnessAuth: {
+              method: "api_key",
+              source: (
+                await fixture.createSecret(namespace.id, `Unbroken auth ${index}`, "test-key")
+              ).ref,
+            },
+          }
+        : {},
+    );
+    // Half the Agents have a current version, so both forms of that cell are shown.
+    if (index % 2 === 0) {
+      await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    }
+    agents.push({ ...agent, name });
+  }
+  assert.equal(agents[0].name.length, 60);
+  const columns = ["Agent", "Execution mode", "Current version", "Latest deployment", "Created"];
+  for (const width of [390, 360, 600, 760, 761, 1024, 1440]) {
+    const desktop = width > 760;
+    const { page } = await newPage(t, fixture, {
+      context: { viewport: { width, height: desktop ? 900 : 844 } },
+    });
+    // Each row keeps its height when its deployment read lands (finding 1488).
+    const rows = await holdRowReads(t, page, namespace);
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    const table = page.locator(settledView).getByRole("table", { name: "Agents" });
+    await table.getByRole("link", { name: agents[0].name }).waitFor();
+    await rows.revisions.requested;
+    const heights = () =>
+      table.evaluate((node) =>
+        [...node.querySelectorAll("tbody tr")].map((row) => row.getBoundingClientRect().height),
+      );
+    const reading = await heights();
+    assert.equal(await table.getByText(READING).count(), AGENTS);
+    rows.release();
+    await page.getByText(READING).first().waitFor({ state: "detached" });
+    assert.deepEqual(await heights(), reading, `${width}: a row grew when its read landed`);
+    // Every row is still a table row with its cells, for screen readers.
+    assert.equal(await table.getByRole("row").count(), AGENTS + 1, `${width}: rows`);
+    assert.equal(await table.getByRole("columnheader").count(), columns.length, `${width}`);
+    const layout = await table.evaluate((node) => {
+      const document = globalThis.document;
+      const view = document.documentElement;
+      const scroll = node.closest(".table-scroll");
+      const tableBox = node.getBoundingClientRect();
+      // Where each line of a text starts: the character before it ends the previous line.
+      const lineBreaks = (text) => {
+        const breaks = [];
+        let top = null;
+        for (let index = 0; index < text.length; index += 1) {
+          const range = document.createRange();
+          range.setStart(text, index);
+          range.setEnd(text, index + 1);
+          const rect = range.getBoundingClientRect();
+          if (top !== null && rect.top > top + 1) {
+            breaks.push(text.data[index - 1]);
+          }
+          top = rect.top;
+        }
+        return breaks;
+      };
+      const rows = [...node.querySelectorAll("tbody tr")].map((row) => {
+        const cells = [...row.cells];
+        const breaks = lineBreaks(cells[0].querySelector(".resource-id").firstChild);
+        const link = cells[0].querySelector("a");
+        const name = link.getBoundingClientRect();
+        const first = cells[0].getBoundingClientRect();
+        return {
+          // A name with no line-breaking space (a no-break space does not count).
+          unbroken: !/[ ]/.test(link.textContent),
+          name: {
+            width: name.width,
+            inside: name.left >= first.left - 0.5 && name.right <= first.right + 0.5,
+            breaks: lineBreaks(link.firstChild),
+            wrap: (({ display, overflowWrap }) => `${display} ${overflowWrap}`)(
+              globalThis.getComputedStyle(link),
+            ),
+          },
+          overflows: cells.some((cell) => {
+            const box = cell.getBoundingClientRect();
+            return box.left < tableBox.left - 0.5 || box.right > tableBox.right + 0.5;
+          }),
+          labels: cells.slice(1).map((cell) => {
+            const before = globalThis.getComputedStyle(cell, "::before");
+            const range = document.createRange();
+            range.selectNodeContents(cell);
+            const content = range.getBoundingClientRect();
+            const box = cell.getBoundingClientRect();
+            return {
+              label: cell.dataset.label,
+              shown:
+                before.display !== "none" &&
+                before.visibility === "visible" &&
+                before.content.startsWith(JSON.stringify(cell.dataset.label)),
+              // The value starts beside its label (760 px and under) or below it (520 and under).
+              beside: content.left - box.left > 40,
+              below: content.top - box.top >= 12,
+            };
+          }),
+          breaks,
+          display: globalThis.getComputedStyle(row).display,
+          revision: (({ fontFamily, color }) => ({ fontFamily, color }))(
+            globalThis.getComputedStyle(cells[2].querySelector("a") ?? cells[2]),
+          ),
+        };
+      });
+      // The table's width without the unbroken names' rows, which must not widen it.
+      const unbroken = [...node.tBodies[0].rows].filter((_, index) => rows[index].unbroken);
+      const width = scroll.scrollWidth;
+      unbroken.forEach((row) => row.style.setProperty("display", "none"));
+      const ordinaryWidth = scroll.scrollWidth;
+      unbroken.forEach((row) => row.style.removeProperty("display"));
+      return {
+        width,
+        ordinaryWidth,
+        pageFits: view.scrollWidth <= view.clientWidth,
+        tableFits: scroll.scrollWidth <= scroll.clientWidth,
+        headerShown: node.tHead.getBoundingClientRect().height > 1,
+        text: globalThis.getComputedStyle(document.querySelector("h1")).color,
+        rows,
+      };
+    });
+    assert.equal(layout.pageFits, true, `${width}: the page scrolls sideways`);
+    // At 761 and 1024 px these rows' five columns still scroll inside their card (finding 1907),
+    // but the unbroken name makes the table no wider than its other rows do.
+    if (width !== 761 && width !== 1024) {
+      assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
+    }
+    assert.ok(
+      layout.width <= layout.ordinaryWidth + 2,
+      `${width}: the unbroken name widens the table from ${layout.ordinaryWidth} to ${layout.width} px`,
+    );
+    assert.equal(layout.rows.length, AGENTS);
+    assert.equal(layout.rows.filter((row) => row.unbroken).length, 2, `${width}: unbroken rows`);
+    for (const [index, row] of layout.rows.entries()) {
+      assert.equal(row.overflows, false, `${width}: row ${index} overflows the table`);
+      assert.equal(row.name.inside, true, `${width}: row ${index} name overflows its cell`);
+      if (desktop && row.unbroken) {
+        assert.ok(row.name.width <= 310.5, `${width}: the unbroken name is ${row.name.width} px`);
+      }
+      // A stacked row gives every name its full width.
+      if (width >= 600 && !desktop && row.unbroken) {
+        assert.ok(row.name.width > 400, `${width}: the unbroken name is ${row.name.width} px`);
+      }
+      // Ordinary names wrap as they did before, only between words.
+      if (!row.unbroken) {
+        assert.equal(
+          row.name.wrap,
+          desktop ? "inline normal" : "inline anywhere",
+          `${width}: row ${index} name wrap`,
+        );
+        for (const character of row.name.breaks) {
+          assert.equal(character, " ", `${width}: row ${index} name breaks inside a word`);
+        }
+      }
+      assert.deepEqual(
+        row.labels.map(({ label }) => label),
+        columns.slice(1),
+        `${width}: row ${index} labels`,
+      );
+      for (const { label, shown, beside, below } of row.labels) {
+        if (desktop) {
+          // The desktop table names its columns in the header row instead.
+          assert.equal(shown, false, `${width}: ${label} labelled in the cell`);
+        } else {
+          assert.equal(shown, true, `${width}: row ${index} hides ${label}`);
+          assert.deepEqual(
+            { beside, below },
+            width > 520 ? { beside: true, below: false } : { beside: false, below: true },
+            `${width}: row ${index} ${label} value overlaps its label`,
+          );
+        }
+      }
+      for (const character of row.breaks) {
+        assert.match(character, /[-_]/, `${width}: row ${index} ID breaks inside a segment`);
+      }
+      if (width === 360) {
+        assert.ok(row.breaks.length > 0, `${width}: row ${index} ID fits one line`);
+      }
+      // A current version's revision ID reads as an ID: mono, in the text colour.
+      if (index % 2 === 1) {
+        assert.match(row.revision.fontFamily, /monospace/, `${width}: row ${index} revision`);
+        assert.equal(row.revision.color, layout.text, `${width}: row ${index} revision colour`);
+      }
+      assert.equal(row.display, desktop ? "table-row" : "grid", `${width}: row display`);
+    }
+    assert.equal(layout.headerShown, desktop, `${width}: header row`);
+    // The row's name still opens its Agent.
+    const target = agents[1];
+    await table.getByRole("link", { name: target.name, exact: true }).click();
+    await page.waitForURL(`**/console/agents/${target.id}**`);
+    await page
+      .locator(settledView)
+      .getByRole("region", { name: "Agent state at a glance" })
+      .waitFor();
+  }
+});
+
+// A name the browser cannot wrap sets the desktop table's width unless it is marked to break
+// anywhere (finding 1955). Each row is a break point Chromium was measured to use (finding 1982),
+// and the test measures it again: each name is marked exactly when the longest run the browser
+// keeps on one line (spaces aside) has 21 or more characters. A hyphen between digits is a break
+// ("1000-1001"); a hyphen, dash, soft hyphen or wide space before closing punctuation is not, nor
+// is a hyphen before a digit or a dash that starts a word. A run of em dashes breaks only at its
+// ends (finding 1971).
+const groups = (part, separator, count = 6) =>
+  Array.from({ length: count }, () => part).join(separator);
+const unbrokenNameCases = [
+  {
+    name: Array.from({ length: 40 }, (_, index) => String(1000 + index))
+      .join("-")
+      .slice(0, 200),
+    unbroken: false,
+  },
+  { name: "\u2014".repeat(200), unbroken: true },
+  { name: `Release ${"\u2013".repeat(40)}`, unbroken: true },
+  // The threshold: 21 characters with no break are marked, 20 are not (finding 1974), and a
+  // mid-length run (about 600 px unmarked) stays within the column too.
+  { name: `Run ${"W".repeat(21)}`, unbroken: true },
+  { name: `Run ${"W".repeat(20)}`, unbroken: false },
+  { name: `Run ${"W".repeat(40)}`, unbroken: true },
+  { name: "nightly-build-2026-10-19-release-candidate", unbroken: false },
+  // Closing punctuation after a break character holds the run together.
+  { name: groups("abc", "-.5", 30), unbroken: true },
+  { name: groups("abcdefgh", "-)"), unbroken: true },
+  { name: groups("abcdefgh", "\u2013,"), unbroken: true },
+  { name: groups("abcdefgh", "\u2010\u2019"), unbroken: true },
+  { name: groups("abcdefgh", "\u2009!"), unbroken: true },
+  { name: groups("abcdefgh", "\u3000/"), unbroken: true },
+  { name: groups("abcdefgh", "-("), unbroken: false },
+  { name: groups("abcdefgh", "-\u201d"), unbroken: true },
+  // A hyphen-minus that starts a word holds a digit, not a letter; a hyphen or dash holds a letter.
+  { name: `x ${groups(`-${"1".repeat(20)}`, " ", 3)}`, unbroken: true },
+  { name: `x ${groups(`-${"a".repeat(20)}`, " ", 3)}`, unbroken: false },
+  { name: `x ${groups(`\u2010${"a".repeat(20)}`, " ", 3)}`, unbroken: true },
+  { name: `x ${groups(`\u2010${"a".repeat(19)}`, " ", 3)}`, unbroken: false },
+  // The hyphen a line breaks after stays on it; hyphen-minus pairs break between them.
+  { name: `${"a".repeat(20)}-b`, unbroken: true },
+  { name: `${"a".repeat(19)}-b`, unbroken: false },
+  { name: `Run ${"-".repeat(40)}`, unbroken: false },
+  { name: groups("ab", "-\u0661", 10), unbroken: true },
+  { name: groups("ab", "-\uff11", 10), unbroken: false },
+  // Combining marks share their letter's place; ideographs, kana, Hangul and emoji each break.
+  { name: "e\u0301".repeat(15), unbroken: false },
+  { name: "\u4e2d\u6587\u540d\u5b57".repeat(8), unbroken: false },
+  { name: "\u30ab\u30bf\u30ab\u30ca".repeat(8), unbroken: false },
+  { name: "\ud55c\uad6d\uc5b4".repeat(10), unbroken: false },
+  { name: "\u{1F680}".repeat(25), unbroken: false },
+  { name: `${"a".repeat(15)}\u4e2d${"b".repeat(15)}`, unbroken: false },
+  // A word joiner or zero-width joiner holds the ideograph or emoji before it.
+  { name: "\u4e2d\u2060".repeat(100), unbroken: true },
+  { name: "\u{1F468}\u200d\u{1F469}\u200d\u{1F467}".repeat(8), unbroken: false },
+  // A combining mark before a joiner shares its letter's place too (finding 1999).
+  { name: "e\u0301\u2060".repeat(10), unbroken: false },
+  { name: `${"e\u0301\u2060".repeat(10)}a`, unbroken: true },
+];
+
+test("Agents list marks names with no break opportunity, hyphen and dash runs included", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Unbroken Agent names");
+  const cases = unbrokenNameCases;
+  for (const [index, entry] of cases.entries()) {
+    // The default harness Secret is named after its Agent, so it would exceed the name limit.
+    const secret = await fixture.createSecret(namespace.id, `Unbroken name ${index}`, "test-key");
+    await fixture.createAgent(namespace.id, entry.name, nativeValues(`unbroken-${index}`), {
+      harnessAuth: { method: "api_key", source: secret.ref },
+    });
+  }
+  for (const width of [1024, 1440]) {
+    const { page } = await newPage(t, fixture, { context: { viewport: { width, height: 900 } } });
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    const table = page.locator(settledView).getByRole("table", { name: "Agents" });
+    await table.getByRole("link", { name: cases.at(-1).name, exact: true }).waitFor();
+    for (const entry of cases) {
+      const shown = await table
+        .getByRole("link", { name: entry.name, exact: true })
+        .evaluate((node) => {
+          // The longest run the browser keeps on one line, set in the link's font in a box too
+          // narrow for any word. Combining marks share their letter's place, and a space hangs at
+          // the end of its line, so neither counts.
+          const box = globalThis.document.createElement("div");
+          const style = globalThis.getComputedStyle(node);
+          box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
+          box.textContent = node.textContent;
+          node.closest("table").after(box);
+          const range = globalThis.document.createRange();
+          let longest = 0;
+          let run = 0;
+          let top = null;
+          let offset = 0;
+          for (const character of Array.from(node.textContent)) {
+            range.setStart(box.firstChild, offset);
+            range.setEnd(box.firstChild, offset + character.length);
+            offset += character.length;
+            const rect = range.getClientRects()[0];
+            if (!rect || /[\p{M} ]/u.test(character)) {
+              continue;
+            }
+            run = Math.round(rect.top) === top ? run + 1 : 1;
+            top = Math.round(rect.top);
+            longest = Math.max(longest, run);
+          }
+          box.remove();
+          return {
+            marked: node.classList.contains("agent-name-unbroken"),
+            width: node.getBoundingClientRect().width,
+            longest,
+          };
+        });
+      const label = `${width}: ${JSON.stringify(entry.name.slice(0, 24))}…`;
+      assert.equal(shown.marked, entry.unbroken, `${label} marked`);
+      assert.equal(shown.longest >= 21, entry.unbroken, `${label} longest run ${shown.longest}`);
+      if (entry.unbroken) {
+        assert.ok(shown.width <= 310.5, `${label} the unbroken name is ${shown.width} px`);
+      }
+    }
+    if (width === 1440) {
+      const fits = await table.evaluate((node) => {
+        const scroll = node.closest(".table-scroll");
+        return scroll.scrollWidth <= scroll.clientWidth;
+      });
+      assert.equal(fits, true, `${width}: the table scrolls sideways`);
+    }
+  }
+});
+
+// A name of word-joiner or zero-width-joiner runs made the long-name check backtrack
+// exponentially: seconds per name, so the list froze on load and on each search keystroke that
+// kept such an Agent listed (finding 1999). Each name here is several runs of 20 that just fail
+// to be marked, the worst case. A keystroke re-renders the rows it keeps synchronously, so the
+// page times that work itself.
+test("Agents list search stays responsive with joiner-run names", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Joiner Agent names");
+  const names = [
+    `Joiners ${`${"\u2060".repeat(20)} `.repeat(9)}`.trimEnd(),
+    `Joiners ${`a${"\u200d".repeat(19)} `.repeat(9)}`.trimEnd(),
+  ];
+  for (const [index, name] of names.entries()) {
+    const secret = await fixture.createSecret(namespace.id, `Joiner name ${index}`, "test-key");
+    await fixture.createAgent(namespace.id, name, nativeValues(`joiners-${index}`), {
+      harnessAuth: { method: "api_key", source: secret.ref },
+    });
+  }
+  const { page } = await newPage(t, fixture, {
+    context: { viewport: { width: 1440, height: 900 } },
+  });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const table = page.locator(settledView).getByRole("table", { name: "Agents" });
+  await table.getByRole("link", { name: names[1], exact: true }).waitFor();
+  const search = page.getByRole("searchbox", { name: "Search Agents" });
+  for (const text of ["J", "Jo", "Joi", "Joiners"]) {
+    const elapsed = await search.evaluate((node, value) => {
+      const started = globalThis.performance.now();
+      node.value = value;
+      node.dispatchEvent(new globalThis.Event("input", { bubbles: true }));
+      return globalThis.performance.now() - started;
+    }, text);
+    assert.ok(elapsed < 250, `typing ${JSON.stringify(text)} blocked the page for ${elapsed} ms`);
+  }
+  for (const name of names) {
+    const link = table.getByRole("link", { name, exact: true });
+    await link.waitFor();
+    assert.equal(
+      await link.evaluate((node) => node.classList.contains("agent-name-unbroken")),
+      false,
+    );
   }
 });

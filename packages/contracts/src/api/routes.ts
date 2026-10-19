@@ -23,6 +23,7 @@ import {
   CreateConfigurationBody,
   CreateNamespaceBody,
   ProvisionAgentBody,
+  ValidateAgentCreateBody,
   CreateSecretBody,
   AgentCredentialSourceParams,
   CreateCredentialSourceBody,
@@ -1305,6 +1306,24 @@ export const occApiRoutes = [
       params: NamespaceParams,
       body: CreateAgentBody,
       response: { 201: AgentResponse, ...createErrors },
+    },
+  },
+  {
+    operationId: "validateAgentCreate",
+    method: "POST",
+    path: "/namespaces/:namespaceId/agents/validate",
+    action: "openclaw.agents.validate",
+    iamAction: "create",
+    resourceKind: "agent",
+    authorizationTarget: "namespace_collection",
+    summary:
+      "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
+    tags: ["Agents"],
+    schema: {
+      querystring: EmptyQuery,
+      params: NamespaceParams,
+      body: ValidateAgentCreateBody,
+      response: { 204: Type.Null(), ...createErrors },
     },
   },
   {

@@ -1,6 +1,7 @@
 import {
   ADMISSION_LIMIT_DETAILS,
   OpenShellAdmissionLimitError,
+  OpenShellDeletionUnconfirmedError,
   OpenShellGatewayFailure,
   OpenShellProviderAlreadyExistsError,
   OpenShellRequestReplayRefusedError,
@@ -1466,7 +1467,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
         // A Sandbox that is gone and one this identity is not allowed to see answer alike
         // (finding 1670): neither confirms the endpoint gone, so the caller decides with a
         // read it can trust.
-        throw new OpenShellGatewayFailure(
+        throw new OpenShellDeletionUnconfirmedError(
           "OpenShell DeleteService did not find the Sandbox, so the deletion is unconfirmed.",
           { cause: error },
         );
@@ -1504,7 +1505,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     } catch (error) {
       const { grpc } = await this.ensureClient();
       if (statusCode(error) === grpc.status.NOT_FOUND) {
-        throw new OpenShellGatewayFailure(
+        throw new OpenShellDeletionUnconfirmedError(
           "OpenShell DeleteSandbox did not find the Sandbox, so the deletion is unconfirmed.",
           { cause: error },
         );

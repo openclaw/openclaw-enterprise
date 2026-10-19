@@ -161,16 +161,17 @@ the setting and what is accepted, never its value, before any revision is create
 
 While a revision is not ready, deployment `progress.lastAttempt.code` says why
 when Compute knows. Kubernetes reports `REVISION_UNSCHEDULABLE` when a live
-Pod has `PodScheduled` `False` with reason `Unschedulable`,
-`NAMESPACE_POD_QUOTA_EXCEEDED` when a revision Deployment's `ReplicaFailure`
-names a full Pod quota, `WORKSPACE_SETUP_RETRYING` while restarting a failed
-workspace setup, and `WORKSPACE_NODE_PENDING` when only the workspace node's
-gateway connection is outstanding. Activation of a dedicated revision reports
-`WORKSPACE_NODE_BINDING_PENDING` while the gateway has not yet applied the
-workspace node it was handed, and `WORKSPACE_NODE_PENDING` while that node has
-not connected. Otherwise the code is `REVISION_INCOMPLETE`. The revision stays
-pending until it is ready, a held failure (such as `WORKSPACE_SETUP_REFUSED`)
-ends it, or the convergence deadline passes. The worker rechecks an unready
+Pod is `Unschedulable`, `REVISION_IMAGE_PULL_FAILED` when a container waits on
+`ErrImagePull` or `ImagePullBackOff`, `NAMESPACE_POD_QUOTA_EXCEEDED` when a
+revision Deployment's `ReplicaFailure` names a full Pod quota,
+`WORKSPACE_SETUP_RETRYING` while restarting a failed workspace setup, and
+`WORKSPACE_NODE_PENDING` when only the workspace node's gateway connection is
+outstanding. Activation of a dedicated revision reports
+`WORKSPACE_NODE_BINDING_PENDING` until the gateway applies the workspace node it
+was handed, then `WORKSPACE_NODE_PENDING` until that node connects. Otherwise
+the code is `REVISION_INCOMPLETE`. The revision stays pending until it is ready,
+a held failure (such as `WORKSPACE_SETUP_REFUSED`) ends it, or the convergence
+deadline passes. The worker rechecks an unready
 revision after 500 ms, growing with the deployment's age to 5 s at 200 s.
 
 A dedicated gateway that refuses its own in-Pod CLI as unauthorized can never
@@ -222,7 +223,7 @@ an optional `detail` token from this closed vocabulary. A Codex `detail` ending
 
 | `kind`           | Meaning                                                    | `detail`                                                                                                                                                                         |
 | ---------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` (oversized output); others read `UNRECOGNIZED`                                                   |
+| `PROCESS_EXIT`   | The check process exited nonzero, was killed, or never ran | `exit-<status>`, `signal-<SIGNAL>`, or `error-<ERRNO>`, such as `error-ENOBUFS` (oversized output); others are dropped                                                           |
 | `PROBE_STATUS`   | The check ran and reported the model unusable              | OpenClaw `format`, `rate_limit`, `billing`, `unknown`, `no_model`, or `other`; Codex `rate_limit`, `turn-failed`, `error-event`, `tool-event`, `unexpected-event`, or `no-reply` |
 | `INVALID_OUTPUT` | The check's output was not what the runtime expects        | `json` (unparseable) or `shape` (an unexpected result, such as another provider's)                                                                                               |
 | `WRAPPER_ERROR`  | The runtime wrapper could not prepare or read the check    | none                                                                                                                                                                             |

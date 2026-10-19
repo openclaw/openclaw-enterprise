@@ -8,22 +8,22 @@ Configure GitHub Actions variables, secrets, environments, and setting overrides
 
 ## Tests
 
-| Check                             | When it runs                              | Blocks merge               | GitHub Actions                                                                                                     |
-| --------------------------------- | ----------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| CI                                | Every PR                                  | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| First Agent Smoke (job within CI) | [Every PR](#special-cases)                | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
-| QA Matrix Advisory                | [PRs; main for OpenShell](#special-cases) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
-| Full Integration                  | Manual                                    | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
-| Observability Demo                | [Every PR](#special-cases)                | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
-| Publish private documentation     | Manual                                    | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
+| Check                             | When it runs                            | Blocks merge               | GitHub Actions                                                                                                     |
+| --------------------------------- | --------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| CI                                | Every PR                                | Yes, through `CI Required` | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| First Agent Smoke (job within CI) | [Every PR](#special-cases)              | No                         | [ci.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/ci.yml)                                 |
+| QA Matrix Advisory                | [`main`; PR with `full-qa`](#qa-matrix) | No                         | [qa-advisory.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/qa-advisory.yml)               |
+| Full Integration                  | Manual                                  | No                         | [full-integration.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/full-integration.yml)     |
+| Observability Demo                | [Every PR](#special-cases)              | No                         | [observability-demo.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/observability-demo.yml) |
+| Publish private documentation     | Manual                                  | No                         | [docs-pages.yml](https://github.com/openclaw/openclaw-enterprise/actions/workflows/docs-pages.yml)                 |
 
 <a id="pr-exceptions"></a>
 
 ### Special Cases
 
 - **First Agent Smoke:** skips docs-only and recognized test-only PRs.
-- **QA Matrix Advisory:** skips fork and Dependabot PRs. The complete OpenShell
-  lane also runs on every push to `main`.
+- **QA Matrix Advisory:** runs after each push to `main`. To qualify a change before merge,
+  a maintainer can [request full QA on a trusted pull request](#qa-matrix).
 - **Observability Demo:** runs only when the changed files match its workflow path filters.
 
 Docs-only PRs run static checks in CI; recognized test-only PRs select affected
@@ -58,7 +58,8 @@ Create only environments needed by selected jobs. Full Integration preflight
 requires no required reviewers. Its environments allow protected branches or a
 custom policy containing `main`; `integration-provider-account` instead requires
 exactly one custom rule: branch `main`. The advisory `integration-qa-pr` environment
-must permit trusted PR jobs and `main` pushes; Full Integration preflight does not govern it.
+permits `main` and GitHub's `refs/pull/*/merge` branches. The `full-qa` label selects a run within
+that policy. Full Integration preflight does not govern this environment.
 
 Only `k3d-model`, `openshell`, and credential-free `dev-up-k3d` accept a branch
 dispatch. For the first two, temporarily add the exact reviewed branch to the
@@ -79,7 +80,7 @@ image variables are optional `OCC_TEST_KUBERNETES_GATEWAY_IMAGE` and
 | `integration-slack`            | Full Integration: Slack Live                                                                 | `OPENAI_API_KEY`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `OCC_TEST_SLACK_SENDER_BOT_TOKEN`                                                 | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_SLACK_PROXY_URL`, `OCC_TEST_SLACK_CHANNEL_ID`.                                                                                                                                                              |
 | `integration-provider-account` | Full Integration: Provider Account                                                           | `OCC_TEST_CHATGPT_ADMIN_KEY_JSON`                                                                                                         | `OCC_TEST_CHATGPT_WORKSPACE_ID`, `OCC_TEST_OPENAI_MODEL`, common runtime images.                                                                                                                                                                                      |
 | `integration-openshell`        | Full Integration: OpenShell                                                                  | `CODEX_ACCESS_TOKEN`                                                                                                                      | `OCC_TEST_OPENAI_MODEL`, common runtime images, `OCC_TEST_OPENSHELL_GATEWAY_IMAGE`, `OCC_TEST_OPENSHELL_SANDBOX_IMAGE`, `OCC_TEST_OPENSHELL_SUPERVISOR_IMAGE`, `OCC_TEST_OPENSHELL_SECRET_PROJECTION` (default `1`).                                                  |
-| `integration-qa-pr`            | QA Matrix Advisory: QA advisory (compose), QA advisory (kubernetes), QA advisory (OpenShell) | `CODEX_ACCESS_TOKEN`                                                                                                                      | `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_OPENAI_MODEL`, and Calendar settings below. Trusted PR code receives these credentials.                                                                                                                                          |
+| `integration-qa-pr`            | QA Matrix Advisory: QA advisory (compose), QA advisory (kubernetes), QA advisory (OpenShell) | `CODEX_ACCESS_TOKEN`                                                                                                                      | `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_OPENAI_MODEL`, and Calendar settings below. Code on `main` and selected trusted PRs receives these credentials.                                                                                                                  |
 | `integration-qa`               | Full Integration: Shipped Installation QA Matrix                                             | `OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN`, `SLACK_SENDER_TOKEN`, plus repository fixture secrets below | `OCC_TEST_QA_OPENAI_MODEL`, `OCC_TEST_QA_CODEX_MODEL`, `OCC_TEST_QA_SLACK_CHANNEL_ID`, Calendar settings, `REPOSITORY_UPSTREAM_CIDRS_JSON`.                                                                                                                           |
 
 `NODE_BASE_IMAGE` is a separate variable consumed by older Full Integration
@@ -176,12 +177,22 @@ Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It doe
 not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
-PR jobs `QA advisory (compose)` and `QA advisory (kubernetes)` run the marked
-scenarios with Codex in both installation modes, subject to [Special Cases](#special-cases).
-New PR pushes cancel superseded advisory runs. Every `main` push starts the complete
-OpenShell lane in its own concurrency group, so later pushes do not cancel it.
-OpenShell remains advisory and does not block merge or publication. Full Integration's
-`Shipped Installation QA Matrix` runs every selected combination.
+Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
+complete OpenShell lane. Each push has its own concurrency group so a later
+merge cannot cancel the result. The author of the change that first breaks a lane owns triage;
+use the failed run's commit and retained results. These jobs do not block merge or publication.
+
+For changes to OpenShell, image pins, Helm installation or another live integration, a maintainer
+can add the `full-qa` label to a reviewed, same-repository pull request. Create that repository
+label once before enabling this workflow. Adding it starts those three jobs on GitHub's PR merge
+commit, plus the hosted local installation rehearsal. A manual dispatch on `main` also includes
+that rehearsal. Check the run's commit and results before merging; skipped jobs provide no live QA
+result. As long as the label remains, pushing a new revision replaces the previous run. Removing
+it stops selection on future pushes; cancel an active run separately. Forks and Dependabot PRs are
+ineligible. This is trusted code with real credentials, under the [existing environment policy](#environments).
+
+Ordinary PRs keep the [required CI suites](#ci) and, when selected, First Agent Smoke with a
+simulated model. Full Integration's `Shipped Installation QA Matrix` runs every selected combination.
 
 ```sh
 pnpm cli:build
@@ -191,7 +202,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 #### Scenarios
 
-| Scenario   | Runs on PRs | Presets         | Checks                                                            |
+| Scenario   | In advisory | Presets         | Checks                                                            |
 | ---------- | ----------- | --------------- | ----------------------------------------------------------------- |
 | `model-ui` | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                      |
 | `git-full` | No          | OpenClaw, Codex | Clone, edit, commit, push, open/verify a PR, dispose credentials. |
@@ -274,16 +285,16 @@ selected results. QA waits for Slack to finish, including after Slack failure.
 The PR column identifies suites reused by other workflows; Full Integration
 itself remains manual.
 
-| Jobs                                    | What they test / suite guide                                                                                                                               | Exact manifests                                                                                                       | Runs on PRs                           |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| Docker Model Runtime; k3d Model Runtime | [Docker](docker.md) and [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)          | No                                    |
-| Gateway Routing; Production TUI         | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI revision cutover](kubernetes.md#production-tui-tests)                                | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json) | No                                    |
-| Slack Live; Provider Account            | [Live Slack isolation, issued credentials and model turns](slack.md)                                                                                       | [Slack](../../scripts/ci/test-suites/slack.json), [Account](../../scripts/ci/test-suites/provider-account.json)       | No                                    |
-| OpenShell                               | [Sandbox enforcement and first-Agent flows](openshell.md)                                                                                                  | [OpenShell](../../scripts/ci/test-suites/openshell.json)                                                              | Yes: QA advisory (OpenShell)          |
-| Local Kubernetes Installation           | [Installation/recovery, including Keycloak](kubernetes.md#local-kubernetes-installation)                                                                   | [Installation](../../scripts/ci/test-suites/dev-up-k3d.json)                                                          | Yes: QA advisory (local installation) |
-| Logging Collector                       | [Collector forwarding and recovery](local.md#metrics-and-observability-tests)                                                                              | [Collector](../../scripts/ci/test-suites/logging-collector.json)                                                      | Yes: CI                               |
-| k3d OTEL; Helper Timeout                | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                               | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)       | No                                    |
-| Shipped Installation QA Matrix          | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                     | Subset; see QA scenarios              |
+| Jobs                                    | What they test / suite guide                                                                                                                               | Exact manifests                                                                                                       | Runs on PRs                      |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| Docker Model Runtime; k3d Model Runtime | [Docker](docker.md) and [Kubernetes](kubernetes.md#kubernetes-model-turns-and-secrets) real models, Pod replacement, Secret rotation and first-Agent reuse | [Docker](../../scripts/ci/test-suites/docker-model.json), [k3d](../../scripts/ci/test-suites/k3d-model.json)          | No                               |
+| Gateway Routing; Production TUI         | [Envoy/OCC routing](kubernetes.md#private-gateway-routing), [Helm/TUI revision cutover](kubernetes.md#production-tui-tests)                                | [Routing](../../scripts/ci/test-suites/gateway-routing.json), [TUI](../../scripts/ci/test-suites/production-tui.json) | No                               |
+| Slack Live; Provider Account            | [Live Slack isolation, issued credentials and model turns](slack.md)                                                                                       | [Slack](../../scripts/ci/test-suites/slack.json), [Account](../../scripts/ci/test-suites/provider-account.json)       | No                               |
+| OpenShell                               | [Sandbox enforcement and first-Agent flows](openshell.md)                                                                                                  | [OpenShell](../../scripts/ci/test-suites/openshell.json)                                                              | With `full-qa`                   |
+| Local Kubernetes Installation           | [Installation/recovery, including Keycloak](kubernetes.md#local-kubernetes-installation)                                                                   | [Installation](../../scripts/ci/test-suites/dev-up-k3d.json)                                                          | With `full-qa`                   |
+| Logging Collector                       | [Collector forwarding and recovery](local.md#metrics-and-observability-tests)                                                                              | [Collector](../../scripts/ci/test-suites/logging-collector.json)                                                      | Yes: CI                          |
+| k3d OTEL; Helper Timeout                | [Real runtime OTLP logs](local.md#kubernetes-observability-acceptance); 300-second worker readiness deadline                                               | [OTEL](../../scripts/ci/test-suites/k3d-otel.json), [Timeout](../../scripts/ci/test-suites/helper-timeout.json)       | No                               |
+| Shipped Installation QA Matrix          | [All installation/preset/scenario combinations](#qa-matrix)                                                                                                | [QA](../../scripts/ci/test-suites/qa-matrix.json)                                                                     | With `full-qa`; see QA scenarios |
 
 ### Observability Demo
 

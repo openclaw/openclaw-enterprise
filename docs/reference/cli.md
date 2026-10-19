@@ -112,6 +112,9 @@ For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
 deployment status null for an unreadable revision and names it on stderr; if
 the Agent itself is unreadable, it skips all status reads and explains why. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
 
+`service-key create --out FILE` sets the new file to `0600` before requesting a
+key, including under a restrictive umask. Existing files and symlinks are refused.
+
 `service-key create --expires-in-days N` accepts 1–365. Omit the flag for 30 days;
 explicit zero is refused before output-file creation or API issuance.
 

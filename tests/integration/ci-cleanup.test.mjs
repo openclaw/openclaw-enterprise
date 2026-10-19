@@ -69,6 +69,13 @@ async function writeState(path, state) {
   await chmod(path, 0o600);
 }
 
+async function createK3dClusterResource(identity, directory) {
+  const kubeconfig = join(directory, "kubeconfig");
+  await mkdir(directory);
+  await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
+  return { id: "cluster-1", kind: "k3d-cluster", ...identity, directory, kubeconfig };
+}
+
 function runCleanup(statePath, env = {}) {
   return spawnSync(process.execPath, [cleanupPath, "--state", statePath], {
     cwd: repositoryRoot,
@@ -145,13 +152,15 @@ test("k3d routing reset removes only the owned test database", async (t) => {
 
 test("cleanup removes an owned k3d cluster resource through the CLI", async (t) => {
   const root = await fixture(t);
+  const prefix = "openclaw-ci-local-1234567890abcdef";
   const clusterName = "openclaw-k8s-old-truncated-name-abc123def456";
   const k3dLog = join(root, "k3d.log");
   const dockerLog = join(root, "docker.log");
   const clusterDirectory = join(root, `${clusterName}-state`);
-  const kubeconfig = join(clusterDirectory, "kubeconfig");
-  await mkdir(clusterDirectory);
-  await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
+  const cluster = await createK3dClusterResource(
+    { owner: prefix, name: clusterName },
+    clusterDirectory,
+  );
   const deletedMarker = join(root, "deleted");
   await writeExecutable(
     join(root, "bin/k3d"),
@@ -175,20 +184,13 @@ test("cleanup removes an owned k3d cluster resource through the CLI", async (t) 
   await writeState(statePath, {
     version: 1,
     repositoryRoot,
-    prefix: "openclaw-ci-local-1234567890abcdef",
+    prefix,
     resources: [
-      {
-        id: "cluster-1",
-        kind: "k3d-cluster",
-        owner: "openclaw-ci-local-1234567890abcdef",
-        name: clusterName,
-        directory: clusterDirectory,
-        kubeconfig,
-      },
+      cluster,
       {
         id: "image-1",
         kind: "k3d-image",
-        owner: "openclaw-ci-local-1234567890abcdef",
+        owner: prefix,
         name: `${"localhost"}/${clusterName}/occ-test:local`,
         reference:
           "registry.example/gateway@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -230,12 +232,14 @@ for (const scenario of [
 ]) {
   test(`cleanup verifies owned cluster absence: ${scenario}`, async (t) => {
     const root = await fixture(t);
+    const prefix = "openclaw-ci-local-abcdef1234567890";
     const clusterName = "openclaw-k8s-readback-123abc456def";
     const clusterDirectory = join(root, `${clusterName}-state`);
-    const kubeconfig = join(clusterDirectory, "kubeconfig");
     const log = join(root, "k3d.log");
-    await mkdir(clusterDirectory);
-    await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
+    const cluster = await createK3dClusterResource(
+      { owner: prefix, name: clusterName },
+      clusterDirectory,
+    );
     await writeExecutable(
       join(root, "bin/k3d"),
       [
@@ -283,17 +287,8 @@ for (const scenario of [
     const state = {
       version: 1,
       repositoryRoot,
-      prefix: "openclaw-ci-local-abcdef1234567890",
-      resources: [
-        {
-          id: "cluster-1",
-          kind: "k3d-cluster",
-          owner: "openclaw-ci-local-abcdef1234567890",
-          name: clusterName,
-          directory: clusterDirectory,
-          kubeconfig,
-        },
-      ],
+      prefix,
+      resources: [cluster],
     };
     await writeState(statePath, state);
     const result = runCleanup(statePath, {
@@ -583,12 +578,14 @@ for (const scenario of [
 
 test("cleanup rejects a k3d cluster directory outside the owned cluster prefix", async (t) => {
   const root = await fixture(t);
+  const prefix = "openclaw-ci-local-abcdef1234567890";
   const clusterName = "openclaw-k8s-owned-cluster-abcdef123456";
   const clusterDirectory = join(root, "foreign-directory");
-  const kubeconfig = join(clusterDirectory, "kubeconfig");
   const k3dLog = join(root, "k3d.log");
-  await mkdir(clusterDirectory);
-  await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
+  const cluster = await createK3dClusterResource(
+    { owner: prefix, name: clusterName },
+    clusterDirectory,
+  );
   await writeExecutable(
     join(root, "bin/k3d"),
     ["#!/bin/sh", `printf '%s\\n' "$*" >> ${JSON.stringify(k3dLog)}`, "exit 0", ""].join("\n"),
@@ -598,17 +595,8 @@ test("cleanup rejects a k3d cluster directory outside the owned cluster prefix",
   const state = {
     version: 1,
     repositoryRoot,
-    prefix: "openclaw-ci-local-abcdef1234567890",
-    resources: [
-      {
-        id: "cluster-1",
-        kind: "k3d-cluster",
-        owner: "openclaw-ci-local-abcdef1234567890",
-        name: clusterName,
-        directory: clusterDirectory,
-        kubeconfig,
-      },
-    ],
+    prefix,
+    resources: [cluster],
   };
   await writeState(statePath, state);
 
@@ -627,10 +615,8 @@ test("cleanup rejects ownerless resources before invoking cleanup commands", asy
   const root = await fixture(t);
   const clusterName = "openclaw-k8s-ownerless-cluster-abcdef123456";
   const clusterDirectory = join(root, `${clusterName}-state`);
-  const kubeconfig = join(clusterDirectory, "kubeconfig");
   const k3dLog = join(root, "k3d.log");
-  await mkdir(clusterDirectory);
-  await writeFile(kubeconfig, "apiVersion: v1\n", { mode: 0o600 });
+  const cluster = await createK3dClusterResource({ name: clusterName }, clusterDirectory);
   await writeExecutable(
     join(root, "bin/k3d"),
     ["#!/bin/sh", `printf '%s\\n' "$*" >> ${JSON.stringify(k3dLog)}`, "exit 0", ""].join("\n"),
@@ -641,15 +627,7 @@ test("cleanup rejects ownerless resources before invoking cleanup commands", asy
     version: 1,
     repositoryRoot,
     prefix: "openclaw-ci-local-abcdef1234567890",
-    resources: [
-      {
-        id: "cluster-1",
-        kind: "k3d-cluster",
-        name: clusterName,
-        directory: clusterDirectory,
-        kubeconfig,
-      },
-    ],
+    resources: [cluster],
   };
   await writeState(statePath, state);
 

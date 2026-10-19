@@ -1,7 +1,7 @@
 ---
 created: 2026-09-21
-updated: 2026-10-16
-last_updated_session: authoring-run/0bac9d5a-6aa7-4151-87e0-54e6a380e79c
+updated: 2026-10-19
+last_updated_session: authoring-run/45f16ec0-9506-4874-9bb5-62003aa555c3
 ---
 
 # Agent Presets flow
@@ -26,8 +26,8 @@ owns deployment.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
 - [Console selector](../../apps/controller/src/console/agents/presets.mjs):
-  `createPresetFields` requires a selected Namespace and an authenticated user.
-  Saving also needs the existing Configuration, Agent, and credential grants.
+  `createPresetFields` requires an authenticated Namespace selection.
+  Saving needs Configuration, Agent, and credential grants.
 
 ## Flow
 
@@ -69,12 +69,11 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 
 `apps/controller/src/composition/installation-presets.ts:loadInstallationPresets`
 
-The loader validates options and bundled JSON; explicit paths resolve beside
-startup YAML. It validates names/templates and rejects missing,
-malformed, invalid, or duplicate-name files; a file named like a bundled default
-replaces it, and API composition warns `presets.bundled-default-shadowed`. API and worker share the startup
-snapshot and source path (files are not watched), but only the API applies
-defaults and logs Preset warnings. [Production composition](../../apps/controller/src/composition/production.ts)
+The loader validates options, names and templates; explicit paths resolve beside
+startup YAML. Missing, malformed, invalid or duplicate-name files fail. A file named
+like a bundled default replaces it; API composition warns `presets.bundled-default-shadowed`. API and worker share
+a startup snapshot and source path without watching files; only the API applies
+defaults and logs warnings. [Production composition](../../apps/controller/src/composition/production.ts)
 and [development composition](../../apps/controller/src/composition/development-postgres.ts)
 pass generic definitions into `ControllerOptions.defaultPresets` and initialize
 defaults after selecting Configuration and IAM Drivers. They try each persisted
@@ -148,11 +147,10 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists readable summaries with Namespace read, then reads the selection
-once. Quick-start prefers `default-codex`, otherwise the first readable Preset in
+lists summaries with Namespace read, then reads the selection once. Quick-start prefers `default-codex`, otherwise the first readable Preset in
 case-insensitive locale order, with exact name order breaking ties. Custom
 starters appear by name. Variable-free templates apply immediately; variables
-retain the chooser and shortcut origin. Empty or failed lists and reads cannot
+retain the chooser and its edits. Empty or failed lists and reads cannot
 apply hidden templates. **Start without Preset** opens the form without a Preset
 read; it does not replace a denied selection. Creation authorization applies.
 
@@ -162,36 +160,36 @@ read; it does not replace a denied selection. Creation authorization applies.
 empty templates, reset and Harness transitions, adding model routing. Installed
 Namespace templates are never exposed by that module.
 
-The chooser prefills typed defaults. String controls accept multiple lines;
-untouched defaults and restored drafts retain exact line endings, while edits use
-browser LF. Empty strings override defaults. Referenced variables without defaults
-are required; defaulted or unused variables are optional. The password variable
+The chooser prefills defaults. Strings accept multiple lines;
+untouched defaults and restored drafts retain line endings, while edits use LF. Empty strings override defaults. Referenced variables lacking defaults
+are required; others are optional. The password variable
 offers a masked new token or an existing same-Namespace Secret. The chooser reads
 Secret metadata, validates the original template, then substitutes the selected
 reference in a temporary copy. Changing mode discards tokens; stale catalog
 responses cannot replace a later selection.
-The user then selects **Use Preset**. The shared
-[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs)
+**Use Preset** invokes the shared
+[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs), which
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 
-Rendering makes no requests. Success opens the Agent form with rendered settings
-and optional ephemeral Secret metadata for grants. The alphabetic chooser moves
-password values into the masked credential input and clears detached controls;
-later Preset changes cannot alter the form. Before saving, **Start over** confirms
-discard and opens a fresh chooser. A successful or uncertain save disables restart
-and uses ordinary creation recovery.
+Rendering makes no requests. Success opens an editable form with rendered settings
+and ephemeral Secret metadata for grants. The chooser moves passwords into the
+masked credential input and clears detached controls. Before saving, **Start over**
+confirms discarding edits and reopens the chooser. Successful or uncertain saves
+disable restart and use creation recovery.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
 Before resetting views, `loadPage` captures unsaved JSON, model controls, workspace
 files, repositories and staged Secret references per user and Namespace. Explicit
-Preset forms return from this copy with fresh capability and repository discovery;
-default-shortcut and bare forms discard on exit. Flushing removes creation and
-channel snapshots and the retained view on exit or Namespace change; re-entry
-opens the chooser and preserves saved resources. Invalid JSON stays text; passwords
-and discovery results are excluded. Start over, session loss, logout, user change,
-page exit, or starting save clears captures. Partial-save recovery stays local.
+Preset, default-shortcut and bare forms all return from this copy with fresh
+capability and repository discovery. A confirmed **Cancel** removes creation and
+channel snapshots and the retained view; re-entry opens the chooser and preserves
+saved resources. `beforeunload` asks first while any capture holds changes. Invalid JSON stays text; passwords
+and discovery results are excluded. Start over, session loss, logout, user change or
+page exit clears captures, not a failed `/namespaces` read. A known Create refusal keeps
+the capture and its saved resources, unless repository policy refused it or an Agent,
+provisioning job or credential registration exists.
 
 `agents/create.mjs:updateModelConfiguration` retains ordered fallbacks and
 model metadata referenced by defaults or entries. Only an unreferenced replaced
@@ -284,6 +282,8 @@ or an immutable admitted revision.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-19 14:05: Preserve custom drafts across navigation until explicit discard. (authoring-run/45f16ec0-9506-4874-9bb5-62003aa555c3 - 82c7e1f8fb66ae966f7126ac4e1fa1337d7dc3fd)
 
 - 2026-10-16 13:00: Integrate upstream Console changes while retaining readable starter selection. (authoring-run/0bac9d5a-6aa7-4151-87e0-54e6a380e79c - ba98603943c22e5fb4e40b03b07b95ade9b29db8)
 

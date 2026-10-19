@@ -53,10 +53,7 @@ func TestResourceRequestStopsWhenCommandContextIsCanceled(t *testing.T) {
 			defer server.Close()
 			defer close(release)
 
-			keyFile := filepath.Join(t.TempDir(), "service-key.json")
-			if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -279,10 +276,7 @@ func runLogsCommandTo(t *testing.T, ctx context.Context, stub *runtimeLogStub, o
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(stub.serve))
 	t.Cleanup(server.Close)
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	command := New(out, errOut)
 	command.SetArgs(append(args, "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"))
 	return command.ExecuteContext(ctx)
@@ -400,6 +394,7 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		}
 	}
 	// --follow exits cleanly only when the lookup failed because of cancellation.
+	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
 	for _, follow := range []bool{false, true} {
 		args := []string{"agent", "logs", "agt_1", "--source", "gateway"}
 		if follow {
@@ -407,7 +402,8 @@ func TestAgentLogsRejectsInvalidFlagsBeforeAnyRequest(t *testing.T) {
 		}
 		stub := &runtimeLogStub{t: t}
 		_, _, err := runLogsCommand(t, context.Background(), stub, args...)
-		if err == nil || !strings.Contains(err.Error(), "has no readable revisions") {
+		// The hint keeps the selected Namespace so the copied command targets the same Agent.
+		if err == nil || !strings.Contains(err.Error(), `agent agt_1 has no readable revisions; run "occ --namespace ns_1 agent deploy agt_1" first`) {
 			t.Fatalf("follow=%v: expected a missing revision error, got %v", follow, err)
 		}
 		if len(stub.queries) != 0 {
@@ -884,7 +880,7 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 		// A crash-looping Harness is told apart from a first start (finding 1043).
 		{
 			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(1), "restarts": float64(3)},
-			"Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 3). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ agent logs AGENT_ID --source sandbox).\n\n",
+			"Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 3). The Harness process exited and OpenShell is restarting it; if this persists, read its Sandbox logs (occ --namespace ns_1 agent logs agt_1 --source sandbox --revision rev_1).\n\n",
 		},
 		{
 			map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(-1), "restarts": float64(1)},
@@ -909,7 +905,7 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 		if test.harness != nil {
 			description["harness"] = test.harness
 		}
-		if err := app.printRuntime(description); err != nil {
+		if err := app.printRuntime(description, "ns_1", "agt_1", "rev_1"); err != nil {
 			t.Fatal(err)
 		}
 		if !strings.HasPrefix(out.String(), test.want) {
@@ -918,7 +914,31 @@ func TestAgentRuntimePrintsALostHarnessSandboxFirst(t *testing.T) {
 	}
 }
 
+func TestAgentRuntimeNamesTheExactSandboxLogsCommandForARestartingHarness(t *testing.T) {
+	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
+	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
+	restarting := map[string]any{"state": "starting", "code": "HARNESS_RESTARTING", "exitCode": float64(1), "restarts": float64(2)}
+	for _, args := range [][]string{
+		{"agent", "runtime", "agt_1", "--revision", "rev_2"},
+		// The default selection reads the newer revision, so the hint pins it.
+		{"agent", "runtime", "agt_1"},
+	} {
+		stub := &runtimeLogStub{t: t, activeID: "rev_1", revisions: `[{"id":"rev_2","revision":2},{"id":"rev_1","revision":1}]`, podless: []string{"rev_2"}, harness: restarting}
+		out, _, err := runLogsCommand(t, context.Background(), stub, args...)
+		if err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		want := "Harness Sandbox: starting (HARNESS_RESTARTING, last exit code 1, restart 2). The Harness process exited and OpenShell is restarting it; " +
+			"if this persists, read its Sandbox logs (occ --namespace ns_1 agent logs agt_1 --source sandbox --revision rev_2).\n\n"
+		if !strings.HasPrefix(out, want) {
+			t.Errorf("%v: output = %q, want prefix %q", args, out, want)
+		}
+	}
+}
+
 func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
+	// A stale environment scope must not replace the explicitly selected Namespace in the hint.
+	t.Setenv("OCC_NAMESPACE", "ns_55555555-5555-4555-8555-555555555555")
 	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.Path)
@@ -926,10 +946,7 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 		_, _ = io.WriteString(w, `{"data":{"id":"agt_1","name":"stopped-agent","namespaceId":"ns_1","desiredRuntimeState":"stopped"},"meta":{"requestId":"req_1"}}`)
 	}))
 	t.Cleanup(server.Close)
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	var out, errOut strings.Builder
 	command := New(&out, &errOut)
 	command.SetArgs([]string{"agent", "stop", "agt_1", "--url", server.URL, "--service-key-file", keyFile, "--namespace", "ns_1"})
@@ -942,7 +959,7 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	if !strings.Contains(out.String(), "stopped-agent") {
 		t.Fatalf("stdout = %q", out.String())
 	}
-	if want := "notice: stop requested; run \"occ agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
+	if want := "notice: stop requested; run \"occ --namespace ns_1 agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
 		t.Fatalf("stderr = %q, want %q", errOut.String(), want)
 	}
 	// Structured output stays machine-readable: the notice goes to stderr only.
@@ -957,7 +974,7 @@ func TestAgentStopNamesTheDeployCommandThatStartsTheAgentAgain(t *testing.T) {
 	if err := json.Unmarshal([]byte(out.String()), &decoded); err != nil || decoded["id"] != "agt_1" {
 		t.Fatalf("json stdout = %q, %v", out.String(), err)
 	}
-	if want := "notice: stop requested; run \"occ agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
+	if want := "notice: stop requested; run \"occ --namespace ns_1 agent deploy agt_1\" to start the Agent again\n"; errOut.String() != want {
 		t.Fatalf("json stderr = %q, want %q", errOut.String(), want)
 	}
 	stop, _, err := New(io.Discard, io.Discard).Find([]string{"agent", "stop"})
@@ -981,10 +998,7 @@ func TestCredentialSourceListTableOmitsTheLiveGatewayStatusOnlyGetCarries(t *tes
 		}
 	}))
 	t.Cleanup(server.Close)
-	keyFile := filepath.Join(t.TempDir(), "service-key.json")
-	if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 	for _, test := range []struct {
 		args []string
 		rows [][]string
@@ -1035,10 +1049,7 @@ func TestRedirectIsReportedWithItsTargetAndNotFollowed(t *testing.T) {
 				w.WriteHeader(http.StatusPermanentRedirect)
 			}))
 			defer origin.Close()
-			keyFile := filepath.Join(t.TempDir(), "service-key.json")
-			if err := os.WriteFile(keyFile, []byte(`{"data":{"key":"test-key"}}`), 0o600); err != nil {
-				t.Fatal(err)
-			}
+			keyFile := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
 			command := New(io.Discard, io.Discard)
 			command.SetArgs([]string{"installation", "get", "--url", origin.URL, "--service-key-file", keyFile})
 			err := command.Execute()
