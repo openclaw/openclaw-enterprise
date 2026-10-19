@@ -1192,8 +1192,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       : null;
   const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
   // The note that holds the tabs also holds ← Agents and the Namespace selector (finding 1902).
-  const refuseLeave = () => {
-    if (!draftEditorBlocksNavigation()) {
+  const refuseLeave = ({ pendingOnly = false } = {}) => {
+    if (!(pendingOnly ? draftWriteInFlight() : draftEditorBlocksNavigation())) {
       return false;
     }
     showDraftEditorNavigationBlock();
@@ -1370,6 +1370,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   const tabControls = new Map();
   const revisionControls = new Map();
   let draftEditorNavigationBlock = null;
+  // Whether a draft editor's write is in flight (its block names the save to wait for).
+  let draftEditorSaving = false;
   let showDraftEditorNavigationBlock = () => {};
   function draftEditorBlocksNavigation() {
     return (
@@ -1380,6 +1382,19 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         activeCredentials?.isSaving() ||
         (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
           draftEditorNavigationBlock))
+    );
+  }
+  // A write in flight, whose answer only this page can handle: the sidebar and Back wait for it
+  // too (finding 1937). An uncertain or stale editor is kept as a draft, so they may leave it.
+  function draftWriteInFlight() {
+    return (
+      selected === "draft" &&
+      (deployInFlight ||
+        refreshingDraft ||
+        authenticationSaveState === "saving" ||
+        activeCredentials?.isSaving() ||
+        (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
+          draftEditorSaving))
     );
   }
   function trackRevisionControl(control) {
@@ -2862,6 +2877,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       },
       setDraftEditorState(nextState) {
         Object.assign(draftEditorState, nextState);
+        draftEditorSaving = Boolean(draftEditorState.saving);
         draftEditorNavigationBlock = draftEditorState.outcomeUnknown
           ? "Outcome unknown. Reload this draft before leaving the editor."
           : draftEditorState.reloadRequired
@@ -2888,6 +2904,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       },
       setPluginEditorState(nextState) {
         Object.assign(pluginEditorState, nextState);
+        draftEditorSaving = Boolean(pluginEditorState.saving);
         draftEditorNavigationBlock = pluginEditorState.outcomeUnknown
           ? "Outcome unknown. Reload this Agent before leaving plugin selections."
           : pluginEditorState.reloadRequired
@@ -2999,6 +3016,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     details = next;
     // The rebuilt editors start clean; nothing is saving any more.
     draftEditorNavigationBlock = null;
+    draftEditorSaving = false;
     authenticationSaveState = "idle";
     // Tabs built from the previous draft state would drive its replaced controls.
     retainedTabs.clear();

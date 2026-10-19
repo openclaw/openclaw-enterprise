@@ -331,6 +331,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           return;
         }
         event.preventDefault();
+        // A page waiting on a write stays and says why, as ← Agents does (finding 1937). On a
+        // phone the drawer closes, so the reason is not hidden behind it.
+        if (refuseLeave({ pendingOnly: true })) {
+          if (drawerControls?.shell.classList.contains("drawer-open")) {
+            drawerControls.close();
+          }
+          return;
+        }
         navigate(name);
       });
       nav.append(link);
