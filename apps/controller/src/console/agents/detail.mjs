@@ -1909,7 +1909,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           {},
           element("strong", {}, `v${revision.revision}`),
           ...(revision.id === currentRevisionId
-            ? [" ", element("span", { className: "badge", "data-tone": "success" }, "Current")]
+            ? // Current means only that OCC selected this version; it can be stopped or failed
+              // (finding 1969), so the badge marks it without claiming health.
+              [" ", element("span", { className: "badge", "data-tone": "info" }, "Current")]
             : []),
         ),
         element("small", {}, displayDate(revision.createdAt)),
