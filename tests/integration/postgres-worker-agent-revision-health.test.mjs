@@ -244,7 +244,7 @@ function stepBudget(budgetMs, describe = () => undefined) {
   const where = (name, stepStarted) => {
     const detail = describe();
     return [
-      `step "${name}" after ${Date.now() - stepStarted} ms`,
+      `step "${name}" after ${Date.now() - stepStarted} ms (${Date.now() - started} ms into the budget)`,
       `earlier steps: ${done.length > 0 ? done.join(", ") : "none"}`,
       ...(detail === undefined ? [] : [detail]),
     ].join("; ");
@@ -252,14 +252,15 @@ function stepBudget(budgetMs, describe = () => undefined) {
   return async function step(name, run) {
     const stepStarted = Date.now();
     let timer;
+    let budgetError;
     const expired = new Promise((resolve, reject) => {
       timer = setTimeout(
-        () =>
-          reject(
-            new Error(
-              `Timed out within the ${budgetMs} ms step budget at ${where(name, stepStarted)}.`,
-            ),
-          ),
+        () => {
+          budgetError = new Error(
+            `Timed out within the ${budgetMs} ms step budget at ${where(name, stepStarted)}.`,
+          );
+          reject(budgetError);
+        },
         Math.max(0, started + budgetMs - stepStarted),
       );
     });
@@ -268,7 +269,7 @@ function stepBudget(budgetMs, describe = () => undefined) {
       done.push(`${name} ${Date.now() - stepStarted} ms`);
       return value;
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith("Timed out within the ")) {
+      if (error === budgetError) {
         throw error;
       }
       throw new Error(`${error?.message ?? error} (${where(name, stepStarted)})`, { cause: error });
