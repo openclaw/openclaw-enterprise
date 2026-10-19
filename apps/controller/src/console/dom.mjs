@@ -131,28 +131,35 @@ export function dismissOnBackdrop(dialog) {
 /**
  * A phone's on-screen keyboard shrinks the visual viewport, not the layout viewport a modal
  * dialog sits in, so a bottom sheet's actions ended up under the keyboard (finding 1957). This
- * mirrors the visible area into `--visual-viewport-height` and `--visual-viewport-bottom` (the
- * layout viewport's height hidden below it), which the phone sheet sizes itself from
- * (console.css). Nothing is set while the two viewports match.
+ * mirrors the visible area's offset and height into `--visual-viewport-top` and
+ * `--visual-viewport-height`, which the phone sheet places itself with (console.css). It writes
+ * at most once per frame, and only values that changed.
  */
 export function trackVisualViewport(root = document.documentElement) {
   const viewport = globalThis.visualViewport;
   if (!viewport) {
     return;
   }
-  const update = () => {
-    const bottom = Math.max(0, root.clientHeight - viewport.offsetTop - viewport.height);
-    if (bottom < 1 && Math.abs(root.clientHeight - viewport.height) < 1) {
-      root.style.removeProperty("--visual-viewport-height");
-      root.style.removeProperty("--visual-viewport-bottom");
-    } else {
-      root.style.setProperty("--visual-viewport-height", `${viewport.height}px`);
-      root.style.setProperty("--visual-viewport-bottom", `${bottom}px`);
+  const written = { top: null, height: null };
+  let frame = 0;
+  const write = () => {
+    frame = 0;
+    for (const [key, value] of [
+      ["top", `${viewport.offsetTop}px`],
+      ["height", `${viewport.height}px`],
+    ]) {
+      if (written[key] !== value) {
+        written[key] = value;
+        root.style.setProperty(`--visual-viewport-${key}`, value);
+      }
     }
   };
-  viewport.addEventListener("resize", update);
-  viewport.addEventListener("scroll", update);
-  update();
+  const schedule = () => {
+    frame ||= globalThis.requestAnimationFrame(write);
+  };
+  viewport.addEventListener("resize", schedule);
+  viewport.addEventListener("scroll", schedule);
+  write();
 }
 
 let describedFocusIds = 0;

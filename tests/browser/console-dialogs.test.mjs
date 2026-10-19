@@ -251,7 +251,6 @@ const sheetInView = (page) =>
       actions: Object.fromEntries(
         actions.map((button) => [button.textContent.trim(), vertical(button)]),
       ),
-      focused: globalThis.document.activeElement?.labels?.[0]?.textContent ?? null,
     };
   });
 
@@ -272,8 +271,11 @@ test("On a phone the Secret sheet keeps its actions in the visible area above th
   await openCreateSecretDialog(page, "API key Secret");
   await page.getByRole("dialog", { name: "Create model credential Secret" }).waitFor();
   await openDialog(page);
-  const expectInView = (state, label, { actions = true } = {}) => {
-    assert.equal(state.focused, "Name", `${label}: Name keeps focus`);
+  const nameField = page
+    .getByRole("dialog", { name: "Create model credential Secret" })
+    .getByRole("textbox", { name: "Name", exact: true });
+  const expectInView = async (state, label, { actions = true } = {}) => {
+    assert.equal(await nameField.evaluate(isFocused), true, `${label}: Name keeps focus`);
     assert.deepEqual(Object.keys(state.actions), ["Cancel", "Create Secret"], label);
     assert.equal(state.sheet.bottom, state.visible.bottom, `${label}: the sheet's bottom edge`);
     assert.ok(state.sheet.top >= state.visible.top, `${label}: the sheet's top is hidden`);
@@ -289,7 +291,7 @@ test("On a phone the Secret sheet keeps its actions in the visible area above th
   };
   const resting = await sheetInView(page);
   assert.deepEqual(resting.visible, { top: 0, bottom: 844 });
-  expectInView(resting, "no keyboard");
+  await expectInView(resting, "no keyboard");
 
   const cdp = await page.context().newCDPSession(page);
   const resized = () =>
@@ -304,15 +306,16 @@ test("On a phone the Secret sheet keeps its actions in the visible area above th
   const zoomed = await sheetInView(page);
   assert.ok(zoomed.visible.bottom < 600, "the zoom shrank the visual viewport");
   await page.screenshot({ path: join(artifacts, "dialog-secret-390-zoomed.png") });
-  expectInView(zoomed, "zoomed");
+  await expectInView(zoomed, "zoomed");
   await resized();
   await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
   await page.evaluate(() => globalThis.visualViewportResized);
-  expectInView(await sheetInView(page), "zoom undone");
+  await expectInView(await sheetInView(page), "zoom undone");
 
   // A 336 px keyboard: the visible area keeps its width and starts at the top (a resize). iOS may
   // then scroll it 120 px down the page (a scroll, as only its offset changes). Above a taller
-  // keyboard the whole sheet still fits the visible area and scrolls inside it.
+  // keyboard, or a short area scrolled down, the whole sheet still fits the visible area and
+  // scrolls inside it.
   const fakeVisible = (visible, event = "resize") =>
     page.evaluate(
       ([visible, event]) => {
@@ -332,12 +335,13 @@ test("On a phone the Secret sheet keeps its actions in the visible area above th
     [508, 0, "resize"],
     [508, 120, "scroll"],
     [400, 0, "resize"],
+    [300, 200, "resize"],
   ]) {
     await fakeVisible({ height, offsetTop }, event);
     const keyboard = await sheetInView(page);
     const label = `${height} px visible, ${offsetTop} px down`;
     assert.deepEqual(keyboard.visible, { top: offsetTop, bottom: offsetTop + height }, label);
-    expectInView(keyboard, label, { actions: height === 508 });
+    await expectInView(keyboard, label, { actions: height === 508 });
     if (offsetTop === 0 && height === 508) {
       await page.screenshot({ path: join(artifacts, "dialog-secret-390-keyboard.png") });
     }
@@ -345,14 +349,5 @@ test("On a phone the Secret sheet keeps its actions in the visible area above th
   await fakeVisible(null);
   const closed = await sheetInView(page);
   assert.deepEqual(closed.visible, { top: 0, bottom: 844 });
-  expectInView(closed, "keyboard closed");
-  assert.deepEqual(
-    await page.evaluate(() =>
-      ["--visual-viewport-height", "--visual-viewport-bottom"].map((name) =>
-        globalThis.document.documentElement.style.getPropertyValue(name),
-      ),
-    ),
-    ["", ""],
-    "nothing is left set once the visible area matches the page again",
-  );
+  await expectInView(closed, "keyboard closed");
 });
