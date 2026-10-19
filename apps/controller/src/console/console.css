@@ -266,17 +266,21 @@ button[aria-busy="true"] {
 }
 /* One focus ring for every control. Rows and panes that sit against an edge use the inset offset
    (.focus-inset, or listed here); wrappers that draw the ring for a borderless child use the
-   normal one. */
+   normal one. Items inside a scrolling list or tab strip are inset too: the scroller clips
+   anything drawn outside it. */
 :focus-visible {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
 }
 .focus-inset:focus-visible,
 .focus-inset:has(input:focus-visible),
+.agent-tabs button:focus-visible,
 .log-pane:focus-visible,
+.plugin-list-item:focus-visible,
 .repository-card-toggle:focus-visible,
 .repository-result:has(input:focus-visible),
-.slack-directory-result.active {
+.slack-directory-result.active,
+.version-item:focus-visible {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset-inset);
 }
@@ -2041,7 +2045,8 @@ select:not([multiple])[size="1"] {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  padding: 4px 16px 4px 4px;
+  /* Room for the focus ring of the search field and the buttons at the scroller's edge. */
+  padding: var(--space-2) var(--space-4) var(--space-2) var(--space-2);
   border-right: 1px solid var(--line);
 }
 .plugin-browser > :not(.plugin-list) {
@@ -2323,7 +2328,7 @@ select:not([multiple])[size="1"] {
   }
   .plugin-browser {
     border: 0;
-    padding: 4px;
+    padding: var(--space-2);
   }
   .plugin-workspace[data-show-details="true"] .plugin-browser,
   .plugin-workspace[data-show-details="false"] .plugin-detail {
@@ -3007,6 +3012,8 @@ select:not([multiple])[size="1"] {
 .log-row summary {
   position: relative;
   display: block;
+  /* Keyboard scrolling stops short of the pane edge, so the ring outside the summary shows. */
+  scroll-margin-block: var(--space-2);
   cursor: pointer;
   list-style: none;
 }
