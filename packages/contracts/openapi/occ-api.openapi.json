@@ -51,6 +51,32 @@
                             { "const": "content", "type": "string" }
                           ]
                         },
+                        "decision": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "binary": { "maxLength": 512, "type": "string" },
+                            "decision": {
+                              "anyOf": [
+                                { "const": "denied", "type": "string" },
+                                { "const": "allowed", "type": "string" }
+                              ]
+                            },
+                            "enforcement": {
+                              "anyOf": [
+                                { "const": "blocked", "type": "string" },
+                                { "const": "reported", "type": "string" }
+                              ]
+                            },
+                            "engine": { "maxLength": 512, "type": "string" },
+                            "host": { "maxLength": 512, "type": "string" },
+                            "policyGeneration": { "maxLength": 512, "type": "string" },
+                            "port": { "maximum": 65535, "minimum": 1, "type": "integer" },
+                            "reason": { "maxLength": 512, "type": "string" },
+                            "rule": { "maxLength": 512, "type": "string" }
+                          },
+                          "required": ["decision", "enforcement"],
+                          "type": "object"
+                        },
                         "fields": {
                           "additionalProperties": {
                             "anyOf": [
@@ -10838,6 +10864,88 @@
                               "required": ["executionModes"],
                               "type": "object"
                             },
+                            "credentialSources": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "types": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "config": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "deviceAuthorization": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "harnessId": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["harnessId"],
+                                        "type": "object"
+                                      },
+                                      "harnessAuth": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "loginMode": {
+                                            "anyOf": [
+                                              { "const": "api_key", "type": "string" },
+                                              { "const": "codex_pat", "type": "string" },
+                                              { "const": "chatgptAuthTokens", "type": "string" }
+                                            ]
+                                          },
+                                          "modelProvider": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["modelProvider", "loginMode"],
+                                        "type": "object"
+                                      },
+                                      "rotation": {
+                                        "anyOf": [
+                                          { "const": "none", "type": "string" },
+                                          { "const": "external", "type": "string" },
+                                          { "const": "refresh", "type": "string" }
+                                        ]
+                                      },
+                                      "secrets": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "type": {
+                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "maxLength": 64,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["type", "config", "secrets", "rotation"],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["types"],
+                              "type": "object"
+                            },
                             "nativeWorkers": {
                               "additionalProperties": false,
                               "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
@@ -10850,6 +10958,30 @@
                                 }
                               },
                               "required": ["support"],
+                              "type": "object"
+                            },
+                            "openclaw": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save also refuses Embedded with a selected Sandbox Driver, but saves Dedicated without one that can provision it; deploy refuses that. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither.",
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "sandboxDriverUnavailable": {
+                                  "const": true,
+                                  "description": "Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE.",
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": ["executionModes"],
                               "type": "object"
                             },
                             "pluginDiscovery": {
@@ -11083,6 +11215,88 @@
                               "required": ["executionModes"],
                               "type": "object"
                             },
+                            "credentialSources": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "types": {
+                                  "items": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "config": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "deviceAuthorization": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "harnessId": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["harnessId"],
+                                        "type": "object"
+                                      },
+                                      "harnessAuth": {
+                                        "additionalProperties": false,
+                                        "properties": {
+                                          "loginMode": {
+                                            "anyOf": [
+                                              { "const": "api_key", "type": "string" },
+                                              { "const": "codex_pat", "type": "string" },
+                                              { "const": "chatgptAuthTokens", "type": "string" }
+                                            ]
+                                          },
+                                          "modelProvider": { "minLength": 1, "type": "string" }
+                                        },
+                                        "required": ["modelProvider", "loginMode"],
+                                        "type": "object"
+                                      },
+                                      "rotation": {
+                                        "anyOf": [
+                                          { "const": "none", "type": "string" },
+                                          { "const": "external", "type": "string" },
+                                          { "const": "refresh", "type": "string" }
+                                        ]
+                                      },
+                                      "secrets": {
+                                        "items": {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "description": { "type": "string" },
+                                            "issuerRotated": { "type": "boolean" },
+                                            "name": { "minLength": 1, "type": "string" },
+                                            "required": { "type": "boolean" }
+                                          },
+                                          "required": ["name", "required"],
+                                          "type": "object"
+                                        },
+                                        "type": "array"
+                                      },
+                                      "type": {
+                                        "description": "Source type from the selected Credential Gateway catalog, for example `openai`.",
+                                        "maxLength": 64,
+                                        "minLength": 1,
+                                        "pattern": "^[a-z][a-z0-9-]{0,63}$",
+                                        "type": "string"
+                                      }
+                                    },
+                                    "required": ["type", "config", "secrets", "rotation"],
+                                    "type": "object"
+                                  },
+                                  "type": "array"
+                                }
+                              },
+                              "required": ["types"],
+                              "type": "object"
+                            },
                             "nativeWorkers": {
                               "additionalProperties": false,
                               "description": "Present only when dedicated native OpenClaw can be admitted, and says where its native worker support comes from.",
@@ -11095,6 +11309,30 @@
                                 }
                               },
                               "required": ["support"],
+                              "type": "object"
+                            },
+                            "openclaw": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "executionModes": {
+                                  "description": "The OpenClaw execution modes this Installation's Sandbox Driver and runtime let an Agent deploy. Agent save also refuses Embedded with a selected Sandbox Driver, but saves Dedicated without one that can provision it; deploy refuses that. Empty when no mode can deploy: a selected Sandbox Driver refuses Embedded execution, Dedicated needs one that can provision dedicated OpenClaw, and a selected Sandbox Driver that is unavailable admits neither.",
+                                  "items": {
+                                    "anyOf": [
+                                      { "const": "embedded", "type": "string" },
+                                      { "const": "dedicated", "type": "string" }
+                                    ]
+                                  },
+                                  "maxItems": 2,
+                                  "type": "array",
+                                  "uniqueItems": true
+                                },
+                                "sandboxDriverUnavailable": {
+                                  "const": true,
+                                  "description": "Present while the selected Sandbox Driver is unavailable. executionModes is then empty until it returns, and Agent save and deploy answer 503 DEPENDENCY_UNAVAILABLE.",
+                                  "type": "boolean"
+                                }
+                              },
+                              "required": ["executionModes"],
                               "type": "object"
                             },
                             "pluginDiscovery": {
@@ -12123,31 +12361,6 @@
                                       {
                                         "additionalProperties": false,
                                         "properties": {
-                                          "method": { "const": "oauth", "type": "string" },
-                                          "source": {
-                                            "additionalProperties": false,
-                                            "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                            "properties": {
-                                              "id": {
-                                                "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                                "type": "string"
-                                              },
-                                              "kind": { "const": "secret", "type": "string" },
-                                              "namespaceId": {
-                                                "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                                "type": "string"
-                                              }
-                                            },
-                                            "required": ["kind", "namespaceId", "id"],
-                                            "type": "object"
-                                          }
-                                        },
-                                        "required": ["method", "source"],
-                                        "type": "object"
-                                      },
-                                      {
-                                        "additionalProperties": false,
-                                        "properties": {
                                           "method": {
                                             "const": "credential_source",
                                             "type": "string"
@@ -12242,6 +12455,7 @@
                                 "minItems": 1,
                                 "type": "array"
                               },
+                              "sandboxPolicyEditing": { "type": "boolean" },
                               "servicePrincipalId": {
                                 "maxLength": 200,
                                 "minLength": 1,
@@ -12346,6 +12560,7 @@
                                 "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"
                               },
+                              "sandboxPolicyEditing": { "type": "boolean" },
                               "servicePrincipalId": {
                                 "maxLength": 200,
                                 "minLength": 1,
@@ -12574,31 +12789,6 @@
                                     "type": "object"
                                   }
                                 ]
-                              }
-                            },
-                            "required": ["method", "source"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "method": { "const": "oauth", "type": "string" },
-                              "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
                               }
                             },
                             "required": ["method", "source"],
@@ -12876,31 +13066,6 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
                                     "method": { "const": "credential_source", "type": "string" },
                                     "sourceId": {
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -12992,6 +13157,7 @@
                           "minItems": 1,
                           "type": "array"
                         },
+                        "sandboxPolicyEditing": { "type": "boolean" },
                         "servicePrincipalId": {
                           "maxLength": 200,
                           "minLength": 1,
@@ -13165,7 +13331,7 @@
                           "type": "string"
                         },
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "source": {
+                        "session": {
                           "additionalProperties": false,
                           "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
@@ -13174,6 +13340,23 @@
                               "type": "string"
                             },
                             "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "credential_source", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -13192,7 +13375,7 @@
                         "verificationUrl": { "format": "uri", "type": "string" }
                       },
                       "required": [
-                        "source",
+                        "session",
                         "status",
                         "verificationUrl",
                         "userCode",
@@ -13420,7 +13603,7 @@
                           "type": "string"
                         },
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "source": {
+                        "session": {
                           "additionalProperties": false,
                           "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
@@ -13429,6 +13612,23 @@
                               "type": "string"
                             },
                             "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "credential_source", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -13447,7 +13647,7 @@
                         "verificationUrl": { "format": "uri", "type": "string" }
                       },
                       "required": [
-                        "source",
+                        "session",
                         "status",
                         "verificationUrl",
                         "userCode",
@@ -13724,16 +13924,15 @@
                   {
                     "additionalProperties": false,
                     "properties": {
-                      "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
-                      "oauthLogin": {
+                      "credentialSource": {
                         "additionalProperties": false,
-                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                         "properties": {
                           "id": {
-                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
-                          "kind": { "const": "secret", "type": "string" },
+                          "kind": { "const": "credential_source", "type": "string" },
                           "namespaceId": {
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
@@ -13742,9 +13941,10 @@
                         "required": ["kind", "namespaceId", "id"],
                         "type": "object"
                       },
+                      "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
                       "q": { "maxLength": 1024, "type": "string" }
                     },
-                    "required": ["oauthLogin"],
+                    "required": ["credentialSource"],
                     "type": "object"
                   },
                   {
@@ -14013,15 +14213,15 @@
                   {
                     "additionalProperties": false,
                     "properties": {
-                      "oauthLogin": {
+                      "credentialSource": {
                         "additionalProperties": false,
-                        "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                        "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                         "properties": {
                           "id": {
-                            "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                            "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
-                          "kind": { "const": "secret", "type": "string" },
+                          "kind": { "const": "credential_source", "type": "string" },
                           "namespaceId": {
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
@@ -14032,7 +14232,7 @@
                       },
                       "pluginId": { "maxLength": 256, "minLength": 1, "type": "string" }
                     },
-                    "required": ["oauthLogin", "pluginId"],
+                    "required": ["credentialSource", "pluginId"],
                     "type": "object"
                   },
                   {
@@ -14417,31 +14617,6 @@
                           {
                             "additionalProperties": false,
                             "properties": {
-                              "method": { "const": "oauth", "type": "string" },
-                              "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
-                              }
-                            },
-                            "required": ["method", "source"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
                               "method": { "const": "credential_source", "type": "string" },
                               "sourceId": {
                                 "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -14455,7 +14630,7 @@
                       },
                       { "type": "null" }
                     ],
-                    "description": "Dedicated Harness authentication, required. Omitted, null, `runtime` and `credential_source` are refused with 400 INVALID_REQUEST; for a credential source, create the Agent with the source, then deploy it."
+                    "description": "Dedicated Harness authentication, required. Omitted, null and `runtime` are refused with 400 INVALID_REQUEST. A ready model `credential_source` is supported when the selected Credential Gateway owns it and the caller has source `operate` permission."
                   },
                   "initialWorkspaceFiles": {
                     "additionalProperties": false,
@@ -14603,6 +14778,43 @@
                                 { "const": "transport", "type": "string" },
                                 { "const": "handoff", "type": "string" }
                               ]
+                            },
+                            "progress": {
+                              "additionalProperties": false,
+                              "description": "Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0.",
+                              "properties": {
+                                "lastAttempt": {
+                                  "anyOf": [
+                                    { "type": "null" },
+                                    {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "at": {
+                                          "format": "date-time",
+                                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                                          "type": "string"
+                                        },
+                                        "code": {
+                                          "maxLength": 64,
+                                          "minLength": 1,
+                                          "type": "string"
+                                        },
+                                        "message": { "minLength": 1, "type": "string" }
+                                      },
+                                      "required": ["at", "code", "message"],
+                                      "type": "object"
+                                    }
+                                  ],
+                                  "description": "With `agent_revision:read`, this can report the deployment's named wait. Otherwise it reports the job's own `PROVISIONING_DEPLOYMENT_PENDING`, or null if the job has not recorded that wait. The controller writes the message; a refusal can include a code restricted to uppercase letters, digits, and underscores."
+                                },
+                                "phase": {
+                                  "const": "deployment",
+                                  "description": "Handoff is done; the job waits for its initial deployment.",
+                                  "type": "string"
+                                }
+                              },
+                              "required": ["phase", "lastAttempt"],
+                              "type": "object"
                             },
                             "revisionId": {
                               "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -14794,6 +15006,39 @@
                             { "const": "transport", "type": "string" },
                             { "const": "handoff", "type": "string" }
                           ]
+                        },
+                        "progress": {
+                          "additionalProperties": false,
+                          "description": "Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0.",
+                          "properties": {
+                            "lastAttempt": {
+                              "anyOf": [
+                                { "type": "null" },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "at": {
+                                      "format": "date-time",
+                                      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                                      "type": "string"
+                                    },
+                                    "code": { "maxLength": 64, "minLength": 1, "type": "string" },
+                                    "message": { "minLength": 1, "type": "string" }
+                                  },
+                                  "required": ["at", "code", "message"],
+                                  "type": "object"
+                                }
+                              ],
+                              "description": "With `agent_revision:read`, this can report the deployment's named wait. Otherwise it reports the job's own `PROVISIONING_DEPLOYMENT_PENDING`, or null if the job has not recorded that wait. The controller writes the message; a refusal can include a code restricted to uppercase letters, digits, and underscores."
+                            },
+                            "phase": {
+                              "const": "deployment",
+                              "description": "Handoff is done; the job waits for its initial deployment.",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["phase", "lastAttempt"],
+                          "type": "object"
                         },
                         "revisionId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -14992,6 +15237,39 @@
                             { "const": "transport", "type": "string" },
                             { "const": "handoff", "type": "string" }
                           ]
+                        },
+                        "progress": {
+                          "additionalProperties": false,
+                          "description": "Present while a job past handoff is queued or running. The job defers without spending attempts while it waits, so `attemptCount` can stay 0.",
+                          "properties": {
+                            "lastAttempt": {
+                              "anyOf": [
+                                { "type": "null" },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "at": {
+                                      "format": "date-time",
+                                      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                                      "type": "string"
+                                    },
+                                    "code": { "maxLength": 64, "minLength": 1, "type": "string" },
+                                    "message": { "minLength": 1, "type": "string" }
+                                  },
+                                  "required": ["at", "code", "message"],
+                                  "type": "object"
+                                }
+                              ],
+                              "description": "With `agent_revision:read`, this can report the deployment's named wait. Otherwise it reports the job's own `PROVISIONING_DEPLOYMENT_PENDING`, or null if the job has not recorded that wait. The controller writes the message; a refusal can include a code restricted to uppercase letters, digits, and underscores."
+                            },
+                            "phase": {
+                              "const": "deployment",
+                              "description": "Handoff is done; the job waits for its initial deployment.",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["phase", "lastAttempt"],
+                          "type": "object"
                         },
                         "revisionId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -15268,6 +15546,148 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/validate": {
+      "post": {
+        "description": "Requires create permission for Agent resources in the requested Namespace.",
+        "operationId": "validateAgentCreate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "configuration": {
+                    "additionalProperties": false,
+                    "description": "The Agent Configuration the caller will save, not yet saved.",
+                    "properties": {
+                      "kind": { "const": "agent", "type": "string" },
+                      "values": {
+                        "additionalProperties": { "$ref": "#/components/schemas/def-0" },
+                        "description": "A native OpenClaw configuration document.",
+                        "properties": {},
+                        "type": "object"
+                      }
+                    },
+                    "required": ["kind", "values"],
+                    "type": "object"
+                  },
+                  "executionMode": {
+                    "anyOf": [
+                      { "const": "embedded", "type": "string" },
+                      { "const": "dedicated", "type": "string" }
+                    ]
+                  },
+                  "initialWorkspaceFiles": {
+                    "additionalProperties": false,
+                    "properties": {
+                      "AGENTS.md": {
+                        "maxLength": 16384,
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      },
+                      "IDENTITY.md": {
+                        "maxLength": 16384,
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      },
+                      "SOUL.md": {
+                        "maxLength": 16384,
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      },
+                      "USER.md": {
+                        "maxLength": 16384,
+                        "pattern": "^[^\\u0000]*$",
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                  "plugins": { "$ref": "#/components/schemas/def-6" }
+                },
+                "required": ["configuration"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": { "description": "Default Response" },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "create", "resourceKind": "agent", "scope": "namespace" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}": {
       "delete": {
         "description": "Requires delete permission on the requested Agent.",
@@ -15443,31 +15863,6 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
                                     "method": { "const": "credential_source", "type": "string" },
                                     "sourceId": {
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -15559,6 +15954,7 @@
                           "minItems": 1,
                           "type": "array"
                         },
+                        "sandboxPolicyEditing": { "type": "boolean" },
                         "servicePrincipalId": {
                           "maxLength": 200,
                           "minLength": 1,
@@ -15830,31 +16226,6 @@
                                     {
                                       "additionalProperties": false,
                                       "properties": {
-                                        "method": { "const": "oauth", "type": "string" },
-                                        "source": {
-                                          "additionalProperties": false,
-                                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                          "properties": {
-                                            "id": {
-                                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                              "type": "string"
-                                            },
-                                            "kind": { "const": "secret", "type": "string" },
-                                            "namespaceId": {
-                                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                              "type": "string"
-                                            }
-                                          },
-                                          "required": ["kind", "namespaceId", "id"],
-                                          "type": "object"
-                                        }
-                                      },
-                                      "required": ["method", "source"],
-                                      "type": "object"
-                                    },
-                                    {
-                                      "additionalProperties": false,
-                                      "properties": {
                                         "method": {
                                           "const": "credential_source",
                                           "type": "string"
@@ -15949,6 +16320,7 @@
                               "minItems": 1,
                               "type": "array"
                             },
+                            "sandboxPolicyEditing": { "type": "boolean" },
                             "servicePrincipalId": {
                               "maxLength": 200,
                               "minLength": 1,
@@ -16053,6 +16425,7 @@
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
                             },
+                            "sandboxPolicyEditing": { "type": "boolean" },
                             "servicePrincipalId": {
                               "maxLength": 200,
                               "minLength": 1,
@@ -16287,31 +16660,6 @@
                                     "type": "object"
                                   }
                                 ]
-                              }
-                            },
-                            "required": ["method", "source"],
-                            "type": "object"
-                          },
-                          {
-                            "additionalProperties": false,
-                            "properties": {
-                              "method": { "const": "oauth", "type": "string" },
-                              "source": {
-                                "additionalProperties": false,
-                                "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                "properties": {
-                                  "id": {
-                                    "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  },
-                                  "kind": { "const": "secret", "type": "string" },
-                                  "namespaceId": {
-                                    "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                    "type": "string"
-                                  }
-                                },
-                                "required": ["kind", "namespaceId", "id"],
-                                "type": "object"
                               }
                             },
                             "required": ["method", "source"],
@@ -16558,31 +16906,6 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
                                     "method": { "const": "credential_source", "type": "string" },
                                     "sourceId": {
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -16674,6 +16997,7 @@
                           "minItems": 1,
                           "type": "array"
                         },
+                        "sandboxPolicyEditing": { "type": "boolean" },
                         "servicePrincipalId": {
                           "maxLength": 200,
                           "minLength": 1,
@@ -17321,31 +17645,6 @@
                             {
                               "additionalProperties": false,
                               "properties": {
-                                "method": { "const": "oauth", "type": "string" },
-                                "source": {
-                                  "additionalProperties": false,
-                                  "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                  "properties": {
-                                    "id": {
-                                      "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                      "type": "string"
-                                    },
-                                    "kind": { "const": "secret", "type": "string" },
-                                    "namespaceId": {
-                                      "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                      "type": "string"
-                                    }
-                                  },
-                                  "required": ["kind", "namespaceId", "id"],
-                                  "type": "object"
-                                }
-                              },
-                              "required": ["method", "source"],
-                              "type": "object"
-                            },
-                            {
-                              "additionalProperties": false,
-                              "properties": {
                                 "method": { "const": "credential_source", "type": "string" },
                                 "sourceId": {
                                   "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -17973,7 +18272,7 @@
                                               "description": "Why the startup model check failed, classified by the runtime.",
                                               "properties": {
                                                 "detail": {
-                                                  "description": "A fixed token for the kind, such as exit-1, signal-SIGKILL, error-ENOBUFS, format, rate_limit, billing, no_model, turn-failed, tool-event, no-reply, json or shape. Never native output.",
+                                                  "description": "A fixed token for the kind, such as exit-1, signal-SIGKILL, error-ENOBUFS, format, rate_limit, billing, no_model, turn-failed, tool-event, no-reply, json or shape. A Codex token ends -attempt2, such as rate_limit-attempt2, when a retried check failed again. Never native output.",
                                                   "maxLength": 32,
                                                   "minLength": 1,
                                                   "pattern": "^[A-Za-z0-9_-]{1,32}$",
@@ -18029,7 +18328,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned."
+                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence; a component, check or code outside the runtime's own vocabulary reads UNRECOGNIZED. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned."
                         },
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -18950,6 +19249,32 @@
                                       { "const": "content", "type": "string" }
                                     ]
                                   },
+                                  "decision": {
+                                    "additionalProperties": false,
+                                    "properties": {
+                                      "binary": { "maxLength": 512, "type": "string" },
+                                      "decision": {
+                                        "anyOf": [
+                                          { "const": "denied", "type": "string" },
+                                          { "const": "allowed", "type": "string" }
+                                        ]
+                                      },
+                                      "enforcement": {
+                                        "anyOf": [
+                                          { "const": "blocked", "type": "string" },
+                                          { "const": "reported", "type": "string" }
+                                        ]
+                                      },
+                                      "engine": { "maxLength": 512, "type": "string" },
+                                      "host": { "maxLength": 512, "type": "string" },
+                                      "policyGeneration": { "maxLength": 512, "type": "string" },
+                                      "port": { "maximum": 65535, "minimum": 1, "type": "integer" },
+                                      "reason": { "maxLength": 512, "type": "string" },
+                                      "rule": { "maxLength": 512, "type": "string" }
+                                    },
+                                    "required": ["decision", "enforcement"],
+                                    "type": "object"
+                                  },
                                   "fields": {
                                     "additionalProperties": {
                                       "anyOf": [
@@ -19399,7 +19724,7 @@
                           "type": "string"
                         },
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "source": {
+                        "session": {
                           "additionalProperties": false,
                           "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
@@ -19408,6 +19733,23 @@
                               "type": "string"
                             },
                             "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "credential_source", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -19426,7 +19768,7 @@
                         "verificationUrl": { "format": "uri", "type": "string" }
                       },
                       "required": [
-                        "source",
+                        "session",
                         "status",
                         "verificationUrl",
                         "userCode",
@@ -19674,7 +20016,7 @@
                           "type": "string"
                         },
                         "intervalSeconds": { "minimum": 1, "type": "integer" },
-                        "source": {
+                        "session": {
                           "additionalProperties": false,
                           "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
                           "properties": {
@@ -19683,6 +20025,23 @@
                               "type": "string"
                             },
                             "kind": { "const": "secret", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": ["kind", "namespaceId", "id"],
+                          "type": "object"
+                        },
+                        "source": {
+                          "additionalProperties": false,
+                          "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
+                          "properties": {
+                            "id": {
+                              "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "kind": { "const": "credential_source", "type": "string" },
                             "namespaceId": {
                               "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                               "type": "string"
@@ -19701,7 +20060,7 @@
                         "verificationUrl": { "format": "uri", "type": "string" }
                       },
                       "required": [
-                        "source",
+                        "session",
                         "status",
                         "verificationUrl",
                         "userCode",
@@ -20040,16 +20399,15 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
-                  "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
-                  "oauthLogin": {
+                  "credentialSource": {
                     "additionalProperties": false,
-                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                     "properties": {
                       "id": {
-                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
-                      "kind": { "const": "secret", "type": "string" },
+                      "kind": { "const": "credential_source", "type": "string" },
                       "namespaceId": {
                         "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
@@ -20058,6 +20416,7 @@
                     "required": ["kind", "namespaceId", "id"],
                     "type": "object"
                   },
+                  "cursor": { "maxLength": 8192, "minLength": 1, "type": "string" },
                   "q": { "maxLength": 1024, "type": "string" }
                 },
                 "type": "object"
@@ -20478,15 +20837,15 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
-                  "oauthLogin": {
+                  "credentialSource": {
                     "additionalProperties": false,
-                    "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                    "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
                     "properties": {
                       "id": {
-                        "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
                       },
-                      "kind": { "const": "secret", "type": "string" },
+                      "kind": { "const": "credential_source", "type": "string" },
                       "namespaceId": {
                         "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                         "type": "string"
@@ -21205,31 +21564,6 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
                                     "method": { "const": "credential_source", "type": "string" },
                                     "sourceId": {
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -21492,6 +21826,201 @@
         "tags": ["Agent revisions"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent_revision", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/revisions/{revisionId}/sandbox-policy/{facet}/recommendations": {
+      "get": {
+        "description": "Requires read permission on the requested Agent. Requires read permission on the requested SandboxPolicy.",
+        "operationId": "getAgentSandboxRecommendations",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "facet",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                { "const": "networking", "type": "string" },
+                { "const": "filesystem", "type": "string" },
+                { "const": "process", "type": "string" }
+              ]
+            }
+          },
+          {
+            "in": "path",
+            "name": "revisionId",
+            "required": true,
+            "schema": {
+              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "providerVersion": { "maxLength": 128, "type": "string" },
+                        "recommendations": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "grant": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "binary": {
+                                    "maxLength": 512,
+                                    "minLength": 2,
+                                    "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                    "type": "string"
+                                  },
+                                  "host": {
+                                    "maxLength": 253,
+                                    "minLength": 1,
+                                    "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                    "type": "string"
+                                  },
+                                  "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                                  "ports": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "from": {
+                                          "maximum": 65535,
+                                          "minimum": 1,
+                                          "type": "integer"
+                                        },
+                                        "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                      },
+                                      "required": ["from", "to"],
+                                      "type": "object"
+                                    },
+                                    "maxItems": 16,
+                                    "minItems": 1,
+                                    "type": "array"
+                                  }
+                                },
+                                "required": ["id", "binary", "host", "ports"],
+                                "type": "object"
+                              },
+                              "id": { "type": "string" },
+                              "observations": { "minimum": 0, "type": "integer" },
+                              "status": {
+                                "anyOf": [
+                                  { "const": "pending", "type": "string" },
+                                  { "const": "approved", "type": "string" },
+                                  { "const": "rejected", "type": "string" }
+                                ]
+                              }
+                            },
+                            "required": ["id", "status", "grant"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "truncated": { "type": "boolean" }
+                      },
+                      "required": ["recommendations", "truncated"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "429": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Read bounded policy suggestions for one exact revision",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "sandbox_policy", "scope": "requested" }
         ]
       }
     },
@@ -21861,6 +22390,1254 @@
         ]
       }
     },
+    "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}": {
+      "get": {
+        "description": "Requires read permission on the requested Agent. Requires read permission on the requested SandboxPolicy.",
+        "operationId": "getAgentSandboxPolicy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "facet",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                { "const": "networking", "type": "string" },
+                { "const": "filesystem", "type": "string" },
+                { "const": "process", "type": "string" }
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "capability": {
+                          "anyOf": [
+                            { "type": "null" },
+                            {
+                              "additionalProperties": false,
+                              "properties": {
+                                "live": { "type": "boolean" },
+                                "portRanges": { "type": "boolean" },
+                                "wildcards": { "type": "boolean" }
+                              },
+                              "required": ["wildcards", "portRanges", "live"],
+                              "type": "object"
+                            }
+                          ]
+                        },
+                        "ceiling": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "binary": {
+                                "maxLength": 512,
+                                "minLength": 2,
+                                "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                "type": "string"
+                              },
+                              "host": {
+                                "maxLength": 253,
+                                "minLength": 1,
+                                "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                "type": "string"
+                              },
+                              "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                              "ports": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "from": { "maximum": 65535, "minimum": 1, "type": "integer" },
+                                    "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                  },
+                                  "required": ["from", "to"],
+                                  "type": "object"
+                                },
+                                "maxItems": 16,
+                                "minItems": 1,
+                                "type": "array"
+                              }
+                            },
+                            "required": ["id", "binary", "host", "ports"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "defaults": {
+                          "anyOf": [
+                            { "type": "null" },
+                            { "additionalProperties": {}, "type": "object" }
+                          ]
+                        },
+                        "defaultsRevisionId": {
+                          "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "editingEnabled": { "type": "boolean" },
+                        "policy": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "additions": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "binary": {
+                                    "maxLength": 512,
+                                    "minLength": 2,
+                                    "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                    "type": "string"
+                                  },
+                                  "host": {
+                                    "maxLength": 253,
+                                    "minLength": 1,
+                                    "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                    "type": "string"
+                                  },
+                                  "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                                  "ports": {
+                                    "items": {
+                                      "additionalProperties": false,
+                                      "properties": {
+                                        "from": {
+                                          "maximum": 65535,
+                                          "minimum": 1,
+                                          "type": "integer"
+                                        },
+                                        "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                      },
+                                      "required": ["from", "to"],
+                                      "type": "object"
+                                    },
+                                    "maxItems": 16,
+                                    "minItems": 1,
+                                    "type": "array"
+                                  }
+                                },
+                                "required": ["id", "binary", "host", "ports"],
+                                "type": "object"
+                              },
+                              "maxItems": 32,
+                              "type": "array"
+                            },
+                            "agentId": {
+                              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "application": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "id": { "format": "uuid", "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "reason": { "type": "string" },
+                                "requestedAt": { "type": "string" },
+                                "requestedBy": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                },
+                                "state": {
+                                  "anyOf": [
+                                    { "const": "pending", "type": "string" },
+                                    { "const": "applied", "type": "string" },
+                                    { "const": "failed", "type": "string" }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "revisionId",
+                                "policyVersion",
+                                "state",
+                                "requestedBy",
+                                "requestedAt"
+                              ],
+                              "type": "object"
+                            },
+                            "applied": {
+                              "additionalProperties": false,
+                              "properties": {
+                                "appliedAt": { "type": "string" },
+                                "policyVersion": {
+                                  "maximum": 2147483647,
+                                  "minimum": 1,
+                                  "type": "integer"
+                                },
+                                "providerVersion": { "type": "string" },
+                                "revisionId": {
+                                  "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "revisionId",
+                                "policyVersion",
+                                "providerVersion",
+                                "appliedAt"
+                              ],
+                              "type": "object"
+                            },
+                            "id": { "pattern": "^sbp_[0-9a-f-]{36}$", "type": "string" },
+                            "namespaceId": {
+                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
+                          },
+                          "required": ["id", "namespaceId", "agentId", "version", "additions"],
+                          "type": "object"
+                        }
+                      },
+                      "required": ["policy", "editingEnabled", "ceiling", "defaults", "capability"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Read one Agent sandbox policy and delegation ceiling",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "read", "resourceKind": "agent", "scope": "requested" },
+          { "action": "read", "resourceKind": "sandbox_policy", "scope": "requested" }
+        ]
+      },
+      "put": {
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
+        "operationId": "updateAgentSandboxPolicy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "facet",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                { "const": "networking", "type": "string" },
+                { "const": "filesystem", "type": "string" },
+                { "const": "process", "type": "string" }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "additions": {
+                    "items": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "binary": {
+                          "maxLength": 512,
+                          "minLength": 2,
+                          "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                          "type": "string"
+                        },
+                        "host": {
+                          "maxLength": 253,
+                          "minLength": 1,
+                          "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                          "type": "string"
+                        },
+                        "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                        "ports": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "from": { "maximum": 65535, "minimum": 1, "type": "integer" },
+                              "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                            },
+                            "required": ["from", "to"],
+                            "type": "object"
+                          },
+                          "maxItems": 16,
+                          "minItems": 1,
+                          "type": "array"
+                        }
+                      },
+                      "required": ["id", "binary", "host", "ports"],
+                      "type": "object"
+                    },
+                    "maxItems": 32,
+                    "type": "array"
+                  },
+                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
+                },
+                "required": ["expectedVersion", "additions"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "additions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "binary": {
+                                "maxLength": 512,
+                                "minLength": 2,
+                                "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                "type": "string"
+                              },
+                              "host": {
+                                "maxLength": 253,
+                                "minLength": 1,
+                                "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                "type": "string"
+                              },
+                              "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                              "ports": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "from": { "maximum": 65535, "minimum": 1, "type": "integer" },
+                                    "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                  },
+                                  "required": ["from", "to"],
+                                  "type": "object"
+                                },
+                                "maxItems": 16,
+                                "minItems": 1,
+                                "type": "array"
+                              }
+                            },
+                            "required": ["id", "binary", "host", "ports"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "agentId": {
+                          "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "application": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": { "format": "uuid", "type": "string" },
+                            "policyVersion": {
+                              "maximum": 2147483647,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "providerVersion": { "type": "string" },
+                            "reason": { "type": "string" },
+                            "requestedAt": { "type": "string" },
+                            "requestedBy": { "type": "string" },
+                            "revisionId": {
+                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "state": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "applied", "type": "string" },
+                                { "const": "failed", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "revisionId",
+                            "policyVersion",
+                            "state",
+                            "requestedBy",
+                            "requestedAt"
+                          ],
+                          "type": "object"
+                        },
+                        "applied": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "appliedAt": { "type": "string" },
+                            "policyVersion": {
+                              "maximum": 2147483647,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "providerVersion": { "type": "string" },
+                            "revisionId": {
+                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "revisionId",
+                            "policyVersion",
+                            "providerVersion",
+                            "appliedAt"
+                          ],
+                          "type": "object"
+                        },
+                        "id": { "pattern": "^sbp_[0-9a-f-]{36}$", "type": "string" },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
+                      },
+                      "required": ["id", "namespaceId", "agentId", "version", "additions"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Replace one Agent network policy additions",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/apply": {
+      "post": {
+        "description": "Requires manage_policy permission on the requested Agent. Requires update permission on the requested SandboxPolicy.",
+        "operationId": "applyAgentSandboxPolicy",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "facet",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                { "const": "networking", "type": "string" },
+                { "const": "filesystem", "type": "string" },
+                { "const": "process", "type": "string" }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expectedVersion": { "maximum": 2147483647, "minimum": 1, "type": "integer" },
+                  "revisionId": {
+                    "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "type": "string"
+                  }
+                },
+                "required": ["expectedVersion", "revisionId"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "additions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "binary": {
+                                "maxLength": 512,
+                                "minLength": 2,
+                                "pattern": "^/[^\\s\\x00-\\x1f]+$",
+                                "type": "string"
+                              },
+                              "host": {
+                                "maxLength": 253,
+                                "minLength": 1,
+                                "pattern": "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
+                                "type": "string"
+                              },
+                              "id": { "pattern": "^[a-z][a-z0-9-]{0,47}$", "type": "string" },
+                              "ports": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "from": { "maximum": 65535, "minimum": 1, "type": "integer" },
+                                    "to": { "maximum": 65535, "minimum": 1, "type": "integer" }
+                                  },
+                                  "required": ["from", "to"],
+                                  "type": "object"
+                                },
+                                "maxItems": 16,
+                                "minItems": 1,
+                                "type": "array"
+                              }
+                            },
+                            "required": ["id", "binary", "host", "ports"],
+                            "type": "object"
+                          },
+                          "maxItems": 32,
+                          "type": "array"
+                        },
+                        "agentId": {
+                          "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "application": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "id": { "format": "uuid", "type": "string" },
+                            "policyVersion": {
+                              "maximum": 2147483647,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "providerVersion": { "type": "string" },
+                            "reason": { "type": "string" },
+                            "requestedAt": { "type": "string" },
+                            "requestedBy": { "type": "string" },
+                            "revisionId": {
+                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            },
+                            "state": {
+                              "anyOf": [
+                                { "const": "pending", "type": "string" },
+                                { "const": "applied", "type": "string" },
+                                { "const": "failed", "type": "string" }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "id",
+                            "revisionId",
+                            "policyVersion",
+                            "state",
+                            "requestedBy",
+                            "requestedAt"
+                          ],
+                          "type": "object"
+                        },
+                        "applied": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "appliedAt": { "type": "string" },
+                            "policyVersion": {
+                              "maximum": 2147483647,
+                              "minimum": 1,
+                              "type": "integer"
+                            },
+                            "providerVersion": { "type": "string" },
+                            "revisionId": {
+                              "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "revisionId",
+                            "policyVersion",
+                            "providerVersion",
+                            "appliedAt"
+                          ],
+                          "type": "object"
+                        },
+                        "id": { "pattern": "^sbp_[0-9a-f-]{36}$", "type": "string" },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "version": { "maximum": 2147483647, "minimum": 1, "type": "integer" }
+                      },
+                      "required": ["id", "namespaceId", "agentId", "version", "additions"],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Apply the saved policy to the exact running revision",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
+          { "action": "update", "resourceKind": "sandbox_policy", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/sandbox-policy/{facet}/editing": {
+      "patch": {
+        "description": "Requires administer permission on the requested Agent. Requires administer permission for Installation resources in the Installation.",
+        "operationId": "TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "facet",
+            "required": true,
+            "schema": {
+              "anyOf": [
+                { "const": "networking", "type": "string" },
+                { "const": "filesystem", "type": "string" },
+                { "const": "process", "type": "string" }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": { "enabled": { "type": "boolean" } },
+                "required": ["enabled"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "data": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "activeRevisionId": {
+                          "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "backendId": {
+                          "anyOf": [
+                            {
+                              "maxLength": 200,
+                              "minLength": 1,
+                              "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                              "type": "string"
+                            },
+                            { "type": "null" }
+                          ]
+                        },
+                        "configurationId": {
+                          "pattern": "^cfg_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "format": "date-time",
+                          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$",
+                          "type": "string"
+                        },
+                        "credentialSources": {
+                          "description": "Every credential source the Agent uses, at each source's endpoints. A credential-source harnessAuth names one entry. The selected Credential Gateway injects them at deployment; the Agent never receives their values.",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "sourceId": {
+                                "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["sourceId"],
+                            "type": "object"
+                          },
+                          "maxItems": 8,
+                          "type": "array",
+                          "uniqueItems": true
+                        },
+                        "desiredRuntimeState": {
+                          "anyOf": [
+                            { "const": "running", "type": "string" },
+                            { "const": "stopped", "type": "string" }
+                          ]
+                        },
+                        "executionMode": {
+                          "anyOf": [
+                            { "const": "embedded", "type": "string" },
+                            { "const": "dedicated", "type": "string" }
+                          ]
+                        },
+                        "harnessAuth": {
+                          "anyOf": [
+                            {
+                              "anyOf": [
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "method": { "const": "runtime", "type": "string" }
+                                  },
+                                  "required": ["method"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "method": { "const": "api_key", "type": "string" },
+                                    "source": {
+                                      "additionalProperties": false,
+                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                      "properties": {
+                                        "id": {
+                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        },
+                                        "kind": { "const": "secret", "type": "string" },
+                                        "namespaceId": {
+                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                          "type": "string"
+                                        }
+                                      },
+                                      "required": ["kind", "namespaceId", "id"],
+                                      "type": "object"
+                                    }
+                                  },
+                                  "required": ["method", "source"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "method": { "const": "codex_pat", "type": "string" },
+                                    "source": {
+                                      "anyOf": [
+                                        {
+                                          "additionalProperties": false,
+                                          "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
+                                          "properties": {
+                                            "id": {
+                                              "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                              "type": "string"
+                                            },
+                                            "kind": { "const": "secret", "type": "string" },
+                                            "namespaceId": {
+                                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": ["kind", "namespaceId", "id"],
+                                          "type": "object"
+                                        },
+                                        {
+                                          "additionalProperties": false,
+                                          "properties": {
+                                            "id": {
+                                              "pattern": "^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                              "type": "string"
+                                            },
+                                            "kind": {
+                                              "const": "service_account",
+                                              "type": "string"
+                                            },
+                                            "namespaceId": {
+                                              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                              "type": "string"
+                                            }
+                                          },
+                                          "required": ["kind", "namespaceId", "id"],
+                                          "type": "object"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": ["method", "source"],
+                                  "type": "object"
+                                },
+                                {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "method": { "const": "credential_source", "type": "string" },
+                                    "sourceId": {
+                                      "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": ["method", "sourceId"],
+                                  "type": "object"
+                                }
+                              ]
+                            },
+                            { "type": "null" }
+                          ]
+                        },
+                        "id": {
+                          "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "name": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "pattern": "^(?!\\s)(?!.*\\s$)[^\\u0000-\\u001f\\u007f-\\u009f\\u2028\\u2029]+$",
+                          "type": "string"
+                        },
+                        "namespaceId": {
+                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        },
+                        "pluginApprovers": { "$ref": "#/components/schemas/def-2" },
+                        "plugins": { "$ref": "#/components/schemas/def-6" },
+                        "repositoryAccess": {
+                          "additionalProperties": false,
+                          "description": "Desired repository access. Each omitted repository profile inherits defaultProfile; explicit profiles remain overrides. Mutually exclusive with repositoryBindings in create, provision, and update requests.",
+                          "properties": {
+                            "defaultProfile": {
+                              "maxLength": 128,
+                              "minLength": 1,
+                              "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                              "type": "string"
+                            },
+                            "repositories": {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "profile": {
+                                    "maxLength": 128,
+                                    "minLength": 1,
+                                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                                    "type": "string"
+                                  },
+                                  "repositoryRef": {
+                                    "maxLength": 128,
+                                    "minLength": 1,
+                                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": ["repositoryRef"],
+                                "type": "object"
+                              },
+                              "maxItems": 16,
+                              "type": "array"
+                            }
+                          },
+                          "required": ["defaultProfile", "repositories"],
+                          "type": "object"
+                        },
+                        "repositoryBindings": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "profile": {
+                                "maxLength": 128,
+                                "minLength": 1,
+                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                                "type": "string"
+                              },
+                              "repositoryRef": {
+                                "maxLength": 128,
+                                "minLength": 1,
+                                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                                "type": "string"
+                              }
+                            },
+                            "required": ["repositoryRef", "profile"],
+                            "type": "object"
+                          },
+                          "maxItems": 16,
+                          "minItems": 1,
+                          "type": "array"
+                        },
+                        "sandboxPolicyEditing": { "type": "boolean" },
+                        "servicePrincipalId": {
+                          "maxLength": 200,
+                          "minLength": 1,
+                          "type": "string"
+                        },
+                        "status": {
+                          "anyOf": [
+                            { "const": "active", "type": "string" },
+                            { "const": "deleting", "type": "string" }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "namespaceId",
+                        "name",
+                        "servicePrincipalId",
+                        "configurationId",
+                        "backendId",
+                        "harnessAuth",
+                        "executionMode",
+                        "desiredRuntimeState",
+                        "status",
+                        "createdAt"
+                      ],
+                      "type": "object"
+                    },
+                    "meta": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "requestId": {
+                          "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "type": "string"
+                        }
+                      },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "413": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "415": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Temporarily enable or disable future policy edits for one Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "agent", "scope": "requested" },
+          { "action": "administer", "resourceKind": "installation", "scope": "installation" }
+        ]
+      }
+    },
     "/namespaces/{namespaceId}/agents/{agentId}/stop": {
       "post": {
         "description": "Requires operate permission on the requested Agent.",
@@ -22036,31 +23813,6 @@
                                 {
                                   "additionalProperties": false,
                                   "properties": {
-                                    "method": { "const": "oauth", "type": "string" },
-                                    "source": {
-                                      "additionalProperties": false,
-                                      "description": "Exact OCC Secret reference. Shape: `{ \"kind\": \"secret\", \"namespaceId\": \"ns_...\", \"id\": \"sec_...\" }`.",
-                                      "properties": {
-                                        "id": {
-                                          "pattern": "^sec_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        },
-                                        "kind": { "const": "secret", "type": "string" },
-                                        "namespaceId": {
-                                          "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-                                          "type": "string"
-                                        }
-                                      },
-                                      "required": ["kind", "namespaceId", "id"],
-                                      "type": "object"
-                                    }
-                                  },
-                                  "required": ["method", "source"],
-                                  "type": "object"
-                                },
-                                {
-                                  "additionalProperties": false,
-                                  "properties": {
                                     "method": { "const": "credential_source", "type": "string" },
                                     "sourceId": {
                                       "pattern": "^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -22152,6 +23904,7 @@
                           "minItems": 1,
                           "type": "array"
                         },
+                        "sandboxPolicyEditing": { "type": "boolean" },
                         "servicePrincipalId": {
                           "maxLength": 200,
                           "minLength": 1,
@@ -24394,7 +26147,8 @@
                                   { "const": "secret", "type": "string" },
                                   { "const": "agent", "type": "string" },
                                   { "const": "agent_revision", "type": "string" },
-                                  { "const": "credential_source", "type": "string" }
+                                  { "const": "credential_source", "type": "string" },
+                                  { "const": "sandbox_policy", "type": "string" }
                                 ]
                               },
                               "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
@@ -24512,6 +26266,7 @@
                       { "const": "agent_revision", "type": "string" },
                       { "const": "configuration", "type": "string" },
                       { "const": "credential_source", "type": "string" },
+                      { "const": "sandbox_policy", "type": "string" },
                       { "const": "preset", "type": "string" },
                       { "const": "secret", "type": "string" },
                       { "const": "service_account", "type": "string" }
@@ -24576,7 +26331,8 @@
                                 { "const": "secret", "type": "string" },
                                 { "const": "agent", "type": "string" },
                                 { "const": "agent_revision", "type": "string" },
-                                { "const": "credential_source", "type": "string" }
+                                { "const": "credential_source", "type": "string" },
+                                { "const": "sandbox_policy", "type": "string" }
                               ]
                             },
                             "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
@@ -24872,7 +26628,8 @@
                                 { "const": "secret", "type": "string" },
                                 { "const": "agent", "type": "string" },
                                 { "const": "agent_revision", "type": "string" },
-                                { "const": "credential_source", "type": "string" }
+                                { "const": "credential_source", "type": "string" },
+                                { "const": "sandbox_policy", "type": "string" }
                               ]
                             },
                             "roleId": { "maxLength": 200, "minLength": 1, "type": "string" },
@@ -25011,7 +26768,8 @@
                                     { "const": "deploy", "type": "string" },
                                     { "const": "operate", "type": "string" },
                                     { "const": "administer", "type": "string" },
-                                    { "const": "read_logs", "type": "string" }
+                                    { "const": "read_logs", "type": "string" },
+                                    { "const": "manage_policy", "type": "string" }
                                   ]
                                 },
                                 "resourceKind": {
@@ -25024,7 +26782,8 @@
                                     { "const": "secret", "type": "string" },
                                     { "const": "agent", "type": "string" },
                                     { "const": "agent_revision", "type": "string" },
-                                    { "const": "credential_source", "type": "string" }
+                                    { "const": "credential_source", "type": "string" },
+                                    { "const": "sandbox_policy", "type": "string" }
                                   ]
                                 }
                               },
@@ -25143,7 +26902,8 @@
                             { "const": "deploy", "type": "string" },
                             { "const": "operate", "type": "string" },
                             { "const": "administer", "type": "string" },
-                            { "const": "read_logs", "type": "string" }
+                            { "const": "read_logs", "type": "string" },
+                            { "const": "manage_policy", "type": "string" }
                           ]
                         },
                         "resourceKind": {
@@ -25153,6 +26913,7 @@
                             { "const": "agent_revision", "type": "string" },
                             { "const": "configuration", "type": "string" },
                             { "const": "credential_source", "type": "string" },
+                            { "const": "sandbox_policy", "type": "string" },
                             { "const": "preset", "type": "string" },
                             { "const": "secret", "type": "string" },
                             { "const": "service_account", "type": "string" }
@@ -25208,7 +26969,8 @@
                                   { "const": "deploy", "type": "string" },
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
-                                  { "const": "read_logs", "type": "string" }
+                                  { "const": "read_logs", "type": "string" },
+                                  { "const": "manage_policy", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -25221,7 +26983,8 @@
                                   { "const": "secret", "type": "string" },
                                   { "const": "agent", "type": "string" },
                                   { "const": "agent_revision", "type": "string" },
-                                  { "const": "credential_source", "type": "string" }
+                                  { "const": "credential_source", "type": "string" },
+                                  { "const": "sandbox_policy", "type": "string" }
                                 ]
                               }
                             },
@@ -25445,7 +27208,8 @@
                                   { "const": "deploy", "type": "string" },
                                   { "const": "operate", "type": "string" },
                                   { "const": "administer", "type": "string" },
-                                  { "const": "read_logs", "type": "string" }
+                                  { "const": "read_logs", "type": "string" },
+                                  { "const": "manage_policy", "type": "string" }
                                 ]
                               },
                               "resourceKind": {
@@ -25458,7 +27222,8 @@
                                   { "const": "secret", "type": "string" },
                                   { "const": "agent", "type": "string" },
                                   { "const": "agent_revision", "type": "string" },
-                                  { "const": "credential_source", "type": "string" }
+                                  { "const": "credential_source", "type": "string" },
+                                  { "const": "sandbox_policy", "type": "string" }
                                 ]
                               }
                             },

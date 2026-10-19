@@ -33,6 +33,8 @@ async function scenario(
   const directory = join(root, "provider");
   await mkdir(directory);
   t.after(() => rm(root, { recursive: true, force: true }));
+  const readJournal = async () =>
+    JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
   const objects = new Map();
   const calls = [];
   const environment = {
@@ -40,7 +42,7 @@ async function scenario(
     DOCKER_HOST: "unix:///owned.sock",
   };
   const events = [{ event: "listening", at: 1 }];
-  const faults = { inspect: false };
+  const faults = { inspectError: undefined };
   let failedCreate = false;
   let failedRemove = false;
   const run = async (command, args, options) => {
@@ -58,9 +60,9 @@ async function scenario(
     }
     assert.equal(command, "docker", "no actual cluster command may escape the fixture test");
     if (args[1] === "inspect") {
-      if (faults.inspect) {
+      if (faults.inspectError) {
         throw Object.assign(new Error("engine unavailable"), {
-          stderr: "permission denied while connecting to the Docker API",
+          stderr: faults.inspectError(args[0], args[2]),
         });
       }
       const name = args[2];
@@ -83,7 +85,7 @@ async function scenario(
       const [key, value] = flag("--label").split("=");
       // Creation must already have a durable cleanup obligation, even if its
       // acknowledgement is lost after the engine has materialized the object.
-      const journal = JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
+      const journal = await readJournal();
       assert.ok(journal.resources.some((resource) => resource.name === name));
       const object = {
         Id: `id-${name}`,
@@ -167,6 +169,7 @@ async function scenario(
     root,
     run,
     directory,
+    readJournal,
     calls,
     objects,
     environment,
@@ -176,7 +179,8 @@ async function scenario(
 }
 
 test("provider prepares a scoped immutable image pair and requires a completed turn receipt", async (t) => {
-  const { fixture, directory, environment, calls, objects, events } = await scenario(t);
+  const { fixture, directory, readJournal, environment, calls, objects, events } =
+    await scenario(t);
   const before = { ...environment };
   const images = await fixture.prepare();
   assert.deepEqual(environment, before, "caller and global environment must not be mutated");
@@ -185,6 +189,7 @@ test("provider prepares a scoped immutable image pair and requires a completed t
   await execute("openssl", ["verify", "-CAfile", ca, "-verify_hostname", "api.openai.com", leaf]);
   await assert.rejects(
     execute("openssl", ["verify", "-CAfile", ca, "-verify_hostname", "unrelated.test", leaf]),
+    { code: 2, message: /hostname mismatch/i },
   );
   assert.match(images.OCC_DEVELOPMENT_CONTROLLER_IMAGE, /\/controller@sha256:[a-f0-9]{64}$/);
   assert.match(images.OCC_KUBERNETES_RUNTIME_IMAGE, /\/runtime@sha256:[a-f0-9]{64}$/);
@@ -220,10 +225,7 @@ test("provider prepares a scoped immutable image pair and requires a completed t
   });
   await fixture.cleanup();
   assert.equal(objects.size, 0);
-  assert.deepEqual(
-    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources,
-    [],
-  );
+  assert.deepEqual((await readJournal()).resources, []);
   assert.ok(
     calls
       .filter(({ args }) => args[0] === "image" && args[1] === "rm")
@@ -232,23 +234,17 @@ test("provider prepares a scoped immutable image pair and requires a completed t
 });
 
 test("provider reconciles a creation whose acknowledgement was lost", async (t) => {
-  const { fixture, directory, objects } = await scenario(t, {
+  const { fixture, readJournal, objects } = await scenario(t, {
     failAfterCreate: true,
     failAfterRemove: true,
   });
   await assert.rejects(fixture.prepare(), /acknowledgement lost/);
   assert.equal(objects.size, 1);
-  assert.equal(
-    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources.length,
-    1,
-  );
+  assert.equal((await readJournal()).resources.length, 1);
   await assert.rejects(fixture.cleanup(), /recovery journal retained/);
   assert.equal(objects.size, 0);
   await fixture.cleanup();
-  assert.deepEqual(
-    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources,
-    [],
-  );
+  assert.deepEqual((await readJournal()).resources, []);
 });
 
 test("provider leaves pre-existing resources untouched", async (t) => {
@@ -262,37 +258,31 @@ test("provider leaves pre-existing resources untouched", async (t) => {
 });
 
 test("provider retains failed cleanup obligations and retries only the remainder", async (t) => {
-  const { fixture, directory, objects } = await scenario(t, { failRemove: true });
+  const { fixture, readJournal, objects } = await scenario(t, { failRemove: true });
   await fixture.prepare();
   await assert.rejects(fixture.cleanup(), /recovery journal retained/);
-  const remaining = JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources;
+  const remaining = (await readJournal()).resources;
   assert.equal(remaining.length, 1);
   assert.equal(objects.size, 1);
   await fixture.cleanup();
   assert.equal(objects.size, 0);
-  assert.deepEqual(
-    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources,
-    [],
-  );
+  assert.deepEqual((await readJournal()).resources, []);
 });
 
 test("provider retains the registry recovery obligation until removal succeeds", async (t) => {
-  const { fixture, directory, objects } = await scenario(t, {
+  const { fixture, readJournal, objects } = await scenario(t, {
     failRemove: "-registry",
   });
   await fixture.prepare();
   await assert.rejects(fixture.cleanup(), /recovery journal retained/);
-  const remaining = JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources;
+  const remaining = (await readJournal()).resources;
   assert.equal(remaining.length, 1);
   assert.equal(remaining[0].kind, "container");
   assert.match(remaining[0].name, /-registry$/);
   assert.equal(objects.size, 1);
   await fixture.cleanup();
   assert.equal(objects.size, 0);
-  assert.deepEqual(
-    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources,
-    [],
-  );
+  assert.deepEqual((await readJournal()).resources, []);
 });
 
 test("provider refuses changed ownership and unrelated cluster routing", async (t) => {
@@ -379,14 +369,21 @@ test("provider DNS configuration failure stops before readiness or Agent use", a
 });
 
 test("provider retains ownership obligations when the engine cannot be inspected", async (t) => {
-  const { fixture, directory, objects, faults } = await scenario(t);
+  const { fixture, readJournal, objects, faults } = await scenario(t);
   await fixture.prepare();
-  const before = JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
-  faults.inspect = true;
-  await assert.rejects(fixture.cleanup(), /recovery journal retained/);
-  assert.deepEqual(JSON.parse(await readFile(join(directory, "resources.json"), "utf8")), before);
-  assert.equal(objects.size, before.resources.length);
-  faults.inspect = false;
+  const before = await readJournal();
+  for (const diagnostic of [
+    () => "permission denied while connecting to the Docker API",
+    (kind, name) => `Error response from daemon: No such ${kind}: ${name}-other`,
+    (kind, name) =>
+      `Error response from daemon: permission denied; last error: No such ${kind}: ${name}`,
+  ]) {
+    faults.inspectError = diagnostic;
+    await assert.rejects(fixture.cleanup(), /recovery journal retained/);
+    assert.deepEqual(await readJournal(), before);
+    assert.equal(objects.size, before.resources.length);
+  }
+  faults.inspectError = undefined;
   await fixture.cleanup();
   assert.equal(objects.size, 0);
 });
@@ -395,7 +392,7 @@ test("cleanup drains admitted image builds before reconciling their reservations
   const started = Promise.withResolvers();
   const release = Promise.withResolvers();
   const signals = [];
-  const { fixture, objects, directory, calls } = await scenario(t, {
+  const { fixture, objects, directory, readJournal, calls } = await scenario(t, {
     beforeBuild: async ({ options }) => {
       signals.push(options.signal);
       if (signals.length === 2) {
@@ -410,7 +407,7 @@ test("cleanup drains admitted image builds before reconciling their reservations
   await started.promise;
   const cleaning = fixture.cleanup().catch((error) => error);
   const early = await Promise.race([cleaning.then(() => true), delay(40).then(() => false)]);
-  const reserved = JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
+  const reserved = await readJournal();
   release.resolve();
   await preparing;
   const cleanupError = await cleaning;
@@ -428,7 +425,7 @@ test("cleanup drains admitted image builds before reconciling their reservations
   );
   assert.match(cleanupError.message, /recovery journal retained/);
   assert.equal(objects.size, 1, "only the failed registry removal remains");
-  const remaining = JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
+  const remaining = await readJournal();
   assert.equal(remaining.resources.length, 1);
   const creates = calls.filter(({ args }) => args[0] === "run" || args[0] === "buildx").length;
   await fixture.cleanup();
@@ -444,7 +441,7 @@ test("cleanup drains admitted image builds before reconciling their reservations
 test("cancelled creation remains journaled until its late outcome can be reconciled", async (t) => {
   const controller = new AbortController();
   let late;
-  const { fixture, objects, directory, calls } = await scenario(t, {
+  const { fixture, objects, directory, readJournal, calls } = await scenario(t, {
     signal: controller.signal,
     beforeCreate: async (creation) => {
       late = creation;
@@ -454,7 +451,7 @@ test("cancelled creation remains journaled until its late outcome can be reconci
   });
   await assert.rejects(fixture.prepare(), /response lost/);
   await assert.rejects(fixture.cleanup(), /recovery journal retained/);
-  const journal = JSON.parse(await readFile(join(directory, "resources.json"), "utf8"));
+  const journal = await readJournal();
   assert.deepEqual(journal.resources, [{ kind: "container", name: late.name, uncertain: true }]);
   const count = calls.length;
   await assert.rejects(fixture.route(directory), { name: "AbortError" });
@@ -465,10 +462,7 @@ test("cancelled creation remains journaled until its late outcome can be reconci
   objects.set("unrelated", { Id: "unrelated", Config: { Labels: {} } });
   await fixture.cleanup();
   assert.deepEqual([...objects.keys()], ["unrelated"]);
-  assert.deepEqual(
-    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources,
-    [],
-  );
+  assert.deepEqual((await readJournal()).resources, []);
   assert.equal(calls.filter(({ args }) => args[0] === "run").length, 1);
 });
 
@@ -551,7 +545,7 @@ test("deliberate cancellation", { timeout: 500 }, async (t) => {
 });
 
 test("cleanup retries journal persistence without replaying completed removals", async (t) => {
-  const { fixture, directory, objects, calls } = await scenario(t);
+  const { fixture, directory, readJournal, objects, calls } = await scenario(t);
   await fixture.prepare();
   const journal = await readFile(join(directory, "resources.json"), "utf8");
   const temporary = join(directory, "resources.json.tmp");
@@ -563,15 +557,12 @@ test("cleanup retries journal persistence without replaying completed removals",
   await rm(temporary, { recursive: true });
   await fixture.cleanup();
   assert.equal(calls.filter(({ args }) => args[1] === "rm").length, removals);
-  assert.deepEqual(
-    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources,
-    [],
-  );
+  assert.deepEqual((await readJournal()).resources, []);
 });
 
 test("launcher case keeps recovery files after provider cleanup failure and permits cleanup retry", async (t) => {
   const { runDevUpModelProviderCase } = await import("../helpers/dev-up-model-provider.mjs");
-  const { root, run, directory, environment, objects } = await scenario(t, {
+  const { root, run, readJournal, environment, objects } = await scenario(t, {
     failRemove: "-registry",
   });
   environment.OCC_DEVELOPMENT_STATE_DIRECTORY = join(root, "state");
@@ -592,10 +583,7 @@ test("launcher case keeps recovery files after provider cleanup failure and perm
   await assert.rejects(cleanup(), /recovery journal retained/);
   assert.equal(existsSync(root), true);
   assert.equal(objects.size, 1);
-  assert.equal(
-    JSON.parse(await readFile(join(directory, "resources.json"), "utf8")).resources.length,
-    1,
-  );
+  assert.equal((await readJournal()).resources.length, 1);
   await cleanup();
   assert.equal(objects.size, 0);
   assert.equal(existsSync(root), false);

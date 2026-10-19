@@ -82,6 +82,11 @@ var commandPermissions = map[string]commandPermission{
 	"agent credential-withdrawal get":     {[]string{"getAgentCredentialWithdrawal"}, []string{"agent.read"}, ""},
 	"agent runtime":                       {[]string{"getAgentDeploymentRuntime"}, []string{"agent.operate", "agent.read", "agent_revision.read"}, ""},
 	"agent logs":                          {[]string{"getAgentDeploymentRuntimeLogs"}, []string{"agent.read_logs", "agent.read"}, "(or administer)"},
+	"agent policy get":                    {[]string{"getAgentSandboxPolicy"}, []string{"agent.read", "sandbox_policy.read"}, ""},
+	"agent policy update":                 {[]string{"updateAgentSandboxPolicy"}, []string{"agent.manage_policy", "sandbox_policy.update"}, ""},
+	"agent policy apply":                  {[]string{"applyAgentSandboxPolicy"}, []string{"agent.manage_policy", "sandbox_policy.update"}, ""},
+	"agent policy editing":                {[]string{"TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing"}, []string{"agent.administer", "installation.administer"}, ""},
+	"agent policy recommendations":        {[]string{"getAgentSandboxRecommendations"}, []string{"agent.read", "sandbox_policy.read"}, ""},
 }
 
 // permissionKinds names OCC resource kinds as the console and docs do.
@@ -95,6 +100,7 @@ var permissionKinds = map[string]string{
 	"preset":            "Preset",
 	"credential_source": "credential source",
 	"service_account":   "ServiceAccount",
+	"sandbox_policy":    "SandboxPolicy",
 }
 
 // OCC's two caller-scope refusals. Other 403 messages name their own cause
@@ -119,7 +125,7 @@ func (app *application) refusalHint(command *cobra.Command, path string, err err
 	}
 	switch apiErr.Message {
 	case admittedNamespaceRefusal:
-		namespace := occclient.ServiceKeyNamespace(app.serviceKeyFile)
+		namespace := apiErr.ServiceKeyNamespace
 		if !keyNamespacePattern.MatchString(namespace) {
 			return "hint: this service key is scoped to one Namespace; it cannot reach another Namespace or Installation-level commands such as \"occ namespace list\". Pass that Namespace's ID with --namespace (or OCC_NAMESPACE), read it with \"occ namespace get ID\", or use an Installation-scoped key."
 		}

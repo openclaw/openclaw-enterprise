@@ -414,7 +414,12 @@ test(
     });
     const deadline = await queue.findWork(invalidKey);
     assert.equal(deadline.state, "failed_permanent");
-    assert.deepEqual(deadline.resultData, { timeoutMs: 900_000, runtimeFailure });
+    // A check and code outside the runtime's vocabulary are recorded as UNRECOGNIZED, never as
+    // served: a provider-owned Harness answers from inside its Sandbox (finding 1660).
+    assert.deepEqual(deadline.resultData, {
+      timeoutMs: 900_000,
+      runtimeFailure: { ...runtimeFailure, check: "UNRECOGNIZED", code: "UNRECOGNIZED" },
+    });
     // A permanent failure ends the work item on its first attempt; its evidence says so.
     const deadlineEvidence = await pool.query(
       `SELECT details->'final' AS final FROM occ.audit_events

@@ -197,21 +197,22 @@ failure that clears without a change to the revision is deferred like
 convergence instead: the Agent Gateway route refusing or dropping the worker's
 connection while it converges (`AGENT_GATEWAY_UNAVAILABLE`), a Kubernetes API
 request that timed out, never reached the API server, or got 429 or 5xx
-(`KUBERNETES_API_UNAVAILABLE`), or an OpenShell gateway refusing new requests at
-its durable request admission limit (`SANDBOX_ADMISSION_LIMIT_REACHED`). Each such
+(`KUBERNETES_API_UNAVAILABLE`), an OpenShell gateway refusing new requests at
+its durable request admission limit (`SANDBOX_ADMISSION_LIMIT_REACHED`), or not
+answering a Harness status read (`SANDBOX_GATEWAY_UNAVAILABLE`). Each such
 pass records that code, and `worker.completed` names the `dependency` and its
 `cause`. If the dependency is still failing at the convergence deadline, the
 deployment fails with that code rather than `CONVERGENCE_DEADLINE_EXCEEDED`.
 Pending convergence has its own limit: `OCC_WORKER_CONVERGENCE_TIMEOUT_MS`,
-measured from the original operation creation time on PostgreSQL's clock, so
+measured from operation creation on PostgreSQL's clock, so
 controller clock skew cannot move it. Exceeding it fails the operation with
-`CONVERGENCE_DEADLINE_EXCEEDED`. A runtime that reports a deterministic
-credential rejection fails the deployment earlier with
+`CONVERGENCE_DEADLINE_EXCEEDED`. A runtime reporting a deterministic
+credential rejection fails deployment earlier with
 `RUNTIME_AUTHENTICATION_FAILED`, and one whose startup model probe ran out of
-CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures a runtime holds
-until restart fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
-`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, and
-`RUNTIME_STARTUP_FAILED`. A dedicated gateway that refuses its own in-Pod CLI as
+CPU at its limit with `RUNTIME_CPU_STARVED`. Other failures that need a new
+version fail it early too: `RUNTIME_MODEL_PROBE_TIMEOUT`,
+`RUNTIME_MODEL_PROBE_FAILED`, `RUNTIME_LOGIN_FAILED`, `RUNTIME_STARTUP_FAILED`,
+and a workspace setup refusal (`WORKSPACE_SETUP_REFUSED`). A dedicated gateway that refuses its own in-Pod CLI as
 unauthorized fails activation at once with `AGENT_GATEWAY_UNAUTHORIZED`. A Sandbox Driver that cannot run
 the revision fails it on the first attempt with its
 [closed code](../drivers/sandbox.md), such as
@@ -239,8 +240,7 @@ continues after worker restart and does not reopen the failed deployment. The
 selected Compute Driver owns the external failure condition and resource cleanup.
 It may supply bounded preparation evidence through the public contracts type;
 OCC validates and persists it before deleting resources. Deployment status exposes
-cleanup separately and retains failure evidence after cleanup and restart;
-see [Kubernetes OAuth bootstrap](../drivers/kubernetes-compute/codex-oauth-storage.md#bounded-bootstrap-job).
+cleanup separately and retains failure evidence after cleanup and restart.
 
 Replacement behavior depends on the Harness. Dedicated Codex prepares its
 revision-specific workload before the worker switches the Agent Service, but the

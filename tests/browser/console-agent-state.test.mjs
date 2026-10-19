@@ -347,6 +347,150 @@ test("Diagnostics explain UNAVAILABLE checks and point at the recorded failure",
     .waitFor();
 });
 
+// A fast answer painted "Waiting for diagnostic results…" for a frame and moved focus to it and
+// back (finding 1714). The waiting line, the disabled button and the focus move now wait 250 ms.
+test("A fast diagnostics answer neither shows the waiting line nor moves focus", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Diagnostics fast", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Fast Agent", nativeValues("v1"));
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const deploymentPath = `/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
+  const { page } = await newPage(t, fixture);
+  await page.route(`${fixture.origin}${deploymentPath}`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: deploymentBody(namespace.id, agent.id, revision.id, "succeeded"),
+    }),
+  );
+  const answer = (observedAt) => ({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: {
+        revisionId: revision.id,
+        observedAt,
+        checks: [
+          {
+            component: "slack",
+            check: "authentication",
+            state: "succeeded",
+            checkedAt: observedAt,
+          },
+        ],
+      },
+      meta: { requestId: "req_test_diagnostics_fast" },
+    }),
+  });
+  const holdRun = (observedAt) =>
+    holdRequests(t, page, `${fixture.origin}${deploymentPath}/diagnostics`, {
+      method: "POST",
+      once: true,
+      fulfill: answer(observedAt),
+    });
+  await page.clock.install({ time: new Date("2026-09-30T12:00:00Z") });
+  await page.clock.pauseAt(new Date("2026-09-30T12:00:01Z"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  const observations = page.locator(".version-diagnostics");
+  const run = observations.getByRole("button", { name: "Run diagnostics for this version" });
+  const waiting = observations.getByText("Waiting for diagnostic results…");
+  await run.waitFor();
+  // Every waiting line added and every element focused inside the panel, painted or not.
+  await page.evaluate(() => {
+    const panel = globalThis.document.querySelector(".version-diagnostics");
+    globalThis.diagnosticsSeen = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node.textContent.includes("Waiting for diagnostic results")) {
+            globalThis.diagnosticsSeen.push("waiting line");
+          } else if (node.textContent.startsWith("Observed ")) {
+            globalThis.diagnosticsSeen.push("result");
+          }
+        }
+      }
+    }).observe(panel, { childList: true, subtree: true });
+    panel.addEventListener("focusin", (event) =>
+      globalThis.diagnosticsSeen.push(`focus ${event.target.localName}`),
+    );
+  });
+  const seen = () => page.evaluate(() => globalThis.diagnosticsSeen.splice(0));
+  const focused = (locator) =>
+    locator.evaluate((node) => node === globalThis.document.activeElement);
+  const description = () =>
+    run.evaluate(
+      (node) =>
+        globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
+    );
+
+  await run.focus();
+  assert.deepEqual(await seen(), ["focus button"]);
+  // The last run repeats the result shown: it is added anew, so it is announced again.
+  for (const [observedAt, slow] of [
+    ["2026-09-30T12:00:02.000Z", false],
+    ["2026-09-30T12:00:04.000Z", false],
+    ["2026-09-30T12:00:06.000Z", true],
+    ["2026-09-30T12:00:06.000Z", false],
+  ]) {
+    const held = await holdRun(observedAt);
+    await page.keyboard.press("Enter");
+    try {
+      await held.requested;
+      await page.clock.runFor(249);
+      assert.equal(await waiting.count(), 0);
+      assert.equal(await run.isEnabled(), true);
+      assert.equal(await focused(run), true);
+      if (slow) {
+        // Past the delay the run behaves as before: the line shows and takes focus from the
+        // disabled button.
+        await page.clock.runFor(1);
+        await waiting.waitFor();
+        assert.equal(await focused(waiting), true);
+        assert.equal(await run.isDisabled(), true);
+        // Focus events land at once, mutation records a microtask later.
+        assert.deepEqual((await seen()).sort(), ["focus p", "waiting line"]);
+      }
+    } finally {
+      held.release();
+    }
+    const shown = await page.evaluate((value) => new Date(value).toLocaleString(), observedAt);
+    const observed = observations.getByText(`Observed ${shown}`);
+    await observed.waitFor();
+    assert.equal(await focused(run), true);
+    assert.equal(await description(), await observed.textContent());
+    assert.deepEqual((await seen()).sort(), slow ? ["focus button", "result"] : ["result"]);
+  }
+
+  // A reader who leaves the button before the line shows stays where they went, even on the page
+  // itself after clicking text outside the panel (maintainer review).
+  const onPage = () =>
+    page.evaluate(() => globalThis.document.activeElement === globalThis.document.body);
+  const held = await holdRun("2026-09-30T12:00:08.000Z");
+  await run.focus();
+  await page.keyboard.press("Enter");
+  try {
+    await held.requested;
+    await page.getByRole("heading", { name: "Version v1" }).click();
+    assert.equal(await onPage(), true);
+    await page.clock.runFor(250);
+    await waiting.waitFor();
+    assert.equal(await onPage(), true);
+  } finally {
+    held.release();
+  }
+  const shown = await page.evaluate(
+    (value) => new Date(value).toLocaleString(),
+    "2026-09-30T12:00:08.000Z",
+  );
+  await observations.getByText(`Observed ${shown}`).waitFor();
+  assert.equal(await onPage(), true);
+});
+
 test("Diagnostics explain a missing Slack channel and keep the recorded failure in view", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -705,6 +849,30 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
       nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
       cause: "The model provider check reported a failure (error-event)",
     },
+    // Finding 1600: a Codex check retried once ends its detail -attempt2. The advice
+    // follows the token without the suffix, and the text says the retry also failed.
+    ...[
+      [
+        "rate_limit-attempt2",
+        "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version. The check was retried once and failed again.",
+      ],
+      [
+        "turn-failed-attempt2",
+        "The model provider check reported a failure (turn-failed). The check was retried once and failed again.",
+      ],
+    ].map(([detail, cause]) => ({
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED", {
+        runtimeFailure: {
+          component: "agent",
+          check: "model-probe",
+          checkedAt: "2026-10-03T08:00:00.000Z",
+          code: "MODEL_PROBE_FAILED",
+          cause: { kind: "PROBE_STATUS", detail },
+        },
+      }),
+      nextStep: /^The startup model check failed for a reason other than a rejected credential, /,
+      cause,
+    })),
     {
       error: persistedDeploymentError("RUNTIME_MODEL_PROBE_TIMEOUT"),
       nextStep:
@@ -1004,7 +1172,7 @@ test("Deployment activity appears once with its recorded status, not as an empty
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   await status.requested;
 
-  // The loading placeholder stays: no empty panel (disabled Refreshing... and "has not
+  // The loading placeholder stays: no empty panel (disabled Refreshing… and "has not
   // loaded") pushes the sharing panel and version tabs down before the status arrives.
   const activity = page.locator(".deployment-status");
   assert.equal(await activity.count(), 1);

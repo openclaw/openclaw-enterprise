@@ -822,7 +822,7 @@ func (app *application) agentCommand() *cobra.Command {
 				if command.Flags().Changed("limit") {
 					limit = fmt.Sprintf(" --limit %d", revisionLimit)
 				}
-				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ agent revisions %s%s --cursor %s\"", args[0], limit, page.NextCursor)
+				noticef(command.ErrOrStderr(), "notice: older revisions may exist; run \"occ --namespace %s agent revisions %s%s --cursor %s\"", namespace, args[0], limit, page.NextCursor)
 			}
 			return nil
 		},
@@ -874,7 +874,7 @@ func (app *application) agentCommand() *cobra.Command {
 			if err := app.printAgent(agent, false); err != nil {
 				return err
 			}
-			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ agent deploy %s\" to start the Agent again\n", args[0])
+			fmt.Fprintf(command.ErrOrStderr(), "notice: stop requested; run \"occ --namespace %s agent deploy %s\" to start the Agent again\n", namespace, args[0])
 			return nil
 		},
 	}
@@ -909,6 +909,7 @@ func (app *application) agentCommand() *cobra.Command {
 		app.agentCredentialWithdrawalCommand(),
 		app.agentRuntimeCommand(),
 		app.agentLogsCommand(),
+		app.agentPolicyCommand(),
 	)
 	return command
 }
@@ -1187,16 +1188,17 @@ func (app *application) validateOptions(command *cobra.Command) error {
 // key; Namespace commands refuse it), so neither is listed. The other string
 // flags refuse an empty value themselves.
 var emptyFlagValues = map[string]string{
-	"file":              "a JSON document",
-	"key-output":        "a key file path",
-	"level":             "error, warn, info or debug",
-	"out":               "a key file path",
-	"pod":               "a Pod",
-	"revision":          "a revision ID",
-	"service-key-file":  "a bootstrap or service-key response file",
-	"service-principal": "a ServicePrincipal ID",
-	"source":            "gateway, agent or sandbox",
-	"url":               "the OCC endpoint URL",
+	"file":                        "a JSON document",
+	"key-output":                  "a key file path",
+	"sandbox-network-policy-file": "a Sandbox network policy file",
+	"level":                       "error, warn, info or debug",
+	"out":                         "a key file path",
+	"pod":                         "a Pod",
+	"revision":                    "a revision ID",
+	"service-key-file":            "a bootstrap or service-key response file",
+	"service-principal":           "a ServicePrincipal ID",
+	"source":                      "gateway, agent or sandbox",
+	"url":                         "the OCC endpoint URL",
 }
 
 // refuseEmptyFlags refuses an explicitly empty value for a flag in
@@ -1255,7 +1257,7 @@ func (app *application) requiredNamespace() (string, error) {
 	if app.namespace == "" {
 		return "", fmt.Errorf("set OCC_NAMESPACE or pass --namespace")
 	}
-	if err := namespaceIDArg.check(app.namespace); err != nil {
+	if err := namespaceIDArg.check(app.namespace, ""); err != nil {
 		return "", fmt.Errorf("OCC_NAMESPACE or --namespace: %w", err)
 	}
 	return app.namespace, nil

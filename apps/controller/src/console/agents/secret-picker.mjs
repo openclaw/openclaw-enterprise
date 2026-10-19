@@ -1,4 +1,12 @@
-import { element, dismissOnBackdrop } from "../dom.mjs";
+import {
+  dismissOnBackdrop,
+  element,
+  field as formField,
+  setFieldError,
+  setStatusTone,
+  statusBlock,
+  validateFields,
+} from "../dom.mjs";
 import { message, namespacePath } from "./list.mjs";
 
 export function secretIdForBinding(binding) {
@@ -384,6 +392,10 @@ export function createSecretReferenceField({
         ? `${label} is required.`
         : "",
     );
+    // A binding is chosen without an input event; its "is required" error goes with it.
+    if (input.validity.valid) {
+      setFieldError(input, "");
+    }
     if (manuallyDisabled) {
       closeListbox({ restoreSelection: true });
     }
@@ -395,7 +407,7 @@ export function createSecretReferenceField({
     }
     input.disabled = true;
     closeListbox({ restoreSelection: false });
-    status.className = "hint";
+    setStatusTone(status, null);
     try {
       await onSecretSelected(secret);
       if (!secrets.some((item) => item.id === secret.id)) {
@@ -433,13 +445,14 @@ export function createSecretReferenceField({
 
   function openCreateSecretDialog() {
     const dialog = element("dialog", {
-      className: "channel-dialog credential-secret-dialog",
+      className: "dialog credential-secret-dialog",
       "aria-label": createDialogTitle ?? `Create ${label} Secret`,
     });
     const name = element("input", {
       id: `create-${id}-name`,
       type: "text",
       required: "",
+      "data-trim": "",
       autocomplete: "off",
       value: createSecretName(),
     });
@@ -449,9 +462,13 @@ export function createSecretReferenceField({
       required: "",
       autocomplete: "off",
     });
-    const feedback = element("p", { className: "error", role: "alert" });
+    const feedback = statusBlock("danger", null, null);
     const cancel = element("button", { type: "button" }, "Cancel");
-    const submit = element("button", { type: "submit", className: "primary" }, "Create Secret");
+    const submit = element(
+      "button",
+      { type: "submit", className: "button button--primary" },
+      "Create Secret",
+    );
     let creating = false;
     let outcomeUnknown = false;
     const fixedKey = createFixedKey
@@ -463,7 +480,7 @@ export function createSecretReferenceField({
       : null;
     const form = element(
       "form",
-      { method: "dialog", className: "channel-drawer-form" },
+      { method: "dialog", className: "channel-drawer-form", novalidate: "" },
       element(
         "div",
         { className: "channel-drawer-head" },
@@ -471,34 +488,27 @@ export function createSecretReferenceField({
         element("button", { type: "button" }, "Close"),
       ),
       fixedKey
-        ? element(
-            "div",
-            { className: "form-field" },
-            element("label", { for: fixedKey.id }, createFixedKey.label),
-            fixedKey,
-            element("p", { className: "hint" }, createFixedKey.hint),
-          )
+        ? formField({
+            label: createFixedKey.label,
+            control: fixedKey,
+            help: createFixedKey.hint,
+            className: "form-field",
+          })
         : null,
-      element(
-        "div",
-        { className: "form-field" },
-        element("label", { for: name.id }, "Name"),
-        name,
-        element("p", { className: "hint" }, "Unique within this Namespace."),
-      ),
-      element(
-        "div",
-        { className: "form-field" },
-        element("label", { for: value.id }, "Value"),
-        value,
-        element(
-          "p",
-          { className: "hint" },
-          "Stored as a Namespace Secret. The value is never read back.",
-        ),
-      ),
+      formField({
+        label: "Name",
+        control: name,
+        help: "Unique within this Namespace.",
+        className: "form-field",
+      }),
+      formField({
+        label: "Value",
+        control: value,
+        help: "Stored as a Namespace Secret. The value is never read back.",
+        className: "form-field",
+      }),
       feedback,
-      element("div", { className: "form-actions" }, cancel, submit),
+      element("div", { className: "dialog-actions" }, cancel, submit),
     );
     const dismiss = () => {
       suppressFocusOpen = true;
@@ -518,18 +528,14 @@ export function createSecretReferenceField({
     };
     form.querySelector(".channel-drawer-head button").addEventListener("click", close);
     cancel.addEventListener("click", close);
-    name.addEventListener("input", () => name.setCustomValidity(""));
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (creating || outcomeUnknown || !form.reportValidity()) {
+      // The console checks the fields, so no browser bubble shows; a Name of only spaces is
+      // missing too (UX plan C3).
+      if (creating || outcomeUnknown || !validateFields([...form.elements])) {
         return;
       }
       const secretName = name.value.trim();
-      if (!secretName) {
-        name.setCustomValidity("Name is required.");
-        form.reportValidity();
-        return;
-      }
       creating = true;
       submit.disabled = true;
       cancel.disabled = true;
@@ -621,7 +627,7 @@ export function createSecretReferenceField({
         secrets.splice(0, secrets.length, ...listed, ...added);
         setSecretOptions({ preserveSearch: true });
         if (!staged) {
-          status.className = "hint";
+          setStatusTone(status, null);
           status.textContent = secrets.length
             ? "Choose an existing Secret or create a new one."
             : "No readable Secrets yet. Create a new Secret to bind this field.";
@@ -632,7 +638,7 @@ export function createSecretReferenceField({
         if (!isCurrent()) {
           return;
         }
-        status.className = "error";
+        setStatusTone(status, "danger");
         status.textContent =
           error.status === 401
             ? "Your session has expired."

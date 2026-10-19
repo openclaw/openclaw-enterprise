@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { isIP } from "node:net";
+import { checkServerIdentity } from "node:tls";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import test from "node:test";
@@ -252,6 +254,22 @@ test("sandbox ingress uses a separate listener outside OCE cookie scope", toolin
     "public-ingress",
   );
   assert.deepEqual(publicRule.ports, [{ protocol: "TCP", port: 8443 }]);
+  await assert.rejects(
+    render({ ...sandboxValues, "gatewayRouting.sandbox.domain": "127.1" }),
+    /gatewayRouting\.sandbox\.domain must be a DNS hostname usable after an Agent label/,
+  );
+  await assert.rejects(
+    render({ ...sandboxValues, "gatewayRouting.sandbox.domain": "api.0x10" }),
+    /gatewayRouting\.sandbox\.domain must be a DNS hostname usable after an Agent label/,
+  );
+  await assert.rejects(
+    render({ ...sandboxValues, "gatewayRouting.sandbox.domain": "api.123" }),
+    /gatewayRouting\.sandbox\.domain must be .*Agent label; use a DNS suffix/,
+  );
+  await assert.rejects(
+    render({ ...sandboxValues, "gatewayRouting.sandbox.domain": "999.1.2.3" }),
+    /gatewayRouting\.sandbox\.domain must be a DNS hostname usable after an Agent label/,
+  );
   for (const domain of ["example.invalid", "preview.example.invalid"]) {
     await assert.rejects(
       render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain }),
@@ -892,6 +910,20 @@ test(
     );
     const installationPath = join(directory, "installation.yaml");
     const invalid = [
+      "192.168.1",
+      "2130706433",
+      "127.1",
+      "0177.0.0.1",
+      "0x7f000001",
+      "0x7f.0.0.1",
+      "0x",
+      "0x.0.0.1",
+      "1.2.3.4.5",
+      "0.0.0.08",
+      "api.0x10",
+      "api.123",
+      "999.1.2.3",
+      "example.0x10",
       "Bad_Host",
       "proxy.example.test:443",
       "https://proxy.example.test",
@@ -900,6 +932,11 @@ test(
       `${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(62)}`,
     ];
     const valid = [
+      "192.168.1.1",
+      "192.0.2.1",
+      "0.0.0.0",
+      "255.255.255.255",
+      "0xdead.gateway.example.test",
       "proxy.example.test",
       `${"a".repeat(63)}.test`,
       `${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(63)}.${"a".repeat(61)}`,
@@ -919,27 +956,39 @@ test(
           mode: "production",
           environment: { OCC_CONFIG_PATH: installationPath },
         });
+      // Helm --set reads a bare integer or 0x hex as a number. Pass those spellings
+      // with --set-string so the chart sees the hostname the Installation stores.
+      const numericHostname =
+        typeof hostname === "string" && /^(?:0x[0-9a-f]*|\d+)$/.test(hostname);
       const helmValues =
-        hostname === undefined
+        hostname === undefined || numericHostname
           ? gatewayRoutingValues
           : { ...gatewayRoutingValues, "gatewayRouting.hostname": hostname };
+      const renderHostname = () =>
+        numericHostname
+          ? render(helmValues, { strings: { "gatewayRouting.hostname": hostname } })
+          : render(helmValues);
       if (invalid.includes(hostname)) {
         await assert.rejects(
           load(),
-          /Gateway routing hostname must be a DNS hostname without a port or path/,
+          hostname === "api.123"
+            ? /Gateway routing hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/
+            : /Gateway routing hostname must be a DNS hostname without a port or path/,
         );
         await assert.rejects(
-          render(helmValues),
+          renderHostname(),
           ({ stderr }) =>
             stderr.includes(
-              "gatewayRouting.hostname must be a DNS hostname without a port or path",
+              hostname === "api.123"
+                ? "gatewayRouting.hostname must be a DNS hostname without a port or path. A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers"
+                : "gatewayRouting.hostname must be a DNS hostname without a port or path",
             ),
           hostname,
         );
         continue;
       }
       const loaded = await load();
-      const objects = await resources((await render(helmValues)).stdout);
+      const objects = await resources((await renderHostname()).stdout);
       const gateway = objects.find((object) => object.kind === "Gateway");
       const envoy = objects.find((object) => object.kind === "EnvoyProxy");
       const certificate = objects.find(
@@ -954,7 +1003,39 @@ test(
         expected,
       );
       assert.deepEqual(certificate.spec.dnsNames, [expected]);
+      // Admission preserves canonical IPv4 syntax, but the standard chart requests
+      // DNS SANs, not IP SANs. A rendered address is not a usable TLS endpoint.
+      const identityError = checkServerIdentity(expected, {
+        subjectaltname: certificate.spec.dnsNames.map((name) => `DNS:${name}`).join(", "),
+      });
+      if (isIP(expected) === 4) {
+        assert.equal(identityError?.code, "ERR_TLS_CERT_ALTNAME_INVALID");
+      } else {
+        assert.equal(identityError, undefined);
+      }
       assert.equal(routing.hostname, hostname);
+    }
+    // Direct IPv4 passes address admission only; an Agent-prefixed suffix cannot be a URL host.
+    for (const domain of ["192.0.2.1", "previews.example.test", "0xdead.previews.example.test"]) {
+      const configuration = structuredClone(example);
+      configuration.drivers.compute.configuration.gatewayRouting.sandbox = { domain };
+      await writeFile(installationPath, JSON.stringify(configuration));
+      const load = () =>
+        loadInstallationConfiguration({
+          mode: "production",
+          environment: { OCC_CONFIG_PATH: installationPath },
+        });
+      const rendered = () => render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain });
+      if (domain === "192.0.2.1") {
+        await assert.rejects(load(), /Sandbox domain must be a DNS hostname.*Agent label/);
+        await assert.rejects(
+          rendered(),
+          /gatewayRouting\.sandbox\.domain must be a DNS hostname.*Agent label/,
+        );
+      } else {
+        await load();
+        await rendered();
+      }
     }
   },
 );
@@ -3003,11 +3084,31 @@ test("database CA mounts stay distinct from active production volume mounts", to
     );
     assert.ok(paths.size > 0);
     for (const mountPath of paths) {
-      await assert.rejects(
-        render({ ...features, ...databaseCaValues, "database.caMountPath": mountPath }),
-        /database.caMountPath.*distinct/,
+      // Linux kubelet/runtime destinations alias these spellings. The CA must not
+      // hide an active volume after admission accepts the distinct raw strings.
+      for (const alias of [
         mountPath,
-      );
+        mountPath.slice(1),
+        `${mountPath}/`,
+        `${mountPath}/.`,
+        `${mountPath}/../${mountPath.split("/").at(-1)}`,
+        // The controller image links /var/run to /run, and the runtime follows it.
+        ...(mountPath.startsWith("/run/") ? [`/var${mountPath}`] : []),
+        ...(mountPath.startsWith("/var/run/") ? [mountPath.slice("/var".length)] : []),
+        // It links /var/lock to /run/lock too, so ".." from /var/lock lands in /run, not /var.
+        ...(mountPath.startsWith("/run/")
+          ? [
+              `/var/lock/..${mountPath.slice("/run".length)}`,
+              `/run/lock/..${mountPath.slice("/run".length)}`,
+            ]
+          : []),
+      ]) {
+        await assert.rejects(
+          render({ ...features, ...databaseCaValues, "database.caMountPath": alias }),
+          /database.caMountPath.*distinct/,
+          alias,
+        );
+      }
     }
   }
   // Paths reserved by optional features remain available when those features are disabled.
@@ -3016,11 +3117,15 @@ test("database CA mounts stay distinct from active production volume mounts", to
     "/etc/openclaw/repository-registry",
     "/etc/openclaw/repository-ca",
     "/var/run/secrets/kubernetes.io/serviceaccount",
+    "/run/secrets/kubernetes.io/serviceaccount",
     "/run/openclaw/repository-control",
+    "/var/run/openclaw/repository-control",
     "/etc/openclaw/gateway-api-key",
     "/etc/openclaw/gateway-ca",
     "/etc/openclaw/chatgpt",
     "/custom/database-ca",
+    "custom/database-ca",
+    "/custom/./database-ca",
   ]) {
     await render({ ...databaseCaValues, "database.caMountPath": mountPath });
   }
@@ -5346,7 +5451,24 @@ test("execution chart refuses a harness hostname Compute refuses", tooling, asyn
       hostname,
     );
   }
-  for (const hostname of ["123", "agents.example.invalid"]) {
+  for (const hostname of [
+    "123",
+    "127.1",
+    "0x",
+    "0x.0.0.1",
+    "1.2.3.4.5",
+    "api.0x10",
+    "api.123",
+    "999.1.2.3",
+    "example.0x10",
+  ]) {
+    await assert.rejects(
+      template("--set-string", `routing.hostname=${hostname}`),
+      /routing\.hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/,
+      hostname,
+    );
+  }
+  for (const hostname of ["agents.example.invalid", "0xdead.gateway.example.test"]) {
     const { stdout } = await template("--set-string", `routing.hostname=${hostname}`);
     const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
     assert.equal(gateway?.spec.listeners[0].hostname, hostname);

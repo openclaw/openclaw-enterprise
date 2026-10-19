@@ -11,14 +11,151 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
   detailUrl,
+  fileBrowser,
   login,
   nativeValues,
   newPage,
   pathRequests,
   selectSecret,
+  statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import { enterManualModel, openAdvancedSettings } from "./console-agents-test-support.mjs";
+
+// Every test opens its own context in one Chromium per file.
+const browser = fileBrowser();
+
+test("Plugin details refresh preserves the user's current keyboard focus", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  for (const destination of ["Beta", "Search plugins"]) {
+    const { page } = await newPage(t, fixture, { browser });
+    const requested = Promise.withResolvers();
+    const released = Promise.withResolvers();
+    t.after(() => released.resolve());
+    await page.exposeFunction("waitForPluginDetails", () => {
+      requested.resolve();
+      return released.promise;
+    });
+    await login(page, fixture, "/console");
+    // Exercise the served Console component with a held synthetic catalog update.
+    await page.evaluate(async () => {
+      const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
+      const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
+      const beta = { id: "beta", name: "Beta", tools: [] };
+      const catalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
+      const input = globalThis.document.createElement("textarea");
+      input.id = "plugin-focus-selections";
+      input.value = "{}";
+      const fields = createPluginFields({
+        input,
+        catalog,
+        async onLoadTools() {
+          await globalThis.waitForPluginDetails();
+          fields.setCatalog({ ...catalog, entries: [{ ...alpha, tools: [] }, beta] });
+        },
+      });
+      globalThis.document.body.append(fields.section);
+    });
+    await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+    const alpha = dialog.getByRole("button", { name: "Alpha", exact: true });
+    const beta = dialog.getByRole("button", { name: "Beta", exact: true });
+    const search = dialog.getByLabel("Search plugins");
+    await alpha.click();
+    await requested.promise;
+    await alpha.focus();
+    await page.keyboard.press("Tab");
+    const isFocused = (node) => node === node.ownerDocument.activeElement;
+    assert.equal(await beta.evaluate(isFocused), true);
+    if (destination === "Search plugins") {
+      await page.keyboard.press("Shift+Tab");
+      await page.keyboard.press("Shift+Tab");
+    }
+    const expected = destination === "Beta" ? beta : search;
+    assert.equal(await expected.evaluate(isFocused), true);
+    released.resolve();
+    await dialog.getByText("No tools listed for this plugin.").waitFor();
+    assert.equal(await expected.evaluate(isFocused), true);
+  }
+});
+
+// Each redraw (tool details arriving, for one) used to rewrite the dialog's status lines with the
+// same words, so screen readers could announce "Page 1 · 2 plugins" again (finding 1890). Live
+// regions change only when their text does.
+test("Plugin dialog redraws leave unchanged live regions alone", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console");
+  await page.evaluate(async () => {
+    const { createPluginFields } = await import("/console/agents/plugin-fields.mjs");
+    const alpha = { id: "alpha", name: "Alpha", remoteId: "alpha", tools: null };
+    const beta = { id: "beta", name: "Beta", tools: [] };
+    const catalog = { status: "ready", canLoad: true, entries: [alpha, beta] };
+    const input = globalThis.document.createElement("textarea");
+    input.id = "plugin-live-selections";
+    input.value = "{}";
+    const fields = createPluginFields({
+      input,
+      catalog,
+      async onLoadTools() {
+        fields.setCatalog({ ...catalog, entries: [{ ...alpha, tools: [] }, beta] });
+      },
+    });
+    // Shows the second catalog page with the given Plugin selections JSON.
+    globalThis.showPluginPage2 = (selections = "{}") => {
+      input.value = selections;
+      fields.setCatalog({ ...catalog, pageNumber: 2, entries: [{ ...alpha, tools: [] }, beta] });
+    };
+    globalThis.document.body.append(fields.section);
+  });
+  await page.getByRole("button", { name: "Configure plugins", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Configure plugins" });
+  await dialog.getByText("Page 1 · 2 plugins", { exact: true }).waitFor();
+  // Every text change inside the dialog's live regions, as region text after the change.
+  await dialog.evaluate((node) => {
+    globalThis.liveWrites = [];
+    const regions = [...node.querySelectorAll('[role="status"], [role="alert"], [aria-live]')];
+    const observer = new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+        globalThis.liveWrites.push(target.textContent);
+      }
+    });
+    for (const region of regions) {
+      observer.observe(region, { childList: true, characterData: true, subtree: true });
+    }
+    globalThis.liveRegions = regions.map((region) => region.textContent);
+  });
+  const liveWrites = () => page.evaluate(() => globalThis.liveWrites.splice(0));
+  assert.ok(
+    (await page.evaluate(() => globalThis.liveRegions)).includes(
+      "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.",
+    ),
+  );
+
+  // Opening Alpha loads its tools; the dialog redraws twice with the same status lines.
+  await dialog.getByRole("button", { name: "Alpha", exact: true }).click();
+  await dialog.getByText("No tools listed for this plugin.").waitFor();
+  assert.deepEqual(await liveWrites(), []);
+  // A real change is written once, and a redraw after it writes nothing.
+  await page.evaluate(() => globalThis.showPluginPage2());
+  await dialog.getByText("Page 2 · 2 plugins", { exact: true }).waitFor();
+  assert.deepEqual(await liveWrites(), ["Page 2 · 2 plugins"]);
+  const invalid =
+    "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept.";
+  await page.evaluate(() => globalThis.showPluginPage2("["));
+  await dialog.getByText(invalid, { exact: true }).waitFor();
+  assert.deepEqual(await liveWrites(), [invalid]);
+  assert.deepEqual(await statusTone(dialog.getByText(invalid, { exact: true })), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+  });
+  await page.evaluate(() => globalThis.showPluginPage2("["));
+  assert.deepEqual(await liveWrites(), []);
+});
 
 test("Create Agent searches approvers with a search-only Slack Secret", async (t) => {
   const preset = JSON.parse(
@@ -31,7 +168,7 @@ test("Create Agent searches approvers with a search-only Slack Secret", async (t
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Approver search", { ready: true });
   const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
-  const { page, artifacts } = await newPage(t, fixture);
+  const { page, artifacts } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   const lookups = [];
   const lookupStarted = Promise.withResolvers();
@@ -146,7 +283,7 @@ test("Create Agent keeps the search Secret out of plugin approver lookups", asyn
   fixture.controller.selectDriver("plugin", driver.id);
   const namespace = await fixture.createNamespace("Approver privacy", { ready: true });
   const bot = await fixture.createSecret(namespace.id, "Search bot", "synthetic-slack-token");
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const lookups = [];
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/channel-directory/lookup`,
@@ -219,7 +356,7 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     configurationId: agent.configurationId,
     plugins: { [pluginId]: { enabled: true, tools: { [toolId]: { enabled: true } } } },
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   const directoryBodies = [];
   let directoryAvailable = true;
@@ -326,10 +463,10 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await page.getByRole("button", { name: "Configure plugins", exact: true }).focus();
   assert.equal(await people.getAttribute("aria-expanded"), "false");
   const peopleNode = await people.elementHandle();
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await people.waitFor({ state: "detached" });
   assert.equal(await peopleNode.evaluate((node) => node.isConnected), false);
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await people.waitFor();
   assert.equal(await peopleNode.evaluate((node) => node.isConnected), true);
   assert.equal(await resultNode.evaluate((node) => node.isConnected), true);
@@ -348,9 +485,9 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
     .getByText("Alex (@alex)")
     .waitFor();
   const selectedPeopleNode = await people.elementHandle();
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await people.waitFor({ state: "detached" });
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await people.waitFor();
   assert.equal(await selectedPeopleNode.evaluate((node) => node.isConnected), true);
   assert.equal(
@@ -363,6 +500,12 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
   await picker
     .getByText("This bot belongs to workspace TTEST123. Enter a user in that workspace.")
     .waitFor();
+  assert.deepEqual(
+    await statusTone(
+      picker.getByText("This bot belongs to workspace TTEST123. Enter a user in that workspace."),
+    ),
+    { className: "status", tone: "danger", role: "alert" },
+  );
   directoryAvailable = false;
   await people.fill("UTEST999");
   await picker.getByText("Slack directory lookup is unavailable.").waitFor();
@@ -461,8 +604,8 @@ test("Agent plugin approver selectors save inheritance and workspace-qualified u
 
   await page.goto(pluginsUrl.href);
   await page.getByLabel("Default plugin approvers mode").selectOption("inherit");
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal(await page.getByLabel("Default plugin approvers mode").inputValue(), "inherit");
   const clearedDefault = page.waitForResponse(
     (response) =>
@@ -492,7 +635,7 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
     nativeValues("approver-draft"),
     { executionMode: "embedded", harnessAuth: { method: "runtime" } },
   );
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, url);
   const deploy = page.getByRole("button", { name: "Deploy new version" });
@@ -500,14 +643,14 @@ test("Unsaved default plugin approvers block deployment after leaving Plugins", 
 
   await page.getByLabel("Default plugin approvers mode").selectOption("none");
   assert.equal(await deploy.isDisabled(), true);
-  await page.getByRole("button", { name: "Channels", exact: true }).click();
+  await page.getByRole("tab", { name: "Channels", exact: true }).click();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
   assert.equal(await deploy.isDisabled(), true);
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();
   await page.goBack();
   await page.getByRole("heading", { name: "Channels", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   assert.equal(await page.getByLabel("Default plugin approvers mode").inputValue(), "none");
   await page
     .getByText("Save or discard plugin changes before deploying.", { exact: true })
@@ -532,7 +675,7 @@ test("Codex Agents offer only default plugin approvers", async (t) => {
     configurationId: agent.configurationId,
     plugins: { [pluginId]: { enabled: true, tools: { [toolId]: { enabled: true } } } },
   });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "plugins");
   await login(page, fixture, url);
   // Codex approval requests carry no plugin or tool identity, so the API refuses those

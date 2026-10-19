@@ -16,6 +16,7 @@ import {
   type HarnessResolver,
   type ProvisionAgentInput,
   type UpdateAgentInput,
+  type ValidateAgentCreateInput,
 } from "@openclaw-enterprise/occ";
 import type { FastifyRequest } from "fastify";
 import { dependencyUnavailable, failure } from "./errors.ts";
@@ -32,6 +33,7 @@ function clientAgent(agent: Readonly<AgentRead>): Record<string, unknown> {
     return { ...agent };
   }
   return {
+    sandboxPolicyEditing: agent.sandboxPolicyEditing === true,
     id: agent.id,
     namespaceId: agent.namespaceId,
     name: agent.name,
@@ -73,6 +75,7 @@ function clientAgentProvisioning(
     revisionId: provisioning.revisionId,
     url: provisioning.url ?? agentProvisioningUrl(namespaceId, provisioning.workId),
     error: provisioning.error,
+    progress: provisioning.progress,
   };
 }
 
@@ -222,6 +225,18 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         return clientAgent(created);
       });
       reply.status(201).send({ data: agent, meta: { requestId: request.id } });
+    },
+    // Writes nothing and records no mutation: a refusal names the same rule createAgent would.
+    async validateAgentCreate({ controller, context, reply, body, namespaceId }) {
+      const input = body as Omit<ValidateAgentCreateInput, "namespaceId">;
+      validateWorkspaceSetup(input);
+      await controller.validateAgentCreate(
+        context.actorId,
+        { ...input, namespaceId },
+        options.resolveHarness,
+      );
+      reply.header("cache-control", "no-store");
+      reply.status(204).send();
     },
     async listAgents({ controller, context, request, reply, namespaceId }) {
       const agents = await controller.listAgents(context.actorId, namespaceId);

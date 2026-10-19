@@ -1,22 +1,41 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { KubernetesConfigurationDriver } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
+import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
   apiRequests,
+  fileBrowser,
   holdRequests,
   login,
+  nativeValues,
   newPage,
   pathRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
+  agentPostRequests,
   agentProvisionPostRequests,
+  configurationPostRequests,
   createModelCredentialSecret,
+  enterManualModel,
+  nativeSandboxDriver,
   openAdvancedSettings,
+  routeInstallationProvisioning,
+  routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.mjs";
+import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
+
+// Every test opens its own context in one Chromium per file.
+const browser = fileBrowser();
+
+const defaultCodexPreset = JSON.parse(
+  await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
+);
 
 // The production Kubernetes Drivers, built without a cluster client. The Compute Driver
 // advertises dedicated provisioning through the real /installation route. Provisioning
@@ -38,18 +57,97 @@ function provisioningDrivers() {
   return { computeDriver, configurationDriver };
 }
 
+async function modelSourceFixture(t, options = {}, gatewayMethods = {}) {
+  const drivers = provisioningDrivers();
+  drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
+  const fixture = await createConsoleAppFixture(t, {
+    ...drivers,
+    sandboxDriver: nativeSandboxDriver(),
+    ...options,
+  });
+  await fixture.bootstrap();
+  const calls = [];
+  const removals = [];
+  const gateway = {
+    id: "console-credential-gateway",
+    capability: "credential_gateway",
+    implementation: "test-model-source",
+    validateSourceConfig() {},
+    async listSourceTypes() {
+      return [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ];
+    },
+    async registerSource(context, input) {
+      calls.push({ sourceId: context.source.id, input });
+      return gatewayMethods.registerSource
+        ? gatewayMethods.registerSource(context, input, calls.length)
+        : { state: "ready" };
+    },
+    async sourceStatus() {
+      return { state: "ready" };
+    },
+    async updateSource() {
+      assert.fail("these cases do not update a source");
+    },
+    async attachForRevision() {
+      assert.fail("these cases do not deploy a Sandbox");
+    },
+    async attachmentStatus() {
+      assert.fail("these cases do not deploy a Sandbox");
+    },
+    async withdraw() {
+      assert.fail("these cases do not withdraw a source");
+    },
+    async removeSource(context) {
+      removals.push(context.source.id);
+    },
+  };
+  fixture.controller.registerDriver(gateway);
+  fixture.controller.selectDriver("credential_gateway", gateway.id);
+  return { fixture, calls, removals };
+}
+
+// Codex with its "Service Accounts" sign-in, a new model Secret and a listed model.
+async function pickCodexCredential(page, secretValue = `model-secret-${randomUUID()}`) {
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, secretValue);
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+}
+
+async function openModelSourceForm(t, fixture, namespace, harness = "codex") {
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption(harness);
+  if (harness === "openclaw") {
+    await page.locator(".launch-runtime:not([open]) > summary").click();
+    await page.getByLabel("Execution mode").selectOption("dedicated");
+  }
+  await page.getByLabel("Agent name").fill("Source-backed " + harness);
+  const secret = await createModelCredentialSecret(page, "synthetic-source-model-key-" + harness);
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  return { page, secret };
+}
+
 test("Dedicated Agent provisioning shows the API's 400 message for an inline model credential", async (t) => {
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision inline credential", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Provisioned inline credential");
-  await page.getByLabel("Authentication method").selectOption("codex_pat");
-  await createModelCredentialSecret(page, `model-secret-${randomUUID()}`);
-  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await pickCodexCredential(page);
   await openAdvancedSettings(page);
   // A pasted provider key is a value, not the Secret reference the field requires.
   const sentinel = `synthetic-inline-key-${randomUUID()}`;
@@ -88,6 +186,341 @@ test("Dedicated Agent provisioning shows the API's 400 message for an inline mod
   assert.equal(await configuration.isDisabled(), false);
 });
 
+test("The pinned runtime lets the Console request dedicated OpenClaw provisioning", async (t) => {
+  const fixture = await createConsoleAppFixture(t, {
+    ...provisioningDrivers(),
+    sandboxDriver: nativeSandboxDriver(),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pinned native deployment", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.locator(".launch-runtime:not([open]) > summary").click();
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  await mode.selectOption("dedicated");
+  await page.getByLabel("Agent name").fill("Dedicated native from Console");
+  await createModelCredentialSecret(page, "synthetic-native-model-key");
+  await page.getByRole("button", { name: "Enter model ID manually", exact: true }).click();
+  await page.getByLabel("Model ID", { exact: true }).fill("gpt-5");
+  await page.getByLabel("Model ID", { exact: true }).press("Tab");
+  const sent = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents/provision` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  const response = await sent;
+  // This fixture has no transactional provisioning queue. The request reaches
+  // the real provisioning route; admission and deployment have separate coverage.
+  assert.equal(response.status(), 503);
+  assert.equal((await response.json()).error.code, "DEPENDENCY_UNAVAILABLE");
+  const payload = response.request().postDataJSON();
+  assert.equal(payload.executionMode, "dedicated");
+  assert.equal(payload.configuration.values.agents.defaults.model, "openai/gpt-5");
+  // Packaged Kubernetes proof separately verifies queued work and deployment.
+  // No draft writes or external provisioning effects occur in this fixture.
+  assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 1);
+  assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).length, 0);
+});
+
+test("Credential Gateway creation registers the same model source for both dedicated harnesses", async (t) => {
+  for (const harness of ["openclaw", "codex"]) {
+    await t.test(harness, async (t) => {
+      const { fixture, calls } = await modelSourceFixture(
+        t,
+        {},
+        {
+          registerSource(_context, _input, attempt) {
+            // A terminal failure is cleaned up by the actual registration owner.
+            return harness === "openclaw" && attempt === 1
+              ? { state: "failed" }
+              : { state: "ready" };
+          },
+        },
+      );
+      const namespace = await fixture.createNamespace("Console model source " + harness, {
+        ready: true,
+      });
+      const { page, secret } = await openModelSourceForm(t, fixture, namespace, harness);
+      const requests = apiRequests(page, fixture.origin);
+      const sentinel = "synthetic-source-model-key-" + harness;
+      // Lose only the registration response. The real owner records the source first;
+      // checking it must recover that exact registration, never create another copy.
+      const sourceUrl = `${fixture.origin}/namespaces/${namespace.id}/credential-sources`;
+      await page.route(sourceUrl, async (route) => {
+        if (route.request().method() !== "POST") {
+          return route.fallback();
+        }
+        const response = await route.fetch();
+        if (response.status() === 503) {
+          return route.fulfill({ response });
+        }
+        assert.equal(response.status(), 201);
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            error: {
+              code: "DEPENDENCY_UNAVAILABLE",
+              message: "Synthetic lost registration reply.",
+            },
+          }),
+        });
+      });
+      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+      if (harness === "openclaw") {
+        await page.getByRole("button", { name: "Check credential registration" }).click();
+        await page
+          .getByText(
+            "No credential registration is visible. Select Create Agent to retry the same registration.",
+            { exact: true },
+          )
+          .waitFor();
+        await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+      }
+      await page.getByRole("button", { name: "Check credential registration" }).waitFor();
+      assert.equal(
+        await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+        true,
+      );
+      assert.equal(agentProvisionPostRequests(requests, namespace.id).length, 0);
+      await page.getByRole("button", { name: "Check credential registration" }).click();
+      await page
+        .getByText("Credential Source is ready. Select Create Agent to continue.", { exact: true })
+        .waitFor();
+      const sent = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" && response.url().endsWith("/agents/provision"),
+      );
+      await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+      const response = await sent;
+      assert.equal(response.status(), 503); // This fixture has no durable provisioning queue.
+      const payload = response.request().postDataJSON();
+      assert.deepEqual(payload.harnessAuth, {
+        method: "credential_source",
+        sourceId: calls.at(-1).sourceId,
+      });
+      assert.equal(payload.executionMode, "dedicated");
+      assert.equal(calls.length, harness === "openclaw" ? 2 : 1);
+      assert.deepEqual(calls.at(-1).input.secrets, { api_key: sentinel });
+      const registrations = pathRequests(
+        requests,
+        "POST",
+        `/namespaces/${namespace.id}/credential-sources`,
+      );
+      assert.equal(registrations.length, calls.length);
+      for (const registration of registrations) {
+        assert.deepEqual(registration.body, registrations[0].body);
+        assert.deepEqual(registration.body.secrets, { api_key: secret.ref });
+      }
+      assert.equal(JSON.stringify(payload).includes(sentinel), false);
+      assert.equal(pathRequests(requests, "POST", `/namespaces/${namespace.id}/agents`).length, 0);
+    });
+  }
+});
+
+test("Credential registration recovers a ready source after a same-name retry conflicts", async (t) => {
+  const { fixture, calls } = await modelSourceFixture(t);
+  const namespace = await fixture.createNamespace("Delayed source registration", { ready: true });
+  const { page } = await openModelSourceForm(t, fixture, namespace);
+  const requests = apiRequests(page, fixture.origin);
+  const sourcePath = `/namespaces/${namespace.id}/credential-sources`;
+  const sourceUrl = fixture.origin + sourcePath;
+  let delayedRegistration;
+  await page.route(sourceUrl, async (route) => {
+    if (route.request().method() !== "POST" || delayedRegistration) {
+      return route.fallback();
+    }
+    // The transport loses the response before the original request reaches OCC.
+    // Its exact body will arrive after the operator checks the currently empty list.
+    delayedRegistration = route.request().postDataJSON();
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Synthetic delayed registration." },
+      }),
+    });
+  });
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Check credential registration" }).click();
+  await page
+    .getByText(
+      "No credential registration is visible. Select Create Agent to retry the same registration.",
+      { exact: true },
+    )
+    .waitFor();
+  // Complete the earlier real API request between the empty read and the explicit retry.
+  // Namespace/name uniqueness must reject the retry before another gateway registration.
+  const registered = await fixture.request("POST", sourcePath, { body: delayedRegistration });
+  assert.equal(registered.status, 201, JSON.stringify(registered.body));
+  const conflict = page.waitForResponse(
+    (response) => response.url() === sourceUrl && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await conflict).status(), 409);
+  await page.getByRole("button", { name: "Check credential registration" }).click();
+  await page
+    .getByText("Credential Source is ready. Select Create Agent to continue.", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Remove failed credential registration" }).isVisible(),
+    false,
+  );
+  const provision = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/agents/provision") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await provision;
+  assert.equal(response.status(), 503); // The fixture has no durable provisioning queue.
+  assert.deepEqual(response.request().postDataJSON().harnessAuth, {
+    method: "credential_source",
+    sourceId: registered.data.id,
+  });
+  assert.equal(calls.length, 1);
+  const retries = pathRequests(requests, "POST", sourcePath);
+  assert.equal(retries.length, 2);
+  assert.deepEqual(retries[0].body, retries[1].body);
+});
+
+test("Credential registration removal preserves the safety fence and retries the exact source", async (t) => {
+  let now = Date.now();
+  const { fixture, calls, removals } = await modelSourceFixture(
+    t,
+    { now: () => new Date(now) },
+    {
+      registerSource(_context, _input, attempt) {
+        if (attempt === 1) {
+          throw new Error("Synthetic uncertain gateway outcome.");
+        }
+        return { state: "ready" };
+      },
+    },
+  );
+  const namespace = await fixture.createNamespace("Source removal recovery", { ready: true });
+  const { page, secret } = await openModelSourceForm(t, fixture, namespace, "openclaw");
+  const requests = apiRequests(page, fixture.origin);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Check credential registration" }).click();
+  const remove = page.getByRole("button", { name: "Remove failed credential registration" });
+  await remove.waitFor();
+  // Removal deletes the registration on the server: the destructive tone (finding 1967).
+  assert.match(await remove.getAttribute("class"), /\bbutton--danger\b/);
+  const sourceId = calls[0].sourceId;
+  const sourcePath = `/namespaces/${namespace.id}/credential-sources/${sourceId}`;
+  const deleted = () =>
+    page.waitForResponse(
+      (response) =>
+        response.url() === fixture.origin + sourcePath && response.request().method() === "DELETE",
+    );
+  const first = deleted();
+  await remove.click();
+  assert.equal((await first).status(), 503);
+  // The real owner already removed the copy, but keeps the deleting record to
+  // fence late registration effects. The Console must retain the same cleanup handle.
+  const fenced = await fixture.request("GET", sourcePath);
+  assert.equal(fenced.status, 200, JSON.stringify(fenced.body));
+  assert.equal(fenced.data.state, "deleting");
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+  await page.getByText(/Retry removal when the Credential Gateway is available/).waitFor();
+  now += 70_001;
+  const second = deleted();
+  await remove.click();
+  assert.equal((await second).status(), 204);
+  await page
+    .getByText(
+      "Failed credential registration removed. Select Create Agent to retry with the saved model Secret.",
+      { exact: true },
+    )
+    .waitFor();
+  const retry = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/agents/provision") && response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  const response = await retry;
+  assert.equal(response.status(), 503); // The fixture has no durable provisioning queue.
+  assert.deepEqual(response.request().postDataJSON().harnessAuth, {
+    method: "credential_source",
+    sourceId: calls[1].sourceId,
+  });
+  assert.equal(calls.length, 2);
+  assert.notEqual(calls[1].sourceId, sourceId);
+  assert.deepEqual(calls[0].input, calls[1].input);
+  assert.deepEqual(removals, [sourceId, sourceId, sourceId]); // Initial abandonment, then both DELETEs.
+  assert.equal(pathRequests(requests, "DELETE", sourcePath).length, 2);
+  assert.deepEqual(
+    pathRequests(requests, "POST", `/namespaces/${namespace.id}/credential-sources`)[1].body
+      .secrets,
+    { api_key: secret.ref },
+  );
+  assert.equal(
+    (await fixture.request("GET", `/namespaces/${namespace.id}/secrets/${secret.id}`)).status,
+    200,
+  );
+});
+
+test("Agent Credentials saves its existing model source without replacing the binding", async (t) => {
+  const { fixture } = await modelSourceFixture(t, {
+    configurationDriver: undefined,
+    filesystemConfiguration: true,
+  });
+  const namespace = await fixture.createNamespace("Saved Source authentication", { ready: true });
+  const secret = await fixture.createSecret(
+    namespace.id,
+    "Source model key",
+    "synthetic-retained-source-key",
+  );
+  const source = await fixture.request("POST", `/namespaces/${namespace.id}/credential-sources`, {
+    body: { name: "Agent model source", type: "openai", secrets: { api_key: secret.ref } },
+  });
+  assert.equal(source.status, 201, JSON.stringify(source.body));
+  const configuration = await fixture.createConfiguration(
+    namespace.id,
+    createHarnessConfiguration("openclaw", "gpt-5"),
+  );
+  const harnessAuth = { method: "credential_source", sourceId: source.data.id };
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Retained model Source",
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth,
+      credentialSources: [{ sourceId: source.data.id }],
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const agentPath = `/namespaces/${namespace.id}/agents/${created.data.id}`;
+  const { page } = await newPage(t, fixture, { browser });
+  await login(
+    page,
+    fixture,
+    `/console/agents/${created.data.id}?namespace=${namespace.id}&revision=draft&tab=credentials`,
+  );
+  const method = page.getByLabel("Authentication source", { exact: true });
+  await method.waitFor();
+  assert.equal(await method.inputValue(), "credential_source");
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url() === fixture.origin + agentPath && response.request().method() === "PATCH",
+  );
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  const response = await saved;
+  assert.equal(response.status(), 200);
+  assert.deepEqual(response.request().postDataJSON().harnessAuth, harnessAuth);
+  const current = await fixture.request("GET", agentPath);
+  assert.deepEqual(current.data.harnessAuth, harnessAuth);
+  assert.deepEqual(current.data.credentialSources, [{ sourceId: source.data.id }]);
+});
+
 // A refused submit kept "Submitting provisioning request…" beside the API's refusal, and focus
 // dropped to the page when Create Agent disabled, for the refusal and for the whole provisioning
 // wait (finding 1490). Focus now follows the progress line, then the refusal, which replaces it.
@@ -95,13 +528,11 @@ test("A refused Create Agent submit clears its progress and focuses the refusal"
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision refusal focus", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Provisioned refusal focus");
-  await page.getByLabel("Authentication method").selectOption("codex_pat");
-  await createModelCredentialSecret(page, `model-secret-${randomUUID()}`);
-  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await pickCodexCredential(page);
   await openAdvancedSettings(page);
   const configuration = page.getByLabel("Configuration JSON");
   const edited = JSON.parse(await configuration.inputValue());
@@ -160,13 +591,11 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision not ready", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByLabel("Agent name").fill("Provisioned before ready");
-  await page.getByLabel("Authentication method").selectOption("codex_pat");
-  await createModelCredentialSecret(page, `model-secret-${randomUUID()}`);
-  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await pickCodexCredential(page);
   // The API's answer while the Namespace is provisioning.
   const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
   await page.route(provisionUrl, (route) =>
@@ -199,17 +628,976 @@ test("Dedicated Agent provisioning names a Namespace that is not ready", async (
   );
 });
 
+const DEDICATED_SANDBOX_REFUSAL =
+  "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
+const NO_OPENCLAW_MODE =
+  "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. Choose OpenAI with the Codex harness, or ask an administrator to select a Sandbox Driver that can provision dedicated OpenClaw, with a runtime that has native worker support.";
+
+// Saves a Preset whose template holds `agent` and the Configuration nativeValues(`marker`).
+async function savePreset(fixture, namespace, name, agent, marker) {
+  const preset = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: { name, template: { agent, configuration: { values: nativeValues(marker) } } },
+  });
+  assert.equal(preset.status, 201, JSON.stringify(preset.body));
+  return preset.data.id;
+}
+
+// Opens Create Agent on a saved Preset in a new page. `openclaw`, when given, is the routed
+// Installation's OpenClaw answer.
+async function openPreset(t, fixture, namespace, presetId, openclaw) {
+  const { page } = await newPage(t, fixture, { browser });
+  if (openclaw !== undefined) {
+    await routeInstallationWithoutProvisioning(page, fixture, { openclaw });
+  }
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByLabel("Preset template").selectOption(presetId);
+  await page.getByRole("button", { name: "Use Preset" }).click();
+  return page;
+}
+
+async function startWithoutPreset(page, fixture, namespace) {
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+}
+
+test("Without a provisioning Sandbox Driver, Create Agent withholds Dedicated OpenClaw", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(
+    t,
+    "No provisioning Sandbox",
+    provisioningDrivers(),
+  );
+  // The real Installation: the pinned runtime supports native workers, but no Sandbox Driver can
+  // provision them, so it does not report native worker support (finding 1608).
+  const installation = await fixture.request("GET", "/installation");
+  assert.equal(installation.status, 200);
+  assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
+  assert.deepEqual(installation.data.capabilities?.agentProvisioning, {
+    executionModes: ["dedicated"],
+  });
+  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: ["embedded"] });
+  const { page } = await newPage(t, fixture, { browser });
+  await startWithoutPreset(page, fixture, namespace);
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.locator(".launch-runtime:not([open]) > summary").click();
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
+  assert.equal(await mode.inputValue(), "embedded");
+  assert.equal(
+    await page.locator("#execution-mode-hint").textContent(),
+    "Codex uses Dedicated execution. Dedicated OpenClaw is unavailable because this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Embedded OpenClaw works only when the installation selects no Sandbox Driver. Slack requires Codex.",
+  );
+  // The harness hint states this Agent's outcome; Runtime details keep the conditions (finding 1904).
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "This Agent will run OpenClaw with Embedded execution. Choose Codex for Dedicated execution.",
+  );
+  // Anthropic hides Codex, so the hint names only why this Agent runs Embedded.
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "This Agent will run OpenClaw with Embedded execution. Anthropic requires Embedded OpenClaw.",
+  );
+  await page.getByLabel("Provider", { exact: true }).selectOption("openai");
+  // Codex does not need the Sandbox Driver and keeps Dedicated.
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "This Agent will run Codex with Dedicated execution.",
+  );
+
+  // A saved Dedicated OpenClaw Preset keeps its mode and is blocked; the alert names Codex first,
+  // Embedded only with its condition, and the administrator's fix.
+  const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "no-sandbox-key");
+  const presetId = await savePreset(
+    fixture,
+    namespace,
+    "Dedicated OpenClaw",
+    {
+      name: "Dedicated OpenClaw Agent",
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: secret.ref },
+    },
+    "no-sandbox",
+  );
+  const presetPage = await openPreset(t, fixture, namespace, presetId);
+  const alert = presetPage
+    .getByRole("alert")
+    .filter({ hasText: /^Dedicated OpenClaw is unavailable: / });
+  await alert.waitFor();
+  assert.equal(
+    await alert.textContent(),
+    "Dedicated OpenClaw is unavailable: this installation has no Sandbox Driver that can provision it, or its OpenClaw runtime lacks native worker support. Choose the Codex harness, or Embedded execution if the installation selects no Sandbox Driver. Otherwise an administrator must select a Sandbox Driver that can provision dedicated OpenClaw, or a runtime with native worker support.",
+  );
+  assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "dedicated");
+  assert.match(
+    await presetPage.locator(".launch-runtime summary").innerText(),
+    /Execution mode unavailable/,
+  );
+  assert.equal(
+    await presetPage.locator("#agent-harness-hint").textContent(),
+    "This Agent cannot run OpenClaw with Dedicated execution on this installation.",
+  );
+  assert.equal(await presetPage.locator("#create-agent-form > [role=status]").innerText(), "");
+  assert.equal(
+    await presetPage.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+});
+
+test("With a selected Sandbox Driver that cannot provision Dedicated OpenClaw, Create Agent copy does not recommend Embedded unconditionally", async (t) => {
+  // The Driver lacks the process facet, so the Installation cannot admit dedicated OpenClaw. Like
+  // every selected Sandbox Driver it also refuses Embedded execution at Agent save and deploy, so
+  // the Console copy must not recommend Embedded unconditionally (finding 1612), and the
+  // Installation admits no OpenClaw mode (#2670).
+  const drivers = provisioningDrivers();
+  drivers.computeDriver.resolveSandboxNamespace = async (namespace) => namespace;
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Partial Sandbox", {
+    ...drivers,
+    sandboxDriver: nativeSandboxDriver(["networking", "filesystem"]),
+  });
+  const installation = await fixture.request("GET", "/installation");
+  assert.equal(installation.status, 200);
+  assert.equal(installation.data.capabilities?.nativeWorkers, undefined);
+  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: [] });
+  const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "partial-key");
+  const presetId = await savePreset(
+    fixture,
+    namespace,
+    "Dedicated OpenClaw",
+    {
+      name: "Dedicated OpenClaw Agent",
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: secret.ref },
+    },
+    "partial-sandbox",
+  );
+
+  const { page } = await newPage(t, fixture, { browser });
+  await startWithoutPreset(page, fixture, namespace);
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await page.locator(".launch-runtime:not([open]) > summary").click();
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
+  // The hints agree with the alert: no OpenClaw mode is usable here, for either provider.
+  const noModeHarnessHint =
+    "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw.";
+  assert.equal(
+    await page.locator("#execution-mode-hint").textContent(),
+    "Codex uses Dedicated execution. OpenClaw is unavailable on this installation. Slack requires Codex.",
+  );
+  assert.equal(await page.locator("#agent-harness-hint").textContent(), noModeHarnessHint);
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  assert.equal(await page.locator("#agent-harness-hint").textContent(), noModeHarnessHint);
+
+  // A saved Dedicated OpenClaw Preset opens as saved and is blocked. No OpenClaw mode is usable,
+  // so the alert says that rather than suggesting Embedded; Codex is the way forward.
+  const presetPage = await openPreset(t, fixture, namespace, presetId);
+  const alert = presetPage.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
+  await alert.waitFor();
+  assert.equal(await alert.textContent(), NO_OPENCLAW_MODE);
+  assert.equal(await presetPage.getByText(/^Dedicated OpenClaw is unavailable: /).isHidden(), true);
+  assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "dedicated");
+  assert.equal(
+    await presetPage.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+});
+
+// The writes a Create Agent submit can make. The form also prefetches the plugin catalog with a
+// read-only POST .../agents/plugins, which is not one.
+function createWrites(requests, namespaceId) {
+  return requests.filter(
+    (request) =>
+      request.method !== "GET" &&
+      !request.path.startsWith(`/namespaces/${namespaceId}/agents/plugins`),
+  );
+}
+
+// Start without a Preset and fill an OpenClaw draft through to Create: name, harness, a model
+// credential Secret and a model ID. The Secret is the picker's own write, before Create.
+async function fillOpenClawDraft(t, fixture, namespace, name) {
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await startWithoutPreset(page, fixture, namespace);
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  await page.getByLabel("Agent name").fill(name);
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  await enterManualModel(page, `model-secret-${randomUUID()}`, "gpt-5.1");
+  await page.locator(".launch-runtime:not([open]) > summary").click();
+  const before = createWrites(requests, namespace.id).length;
+  return { page, writesSinceFill: () => createWrites(requests, namespace.id).slice(before) };
+}
+
+// Submits the form past its disabled Create Agent button, then fails on any POST whose path
+// matches `writePath` within 2 s. Without a refusal the first write goes out within
+// milliseconds.
+async function assertBypassedSubmitWritesNothing(page, writePath) {
+  // Attach both outcomes when the timed wait starts, so a submit that outlasts the window on a
+  // loaded runner cannot leave the timeout as an unhandled rejection (finding 1986).
+  const wrote = page
+    .waitForRequest(
+      (request) => request.method() === "POST" && writePath.test(new URL(request.url()).pathname),
+      { timeout: 2_000 },
+    )
+    .then(
+      (request) => assert.fail(`Create Agent wrote ${request.url()}`),
+      () => {},
+    );
+  await page.locator("#create-agent-form").evaluate((form) => form.requestSubmit());
+  await wrote;
+}
+
+// The filesystem Configuration Driver saves without a cluster, so a submit that got past the form
+// would save the Configuration (201) and then be refused at Agent save (400), as in #2670.
+test("With a selected Sandbox Driver that admits no OpenClaw mode, Create Agent refuses before any write", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "No OpenClaw mode", {
+    filesystemConfiguration: true,
+    sandboxDriver: nativeSandboxDriver(["networking", "filesystem"]),
+  });
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: [] });
+  const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "No mode");
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), true);
+  assert.equal(await mode.locator('option[value="embedded"]').isDisabled(), true);
+  const alert = page.getByRole("alert").filter({ hasText: /^OpenClaw is unavailable / });
+  await alert.waitFor();
+  assert.equal(await alert.textContent(), NO_OPENCLAW_MODE);
+  const runtimeSummary = page.locator(".launch-runtime summary");
+  const createStatus = page.locator("#create-agent-form > [role=status]");
+  assert.match(await runtimeSummary.innerText(), /Execution mode unavailable/);
+  assert.equal(await createStatus.innerText(), "");
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  assert.equal(await create.isDisabled(), true);
+  // A submit that bypasses the disabled button is refused too, before any write.
+  await assertBypassedSubmitWritesNothing(page, /\/namespaces\/[^/]+\/(configurations|agents)$/);
+  // Neither a Configuration nor an Agent write left the page; no Agent exists.
+  assert.deepEqual(writesSinceFill(), []);
+  assert.deepEqual((await fixture.request("GET", `/namespaces/${namespace.id}/agents`)).data, []);
+  // Codex remains: choosing it clears the refusal.
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  assert.equal(await alert.isHidden(), true);
+  assert.match(await runtimeSummary.innerText(), /Dedicated/);
+  assert.notEqual((await createStatus.innerText()).trim(), "");
+});
+
+const SANDBOX_DRIVER_OUTAGE =
+  "Agents cannot be created right now: this installation's Sandbox Driver is unavailable. Reload this page to check again, or ask an administrator if it persists.";
+
+test("During a Sandbox Driver outage, Create Agent says Agents are unavailable for now, not that the driver cannot run OpenClaw", async (t) => {
+  // Agent save and deploy answer a retryable 503 for every harness in this state, so the copy must
+  // not ask an administrator to select another Sandbox Driver or point to Codex (finding 1624).
+  const sandboxDriver = nativeSandboxDriver();
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Sandbox outage", {
+    filesystemConfiguration: true,
+    sandboxDriver,
+  });
+  // The registry no longer matches the selection, as after a Driver swap at runtime.
+  sandboxDriver.implementation = `${sandboxDriver.implementation}-unavailable`;
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities?.openclaw, {
+    executionModes: [],
+    sandboxDriverUnavailable: true,
+  });
+  const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Outage");
+  const alert = page.getByRole("alert").filter({ hasText: /^Agents cannot be created / });
+  const create = page.getByRole("button", { name: "Create Agent", exact: true });
+  const outageHints = {
+    harness:
+      "Codex and OpenClaw are unavailable right now: this installation's Sandbox Driver is unavailable.",
+    mode: "Codex and OpenClaw are unavailable while this installation's Sandbox Driver is unavailable.",
+  };
+  for (const harness of ["openclaw", "codex"]) {
+    await page.getByLabel("Harness", { exact: true }).selectOption(harness);
+    await alert.waitFor();
+    assert.equal(await alert.textContent(), SANDBOX_DRIVER_OUTAGE, harness);
+    assert.equal(
+      await page
+        .getByRole("alert")
+        .filter({ hasText: /^OpenClaw is unavailable / })
+        .count(),
+      0,
+      harness,
+    );
+    assert.deepEqual(
+      {
+        harness: await page.locator("#agent-harness-hint").textContent(),
+        mode: await page.locator("#execution-mode-hint").textContent(),
+      },
+      outageHints,
+      harness,
+    );
+    assert.equal(await create.isDisabled(), true, harness);
+  }
+  // A submit that bypasses the disabled button is refused too, before any write.
+  await assertBypassedSubmitWritesNothing(
+    page,
+    /\/namespaces\/[^/]+\/(configurations|agents)(\/provision)?$/,
+  );
+  assert.deepEqual(writesSinceFill(), []);
+});
+
+test("Without a Sandbox Driver, the same Create Agent steps save an Embedded OpenClaw Agent", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "No Sandbox control", {
+    filesystemConfiguration: true,
+  });
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: ["embedded"] });
+  const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Embedded");
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.inputValue(), "embedded");
+  assert.equal(await mode.locator('option[value="embedded"]').isDisabled(), false);
+  assert.match(await page.locator(".launch-runtime summary").innerText(), /Embedded/);
+  assert.match(
+    await page.locator("#create-agent-form > [role=status]").innerText(),
+    /Embedded Agents are saved as drafts/,
+  );
+  assert.equal(
+    await page
+      .getByRole("alert")
+      .filter({ hasText: /^OpenClaw is unavailable / })
+      .count(),
+    0,
+  );
+  const saved = page.waitForResponse(
+    (response) =>
+      response.url() === `${fixture.origin}/namespaces/${namespace.id}/agents` &&
+      response.request().method() === "POST",
+  );
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  assert.equal((await saved).status(), 201);
+  const writes = writesSinceFill();
+  assert.equal(configurationPostRequests(writes, namespace.id).length, 1);
+  assert.equal(agentPostRequests(writes, namespace.id).length, 1);
+  assert.equal(agentPostRequests(writes, namespace.id)[0].body.executionMode, "embedded");
+
+  // A Preset that selects OpenClaw but no execution mode opens on the usable mode, Embedded,
+  // rather than the form's Dedicated default.
+  const secret = await fixture.createSecret(namespace.id, "OpenAI model key", "control-key");
+  const presetId = await savePreset(
+    fixture,
+    namespace,
+    "OpenClaw without a mode",
+    { name: "OpenClaw Agent", harnessAuth: { method: "api_key", source: secret.ref } },
+    "no-mode",
+  );
+  const presetPage = await openPreset(t, fixture, namespace, presetId);
+  await presetPage.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  assert.equal(await presetPage.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
+  assert.equal(await presetPage.getByLabel("Execution mode").inputValue(), "embedded");
+  assert.equal(await presetPage.getByText(/^Dedicated OpenClaw is unavailable: /).isHidden(), true);
+});
+
+// The harness hint states why the harness is locked, never that a request is in flight: it must
+// not change while Create is pending, or it shifts the refusal the form just scrolled into view.
+// Once something is saved, or the outcome is unknown, the harness is locked and the hint stops
+// naming Codex as a choice (#2875, finding 1954). The installation selects no Sandbox Driver, so
+// Dedicated OpenClaw is refused and the hint offers Codex while the reader can still pick it.
+test("Create Agent's harness hint holds while Create is pending and drops the Codex choice once the harness is locked", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Harness lock hint", {
+    filesystemConfiguration: true,
+  });
+  const agentsPath = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  const choosable =
+    "This Agent will run OpenClaw with Embedded execution. Choose Codex for Dedicated execution.";
+  const locked = "This Agent will run OpenClaw with Embedded execution.";
+
+  await t.test("pending, then saved", async (t) => {
+    const { page } = await fillOpenClawDraft(t, fixture, namespace, "Pending hint");
+    const harness = page.getByLabel("Harness", { exact: true });
+    const hint = page.locator("#agent-harness-hint");
+    assert.equal(await hint.textContent(), choosable);
+    const validate = await holdRequests(t, page, `${agentsPath}/validate`, { method: "POST" });
+    const agentSave = await holdRequests(t, page, agentsPath, { method: "POST" });
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    // Nothing is saved yet: the harness is disabled only for the request, and the hint stays.
+    await validate.requested;
+    assert.equal(await harness.isDisabled(), true);
+    assert.equal(await hint.textContent(), choosable);
+    validate.release();
+    // The Configuration is saved, so this form can no longer change the harness.
+    await agentSave.requested;
+    assert.equal(await hint.textContent(), locked);
+    agentSave.release();
+    await page.waitForURL(/\/console\/agents\/[^/?]+\?revision=draft/);
+  });
+
+  await t.test("outcome unknown", async (t) => {
+    const { page } = await fillOpenClawDraft(t, fixture, namespace, "Unknown hint");
+    const hint = page.locator("#agent-harness-hint");
+    assert.equal(await hint.textContent(), choosable);
+    // The connection drops on the Configuration save: it may have been saved, so the form keeps
+    // its choices for a retry with the same references.
+    await page.route(`${fixture.origin}/namespaces/${namespace.id}/configurations`, (route) =>
+      route.request().method() === "POST" ? route.abort("failed") : route.fallback(),
+    );
+    await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+    await page.getByText(/^Outcome unknown\./).waitFor();
+    assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
+    assert.equal(await hint.textContent(), locked);
+  });
+});
+
+// A service account token needs Codex. While Create is pending the token is not yet saved, so the
+// hint keeps this Agent's outcome; once the Configuration is saved it explains the lock.
+test("Create Agent's Codex service account hint changes only when the token is saved, not while Create is pending", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Token lock hint", {
+    filesystemConfiguration: true,
+  });
+  const agentsPath = `${fixture.origin}/namespaces/${namespace.id}/agents`;
+  const { page } = await newPage(t, fixture, { browser });
+  await startWithoutPreset(page, fixture, namespace);
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  await page.getByLabel("Agent name").fill("Token hint");
+  await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await enterManualModel(page, `model-secret-${randomUUID()}`, "gpt-5.1");
+  const hint = page.locator("#agent-harness-hint");
+  const outcome = "This Agent will run Codex with Dedicated execution.";
+  assert.equal(await hint.textContent(), outcome);
+  const validate = await holdRequests(t, page, `${agentsPath}/validate`, { method: "POST" });
+  const agentSave = await holdRequests(t, page, agentsPath, { method: "POST" });
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await validate.requested;
+  assert.equal(await page.getByLabel("Harness", { exact: true }).isDisabled(), true);
+  assert.equal(await hint.textContent(), outcome);
+  validate.release();
+  await agentSave.requested;
+  assert.equal(
+    await hint.textContent(),
+    "This saved service account token requires Codex. Create a new draft without a Preset to use OpenClaw with an API key.",
+  );
+  agentSave.release();
+  await page.waitForURL(/\/console\/agents\/[^/?]+\?revision=draft/);
+});
+
+test("With a Sandbox Driver that provisions Dedicated OpenClaw, Create Agent preselects Dedicated", async (t) => {
+  // Every selected Sandbox Driver refuses Embedded execution, so OpenClaw starts on Dedicated.
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Full Sandbox", {
+    sandboxDriver: nativeSandboxDriver(),
+  });
+  const installation = await fixture.request("GET", "/installation");
+  assert.deepEqual(installation.data.capabilities?.openclaw, { executionModes: ["dedicated"] });
+  assert.deepEqual(installation.data.capabilities?.nativeWorkers, { support: "pinned-runtime" });
+  const { page, writesSinceFill } = await fillOpenClawDraft(t, fixture, namespace, "Dedicated");
+  const mode = page.getByLabel("Execution mode");
+  assert.equal(await mode.inputValue(), "dedicated");
+  assert.equal(await mode.locator('option[value="dedicated"]').isDisabled(), false);
+  assert.equal(await mode.locator('option[value="embedded"]').isDisabled(), true);
+  assert.equal(
+    await page.locator("#execution-mode-hint").textContent(),
+    "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution.",
+  );
+  assert.equal(
+    await page
+      .getByRole("alert")
+      .filter({ hasText: /OpenClaw is unavailable/ })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    false,
+  );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "This Agent will run OpenClaw with Dedicated execution.",
+  );
+  // The user's choice of Embedded is refused here with the Sandbox Driver named as the reason.
+  await mode.evaluate((select) => {
+    select.querySelector('[value="embedded"]').disabled = false;
+    select.value = "embedded";
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const alert = page.getByRole("alert").filter({ hasText: /^Embedded OpenClaw is unavailable: / });
+  await alert.waitFor();
+  assert.equal(
+    await alert.textContent(),
+    "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details.",
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+  // Anthropic runs only Embedded OpenClaw, so it is refused here too, with its own way out.
+  await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+  const anthropicAlert = page
+    .getByRole("alert")
+    .filter({ hasText: /^Anthropic uses Embedded OpenClaw/ });
+  await anthropicAlert.waitFor();
+  assert.equal(
+    await anthropicAlert.textContent(),
+    "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution.",
+  );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "This Agent cannot run OpenClaw with Embedded execution on this installation.",
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+    true,
+  );
+  assert.deepEqual(writesSinceFill(), []);
+});
+
+test("OpenClaw chosen before the Installation answers switches to the mode it admits", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Early OpenClaw", {
+    sandboxDriver: nativeSandboxDriver(),
+  });
+  const { page } = await newPage(t, fixture, { browser });
+  const installation = await holdRequests(t, page, `${fixture.origin}/installation`, {
+    method: "GET",
+  });
+  await startWithoutPreset(page, fixture, namespace);
+  await installation.requested;
+  await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+  const mode = page.getByLabel("Execution mode");
+  // Before the answer the form keeps its Embedded default, and the hints promise no mode: no
+  // Installation admits both (finding 1625).
+  assert.equal(await mode.inputValue(), "embedded");
+  assert.equal(
+    await page.locator("#execution-mode-hint").textContent(),
+    "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.",
+  );
+  assert.equal(
+    await page.locator("#agent-harness-hint").textContent(),
+    "OpenClaw is available for both providers. With OpenAI its execution mode depends on the installation's Sandbox Driver; Anthropic uses Embedded OpenClaw.",
+  );
+  installation.release();
+  await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+  assert.equal(await mode.inputValue(), "dedicated");
+  assert.equal(
+    await page
+      .getByRole("alert")
+      .filter({ hasText: /OpenClaw is unavailable/ })
+      .count(),
+    0,
+  );
+});
+
+test("Operator-managed Preset credentials name the Preset when the Installation refuses Embedded OpenClaw", async (t) => {
+  // The fixed runtime binding needs Embedded OpenClaw. The Installation answer is routed: an SSH
+  // Compute Driver selects no Sandbox Driver.
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Runtime Preset modes", {
+    filesystemConfiguration: true,
+  });
+  const presetId = await savePreset(
+    fixture,
+    namespace,
+    "Operator-managed credentials",
+    { name: "Runtime Agent", executionMode: "embedded", harnessAuth: { method: "runtime" } },
+    "runtime-preset-modes",
+  );
+  for (const [openclaw, text] of [
+    [
+      { executionModes: [] },
+      "OpenClaw is unavailable on this installation: its selected Sandbox Driver refuses Embedded execution, and it cannot run Dedicated OpenClaw. This Preset's operator-managed credentials require OpenClaw. Ask an administrator, or start without a Preset.",
+    ],
+    [
+      { executionModes: ["dedicated"] },
+      "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset.",
+    ],
+    // An outage needs time, not a different Preset (finding 1624).
+    [{ executionModes: [], sandboxDriverUnavailable: true }, SANDBOX_DRIVER_OUTAGE],
+  ]) {
+    const page = await openPreset(t, fixture, namespace, presetId, openclaw);
+    const alert = page
+      .getByRole("alert")
+      .filter({ hasText: /operator-managed credentials|^Agents cannot be created / });
+    await alert.waitFor();
+    assert.equal(await alert.textContent(), text, JSON.stringify(openclaw));
+    assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+    assert.equal(
+      await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+      true,
+    );
+  }
+});
+
+// Create Agent preselects an OpenClaw execution mode the Installation admits, but only one the
+// form chose itself (#2670): a mode the reader picked, or one fixed by Anthropic credentials,
+// stays as it is and shows its refusal. Each case reads the form before the Installation answers.
+// The Sandbox Driver provisions dedicated OpenClaw, so the Installation admits Dedicated only.
+test("Create Agent switches only a mode it chose itself when the Installation answers", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Mode defaults", {
+    sandboxDriver: nativeSandboxDriver(),
+  });
+  const cases = [
+    {
+      name: "a mode the reader picked is kept",
+      async before(page) {
+        await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+        await page.locator(".launch-runtime:not([open]) > summary").click();
+        await page.getByLabel("Execution mode").selectOption("dedicated");
+        await page.getByLabel("Execution mode").selectOption("embedded");
+      },
+      mode: "embedded",
+      alert:
+        "Embedded OpenClaw is unavailable: this installation selects a Sandbox Driver, which requires Dedicated execution. Select Dedicated under Runtime details.",
+    },
+    {
+      // Choosing the harness again hands the mode back to the form.
+      name: "a picked mode followed by a harness change is the form's again",
+      async before(page) {
+        await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+        await page.locator(".launch-runtime:not([open]) > summary").click();
+        await page.getByLabel("Execution mode").selectOption("dedicated");
+        await page.getByLabel("Harness", { exact: true }).selectOption("codex");
+        await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+      },
+      mode: "dedicated",
+    },
+    {
+      name: "Anthropic keeps Embedded",
+      async before(page) {
+        await page.getByLabel("Provider", { exact: true }).selectOption("anthropic");
+        await page.getByLabel("Harness", { exact: true }).selectOption("openclaw");
+      },
+      mode: "embedded",
+      alert:
+        "Anthropic uses Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Choose OpenAI to use Dedicated execution.",
+    },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (t) => {
+      const { page } = await newPage(t, fixture, { browser });
+      const installation = await holdRequests(t, page, `${fixture.origin}/installation`, {
+        method: "GET",
+      });
+      await startWithoutPreset(page, fixture, namespace);
+      await installation.requested;
+      await scenario.before(page);
+      // Before the answer every choice is open and the form keeps Embedded.
+      assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+      installation.release();
+      await page.getByText("Checking installation capabilities…").waitFor({ state: "detached" });
+      assert.equal(await page.getByLabel("Execution mode").inputValue(), scenario.mode);
+      const refusals = page.getByRole("alert").filter({ hasText: /OpenClaw/ });
+      if (scenario.alert === undefined) {
+        assert.equal(await refusals.count(), 0);
+      } else {
+        assert.equal(await refusals.textContent(), scenario.alert);
+        assert.equal(
+          await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
+          true,
+        );
+      }
+    });
+  }
+});
+
+// A Preset with operator-managed credentials and no execution mode leaves the mode to the form,
+// but those credentials need Embedded OpenClaw, so an Installation that admits only Dedicated
+// does not switch it: the form names the Preset instead. The Installation answer is routed: an
+// Installation that admits only Dedicated, over the SSH Compute Driver the fixture uses.
+test("Operator-managed Preset credentials without a mode keep Embedded when the Installation refuses it", async (t) => {
+  const { fixture, namespace } = await createRuntimeAuthFixture(t, "Runtime Preset default", {
+    filesystemConfiguration: true,
+  });
+  const presetId = await savePreset(
+    fixture,
+    namespace,
+    "Operator-managed credentials without a mode",
+    { name: "Runtime Agent", harnessAuth: { method: "runtime" } },
+    "runtime-preset-default",
+  );
+  const page = await openPreset(t, fixture, namespace, presetId, { executionModes: ["dedicated"] });
+  const alert = page.getByRole("alert").filter({ hasText: /operator-managed credentials/ });
+  await alert.waitFor();
+  assert.equal(
+    await alert.textContent(),
+    "This Preset's operator-managed credentials require Embedded OpenClaw, which this installation refuses because it selects a Sandbox Driver. Ask an administrator, or start without a Preset.",
+  );
+  assert.equal(await page.getByLabel("Execution mode").inputValue(), "embedded");
+});
+
+test("Create Agent shows a provisioning refusal's own reason and keeps catch-all answers generic", async (t) => {
+  const fixture = await createConsoleAppFixture(t, provisioningDrivers());
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Provision refusal reasons", { ready: true });
+  const cases = [
+    {
+      name: "named outage",
+      status: 503,
+      error: { code: "DEPENDENCY_UNAVAILABLE", message: "Synthetic named outage." },
+      // An outage keeps Retry, which resubmits the same request ID, but leads with the reason.
+      text: "Synthetic named outage. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // Channel credential validation runs before admission, so this 503 refused the request.
+      name: "channel credential outage",
+      status: 503,
+      error: {
+        code: "CHANNEL_CREDENTIAL_UNAVAILABLE",
+        message:
+          "Channel credential validation is temporarily unavailable. Retry before deploying.",
+        details: [{ path: "/channels/slack/botToken", code: "INVALID_VALUE" }],
+      },
+      text: "Channel credential validation is temporarily unavailable. Retry before deploying. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // A 503 without a code, such as a proxy's, names no refusal whatever it says.
+      name: "uncoded outage",
+      status: 503,
+      error: { message: "Synthetic named outage." },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // Met after admission (the provisioning worker, deploy), never refused before it here.
+      name: "named outage after admission",
+      status: 503,
+      error: {
+        code: "RUNTIME_CREDENTIALS_CLUSTER_RBAC",
+        message:
+          "The cluster denied OCC access needed for this Agent's runtime credentials. Ask a platform operator to grant the API ServiceAccount the documented tenant RoleBindings in the Agent's Kubernetes namespaces.",
+      },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      name: "catch-all outage",
+      status: 503,
+      error: {
+        code: "DEPENDENCY_UNAVAILABLE",
+        message: "A required platform dependency is unavailable.",
+      },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // The API could not confirm its own commit: the reason is that the outcome is unknown.
+      name: "unconfirmed commit",
+      status: 503,
+      error: {
+        code: "DEPENDENCY_UNAVAILABLE",
+        message:
+          "The operation outcome is unknown. Do not retry automatically; inspect current state before a deliberate new action.",
+      },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // Only a 503 names a refusal: a gateway's 502 says nothing about the request.
+      name: "named code on a 502",
+      status: 502,
+      error: { code: "DEPENDENCY_UNAVAILABLE", message: "Synthetic named outage." },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // Any other 5xx may have committed, so it names no refusal.
+      name: "internal error",
+      status: 500,
+      error: { code: "INTERNAL_ERROR", message: "The platform request could not be completed." },
+      text: "Outcome unknown. Retry resubmits the same request ID and saved references.",
+      retry: true,
+    },
+    {
+      // The API's answer to dedicated OpenClaw without a provisioning Sandbox Driver.
+      name: "named conflict",
+      status: 409,
+      error: { code: "RESOURCE_CONFLICT", message: DEDICATED_SANDBOX_REFUSAL },
+      text: DEDICATED_SANDBOX_REFUSAL,
+      retry: false,
+    },
+    {
+      name: "catch-all conflict",
+      status: 409,
+      error: {
+        code: "RESOURCE_CONFLICT",
+        message: "The requested platform resource already exists.",
+      },
+      text: "The request conflicts with the saved state. Check for an existing Agent name or changed Configuration, then refresh.",
+      retry: false,
+    },
+  ];
+  for (const [index, answer] of cases.entries()) {
+    await t.test(answer.name, async (t) => {
+      const { page } = await newPage(t, fixture, { browser });
+      await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+      await page.getByRole("button", { name: "Start without Preset" }).click();
+      await page.getByLabel("Agent name").fill(`Provision refusal ${index}`);
+      await pickCodexCredential(page);
+      const requestId = `req_00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+      const provisionUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/provision`;
+      await page.route(provisionUrl, (route) =>
+        route.request().method() === "POST"
+          ? route.fulfill({
+              status: answer.status,
+              contentType: "application/json",
+              body: JSON.stringify({ error: answer.error, meta: { requestId } }),
+            })
+          : route.fallback(),
+      );
+      await page.getByRole("button", { name: "Create Agent" }).click();
+      const feedback = page.getByRole("alert").filter({ hasText: requestId });
+      await feedback.waitFor();
+      assert.equal(await feedback.textContent(), `${answer.text} Request ID: ${requestId}`);
+      // An outage keeps the form locked for Retry; a refusal unlocks it for a fix.
+      assert.equal(
+        await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
+        answer.retry,
+      );
+      assert.equal(await page.getByLabel("Agent name").isDisabled(), answer.retry);
+    });
+  }
+});
+
+// Create Agent shows a full Namespace Pod quota while the first deployment reports it, and shows
+// generic progress again once the reader can no longer read that deployment (finding 1637). A
+// denied read (403) loses access as surely as a missing one (404): the quota line must not stay.
+test("Create Agent drops the Pod quota line when the deployment read is denied", async (t) => {
+  const quotaFull =
+    "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.";
+  const fixture = await createConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pod quota denied", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  await routeInstallationProvisioning(page, fixture);
+  await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: [], meta: { requestId: "req_repository_choices" } }),
+    }),
+  );
+  const updatedAt = new Date().toISOString();
+  const meta = { requestId: "req_00000000-0000-4000-8000-000000000001" };
+  const url = `/namespaces/${namespace.id}/agents/provision/work_quota_denied`;
+  const agentId = "agt_00000000-0000-4000-8000-00000000b637";
+  const revisionId = "rev_00000000-0000-4000-8000-00000000b637";
+  const job = (status, extra = {}) => ({
+    workId: "work_quota_denied",
+    status,
+    phase: "configuration",
+    attemptCount: 1,
+    updatedAt,
+    url,
+    ...extra,
+  });
+  const handedOff = { phase: "handoff", agentId, configurationId: "cfg_quota", revisionId };
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({ data: { provisioning: job("queued") }, meta }),
+    }),
+  );
+  // Create Agent reads the handed-off deployment three times before the job fails.
+  const reads = [
+    job("running"),
+    job("running", handedOff),
+    job("running", handedOff),
+    job("running", handedOff),
+    job("failed", {
+      ...handedOff,
+      error: {
+        code: "PROVISIONING_DEPENDENCY_UNAVAILABLE",
+        message: "Agent provisioning could not complete.",
+      },
+    }),
+  ];
+  let read = 0;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision/work_quota_denied`, (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ data: reads[Math.min(read++, reads.length - 1)], meta }),
+    }),
+  );
+  // The first deployment read names the quota; every later one is denied.
+  let deploymentReads = 0;
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agentId}/deployments/${revisionId}`,
+    (route) => {
+      deploymentReads += 1;
+      return route.fulfill(
+        deploymentReads === 1
+          ? {
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                data: {
+                  deploymentId: revisionId,
+                  namespaceId: namespace.id,
+                  agentId,
+                  status: "queued",
+                  error: null,
+                  warnings: [],
+                  progress: {
+                    lastAttempt: {
+                      at: updatedAt,
+                      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+                      message: quotaFull,
+                    },
+                    nextAttemptAt: updatedAt,
+                  },
+                },
+                meta,
+              }),
+            }
+          : {
+              status: 403,
+              contentType: "application/json",
+              body: JSON.stringify({
+                error: {
+                  code: "FORBIDDEN",
+                  message: "The exact platform operation was not authorized.",
+                },
+                meta,
+              }),
+            },
+      );
+    },
+  );
+
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("heading", { name: "Create Agent" }).waitFor();
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Pod quota denied");
+  await pickCodexCredential(page, "model-secret-value");
+  await page.evaluate(() => {
+    globalThis.provisioningWrites = [];
+    new globalThis.MutationObserver((records) => {
+      for (const record of records) {
+        if (record.target.nodeType === 1 && record.target.getAttribute("role") === "status") {
+          const text = [...record.addedNodes].map((node) => node.textContent).join("");
+          if (text.startsWith("Provisioning") || text.startsWith("The Namespace")) {
+            globalThis.provisioningWrites.push(text);
+          }
+        }
+      }
+    }).observe(globalThis.document.body, { childList: true, subtree: true });
+  });
+  await page.getByRole("button", { name: "Create Agent" }).click();
+  await page.getByText("Provisioning failed.", { exact: true }).waitFor();
+  assert.equal(read, reads.length);
+  assert.equal(deploymentReads, 3);
+  assert.deepEqual(await page.evaluate(() => globalThis.provisioningWrites), [
+    "Provisioning request accepted.",
+    "Provisioning queued…",
+    "Provisioning Agent…",
+    quotaFull,
+    "Provisioning Agent…",
+    "Provisioning failed.",
+  ]);
+});
+
 test("Agent name counts characters, as the API does, not UTF-16 code units", async (t) => {
   const fixture = await createConsoleAppFixture(t, provisioningDrivers());
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent name length", { ready: true });
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
-  await page.getByLabel("Authentication method").selectOption("codex_pat");
-  await createModelCredentialSecret(page, `model-secret-${randomUUID()}`);
-  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  await pickCodexCredential(page);
   const name = page.getByLabel("Agent name");
   // Only the writes a submit makes. Once a credential is selected, the form also prefetches
   // the plugin catalog with a read-only POST .../agents/plugins after a 300 ms debounce,

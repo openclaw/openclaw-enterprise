@@ -120,6 +120,7 @@ the [installation procedure](../guides/deploy/production-installation.md).
 `GET /namespaces/:namespaceId/agents/repository-options` requires Agent `create`;
 the exact-Agent editing route requires `update`. Both return approved
 `repositoryRef`, `displayName`, `allowedProfiles` and optional `description`.
+Descriptions allow 512 Unicode code points.
 `descriptionRefs` accepts up to 20 unique, comma-separated refs;
 `meta.descriptionsPending` signals background work, and missing descriptions never
 block selection. Authorized discovery failure yields
@@ -127,8 +128,8 @@ block selection. Authorized discovery failure yields
 yields 409. Only success or that outage permits a fresh ordinary draft; editing
 requires success. Writes reauthorize and resolve.
 
-The service rechecks approved refs and fetches metadata with a private,
-repository-scoped Metadata-read token, validating GitHub's numeric repository ID;
+The service rechecks approval and fetches metadata with repository-scoped
+Metadata-read tokens, verifying GitHub's numeric repository ID;
 the Driver checks provider, App, installation and repository IDs. Lookups share
 provider capacity and token cleanup with sessions and are cached for five minutes.
 Descriptions never grant access.

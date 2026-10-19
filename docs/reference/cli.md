@@ -1,16 +1,13 @@
 # OCC CLI command reference
 
-`occ` manages OpenClaw Control Plane (OCC) resources. To install it and make
-your first request, see [CLI setup](../guides/cli.md). To see help for the
-installed version, run `occ --help` or add `--help` to a command.
+See [CLI setup](../guides/cli.md) to install `occ`. Run `occ --help` for commands and flags.
 
 ## Global options
 
-Command-line flags override the corresponding environment variables. An
-explicitly empty value, such as `--file=` or `--revision=`, is refused before
-the command does anything; omit the flag to use its default. Two exceptions
-clear their environment variable: `--ca-bundle=`, and `--namespace=`, which
-`service-key create` accepts for an Installation-scoped principal.
+Flags override environment variables. Empty values (`--file=`, `--revision=`)
+fail before execution; omit a flag to use its default. `--ca-bundle=` clears
+its environment variable; `--namespace=` does so for Installation-scoped
+`service-key create`.
 
 | Flag                 | Environment variable   | What it controls                                                                                                                           |
 | -------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -29,8 +26,7 @@ HTTPS endpoint unless connecting to a local loopback development Installation.
 See [Service API Keys](authentication/service-api-keys.md) for issuing or rotating
 keys.
 
-Pressing Ctrl-C, or sending `SIGTERM`, cancels an in-flight request and exits
-with an error instead of waiting for `--timeout-seconds` to expire.
+Ctrl-C or `SIGTERM` cancels in-flight requests and exits with an error.
 
 ## Resource commands
 
@@ -72,7 +68,7 @@ input is not supported. The server validates document fields against the
 | `occ iam role get ID`                                  | Reads a Namespace Role.                                                                                                                                                                                                                                                                                                                                                                           |
 | `occ iam role create --file FILE`                      | Creates a Namespace Role with explicit permissions.                                                                                                                                                                                                                                                                                                                                               |
 | `occ iam role delete ID`                               | Deletes an unreferenced Namespace Role.                                                                                                                                                                                                                                                                                                                                                           |
-| `occ iam access-binding list`                          | Lists Namespace AccessBindings.                                                                                                                                                                                                                                                                                                                                                                   |
+| `occ iam access-binding list`                          | Lists Namespace AccessBindings. The SUBJECT KIND column distinguishes `identity` and `group` subjects in list, get, and create tables.                                                                                                                                                                                                                                                            |
 | `occ iam access-binding get ID`                        | Reads a Namespace AccessBinding.                                                                                                                                                                                                                                                                                                                                                                  |
 | `occ iam access-binding create --file FILE`            | Grants a Role to a principal for an exact resource.                                                                                                                                                                                                                                                                                                                                               |
 | `occ iam access-binding delete ID`                     | Deletes a Namespace AccessBinding.                                                                                                                                                                                                                                                                                                                                                                |
@@ -112,6 +108,9 @@ For [unreadable saved Agent settings](agents.md#unreadable-saved-settings),
 deployment status null for an unreadable revision and names it on stderr; if
 the Agent itself is unreadable, it skips all status reads and explains why. See the [CLI browsing flow](../flows/cli-agent-browsing.md).
 
+`service-key create --out FILE` sets the new file to `0600` before requesting a
+key, including under a restrictive umask. Existing files and symlinks are refused.
+
 `service-key create --expires-in-days N` accepts 1–365. Omit the flag for 30 days;
 explicit zero is refused before output-file creation or API issuance.
 
@@ -135,13 +134,11 @@ claimed.
 
 `occ agent runtime AGENT_ID` and `occ agent logs AGENT_ID` read the
 [Agent logs](../guides/topics/agent-logs.md) routes. Without `--revision ID`,
-both read the latest revision when it differs from the active one and has Pods
-or concrete provider Harness status (`running`, `starting`, or `lost`), including
-a failed replacement with no revision Pods yet. An `unknown` Harness status
-alone is not runtime evidence. Podless Harness selection also requires a higher
-revision number than the exact active revision; unreadable or invalid active
-metadata retains the active revision. Otherwise they read the active revision, else
-the latest revision. They print the revision they
+a candidate with Pods is read unless exact active metadata proves it older.
+Unreadable or invalid active metadata does not exclude that Pod candidate.
+A candidate with only provider Harness status (`running`, `starting`, or `lost`)
+needs to be proven newer; `unknown` alone is not runtime evidence. Otherwise
+both read the active revision, else the latest revision. They print the revision they
 read to stderr; a reader without Agent `operate` cannot probe runtime status, so the
 notice names the other readable revision to pass. Notices call any other revision newer or
 older only when the active revision's metadata proves it. `runtime` accepts `-o table|json|yaml`
@@ -212,12 +209,13 @@ Run these from a repository checkout. They use local development configuration,
 not the remote connection or output options above. Kubernetes is the supported
 local setup for deploying an Agent; follow [Local Setup](../guides/quickstart.md).
 
-| Command                        | What it does                                                                                                                                                                   |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `occ dev up`                   | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.               |
-| `occ dev up --key-output PATH` | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                       |
-| `occ dev down`                 | Stops the selected profile. Docker keeps Compose volumes by default. Kubernetes removes its owned k3d cluster; the Compose control-plane profile also removes Compose volumes. |
-| `occ dev down --volumes`       | Also removes Docker Compose volumes; Kubernetes cleanup already removes its volumes.                                                                                           |
+| Command                                         | What it does                                                                                                                                                                   |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `occ dev up`                                    | Starts the profile selected by `OCC_DEVELOPMENT_COMPUTE_DRIVER`: `docker` (default) or `kubernetes`. Docker is a control-plane preview and cannot deploy Agents.               |
+| `occ dev up --key-output PATH`                  | Writes the bootstrap service-key file to an absent absolute path in a private directory.                                                                                       |
+| `occ dev up --sandbox-network-policy-file FILE` | Adds binary and endpoint rules for Kubernetes Compute with OpenShell; see [startup network policy](../guides/deploy/local-sandbox-network-policy.md).                          |
+| `occ dev down`                                  | Stops the selected profile. Docker keeps Compose volumes by default. Kubernetes removes its owned k3d cluster; the Compose control-plane profile also removes Compose volumes. |
+| `occ dev down --volumes`                        | Also removes Docker Compose volumes; Kubernetes cleanup already removes its volumes.                                                                                           |
 
 In the Go Kubernetes helpers, a failed exclusive write removes its newly created
 output, including a partial key file. Existing targets stay unchanged. If removal
@@ -231,3 +229,6 @@ profile; the Compute and Sandbox Driver settings select the implementation.
 When `scripts/dev-up` fails on the Docker profile, `occ dev up` exits with the
 script's status (`2` for a usage or configuration error) and prints nothing
 beyond the script's own message.
+
+[Agent policy commands](../guides/topics/agent-sandbox-policy.md#cli) default to
+`--facet networking`. Editing admission is temporary pending Guardrails.

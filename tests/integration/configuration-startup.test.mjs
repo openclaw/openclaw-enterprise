@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
@@ -18,6 +17,7 @@ import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/compos
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
 import { createTlsMaterial } from "../fixtures/repository-credentials/process.mjs";
@@ -35,6 +35,40 @@ function startupDiagnostic(stderr, event) {
   const diagnostic = jsonLines(stderr).find((line) => line.event === event);
   assert.ok(diagnostic, stderr);
   return diagnostic;
+}
+
+// The startup cases boot the real API and worker processes with an allowlisted environment,
+// which drops NODE_COMPILE_CACHE, so it is passed explicitly: the lane's cache in CI, otherwise
+// a temporary one owned by this file, so each boot after the first reuses compiled code.
+const compileCache =
+  process.env.NODE_COMPILE_CACHE || (await mkdtemp(join(tmpdir(), "configuration-startup-cache-")));
+if (compileCache !== process.env.NODE_COMPILE_CACHE) {
+  after(() => rm(compileCache, { recursive: true, force: true }));
+}
+
+// The production listener and sign-in settings of the API boots that reach session auth.
+const productionServer = {
+  OCC_HOST: "192.0.2.10",
+  OCC_PORT: "8080",
+  OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+  OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
+};
+
+// Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
+// the signal instead of reading as a wrong exit status.
+const limit = concurrencyLimit();
+async function boot(script, env, timeout = 10_000) {
+  const { signal, ...result } = await limit(() =>
+    captureChild(process.execPath, [script], {
+      cwd: process.cwd(),
+      env: { ...env, NODE_COMPILE_CACHE: compileCache },
+      timeout,
+    }),
+  );
+  if (signal) {
+    throw new Error(`${script} ended by ${signal} (timeout ${timeout} ms): ${result.stderr}`);
+  }
+  return result;
 }
 
 async function fixture(t, configuration = installation()) {
@@ -184,17 +218,19 @@ test("API and worker refuse a bad observability host or runtime image before ope
     ],
     ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
   ];
-  const boot = (script, event, env) => {
-    const result = spawnSync(process.execPath, [script], {
-      cwd: process.cwd(),
-      env,
-      encoding: "utf8",
-      timeout: 15_000,
-    });
-    assert.equal(result.status, 1, script);
-    assert.ok(!result.stderr.includes(path), result.stderr);
-    return startupDiagnostic(result.stderr, event);
-  };
+  // Each case boots both processes on its own copy of the file, concurrently.
+  const refuses = async (file, code, label) =>
+    settled(
+      processes.map(async ([script, event, env]) => {
+        const result = await boot(script, { ...env, OCC_CONFIG_PATH: file }, 15_000);
+        assert.equal(result.status, 1, script);
+        assert.ok(!result.stderr.includes(file), result.stderr);
+        const diagnostic = startupDiagnostic(result.stderr, event);
+        assert.equal(diagnostic.code, code, `${script} ${label}`);
+        return diagnostic;
+      }),
+    );
+  const cases = [];
   for (const shorthand of [
     "http://192.168.1",
     "http://2130706433",
@@ -207,12 +243,13 @@ test("API and worker refuse a bad observability host or runtime image before ope
     "http://good.example\nevil.com/x",
   ]) {
     configuration.observability = { url: shorthand };
-    await writeFile(path, JSON.stringify(configuration), "utf8");
-    for (const [script, event, env] of processes) {
-      const diagnostic = boot(script, event, env);
-      assert.equal(diagnostic.code, "OBSERVABILITY_URL_INVALID", `${script} ${shorthand}`);
-      assert.equal(diagnostic.message, undefined);
-    }
+    cases.push(
+      fixture(t, structuredClone(configuration)).then(async (copy) => {
+        for (const diagnostic of await refuses(copy, "OBSERVABILITY_URL_INVALID", shorthand)) {
+          assert.equal(diagnostic.message, undefined, shorthand);
+        }
+      }),
+    );
   }
   // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
   // other reference its parser refuses, such as one with .. in the path.
@@ -226,21 +263,23 @@ test("API and worker refuse a bad observability host or runtime image before ope
     ]) {
       assert.notEqual(refused, original);
       images[role] = refused;
-      await writeFile(path, JSON.stringify(configuration), "utf8");
-      for (const [script, event, env] of processes) {
-        const diagnostic = boot(script, event, env);
-        assert.equal(diagnostic.code, "RUNTIME_IMAGE_INVALID", `${script} ${images[role]}`);
-        assert.equal(diagnostic.message, undefined);
-      }
+      cases.push(
+        fixture(t, structuredClone(configuration)).then(async (copy) => {
+          for (const diagnostic of await refuses(copy, "RUNTIME_IMAGE_INVALID", refused)) {
+            assert.equal(diagnostic.message, undefined, refused);
+          }
+        }),
+      );
     }
     images[role] = original;
   }
   configuration.observability = { url: "http://192.168.1.1" };
-  await writeFile(path, JSON.stringify(configuration), "utf8");
-  for (const [script, event, env] of processes) {
-    const diagnostic = boot(script, event, env);
-    assert.equal(diagnostic.code, "PERSISTENCE_UNAVAILABLE", script);
-  }
+  cases.push(
+    writeFile(path, JSON.stringify(configuration), "utf8").then(() =>
+      refuses(path, "PERSISTENCE_UNAVAILABLE", "valid"),
+    ),
+  );
+  await settled(cases);
   const corrected = JSON.parse(await readFile(path, "utf8"));
   assert.equal(corrected.occ.cluster, "production-west");
   assert.equal(corrected.observability.url, "http://192.168.1.1");
@@ -251,7 +290,7 @@ test("Installation startup declares native worker support only as a custom runti
   const path = await fixture(t, configuration);
   const load = () =>
     loadInstallationConfiguration({ mode: "development", environment: { OCC_CONFIG_PATH: path } });
-  // Off by default: the pinned runtime cannot run dedicated native OpenClaw.
+  // The pinned runtime needs no operator declaration in the Installation file.
   assert.equal((await load()).installation.runtime, undefined);
   configuration.runtime = { nativeWorkerSupport: "custom-image" };
   await writeFile(path, JSON.stringify(configuration), "utf8");
@@ -456,20 +495,12 @@ test("repository startup constructs the same local resolver without a private so
 
   // The actual API reaches its ordinary database dependency while the configured
   // Unix directory is absent. No private service inputs are supplied to it.
-  const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: path,
-      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-      OCC_HOST: "192.0.2.10",
-      OCC_PORT: "8080",
-      OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-      OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
-    },
-    encoding: "utf8",
-    timeout: 10000,
+  const server = await boot("apps/controller/src/server.mjs", {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+    ...productionServer,
   });
   assert.equal(server.status, 1);
   assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "PERSISTENCE_UNAVAILABLE");
@@ -721,12 +752,17 @@ test("production embedded replacements preserve their active Service across fail
   }));
   const pool = new pg.Pool({ connectionString: "postgresql://127.0.0.1:1/occ" });
   t.after(async () => pool.end());
+  const events = [];
   const worker = createControllerWorker({
     pool,
     mode: "production",
     drivers,
-    emit: () => {},
+    emit: (event) => events.push(event),
   });
+  const completed = () =>
+    events
+      .filter(({ event }) => event === "worker.completed")
+      .map(({ workId, outcome, result, code }) => ({ workId, outcome, result, code }));
   // Queue health is outside this selector unit; the PostgreSQL suites exercise
   // real health observations while activation holds and renews its claim.
   t.mock.method(worker.queue, "pending", async () => 0);
@@ -889,6 +925,27 @@ test("production embedded replacements preserve their active Service across fail
   assert.equal(activeAgent.activeRevisionId, predecessor.id);
   assert.deepEqual(service.spec.selector, activeSelector);
   assert.deepEqual(serviceWrites, []);
+  // The pass logs the retry it committed, not the success it resolved (finding 1611).
+  const lostRace = {
+    workId: claim.idempotencyKey,
+    outcome: "retry",
+    result: "retry",
+    code: "ACTIVE_REVISION_CHANGED",
+  };
+  assert.deepEqual(completed(), [lostRace]);
+
+  // The pointer moved before the compare-and-set: the same retry, and the same log.
+  activeAgent.activeRevisionId = `rev_production-${harness.mode}-newer`;
+  await worker.finalizeRevision(claim, observation);
+  assert.equal(compareAndSetAttempts, 1);
+  assert.deepEqual(retries, Array(2).fill({ code: "ACTIVE_REVISION_CHANGED" }));
+  assert.deepEqual(completed(), [lostRace, lostRace]);
+
+  // The pointer moved after activation committed it: completion retries and logs that retry too.
+  await worker.completeActivatedRevision(claim, { ...observation, revision: candidate });
+  assert.deepEqual(retries, Array(3).fill({ code: "ACTIVE_REVISION_CHANGED" }));
+  assert.deepEqual(completed(), [lostRace, lostRace, lostRace]);
+  activeAgent.activeRevisionId = predecessor.id;
 
   // Recovery for an older claim must never replace a gateway already advanced to a newer revision.
   const newerGateway = computeDriver.deployment(
@@ -1015,31 +1072,26 @@ test("development OCC_AUTH_BASE_URL must be a loopback origin or an HTTPS localh
   // The server refuses each spelling in configuration(), before reading the Installation, so the
   // startup diagnostic names the setting instead of a later generic failure.
   const path = await fixture(t);
-  for (const authBaseURL of [
-    "http://x.localhost",
-    "https://.localhost",
-    "http://localhost:3000/auth",
-  ]) {
-    const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-      cwd: process.cwd(),
-      env: {
-        PATH: process.env.PATH,
-        NODE_ENV: "development",
-        OCC_CONFIG_PATH: path,
-        OCC_HOST: "127.0.0.1",
-        OCC_PORT: "8080",
-        OCC_AUTH_BASE_URL: authBaseURL,
+  await settled(
+    ["http://x.localhost", "https://.localhost", "http://localhost:3000/auth"].map(
+      async (authBaseURL) => {
+        const server = await boot("apps/controller/src/server.mjs", {
+          PATH: process.env.PATH,
+          NODE_ENV: "development",
+          OCC_CONFIG_PATH: path,
+          OCC_HOST: "127.0.0.1",
+          OCC_PORT: "8080",
+          OCC_AUTH_BASE_URL: authBaseURL,
+        });
+        assert.equal(server.status, 1, authBaseURL);
+        assert.equal(
+          startupDiagnostic(server.stderr, "startup-error").code,
+          "AUTH_BASE_URL_INVALID",
+          authBaseURL,
+        );
       },
-      encoding: "utf8",
-      timeout: 10_000,
-    });
-    assert.equal(server.status, 1, authBaseURL);
-    assert.equal(
-      startupDiagnostic(server.stderr, "startup-error").code,
-      "AUTH_BASE_URL_INVALID",
-      authBaseURL,
-    );
-  }
+    ),
+  );
 });
 
 test("production server and worker resolve singleton startup without an Installation ID", async (t) => {
@@ -1051,28 +1103,16 @@ test("production server and worker resolve singleton startup without an Installa
     OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
   };
 
+  const [server, worker] = await settled([
+    boot("apps/controller/src/server.mjs", { ...shared, OCC_HOST: "192.0.2.10", OCC_PORT: "8080" }),
+    boot("apps/controller/src/worker.mjs", shared),
+  ]);
   // The actual server gets beyond singleton/Driver startup and fails only at missing session auth.
-  const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      ...shared,
-      OCC_HOST: "192.0.2.10",
-      OCC_PORT: "8080",
-    },
-    encoding: "utf8",
-    timeout: 10_000,
-  });
   assert.equal(server.status, 1);
   assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "AUTH_BASE_URL_INVALID");
   assert.doesNotMatch(server.stderr, /OCC_AUTH_BASE_URL|OCC_AUTH_SECRET|OCC_INSTALLATION_ID/);
 
   // The real worker likewise reaches PostgreSQL; no test-owned database or driver is substituted.
-  const worker = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
-    cwd: process.cwd(),
-    env: shared,
-    encoding: "utf8",
-    timeout: 10_000,
-  });
   assert.equal(worker.status, 1);
   assert.equal(
     startupDiagnostic(worker.stderr, "worker.startup-error").code,
@@ -1090,19 +1130,21 @@ test("only the actual API process reads ChatGPT admin credentials and backend ac
     OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
   };
 
-  // API startup fails on its missing mounted admin key before opening the configured database.
-  const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
+  const [server, worker, inMemory] = await settled([
+    boot("apps/controller/src/server.mjs", {
       ...shared,
-      OCC_HOST: "192.0.2.10",
+      ...productionServer,
+    }),
+    boot("apps/controller/src/worker.mjs", shared),
+    boot("apps/controller/src/server.mjs", {
+      PATH: process.env.PATH,
+      NODE_ENV: "development",
+      OCC_CONFIG_PATH: path,
+      OCC_HOST: "127.0.0.1",
       OCC_PORT: "8080",
-      OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-      OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
-    },
-    encoding: "utf8",
-    timeout: 10_000,
-  });
+    }),
+  ]);
+  // API startup fails on its missing mounted admin key before opening the configured database.
   assert.equal(server.status, 1);
   assert.equal(
     startupDiagnostic(server.stderr, "startup-error").code,
@@ -1111,12 +1153,6 @@ test("only the actual API process reads ChatGPT admin credentials and backend ac
   assert.doesNotMatch(server.stderr, /ChatGPT admin-key Secret is unavailable/);
 
   // The same configured worker cannot read that mount and fails only when PostgreSQL is unavailable.
-  const worker = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
-    cwd: process.cwd(),
-    env: shared,
-    encoding: "utf8",
-    timeout: 10_000,
-  });
   assert.equal(worker.status, 1);
   assert.equal(
     startupDiagnostic(worker.stderr, "worker.startup-error").code,
@@ -1125,18 +1161,6 @@ test("only the actual API process reads ChatGPT admin credentials and backend ac
   assert.doesNotMatch(worker.stderr, /ChatGPT|admin-key|ServiceAccount Driver/);
 
   // Driver-private backend bindings cannot silently fall back to ephemeral in-memory persistence.
-  const inMemory = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-    cwd: process.cwd(),
-    env: {
-      PATH: process.env.PATH,
-      NODE_ENV: "development",
-      OCC_CONFIG_PATH: path,
-      OCC_HOST: "127.0.0.1",
-      OCC_PORT: "8080",
-    },
-    encoding: "utf8",
-    timeout: 10_000,
-  });
   assert.equal(inMemory.status, 1);
   assert.equal(
     startupDiagnostic(inMemory.stderr, "startup-error").code,
@@ -1466,7 +1490,7 @@ test("API and worker name a Preset file failure in their startup error code", as
   // An operator who lists a file the image lacks, or a broken one, needs a cause rather
   // than STARTUP_FAILED. The file path and the loader message stay out of the log.
   const duplicate = JSON.stringify({ name: "twice", template: {} });
-  for (const [filename, contents, files] of [
+  const cases = [
     ["missing.json", undefined],
     [
       "invalid-template.json",
@@ -1476,49 +1500,41 @@ test("API and worker name a Preset file failure in their startup error code", as
     ["duplicate.json", duplicate, ["cases/duplicate.json", "cases/duplicate-b.json"]],
     ["not-a-list.json", undefined, "cases/not-a-list.json"],
     ["blank-entry", undefined, ["  "]],
-  ]) {
-    const configuration = installation();
-    configuration.presets = { includeDefaults: false, files: files ?? [`cases/${filename}`] };
-    const path = await fixture(t, configuration);
-    await mkdir(join(dirname(path), "cases"), { recursive: true });
-    if (contents !== undefined) {
-      await writeFile(join(dirname(path), "cases", filename), contents);
-      await writeFile(join(dirname(path), "cases", "duplicate-b.json"), duplicate);
-    }
-    const shared = {
-      PATH: process.env.PATH,
-      NODE_ENV: "production",
-      OCC_CONFIG_PATH: path,
-      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
-    };
-    const server = spawnSync(process.execPath, ["apps/controller/src/server.mjs"], {
-      cwd: process.cwd(),
-      env: {
-        ...shared,
-        OCC_HOST: "192.0.2.10",
-        OCC_PORT: "8080",
-        OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
-        OCC_AUTH_BASE_URL: "http://192.0.2.10:8080",
-      },
-      encoding: "utf8",
-      timeout: 10_000,
-    });
-    assert.equal(server.status, 1, filename);
-    const apiDiagnostic = startupDiagnostic(server.stderr, "startup-error");
-    assert.equal(apiDiagnostic.code, "PRESET_FILE_INVALID", filename);
-    assert.equal(apiDiagnostic.message, undefined);
-    assert.ok(!server.stderr.includes(dirname(path)), server.stderr);
+  ];
+  await settled(
+    cases.map(async ([filename, contents, files]) => {
+      const configuration = installation();
+      configuration.presets = { includeDefaults: false, files: files ?? [`cases/${filename}`] };
+      const path = await fixture(t, configuration);
+      await mkdir(join(dirname(path), "cases"), { recursive: true });
+      if (contents !== undefined) {
+        await writeFile(join(dirname(path), "cases", filename), contents);
+        await writeFile(join(dirname(path), "cases", "duplicate-b.json"), duplicate);
+      }
+      const shared = {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        OCC_CONFIG_PATH: path,
+        OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      };
+      const [server, worker] = await settled([
+        boot("apps/controller/src/server.mjs", {
+          ...shared,
+          ...productionServer,
+        }),
+        boot("apps/controller/src/worker.mjs", shared),
+      ]);
+      assert.equal(server.status, 1, filename);
+      const apiDiagnostic = startupDiagnostic(server.stderr, "startup-error");
+      assert.equal(apiDiagnostic.code, "PRESET_FILE_INVALID", filename);
+      assert.equal(apiDiagnostic.message, undefined);
+      assert.ok(!server.stderr.includes(dirname(path)), server.stderr);
 
-    const worker = spawnSync(process.execPath, ["apps/controller/src/worker.mjs"], {
-      cwd: process.cwd(),
-      env: shared,
-      encoding: "utf8",
-      timeout: 10_000,
-    });
-    assert.equal(worker.status, 1, filename);
-    const workerDiagnostic = startupDiagnostic(worker.stderr, "worker.startup-error");
-    assert.equal(workerDiagnostic.code, "PRESET_FILE_INVALID", filename);
-    assert.equal(workerDiagnostic.message, undefined);
-    assert.ok(!worker.stderr.includes(dirname(path)), worker.stderr);
-  }
+      assert.equal(worker.status, 1, filename);
+      const workerDiagnostic = startupDiagnostic(worker.stderr, "worker.startup-error");
+      assert.equal(workerDiagnostic.code, "PRESET_FILE_INVALID", filename);
+      assert.equal(workerDiagnostic.message, undefined);
+      assert.ok(!worker.stderr.includes(dirname(path)), worker.stderr);
+    }),
+  );
 });

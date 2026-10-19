@@ -57,7 +57,7 @@ function render(loginMode, node, initialSetup, environment = {}) {
 }
 
 test("dedicated Harness shares one claim while preserving private subpaths", async (t) => {
-  for (const loginMode of ["api_key", "oauth"]) {
+  for (const loginMode of ["api_key", "codex_pat", "chatgptAuthTokens"]) {
     for (const node of ["none", "setup-file", "native"]) {
       for (const initialSetup of [false, true]) {
         await t.test(`${loginMode} ${node} setup=${initialSetup}`, () => {
@@ -77,25 +77,20 @@ test("dedicated Harness shares one claim while preserving private subpaths", asy
           const expected = [
             ["workspace", "/home/node/workspace"],
             ["generated-images", "/home/node/.codex/generated_images"],
-            ...(loginMode === "oauth"
-              ? [["codex-home", homePath]]
-              : [["codex-sessions", "/home/node/.codex/sessions"]]),
+            ["codex-sessions", "/home/node/.codex/sessions"],
             ...(node === "none" ? [] : [[nodeName, nodePath]]),
           ];
           assert.deepEqual(
             workspaceMounts.map(({ subPath, mountPath }) => [subPath, mountPath]),
             expected,
           );
-          const projected = driver.sandboxWorkspaceMounts(
-            pod.volumes,
-            mounts,
-            loginMode === "oauth",
-            node !== "none",
-          );
+          const projected = driver.sandboxWorkspaceMounts(pod.volumes, mounts, node !== "none");
           assert.deepEqual(
             projected.map(({ subPath, mountPath }) => [subPath, mountPath]),
-            expected.filter(([subPath]) => subPath !== "codex-home"),
+            expected,
           );
+          // Authentication remains Pod-local for every supported login mode.
+          assert(!mounts.some(({ mountPath }) => mountPath === homePath));
           assert(
             projected.every(
               ({ claimName, readOnly }) =>
@@ -120,7 +115,7 @@ test("dedicated Harness shares one claim while preserving private subpaths", asy
               setupInit.volumeMounts
                 .filter(({ name }) => name === claimVolume)
                 .map(({ subPath, mountPath }) => [subPath, mountPath]),
-              expected.filter(([subPath]) => subPath !== "codex-home" && subPath !== nodeName),
+              expected.filter(([subPath]) => subPath !== nodeName),
             );
             assert(!setupInit.volumeMounts.some(({ mountPath }) => mountPath === homePath));
           }
@@ -150,28 +145,28 @@ test("dedicated Harness shares one claim while preserving private subpaths", asy
   }
 });
 
-test("provider projection rejects unexpected node and OAuth home mounts", () => {
-  const { driver, pod } = render("oauth", "setup-file", false);
+test("provider projection rejects unexpected node and persistent authentication home mounts", () => {
+  const { driver, pod } = render("chatgptAuthTokens", "setup-file", false);
   const mounts = pod.containers[0].volumeMounts;
-  const home = mounts.find(({ mountPath }) => mountPath === homePath);
   const node = mounts.find(({ mountPath }) => mountPath === nodePath);
-  const project = (candidate, oauth = true) =>
-    driver.sandboxWorkspaceMounts(pod.volumes, candidate, oauth, true);
-  for (const bad of [
-    mounts.filter((mount) => mount !== home),
-    [...mounts, home],
-    mounts.map((mount) => (mount === home ? { ...mount, name: "other" } : mount)),
-    mounts.map((mount) => (mount === home ? { ...mount, subPath: "other" } : mount)),
-    mounts.map((mount) => (mount === home ? { ...mount, readOnly: true } : mount)),
-    [...mounts, node],
-    mounts.map((mount) => (mount === node ? { ...mount, name: "other" } : mount)),
-    mounts.map((mount) => (mount === node ? { ...mount, subPath: "other" } : mount)),
-    mounts.map((mount) => (mount === node ? { ...mount, readOnly: true } : mount)),
-    [...mounts, { name: claimVolume, mountPath: "/unapproved", subPath: "codex-home" }],
+  const project = (candidate) => driver.sandboxWorkspaceMounts(pod.volumes, candidate, true);
+  const unapproved = { message: "Dedicated Harness must mount every approved workspace path." };
+  const nodeState = {
+    message: "Harness node state must preserve its Agent node directory on the Harness claim.",
+  };
+  for (const [bad, refusal] of [
+    [[...mounts, { name: claimVolume, mountPath: homePath, subPath: "codex-home" }], unapproved],
+    [[...mounts, node], nodeState],
+    [mounts.map((mount) => (mount === node ? { ...mount, name: "other" } : mount)), nodeState],
+    [mounts.map((mount) => (mount === node ? { ...mount, subPath: "other" } : mount)), nodeState],
+    [mounts.map((mount) => (mount === node ? { ...mount, readOnly: true } : mount)), nodeState],
+    [
+      [...mounts, { name: claimVolume, mountPath: "/unapproved", subPath: "codex-home" }],
+      unapproved,
+    ],
   ]) {
-    assert.throws(() => project(bad));
+    assert.throws(() => project(bad), refusal);
   }
-  assert.throws(() => project(mounts, false));
   // The node subPath names exactly one Agent node directory.
   assert.throws(
     () =>
@@ -180,26 +175,14 @@ test("provider projection rejects unexpected node and OAuth home mounts", () => 
       ),
     /node directory/,
   );
-  // An API-key Harness has no OAuth home on the claim.
-  const apiKey = render("api_key", "setup-file", false);
-  assert.throws(
-    () =>
-      apiKey.driver.sandboxWorkspaceMounts(
-        apiKey.pod.volumes,
-        [...apiKey.pod.containers[0].volumeMounts, home],
-        false,
-        true,
-      ),
-    /OAuth home/,
-  );
 });
 
 test("requirements require node state only when node wiring was selected", async (t) => {
   for (const node of ["setup-file", "native"]) {
     await t.test(node, () => {
-      const { driver, deployment, pod } = render("oauth", node, false);
+      const { driver, deployment, pod } = render("chatgptAuthTokens", node, false);
       const requirements = () =>
-        driver.harnessRequirementsFromDeployment(deployment, "oauth", true, [], []);
+        driver.harnessRequirementsFromDeployment(deployment, "chatgptAuthTokens", true, [], []);
       const nodeMount = pod.containers[0].volumeMounts.find(
         ({ mountPath }) => mountPath === nodePath,
       );
@@ -217,10 +200,10 @@ test("requirements require node state only when node wiring was selected", async
     });
   }
   await t.test("activation render without node", () => {
-    const { driver, deployment } = render("oauth", "none", false);
+    const { driver, deployment } = render("chatgptAuthTokens", "none", false);
     const requirements = driver.harnessRequirementsFromDeployment(
       deployment,
-      "oauth",
+      "chatgptAuthTokens",
       false,
       [],
       [],
@@ -231,10 +214,14 @@ test("requirements require node state only when node wiring was selected", async
     );
   });
   await t.test("no node with an independently supplied state variable", () => {
-    const { driver, deployment } = render("oauth", "none", false, {
+    const { driver, deployment } = render("chatgptAuthTokens", "none", false, {
       OPENCLAW_NODE_STATE_DIR: "/user-supplied",
     });
-    const requirements = driver.harnessRequirementsFromDeployment(deployment, "oauth", false);
+    const requirements = driver.harnessRequirementsFromDeployment(
+      deployment,
+      "chatgptAuthTokens",
+      false,
+    );
     assert(
       requirements.environment.some(
         ({ name, value }) => name === "OPENCLAW_NODE_STATE_DIR" && value === "/user-supplied",

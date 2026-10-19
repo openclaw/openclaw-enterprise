@@ -77,7 +77,12 @@ interface WorkRow {
   readonly actor_id: string;
   readonly namespace_target: "ready" | "deleted" | null;
   readonly agent_target:
-    "stopped" | "deleted" | "provisioned" | typeof CREDENTIAL_WITHDRAWAL_TARGET | null;
+    | "stopped"
+    | "deleted"
+    | "provisioned"
+    | "sandbox_policy"
+    | typeof CREDENTIAL_WITHDRAWAL_TARGET
+    | null;
   readonly state: ControllerWorkState;
   readonly available_at: Date | string;
   readonly attempt_count: number;
@@ -118,6 +123,17 @@ const REVISION_RECONCILE_KEY = new RegExp(`^agent_revision:${REVISION_ID_PATTERN
 const ACTIVE_REVISION_RECOVERY = "ACTIVE_REVISION_RECOVERY";
 /** Recovery evidence that a deployment with a started predecessor stop got its one extra attempt. */
 const PREDECESSOR_STOP_RECOVERY = "PREDECESSOR_STOP_RECOVERY";
+
+function backoffDelayMsSql(
+  attemptCount: string,
+  maximum: string,
+  initial: string,
+  jitter: string,
+): string {
+  return `LEAST(${maximum}::double precision,
+    ${initial}::double precision * POWER(2::double precision,
+      LEAST(GREATEST(${attemptCount} - 1, 0), 30))) * ${jitter}::double precision`;
+}
 
 /** Cleanup dispatch and retry exemption require an exact immutable revision target. */
 export function repositoryCleanupRevisionId(
@@ -764,7 +780,10 @@ export class PostgresWorkQueue {
           agentTarget !== null)) ||
         (agentId !== null &&
           revisionId === null &&
-          (namespaceTarget !== null || (agentTarget !== "stopped" && agentTarget !== "deleted"))) ||
+          (namespaceTarget !== null ||
+            (agentTarget !== "stopped" &&
+              agentTarget !== "deleted" &&
+              agentTarget !== "sandbox_policy"))) ||
         (revisionId !== null &&
           (namespaceTarget !== null ||
             (agentTarget !== null && agentTarget !== CREDENTIAL_WITHDRAWAL_TARGET))))
@@ -1234,11 +1253,7 @@ export class PostgresWorkQueue {
          SET state = 'queued',
              attempt_count = GREATEST(attempt_count - 1, 0),
              available_at = clock_timestamp() +
-               COALESCE($8::double precision,
-                 LEAST($5::double precision,
-                   $6::double precision * POWER(2::double precision,
-                     LEAST(GREATEST(attempt_count - 1, 0), 30))) *
-                   $7::double precision) * interval '1 millisecond',
+               COALESCE($8::double precision, ${backoffDelayMsSql("attempt_count", "$5", "$6", "$7")}) * interval '1 millisecond',
              claim_token = NULL,
              lease_expires_at = NULL,
              updated_at = clock_timestamp()
@@ -1283,10 +1298,7 @@ export class PostgresWorkQueue {
              available_at = CASE
                WHEN ${exhausted} THEN available_at
                ELSE clock_timestamp() +
-                 LEAST($6::double precision,
-                   $7::double precision * POWER(2::double precision,
-                     LEAST(GREATEST(attempt_count - 1, 0), 30))) *
-                   $8::double precision * interval '1 millisecond'
+                 ${backoffDelayMsSql("attempt_count", "$6", "$7", "$8")} * interval '1 millisecond'
              END,
              claim_token = NULL,
              lease_expires_at = NULL,
@@ -1459,10 +1471,7 @@ export class PostgresWorkQueue {
                WHEN ${recovering} OR ${predecessorStop} THEN clock_timestamp() +
                  $6::double precision * $7::double precision * interval '1 millisecond'
                ELSE clock_timestamp() +
-                 LEAST($5::double precision,
-                   $6::double precision * POWER(2::double precision,
-                     LEAST(GREATEST(work.attempt_count - 1, 0), 30))) *
-                   $7::double precision * interval '1 millisecond'
+                 ${backoffDelayMsSql("work.attempt_count", "$5", "$6", "$7")} * interval '1 millisecond'
              END,
              claim_token = NULL,
              lease_expires_at = NULL,

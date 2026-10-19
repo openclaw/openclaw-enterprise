@@ -2,11 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
-import { detailUrl, login, nativeValues, newPage } from "./console-agents-browser-helpers.mjs";
+import {
+  detailUrl,
+  fileBrowser,
+  login,
+  nativeValues,
+  newPage,
+} from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
   openAdvancedSettings,
 } from "./console-agents-test-support.mjs";
+
+// Every test opens its own context in one Chromium per file.
+const browser = fileBrowser();
 
 // A member who can read an Agent and its Configuration, but not change them, was offered Save
 // on the Configuration JSON editor, the Slack drawer and the Agent-side editors. Each save
@@ -72,7 +81,7 @@ async function readOnlyMember(t, name) {
     },
   );
   const member = await createReader(fixture, namespace);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   const refusedPatch = () =>
     page.waitForResponse(
@@ -221,7 +230,7 @@ test("a member without Agent update cannot edit repository access", async (t) =>
   });
   assert.equal(saved.status, 200);
   const member = await createReader(fixture, namespace);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await login(
     page,
     fixture,
@@ -240,7 +249,7 @@ test("a member without Agent update cannot edit repository access", async (t) =>
   assert.deepEqual(await editableFields(page), []);
   // Cancel stays available; nothing is left to block leaving the tab.
   assert.equal(await page.getByRole("button", { name: "Cancel", exact: true }).isEnabled(), true);
-  await page.getByRole("button", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
   await page.getByRole("button", { name: "Save plugin selections", exact: true }).waitFor();
 });
 
@@ -310,7 +319,7 @@ for (const c of readRefusals) {
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace(`Read ${c.tab}`, { ready: true });
     const agent = await fixture.createAgent(namespace.id, `Read ${c.tab}`, nativeValues("read"));
-    const { page } = await newPage(t, fixture);
+    const { page } = await newPage(t, fixture, { browser });
     const patches = [];
     page.on("request", (request) => {
       if (request.method() === "PATCH") {
@@ -338,7 +347,7 @@ test("a refused workspace file save names Agent operate", async (t) => {
   const namespace = await fixture.createNamespace("Workspace Refusal", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Workspace Refusal", nativeValues("ws"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
-  const { page } = await newPage(t, fixture);
+  const { page } = await newPage(t, fixture, { browser });
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
     (route) =>

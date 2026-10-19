@@ -1311,13 +1311,22 @@ revisionTest(
   async (fixture) => {
     const unscheduled = await fixture.agent("pending-unschedulable");
     const unpaired = await fixture.agent("pending-node");
+    const overQuota = await fixture.agent("pending-pod-quota");
+    const setupRetrying = await fixture.agent("pending-workspace-setup");
+    const imagePull = await fixture.agent("pending-image-pull");
     const unscheduledRevision = await fixture.revision(unscheduled, 1);
+    const overQuotaRevision = await fixture.revision(overQuota, 1);
+    const setupRetryingRevision = await fixture.revision(setupRetrying, 1);
+    const imagePullRevision = await fixture.revision(imagePull, 1);
     // Admitted five minutes ago by PostgreSQL's clock, which judges work age (finding 1187),
     // and still inside the 900-second deadline.
     const unpairedRevision = await fixture.revision(unpaired, 1, { workAge: "300 seconds" });
     const reasons = new Map([
       [unscheduledRevision.id, "WORKLOAD_UNSCHEDULABLE"],
       [unpairedRevision.id, "WORKSPACE_NODE_PENDING"],
+      [overQuotaRevision.id, "NAMESPACE_POD_QUOTA_EXCEEDED"],
+      [setupRetryingRevision.id, "WORKSPACE_SETUP_RETRYING"],
+      [imagePullRevision.id, "WORKLOAD_IMAGE_PULL_FAILED"],
     ]);
     const delays = new Map([
       [unscheduledRevision.idempotencyKey, []],
@@ -1369,6 +1378,24 @@ revisionTest(
     assert.deepEqual(await progress(unpaired, unpairedRevision), {
       code: "WORKSPACE_NODE_PENDING",
       message: "Workloads are ready; waiting for the workspace node to connect to the Gateway.",
+    });
+    // Finding 1617: a full Namespace Pod quota is named, without its numbers.
+    assert.deepEqual(await progress(overQuota, overQuotaRevision), {
+      code: "NAMESPACE_POD_QUOTA_EXCEEDED",
+      message:
+        "The Namespace's Pod quota is full. Stop or delete an Agent, or ask an administrator to raise the quota.",
+    });
+    // Finding 1677: Kubernetes is restarting a failed workspace setup that may still pass.
+    assert.deepEqual(await progress(setupRetrying, setupRetryingRevision), {
+      code: "WORKSPACE_SETUP_RETRYING",
+      message:
+        "Workspace setup failed; Kubernetes is retrying it. If it keeps failing, ask an admin to check the Agent's workspace storage and runtime image.",
+    });
+    // Finding 1762: the kubelet cannot pull an image; fixed copy, never the image reference.
+    assert.deepEqual(await progress(imagePull, imagePullRevision), {
+      code: "REVISION_IMAGE_PULL_FAILED",
+      message:
+        "Kubernetes cannot pull a container image for this Agent and keeps retrying. Ask an administrator to check the runtime image reference and that the cluster's nodes can pull from its registry.",
     });
     const firstDelay = async (revision) => {
       const recorded = delays.get(revision.idempotencyKey);
@@ -1678,13 +1705,29 @@ revisionTest(
       [candidate.id],
     );
     assert.deepEqual(evidence.rows, [{ reason: "CONVERGENCE_DEADLINE_EXCEEDED" }]);
+    // The Compute observation carried a check and code outside the runtime's vocabulary. They
+    // are recorded as UNRECOGNIZED, so neither the stored work nor its status carries them
+    // (finding 1660).
+    const recordedRuntimeFailure = {
+      ...runtimeFailure,
+      check: "UNRECOGNIZED",
+      code: "UNRECOGNIZED",
+    };
+    const recorded = await fixture.observerPool.query(
+      "SELECT result_data FROM occ.controller_work WHERE idempotency_key = $1",
+      [candidate.idempotencyKey],
+    );
+    assert.deepEqual(recorded.rows[0].result_data, {
+      timeoutMs: 1,
+      runtimeFailure: recordedRuntimeFailure,
+    });
     const status = await fixture.deploymentStatus(owner, candidate);
     assert.equal(status.status, "failed");
     assert.deepEqual(status.error, {
       code: "CONVERGENCE_DEADLINE_EXCEEDED",
       message:
         "Deployment convergence deadline exceeded: the version did not become ready in time. Check its logs and runtime diagnostics, correct the cause if there is one, then deploy a new version.",
-      data: { timeoutMs: 1, runtimeFailure },
+      data: { timeoutMs: 1, runtimeFailure: recordedRuntimeFailure },
     });
     assert.deepEqual(status.warnings, []);
     // A runtime that failed by itself stays for diagnosis: nothing retires it.
@@ -2056,6 +2099,27 @@ for (const scenario of [
       },
     },
   },
+  {
+    // Finding 1677: the kubelet restarts the init container, but a refusal repeats.
+    name: "a refused workspace setup fails deployment before the convergence deadline",
+    label: "refused-workspace-setup",
+    pendingPasses: 1,
+    runtimeFailure: {
+      component: "agent",
+      check: "workspace-setup",
+      checkedAt: "2026-10-17T08:00:00.000Z",
+      code: "WORKSPACE_SETUP_REFUSED",
+    },
+    expected: {
+      preparations: 2,
+      activeRevisionId: null,
+      error: {
+        code: "WORKSPACE_SETUP_REFUSED",
+        message:
+          "Initial workspace setup refused this version's workspace, and every retry would refuse it again: the workspace files or setup record, or the runtime's default files, do not match what the Agent was created with. Ask an admin to check the Agent's workspace storage and runtime image; do not delete the setup record to force a replay.",
+      },
+    },
+  },
 ]) {
   revisionTest(scenario.name, async (fixture) => {
     const [{ candidate }] = await runRuntimeFailureCases(fixture, [scenario]);
@@ -2093,6 +2157,16 @@ revisionTest(
       component: "agent",
       cause: { kind: "WRAPPER_ERROR" },
     };
+    // Only failed model probes retain evidence in both persisted and public errors.
+    const expectedProbeFailure = (runtimeFailure) => ({
+      resultData: { runtimeFailure },
+      error: {
+        code: "RUNTIME_MODEL_PROBE_FAILED",
+        message:
+          "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
+        data: { runtimeFailure },
+      },
+    });
     const cases = [
       {
         label: "held-runtime-0",
@@ -2113,29 +2187,12 @@ revisionTest(
       {
         label: "held-runtime-1",
         runtimeFailure: probeStatusFailure,
-        // Only failed model probes retain their classified runtime evidence.
-        expected: {
-          resultData: { runtimeFailure: probeStatusFailure },
-          error: {
-            code: "RUNTIME_MODEL_PROBE_FAILED",
-            message:
-              "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
-            data: { runtimeFailure: probeStatusFailure },
-          },
-        },
+        expected: expectedProbeFailure(probeStatusFailure),
       },
       {
         label: "held-runtime-2",
         runtimeFailure: wrapperFailure,
-        expected: {
-          resultData: { runtimeFailure: wrapperFailure },
-          error: {
-            code: "RUNTIME_MODEL_PROBE_FAILED",
-            message:
-              "The startup model check failed for a reason other than a rejected credential, such as an unknown model, invalid provider settings, a provider or TLS error, a rate limit or quota, or, with Codex, a provider the runtime cannot reach. Check the model and its provider settings (such as baseUrl and api) in the Configuration, the provider account, and that the runtime can reach the provider, then deploy a new version.",
-            data: { runtimeFailure: wrapperFailure },
-          },
-        },
+        expected: expectedProbeFailure(wrapperFailure),
       },
       {
         label: "held-runtime-3",
@@ -2286,7 +2343,7 @@ revisionTest(
       failure: () =>
         new SandboxRevisionUnsupportedError(
           "SANDBOX_SECRET_ENVIRONMENT_UNSUPPORTED",
-          "OpenShell v0.1.3-pre.2 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
+          "OpenShell v0.1.4 cannot receive secretKeyRef environment APP_SERVER_TOKEN.",
         ),
       expected: {
         error: {

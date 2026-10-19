@@ -53,7 +53,7 @@ case "$development_compute_driver" in
 esac
 
 usage() {
-  echo "usage: scripts/dev-up [--key-output PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
+  echo "usage: scripts/dev-up [--key-output PATH] [--sandbox-network-policy-file PATH] [--sandbox-network-policy-ceiling-file PATH] [-- COMPOSE_GLOBAL_OPTIONS...]" >&2
 }
 
 quote_command() {

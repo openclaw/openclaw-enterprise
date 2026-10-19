@@ -45,7 +45,7 @@ func (app *application) agentRevision(
 	namespace, agentID, revision string,
 ) (string, any, error) {
 	if revision != "" {
-		if err := revisionIDArg.check(revision); err != nil {
+		if err := revisionIDArg.check(revision, namespace); err != nil {
 			return "", nil, err
 		}
 		return revision, nil, nil
@@ -78,12 +78,6 @@ func (app *application) agentRevision(
 			noticef(
 				notices,
 				"notice: reading revision %s, newer than the active revision %s and not yet active; pass --revision %s for the active revision",
-				probe.latest, active, active,
-			)
-		case "older":
-			noticef(
-				notices,
-				"notice: reading revision %s, older than the active revision %s, because it still has Pods; pass --revision %s for the active revision",
 				probe.latest, active, active,
 			)
 		default:
@@ -156,12 +150,12 @@ func newerRevisionWithRuntime(client *occclient.Client, namespace, agentID, acti
 		return newerRevision{latest: latest, number: number}
 	}
 	// Revision lists are permission-filtered: a different ID can be older.
-	// Preserve Pod selection, but only redirect for Podless Harness status
-	// when the active revision's exact metadata proves the candidate newer.
+	// A Pod candidate is read unless exact active metadata proves it older;
+	// a Podless Harness candidate only when that metadata proves it newer.
 	order, _ := revisionOrder(client, namespace, agentID, active, number)
 	return newerRevision{
 		latest: latest, number: number, order: order,
-		hasRuntime:  hasPods || order == "newer",
+		hasRuntime:  (hasPods && order != "older") || order == "newer",
 		description: description,
 	}
 }
@@ -213,7 +207,7 @@ func (app *application) agentRuntimeCommand() *cobra.Command {
 			if app.output != "table" {
 				return app.printStructured(description)
 			}
-			return app.printRuntime(description)
+			return app.printRuntime(description, namespace, args[0], revisionID)
 		},
 	}
 	command.Flags().StringVar(&revision, "revision", "", "Revision ID (default: a newer not-yet-active revision with Pods or concrete Harness status, else the active revision, else the latest revision)")
@@ -326,6 +320,7 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 		return err
 	}
 	cursor := ""
+	noPod := false
 	for {
 		pageQuery := query
 		if cursor != "" {
@@ -367,6 +362,12 @@ func (app *application) runAgentLogs(command *cobra.Command, agentID string, opt
 				return err
 			}
 		} else {
+			// A present stream ends the absence, even when it has no new records.
+			missingPod := string(page.Stream) == "null" || len(page.Stream) == 0
+			if missingPod && !noPod {
+				noticef(notices, "notice: revision %s has no running Pod for source %s", page.RevisionID, page.Source)
+			}
+			noPod = missingPod
 			if err := app.printRuntimeLogPage(page, notices); err != nil {
 				return err
 			}

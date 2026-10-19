@@ -62,6 +62,15 @@ export function sorted(items) {
   );
 }
 
+// Status badges speak in words with a tone; Backend types are names, so they stay neutral.
+const namespaceStatuses = {
+  ready: { label: "Ready", tone: "success" },
+  provisioning: { label: "Provisioning", tone: "warning" },
+  deleting: { label: "Deleting", tone: "warning" },
+  failed: { label: "Failed", tone: "danger" },
+};
+const backendTypes = { chatgpt: "ChatGPT", github: "GitHub", openshell: "OpenShell" };
+
 export function createShell({ app, pages, route, pageUrl, navigate, loadPage, logout }) {
   let session = null;
   let namespaces = [];
@@ -71,6 +80,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   let drawerControls = null;
   let namespaceSelect = null;
   let namespaceAdmissionPending = true;
+  // Whether the shown page refuses to be left yet; it then says why (finding 1902).
+  let refuseLeave = () => false;
   const mobileLayout = window.matchMedia("(max-width: 760px)");
 
   mobileLayout.addEventListener("change", (event) => {
@@ -221,6 +232,11 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       ) {
         return;
       }
+      // A page that cannot be left yet keeps its Namespace and says why (finding 1902).
+      if (refuseLeave()) {
+        event.target.value = namespaceId;
+        return;
+      }
       navigate(route().feature, event.target.value);
     });
     return element(
@@ -315,6 +331,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           return;
         }
         event.preventDefault();
+        // A page waiting on a write stays and says why, as ← Agents does (finding 1937). On a
+        // phone the drawer closes, so the reason is not hidden behind it.
+        if (refuseLeave({ pendingOnly: true })) {
+          if (drawerControls?.shell.classList.contains("drawer-open")) {
+            drawerControls.close();
+          }
+          return;
+        }
         navigate(name);
       });
       nav.append(link);
@@ -384,7 +408,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
             ? "Installation-wide · Experimental"
             : "Installation-wide";
     const scopeSelector = feature === "namespaces" ? null : namespaceSelector();
-    const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }));
+    const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }), {
+      tone: "ghost",
+      size: "sm",
+    });
     refresh.disabled = true;
     const header = element(
       "header",
@@ -515,27 +542,50 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     }
     const list = element("ul", { className: "collection", "aria-label": pages[feature] });
     for (const item of sorted(items)) {
+      const name = item.name ?? item.id;
+      // A Namespace row opens that Namespace's Agents (finding 1897).
+      const label =
+        feature === "namespaces" ? namespaceLink(name, item.id) : element("span", {}, name);
+      const status = feature === "namespaces" ? namespaceStatuses[item.status] : undefined;
       list.append(
         element(
           "li",
-          { className: "resource" },
+          {
+            className: feature === "namespaces" ? "card resource resource-linked" : "card resource",
+          },
           element(
             "div",
             {},
-            element("p", { className: "resource-name" }, item.name ?? item.id),
+            element("p", { className: "resource-name" }, label),
             feature === "backends" ? null : element("span", { className: "resource-id" }, item.id),
           ),
           feature === "agents"
             ? null
             : element(
                 "span",
-                { className: "badge" },
-                feature === "backends" ? item.type : item.status,
+                { className: "badge", ...(status ? { "data-tone": status.tone } : {}) },
+                feature === "backends"
+                  ? (backendTypes[item.type] ?? item.type)
+                  : (status?.label ?? item.status),
               ),
         ),
       );
     }
     view.replaceChildren(list);
+  }
+
+  function namespaceLink(name, id) {
+    const node = element("a", { href: pageUrl("agents", id) }, name);
+    // A revalidation that remounts the list returns focus to the same row.
+    node.dataset.returnFocusHref = node.href;
+    node.addEventListener("click", (event) => {
+      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      event.preventDefault();
+      navigate("agents", id);
+    });
+    return node;
   }
 
   function switchNamespace() {
@@ -575,6 +625,32 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     renderRows,
     switchNamespace,
     updateNamespaces,
+    // The shown shell's control, outside its page view, that matches one from an earlier
+    // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
+    // toggle. A new shell's account menu starts closed, so its items give way to the toggle. At
+    // phone width its navigation drawer starts closed too, so every control from the open drawer
+    // gives way to the drawer's toggle (finding 1680).
+    matchingControl(node) {
+      const shell = app.querySelector(":scope > .shell");
+      if (!shell) {
+        return null;
+      }
+      if (
+        mobileLayout.matches &&
+        node.closest(".sidebar") &&
+        !shell.classList.contains("drawer-open")
+      ) {
+        return shell.querySelector(".mobile-toggle");
+      }
+      if (node.closest(".account")) {
+        return shell.querySelector(".account-toggle");
+      }
+      // The sidebar, toggle and header precede the page view, so their match is found first.
+      return sameControl(node, shell);
+    },
+    setLeaveGuard(guard) {
+      refuseLeave = guard;
+    },
     reset() {
       document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
       menuControls = null;

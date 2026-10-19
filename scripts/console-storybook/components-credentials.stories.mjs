@@ -13,9 +13,21 @@ export const CredentialsSlackReplacement = {
   ...story("credentialsSlackReplacement"),
   name: "Slack token switch",
 };
+export const DiscardSecretChoice = {
+  ...story("credentialsDiscardSecretChoice"),
+  name: "Discard an unsaved Secret choice",
+};
 export const CredentialsSlackCarried = {
   ...story("credentialsSlackCarried"),
   name: "Slack token choice carried through a conflict",
+};
+export const CredentialsSaveProvisioningReserved = {
+  ...story("credentialsSaveProvisioningReserved"),
+  name: "Secret choices after a refused save",
+};
+export const CredentialsSaveConflict = {
+  ...story("credentialsSaveConflict"),
+  name: "Secret choices after a conflict",
 };
 export const CredentialsSecretListDenied = {
   ...story("credentialsSecretListDenied"),
@@ -52,6 +64,10 @@ export const AuthSecretReplacement = {
   ...story("authSecretReplacement"),
   name: "Replace model Secret",
 };
+export const AuthSaveRefused = {
+  ...story("authSaveRefused"),
+  name: "Authentication save refused",
+};
 export const AuthSecretGrantDenied = {
   ...story("authSecretGrantDenied"),
   name: "Authentication saved, grant denied",
@@ -59,6 +75,10 @@ export const AuthSecretGrantDenied = {
 export const AuthSecretGrantLoading = {
   ...story("authSecretGrantLoading"),
   name: "Checking model Secret access",
+};
+export const AuthSaveHoldsNavigation = {
+  ...story("authSaveHoldsNavigation"),
+  name: "Authentication save holds navigation",
 };
 export const AuthSaveUnknown = { ...story("authSaveUnknown"), name: "Authentication save unknown" };
 export const AuthenticationNavigation = story("authenticationNavigation");

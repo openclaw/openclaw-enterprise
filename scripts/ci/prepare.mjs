@@ -59,7 +59,6 @@ const fixtureLanes = new Set([
   "k3d-fixture-configuration",
   "k3d-fixture-state",
   "k3d-fixture-plugins",
-  "k3d-fixture-oauth",
 ]);
 // These lanes' tests use no Ingress, LoadBalancer Service, metrics API or
 // Gateway API, so their clusters skip K3s's Traefik, ServiceLB and
@@ -1385,18 +1384,12 @@ async function ensureK3dCluster(statePath, state) {
     }
     if (crossNodePluginStatus) {
       resource.pluginStatusProxyCidrs = await k3dStage(state, "k3d-overlay", async () => {
-        const worker = await execFile(process.env.OCC_KUBECTL_BIN ?? "kubectl", [
-          "--kubeconfig",
-          kubeconfig,
-          "--context",
-          resource.context,
-          "get",
-          "node",
+        const podCidr = await waitForK3dNodePodCidr(
+          state.lane,
+          process.env.OCC_KUBECTL_BIN ?? "kubectl",
+          ["--kubeconfig", kubeconfig, "--context", resource.context],
           `k3d-${cluster}-agent-0`,
-          "-o",
-          "json",
-        ]);
-        const podCidr = JSON.parse(worker.stdout)?.spec?.podCIDR;
+        );
         const destination = typeof podCidr === "string" ? podCidr.split("/")[0] : undefined;
         if (!isIPv4(destination ?? "")) {
           throw new Error("The plugin status worker must have an IPv4 Pod CIDR.");
@@ -1455,6 +1448,45 @@ async function waitForK3dNodesRegistered(kubectl, kubectlArgs, nodes) {
       );
     }
     await delay(1_000);
+  }
+}
+
+// A Ready node can still lack its Pod CIDR: the node IPAM controller assigned
+// the worker's about 30 ms after the overlay stage read it (finding 1666).
+// Poll until spec.podCIDR is set; the caller still checks it is IPv4. The node
+// is already registered, so any read error is retried until the deadline.
+const k3dPodCidrWaitMs =
+  Number(process.env.OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_K3D_POD_CIDR_WAIT_MS)
+    : 60_000;
+
+async function waitForK3dNodePodCidr(lane, kubectl, kubectlArgs, node) {
+  const deadline = performance.now() + k3dPodCidrWaitMs;
+  for (let attempt = 1; ; attempt += 1) {
+    let lastError;
+    try {
+      const listed = await execFile(kubectl, [...kubectlArgs, "get", "node", node, "-o", "json"], {
+        timeoutMs: Math.max(1_000, Math.min(15_000, deadline - performance.now())),
+      });
+      const podCidr = JSON.parse(listed.stdout)?.spec?.podCIDR;
+      if (typeof podCidr === "string" && podCidr !== "") {
+        return podCidr;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    if (performance.now() >= deadline) {
+      throw new Error(
+        lastError
+          ? `Unable to read k3d node ${node} within ${k3dPodCidrWaitMs} ms: ${lastError.message}`
+          : `k3d node ${node} got no Pod CIDR within ${k3dPodCidrWaitMs} ms.`,
+        { cause: lastError },
+      );
+    }
+    if (attempt === 1) {
+      progress(lane, `waiting for ${node} to get its Pod CIDR`);
+    }
+    await delay(250);
   }
 }
 
@@ -2622,8 +2654,7 @@ async function prepareLane({ lane, statePath }) {
       break;
     case "k3d-fixture-configuration":
     case "k3d-fixture-state":
-    case "k3d-fixture-plugins":
-    case "k3d-fixture-oauth": {
+    case "k3d-fixture-plugins": {
       // PostgreSQL, the cluster and the fixture build are independent; the
       // fixture is imported only after the cluster passed its readiness gates.
       const [, cluster, built] = await timedPreparation(
@@ -3168,6 +3199,9 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     });
     resourceIds.push(database.resourceId);
     env.OCC_TEST_DATABASE_URL = database.appUrl;
+    if (relativeFile === "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs") {
+      env.OCC_TEST_OPENSHELL_POLICY_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
     if (name === "postgres-application" && relativeFile === nativeIAMBarrierFile) {
       env.OCC_TEST_NATIVE_IAM_BARRIER_CI = "1";
       env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE = database.name;

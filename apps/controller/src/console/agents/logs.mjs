@@ -1,5 +1,6 @@
-import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
+import { button, element, replaceChildrenIfChanged, setText, statusBlock } from "../dom.mjs";
 import { displayDate, namespacePath } from "./list.mjs";
+import { fitLogTimeColumn } from "./logs-view.mjs";
 import { SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
 
 const STATUS_POLL_MS = 10_000;
@@ -8,10 +9,13 @@ const MAX_ROWS = 5_000;
 const TAIL_LINES = 200;
 // The longest the Logs view keeps its strip and output back for their first reads.
 const FIRST_VIEW_WAIT_MS = 2_000;
-// A 403 is audited; remember it for this page session instead of re-asking every poll
-// or every time the Logs tab reopens.
+// A 403 is audited; remember it for this sign-in instead of re-asking every poll or every
+// time the Logs tab reopens. A status denial also keeps whether the caller's permission answer
+// allowed operate when it was last shown (null until an answer is compared): once a later
+// answer allows operate where it did not, the view asks once more. The answer has no read_logs
+// bit, so a log text denial lasts until sign-out.
 const deniedLogViews = new Set();
-const deniedStatusViews = new Set();
+const deniedStatusViews = new Map();
 // Denials are per signed-in operator: another user signing in on this tab asks again.
 const logViewKey = (context, agentId) =>
   JSON.stringify([context.operatorId ?? null, context.namespaceId, agentId]);
@@ -20,9 +24,16 @@ const logViewKey = (context, agentId) =>
 export function logTextDenied(context, agentId) {
   return deniedLogViews.has(logViewKey(context, agentId));
 }
+
+/** Forgets every remembered runtime denial: sign-out calls this, so a new sign-in asks again. */
+export function clearRuntimeDenials() {
+  deniedLogViews.clear();
+  deniedStatusViews.clear();
+}
+
 const LEVELS = ["error", "warn", "info", "debug", "unknown"];
 
-function runtimeErrorText(error, tier, source) {
+function runtimeErrorText(error, tier, source, manualRead = false) {
   if (error.status === 403) {
     // Name both grants: without status the Logs section never says what log text needs.
     return tier === "logs"
@@ -42,7 +53,13 @@ function runtimeErrorText(error, tier, source) {
     return "The cluster denied the read. Ask your platform operator to enable agentRuntimeLogs in the Helm chart (see the Agent logs guide).";
   }
   if (error.status === 429) {
-    return "Too many requests. Waiting before the next read.";
+    if (!manualRead) {
+      return "Too many requests. Waiting before the next read.";
+    }
+    const seconds = error.retryAfterSeconds;
+    return seconds === undefined
+      ? "Too many requests. Try again shortly."
+      : `Too many requests. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
   }
   if (error.status === 504) {
     return "The read timed out. Try again.";
@@ -91,7 +108,14 @@ function downloadFileName(agentId, revisionId, source, pod, previous) {
 /** Logs tab: runtime status strip, source picker, bounded log pane and follow. */
 export function renderAgentLogs(
   context,
-  { agent, revisionId, shown = Promise.resolve(), onLogsDenied = () => {} },
+  {
+    agent,
+    revisionId,
+    shown = Promise.resolve(),
+    // Returns the caller's newest permission answer; `{ fresh: true }` reads it again.
+    permissions = () => Promise.resolve(null),
+    onLogsDenied = () => {},
+  },
 ) {
   const base = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(agent.id)}/deployments/${encodeURIComponent(revisionId)}/runtime`;
   const deniedKey = logViewKey(context, agent.id);
@@ -164,13 +188,19 @@ export function renderAgentLogs(
   });
   const followButton = button("Follow", () => setFollow(!following), {
     "aria-pressed": "false",
+    size: "sm",
     className: "log-follow",
     disabled: true,
   });
   const refreshButton = button("Refresh logs", () => void readLogs({ restart: true }), {
+    tone: "ghost",
+    size: "sm",
     disabled: true,
   });
-  const downloadButton = button("Download", () => void download(), { disabled: true });
+  const downloadButton = button("Download", () => void download(), {
+    size: "sm",
+    disabled: true,
+  });
   const hiddenLevels = new Set();
   const levelChips = LEVELS.map((level) =>
     button(
@@ -197,15 +227,26 @@ export function renderAgentLogs(
   filterInput.addEventListener("input", () => applyFilters());
   const filterStatus = element("p", { className: "log-filter-status", role: "status" });
   const retention = element("p", { className: "log-retention" });
-  const sourceHint = element("p", { className: "log-source-hint", role: "note", hidden: true });
+  const sourceHint = statusBlock("warning", null, null, [], {
+    className: "log-source-hint",
+    role: "note",
+    hidden: true,
+  });
   const logStatus = element("p", { className: "log-output-status", role: "status" });
-  const logError = element("p", { className: "log-error", role: "alert", hidden: true });
+  const logError = statusBlock("danger", null, null, [], { className: "log-error", hidden: true });
   const pane = element("div", {
     className: "log-pane",
     role: "log",
     tabindex: "0",
     "aria-label": "Runtime log output",
   });
+  // The view is built before it is shown: size the time column once the pane is laid out.
+  const timeColumn = new ResizeObserver(() => {
+    if (fitLogTimeColumn(pane)) {
+      timeColumn.disconnect();
+    }
+  });
+  timeColumn.observe(pane);
   // Detaching the view for Back's cache resets the pane to the top; resume restores the
   // reader's last position so follow neither stalls as "scrolled up" nor jumps. A reader
   // at the bottom returns to the bottom, even if a late scroll event or resize moved it.
@@ -228,18 +269,43 @@ export function renderAgentLogs(
   let followTimer;
   let statusTimer;
   let reading = false;
+  // Counts status reads. A newer read supersedes one in flight: its answer, success or
+  // failure, may predate a revocation the newer one sees.
+  let statusRead = 0;
+  // Set once a log read was allowed: a refusal after that is a revocation.
+  let logsAllowed = false;
   // A source, Pod or instance change while a read is in flight restarts the view after it.
   let restartPending = false;
   let rows = 0;
+  // The log query (source, Pod, instance, level floor) whose lines the pane shows, and the
+  // status line its first page set.
+  let shownSelection = null;
+  let shownStatus = "";
+  // Updates a manual read's "Try again in N seconds" once that wait has passed.
+  let retryHintTimer;
+  // Set when a read is refused after this view showed output; Back rebuilds such a view.
+  let outputRefused = false;
   let logsDenied = deniedLogViews.has(deniedKey);
   // Set when runtime status is denied; the last page's stream stands in for the Pod list.
   let statusDenied = false;
+  // Set once this view compared a status denial with a fresh permission answer, or had no
+  // reason to; Back's check revalidates the page's answer after that.
+  let permissionsAsked = false;
   let lastStream = null;
 
   const current = () => context.isCurrent();
   // Runtime reads are live and audited: a view restored by Back resumes them instead of
   // having the console replay every one of them to revalidate the cached view.
-  const read = (path, options = {}) => context.request(path, { ...options, revalidate: false });
+  // Answers Back's check already read, taken once by the resumed view's first reads.
+  const checked = new Map();
+  const read = (path, options = {}) => {
+    if (checked.has(path)) {
+      const answer = checked.get(path);
+      checked.delete(path);
+      return Promise.resolve(answer);
+    }
+    return context.request(path, { ...options, revalidate: false });
+  };
 
   function selectedSource() {
     return description?.sources.find(({ id }) => id === sourceSelect.value);
@@ -260,6 +326,18 @@ export function renderAgentLogs(
     return Boolean(source) && (source.kind === "sandbox" || statusDenied || Boolean(selectedPod()));
   }
 
+  // Compare the selected stream, not its Pod UID or restart count: the cursor handles those.
+  function effectiveSelection() {
+    const pod = selectedPod();
+    return JSON.stringify([
+      selectedSource()?.id,
+      pod?.name,
+      pod?.container,
+      previous.checked,
+      readableSelection(),
+    ]);
+  }
+
   function logQuery(source, pod) {
     const query = new URLSearchParams({ source: source.id });
     if (source.kind !== "sandbox" && pod) {
@@ -275,9 +353,57 @@ export function renderAgentLogs(
     return query;
   }
 
+  function clearShownLines() {
+    cursor = null;
+    pane.replaceChildren();
+    rows = 0;
+    shownSelection = null;
+    applyFilters();
+  }
+
   function showLogError(text) {
+    clearTimeout(retryHintTimer);
     logError.hidden = text === null;
     logError.textContent = text ?? "";
+  }
+
+  function showLogReadError(error, source, { manualRead }) {
+    if (logsDenied) {
+      return;
+    }
+    showLogError(withRequestId(runtimeErrorText(error, "logs", source.id, manualRead), error));
+    if (manualRead && error.status === 429 && error.retryAfterSeconds !== undefined) {
+      // A later error or a successful read replaces the text and cancels this (finding 1715).
+      // A view held for Back is updated too, so it never returns with a wait that has passed.
+      retryHintTimer = setTimeout(() => {
+        showLogError(withRequestId("Too many requests. You can try again now.", error));
+      }, error.retryAfterSeconds * 1000);
+    }
+    if (error.status !== 403) {
+      return;
+    }
+    // A refusal from either read clears the displayed output. A page or download already
+    // authorized before that refusal can still arrive; neither may put its output back.
+    logsDenied = true;
+    deniedLogViews.add(deniedKey);
+    outputRefused ||= rows > 0;
+    restartPending = false;
+    cursor = null;
+    pane.replaceChildren();
+    rows = 0;
+    shownSelection = null;
+    logStatus.textContent = "";
+    applyFilters();
+    setFollow(false);
+    renderPickers();
+    onLogsDenied();
+    // One revoke often removes operate too: ask for status once now, so the Pod cards it showed
+    // do not stay under the log refusal until the next status poll (finding 1597). This read
+    // supersedes one in flight, which may have been authorized before the revoke. A first
+    // read refused revokes nothing.
+    if (logsAllowed && !statusDenied && description !== null) {
+      void loadStatus();
+    }
   }
 
   function renderStrip() {
@@ -378,15 +504,17 @@ export function renderAgentLogs(
     followButton.disabled = !readable || previous.checked;
   }
 
-  // Status is denied, but log text has its own grant: offer the log reads anyway.
+  // A later status denial clears the Pod details, not an independently authorized log cursor.
   function offerLogsWithoutStatus() {
-    if (description !== null) {
+    if (statusDenied) {
       return;
     }
+    const first = description === null;
     statusDenied = true;
     description = unobservedDescription();
+    strip.replaceChildren();
     renderPickers();
-    if (!logsDenied) {
+    if (first && !logsDenied) {
       firstLogRead = readLogs({ restart: true });
     }
   }
@@ -396,25 +524,65 @@ export function renderAgentLogs(
     if (!current()) {
       return;
     }
+    // Taken before any wait, so even a load that reads nothing (hidden page, remembered
+    // refusal) supersedes a read in flight.
+    const ticket = ++statusRead;
+    const superseded = () => ticket !== statusRead;
     if (deniedStatusViews.has(statusKey)) {
-      showStripStatus(runtimeErrorText({ status: 403 }, "status"));
-      offerLogsWithoutStatus();
-      return;
+      // A rebuilt view compares the denial with a fresh answer, so an operate grant since
+      // shows on the next visit to Logs (finding 1579). Back's check already compared a
+      // retained view's answer; its resumed loads take the newest one.
+      const fresh = !permissionsAsked;
+      permissionsAsked = true;
+      const operate = (await permissions({ fresh }))?.operate === true;
+      // Another status load may have taken the denial while this one waited.
+      if (!current() || !deniedStatusViews.has(statusKey)) {
+        return;
+      }
+      if (operate && deniedStatusViews.get(statusKey) === false) {
+        // Operate is granted again since the denial: ask once more, never on a timer.
+        deniedStatusViews.delete(statusKey);
+      } else {
+        deniedStatusViews.set(statusKey, operate);
+        showStripStatus(runtimeErrorText({ status: 403 }, "status"));
+        offerLogsWithoutStatus();
+        return;
+      }
     }
     if (!document.hidden) {
       try {
         const first = description === null;
-        description = await read(base);
-        if (!current()) {
+        const answer = await read(base);
+        // A superseded first answer still opens the view, unless a refusal has taken its place.
+        if (!current() || (superseded() && description !== null)) {
           return;
         }
+        const selection = effectiveSelection();
+        description = answer;
+        statusDenied = false;
         renderStrip();
         renderPickers();
         if (first && !logsDenied) {
           firstLogRead = readLogs({ restart: true });
+        } else if (!logsDenied && selection !== effectiveSelection()) {
+          // A restart normally clears the old view. Do that now if it must wait for an
+          // in-flight read (whose denial still wins), or there is no readable replacement.
+          if (reading || !readableSelection()) {
+            cursor = null;
+            pane.replaceChildren();
+            rows = 0;
+            logStatus.textContent = "";
+            applyFilters();
+          }
+          showLogError(null);
+          void readLogs({ restart: true });
+        }
+        if (superseded()) {
+          // The newer load schedules the next poll.
+          return;
         }
       } catch (error) {
-        if (!current()) {
+        if (!current() || superseded()) {
           return;
         }
         if (error.status === 401) {
@@ -428,7 +596,20 @@ export function renderAgentLogs(
         // Authorization and support failures do not change on their own.
         if ([403, 404, 501].includes(error.status)) {
           if (error.status === 403) {
-            deniedStatusViews.add(statusKey);
+            deniedStatusViews.set(statusKey, null);
+            // An answer that allows operate may predate a revocation: once per view, compare
+            // the refusal with a fresh one, so a later grant is not taken as unchanged.
+            const fresh = !permissionsAsked;
+            permissionsAsked = true;
+            void permissions()
+              .then((answer) =>
+                answer?.operate === true && fresh ? permissions({ fresh }) : answer,
+              )
+              .then((answer) => {
+                if (deniedStatusViews.get(statusKey) === null) {
+                  deniedStatusViews.set(statusKey, answer?.operate === true);
+                }
+              });
           }
           return;
         }
@@ -518,7 +699,7 @@ export function renderAgentLogs(
     downloadButton.disabled = true;
     try {
       const text = await read(`${base}/logs?${query}`, { responseType: "text" });
-      if (!current()) {
+      if (!current() || logsDenied) {
         return;
       }
       if (typeof text !== "string") {
@@ -526,6 +707,7 @@ export function renderAgentLogs(
         throw new Error("The log download did not return text.");
       }
       showLogError(null);
+      logsAllowed = true;
       const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
       const link = element("a", {
         href: url,
@@ -550,7 +732,7 @@ export function renderAgentLogs(
         context.onExpired();
         return;
       }
-      showLogError(withRequestId(runtimeErrorText(error, "logs", source.id), error));
+      showLogReadError(error, source, { manualRead: true });
     } finally {
       downloadButton.disabled = logsDenied || !readableSelection();
     }
@@ -587,6 +769,15 @@ export function renderAgentLogs(
     const pod = selectedPod();
     if (reading && restart) {
       restartPending = true;
+      // Lines kept for a refresh still in flight must not stay under another selection's
+      // picker while that read finishes: clear them now, as a restart for it would.
+      if (
+        shownSelection !== null &&
+        (!source || logQuery(source, pod).toString() !== shownSelection)
+      ) {
+        clearShownLines();
+        logStatus.textContent = "Reading output…";
+      }
       return;
     }
     if (!current() || reading || logsDenied || !readableSelection()) {
@@ -596,26 +787,42 @@ export function renderAgentLogs(
       return;
     }
     reading = true;
-    if (restart) {
-      cursor = null;
-      pane.replaceChildren();
-      rows = 0;
-      logStatus.textContent = "Reading output…";
-    }
     const query = logQuery(source, pod);
+    const selection = query.toString();
+    // Refreshing the lines shown keeps them until the new page arrives, so a failed or
+    // rate-limited refresh leaves them in place (finding 1715). A refusal still clears them in
+    // showLogReadError, and another selection clears them here: they belong to the old one. So
+    // do lines without a cursor (rejected, say): nothing could read on from them.
+    const keepShown = restart && cursor !== null && selection === shownSelection;
+    // A refresh that ends without a page puts back the status line of the lines still shown.
+    const restoreShownStatus = () => {
+      if (keepShown && selection === shownSelection) {
+        logStatus.textContent = shownStatus;
+      }
+    };
     if (restart) {
+      if (!keepShown) {
+        clearShownLines();
+      }
+      logStatus.textContent = "Reading output…";
       query.set("tailLines", String(TAIL_LINES));
-    }
-    if (cursor) {
+    } else if (cursor) {
       query.set("cursor", cursor);
     }
     let retryAfter = FOLLOW_POLL_MS;
     try {
       const page = await read(`${base}/logs?${query}`);
-      if (!current() || restartPending) {
+      if (!current() || restartPending || logsDenied) {
+        restoreShownStatus();
         return;
       }
       showLogError(null);
+      logsAllowed = true;
+      if (restart) {
+        pane.replaceChildren();
+        rows = 0;
+        shownSelection = selection;
+      }
       cursor = page.cursor;
       appendRecords(page.records);
       if (statusDenied) {
@@ -635,9 +842,11 @@ export function renderAgentLogs(
                 : source.kind === "sandbox"
                   ? `Showing policy decisions and supervisor output of sandbox ${page.stream.sandbox ?? ""}.`
                   : `Showing ${previous.checked ? "the previous instance of " : ""}${page.stream.container} in ${page.stream.pod}.`;
+        shownStatus = logStatus.textContent;
       }
     } catch (error) {
-      if (!current() || (restartPending && error.status !== 401)) {
+      if (!current() || (restartPending && ![401, 403].includes(error.status))) {
+        restoreShownStatus();
         return;
       }
       if (error.status === 401) {
@@ -653,18 +862,12 @@ export function renderAgentLogs(
       }
       if (restart) {
         logStatus.textContent = "";
+        restoreShownStatus();
       }
-      showLogError(withRequestId(runtimeErrorText(error, "logs", source.id), error));
-      if (error.status === 403) {
-        // Never re-poll after a denial; the view needs new grants.
-        logsDenied = true;
-        deniedLogViews.add(deniedKey);
-        onLogsDenied();
+      showLogReadError(error, source, { manualRead: !following });
+      if (error.status === 501) {
         setFollow(false);
-        renderPickers();
-      } else if (error.status === 501) {
-        setFollow(false);
-      } else {
+      } else if (!logsDenied) {
         retryAfter = Math.max(FOLLOW_POLL_MS, (error.retryAfterSeconds ?? 10) * 1000);
       }
     } finally {
@@ -765,15 +968,62 @@ export function renderAgentLogs(
   if (logsDenied) {
     showLogError(runtimeErrorText({ status: 403 }, "logs"));
   }
+  // Back reuses this view only while what it shows is still readable: the check reads on from
+  // where the view stopped, as its polls would, and a refusal rebuilds the page instead
+  // (finding 1553). The resumed view takes those answers rather than asking again.
+  const logsPath = `${base}/logs?`;
+  const forgetCheck = context.onRevalidate?.(async () => {
+    checked.clear();
+    // A Logs view left for another tab is no longer part of the page.
+    if (!context.view?.contains(section)) {
+      forgetCheck?.();
+      return;
+    }
+    const reads = [];
+    if (description !== null && !statusDenied) {
+      reads.push(base);
+    }
+    if (cursor && !logsDenied && readableSelection()) {
+      const query = logQuery(selectedSource(), selectedPod());
+      query.set("cursor", cursor);
+      reads.push(`${logsPath}${query}`);
+    }
+    // Output that cannot be read on from (no cursor, no readable source, or denied since it
+    // showed) is not shown again from the cache.
+    if ((rows > 0 || outputRefused) && !reads.some((path) => path.startsWith(logsPath))) {
+      throw new Error("The shown output cannot be checked.");
+    }
+    const answers = await Promise.all(
+      reads.map((path) =>
+        context.request(path, { revalidate: false }).catch((error) => {
+          // Each refusal is audited: the rebuilt view takes it as known instead of asking again.
+          if (error.status === 403) {
+            if (path === base) {
+              // Not yet compared with a permission answer: the rebuilt view takes its answer.
+              deniedStatusViews.set(statusKey, null);
+            } else {
+              deniedLogViews.add(deniedKey);
+            }
+          }
+          throw error;
+        }),
+      ),
+    );
+    reads.forEach((path, index) => checked.set(path, answers[index]));
+  });
   // Timers that fired while Back's cache held this view stopped; pick both polls up again.
+  // The page Back's check read is shown, followed or not: it is an audited view (finding 1564).
   context.onResume?.(() => {
     if (current()) {
       pane.scrollTop = paneAtBottom ? pane.scrollHeight : paneScrollTop;
       void loadStatus();
-      if (following) {
+      if ([...checked.keys()].some((path) => path.startsWith(logsPath))) {
+        void readLogs({ restart: false });
+      } else if (following) {
         scheduleFollow(0);
       }
     }
+    checked.clear();
   });
   applyFilters();
   void loadStatus()

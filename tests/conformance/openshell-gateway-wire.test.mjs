@@ -16,6 +16,7 @@ import {
   OpenShellAdmissionLimitError,
   OpenShellRequestReplayRefusedError,
 } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
+import { OpenShellGatewayFailure } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-errors.ts";
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import {
   openShellProviderName,
@@ -49,9 +50,249 @@ function bindWireServer(server) {
   );
 }
 
+test("OpenShell policy updates preserve static and L7 constraints and carry fixed scoped CAS receipts", async (t) => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
+    {
+      keepCase: true,
+      longs: String,
+      enums: String,
+      defaults: false,
+      oneofs: true,
+    },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  // These restrictions must survive decode/re-encode when a network grant is added.
+  const policy = {
+    version: 1,
+    filesystem: { read_only: ["/usr"], read_write: ["/tmp"] },
+    process: { run_as_user: "1000", run_as_group: "1000" },
+    network_policies: {
+      api: {
+        name: "api",
+        binaries: [{ path: "/usr/bin/python3.11" }],
+        endpoints: [
+          {
+            host: "example.org",
+            ports: [443],
+            protocol: "rest",
+            tls: "NETWORK_TLS_MODE_SKIP",
+            enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+            rules: [{ allow: { method: "GET", path: "/status" } }],
+            allowed_ips: ["93.184.216.0/24"],
+          },
+        ],
+      },
+    },
+  };
+  const calls = [];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    GetSandbox(call, callback) {
+      callback(null, {
+        sandbox: {
+          metadata: {
+            name: call.request.name,
+            workspace: call.request.workspace_scope.workspace,
+            resource_version: "9007199254740993",
+          },
+          spec: { policy },
+        },
+      });
+    },
+    GetSandboxPolicyStatus(call, callback) {
+      calls.push(["status", call.request]);
+      callback(null, {
+        revision: { version: 7, status: "POLICY_STATUS_LOADED", policy },
+        active_version: 7,
+      });
+    },
+    UpdateConfig(call, callback) {
+      calls.push(["update", call.request]);
+      callback(null, { version: 8 });
+    },
+    GetDraftPolicy(call, callback) {
+      calls.push(["draft", call.request]);
+      callback(null, {
+        draft_version: "19",
+        chunks: [
+          {
+            id: "draft-1",
+            status: "pending",
+            hit_count: 6,
+            proposed_rule: policy.network_policies.api,
+          },
+        ],
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  t.after(async () => {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  });
+  const target = { workspace: "exact-workspace", sandbox: "exact-sandbox" };
+  const observed = await client.getSandbox(
+    { name: target.sandbox, workspace: target.workspace },
+    AbortSignal.timeout(2000),
+  );
+  assert.equal(
+    observed.resourceVersion,
+    "9007199254740993",
+    "sandbox CAS survives without JavaScript numeric rounding",
+  );
+  const status = await client.getPolicyStatus(target, AbortSignal.timeout(2000));
+  assert.equal(status.activeVersion, 7);
+  assert.equal(status.state, "POLICY_STATUS_LOADED");
+  assert.deepEqual(
+    status.policy.network_policies.api.endpoints[0].rules,
+    policy.network_policies.api.endpoints[0].rules,
+  );
+  assert.deepEqual(status.policy.network_policies.api.endpoints[0].allowed_ips, [
+    "93.184.216.0/24",
+  ]);
+  const update = {
+    ...target,
+    policy: status.policy,
+    expectedResourceVersion: "9007199254740993",
+    requestId: "79962864-9cdc-4b12-9561-218b42d004b2",
+  };
+  await client.updatePolicy(update, AbortSignal.timeout(2000));
+  await client.updatePolicy(update, AbortSignal.timeout(2000));
+  assert.deepEqual(
+    calls[1][1],
+    calls[2][1],
+    "a retry must keep the original CAS version and idempotency UUID",
+  );
+  assert.equal(calls[1][1].expected_resource_version, update.expectedResourceVersion);
+  assert.equal(calls[1][1].request_id, update.requestId);
+  assert.deepEqual(calls[1][1].policy, status.policy);
+  const drafts = await client.getPolicyDrafts(target, AbortSignal.timeout(2000));
+  assert.equal(drafts.version, "19");
+  assert.equal(drafts.chunks[0].hit_count, 6);
+  assert.deepEqual(
+    drafts.chunks[0].proposed_rule.endpoints[0].rules,
+    policy.network_policies.api.endpoints[0].rules,
+  );
+  for (const [, request] of calls) {
+    assert.equal(request.sandbox, target.sandbox);
+    assert.equal(request.workspace_scope.workspace, target.workspace);
+    assert.equal(request.global, undefined, "Agent operations never select global policy");
+  }
+  await assert.rejects(
+    client.updatePolicy({ ...update, expectedResourceVersion: "0" }, AbortSignal.timeout(2000)),
+    /nonzero/,
+  );
+  assert.equal(calls.length, 4, "unsafe CAS is refused before provider dispatch");
+});
+test(
+  "OpenShell private initialization streams stdin and settles only on a complete exit",
+  { timeout: 10_000 },
+  async (t) => {
+    const proto = await loader.load(
+      join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
+      { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+    );
+    const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+    const requests = [];
+    const started = Promise.withResolvers();
+    const cancelled = Promise.withResolvers();
+    const privateOutput = "synthetic private document must never enter errors";
+    const server = new grpc.Server();
+    server.addService(OpenShell.service, {
+      ExecSandbox(call) {
+        requests.push(call.request);
+        if (call.request.sandbox === "cancel") {
+          call.once("cancelled", () => cancelled.resolve());
+          started.resolve();
+          return;
+        }
+        call.write({ stdout: { data: Buffer.from(privateOutput) } });
+        call.write({ stderr: { data: Buffer.from(privateOutput) } });
+        if (call.request.sandbox === "missing-exit") {
+          call.end();
+          return;
+        }
+        if (call.request.sandbox === "transport-error") {
+          // The process exit is insufficient: a terminal RPC failure must still fail the call.
+          call.write({ exit: { exit_code: 0 } }, () => {
+            call.emit("error", { code: grpc.status.UNAVAILABLE, details: privateOutput });
+          });
+          return;
+        }
+        call.write({ exit: { exit_code: call.request.sandbox === "nonzero" ? 23 : 0 } });
+        if (call.request.sandbox === "duplicate-exit") {
+          call.write({ exit: { exit_code: 0 } });
+        }
+        call.end();
+      },
+    });
+    const port = await bindWireServer(server);
+    const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+    t.after(() => {
+      client.close();
+      server.forceShutdown();
+    });
+    const request = {
+      workspace: "initialization-workspace",
+      sandbox: "success",
+      command: [
+        "/usr/bin/flock",
+        "/sandbox/initialize.lock",
+        "/usr/local/bin/node",
+        "-e",
+        "fixed writer",
+      ],
+      environment: { WORKSPACE: "/sandbox/workspace" },
+      stdin: JSON.stringify({ files: { "AGENTS.md": "Synthetic private initial instructions" } }),
+      timeoutSeconds: 30,
+    };
+    assert.equal(await client.execSandbox(request, AbortSignal.timeout(3_000)), 0);
+    assert.deepEqual(requests[0], {
+      workspace_scope: { workspace: request.workspace, selection: "workspace" },
+      sandbox: request.sandbox,
+      command: request.command,
+      environment: request.environment,
+      stdin: Buffer.from(request.stdin),
+      execution_timeout: { seconds: "30", nanos: 0 },
+      tty: false,
+      no_login_shell: true,
+    });
+    assert.equal(
+      await client.execSandbox({ ...request, sandbox: "nonzero" }, AbortSignal.timeout(3_000)),
+      23,
+    );
+    for (const sandbox of ["missing-exit", "duplicate-exit", "transport-error"]) {
+      await assert.rejects(
+        client.execSandbox({ ...request, sandbox }, AbortSignal.timeout(3_000)),
+        (error) =>
+          !error.message.includes(privateOutput) &&
+          (sandbox === "transport-error"
+            ? error.grpcStatus === grpc.status.UNAVAILABLE
+            : /exit status/.test(error.message)),
+      );
+    }
+    const abort = new AbortController();
+    const pending = client.execSandbox({ ...request, sandbox: "cancel" }, abort.signal);
+    const rejected = assert.rejects(pending, (error) => error.grpcStatus === grpc.status.CANCELLED);
+    await started.promise;
+    abort.abort();
+    await rejected;
+    await cancelled.promise;
+    assert.equal(getEventListeners(abort.signal, "abort").length, 0);
+    const admitted = requests.length;
+    await assert.rejects(
+      client.execSandbox({ ...request, stdin: "é".repeat(200_001) }, AbortSignal.timeout(3_000)),
+      /execution limits/,
+    );
+    assert.equal(requests.length, admitted, "oversized UTF-8 payloads never reach the gateway");
+  },
+);
+
 test("OpenShell HTTP origins keep port 80 in native gRPC connections", async (t) => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, enums: String },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -158,9 +399,9 @@ test("OpenShell HTTP origins keep port 80 in native gRPC connections", async (t)
   assert.equal(healthCalls, 5);
 });
 
-test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", async () => {
+test("OpenShell client serializes v0.1.4 create-time service exposure", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -389,7 +630,7 @@ test("OpenShell client serializes v0.1.3-pre.2 create-time service exposure", as
 
 test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -410,12 +651,19 @@ test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it
       unnamed: true,
       replacedBy: "sandbox-id-2",
     },
+    // NOT_FOUND: OpenShell answers it for a Sandbox this identity may not see as for one that
+    // is gone (finding 1676), so it confirms nothing and the caller decides with GetWorkspace.
+    "sandbox-missing": { notFound: true },
   };
   const server = new grpc.Server();
   server.addService(OpenShell.service, {
     DeleteSandbox(call, callback) {
       deletes.push(call.request.name);
       const scenario = scenarios[call.request.name];
+      if (scenario.notFound) {
+        callback({ code: grpc.status.NOT_FOUND, details: "sandbox not found" });
+        return;
+      }
       setTimeout(
         () =>
           callback(null, {
@@ -473,6 +721,18 @@ test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it
       return true;
     });
     assert.ok(Date.now() - started < 5_000);
+    await assert.rejects(remove("sandbox-missing"), (error) => {
+      assert.ok(error instanceof OpenShellGatewayFailure, String(error));
+      assert.match(
+        error.message,
+        /DeleteSandbox did not find the Sandbox, so the deletion is unconfirmed/,
+      );
+      // The code the worker's sweep logs apart from a failure (finding 1696).
+      assert.equal(error.code, "SANDBOX_DELETION_UNCONFIRMED");
+      assert.equal(error.cause?.code, grpc.status.NOT_FOUND);
+      return true;
+    });
+    assert.equal(gets.includes("sandbox-missing"), false);
     assert.deepEqual(deletes, Object.keys(scenarios));
 
     const aborted = new AbortController();
@@ -490,7 +750,7 @@ test("OpenShell client reports a Sandbox deleted only once OpenShell confirms it
 
 test("OpenShell client reads an existing Sandbox and its service endpoint", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -528,11 +788,61 @@ test("OpenShell client reads an existing Sandbox and its service endpoint", asyn
         url: "http://tenant-workspace--sandbox-wire.openshell.localhost:8080/",
       });
     },
+    // Per Sandbox name: how DeleteService answers (finding 1657).
+    DeleteService(call, callback) {
+      requests.push(["DeleteService", call.request]);
+      const outcomes = {
+        "sandbox-wire": { outcome: "DELETION_OUTCOME_COMPLETED" },
+        "sandbox-absent": { outcome: "DELETION_OUTCOME_ALREADY_ABSENT" },
+        "sandbox-accepted": { outcome: "DELETION_OUTCOME_ACCEPTED" },
+        "sandbox-silent": {},
+      };
+      const answer = outcomes[call.request.sandbox];
+      if (answer === undefined) {
+        notFound(callback);
+        return;
+      }
+      callback(null, answer);
+    },
   });
   const port = await bindWireServer(server);
   const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
   const signal = AbortSignal.timeout(2_000);
   try {
+    // A service is gone on COMPLETED or ALREADY_ABSENT only; an accepted or unstated outcome
+    // is not a confirmation, so the exposure is reported as still present. Neither is
+    // NOT_FOUND: OpenShell answers it for a Sandbox this identity may not see as for one that
+    // is gone (finding 1670), so the caller confirms with a read it can trust.
+    for (const sandbox of ["sandbox-wire", "sandbox-absent"]) {
+      await client.deleteService("tenant-workspace", sandbox, "", signal);
+    }
+    for (const sandbox of ["sandbox-accepted", "sandbox-silent"]) {
+      await assert.rejects(
+        client.deleteService("tenant-workspace", sandbox, "", signal),
+        /DeleteService did not confirm deletion/,
+      );
+    }
+    await assert.rejects(
+      client.deleteService("tenant-workspace", "sandbox-missing", "", signal),
+      (error) => {
+        assert.match(
+          error.message,
+          /DeleteService did not find the Sandbox, so the deletion is unconfirmed/,
+        );
+        assert.equal(error.code, "SANDBOX_DELETION_UNCONFIRMED");
+        return true;
+      },
+    );
+    const deletions = requests.filter(([method]) => method === "DeleteService");
+    assert.equal(deletions.length, 5);
+    // The delete is idempotent by itself: no request_id, so no durable admission per pass.
+    assert.deepEqual(deletions[0][1], {
+      sandbox: "sandbox-wire",
+      name: "",
+      workspace_scope: { workspace: "tenant-workspace", selection: "workspace" },
+      allow_missing: true,
+    });
+    requests.length = 0;
     const sandbox = await client.getSandbox(
       { name: "sandbox-wire", workspace: "tenant-workspace" },
       signal,
@@ -582,7 +892,7 @@ test("OpenShell client reads an existing Sandbox and its service endpoint", asyn
 
 test("OpenShell client reads the pinned gateway's Harness restart state from GetSandbox", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -644,7 +954,7 @@ test("OpenShell client reads the pinned gateway's Harness restart state from Get
 
 test("OpenShell client reports a refused CreateSandbox request_id from its ErrorInfo reason", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -737,7 +1047,7 @@ test("OpenShell client reports a refused CreateSandbox request_id from its Error
 
 test("OpenShell client holds only the durable admission limit as a transient dependency", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -805,9 +1115,9 @@ test("OpenShell client holds only the durable admission limit as a transient dep
   }
 });
 
-test("OpenShell client serializes v0.1.3-pre.2 credential providers, profiles, and attachment status", async () => {
+test("OpenShell client serializes v0.1.4 credential providers, profiles, and attachment status", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -1181,7 +1491,7 @@ test("OpenShell client verifies a TLS gateway at an IP endpoint against that IP 
 
 test("OpenShell client cancels an in-flight provider request", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -1336,9 +1646,9 @@ test("OpenShell client closes cancellation races around provider dispatch", asyn
   });
 });
 
-test("OpenShell client reads v0.1.3-pre.2 sandbox logs with nanosecond times", async () => {
+test("OpenShell client reads v0.1.4 sandbox logs with nanosecond times", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -1438,7 +1748,7 @@ test("OpenShell client refuses a sandbox log response over its 4 MiB receive lim
   // OpenShell does not bound a log line, and OCC buffers the whole read before it
   // withholds oversized lines. The receive limit is that read's memory bound.
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -1477,9 +1787,9 @@ test("OpenShell client refuses a sandbox log response over its 4 MiB receive lim
   }
 });
 
-test("OpenShell client serializes v0.1.3-pre.2 provider updates and detach receipts", async () => {
+test("OpenShell client serializes v0.1.4 provider updates and detach receipts", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -1605,7 +1915,7 @@ test("OpenShell client serializes v0.1.3-pre.2 provider updates and detach recei
 
 test("OpenShell gateway rechecks a revoked source through the Sandbox's provider list", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
@@ -1657,6 +1967,16 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
         },
       });
     },
+    // A missing Sandbox is absent only once the Workspace read passes (finding 1676).
+    GetWorkspace(call, callback) {
+      calls.push(["GetWorkspace", call.request.name]);
+      callback(null, {
+        workspace: {
+          metadata: { name: call.request.name },
+          status: { phase: "WORKSPACE_PHASE_ACTIVE" },
+        },
+      });
+    },
   });
   const port = await bindWireServer(server);
   const client = new GrpcOpenShellGatewayClient({
@@ -1690,7 +2010,8 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
       reason: "PROVIDER_READINESS_REASON_WAITING_FOR_SUPERVISOR",
     });
     assert.deepEqual(sandboxes.get("os-listed"), ["operator-static"]);
-    // Once the Sandbox no longer lists it, or no longer exists, a recheck mutates nothing.
+    // Once the Sandbox no longer lists it, or no longer exists, a recheck mutates nothing; a
+    // missing Sandbox is absent only after GetWorkspace and a second GetSandbox (finding 1692).
     assert.deepEqual(await recheck("os-listed"), { sourceId, state: "revoked" });
     assert.deepEqual(await recheck("os-detached"), { sourceId, state: "revoked" });
     assert.deepEqual(await recheck("os-bare"), { sourceId, state: "revoked" });
@@ -1703,6 +2024,8 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
       ["GetSandbox", "os-detached"],
       ["GetSandbox", "os-bare"],
       ["GetSandbox", "os-missing"],
+      ["GetWorkspace", workspace],
+      ["GetSandbox", "os-missing"],
     ]);
   } finally {
     client.close();
@@ -1710,9 +2033,9 @@ test("OpenShell gateway rechecks a revoked source through the Sandbox's provider
   }
 });
 
-test("OpenShell client serializes v0.1.3-pre.2 gateway-owned refresh", async () => {
+test("OpenShell client serializes v0.1.4 gateway-owned refresh", async () => {
   const proto = await loader.load(
-    join(import.meta.dirname, "../fixtures/openshell-v0.1.3-pre.2-wire.proto"),
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
     { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
   );
   const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;

@@ -89,6 +89,39 @@ test("a collection body disconnected after headers shows interruption and Retry 
   );
 });
 
+// Waits up to settleMs for the locator's element to hold focus. Returns what held focus at the
+// first and the last check (role, accessible text, class, connected), so a failed check names
+// the element that took focus instead of saying `false !== true` (finding 2016).
+async function focusSettles(locator, settleMs = 1000) {
+  const deadline = Date.now() + settleMs;
+  let first;
+  for (;;) {
+    const sample = await locator.evaluate((node) => {
+      const active = globalThis.document.activeElement;
+      const describe = (element) => {
+        if (!element || element === globalThis.document.body) {
+          return element ? "<body>" : "nothing";
+        }
+        const role = element.getAttribute("role");
+        // getAttribute, not className: an SVG element's className is an object.
+        const className = element.getAttribute("class");
+        const name = (element.getAttribute("aria-label") ?? element.textContent ?? "").trim();
+        return (
+          `<${element.localName}${role ? ` role=${role}` : ""}` +
+          `${className ? ` class="${className}"` : ""}> "${name.slice(0, 60)}"` +
+          `${element.isConnected ? "" : " (detached)"}`
+        );
+      };
+      return { held: node === active, active: describe(active), target: describe(node) };
+    });
+    first ??= sample;
+    if (sample.held || Date.now() >= deadline) {
+      return { ...sample, first: first.active };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 async function openShellMenu(page) {
   await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
 }
@@ -382,7 +415,8 @@ test("console shows the external observability link only to Installation adminis
     }
   });
   await login(page, fixture, "/console/");
-  const link = page.getByRole("link", { name: "Observability" });
+  // Exact: the Namespace row "Observability access" is a link too.
+  const link = page.getByRole("link", { name: "Observability", exact: true });
   await link.waitFor();
   assert.equal(await link.getAttribute("href"), url);
   assert.equal(await link.getAttribute("target"), "_blank");
@@ -715,7 +749,7 @@ test("console keeps loaded route families visible while return reads refresh", a
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByRole("link", { name: "Retained route Agent", exact: true }).click();
   await page.getByRole("heading", { name: "Retained route Agent", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   const workspaceNotice =
     "Workspace files require a deployed Agent with a current version and a reachable gateway.";
   await page.getByText(workspaceNotice, { exact: true }).waitFor();
@@ -759,14 +793,15 @@ test("console keeps loaded route families visible while return reads refresh", a
   t.after(() => createSessionHold.release());
   await page.goBack();
   await createSessionHold.waitForRelease();
-  // The abandoned default starter form must not appear as an inert cached preview.
-  assert.equal(await page.locator("#agent-name").count(), 0);
   createSessionHold.release();
-  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
   await createSessionHold.waitForCompletion();
   await page.unroute(sessionPattern);
-  await page.getByLabel("Preset template").waitFor();
-  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  // A default starter form is kept like any other draft and returns editable (finding 1902).
+  await page.waitForFunction(() => {
+    const name = globalThis.document.querySelector("#agent-name");
+    return name?.value === "Retained draft Agent" && !name.closest("[inert]");
+  });
+  assert.equal(await page.getByLabel("Preset template").count(), 0);
 });
 
 test("the account menu stays open and focused while the page under it finishes loading", async (t) => {
@@ -841,20 +876,28 @@ for (const focus of ["navigation link", "account menu"]) {
       focused = page.getByRole("menuitem", { name: "Settings", exact: true });
     }
     await focused.waitFor();
-    assert.equal(
-      await focused.evaluate((node) => node === globalThis.document.activeElement),
-      true,
-    );
+    const opened = await focusSettles(focused);
+    if (opened.held && opened.first !== opened.active) {
+      t.diagnostic(`focus settled on the ${focus} after ${opened.first}`);
+    }
+    if (!opened.held) {
+      assert.fail(
+        `The opened drawer focuses its ${focus} ${opened.target}; focus is on ${opened.active}` +
+          ` (first check: ${opened.first}; drawer ${await toggle.getAttribute("aria-expanded")})`,
+      );
+    }
     await releaseHeldRoute(page, namespacesPattern, namespacesHold);
     await page.getByRole("list", { name: "Namespaces", exact: true }).waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
 
     assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
     assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
+    // No settling here: the re-render must not move focus at all.
+    const kept = await focusSettles(focused, 0);
     assert.equal(
-      await focused.evaluate((node) => node === globalThis.document.activeElement),
+      kept.held,
       true,
-      `The re-rendered drawer keeps focus on its ${focus}`,
+      `The re-rendered drawer keeps focus on its ${focus} ${kept.target}; focus is on ${kept.active}`,
     );
     await focused.click();
     const destination = focus === "account menu" ? "Settings" : "Agents";
@@ -927,7 +970,7 @@ test("an Agent tab chosen while the detail is still loading is the one Back rest
   t.after(() => configurationHold.release());
   await page.getByRole("link", { name: "Early tab Agent", exact: true }).click();
   await configurationHold.waitForRelease();
-  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.getByRole("tab", { name: "Workspace files", exact: true }).click();
   const workspaceNotice = page.getByText(
     "Workspace files require a deployed Agent with a current version and a reachable gateway.",
     { exact: true },
@@ -1528,6 +1571,66 @@ test("known Namespace revocation invalidates a cached global collection with ano
   await expectNoText(page, /Removed from access/);
 });
 
+// Namespace rows were inert and their status badges showed raw lowercase enum values in one grey
+// (finding 1897). Each row now opens its Namespace's Agents, and statuses read as words with a tone.
+test("Namespaces rows open their Agents and status badges use words with a tone", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const ready = await fixture.createNamespace("Linked ready", { ready: true });
+  const provisioning = await fixture.createNamespace("Linked provisioning");
+  const retiring = await fixture.createNamespace("Linked retiring", { ready: true });
+  assert.equal((await fixture.request("DELETE", `/namespaces/${retiring.id}`)).status, 202);
+  await fixture.createAgent(ready.id, "Linked Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/namespaces?namespace=${provisioning.id}`);
+  const list = page.getByRole("list", { name: "Namespaces", exact: true });
+  await list.waitFor();
+  for (const [namespace, label, tone] of [
+    [ready, "Ready", "success"],
+    [provisioning, "Provisioning", "warning"],
+    [retiring, "Deleting", "warning"],
+  ]) {
+    const row = list.getByRole("listitem").filter({ hasText: namespace.id });
+    const link = row.getByRole("link", { name: namespace.name, exact: true });
+    assert.equal(
+      await link.getAttribute("href"),
+      `/console/agents?namespace=${encodeURIComponent(namespace.id)}`,
+    );
+    const badge = row.locator(".badge");
+    assert.equal(await badge.textContent(), label);
+    assert.equal(await badge.getAttribute("data-tone"), tone);
+  }
+  // The ID stays selectable above the row's link area, so clicking it stays on Namespaces.
+  const row = list.getByRole("listitem").filter({ hasText: ready.id });
+  await row.locator(".resource-id").click();
+  assert.equal(new URL(page.url()).pathname, "/console/namespaces");
+  // Selecting anywhere else on the row opens that Namespace's Agents in place.
+  const box = await row.boundingBox();
+  await row.click({ position: { x: box.width / 2, y: box.height - 6 } });
+  await page.waitForURL(`**/console/agents?namespace=${ready.id}`);
+  await page.getByText("Linked Agent", { exact: true }).waitFor();
+  assert.equal(await page.locator("#namespace-selector").inputValue(), ready.id);
+  // From the keyboard, Back returns focus to the row that was opened.
+  await page.goBack();
+  const provisioningLink = list.getByRole("link", { name: provisioning.name, exact: true });
+  await provisioningLink.focus();
+  await page.keyboard.press("Enter");
+  await page.waitForURL(`**/console/agents?namespace=${provisioning.id}`);
+  await page.goBack();
+  await page.waitForURL(`**/console/namespaces?namespace=${provisioning.id}`);
+  await page.waitForFunction(
+    (name) => globalThis.document.activeElement?.textContent === name,
+    provisioning.name,
+  );
+
+  // Backend types are names, not states: human-cased and neutral.
+  await page.goto(`${fixture.origin}/console/backends?namespace=${ready.id}`);
+  const backend = page.getByRole("list", { name: "Backends", exact: true }).getByRole("listitem");
+  await backend.getByText("openai-primary", { exact: true }).waitFor();
+  assert.equal(await backend.locator(".badge").textContent(), "ChatGPT");
+  assert.equal(await backend.locator(".badge").getAttribute("data-tone"), null);
+});
+
 test("known Backend denial invalidates previews across Namespace selections", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -2114,10 +2217,8 @@ test("login restores a scrubbed Agent destination only after the tab confirms it
   );
   await page.getByRole("heading", { name: "Destination Agent", exact: true }).waitFor();
   assert.equal(
-    await page
-      .getByRole("button", { name: "Credentials", exact: true })
-      .getAttribute("aria-current"),
-    "page",
+    await page.getByRole("tab", { name: "Credentials", exact: true }).getAttribute("aria-selected"),
+    "true",
   );
   assert.equal(await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")), null);
   assert.equal(new URL(page.url()).searchParams.has("token"), false);

@@ -1,4 +1,4 @@
-import { element, button, dismissOnBackdrop } from "../dom.mjs";
+import { element, button, dismissOnBackdrop, setText } from "../dom.mjs";
 
 const approvalOptions = [
   ["provider_default", "Provider default"],
@@ -128,12 +128,12 @@ export function createPluginFields({
   });
   const searchLabel = element("label", { for: search.id }, "Search plugins");
   const status = element("p", { className: "hint", role: "status" });
-  const feedback = element("p", { className: "error", role: "status" });
+  const feedback = element("p", { className: "status", "data-tone": "danger", role: "alert" });
   const policyStatus = element("p", { className: "hint", role: "status" });
   const summary = element("p", { className: "hint" });
   const list = element("div", { className: "plugin-list" });
   const detail = element("div", { className: "plugin-detail" });
-  const loadPlugins = button("Load plugins", () => loadPage("refresh"));
+  const loadPlugins = button("Load plugins", () => loadPage("refresh"), { size: "sm" });
   loadPlugins.hidden = !onLoadPlugins;
   const previous = button("Previous page", () => loadPage("previous"));
   const next = button("Next page", () => loadPage("next"));
@@ -155,7 +155,7 @@ export function createPluginFields({
   );
   const workspace = element("div", { className: "plugin-workspace" }, browser, detail);
   const dialog = element("dialog", {
-    className: "plugin-dialog",
+    className: "dialog dialog--wide plugin-dialog",
     "aria-labelledby": "plugin-dialog-title",
   });
   dismissOnBackdrop(dialog);
@@ -306,6 +306,28 @@ export function createPluginFields({
     input.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
+  function writeToolPolicy(pluginId, scope, key, value, toolId) {
+    update((all) => {
+      const selection = all[pluginId];
+      const policy = {
+        ...(scope === "toolDefaults" ? selection.toolDefaults : selection.tools?.[toolId]),
+        [key]: value,
+      };
+      if (value === undefined) {
+        delete policy[key];
+      }
+      const updated = scope === "toolDefaults" ? policy : { ...selection.tools, [toolId]: policy };
+      if (scope === "tools" && Object.keys(policy).length === 0) {
+        delete updated[toolId];
+      }
+      if (Object.keys(updated).length === 0) {
+        delete selection[scope];
+      } else {
+        selection[scope] = updated;
+      }
+    });
+  }
+
   function select(label, value, options, onChange, supported = true) {
     const control = element(
       "select",
@@ -358,6 +380,154 @@ export function createPluginFields({
       : null;
   }
 
+  function toolPolicyFields(name, policy, scope, reviewers, writePolicy) {
+    const defaults = scope === "toolDefaults";
+    const canSelectReviewer = reviewers.length > 0 || policy.reviewer !== undefined;
+    const reviewer =
+      defaults || canSelectReviewer
+        ? select(
+            defaults ? `${name} default reviewer` : `${name} reviewer`,
+            policy.reviewer ?? "",
+            [
+              ["", defaults ? "Inherit Harness reviewer" : "Inherit plugin or Harness reviewer"],
+              ...reviewers,
+            ],
+            (value) => writePolicy("reviewer", value || undefined),
+            Boolean(capabilities) && canSelectReviewer,
+          )
+        : null;
+    return {
+      controls: element(
+        "div",
+        { className: "plugin-controls" },
+        select(
+          defaults ? `${name} tools enabled by default` : `Enable ${name}`,
+          policy.enabled === undefined ? "" : String(policy.enabled),
+          [
+            ["", defaults ? "Inherit default policy" : "Inherit plugin policy"],
+            ["true", "Enabled"],
+            ["false", "Disabled"],
+          ],
+          (value) => writePolicy("enabled", value === "" ? undefined : value === "true"),
+          capabilities?.[scope].enabled === true,
+        ),
+        approvalSelect(name, policy.approval, scope, (value) =>
+          writePolicy("approval", value || undefined),
+        ),
+        reviewer,
+      ),
+      hint: approvalHint(policy.approval, scope),
+      reviewer,
+    };
+  }
+
+  function updateDetailDisabled(invalidSelection) {
+    for (const node of detail.querySelectorAll("input, select, button")) {
+      node.disabled =
+        disabled ||
+        (invalidSelection && node.dataset.discovery !== "true") ||
+        node.dataset.policyUnsupported === "true";
+    }
+  }
+
+  function renderPluginList(values, entries, catalogLoading) {
+    list.setAttribute("aria-busy", String(catalogLoading));
+    const query = configuredOnly || !onLoadPlugins ? search.value.trim().toLowerCase() : "";
+    const candidates = configuredOnly
+      ? Object.keys(values ?? {}).map((id) => entries.get(id))
+      : (catalog?.entries ?? []);
+    const visible = candidates
+      .filter((entry) =>
+        [entry.name, entry.id, entry.description ?? ""].some((text) =>
+          text.toLowerCase().includes(query),
+        ),
+      )
+      .sort(
+        (a, b) =>
+          Number(a.available === false) - Number(b.available === false) ||
+          a.name.localeCompare(b.name),
+      );
+    const rows = visible.map((entry, index) => {
+      const selected = values?.[entry.id];
+      const item = button(pluginIdentity(entry), () => showPlugin(entry), {
+        className: "plugin-list-item",
+        "aria-label": entry.name,
+        "aria-current": String(tabState().activeId === entry.id),
+      });
+      item.append(
+        element(
+          "span",
+          { className: "badge" },
+          entry.available === false
+            ? "Unavailable"
+            : selected
+              ? selected.enabled
+                ? "Enabled"
+                : "Disabled"
+              : "Not selected",
+        ),
+      );
+      const reasonId = `${input.id}-plugin-unavailable-${index}`;
+      if (entry.available === false) {
+        item.setAttribute("aria-describedby", reasonId);
+      }
+      return element(
+        "div",
+        { className: "plugin-list-row", "data-plugin-id": entry.id },
+        item,
+        entry.available === false
+          ? element(
+              "button",
+              {
+                type: "button",
+                className: "plugin-unavailable-trigger",
+                "aria-label": `Why ${entry.name} is unavailable`,
+                popovertarget: reasonId,
+              },
+              element("span", { "aria-hidden": "true" }, "i"),
+            )
+          : null,
+        entry.available === false
+          ? element(
+              "div",
+              { id: reasonId, className: "plugin-unavailable-popover", popover: "auto" },
+              unavailableMessage(entry),
+            )
+          : null,
+      );
+    });
+    const focused = document.activeElement;
+    const focusedRow = focused?.closest(".plugin-list-row");
+    const focusedSelector = [".plugin-list-item", ".plugin-unavailable-trigger"].find((selector) =>
+      focused?.matches(selector),
+    );
+    const focusedId = focusedRow?.parentElement === list ? focusedRow.dataset.pluginId : null;
+    list.replaceChildren(...rows);
+    if (focusedId !== null && focusedSelector) {
+      rows
+        .find((row) => row.dataset.pluginId === focusedId)
+        ?.querySelector(focusedSelector)
+        ?.focus({ preventScroll: true });
+    }
+    if (!visible.length && !catalogLoading) {
+      list.append(
+        element(
+          "p",
+          { className: "muted" },
+          query
+            ? "No matching plugins on this page."
+            : configuredOnly
+              ? "No plugins configured. Choose Available plugins to add one."
+              : catalog?.status === "ready"
+                ? "No plugins were returned."
+                : !catalog?.canLoad
+                  ? "To add a plugin by ID, choose Done and edit Plugin selections JSON."
+                  : "Load plugins to browse available choices.",
+        ),
+      );
+    }
+  }
+
   function render() {
     rememberExpandedTools();
     const focused = document.activeElement?.getAttribute("aria-label");
@@ -370,19 +540,26 @@ export function createPluginFields({
     const focusedHeading = document.activeElement?.matches(".plugin-detail h3");
     const values = selections();
     const catalogLoading = !configuredOnly && catalog?.status === "loading";
-    policyStatus.textContent = capabilities
-      ? ""
-      : "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.";
+    // Live regions are written only when their text changes, so a redraw (tool details arriving)
+    // does not make screen readers announce the same words again (finding 1890).
+    setText(
+      policyStatus,
+      capabilities
+        ? ""
+        : "This installation does not support plugin policy editing. You can browse plugins; existing settings are preserved.",
+    );
     const defaultReviewers = reviewerOptions.filter(([mode]) =>
       capabilities?.toolDefaults.reviewer?.includes(mode),
     );
     const toolReviewers = reviewerOptions.filter(([mode]) =>
       capabilities?.tools.reviewer?.includes(mode),
     );
-    feedback.textContent =
+    setText(
+      feedback,
       values === null
         ? "Fix Plugin selections JSON to use the controls. Check plugin enablement and tool policies. Your JSON has been kept."
-        : "";
+        : "",
+    );
     if (values === null) {
       json.open = true;
     }
@@ -409,18 +586,16 @@ export function createPluginFields({
     renderedTab = tabState();
     renderedPlugin = renderedTab.activeId;
     const open = renderedTab.expanded;
-    status.textContent =
+    let statusText =
       catalog?.message ??
       "Enter a service account token with the Codex harness to discover plugins. Existing selections remain in JSON.";
     status.classList.toggle("plugin-loading", catalogLoading);
     if (catalogLoading) {
-      status.textContent = tabs[0].query.trim()
-        ? "Searching plugins…"
-        : "Loading available plugins…";
+      statusText = tabs[0].query.trim() ? "Searching plugins…" : "Loading available plugins…";
     } else if (catalog?.status === "error") {
-      status.textContent = catalog.message;
+      statusText = catalog.message;
     } else if (catalog?.status === "ready") {
-      status.textContent = `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
+      statusText = `Page ${catalog.pageNumber ?? 1} · ${catalog.entries.length} plugins`;
     }
     loadPlugins.textContent = catalog?.status === "loading" ? "Loading plugins…" : "Load plugins";
     loadPlugins.disabled = disabled || !catalog?.canLoad || catalog?.status === "loading";
@@ -444,76 +619,11 @@ export function createPluginFields({
     searchLabel.textContent = configuredOnly ? "Filter configured plugins" : "Search plugins";
     search.placeholder = searchLabel.textContent;
     if (configuredOnly) {
-      status.textContent = `${count} configured plugin${count === 1 ? "" : "s"}`;
+      statusText = `${count} configured plugin${count === 1 ? "" : "s"}`;
     }
-    list.setAttribute("aria-busy", String(catalogLoading));
+    setText(status, statusText);
     workspace.dataset.showDetails = String(tabState().activeId !== null);
-    const query = configuredOnly || !onLoadPlugins ? search.value.trim().toLowerCase() : "";
-    const candidates = configuredOnly
-      ? Object.keys(values ?? {}).map((id) => entries.get(id))
-      : (catalog?.entries ?? []);
-    const visible = candidates
-      .filter((entry) =>
-        [entry.name, entry.id, entry.description ?? ""].some((text) =>
-          text.toLowerCase().includes(query),
-        ),
-      )
-      .sort(
-        (a, b) =>
-          Number(a.available === false) - Number(b.available === false) ||
-          a.name.localeCompare(b.name),
-      );
-    list.replaceChildren(
-      ...visible.map((entry, index) => {
-        const selected = values?.[entry.id];
-        const item = button(pluginIdentity(entry), () => showPlugin(entry), {
-          className: "plugin-list-item",
-          "aria-label": entry.name,
-          "aria-current": String(tabState().activeId === entry.id),
-        });
-        item.append(
-          element(
-            "span",
-            { className: "badge" },
-            entry.available === false
-              ? "Unavailable"
-              : selected
-                ? selected.enabled
-                  ? "Enabled"
-                  : "Disabled"
-                : "Not selected",
-          ),
-        );
-        const reasonId = `${input.id}-plugin-unavailable-${index}`;
-        if (entry.available === false) {
-          item.setAttribute("aria-describedby", reasonId);
-        }
-        return element(
-          "div",
-          { className: "plugin-list-row" },
-          item,
-          entry.available === false
-            ? element(
-                "button",
-                {
-                  type: "button",
-                  className: "plugin-unavailable-trigger",
-                  "aria-label": `Why ${entry.name} is unavailable`,
-                  popovertarget: reasonId,
-                },
-                element("span", { "aria-hidden": "true" }, "i"),
-              )
-            : null,
-          entry.available === false
-            ? element(
-                "div",
-                { id: reasonId, className: "plugin-unavailable-popover", popover: "auto" },
-                unavailableMessage(entry),
-              )
-            : null,
-        );
-      }),
-    );
+    renderPluginList(values, entries, catalogLoading);
     detail.replaceChildren(
       ...[entries.get(tabState().activeId)].filter(Boolean).map((entry) => {
         const selected = values?.[entry.id];
@@ -584,24 +694,15 @@ export function createPluginFields({
           );
           const defaults = selected.toolDefaults ?? {};
           const writeDefault = (key, value) =>
-            update((all) => {
-              const selection = all[entry.id];
-              selection.toolDefaults = { ...selection.toolDefaults, [key]: value };
-              if (value === undefined) {
-                delete selection.toolDefaults[key];
-              }
-              if (!Object.keys(selection.toolDefaults).length) {
-                delete selection.toolDefaults;
-              }
-            });
-          defaultReviewer = select(
-            `${entry.name} default reviewer`,
-            defaults.reviewer ?? "",
-            [["", "Inherit Harness reviewer"], ...defaultReviewers],
-            (value) => writeDefault("reviewer", value || undefined),
-            Boolean(capabilities) &&
-              (defaultReviewers.length > 0 || defaults.reviewer !== undefined),
+            writeToolPolicy(entry.id, "toolDefaults", key, value);
+          const fields = toolPolicyFields(
+            entry.name,
+            defaults,
+            "toolDefaults",
+            defaultReviewers,
+            writeDefault,
           );
+          defaultReviewer = fields.reviewer;
           details.append(
             element(
               "fieldset",
@@ -612,26 +713,8 @@ export function createPluginFields({
                 { className: "hint" },
                 "Approval applies to current and future actions unless a tool overrides it. Reviewer selects who reviews; automatic review may deny a call.",
               ),
-              element(
-                "div",
-                { className: "plugin-controls" },
-                select(
-                  `${entry.name} tools enabled by default`,
-                  defaults.enabled === undefined ? "" : String(defaults.enabled),
-                  [
-                    ["", "Inherit default policy"],
-                    ["true", "Enabled"],
-                    ["false", "Disabled"],
-                  ],
-                  (value) => writeDefault("enabled", value === "" ? undefined : value === "true"),
-                  capabilities?.toolDefaults.enabled === true,
-                ),
-                approvalSelect(entry.name, defaults.approval, "toolDefaults", (value) =>
-                  writeDefault("approval", value || undefined),
-                ),
-                defaultReviewer,
-              ),
-              approvalHint(defaults.approval, "toolDefaults"),
+              fields.controls,
+              fields.hint,
             ),
           );
           if (createApproverField && capabilities?.approvers?.plugin === true) {
@@ -769,7 +852,15 @@ export function createPluginFields({
           details.append(element("p", { className: "hint" }, "No tools listed for this plugin."));
         }
         if (entry.toolError) {
-          details.append(element("p", { className: "error", role: "status" }, entry.toolError));
+          details.append(
+            element(
+              "p",
+              // A status, not an alert: the pane is rebuilt on every redraw (search typing, say),
+              // and an alert would be announced again each time.
+              { className: "status", "data-tone": "danger", role: "status" },
+              entry.toolError,
+            ),
+          );
         }
         const toolRows = [];
         const filterTools = () => {
@@ -803,21 +894,15 @@ export function createPluginFields({
         }
         for (const tool of tools.values()) {
           const policy = selected?.tools?.[tool.id] ?? {};
-          const writeTool = (key, value) =>
-            update((all) => {
-              const selection = all[entry.id];
-              const next = { ...selection.tools?.[tool.id], [key]: value };
-              if (value === undefined) {
-                delete next[key];
-              }
-              selection.tools = { ...selection.tools, [tool.id]: next };
-              if (Object.keys(next).length === 0) {
-                delete selection.tools[tool.id];
-              }
-              if (Object.keys(selection.tools).length === 0) {
-                delete selection.tools;
-              }
-            });
+          const writeTool = (key, value) => writeToolPolicy(entry.id, "tools", key, value, tool.id);
+          const fields = toolPolicyFields(tool.name, policy, "tools", toolReviewers, writeTool);
+          if (!fields.reviewer && selected && defaultReviewers.length > 0) {
+            fields.controls.append(
+              button("Set reviewer for all tools", () =>
+                defaultReviewer.querySelector("select")?.focus(),
+              ),
+            );
+          }
           const row = element(
             "fieldset",
             {
@@ -837,38 +922,8 @@ export function createPluginFields({
             tool.ownerId
               ? element("p", { className: "hint" }, `Provided by ${tool.ownerId}`)
               : null,
-            element(
-              "div",
-              { className: "plugin-controls" },
-              select(
-                `Enable ${tool.name}`,
-                policy.enabled === undefined ? "" : String(policy.enabled),
-                [
-                  ["", "Inherit plugin policy"],
-                  ["true", "Enabled"],
-                  ["false", "Disabled"],
-                ],
-                (value) => writeTool("enabled", value === "" ? undefined : value === "true"),
-                capabilities?.tools.enabled === true,
-              ),
-              approvalSelect(tool.name, policy.approval, "tools", (value) =>
-                writeTool("approval", value || undefined),
-              ),
-              toolReviewers.length > 0 || policy.reviewer !== undefined
-                ? select(
-                    `${tool.name} reviewer`,
-                    policy.reviewer ?? "",
-                    [["", "Inherit plugin or Harness reviewer"], ...toolReviewers],
-                    (value) => writeTool("reviewer", value || undefined),
-                    Boolean(capabilities),
-                  )
-                : selected && defaultReviewers.length > 0
-                  ? button("Set reviewer for all tools", () =>
-                      defaultReviewer.querySelector("select")?.focus(),
-                    )
-                  : null,
-            ),
-            approvalHint(policy.approval, "tools"),
+            fields.controls,
+            fields.hint,
           );
           const toolApprovers =
             createApproverField && capabilities?.approvers?.tools === true
@@ -927,7 +982,11 @@ export function createPluginFields({
               element(
                 "span",
                 { className: "plugin-tool-actions" },
-                element("span", { className: "plugin-tool-policy-action" }, "Tool policy"),
+                element(
+                  "span",
+                  { className: "button button--sm plugin-tool-policy-action" },
+                  "Tool policy",
+                ),
                 enabledOverride,
               ),
             ),
@@ -960,23 +1019,6 @@ export function createPluginFields({
         return details;
       }),
     );
-    if (!visible.length && !catalogLoading) {
-      list.append(
-        element(
-          "p",
-          { className: "muted" },
-          query
-            ? "No matching plugins on this page."
-            : configuredOnly
-              ? "No plugins configured. Choose Available plugins to add one."
-              : catalog?.status === "ready"
-                ? "No plugins were returned."
-                : !catalog?.canLoad
-                  ? "To add a plugin by ID, choose Done and edit Plugin selections JSON."
-                  : "Load plugins to browse available choices.",
-        ),
-      );
-    }
     if (!tabState().activeId) {
       detail.append(
         element(
@@ -986,12 +1028,7 @@ export function createPluginFields({
         ),
       );
     }
-    for (const node of detail.querySelectorAll("input, select, button")) {
-      node.disabled =
-        disabled ||
-        (values === null && node.dataset.discovery !== "true") ||
-        node.dataset.policyUnsupported === "true";
-    }
+    updateDetailDisabled(values === null);
     // Detail refreshes replace focused controls; keep the search caret in place.
     if (focusedHeading && focusedPlugin === tabState().activeId) {
       detail.querySelector("h3")?.focus();
@@ -1035,13 +1072,7 @@ export function createPluginFields({
         value || !catalog?.canLoad || !catalog?.hasPrevious || catalog?.status === "loading";
       next.disabled =
         value || !catalog?.canLoad || !catalog?.nextCursor || catalog?.status === "loading";
-      const invalid = selections() === null;
-      for (const node of detail.querySelectorAll("input, select, button")) {
-        node.disabled =
-          value ||
-          (invalid && node.dataset.discovery !== "true") ||
-          node.dataset.policyUnsupported === "true";
-      }
+      updateDetailDisabled(selections() === null);
     },
     resetSearch() {
       // Discovery calls this when credentials or the provider change.

@@ -59,6 +59,7 @@
       "expectedTests": [
         "production image server startup loads bundled Kubernetes, OpenShell, and ChatGPT modules",
         "production image worker startup loads the shared runtime graph",
+        "production image runs the chart's pre-upgrade Installation check",
         "production image includes the OpenShell gRPC proto asset",
         "production image includes console shell and public assets"
       ]

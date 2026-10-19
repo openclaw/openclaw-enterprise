@@ -15,8 +15,10 @@ import {
   registerQaSecret,
   grantQaSecret,
   qaCommandFailureDetail,
+  redactedQaTail,
 } from "./qa-secrets.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
+import { maskPrivateKeyLines } from "../../scripts/ci/failure-redaction.mjs";
 
 function execute(command, args, options) {
   const { input, allowExitCodes = [0], ...rest } = options;
@@ -51,6 +53,94 @@ export function launcherEnvironment() {
     }
   }
   return env;
+}
+
+// The output of the image build step that failed, from a docker (BuildKit) or podman build's
+// stderr, at most `lines` lines; undefined when stderr shows no failed image build. A failed
+// build's own error keeps only its last lines, which name the step but not why it failed (an
+// upstream test run inside the runtime image build, finding 2020). BuildKit prefixes every line
+// of a step's output with "#<step> " and interleaves steps, so the failed step is the one whose
+// "#<step> ERROR:" line comes last; without one (podman), the last lines of stderr. One dev-up can
+// run several builds, each numbering its steps from #0, so only the last build is read: a build
+// stops dev-up at its first failure.
+export function imageBuildFailureOutput(stderr, { lines = 200 } = {}) {
+  const text = String(stderr ?? "").trimEnd();
+  // Newer buildx says "ERROR: failed to build: failed to solve: ...".
+  if (!/^ERROR: (?:failed to build: )?failed to solve: |^Error: building at STEP /m.test(text)) {
+    return undefined;
+  }
+  const all = text.split("\n");
+  const first = Math.max(
+    0,
+    all.findLastIndex((line) =>
+      /^#0 building with |^#1 \[internal\] load build definition/.test(line),
+    ),
+  );
+  const build = all.slice(first);
+  // Private keys are masked over all of stderr before the step and its last lines are cut out: a
+  // key whose BEGIN line falls outside the cut would otherwise keep its body (finding 2026). As in
+  // redactedQaTail, an unterminated BEGIN ... PRIVATE KEY line anywhere earlier masks everything
+  // after it, the failed step included: the safe direction, so the evidence is then all markers.
+  const masked = maskPrivateKeyLines(all).slice(first);
+  const step = build.findLast((line) => /^#\d+ ERROR: /.test(line))?.match(/^#\d+ /)[0];
+  return (step ? masked.filter((_, index) => build[index].startsWith(step)) : masked).slice(-lines);
+}
+
+// Records a failed image build step's output, redacted like any QA command output, as a QA
+// evidence file (the cell uploads its *.json evidence; the private state directory is not
+// uploaded). Returns the file's name, or undefined when stderr shows no failed image build.
+export async function recordImageBuildFailure(record, stderr, env) {
+  const output = imageBuildFailureOutput(stderr);
+  if (output === undefined) {
+    return undefined;
+  }
+  return record(`image-build-failure-${Date.now()}`, {
+    lines: redactedQaTail(output.join("\n"), env, { lines: output.length, lineChars: 800 }),
+  });
+}
+
+// Runs one command of a QA installation `f` (its env, private directories, and evidence
+// `record`). A failure writes the command's output to the private directory and throws with
+// only redacted stderr; a failed image build's step output becomes redacted QA evidence.
+export async function runQaCommand(f, command, args, options = {}) {
+  const { privateFailureOutput = false, ...executeOptions } = options;
+  try {
+    const result = await execute(command, args, {
+      cwd: repository,
+      env: f.env,
+      timeout: 300_000,
+      maxBuffer: 32 * 1024 * 1024,
+      ...executeOptions,
+    });
+    return result.stdout;
+  } catch (error) {
+    await writeFile(
+      join(f.directory, `command-failure-${Date.now()}.log`),
+      privateFailureOutput
+        ? "protected subprocess output withheld\n"
+        : `${error.stdout ?? ""}\n${error.stderr ?? ""}`,
+      { mode: 0o600 },
+    );
+    if (f.credentials?.password) {
+      registerQaSecret(f.credentials.password);
+    }
+    const detail = privateFailureOutput
+      ? ""
+      : qaCommandFailureDetail(error.stderr, executeOptions.env ?? f.env);
+    const buildOutput = privateFailureOutput
+      ? undefined
+      : await recordImageBuildFailure(f.record, error.stderr, executeOptions.env ?? f.env).catch(
+          (recordError) => `not recorded (${recordError?.message ?? recordError})`,
+        );
+    // execFile errors embed argv and output, potentially containing tokens.
+    // Keep arguments/stdout private; include only redacted stderr for diagnosis.
+    error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${f.stateDirectory}${buildOutput ? `; failed image build step output: ${buildOutput}` : ""}${detail ? `; stderr: ${detail}` : ""}`;
+    delete error.cmd;
+    delete error.stdout;
+    delete error.stderr;
+    delete error.stack;
+    throw error;
+  }
 }
 
 export async function createQaInstallation(
@@ -154,39 +244,7 @@ export async function createQaInstallation(
       return file;
     },
     async run(command, args, options = {}) {
-      const { privateFailureOutput = false, ...executeOptions } = options;
-      try {
-        const result = await execute(command, args, {
-          cwd: repository,
-          env,
-          timeout: 300_000,
-          maxBuffer: 32 * 1024 * 1024,
-          ...executeOptions,
-        });
-        return result.stdout;
-      } catch (error) {
-        await writeFile(
-          join(directory, `command-failure-${Date.now()}.log`),
-          privateFailureOutput
-            ? "protected subprocess output withheld\n"
-            : `${error.stdout ?? ""}\n${error.stderr ?? ""}`,
-          { mode: 0o600 },
-        );
-        if (f.credentials?.password) {
-          registerQaSecret(f.credentials.password);
-        }
-        const detail = privateFailureOutput
-          ? ""
-          : qaCommandFailureDetail(error.stderr, executeOptions.env ?? env);
-        // execFile errors embed argv and output, potentially containing tokens.
-        // Keep arguments/stdout private; include only redacted stderr for diagnosis.
-        error.message = `${command.split("/").at(-1)} failed (exit ${error.code ?? "unknown"}, signal ${error.signal ?? "none"}); private state: ${stateDirectory}${detail ? `; stderr: ${detail}` : ""}`;
-        delete error.cmd;
-        delete error.stdout;
-        delete error.stderr;
-        delete error.stack;
-        throw error;
-      }
+      return runQaCommand(f, command, args, options);
     },
     async write(name, value) {
       const path = join(directory, name);

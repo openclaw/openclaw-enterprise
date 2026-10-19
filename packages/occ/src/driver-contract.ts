@@ -77,7 +77,10 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   if (driver.capability === "sandbox") {
     return (
       sandboxFacets(candidate.facets) &&
+      sandboxPolicyContract(candidate) &&
       (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
+      (candidate.validateWorkspaceSetup === undefined ||
+        typeof candidate.validateWorkspaceSetup === "function") &&
       (candidate.configureAgent === undefined || typeof candidate.configureAgent === "function") &&
       (candidate.ensureNamespace === undefined ||
         typeof candidate.ensureNamespace === "function") &&
@@ -130,6 +133,39 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
       typeof candidate.readAgentRuntimeLogs === "function") &&
     (candidate.deleteAgentRuntimeCredentials === undefined ||
       typeof candidate.deleteAgentRuntimeCredentials === "function")
+  );
+}
+
+function sandboxPolicyContract(candidate: Record<string, unknown>): boolean {
+  const policy = candidate.networkPolicy;
+  const methods = [
+    "admitNetworkPolicy",
+    "observeNetworkPolicy",
+    "applyNetworkPolicy",
+    "readPolicyRecommendations",
+  ];
+  if (
+    !methods.every((key) => candidate[key] === undefined || typeof candidate[key] === "function")
+  ) {
+    return false;
+  }
+  if (policy === undefined) {
+    return (
+      candidate.admitNetworkPolicy === undefined &&
+      candidate.observeNetworkPolicy === undefined &&
+      candidate.applyNetworkPolicy === undefined
+    );
+  }
+  if (typeof policy !== "object" || policy === null || Array.isArray(policy)) {
+    return false;
+  }
+  const support = policy as Record<string, unknown>;
+  return (
+    ["wildcards", "portRanges", "live"].every((key) => typeof support[key] === "boolean") &&
+    typeof candidate.admitNetworkPolicy === "function" &&
+    (support.live !== true ||
+      (typeof candidate.observeNetworkPolicy === "function" &&
+        typeof candidate.applyNetworkPolicy === "function"))
   );
 }
 

@@ -702,12 +702,31 @@ export class NativeWorkerSupportError extends Error {
   }
 }
 
+export const DEDICATED_OPENCLAW_SANDBOX_REQUIRED =
+  "Dedicated OpenClaw requires a provisioning SandboxDriver with networking, filesystem, and process containment.";
+
+/**
+ * Dedicated native OpenClaw needs a provisioning SandboxDriver with networking, filesystem and
+ * process containment, and the Installation selects none. The Installation's shape refuses
+ * every new attempt the same way, so a new provisioning request or deploy answers the 409 other
+ * plan refusals use, with this fixed message (finding 1609). Stored provisioning work never
+ * throws this: it stays a retryable DependencyUnavailableError (503) carrying the same message,
+ * and resumes once a qualifying Driver is selected.
+ */
+export class DedicatedOpenClawSandboxError extends ResourceStateConflictError {
+  constructor() {
+    super(DEDICATED_OPENCLAW_SANDBOX_REQUIRED);
+    this.name = "DedicatedOpenClawSandboxError";
+  }
+}
+
 /**
  * A platform dependency a Compute Driver, or the Sandbox Driver it calls, reaches while
  * it reconciles a revision. `sandbox_admission` is the Sandbox gateway's per-caller
  * request admission quota, which frees up as completed requests age out.
  */
-export type TransientDependency = "agent_gateway" | "kubernetes_api" | "sandbox_admission";
+export type TransientDependency =
+  "agent_gateway" | "kubernetes_api" | "sandbox_admission" | "sandbox_gateway";
 
 /** Why the dependency failed, from a closed set that carries no provider text. */
 export type TransientDependencyReason = "unreachable" | "timeout" | "unavailable";
@@ -716,13 +735,15 @@ const TRANSIENT_DEPENDENCY_CODES: Readonly<Record<TransientDependency, string>> 
   agent_gateway: "AGENT_GATEWAY_UNAVAILABLE",
   kubernetes_api: "KUBERNETES_API_UNAVAILABLE",
   sandbox_admission: "SANDBOX_ADMISSION_LIMIT_REACHED",
+  sandbox_gateway: "SANDBOX_GATEWAY_UNAVAILABLE",
 });
 
 /**
  * A Compute dependency failed in a way that clears without a change to the
  * revision: the Kubernetes API timed out or answered 429/5xx, the Agent
- * Gateway's route refused or dropped a connection while it converged, or the
- * Sandbox gateway refused new requests at its request admission limit. The
+ * Gateway's route refused or dropped a connection while it converged, the
+ * Sandbox gateway refused new requests at its request admission limit, or the
+ * Sandbox gateway did not answer a Harness status read through its listener. The
  * worker retries it within the deployment's convergence deadline instead of
  * spending the attempt budget, and records `code`, which names the dependency.
  * The message stays in the controller; status shows a fixed text.
@@ -833,6 +854,57 @@ export class SandboxRevisionUnsupportedError extends Error {
     super(message);
     this.name = "SandboxRevisionUnsupportedError";
     this.code = code;
+  }
+}
+
+/**
+ * A Sandbox Driver's private workspace setup refused the revision's workspace (the setup
+ * runner's exit status 2): its files, setup record or runtime defaults disagree, so no retry
+ * can change it. Compute reports it as a held `WORKSPACE_SETUP_REFUSED` runtime failure, which
+ * fails the deployment at once, as for its own init container (finding 1708).
+ */
+export class SandboxWorkspaceSetupRefusedError extends Error {
+  readonly code = "WORKSPACE_SETUP_REFUSED";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SandboxWorkspaceSetupRefusedError";
+  }
+}
+
+/**
+ * A Sandbox Driver's code for a DeleteService or DeleteSandbox that found nothing where a read
+ * had just found the target: the target went between the two (a failed candidate retired by the
+ * next activation) or the identity lost sight of it. Neither is confirmed, so the caller keeps
+ * its retry and the worker's exposure sweep logs it apart from a failure (finding 1696).
+ */
+export const SANDBOX_DELETION_UNCONFIRMED = "SANDBOX_DELETION_UNCONFIRMED";
+
+/**
+ * The Sandbox gateway refuses the controller's own identity in the revision's Workspace, so the
+ * Driver cannot tell a Sandbox that is gone, with its Harness exposure withdrawn and its
+ * credentials detached, from one it is no longer allowed to see: an unauthorized Sandbox lookup
+ * answers NOT_FOUND there, like a missing one. The Sandbox may still run, route unauthenticated
+ * traffic and resolve credentials, so the Driver fails closed and the worker fails the deployment
+ * with `code` instead of reporting the revision ready, stopped or removed. A Workspace deleted
+ * out of band presents the same way, since the gateway drops the identity's membership with it.
+ * An operator restores the identity's Workspace role (or the Workspace, through a deploy) and
+ * runs the operation again. The message stays in the controller.
+ *
+ * `transient` is true when the gateway could not authenticate the identity at all
+ * (UNAUTHENTICATED): an expired or not-yet-valid token file and a signing key the gateway has
+ * not refreshed yet mend themselves, so the worker retries within its attempt budget before it
+ * fails with `code` (finding 1694). A role the identity lacks (PERMISSION_DENIED) fails at once.
+ */
+export class SandboxGatewayUnauthorizedError extends Error {
+  readonly code: "SANDBOX_GATEWAY_UNAUTHORIZED";
+  readonly transient: boolean;
+
+  constructor(message: string, options?: ErrorOptions & { readonly transient?: boolean }) {
+    super(message, options);
+    this.name = "SandboxGatewayUnauthorizedError";
+    this.code = "SANDBOX_GATEWAY_UNAUTHORIZED";
+    this.transient = options?.transient === true;
   }
 }
 

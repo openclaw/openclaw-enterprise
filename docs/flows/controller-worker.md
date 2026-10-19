@@ -1,7 +1,7 @@
 ---
 created: 2026-08-28
-updated: 2026-10-11
-last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
+updated: 2026-10-17
+last_updated_session: fix-1692
 ---
 
 # Controller Worker Flow
@@ -118,20 +118,22 @@ defines who can retry; a takeover becomes the work's actor, audited as
 `apps/controller/src/worker.ts:ControllerWorker.run`,
 `packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.claim`
 
-Each loop first calls `recoverStale()`, then `claim()`. The
+Each loop calls `recoverStale()`, one bounded native-exposure sweep step
+(`withdrawHarnessExposure` for one listed active-at-start or failed revision,
+five logged attempts) on idle passes and after every five claimed passes, then
+`claim()`. The
 [PostgreSQL queue](../../packages/occ/src/state/postgres-work-queue.ts) selects
-eligible queued work with `FOR UPDATE SKIP LOCKED`, assigns a fresh claim token
-and lease deadline, and increments the attempt count. Another live claim for
-the same Agent, or the Namespace for Namespace work, prevents concurrent
-ownership of that target.
+eligible work with `FOR UPDATE SKIP LOCKED`, assigning claim token, lease
+deadline and attempt increment. Another live claim on the Agent (or Namespace)
+prevents concurrent ownership.
 
-An empty queue waits within a bound. After work or idle, `health()` queries
-work, calls `onHealthy`, and emits `worker.health`; readiness requires both to
-succeed. Serialized failures emit `HEALTH_UNAVAILABLE` without consuming retries.
+An empty queue waits, bounded. After work or idle, `health()` queries work,
+calls `onHealthy`, emits `worker.health`; readiness needs both. Serialized
+failures emit `HEALTH_UNAVAILABLE`, consuming no retries.
 
 Each pass start and claim renewal calls `onProgress`; the liveness probe
-restarts a worker whose marker goes stale. A client `query_timeout` usually
-frees a stuck pass first by discarding its connection. See
+restarts a worker with a stale marker. A client `query_timeout` usually
+frees a stuck pass. See
 [worker settings](../reference/settings/operations.md#controller-worker-environment).
 
 ### 4. Reload ownership and reauthorize before infrastructure effects
@@ -374,12 +376,12 @@ a failed retry keeps the active runtime) or whose predecessor stop yielded
 - For queued operations, compare API and worker database and Installation
   configuration, then inspect `worker.completed` and `worker.error`. Check
   current IAM state for `ACTOR_REVOKED` or `AUTHORIZATION_DENIED`; `DEPENDENCY_UNAVAILABLE`
-  is retryable within `OCC_WORKER_MAX_ATTEMPTS`; `CLAIM_LOST` ends publication ownership.
-  A revision pass [deferred](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
-  on `AGENT_GATEWAY_UNAVAILABLE`, `KUBERNETES_API_UNAVAILABLE` or
-  `SANDBOX_ADMISSION_LIMIT_REACHED` logs `dependency` and `cause` (`unreachable`,
-  `timeout` or `unavailable`); other failures log their error class in `cause` and,
-  for HTTP errors, `status`.
+  retries within `OCC_WORKER_MAX_ATTEMPTS`; `CLAIM_LOST` ends publication ownership. A
+  revision pass [deferred](../reference/controller/reconciliation.md#deferred-namespace-and-agent-convergence)
+  on `AGENT_GATEWAY_UNAVAILABLE`, `KUBERNETES_API_UNAVAILABLE`,
+  `SANDBOX_ADMISSION_LIMIT_REACHED` or `SANDBOX_GATEWAY_UNAVAILABLE` logs `dependency` and
+  `cause` (`unreachable`, `timeout` or `unavailable`); other failures log their error class in
+  `cause` and, for HTTP errors, `status`.
 - `worker.compute-prepare-failed` names the failed Driver stage without the raw
   exception; match its `workId` or `revisionId` to the next `worker.completed`.
 - [Revision](../../tests/integration/postgres-worker-agent-revision.test.mjs),

@@ -298,6 +298,192 @@ test("QA command diagnostics retain the error while hiding generated and environ
   );
 });
 
+test("a failed image build keeps its failed step's output as redacted QA evidence", async () => {
+  const { imageBuildFailureOutput, recordImageBuildFailure } =
+    await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  registerQaSecret("build-private-value");
+  // BuildKit's plain progress (finding 2020's shape): steps interleave, each line prefixed by
+  // its step; the failed step's output is gone from the final summary's last lines.
+  const stderr = [
+    // An earlier build in the same dev-up that succeeded: its step numbers repeat.
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [controller 9/9] RUN node build.mjs",
+    "#41 DONE 4.0s",
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#40 [openclaw-build 13/18] COPY --from=openclaw-source /source/ ./",
+    "#41 [openclaw-build 14/18] RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts",
+    "#40 DONE 2.1s",
+    "#42 [controller 3/5] RUN pnpm install",
+    "#41 3.210  RUN  v3.2.4 /source",
+    "#41 45.12  FAIL  src/gateway/server.required-placement-scopes.test.ts > revokes placement",
+    "#41 45.13 AssertionError: expected 'build-private-value' to be undefined",
+    "#42 12.00 Done in 11.9s",
+    '#41 ERROR: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    "#42 CANCELED",
+    "------",
+    " > [openclaw-build 14/18] RUN --network=none ...:",
+    "------",
+    "Dockerfile:180",
+    "--------------------",
+    " 180 | >>> RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 pnpm_config_verify_deps_before_run=false \\",
+    "--------------------",
+    'ERROR: failed to solve: process "/bin/sh -c OPENCLAW_VITEST_MAX_WORKERS=1" did not complete successfully: exit code: 1',
+    "Error: docker failed: exit status 1",
+    "",
+  ].join("\n");
+  const step = imageBuildFailureOutput(stderr);
+  assert.equal(step.length, 5);
+  assert.ok(step.every((line) => line.startsWith("#41 ")));
+  assert.match(step.at(-2), /AssertionError/);
+  assert.equal(imageBuildFailureOutput(stderr, { lines: 2 }).length, 2);
+
+  const records = [];
+  const record = async (name, value) => {
+    records.push({ name, value });
+    return `kubernetes-${name}.json`;
+  };
+  const file = await recordImageBuildFailure(record, stderr, { PRIVATE_INPUT: "unused" });
+  assert.match(file, /^kubernetes-image-build-failure-\d+\.json$/);
+  assert.equal(records.length, 1);
+  assert.match(
+    records[0].value.lines.join("\n"),
+    /FAIL {2}src\/gateway\/server\.required-placement/,
+  );
+  assert.doesNotMatch(JSON.stringify(records[0].value), /build-private-value/);
+
+  // A podman build has no BuildKit steps: its last lines are kept.
+  const podman = [
+    "STEP 14/18: RUN node test.mjs",
+    ...Array.from({ length: 300 }, (_, i) => `line ${i}`),
+  ];
+  podman.push('Error: building at STEP "RUN node test.mjs": while running runtime: exit status 1');
+  assert.equal(imageBuildFailureOutput(podman.join("\n")).length, 200);
+  assert.match(imageBuildFailureOutput(podman.join("\n")).at(-1), /^Error: building at STEP/);
+
+  // Newer buildx words the summary "failed to build: failed to solve".
+  assert.deepEqual(
+    imageBuildFailureOutput(
+      stderr.replace("ERROR: failed to solve: ", "ERROR: failed to build: failed to solve: "),
+    ),
+    step,
+  );
+
+  // Any other command failure records nothing.
+  assert.equal(
+    imageBuildFailureOutput('Error from server (NotFound): pods "x" not found\n'),
+    undefined,
+  );
+  assert.equal(await recordImageBuildFailure(record, "dev-up: startup timed out\n", {}), undefined);
+  assert.equal(records.length, 1);
+});
+
+// Finding 2025: the QA installation's command runner is what records a failed image build's step
+// as uploaded evidence, so it is run here with a real failing subprocess and no cluster. The
+// evidence file must exist and carry the failed step with every secret the subprocess printed
+// masked; a protected command records nothing.
+test("the QA command runner records a failed image build step as redacted evidence", async (t) => {
+  const { runQaCommand } = await import("../helpers/qa-installation.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const directory = await mkdtemp(join(tmpdir(), "qa-run-evidence-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const artifacts = await mkdtemp(join(directory, "artifacts-"));
+  registerQaSecret("registered-private-2025");
+  const f = {
+    directory,
+    stateDirectory: join(directory, "state"),
+    // The subprocess sees the installation's environment, so it can print its private value.
+    env: { PATH: process.env.PATH, OCC_TEST_PRIVATE_INPUT: "env-private-value-2025" },
+    // The installation's own record: a confined JSON file in the uploaded artifacts directory.
+    async record(name, value) {
+      const file = `kubernetes-${name}.json`;
+      await writeFile(join(artifacts, file), JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+      return file;
+    },
+  };
+  const longLine = "x".repeat(1_000);
+  const stderr = [
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [openclaw-build 14/18] RUN node scripts/test-projects.mts",
+    "#41 45.12  FAIL  src/gateway/placement.test.ts > keeps its token",
+    "#41 45.13 AssertionError: expected 'registered-private-2025' to be undefined",
+    "#41 45.14 env ${OCC_TEST_PRIVATE_INPUT}",
+    "#41 45.15 Authorization: Bearer fake-bearer-token-2025",
+    "#41 45.16 -----BEGIN PRIVATE KEY-----",
+    "#41 45.17 fakePemBodyLine2025AAAAAAAAAAAAAAAAAAAA",
+    "#41 45.18 -----END PRIVATE KEY-----",
+    `#41 45.19 ${longLine}`,
+    '#41 ERROR: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c node scripts/test-projects.mts" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const script = `process.stderr.write(${JSON.stringify(stderr)}.replace("\${OCC_TEST_PRIVATE_INPUT}", process.env.OCC_TEST_PRIVATE_INPUT) + "\\n"); process.exit(1);`;
+
+  await assert.rejects(runQaCommand(f, process.execPath, ["-e", script]), (error) => {
+    assert.match(
+      error.message,
+      /; failed image build step output: kubernetes-image-build-failure-\d+\.json(?:;|$)/,
+    );
+    return true;
+  });
+  const files = (await readdir(artifacts)).filter((file) => file.includes("image-build-failure"));
+  assert.equal(files.length, 1);
+  const evidence = await readFile(join(artifacts, files[0]), "utf8");
+  const { lines } = JSON.parse(evidence);
+  assert.ok(lines.some((line) => line.includes("FAIL  src/gateway/placement.test.ts")));
+  assert.doesNotMatch(
+    evidence,
+    /registered-private-2025|env-private-value-2025|fake-bearer-token-2025|fakePemBodyLine2025/,
+  );
+  // Each line is cut to 800 characters.
+  assert.ok(lines.includes(`#41 45.19 ${longLine}`.slice(0, 800) + "... [truncated]"));
+
+  // A command whose output is protected records no evidence, even from a failed image build.
+  await assert.rejects(
+    runQaCommand(f, process.execPath, ["-e", script], { privateFailureOutput: true }),
+    (error) => {
+      assert.doesNotMatch(error.message, /failed image build step output/);
+      return true;
+    },
+  );
+  assert.deepEqual(
+    (await readdir(artifacts)).filter((file) => file.includes("image-build-failure")),
+    files,
+  );
+});
+
+// Finding 2026: a key whose BEGIN line falls before the failed step's last 200 lines, with no END
+// line, must lose every body line, not only the lines the tail still shows its BEGIN for.
+test("an image build step's unterminated private key is masked past the evidence window", async () => {
+  const { recordImageBuildFailure } = await import("../helpers/qa-installation.mjs");
+  const body = Array.from(
+    { length: 250 },
+    (_, index) =>
+      `#41 ${index}.0 fakeKeyBody${String(index).padStart(3, "0")}QUJDREVGR0hJSktMTU5PUFFSU1RVVldY`,
+  );
+  const stderr = [
+    "#41 [runtime 4/9] RUN cat /run/secrets/key",
+    "#41 0.1 -----BEGIN RSA PRIVATE KEY-----",
+    ...body,
+    '#41 ERROR: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+    'ERROR: failed to solve: process "/bin/sh -c cat /run/secrets/key" did not complete successfully: exit code: 1',
+  ].join("\n");
+  const records = [];
+  await recordImageBuildFailure(
+    async (name, value) => {
+      records.push(value);
+      return `kubernetes-${name}.json`;
+    },
+    stderr,
+    {},
+  );
+  assert.equal(records.length, 1);
+  assert.equal(records[0].lines.length, 200);
+  assert.doesNotMatch(JSON.stringify(records[0]), /fakeKeyBody/);
+});
+
 test("QA waits report the last observation when they time out", async () => {
   const { waitFor } = await import("../helpers/qa-utils.mjs");
   let observations = 0;
@@ -602,7 +788,9 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   );
   // A single worker Pod is the Deployment read: no per-Pod copies.
   platformPods.splice(0, 1);
-  await assert.rejects(stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, timing));
+  await assert.rejects(stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, timing), {
+    message: /^Timed out: ordinary Agent stop removes every runtime Pod; last observation: /,
+  });
   assert.equal(records.get("agent-3-stop-timeout-platform-logs").logs.workerPods, undefined);
 
   // A Compose control plane keeps the observation but has no in-cluster platform logs.
@@ -1406,4 +1594,254 @@ test("failed native Gateway turns capture private bounded logs for the original 
       }
     });
   }
+});
+
+// The shapes the pinned Codex reviewer records on a tool result (finding 1980): a
+// judgement carries risk and authorization; a failed-closed review carries neither.
+const judgedDeny = {
+  id: "review-judged",
+  status: "denied",
+  riskLevel: "high",
+  userAuthorization: "low",
+  rationale: "The read targets a calendar the user did not mention.",
+};
+const failedClosed = {
+  id: "review-failed",
+  status: "denied",
+  rationale:
+    "Automatic approval review failed: guardian review completed without an assessment payload",
+};
+const timedOut = {
+  id: "review-timeout",
+  status: "timed_out",
+  rationale: "Automatic approval review timed out while evaluating the requested approval.",
+};
+
+test("approval review evidence tells a reviewer error from a deny judgement", async () => {
+  const { approvalReviewKind, automaticReviewerErrored, describeApprovalReviews } =
+    await import("../helpers/plugin-driver-real.mjs");
+  assert.equal(approvalReviewKind(judgedDeny), "judged-deny");
+  assert.equal(approvalReviewKind(failedClosed), "reviewer-error");
+  assert.equal(approvalReviewKind(timedOut), "reviewer-error");
+  assert.equal(approvalReviewKind({ id: "a", status: "approved", riskLevel: "low" }), "approved");
+  assert.equal(approvalReviewKind({ id: "c", status: "aborted" }), "aborted");
+  // Without the reviewer's own failure text, or with a judgement's risk level, a denial
+  // stays a judgement or unclassified: a rationale alone cannot claim a reviewer error.
+  assert.equal(approvalReviewKind({ id: "d", status: "denied" }), "denied-unclassified");
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, riskLevel: "high" }),
+    "judged-deny",
+    "a judged rationale that quotes the failure text is still a judgement",
+  );
+  assert.equal(
+    approvalReviewKind({ ...failedClosed, userAuthorization: "unknown" }),
+    "judged-deny",
+  );
+  // A changed authorization may be the policy's own change, not reviewer trouble.
+  const staleAuthorization = {
+    id: "review-stale",
+    status: "denied",
+    rationale:
+      "Automatic approval review failed: authorization changed before approval could be applied",
+  };
+  assert.equal(approvalReviewKind(staleAuthorization), "stale-authorization");
+
+  const failedResult = (reviews) => [
+    { toolCallId: "call-1", isError: true, approvalReviews: reviews },
+  ];
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed])), true);
+  assert.equal(automaticReviewerErrored(failedResult([timedOut])), true);
+  assert.equal(automaticReviewerErrored(failedResult([judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([failedClosed, judgedDeny])), false);
+  assert.equal(automaticReviewerErrored(failedResult([{ id: "d", status: "denied" }])), false);
+  assert.equal(automaticReviewerErrored(failedResult([])), false, "no review, no reviewer error");
+  assert.equal(automaticReviewerErrored([]), false, "no call, no reviewer error");
+  assert.equal(automaticReviewerErrored(failedResult([staleAuthorization])), false);
+  assert.equal(
+    automaticReviewerErrored([
+      ...failedResult([failedClosed]),
+      { toolCallId: "call-2", isError: true, approvalReviews: [] },
+    ]),
+    false,
+    "every failed call needs its own reviewer error",
+  );
+  assert.equal(
+    automaticReviewerErrored([
+      { toolCallId: "call-1", isError: false, approvalReviews: [failedClosed] },
+    ]),
+    false,
+    "a call that did not fail was not blocked by its reviewer",
+  );
+
+  assert.equal(
+    describeApprovalReviews(failedResult([judgedDeny])),
+    "judged-deny (risk: high, authorization: low): The read targets a calendar the user did not mention.",
+  );
+  assert.equal(
+    describeApprovalReviews(failedResult([failedClosed])),
+    `reviewer-error: ${failedClosed.rationale}`,
+  );
+  assert.equal(describeApprovalReviews(failedResult([])), "no approval review recorded");
+  assert.equal(
+    describeApprovalReviews(
+      failedResult([
+        { ...failedClosed, rationale: `${failedClosed.rationale}\n  caused by: eof\n` },
+      ]),
+    ),
+    `reviewer-error: ${failedClosed.rationale} caused by: eof`,
+    "a multi-line rationale stays on the failure's first line",
+  );
+});
+
+function calendarEvidence(reviews) {
+  return {
+    exists: true,
+    sessionId: "session-1",
+    userMarkerSeen: true,
+    assistantMarkerSeen: true,
+    assistantError: false,
+    calls: [{ seq: 5, id: "call-1", name: "calendar_read", mirrorIdentity: "t:tool:call-1:call" }],
+    results: [
+      {
+        seq: 8,
+        toolCallId: "call-1",
+        toolName: "calendar_read",
+        isError: true,
+        deniedByUser: false,
+        matchesResult: false,
+        mirrorIdentity: "t:tool:call-1:result",
+        approvalReviews: reviews,
+      },
+    ],
+    codexTurns: [],
+    diagnostics: {},
+  };
+}
+
+test("a failed reviewed read names the review outcome before the evidence", async () => {
+  const { createNativePluginAssertions } = await import("../helpers/plugin-driver-real.mjs");
+  for (const [reviews, errored, reason] of [
+    [[failedClosed], true, `reviewer-error: ${failedClosed.rationale}`],
+    [[judgedDeny], false, "judged-deny (risk: high, authorization: low)"],
+  ]) {
+    const fixture = createNativePluginAssertions({
+      gatewayUrl: async () => assert.fail("no Gateway turn"),
+      proofMode: "codex",
+      execGateway: async () => ({
+        label: "fixture",
+        stdout: JSON.stringify(calendarEvidence(reviews)),
+      }),
+    });
+    await assert.rejects(
+      fixture.assertSessionToolCallEvidence(
+        {},
+        {
+          sessionKey: "agent:main:fixture",
+          turnMarker: "M",
+          toolName: "calendar_read",
+          resultPattern: "x",
+        },
+      ),
+      (error) => {
+        assert.equal(error.name, "AssertionError");
+        assert.equal(error.automaticReviewerErrored, errored);
+        assert.ok(error.approvalReviewSummary.startsWith(reason), error.approvalReviewSummary);
+        const [head] = error.message.split(": {");
+        assert.ok(head.includes(`(approval reviews: ${reason}`), head);
+        assert.match(error.message, /"approvalReviews":\[\{"id":"review-/);
+        return true;
+      },
+    );
+  }
+});
+
+test("an automatically reviewed Calendar read runs again once, only after a reviewer error", async (t) => {
+  const { automaticallyReviewedRead } = await import("../helpers/calendar-review.mjs");
+  const reviewerError = Object.assign(
+    new assert.AssertionError({ message: "reviewer errored: {}" }),
+    {
+      automaticReviewerErrored: true,
+      approvalReviewSummary: "reviewer-error: Automatic approval review failed: eof",
+    },
+  );
+  const judged = Object.assign(new assert.AssertionError({ message: "judged deny: {}" }), {
+    automaticReviewerErrored: false,
+  });
+  const success = { approvedReviewIds: ["review-ok"] };
+  function fixture(outcomes) {
+    const turns = [];
+    const checks = [];
+    return {
+      turns,
+      checks,
+      async normalGatewayTurn(turn) {
+        turns.push(turn);
+      },
+      async assertSessionToolCallEvidence(agent, options) {
+        checks.push(options);
+        const outcome = outcomes.shift();
+        if (outcome instanceof Error) {
+          throw outcome;
+        }
+        return outcome;
+      },
+    };
+  }
+  const read = (f, logs) =>
+    automaticallyReviewedRead(f, {
+      agent: { id: "agt" },
+      gatewayPassword: "pw",
+      sessionKey: "agent:main:codex-calendar-automatic-fixture",
+      prompt: "read",
+      toolName: "calendar_read",
+      resultPattern: "x",
+      secrets: [],
+      log: (line) => logs.push(line),
+    });
+
+  await t.test("first read passes: one turn", async () => {
+    const f = fixture([success]);
+    const logs = [];
+    assert.equal(await read(f, logs), success);
+    assert.equal(f.turns.length, 1);
+    assert.deepEqual(logs, []);
+    assert.equal(f.checks[0].requireAutomaticReview, true);
+  });
+  await t.test("reviewer error, then pass: a second turn in the same session", async () => {
+    const f = fixture([reviewerError, success]);
+    const logs = [];
+    assert.equal(await read(f, logs), success);
+    assert.equal(f.turns.length, 2);
+    assert.equal(new Set(f.turns.map((turn) => turn.sessionKey)).size, 1);
+    assert.notEqual(
+      f.checks[0].turnMarker,
+      f.checks[1].turnMarker,
+      "each turn needs a fresh marker",
+    );
+    assert.ok(f.checks.every((check) => check.requireAutomaticReview === true));
+    assert.equal(logs.length, 1);
+    assert.match(
+      logs[0],
+      /automatic reviewer errored .* running the read once more: reviewer-error: Automatic approval review failed: eof$/,
+    );
+  });
+  await t.test("deny judgement: fails without another turn", async () => {
+    const f = fixture([judged, success]);
+    await assert.rejects(read(f, []), (error) => error === judged);
+    assert.equal(f.turns.length, 1);
+  });
+  await t.test("reviewer error twice: the second failure stands", async () => {
+    const second = Object.assign(new assert.AssertionError({ message: "again: {}" }), {
+      automaticReviewerErrored: true,
+    });
+    const f = fixture([reviewerError, second, success]);
+    await assert.rejects(read(f, []), (error) => error === second);
+    assert.equal(f.turns.length, 2);
+  });
+  await t.test("other failures: no retry", async () => {
+    const other = new Error("transcript missing");
+    const f = fixture([other, success]);
+    await assert.rejects(read(f, []), (error) => error === other);
+    assert.equal(f.turns.length, 1);
+  });
 });

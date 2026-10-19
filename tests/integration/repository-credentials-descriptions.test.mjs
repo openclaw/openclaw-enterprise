@@ -73,6 +73,27 @@ async function settled(socketPath, payload) {
   throw new Error("metadata lookup did not settle");
 }
 
+// Starts a registry whose repositories (repo-a, repo-b, ...) carry `texts` as their GitHub
+// descriptions, waits for the lookup to settle and returns the descriptions served, in order.
+async function servedDescriptions(t, texts) {
+  const refs = texts.map((_text, index) => `repo-${String.fromCharCode(97 + index)}`);
+  const fixture = await startRegistryCredentialServiceFixture(t, {
+    autoOpen: false,
+    gateway: { listen: "127.0.0.1:0" },
+    repositories: texts.map((description, index) => ({
+      repositoryRef: refs[index],
+      repository: `fixture/${refs[index]}`,
+      repositoryId: String(73 + index),
+      description,
+    })),
+  });
+  const result = await settled(fixture.config.gateway.controlSocket, {
+    namespaceId: fixture.namespaceId,
+    repositoryRefs: refs,
+  });
+  return result.descriptions.map((entry) => entry.description);
+}
+
 test("private metadata sessions reject other methods and routes before issuing a token", async (t) => {
   const clock = createControlledClock();
   const github = await startGitHubFixture(t, { clock });
@@ -247,6 +268,86 @@ test("shutdown cancels an active metadata read and retires its issued token", as
   }
   await closing;
   assert.equal(github.tokenState()[0].revoked, true);
+});
+
+test("repository metadata preserves supplementary Unicode through the character limit", async (t) => {
+  // GitHub permits this 350-character description; its UTF-16 length crosses 512.
+  const description = "a".repeat(187) + "😀".repeat(163);
+  const [served, cut] = await servedDescriptions(t, [description, "😀".repeat(513)]);
+  assert.equal(served, description);
+  assert.equal(served.isWellFormed(), true);
+  assert.equal(cut, "😀".repeat(512));
+});
+
+test("repository metadata replaces controls and invisible or bidi characters", async (t) => {
+  // Finding 1628: controls (Cc), format characters (Cf: bidi, zero-width, invisible operators,
+  // tags) and line and paragraph separators are replaced; their neighbours and private use stay.
+  // Joiners inside words and emoji, and standard subdivision flags, stay: see the next test.
+  const hidden = [
+    0x00, 0x09, 0x1f, 0x7f, 0x80, 0x85, 0x9f, 0xad, 0x061c, 0x200b, 0x200e, 0x200f, 0x2028, 0x2029,
+    0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2060, 0x2061, 0x2064, 0x2066, 0x2067, 0x2068, 0x2069,
+    0x206a, 0x206f, 0xfeff, 0xfff9, 0xfffb, 0xe0001, 0xe0041, 0xe007f,
+  ];
+  const kept = [
+    0xa0, 0xac, 0xae, 0x061b, 0x061d, 0x200a, 0x2010, 0x2027, 0x202f, 0x205f, 0x2070, 0xfefc,
+    0xfffc, 0x1f3f4, 0xe000,
+  ];
+  const spell = (codes) => codes.map((code) => `x${String.fromCodePoint(code)}`).join("") + "x";
+  // Letters, combining marks, CJK, right-to-left scripts and emoji with modifiers stay intact.
+  const unicode = "Café 日本語 עברית العربية 😀👍🏽❤️";
+  assert.deepEqual(
+    await servedDescriptions(t, [`\u202e${spell(hidden)}\u2069`, `${spell(kept)} ${unicode}`]),
+    ["x ".repeat(hidden.length) + "x", `${spell(kept)} ${unicode}`],
+  );
+});
+
+test("repository metadata keeps joiners in words and emoji and subdivision flags", async (t) => {
+  // Finding 1633: a joiner between letters, marks or symbols, and a subdivision flag's tag
+  // sequence stay, so emoji and Persian or Indic words keep their shape. Other joiners and tag
+  // text are still replaced.
+  const scotland = "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}";
+  const kept = [
+    "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}", // family: man, woman, girl
+    "\u{1f469}\u{1f3fd}\u200d\u{1f4bb}", // woman technologist with a skin tone modifier
+    "\u{1f3f3}\ufe0f\u200d\u{1f308}", // rainbow flag: variation selector, then joiner
+    "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", // Persian with a non-joiner
+    "\u0915\u094d\u200d\u0937", // Hindi conjunct: virama, then joiner
+    "\u0d9a\u200d\u0dca\u0dc2", // Sinhala touching letters: joiner, then virama
+    scotland,
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}", // England
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}", // Wales
+  ].join(" ");
+  const replaced = [
+    ["\u200dlead", " lead"],
+    ["space \u200cword", "space  word"],
+    ["double\u200d\u200djoiner", "double  joiner"],
+    ["trail\u200d end", "trail  end"],
+    ["tags\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", "tags      "],
+    ["\u{1f3f4}\u{e0067}\u{e0062}\u{e007f}", "\u{1f3f4}   "], // no subdivision code
+    ["\u{1f3f4}\u{e0063}\u{e006e}\u{e0031}\u{e0031}\u{e007f}", "\u{1f3f4}     "], // not standard
+    [
+      "\u{1f3f4}\u{e0067}\u{e0062}\u{e0061}\u{e0062}\u{e0063}\u{e0064}\u{e0065}\u{e007f}",
+      "\u{1f3f4}        ",
+    ], // code too long
+    ["\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}", "\u{1f3f4}     "], // no cancel tag
+    ["\u{1f3f4}\u{e0047}\u{e0042}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", "\u{1f3f4}      "], // capital region
+    ["\u{1f3f4}\u{e0067}\u{e0062}\u{e0053}\u{e0043}\u{e0054}\u{e007f}", "\u{1f3f4}      "], // capital code
+  ];
+  assert.deepEqual(
+    await servedDescriptions(t, [
+      kept,
+      `start ${replaced.map(([raw]) => raw).join("|")} end`,
+      // The 512 code point cut can leave a joiner or flag unfinished; it is filtered again.
+      `${"a".repeat(511)}\u200db`,
+      `${"a".repeat(508)}${scotland}`,
+    ]),
+    [
+      kept,
+      `start ${replaced.map(([, shown]) => shown).join("|")} end`,
+      "a".repeat(511),
+      `${"a".repeat(508)}\u{1f3f4}`,
+    ],
+  );
 });
 
 test("missing and temporarily unavailable descriptions do not block selection", async (t) => {

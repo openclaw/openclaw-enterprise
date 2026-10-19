@@ -37,6 +37,7 @@ const CONSOLE_ASSETS = new Map([
       "runtime-images.mjs",
       "agents/list.mjs",
       "agents/logs.mjs",
+      "agents/sandbox-policy.mjs",
       "agents/logs-view.mjs",
       "agents/presets.mjs",
       "agents/create.mjs",
@@ -56,7 +57,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/native-admin.mjs",
       "agents/harness-auth.mjs",
       "agents/device-login.mjs",
-      "agents/secret-access.mjs",
+      "agents/credential-access.mjs",
       "agents/secret-picker.mjs",
       "agents/credentials.mjs",
       "channels/slack.mjs",
@@ -212,6 +213,11 @@ function preferredEncoding(acceptEncoding: string | undefined): "br" | "gzip" | 
   const weight = (name: string) => weights.get(name) ?? weights.get("*") ?? 0;
   const br = weight("br");
   const gzipWeight = weight("gzip");
+  // Identity is an acceptable fallback by default; an explicit higher weight also makes it
+  // the preferred representation. Keep the existing compression preference on a tie.
+  if ((weights.get("identity") ?? 0) > Math.max(br, gzipWeight)) {
+    return undefined;
+  }
   if (br > 0 && br >= gzipWeight) {
     return "br";
   }

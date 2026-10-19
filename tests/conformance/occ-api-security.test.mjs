@@ -540,7 +540,11 @@ test("bootstrap owns one Installation without a plural installation collection",
 
   const read = await request(fixture.app, "/installation");
   assert.equal(read.response.status, 200);
-  assert.deepEqual(read.payload.data, installation);
+  // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
+  assert.deepEqual(read.payload.data, {
+    ...installation,
+    capabilities: { openclaw: { executionModes: ["embedded"] } },
+  });
 
   const again = await request(fixture.app, "/installation/bootstrap", {
     body: { name: "Second installation" },
@@ -701,7 +705,11 @@ test("concurrent streaming bootstrap creates one audited Installation", async ()
 
   const confirmed = await request(fixture.app, "/installation");
   assert.equal(confirmed.response.status, 200);
-  assert.deepEqual(confirmed.payload.data, installation);
+  // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
+  assert.deepEqual(confirmed.payload.data, {
+    ...installation,
+    capabilities: { openclaw: { executionModes: ["embedded"] } },
+  });
 
   const bootstrapEvents = fixture.auditSink.events.filter(
     (event) => event.kind === "bootstrap" && event.resource.kind === "installation",
@@ -738,7 +746,11 @@ test("an existing controller cannot be configured for a different Installation",
 
   const unchanged = await request(fixture.app, "/installation");
   assert.equal(unchanged.response.status, 200);
-  assert.deepEqual(unchanged.payload.data, installation);
+  // No Sandbox Driver is selected: Embedded OpenClaw is the one mode admission accepts (#2670).
+  assert.deepEqual(unchanged.payload.data, {
+    ...installation,
+    capabilities: { openclaw: { executionModes: ["embedded"] } },
+  });
   assert.deepEqual(fixture.controller.installation, installation);
 });
 
@@ -2199,6 +2211,38 @@ test("runtime log failures are fixed, content-free and never read after an audit
   const hostile = await fixture.request("GET", target.runtimePath);
   assert.equal(hostile.status, 503);
   assert.equal(hostile.body.error.code, "RUNTIME_LOGS_UNAVAILABLE");
+});
+
+test("runtime log reads retain allowance through backward and restored wall clocks", async (t) => {
+  let elapsed = 0;
+  t.mock.method(performance, "now", () => elapsed);
+  const initial = Date.now();
+  t.mock.timers.enable({ apis: ["Date"], now: initial });
+  const fixture = await createRuntimeLogFixture();
+  const target = await fixture.deployAgent();
+  const first = await fixture.request("GET", target.runtimePath);
+  assert.equal(first.status, 200, first.text);
+
+  // A host clock correction must not turn the nine unspent requests into token debt.
+  t.mock.timers.setTime(initial - 3_600_000);
+  for (let remaining = 9; remaining > 0; remaining -= 1) {
+    const response = await fixture.request("GET", target.runtimePath);
+    assert.equal(response.status, 200, response.text);
+  }
+  const exhausted = await fixture.request("GET", target.runtimePath);
+  assert.equal(exhausted.status, 429);
+  assert.equal(exhausted.headers.get("retry-after"), "1");
+
+  // Restoring the wall clock must not mint a second burst: no time has elapsed.
+  t.mock.timers.setTime(initial);
+  assert.equal((await fixture.request("GET", target.runtimePath)).status, 429);
+
+  // Only elapsed time refills the bucket, independently of wall-clock corrections.
+  elapsed += 500;
+  t.mock.timers.setTime(initial + 500);
+  const refilled = await fixture.request("GET", target.runtimePath);
+  assert.equal(refilled.status, 200, refilled.text);
+  assert.equal((await fixture.request("GET", target.runtimePath)).status, 429);
 });
 
 test("runtime log reads are rate limited per principal and Agent with Retry-After", async () => {

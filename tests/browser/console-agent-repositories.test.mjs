@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { join } from "node:path";
 import test from "node:test";
 import {
   CodexPluginDriver,
@@ -8,6 +10,7 @@ import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { socketDirectory } from "../helpers/socket-directory.mjs";
 import {
   apiRequests,
   login,
@@ -15,6 +18,7 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
+  statusTone,
   waitForCondition,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -183,7 +187,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     { repositoryRef: "application", profile: "git-full" },
     { repositoryRef: "documentation", profile: "git-read" },
   ]);
-  await page.getByRole("button", { name: "Repositories", exact: true }).click();
+  await page.getByRole("tab", { name: "Repositories", exact: true }).click();
   await page.getByText("Contributor · Custom", { exact: true }).waitFor();
   // Reversing an edit restores the saved intent, including explicit overrides.
   await page.getByRole("button", { name: "Remove example/documentation" }).click();
@@ -199,7 +203,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     await page.getByRole("button", { name: "Save repository access" }).isDisabled(),
     true,
   );
-  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
   await page.locator("#repository-default-git-full").check();
   await page.locator("#repository-default-git-read").check();
   assert.equal(
@@ -209,10 +213,7 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   await page.getByText("Read-only · Custom", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Access for example/application" }).click();
   await page.locator("#repository-inherit-application").check();
-  assert.equal(
-    await page.getByRole("button", { name: "Channels", exact: true }).isDisabled(),
-    true,
-  );
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isDisabled(), true);
   const savedResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/agents/${created.data.id}`) &&
@@ -248,7 +249,18 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     },
   ]);
   await page.reload();
-  await page.getByText("Choose approved access", { exact: true }).waitFor();
+  const chooseAccess = page.getByText("Choose approved access", { exact: true });
+  await chooseAccess.waitFor();
+  // Red only for a real refusal: this choice is not approved (finding 1970). The
+  // per-repository notes are danger blocks with no role on purpose: they are rebuilt on each
+  // render, so an alert would be announced again every time; the picker's status line does the
+  // announcing (finding 2006).
+  assert.equal(await chooseAccess.getAttribute("data-tone"), "danger");
+  assert.deepEqual(await statusTone(page.getByText(/^Choose approved access: /)), {
+    className: "status",
+    tone: "danger",
+    role: null,
+  });
   assert.equal(await page.locator("#repository-inherit-documentation").isVisible(), true);
   await page.locator("#repository-override-documentation-git-full").check();
   const issues = page.locator("#repository-access-documentation .repository-customize summary");
@@ -275,24 +287,45 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   );
   await page.getByText("Read-only · Custom", { exact: true }).waitFor();
   const optionsPath = `**/namespaces/${namespace.id}/agents/${legacy.data.id}/repository-options`;
-  await page.route(optionsPath, (route) =>
-    route.fulfill({
+  const optionsHeld = Promise.withResolvers();
+  t.after(() => optionsHeld.resolve());
+  await page.route(optionsPath, async (route) => {
+    await optionsHeld.promise;
+    await route.fulfill({
       status: 503,
       contentType: "application/json",
       body: JSON.stringify({
-        error: { code: "REPOSITORY_OPTIONS_UNAVAILABLE", message: "Discovery unavailable" },
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Discovery unavailable" },
       }),
-    }),
-  );
+    });
+  });
   await page.reload();
+  const awaiting = page.getByText("Access awaiting verification", { exact: true });
+  await awaiting.waitFor();
+  // Choices that are still loading are not a problem: info, not red (finding 1970).
+  assert.equal(await awaiting.getAttribute("data-tone"), "info");
+  optionsHeld.resolve();
   await page.getByText(/Retry repository choices before saving repository access/).waitFor();
-  await page.getByText("Access awaiting verification", { exact: true }).waitFor();
+  assert.deepEqual(await statusTone(page.getByText(/^Repository choices could not be loaded\. /)), {
+    className: "status",
+    tone: "danger",
+    role: "alert",
+  });
+  await awaiting.waitFor();
+  // A failed read is a warning with its own Retry, not a refusal.
+  assert.equal(await awaiting.getAttribute("data-tone"), "warning");
   assert.equal(await page.getByText(/This repository is no longer available/).count(), 0);
   assert.equal(
     await page
       .getByText("Repository availability cannot be verified. Retry repository choices.")
       .count(),
     1,
+  );
+  assert.deepEqual(
+    await statusTone(
+      page.getByText("Repository availability cannot be verified. Retry repository choices."),
+    ),
+    { className: "status", tone: "danger", role: null },
   );
   assert.equal(await page.getByText(/You can save a draft without repository access/).count(), 0);
   assert.equal(
@@ -308,10 +341,129 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
       namespaces: [{ namespaceId: namespace.id, profiles: ["git-write"] }],
     },
   ]);
+  // While the retry is held, the refusal gives way to a quiet loading hint.
+  const retryHeld = Promise.withResolvers();
+  t.after(() => retryHeld.resolve());
+  await page.route(optionsPath, async (route) => {
+    await retryHeld.promise;
+    await route.continue();
+  });
   await page.getByRole("button", { name: "Retry repository choices" }).click();
+  const loading = page.getByText("Loading approved repositories…", { exact: true });
+  await loading.waitFor();
+  assert.deepEqual(await statusTone(loading), { className: "hint", tone: null, role: "status" });
+  retryHeld.resolve();
+  const gone = page.getByText(
+    "This repository is no longer available. Remove it or retry discovery.",
+  );
+  await gone.waitFor();
+  assert.deepEqual(await statusTone(gone), { className: "status", tone: "danger", role: null });
+});
+
+test("Agent repository tab keeps Save disabled for an existing binding while repository options are unavailable", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "789",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-full"] }],
+    },
+  ]);
+  const configured = await fixture.createAgent(namespace.id, "Configured", nativeValues("bound"));
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Bound Agent",
+      configurationId: configured.configurationId,
+      repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
+    },
+  });
+  assert.equal(created.status, 201);
+  const agent = created.data;
+  const { page } = await newPage(t, fixture);
+  // The API answers this code when the Installation's composition offers no repository options,
+  // for example after a Compute Driver without repository support is selected.
+  await page.route(
+    `**/namespaces/${namespace.id}/agents/${agent.id}/repository-options*`,
+    (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: {
+            code: "REPOSITORY_OPTIONS_UNAVAILABLE",
+            message: "Repository options are unavailable.",
+          },
+        }),
+      }),
+  );
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
+  );
   await page
-    .getByText("This repository is no longer available. Remove it or retry discovery.")
+    .getByText(
+      "You can’t save repository changes on this page until an operator sets up repository access.",
+      { exact: false },
+    )
     .waitFor();
+  await page
+    .getByText(
+      "Repository availability cannot be verified because repository access is not available in this Installation's configuration.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  const save = page.getByRole("button", { name: "Save repository access" });
+  assert.equal(await save.isDisabled(), true);
+  // Removing the binding makes the form dirty, and Save still stays disabled on this page.
+  const remove = page.getByRole("button", { name: /^Remove / });
+  assert.equal(await remove.count(), 1);
+  await remove.click();
+  assert.equal(await remove.count(), 0);
+  assert.equal(await save.isDisabled(), true);
+});
+
+test("Agent repository tab without a Repo Driver names the setup step and offers no Retry", async (t) => {
+  // The default console fixture selects no Repo Driver: discovery answers a permanent 503.
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No Repo Driver", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Repository-less Agent",
+    nativeValues("rd"),
+  );
+  const { page } = await newPage(t, fixture);
+  const options = page.waitForResponse((response) =>
+    response.url().endsWith(`/agents/${agent.id}/repository-options`),
+  );
+  await login(
+    page,
+    fixture,
+    `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft&tab=repositories`,
+  );
+  const response = await options;
+  assert.equal(response.status(), 503);
+  assert.equal((await response.json()).error.code, "REPOSITORY_OPTIONS_UNAVAILABLE");
+  const status = page.getByRole("status").filter({
+    hasText: "Repository access is not available in this Installation's configuration.",
+  });
+  await status.waitFor();
+  assert.match(
+    await status.innerText(),
+    /You can’t save repository changes on this page until an operator sets up repository access\./,
+  );
+  assert.equal(
+    await status.getByRole("link", { name: "Set up repository access" }).getAttribute("href"),
+    "https://github.com/openclaw/openclaw-enterprise/blob/main/docs/guides/repository-credentials/team-runbook.md",
+  );
+  assert.doesNotMatch(await status.innerText(), /Retry|Try again/);
+  assert.equal(await page.getByRole("button", { name: "Retry repository choices" }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Save repository access" }).isDisabled(),
+    true,
+  );
 });
 
 test("Preset repository access and plugin policies remain independent during Agent creation", async (t) => {
@@ -426,13 +578,23 @@ test("Repository recovery preserves and updates hosted plugin policy before retr
   await page.getByText("Read-only · Agent default", { exact: true }).waitFor();
   assert.deepEqual(JSON.parse(await page.locator("#agent-plugins").inputValue()), initialPlugins);
 
-  fixture.policy.restrictions.push({
-    id: "deny-repository-plugin-create",
-    namespaceId: namespace.id,
-    resourceKind: "agent",
-    action: "create",
-    effect: "deny",
-  });
+  // Agent create is denied once the form's preflight passes, so the save is refused after the
+  // Configuration is saved.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
+    async (route) => {
+      const response = await route.fetch();
+      fixture.policy.restrictions.push({
+        id: "deny-repository-plugin-create",
+        namespaceId: namespace.id,
+        resourceKind: "agent",
+        action: "create",
+        effect: "deny",
+      });
+      await route.fulfill({ response });
+    },
+    { times: 1 },
+  );
   const savedConfigurationResponse = page.waitForResponse(
     (response) =>
       response.url() === `${fixture.origin}/namespaces/${namespace.id}/configurations` &&
@@ -595,10 +757,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
     await page.getByRole("button", { name: "Remove example/application" }).isDisabled(),
     true,
   );
-  assert.equal(
-    await page.getByRole("button", { name: "Channels", exact: true }).isDisabled(),
-    true,
-  );
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isDisabled(), true);
   release.resolve();
   await page
     .getByText(
@@ -616,7 +775,7 @@ test("Agent repository editor distinguishes stale, rejected, and uncertain saves
   await page.getByText("Contributor · Agent default", { exact: true }).waitFor();
   assert.equal(await save.isDisabled(), true);
   assert.equal(await cancel.isEnabled(), true);
-  assert.equal(await page.getByRole("button", { name: "Channels", exact: true }).isEnabled(), true);
+  assert.equal(await page.getByRole("tab", { name: "Channels", exact: true }).isEnabled(), true);
   assert.equal(pathRequests(requests, "PATCH", path).length, 2);
 });
 
@@ -873,6 +1032,130 @@ test("Repository descriptions arrive without interrupting a selection", async (t
   assert.deepEqual((await response.json()).data.repositoryBindings, [
     { repositoryRef: "application", profile: "git-full" },
   ]);
+});
+
+test("Repository descriptions show hidden and direction-changing characters as escapes", async (t) => {
+  // Finding 1628: the credential service replaces these characters, but the picker must not
+  // trust every description source. An independent control-socket peer sends them raw
+  // through the actual Unix client, GitHub Driver and OCC validation.
+  const hiddenDescription =
+    "Release notes \u202etxt.exe, zero\u200bwidth, \u2066isolate\u2069, C1\u0085 end; " +
+    "日本語 עברית العربية Café 😀👍🏽";
+  const hiddenShown =
+    "Release notes \\u202etxt.exe, zero\\u200bwidth, \\u2066isolate\\u2069, C1\\u0085 end; " +
+    "日本語 עברית العربية Café 😀👍🏽";
+  // Finding 1633: joiners in words and emoji, and subdivision flags, display as written. Other
+  // joiners and tag text show as escapes.
+  const joined = [
+    "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}", // family: man, woman, girl
+    "\u{1f3f3}\ufe0f\u200d\u{1f308}", // rainbow flag: variation selector, then joiner
+    "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", // Persian with a non-joiner
+    "\u0915\u094d\u200d\u0937", // Hindi conjunct: virama, then joiner
+    "\u0d9a\u200d\u0dca\u0dc2", // Sinhala touching letters: joiner, then virama
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}", // Scotland
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0065}\u{e006e}\u{e0067}\u{e007f}", // England
+    "\u{1f3f4}\u{e0067}\u{e0062}\u{e0077}\u{e006c}\u{e0073}\u{e007f}", // Wales
+  ].join(" ");
+  // Tag characters spelling `text`, raw and as the picker escapes them.
+  const tags = (text) => [
+    Array.from(text, (letter) => String.fromCodePoint(0xe0000 + letter.charCodeAt(0))).join(""),
+    Array.from(text, (letter) => `\\U000e00${letter.charCodeAt(0).toString(16)}`).join(""),
+  ];
+  const [scotland, scotlandShown] = tags("gbsct");
+  const [cancel, cancelShown] = tags("\x7f");
+  const escaped = [
+    ["lead:\u200dx", "lead:\\u200dx"],
+    ["double:a\u200d\u200cb", "double:a\\u200d\\u200cb"],
+    ["trail:a\u200d.", "trail:a\\u200d."],
+    [`tags:x${scotland}${cancel}`, `tags:x${scotlandShown}${cancelShown}`],
+    [`short:\u{1f3f4}${tags("gb")[0]}${cancel}`, `short:\u{1f3f4}${tags("gb")[1]}${cancelShown}`],
+    [
+      `long:\u{1f3f4}${tags("gbabcde")[0]}${cancel}`,
+      `long:\u{1f3f4}${tags("gbabcde")[1]}${cancelShown}`,
+    ],
+    [`open:\u{1f3f4}${scotland}`, `open:\u{1f3f4}${scotlandShown}`],
+    [
+      `other:\u{1f3f4}${tags("cn11")[0]}${cancel}`,
+      `other:\u{1f3f4}${tags("cn11")[1]}${cancelShown}`,
+    ],
+    [
+      `region:\u{1f3f4}${tags("GBsct")[0]}${cancel}`,
+      `region:\u{1f3f4}${tags("GBsct")[1]}${cancelShown}`,
+    ],
+    [
+      `code:\u{1f3f4}${tags("gbSCT")[0]}${cancel}`,
+      `code:\u{1f3f4}${tags("gbSCT")[1]}${cancelShown}`,
+    ],
+  ];
+  const description = `${hiddenDescription} ${joined} ${escaped.map(([raw]) => raw).join(" ")}`;
+  const shown = `${hiddenShown} ${joined} ${escaped.map(([, text]) => text).join(" ")}`;
+  const directory = await socketDirectory(t, "repository-description-escapes-");
+  const controlSocket = join(directory, "control.sock");
+  const held = [];
+  let lookups = 0;
+  const server = createServer((request, response) => {
+    lookups += 1;
+    const answer = () => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          providerInstanceId: "console-repository-provider",
+          appId: "123",
+          githubInstallationId: "456",
+          descriptions: [{ repositoryRef: "application", repositoryId: "2000", description }],
+          pending: false,
+        }),
+      );
+    };
+    request.resume();
+    // The first lookup feeds the in-place refresh; later ones wait so a rebuilt row shows
+    // what it renders itself.
+    request.once("end", () => (lookups === 1 ? answer() : held.push(answer)));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(controlSocket, resolve);
+  });
+  t.after(() => {
+    held.splice(0).forEach((release) => release());
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const { fixture, namespace } = await createRepositoryLaunchFixture(
+    t,
+    (namespaceId) => [
+      {
+        repositoryRef: "application",
+        repositoryId: "2000",
+        repository: "example/application",
+        namespaces: [{ namespaceId, profiles: ["git-read"] }],
+      },
+      // Search appears with more than five choices.
+      ...["documentation", "examples", "infrastructure", "libraries", "tools"].map(
+        (name, index) => ({
+          repositoryRef: name,
+          repositoryId: String(2001 + index),
+          repository: `example/${name}`,
+          namespaces: [{ namespaceId, profiles: ["git-read"] }],
+        }),
+      ),
+    ],
+    { controlSocket },
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  const text = page
+    .locator(".repository-result-row")
+    .filter({ hasText: "example/application" })
+    .locator(".repository-description");
+  // The description arrives after the rows render and is written into the existing row.
+  await page.getByText(shown, { exact: true }).waitFor();
+  assert.equal(await text.textContent(), shown);
+  // Searching rebuilds the row from the stored description while its next lookup is held.
+  // Assert before the GitHub Driver's 2 s lookup timeout ends the hold and drops the text.
+  await page.getByLabel("Find a repository").fill("application");
+  await waitForCondition(() => lookups === 2, "the rebuilt row did not request descriptions");
+  assert.equal(await text.textContent(), shown);
 });
 
 test("Repository choices distinguish names, references, and restricted access", async (t) => {

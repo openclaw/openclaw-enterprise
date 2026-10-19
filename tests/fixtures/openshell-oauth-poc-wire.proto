@@ -1,0 +1,122 @@
+// Independent server schema extracted from NVIDIA/OpenShell commit 4c1b16a4.
+syntax = "proto3";
+package openshell.v1;
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+service OpenShell {
+  rpc ConfigureProviderRefresh(ConfigureProviderRefreshRequest) returns (ConfigureProviderRefreshResponse);
+  rpc RotateProviderCredential(RotateProviderCredentialRequest) returns (RotateProviderCredentialResponse);
+  rpc GetProviderRefreshStatus(GetProviderRefreshStatusRequest) returns (GetProviderRefreshStatusResponse);
+  rpc GetProviderCredentials(GetProviderCredentialsRequest) returns (GetProviderCredentialsResponse);
+  rpc GetProvider(GetProviderRequest) returns (ProviderResponse);
+}
+message WorkspaceSelector { string workspace = 1; }
+message GetProviderRequest { string name = 1; WorkspaceSelector workspace_scope = 2; }
+message ProviderResponse { Provider provider = 1; }
+message Provider { ObjectMeta metadata = 1; string type = 2; map<string, string> config = 4; }
+message ObjectMeta { string name = 2; map<string, string> labels = 4; uint64 resource_version = 5; }
+message ConfigureProviderRefreshRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 7;
+  reserved 6;
+  reserved "expires_at_ms";
+  string provider = 1;
+  string credential_key = 2;
+  ProviderCredentialRefreshStrategy strategy = 3;
+  map<string, string> material = 4;
+  // Additional material names the caller requests be stored as secrets. Every
+  // name must be present in material. The server also classifies secrets from
+  // the authoritative provider profile and refresh strategy.
+  repeated string secret_material_keys = 5;
+  google.protobuf.Timestamp expiration_time = 106;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 8;
+}
+
+message ConfigureProviderRefreshResponse {
+  ProviderCredentialRefreshStatus status = 1;
+}
+
+message RotateProviderCredentialRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 3;
+  string provider = 1;
+  string credential_key = 2;
+  // Optional nonzero UUID for durable at-most-once admission. Successful results
+  // can be replayed for 24 hours; see the API errors and retries reference.
+  string request_id = 4;
+}
+
+message RotateProviderCredentialResponse {
+  ProviderCredentialRefreshStatus status = 1;
+}
+
+message GetProviderRefreshStatusRequest {
+  // Workspace scope. Only a named workspace selection is accepted.
+  WorkspaceSelector workspace_scope = 3;
+  string provider = 1;
+  string credential_key = 2;
+}
+
+message GetProviderRefreshStatusResponse {
+  repeated ProviderCredentialRefreshStatus credentials = 1;
+}
+
+message GetProviderCredentialsRequest {
+  WorkspaceSelector workspace_scope = 1;
+  string name = 2;
+  repeated string credential_keys = 3;
+  google.protobuf.Duration minimum_remaining_lifetime = 4;
+}
+message ProviderCredentialValue {
+  string value = 1;
+  google.protobuf.Timestamp expiration_time = 2;
+}
+message GetProviderCredentialsResponse {
+  map<string, ProviderCredentialValue> credentials = 1;
+}
+
+message ProviderCredentialRefreshStatus {
+  reserved 6, 7, 8, 13;
+  reserved "expires_at_ms", "next_refresh_at_ms", "last_refresh_at_ms", "last_error_at_ms";
+  string provider = 1;
+  string provider_id = 2;
+  string credential_key = 3;
+  ProviderCredentialRefreshStrategy strategy = 4;
+  string status = 5;
+  google.protobuf.Timestamp expiration_time = 106;
+  // Next automatic refresh time. Absence means no automatic retry is scheduled;
+  // use recovery_action to determine the required recovery workflow.
+  google.protobuf.Timestamp next_refresh_time = 107;
+  google.protobuf.Timestamp last_refresh_time = 108;
+  string last_error = 9;
+  ProviderCredentialRefreshRecoveryAction recovery_action = 10;
+  // Stable gateway-owned failure identifier, for example
+  // "oauth_invalid_grant". This is not provider-controlled prose and
+  // incorporates any recognized top-level OAuth error classification.
+  string failure_code = 11;
+  // A bounded, recognized provider subtype that refines failure_code; clients
+  // do not need a separate provider_error field. Unknown provider-controlled
+  // values are not persisted or returned.
+  string provider_error_subtype = 12;
+  google.protobuf.Timestamp last_error_time = 113;
+}
+
+enum ProviderCredentialRefreshStrategy {
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_UNSPECIFIED = 0;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_STATIC = 1;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_EXTERNAL = 2;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_REFRESH_TOKEN = 3;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_OAUTH2_CLIENT_CREDENTIALS = 4;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_GOOGLE_SERVICE_ACCOUNT_JWT = 5;
+  PROVIDER_CREDENTIAL_REFRESH_STRATEGY_AWS_STS_ASSUME_ROLE = 6;
+}
+
+enum ProviderCredentialRefreshRecoveryAction {
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_UNSPECIFIED = 0;
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_RETRY = 1;
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_REAUTHORIZE = 2;
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_FIX_CONFIGURATION = 3;
+  PROVIDER_CREDENTIAL_REFRESH_RECOVERY_ACTION_INVESTIGATE = 4;
+}

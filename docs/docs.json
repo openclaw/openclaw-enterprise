@@ -53,7 +53,9 @@
                 ]
               }
             ],
-            "hidden": ["guides/README"]
+            "hidden": [
+              "guides/README"
+            ]
           },
           {
             "tab": "Topics",
@@ -711,7 +713,9 @@
                 ]
               }
             ],
-            "hidden": ["reference/postgres-auth-binding"]
+            "hidden": [
+              "reference/postgres-auth-binding"
+            ]
           },
           {
             "tab": "Contribute",
@@ -931,6 +935,7 @@
               "contributing/rfc-template",
               "guides/deploy/local-repository-credentials",
               "guides/deploy/local-compose-kubernetes",
+              "guides/deploy/local-sandbox-network-policy",
               "guides/deploy/openshell-credential-sources",
               "reference/settings/development",
               "design/resources",
@@ -993,13 +998,17 @@
               "testing/slack",
               "testing/plugins",
               "testing/openshell",
+              "testing/openshell-oauth",
               "testing/openshell-coverage",
               "flows/agent-repository-credentials",
               "flows/public-github-reads",
               "flows/repository-credentials",
               "flows/repository-credential-configuration",
               "testing/repository-credentials",
-              "flows/agent-presets"
+              "flows/agent-presets",
+              "reference/sandbox-policies",
+              "guides/topics/agent-sandbox-policy",
+              "flows/agent-sandbox-policy"
             ]
           }
         ]
