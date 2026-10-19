@@ -35,8 +35,12 @@ follows `:focus-visible`. No part of any ring may be cut off.
    disabled). Hover the button: the pointer is `not-allowed` and the button is
    at 0.6 opacity. A button with `aria-busy="true"`, or a disabled
    button inside an `aria-busy="true"` region, shows the `progress` pointer.
-   Pending action buttons (Stopping…, Deleting…, Save) do not set `aria-busy`
-   yet, so they also show `not-allowed` while pending (finding 1927).
+10. Open **Components / Stop Agent / Stop pending**. Stopping… sets
+    `aria-busy="true"` and shows the `progress` pointer, as Deleting… and a
+    saving Save Configuration do (finding 1927).
+11. On **Pages / Agent detail / Draft** and **New version failed, deploy
+    again**, only one button is filled with the accent. Secondary buttons have
+    a dark edge, and Refresh buttons have none.
 
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).

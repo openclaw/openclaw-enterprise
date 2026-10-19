@@ -6007,6 +6007,18 @@ export const scenarios = {
       "For the revision clearing while Workspace is open, use Flows / Stop an Agent.",
     ],
   },
+  stopPending: {
+    group: "Components/Stop Agent",
+    name: "Stop pending",
+    path: revision,
+    deployed: true,
+    rules: [{ suffix: "/stop", method: "POST", hold: true }],
+    actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
+    description:
+      "The Stop request is held, so the confirmation stays on Stopping…. The button is busy, not unavailable: it sets aria-busy and shows the progress pointer (finding 1927).",
+    steps: ["Hover Stopping…: the pointer is progress, not not-allowed, and Cancel is disabled."],
+    gap: "The request never answers; this story does not verify a stop.",
+  },
   stopRequested: {
     group: "Components/Stop Agent",
     name: "Stop requested",
