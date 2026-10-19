@@ -9,6 +9,7 @@ import type {
   RuntimeLogStream,
   RuntimeLogWithheldReason,
 } from "@openclaw-enterprise/contracts";
+import { CODEX_FAILURE_OUTPUT_CLASSES } from "@openclaw-enterprise/contracts";
 import {
   maskPemBlockLines,
   redactArgvCredentials,
@@ -60,6 +61,15 @@ const WRAPPER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freez
   "runtime.workspace_node": ["container", "outcome", "code"],
   "runtime.gateway_settings_overridden": ["container"],
 });
+
+// A failed Codex login (`runtime.startup_phase`) or model check (`codex.model_probe`)
+// names the class of Codex's error output (finding 2017). Only a value from the
+// contract's closed list is kept; anything else is dropped, never shown.
+const FAILURE_CLASS_EVENTS: ReadonlySet<string> = new Set([
+  "runtime.startup_phase",
+  "codex.model_probe",
+]);
+const FAILURE_CLASSES: ReadonlySet<string> = new Set(CODEX_FAILURE_OUTPUT_CLASSES);
 
 // `runtime.gateway_settings_overridden` names (never values) the owner settings a
 // Gateway replaced. A name can carry an owner-typed key, so the list is kept only
@@ -273,6 +283,13 @@ function classifyStructured(value: Readonly<Record<string, unknown>>): Classifie
         causeKind: cause.kind,
         ...(cause.detail === undefined ? {} : { causeDetail: cause.detail }),
       });
+    }
+    if (
+      FAILURE_CLASS_EVENTS.has(event) &&
+      typeof value.failureClass === "string" &&
+      FAILURE_CLASSES.has(value.failureClass)
+    ) {
+      fields = Object.freeze({ ...fields, failureClass: value.failureClass });
     }
     const failed =
       value.outcome === "failed" ||

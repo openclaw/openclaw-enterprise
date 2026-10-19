@@ -97,8 +97,9 @@ asserting:
 - **OpenShell gateway.** The Namespace's gateway StatefulSet is scaled to zero.
   While it is down, the running Agent cannot serve a turn, a source read
   reports `failed`, registration returns `503 DEPENDENCY_UNAVAILABLE`, and a
-  redeploy fails at least one attempt and stays queued. Once the gateway is
-  back, the redeploy activates and serves a turn without operator action.
+  redeploy waits as `SANDBOX_GATEWAY_UNAVAILABLE` without spending attempts
+  and stays queued. Once the gateway is back, the redeploy activates and serves
+  a turn without operator action.
 
 After the restart, an OAuth2 source whose refresh was due may fail with
 `refresh_configuration_invalid` and be retried only an hour later

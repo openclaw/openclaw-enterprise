@@ -676,6 +676,14 @@ function runDevUp(args, env) {
   });
 }
 
+function runDevDown(env) {
+  return spawnSync(bashExecutable, ["scripts/dev-down"], {
+    cwd: env.DEV_UP_FIXTURE_REPOSITORY,
+    encoding: "utf8",
+    env,
+  });
+}
+
 async function readJsonLines(path) {
   try {
     const content = await readFile(path, "utf8");
@@ -713,6 +721,7 @@ export {
   prepareLifecycleCommands,
   publicControllerOverride,
   readJsonLines,
+  runDevDown,
   runDevUp,
   serviceKey,
 };

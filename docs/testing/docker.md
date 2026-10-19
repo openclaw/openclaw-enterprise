@@ -14,7 +14,7 @@ Compose supports control-plane startup and Namespace operations.
 Follow the [quickstart](../guides/quickstart.md), or run the host/startup cases:
 
 ```sh
-node --test tests/integration/dev-up.test.mjs
+node --test tests/integration/dev-up-compose.test.mjs
 ```
 
 On macOS, follow the Podman prerequisite in the [startup flow](../flows/docker-compose-development/startup.md).

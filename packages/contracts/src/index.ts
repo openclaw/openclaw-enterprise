@@ -2161,6 +2161,7 @@ export {
 } from "./preset-variables.mjs";
 
 export {
+  CODEX_FAILURE_OUTPUT_CLASSES,
   PROCESS_EXIT_ERROR_CODES,
   PROCESS_EXIT_MAX_STATUS,
   PROCESS_EXIT_SIGNALS,

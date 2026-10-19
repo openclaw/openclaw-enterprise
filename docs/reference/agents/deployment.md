@@ -193,7 +193,7 @@ connect, or got 429 or 5xx. Both apply in preparation and
 activation. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway holds
 its limit of durable request admissions and refuses requests (see
 [OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting));
-`SANDBOX_GATEWAY_UNAVAILABLE`, that it left a Harness status read unanswered.
+`SANDBOX_GATEWAY_UNAVAILABLE`, that it did not answer.
 The worker retries on the same cadence without spending
 `OCC_WORKER_MAX_ATTEMPTS`. A dependency still failing at the convergence
 deadline fails the deployment with its own code.

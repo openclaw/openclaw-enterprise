@@ -53,6 +53,7 @@ import {
   CredentialSourceRevisionError,
   CredentialWithdrawalRefusedError,
   SandboxGatewayUnauthorizedError,
+  SandboxGatewayUnavailableError,
   SANDBOX_DELETION_UNCONFIRMED,
   operationRefusalHint,
   SandboxRevisionUnsupportedError,
@@ -291,6 +292,28 @@ function revisionFailureLogFields(error: unknown): {
   return record === undefined
     ? { cause: errorClass }
     : { cause: errorClass, ...causeStatusLogFields(record) };
+}
+
+/**
+ * The dependency a revision pass waits for when its failure clears by itself: within the
+ * convergence deadline, without spending the attempt budget (D28). A Sandbox gateway that did not
+ * answer at all (down or restarting) is one (findings 1658, 2040), at every step of the pass that
+ * calls it: the candidate's preparation and an exclusive predecessor's stop, which the next pass
+ * repeats. Other work (an Agent stop or deletion, a credential withdrawal, a Namespace) keeps its
+ * attempt budget: it has no convergence deadline to bound the wait.
+ */
+function revisionDependencyFailure(error: unknown): TransientDependencyError | undefined {
+  if (error instanceof TransientDependencyError) {
+    return error;
+  }
+  return error instanceof SandboxGatewayUnavailableError
+    ? new TransientDependencyError(
+        "sandbox_gateway",
+        "unavailable",
+        "The Sandbox gateway did not answer.",
+        { cause: error },
+      )
+    : undefined;
 }
 
 /**
@@ -4070,6 +4093,7 @@ export class ControllerWorker {
       if (error instanceof RefusedCandidateStopError) {
         ({ result, logFields: failureLogFields } = error.pending());
       } else {
+        const dependencyFailure = revisionDependencyFailure(error);
         if (error instanceof ComputePreparationFailedError) {
           result = {
             outcome: "permanent",
@@ -4092,15 +4116,15 @@ export class ControllerWorker {
           // A predecessor's or a stopped Agent's revision stop yielded to other Work; the next
           // pass repeats it.
           result = { outcome: "pending", code: stopYieldedCode(error)! };
-        } else if (error instanceof TransientDependencyError) {
+        } else if (dependencyFailure !== undefined) {
           // A dependency that recovers by itself must not spend the attempt budget:
-          // five quick retries end long before a Gateway route or an API server
-          // that is converging under load comes back (D28).
-          result = { outcome: "pending", code: error.code, dependencyFailure: error };
+          // five quick retries end long before a Gateway route, an API server
+          // that is converging under load, or a restarting Sandbox gateway comes back (D28).
+          result = { outcome: "pending", code: dependencyFailure.code, dependencyFailure };
         } else {
           result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
         }
-        failureLogFields = revisionFailureLogFields(error);
+        failureLogFields = revisionFailureLogFields(dependencyFailure ?? error);
       }
     }
     try {
