@@ -1756,7 +1756,9 @@ select:not([multiple])[size="1"] {
   margin-top: var(--space-5);
 }
 /* The Secret dialog's grid gap spaces its fields; their page margins would add to it. */
-.credential-secret-dialog .form-field,
+.credential-secret-dialog .form-field {
+  margin: 0;
+}
 @keyframes dialog-open {
   from {
     opacity: 0;
