@@ -592,6 +592,84 @@ test("a Namespace listing past its deadline keeps the conditions it read", async
   );
 });
 
+// A read the deadline stops rejects with an AbortError as the deadline passes, racing the
+// listing's report: it must not add a "listing objects failed" line, so the report is what was
+// read and then the timeout. The stand-in kubectl on PATH runs through the real client, so the
+// stalled read is a real child process the deadline kills.
+test("a Namespace listing stopped at its deadline reports the timeout alone", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-fake-kubectl-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const namespaceJson = JSON.stringify({
+    spec: { finalizers: ["kubernetes"] },
+    status: {
+      phase: "Terminating",
+      conditions: [
+        { type: "NamespaceContentRemaining", status: "True", reason: "SomeResourcesRemain" },
+      ],
+    },
+  });
+  await writeFile(
+    join(directory, "kubectl"),
+    `#!${process.execPath}
+const args = process.argv.slice(2);
+const verb = args.findIndex((arg) => ["delete", "get", "api-resources"].includes(arg));
+const command = args.slice(verb, verb + 2).join(" ");
+if (command === "delete namespace") {
+  process.stderr.write("error: timed out waiting for the condition on namespaces/oce-held\\n");
+  process.exitCode = 1;
+} else if (command === "get namespace") {
+  process.stdout.write(${JSON.stringify(namespaceJson)});
+} else if (command === "api-resources --namespaced=true") {
+  process.stdout.write("pods\\n");
+} else {
+  // The object listing stalls, as a get through a hung aggregated API does.
+  setTimeout(() => {}, 30_000);
+}
+`,
+    { mode: 0o755 },
+  );
+  const path = process.env.PATH;
+  process.env.PATH = `${directory}${delimiter}${path}`;
+  t.after(() => {
+    process.env.PATH = path;
+  });
+  const client = createKubernetesClient({
+    selection: { kubeconfigPath: join(directory, "kubeconfig"), kubernetesContext: "fake" },
+  });
+  let reached;
+  const listing = new Promise((resolve) => {
+    reached = resolve;
+  });
+  const kubectl = (...args) => {
+    if (args[0] === "get" && args[1] === "pods") {
+      reached();
+    }
+    return client.kubectl(...args);
+  };
+  // The deadline's timer is held until the stalled listing has started.
+  let release;
+  const sleep = (ms, value, { signal }) =>
+    new Promise((resolve, reject) => {
+      release = () => resolve(value);
+      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+    });
+  const failure = deleteNamespaceExplained(kubectl, "oce-held", { sleep }).then(
+    () => assert.fail("the delete resolved"),
+    (error) => error,
+  );
+  await listing;
+  release();
+  const error = await failure;
+  assert.equal(
+    error.message.slice(error.message.indexOf("\nNamespace oce-held")),
+    [
+      "\nNamespace oce-held remains: phase Terminating, finalizers [kubernetes]",
+      "condition NamespaceContentRemaining=True SomeResourcesRemain: ",
+      "listing what remains timed out",
+    ].join("\n  "),
+  );
+});
+
 // Finding 2027: the listing is bounded in size too, since it joins a test failure message: at most
 // 40 objects, and a failed read's first stderr line cut to 300 characters.
 test("a Namespace listing caps its objects and a failed read's error", async () => {

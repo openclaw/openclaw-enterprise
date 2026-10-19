@@ -170,6 +170,11 @@ async function partialKubectlRead(kubectl, args, lines, what) {
   try {
     return { output: await kubectl(...args), complete: true };
   } catch (error) {
+    // A read the deadline stopped is not a failed read: the listing reports its timeout instead,
+    // and a line pushed here could race into that report.
+    if (error?.name === "AbortError" || diagnosticDeadlinePassed()) {
+      throw error;
+    }
     const reason = String(error?.stderr || error?.message || error)
       .trim()
       .split("\n")[0]
