@@ -35,12 +35,11 @@ directory browsing is unavailable.
 
 Before API provisioning or deployment, enabled Slack accounts require
 Secret-backed native environment references. Socket Mode app tokens must start
-with `xapp-`; bot tokens must start with `xoxb-`. Slack’s `auth.test` must return a
-bot ID and either a workspace ID or an explicit Enterprise Grid installation
-(`is_enterprise_install: true`, with matching `team_id` and `enterprise_id`).
-Accepting an enterprise identity does not select a workspace: user and channel
-lookup still require a workspace ID. HTTP mode skips the app-token check.
-Disabled Slack accounts make no provider call. Validation has an eight-second request budget
+with `xapp-`; bot tokens must start with `xoxb-` and pass `auth.test` with a bot
+identity. An explicit Enterprise Grid installation requires an enterprise ID;
+other installations require a workspace ID. User and channel lookup still
+require a workspace ID. HTTP mode skips the app-token check. Disabled Slack
+accounts make no provider call. Validation has an eight-second request budget
 and never opens a Socket Mode connection or sends a message.
 
 Failures return sanitized `CHANNEL_CREDENTIAL_*` errors with the native field

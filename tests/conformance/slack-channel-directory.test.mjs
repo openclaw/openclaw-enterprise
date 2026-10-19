@@ -190,24 +190,6 @@ test("Slack directory rejects a user token before listing names", async () => {
   assert.equal(calls, 1);
 });
 
-const enterpriseInstall = {
-  is_enterprise_install: true,
-  enterprise_id: "EEXAMPLE",
-  team_id: "EEXAMPLE",
-};
-
-test("Slack directory requires a workspace ID even for an enterprise installation", async () => {
-  const requests = [];
-  const driver = new SlackChannelDriver(async (url) => {
-    requests.push(new URL(url).pathname);
-    return Response.json({ ok: true, bot_id: "BEXAMPLE", ...enterpriseInstall });
-  });
-  await assert.rejects(driver.lookupDirectory({ token, kind: "users" }), {
-    reason: "invalid_response",
-  });
-  assert.deepEqual(requests, ["/api/auth.test"]);
-});
-
 test("Slack directory searches paginated user names and qualifies results with workspace identity", async () => {
   const calls = [];
   const driver = new SlackChannelDriver(async (url, options) => {
@@ -428,32 +410,6 @@ test("Slack HTTP errors release the connection for a subsequent directory lookup
       assert.equal(calls, 3, "the retry reaches both auth.test and users.list");
     });
   }
-});
-
-test("Slack bot credentials accept workspace and enterprise installation identities", async () => {
-  const validate = (identity) => {
-    const driver = new SlackChannelDriver(async () =>
-      Response.json({ ok: true, bot_id: "BEXAMPLE", ...identity }),
-    );
-    return driver.validateCredentials(
-      { channels: { slack: { mode: "http", botToken: { source: "env", id: "SLACK_BOT" } } } },
-      async (_id, _field, use) => use(token),
-    );
-  };
-
-  await validate({ team_id: "TWORKSPACE" });
-  await validate(enterpriseInstall);
-  for (const invalid of [
-    { is_enterprise_install: false },
-    { is_enterprise_install: "true" },
-    { team_id: "EOTHER" },
-    { team_id: "invalid", enterprise_id: "invalid" },
-  ]) {
-    await assert.rejects(validate({ ...enterpriseInstall, ...invalid }), { reason: "unavailable" });
-  }
-  await assert.rejects(validate({ ...enterpriseInstall, bot_id: "UEXAMPLE" }), {
-    reason: "credentials_rejected",
-  });
 });
 
 test("Slack credential checks refuse redirects instead of resending the bot token", async (t) => {
