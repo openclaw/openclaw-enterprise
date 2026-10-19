@@ -184,9 +184,8 @@ button,
   padding: 8px 14px;
   font-weight: var(--weight-medium);
 }
-a.button,
-a.primary,
-a.overview-primary {
+/* Low specificity, so a tone's own colour wins. */
+:where(a.button, a.primary, a.overview-primary) {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
@@ -240,7 +239,8 @@ button.danger:not(:disabled):hover {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-button.button--link:not(:disabled):hover {
+button.button--link:not(:disabled):hover,
+a.button.button--link:hover {
   background: none;
 }
 .button--sm {
@@ -1031,24 +1031,53 @@ select:not([multiple])[size="1"] {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-/* The recovery card edges its links itself (below); its first action stays the primary one. */
+/* Recovery links are buttons: the card edges them itself (below), and its first action stays the
+   primary one. */
+.deployment-recovery-actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 8px 14px;
+  border-radius: var(--radius-md);
+  text-decoration: none;
+  font-weight: var(--weight-medium);
+}
 .deployment-recovery-actions .button--primary,
 .deployment-recovery-actions .overview-primary {
   color: var(--color-on-accent);
   background: var(--color-accent);
   border-color: var(--color-accent);
 }
-/* One primary action: a failed version's recovery outranks native administration and the draft's
-   own Deploy new version, wherever the recovery card sits. */
+/* One primary action: a failed version's recovery outranks native administration and, when it
+   offers an action, the draft's own Deploy new version; the draft's Deploy outranks native
+   administration. Wherever the recovery card sits. */
 [aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
   > .native-admin-access
   :is(.overview-primary, .button--primary),
-[aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
+[aria-live="polite"]:has(.agent-draft-actions)
+  > .native-admin-access
+  :is(.overview-primary, .button--primary),
+[aria-live="polite"]:has(
+    > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
+  )
   .agent-draft-actions
   :is(.primary, .button--primary) {
   color: var(--color-text-strong);
   background: var(--color-surface);
   border-color: var(--color-border-strong);
+}
+[aria-live="polite"]:has(> .deployment-recovery:not([hidden]))
+  > .native-admin-access
+  :is(.overview-primary, .button--primary):not(:disabled):hover,
+[aria-live="polite"]:has(.agent-draft-actions)
+  > .native-admin-access
+  :is(.overview-primary, .button--primary):not(:disabled):hover,
+[aria-live="polite"]:has(
+    > .deployment-recovery:not([hidden]) .deployment-recovery-actions:not([hidden])
+  )
+  .agent-draft-actions
+  :is(.primary, .button--primary):not(:disabled):hover {
+  background: var(--color-surface-hover);
 }
 .deployment-recovery {
   background: var(--color-warning-subtle);
@@ -2111,6 +2140,8 @@ select:not([multiple])[size="1"] {
   border-color: var(--accent);
 }
 .plugin-list-item {
+  /* A list row, not a button: the light edge, like the version list. */
+  border-color: var(--line);
   flex-direction: column;
   align-items: stretch;
   gap: 6px;
@@ -3167,6 +3198,7 @@ select:not([multiple])[size="1"] {
   background: var(--warning-subtle);
 }
 .log-chip[aria-pressed="false"] {
+  border-color: var(--line);
   color: var(--muted);
   text-decoration: line-through;
 }

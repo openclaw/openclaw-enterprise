@@ -102,7 +102,7 @@ export function patchChildren(parent, children) {
  * "primary" (at most one per view), "secondary", "ghost", "danger" or "link", and `size` "sm" is
  * the toolbar size. `className` adds a component's own class.
  */
-export function buttonClass({ tone, size, className } = {}) {
+function buttonClass({ tone, size, className } = {}) {
   return [
     ...(tone || size ? ["button"] : []),
     ...(tone ? [`button--${tone}`] : []),

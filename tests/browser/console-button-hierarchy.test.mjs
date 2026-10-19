@@ -141,7 +141,14 @@ for (const viewport of [
       {
         name: "Logs",
         url: detailUrl(fixture, namespace.id, failed.id, active.revision.id, "logs"),
-        ready: () => page.getByRole("button", { name: "Refresh logs" }).waitFor(),
+        // Deploy again follows the recovery's own Configuration read.
+        ready: async () => {
+          await page.getByRole("button", { name: "Refresh logs" }).waitFor();
+          await page
+            .getByRole("region", { name: "Deployment needs attention" })
+            .getByRole("link", { name: "Deploy again" })
+            .waitFor();
+        },
         primary: "Deploy again",
       },
     ];
@@ -153,6 +160,20 @@ for (const viewport of [
       await page.mouse.move(0, 0);
       assert.deepEqual(await filledActions(page), [view.primary], view.name);
     }
+    // The recovery's secondary link is a button of the same size as its primary, not bare text.
+    const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+    const [primaryBox, secondaryBox] = await Promise.all(
+      ["Deploy again", "Open v2 Logs"].map((name) =>
+        recovery.getByRole("link", { name }).boundingBox(),
+      ),
+    );
+    assert.equal(secondaryBox.height, primaryBox.height);
+    assert.equal(
+      await recovery
+        .getByRole("link", { name: "Open v2 Logs" })
+        .evaluate((link) => globalThis.getComputedStyle(link).textDecorationLine),
+      "none",
+    );
   });
 }
 
@@ -244,7 +265,7 @@ const busyState = (locator) =>
 
 // Stopping…, Deleting… and Save while saving are disabled while their request runs; they are
 // busy, not unavailable, so they say so and show the progress cursor (finding 1927).
-test("Stop, Delete and Save Configuration show busy, not disabled, while their request runs", async (t) => {
+test("Stop, Delete and Save Configuration show busy, not only disabled, while their request runs", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Busy buttons");
   const agent = await fixture.createAgent(namespace.id, "Busy Agent", nativeValues("busy"));
   await fixture.seedActiveAgentRevision(namespace.id, agent.id);
