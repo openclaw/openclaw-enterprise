@@ -469,6 +469,17 @@ function namespaceNote(notReady) {
   return statusBlock("warning", null, notReady.note, [], { role: "status" });
 }
 
+// Takes the not-ready note's place on an open form once its Namespace is ready (finding 2024).
+function namespaceReadyNote() {
+  return statusBlock(
+    "success",
+    null,
+    "Namespace status: Ready. Agents created here can be deployed now.",
+    [],
+    { role: "status" },
+  );
+}
+
 function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const { view, request, namespaceId } = context;
   // A recheck replaces it once the Namespace becomes ready (finding 2012).
@@ -1800,14 +1811,20 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   // Every step of a provisioning plan needs a ready Namespace, so the API would refuse it; a
   // draft plan still saves (finding 2007, #2867).
   const provisioningWaitsForNamespace = () => Boolean(notReady) && shouldProvision();
+  // A Namespace that turns failed or deleting while the form is open takes no new Agent, draft
+  // or not, and never becomes ready by waiting (finding 2022).
+  const namespaceRefusesAgents = () => Boolean(notReady?.blocked);
   // The Namespace can become ready while the form is open. Reread only its status, on refocus
   // and while Create Agent waits for it, and update just the note and the gate: the draft,
-  // focus and field values stay (finding 2012). A failed read stops the wait until a refocus,
-  // and a form that Start over replaced stops for good.
+  // focus and field values stay (finding 2012). A failed read keeps the 10 s wait going
+  // (finding 2021); a form that Start over replaced stops for good.
   let namespaceTimer = null;
   let namespaceReading = false;
   const namespaceGateShown = () =>
-    !savedAgent && !provisioningAttempt && provisioningWaitsForNamespace();
+    !savedAgent &&
+    !provisioningAttempt &&
+    !namespaceRefusesAgents() &&
+    provisioningWaitsForNamespace();
   const recheckNamespace = async () => {
     clearTimeout(namespaceTimer);
     namespaceTimer = null;
@@ -1822,15 +1839,21 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
     namespaceReading = true;
     let namespace;
+    let read = false;
     try {
       const namespaces = await request("/namespaces", { revalidate: false, rereadOnResume: true });
       namespace = namespaces.find((item) => item.id === namespaceId);
+      read = true;
     } catch {
-      return;
+      // A failed read changes nothing on screen; the next check comes at the usual cadence.
     } finally {
       namespaceReading = false;
     }
     if (!context.isCurrent() || !form.isConnected) {
+      return;
+    }
+    if (!read) {
+      waitForNamespace();
       return;
     }
     if (namespace) {
@@ -1840,11 +1863,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     const next = namespace ? namespaceCreation(namespace) : notReady;
     if (next?.note !== notReady?.note) {
       notReady = next;
-      const replacement = next ? namespaceNote(next) : null;
-      if (replacement) {
-        notReadyNote?.replaceWith(replacement);
-      } else {
-        notReadyNote?.remove();
+      // Swap the note in place and keep its height, so the field being edited below it does not
+      // jump mid-edit (finding 2024). A ready Namespace says so where the warning was.
+      const replacement = next ? namespaceNote(next) : namespaceReadyNote();
+      if (notReadyNote) {
+        replacement.style.minHeight = `${notReadyNote.getBoundingClientRect().height}px`;
+        notReadyNote.replaceWith(replacement);
       }
       notReadyNote = replacement;
       updateControls();
@@ -1973,7 +1997,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
     if (capabilityDiscoveryDone) {
       let nextStatus = "";
-      if (!modeUnavailable) {
+      if (namespaceRefusesAgents()) {
+        nextStatus = "This Namespace cannot hold new Agents, so Create Agent is unavailable.";
+      } else if (!modeUnavailable) {
         nextStatus = shouldProvision()
           ? notReady
             ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then."
@@ -2146,14 +2172,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       !capabilityDiscoveryDone ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent && provisioningWaitsForNamespace()) ||
+      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       Boolean(provisioningAttempt);
     // Create Agent names why it waits: the status line above says so (finding 2007).
     if (
       !savedAgent &&
       capabilityDiscoveryDone &&
-      !selectedModeUnavailable() &&
-      provisioningWaitsForNamespace()
+      (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
     ) {
       submit.setAttribute("aria-describedby", capabilityStatus.id);
     } else {
@@ -2440,7 +2465,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       !capabilityDiscoveryDone ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
-      (!savedAgent && provisioningWaitsForNamespace()) ||
+      (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
       // The console's own errors under each field, not the browser's bubble (UX plan C3).
       !validateFields([...form.elements])
     ) {
