@@ -680,8 +680,8 @@ test("A list left again during its rows' rereads is reused on the next return an
 // 60-character names fit 390 and 360 px, every column name shows, IDs break only after a hyphen
 // or underscore, and the row still opens its Agent. At 1440 the table is unchanged.
 // One name is the longest allowed with no break in it (200 characters): it wraps inside its row
-// at every width, and above 760 px within its ID's 310 px, so it does not widen the table
-// (findings 1955, 1956).
+// at every width, and above 760 px within its ID's 310 px, so it does not widen the table. The
+// other names wrap as before, only between words (findings 1955, 1956).
 test("On a phone the Agents list stacks each row, fits the screen and still opens the Agent", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Phone Agents list");
   const agents = [];
@@ -770,6 +770,9 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
             width: name.width,
             inside: name.left >= first.left - 0.5 && name.right <= first.right + 0.5,
             breaks: lineBreaks(link.firstChild),
+            wrap: (({ display, overflowWrap }) => `${display} ${overflowWrap}`)(
+              globalThis.getComputedStyle(link),
+            ),
           },
           overflows: cells.some((cell) => {
             const box = cell.getBoundingClientRect();
@@ -829,11 +832,20 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     for (const [index, row] of layout.rows.entries()) {
       assert.equal(row.overflows, false, `${width}: row ${index} overflows the table`);
       assert.equal(row.name.inside, true, `${width}: row ${index} name overflows its cell`);
-      if (desktop) {
-        assert.ok(row.name.width <= 310.5, `${width}: row ${index} name is ${row.name.width} px`);
+      if (desktop && index === AGENTS - 1) {
+        assert.ok(row.name.width <= 310.5, `${width}: the unbroken name is ${row.name.width} px`);
       }
-      // Ordinary names wrap only between words.
+      // A stacked row gives every name its full width.
+      if (width >= 600 && !desktop && index === AGENTS - 1) {
+        assert.ok(row.name.width > 400, `${width}: the unbroken name is ${row.name.width} px`);
+      }
+      // Ordinary names wrap as they did before, only between words.
       if (index < AGENTS - 1) {
+        assert.equal(
+          row.name.wrap,
+          desktop ? "inline normal" : "inline anywhere",
+          `${width}: row ${index} name wrap`,
+        );
         for (const character of row.name.breaks) {
           assert.equal(character, " ", `${width}: row ${index} name breaks inside a word`);
         }

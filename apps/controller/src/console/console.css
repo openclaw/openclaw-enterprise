@@ -1416,14 +1416,10 @@ select:not([multiple])[size="1"] {
   max-width: 310px;
   overflow-wrap: anywhere;
 }
-/* The name wraps within the width its ID takes and may break anywhere, as the ID does, so one
-   long name (up to 200 unbroken characters) does not widen the table (finding 1955). The column
-   keeps 12rem, so where the table is narrowest ordinary names still break between words (10rem
-   split "Documentation"). */
-.agent-table td:first-child {
-  min-width: 12rem;
-}
-.agent-table td:first-child > a {
+/* A name with a run too long to wrap (list.mjs marks it; a name may be 200 unbroken characters)
+   breaks anywhere within the width its ID takes, so it does not widen the table (finding 1955).
+   Other names wrap as before. */
+.agent-table .agent-name-unbroken {
   display: inline-block;
   max-width: 310px;
   overflow-wrap: anywhere;
@@ -1691,10 +1687,7 @@ select:not([multiple])[size="1"] {
     margin-top: var(--space-2);
     max-width: none;
   }
-  .agent-table td:first-child {
-    min-width: 0;
-  }
-  .agent-table td:first-child > a {
+  .agent-table .agent-name-unbroken {
     display: inline;
     overflow-wrap: inherit;
   }
