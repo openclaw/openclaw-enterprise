@@ -19,6 +19,7 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 import {
   createModelCredentialSecret,
+  createRepositoryLaunchFixture,
   enterManualModel,
   openAdvancedSettings,
   routeInstallationWithoutProvisioning,
@@ -272,12 +273,26 @@ test("Stop, Delete and Save Configuration show busy, not only disabled, while th
   const save = page.getByRole("button", { name: "Save Configuration" });
   // Idle: available, and not busy.
   assert.equal(await save.getAttribute("aria-busy"), "false");
-  const patch = await holdRequests(
-    t,
-    page,
-    `${fixture.origin}/namespaces/${namespace.id}/configurations/${editable.configurationId}`,
-    { method: "PATCH", once: true },
-  );
+  const configurationUrl = `${fixture.origin}/namespaces/${namespace.id}/configurations/${editable.configurationId}`;
+  // A refused save is busy while it runs and not after, so Save Again is not left with a busy
+  // state and the progress cursor (finding 1972).
+  const refused = await holdRequests(t, page, configurationUrl, {
+    method: "PATCH",
+    once: true,
+    fulfill: refusal(400, "VALIDATION_FAILED", "Refused for the busy test."),
+  });
+  await save.click();
+  await refused.requested;
+  assert.equal(await save.getAttribute("aria-busy"), "true");
+  refused.release();
+  await page.getByText("Refused for the busy test.", { exact: false }).waitFor();
+  assert.deepEqual(await busyState(save), {
+    busy: "false",
+    cursor: "pointer",
+    disabled: false,
+    text: "Save Configuration",
+  });
+  const patch = await holdRequests(t, page, configurationUrl, { method: "PATCH", once: true });
   await save.click();
   await patch.requested;
   assert.deepEqual(await busyState(save), {
@@ -288,6 +303,58 @@ test("Stop, Delete and Save Configuration show busy, not only disabled, while th
   });
   patch.release();
   await page.getByText("Configuration saved.", { exact: true }).waitFor();
+});
+
+// Save repository access is busy while its request runs and not after it (finding 1972: removing
+// its aria-busy wiring left every test green).
+test("Save repository access shows busy while its request runs", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "789",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read", "git-full"] }],
+    },
+  ]);
+  const configured = await fixture.createAgent(namespace.id, "Configured", nativeValues("repo"));
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Repository busy",
+      configurationId: configured.configurationId,
+      repositoryBindings: [{ repositoryRef: "application", profile: "git-read" }],
+    },
+  });
+  assert.equal(created.status, 201);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, created.data.id, "draft", "repositories"),
+  );
+  await page.getByText("Read-only · Custom", { exact: true }).waitFor();
+  const save = page.getByRole("button", { name: "Save repository access" });
+  assert.equal(await save.getAttribute("aria-busy"), "false");
+  await page.locator('[aria-describedby="repository-summary-application"]').click();
+  await page.locator("#repository-override-application-git-full").check();
+  await page.getByText("Contributor · Custom", { exact: true }).waitFor();
+  const patch = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${created.data.id}`,
+    { method: "PATCH", once: true },
+  );
+  await save.click();
+  await patch.requested;
+  assert.deepEqual(await busyState(save), {
+    busy: "true",
+    cursor: "progress",
+    disabled: true,
+    text: "Save repository access",
+  });
+  patch.release();
+  // The saved tab rebuilds in place; its Save is not busy.
+  await page.getByText("Repository access saved.", { exact: true }).waitFor();
+  assert.equal(await save.getAttribute("aria-busy"), "false");
 });
 
 test("a permanently disabled button says not allowed, not busy", async (t) => {
@@ -629,5 +696,68 @@ test("The current version, Slack token bindings and Namespace rows use the badge
     { badge, text, tone, painted },
     { badge: true, text: "Ready", tone: "success", painted: true },
     "Namespace row",
+  );
+});
+
+// The Agents list's Deleting and Saved configuration unreadable badges and the detail header's
+// Deleting badge keep their tones; no test checked them (finding 1973).
+test("Deleting and unreadable configuration badges take their tones on the list and the detail page", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Badge tones");
+  const deleting = await fixture.createAgent(namespace.id, "Deleting Agent", nativeValues("del"));
+  const unreadable = await fixture.createAgent(
+    namespace.id,
+    "Unreadable Agent",
+    nativeValues("un"),
+  );
+  const deletingPath = `/namespaces/${namespace.id}/agents/${deleting.id}`;
+  assert.equal((await fixture.request("DELETE", deletingPath)).status, 202);
+  const { page } = await newPage(t, fixture, { browser });
+  // The list reports a saved configuration it cannot decode in this wire shape; PostgreSQL tests
+  // own the decode failure itself.
+  await page.route(`${fixture.origin}/namespaces/${namespace.id}/agents`, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const payload = await response.json();
+    payload.data = payload.data.map((item) =>
+      item.id === unreadable.id
+        ? {
+            ...item,
+            configurationReadError: { code: "SAVED_CONFIGURATION_UNREADABLE", field: "plugins" },
+          }
+        : item,
+    );
+    await route.fulfill({ response, json: payload });
+  });
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  const table = page.locator(settledView).getByRole("table", { name: "Agents" });
+  const rowBadge = (name) =>
+    table
+      .getByRole("row")
+      .filter({ has: page.getByRole("link", { name, exact: true }) })
+      .locator(".badge");
+  for (const [name, text, tone] of [
+    ["Deleting Agent", "Deleting", "warning"],
+    ["Unreadable Agent", "Saved configuration unreadable", "danger"],
+  ]) {
+    await rowBadge(name).waitFor();
+    const { badge, text: shown, tone: shownTone, painted } = await badgeState(rowBadge(name));
+    assert.deepEqual(
+      { badge, text: shown, tone: shownTone, painted },
+      { badge: true, text, tone, painted: true },
+      name,
+    );
+  }
+
+  await page.goto(detailUrl(fixture, namespace.id, deleting.id).href);
+  const header = page.locator(".badge", { hasText: "Deleting" });
+  await header.waitFor();
+  const { badge, text, tone, painted } = await badgeState(header);
+  assert.deepEqual(
+    { badge, text, tone, painted },
+    { badge: true, text: "Deleting", tone: "warning", painted: true },
+    "detail header",
   );
 });

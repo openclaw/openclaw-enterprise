@@ -128,15 +128,15 @@ const focusedRing = (page, selector = null) =>
         const gapY = bottom - top - scroller.clientHeight;
         const barWidth = gapX >= 2 ? Math.round(gapX) : 0;
         const barHeight = gapY >= 2 ? Math.round(gapY) : 0;
-        const cut = Math.max(
-          left - (box.left - reach),
-          top - (box.top - reach),
-          box.right + reach - (right - barWidth),
-          box.bottom + reach - (bottom - barHeight),
-        );
+        const cutX = Math.max(left - (box.left - reach), box.right + reach - (right - barWidth));
+        const cutY = Math.max(top - (box.top - reach), box.bottom + reach - (bottom - barHeight));
         // Scroll offsets snap to whole pixels, so a scrolled-to row can overhang its scroller by
-        // a fraction of a pixel; only a whole pixel or more counts as hidden.
-        if (cut >= 1) {
+        // a fraction of a pixel on the axis it was scrolled along; only a whole pixel or more
+        // counts as hidden there. On an axis the scroller has not scrolled along, half a pixel
+        // does (finding 1977: a 0.9px sideways cut passed).
+        const hides = (cut, scrolled) => (scrolled ? cut >= 1 : cut > 0.5);
+        if (hides(cutX, scroller.scrollLeft !== 0) || hides(cutY, scroller.scrollTop !== 0)) {
+          const cut = Math.max(cutX, cutY);
           clipped.push(`.${[...scroller.classList].join(".")} hides ${cut.toFixed(1)}px`);
         }
       }
