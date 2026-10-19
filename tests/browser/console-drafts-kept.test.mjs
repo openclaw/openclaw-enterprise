@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
@@ -11,11 +12,16 @@ import {
   nativeValues,
   newPage,
   pathRequests,
+  repositoryCheckbox,
   selectSecret,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import {
   configurationPostRequests,
+  createModelCredentialSecret,
+  createRepositoryLaunchFixture,
+  enterManualModel,
+  routeInstallationProvisioning,
   routeInstallationWithoutProvisioning,
 } from "./console-agents-test-support.mjs";
 
@@ -333,8 +339,20 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
   const { page } = await newPage(t, fixture);
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   await page.getByRole("link", { name: "Pending leave Agent" }).click();
-  await page.getByRole("tab", { name: "Channels", exact: true }).click();
-  await page.waitForURL((url) => url.searchParams.get("tab") === "channels");
+  const openTab = async (name, id) => {
+    await page.getByRole("tab", { name, exact: true }).click();
+    await page.waitForURL((url) => url.searchParams.get("tab") === id);
+  };
+  await openTab("Channels", "channels");
+  // Channels kept while Repositories is open comes back as the same DOM, and with it its own
+  // note, not the Repositories editor's (finding 1962).
+  const disableSlack = page.getByRole("button", { name: "Disable Slack" });
+  await disableSlack.evaluate((node) => {
+    node.dataset.retained = "true";
+  });
+  await openTab("Repositories", "repositories");
+  await openTab("Channels", "channels");
+  assert.equal(await disableSlack.getAttribute("data-retained"), "true");
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
   const held = await holdRequests(
@@ -343,7 +361,7 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
     { method: "PATCH" },
   );
-  await page.getByRole("button", { name: "Disable Slack" }).click();
+  await disableSlack.click();
   await held.requested;
   const pageUrl = page.url();
   const note = page.getByText(
@@ -356,13 +374,13 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     assert.equal(page.url(), pageUrl);
     await sidebarLink(page, "Namespaces").click();
     assert.equal(page.url(), pageUrl);
-    // So does Back to another page (the Agents list, before the Agent and its Channels tab):
-    // the page stays and its URL is restored before the history event ends.
+    // So does Back to another page (the Agents list, before the Agent and its three tab
+    // changes): the page stays and its URL is restored before the history event ends.
     await page.evaluate(
       () =>
         new Promise((resolve) => {
           globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), { once: true });
-          globalThis.history.go(-2);
+          globalThis.history.go(-4);
         }),
     );
     assert.equal(page.url(), pageUrl);
@@ -385,6 +403,132 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
   await page.goBack();
   await heading(page, "Agents").waitFor();
 });
+
+// Each write that holds the page names itself beside its control when the sidebar, Back or
+// ← Agents is refused; they refused in silence before (findings 1962, 1965).
+for (const pending of [
+  {
+    kind: "a deploy",
+    tab: "configuration",
+    reason: "This page stays open until the deploy request finishes.",
+    beside: ".agent-draft-actions",
+    hold: ({ namespace, agent }) => [`**/namespaces/${namespace.id}/agents/${agent.id}/deploy`],
+    start: (page) => page.getByRole("button", { name: "Deploy new version" }).click(),
+  },
+  {
+    kind: "an authentication save",
+    tab: "credentials",
+    reason: "This page stays open until the authentication save finishes.",
+    beside: "form.agent-card",
+    hold: ({ namespace, agent }) => [
+      `**/namespaces/${namespace.id}/agents/${agent.id}`,
+      { method: "PATCH" },
+    ],
+    start: (page) => page.getByRole("button", { name: "Save authentication source" }).click(),
+  },
+  {
+    kind: "a channel Secrets save",
+    tab: "credentials",
+    reason: "This page stays open until the channel Secret bindings save finishes.",
+    beside: ".channel-secrets",
+    hold: ({ namespace, agent }) => [
+      `**/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+      { method: "PATCH" },
+    ],
+    start: async (page, { replacement }) => {
+      await selectSecret(page, "Slack app token", replacement);
+      await page.getByRole("button", { name: "Save channel Secrets" }).click();
+    },
+  },
+  {
+    kind: "a plugin save",
+    tab: "plugins",
+    reason: "Wait for plugin selections to finish saving before leaving this tab.",
+    beside: "section.agent-card",
+    hold: ({ namespace, agent }) => [
+      `**/namespaces/${namespace.id}/agents/${agent.id}`,
+      { method: "PATCH" },
+    ],
+    start: async (page) => {
+      await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
+      await page
+        .getByLabel("Plugin selections JSON")
+        .fill(JSON.stringify({ "occ-plugin:diffs": { enabled: true } }));
+      await page.getByRole("button", { name: "Save plugin selections" }).click();
+    },
+  },
+]) {
+  test(`${pending.kind} holds the sidebar, Back and ← Agents and says why`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    if (pending.tab === "plugins") {
+      const driver = new OCCPluginDriver();
+      fixture.controller.registerDriver(driver);
+      fixture.controller.selectDriver("plugin", driver.id);
+    }
+    const namespace = await fixture.createNamespace("Pending reason", { ready: true });
+    const { agent } = await createSlackAgent(fixture, namespace, "Pending reason Agent");
+    const replacement = await fixture.createSecret(namespace.id, "Replacement app", "xapp-new");
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+    await page.getByRole("link", { name: "Pending reason Agent" }).click();
+    if (pending.tab !== "configuration") {
+      const tabLabel = pending.tab === "plugins" ? "Plugins" : "Credentials";
+      await page.getByRole("tab", { name: tabLabel, exact: true }).click();
+      await page.waitForURL((url) => url.searchParams.get("tab") === pending.tab);
+    }
+    await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+    const held = await holdRequests(t, page, ...pending.hold({ namespace, agent }));
+    await pending.start(page, { replacement });
+    await held.requested;
+    const pageUrl = page.url();
+    const reason = page.getByText(pending.reason, { exact: true });
+    // Each refusal shows the note again; it is removed first so a silent one would fail.
+    const refusedWithReason = async (leave) => {
+      await reason.evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
+      await leave();
+      await reason.waitFor();
+      assert.equal(page.url(), pageUrl);
+    };
+    try {
+      await refusedWithReason(() => sidebarLink(page, "Agents").click());
+      // Back to the Agents list (past the tab change, where one was made): the URL returns
+      // before the history event ends.
+      await refusedWithReason(() =>
+        page.evaluate(
+          (steps) =>
+            new Promise((resolve) => {
+              globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), {
+                once: true,
+              });
+              globalThis.history.go(steps);
+            }),
+          pending.tab === "configuration" ? -1 : -2,
+        ),
+      );
+      await refusedWithReason(() => page.getByRole("link", { name: "← Agents" }).click());
+      // One note, in a live region, beside the control whose request holds the page.
+      assert.equal(await reason.count(), 1);
+      assert.equal(await reason.getAttribute("role"), "status");
+      assert.equal(await reason.isVisible(), true);
+      assert.equal(
+        await reason.evaluate(
+          (node, beside) =>
+            Boolean(
+              node.parentElement.closest(beside) || node.previousElementSibling?.matches(beside),
+            ),
+          pending.beside,
+        ),
+        true,
+        `the note sits beside ${pending.beside}`,
+      );
+    } finally {
+      held.release();
+    }
+    // The note goes with the hold.
+    await reason.waitFor({ state: "detached" });
+  });
+}
 
 test("an uncertain Configuration save holds ← Agents, but the sidebar may leave the kept draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);
@@ -535,4 +679,217 @@ test("Secret choices carried through Reload draft do not ask before a reload", a
         "Your Secret choices are applied over the reloaded bindings: Slack bot token. Review them, then save.",
     })
     .waitFor();
+});
+
+// A refusal keeps the Create form as a draft only when a retry cannot repeat a write: an
+// uncertain outcome, an admitted provisioning job, a pending credential registration, a job that
+// created its Agent and a repository policy refusal keep none (finding 1965).
+const apiError = (status, code, message) => ({
+  status,
+  contentType: "application/json",
+  body: JSON.stringify({
+    error: { code, message },
+    meta: { requestId: "req_00000000-0000-4000-8000-000000001965" },
+  }),
+});
+
+// The sidebar leaves the refused form and Create Agent returns to the chooser: no kept draft
+// reopens it or asks before a reload.
+async function expectNoKeptDraft(page) {
+  await sidebarLink(page, "Agents").click();
+  await heading(page, "Agents").waitFor();
+  assert.equal(await asksBeforeUnload(page), false);
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
+  assert.equal(await asksBeforeUnload(page), false);
+}
+
+// A dedicated Codex Agent with a new model Secret, which the Installation provisions.
+async function fillProvisionedAgent(page, fixture, namespace, name) {
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill(name);
+  await page.getByLabel("Authentication method").selectOption("codex_pat");
+  await createModelCredentialSecret(page, "synthetic-guard-model-key");
+  await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+}
+
+// Admits one provisioning job and answers its status reads with `read`.
+async function routeProvisioningJob(page, namespace, read) {
+  const url = `/namespaces/${namespace.id}/agents/provision/work_1`;
+  await page.route(`**/namespaces/${namespace.id}/agents/provision`, (route) =>
+    route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        data: {
+          provisioning: {
+            workId: "work_1",
+            status: "queued",
+            phase: "accepted",
+            attemptCount: 0,
+            updatedAt: new Date().toISOString(),
+            url,
+          },
+        },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000202" },
+      }),
+    }),
+  );
+  await page.route(`**${url}`, (route) => route.fulfill(read(url)));
+}
+
+test("an uncertain Create outcome keeps no draft", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Uncertain create", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await page.route(`**/namespaces/${namespace.id}/agents`, async (route, request) => {
+    if (request.method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    // The Agent is created, but the answer does not say so: a retry could create another.
+    await route.fetch();
+    await route.fulfill(apiError(503, "DEPENDENCY_UNAVAILABLE", "masked"));
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await startDefaultPreset(page);
+  await enterManualModel(page, "synthetic-guard-model-key", "gpt-5.1");
+  await page.getByLabel("Agent name", { exact: true }).fill("Uncertain Agent");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByText(/^Outcome unknown\. The result could not be confirmed\./).waitFor();
+  await expectNoKeptDraft(page);
+});
+
+test("a refused read of an admitted provisioning job keeps no draft", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Admitted create", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await routeInstallationProvisioning(page, fixture);
+  // The job is admitted, then its status read is refused: the request ID stays the job's.
+  await routeProvisioningJob(page, namespace, () =>
+    apiError(404, "NOT_FOUND", "The requested platform resource was not found."),
+  );
+  await fillProvisionedAgent(page, fixture, namespace, "Admitted Agent");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByText(/^Resource unavailable in this Namespace\./).waitFor();
+  await expectNoKeptDraft(page);
+});
+
+test("a failed provisioning job that names its Agent keeps no draft", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Failed job create", { ready: true });
+  const { page } = await newPage(t, fixture);
+  await routeInstallationProvisioning(page, fixture);
+  // The job created its Agent and first version, then the deployment failed: no Retry, and a
+  // kept draft would create the Agent again.
+  await routeProvisioningJob(page, namespace, (url) => ({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      data: {
+        workId: "work_1",
+        status: "failed",
+        phase: "handoff",
+        attemptCount: 1,
+        updatedAt: new Date().toISOString(),
+        agentId: "agt_00000000-0000-4000-8000-000000001965",
+        revisionId: "rev_00000000-0000-4000-8000-000000001965",
+        url,
+        error: {
+          code: "PROVISIONING_DEPLOYMENT_FAILED",
+          message: "The initial deployment failed.",
+        },
+      },
+      meta: { requestId: "req_00000000-0000-4000-8000-000000000200" },
+    }),
+  }));
+  await fillProvisionedAgent(page, fixture, namespace, "Failed job Agent");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  await page.getByText(/^The initial deployment failed\. Open this Agent/).waitFor();
+  await expectNoKeptDraft(page);
+});
+
+test("a refused credential registration keeps no draft", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Registration create", { ready: true });
+  const { page } = await newPage(t, fixture);
+  // The Installation provisions dedicated Agents through a Credential Gateway model source.
+  await routeInstallationWithoutProvisioning(page, fixture, {
+    agentProvisioning: { executionModes: ["dedicated"] },
+    credentialSources: {
+      types: [
+        {
+          type: "openai",
+          config: [],
+          secrets: [{ name: "api_key", required: true }],
+          rotation: "none",
+          harnessAuth: { modelProvider: "openai", loginMode: "api_key" },
+        },
+      ],
+    },
+  });
+  await page.route(`**/namespaces/${namespace.id}/credential-sources`, async (route, request) => {
+    if (request.method() !== "POST") {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill(apiError(429, "RATE_LIMITED", "Slow down."));
+  });
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await page.getByRole("button", { name: "Start without Preset" }).click();
+  await page.getByLabel("Agent name").fill("Registration Agent");
+  await enterManualModel(page, "synthetic-guard-model-key", "gpt-5");
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  // The registration keeps its frozen name for Check credential registration.
+  await page.getByRole("button", { name: "Check credential registration" }).waitFor();
+  await expectNoKeptDraft(page);
+});
+
+test("a repository-scoped Agent refusal keeps no draft", async (t) => {
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1965",
+      repository: "example/application",
+      namespaces: [{ namespaceId, profiles: ["git-read"] }],
+    },
+  ]);
+  const { page } = await newPage(t, fixture);
+  // Agent create is denied once the preflight passes, so the Configuration is saved first.
+  let deny = true;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/validate`,
+    async (route) => {
+      const response = await route.fetch();
+      if (deny) {
+        deny = false;
+        fixture.policy.restrictions.push({
+          id: "guard-agent-create",
+          namespaceId: namespace.id,
+          resourceKind: "agent",
+          action: "create",
+          effect: "deny",
+        });
+      }
+      await route.fulfill({ response });
+    },
+  );
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  await startDefaultPreset(page);
+  await enterManualModel(page, "synthetic-guard-model-key", "gpt-5.1");
+  await page.getByLabel("Agent name", { exact: true }).fill("Repository Agent");
+  await repositoryCheckbox(page, "example/application").click();
+  await page.locator("#repository-default-git-read").check();
+  await page.getByRole("button", { name: "Create Agent", exact: true }).click();
+  // The retry is locked until a repository reload, which a restored draft would skip.
+  await heading(page, "Recover from a rejected Agent save").waitFor();
+  fixture.policy.restrictions.pop();
+  await expectNoKeptDraft(page);
 });

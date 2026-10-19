@@ -1188,7 +1188,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   const change = (revision, tab) => {
     if (draftEditorBlocksNavigation()) {
-      showDraftEditorNavigationBlock();
+      showLeaveBlock();
       return;
     }
     context.navigate(target(revision, tab));
@@ -1203,7 +1203,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (!(pendingOnly ? draftWriteInFlight() : draftEditorBlocksNavigation())) {
       return false;
     }
-    showDraftEditorNavigationBlock();
+    showLeaveBlock();
     return true;
   };
   const agentsLink = link("← Agents", "agents", context);
@@ -1385,7 +1385,74 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let draftEditorNavigationBlock = null;
   // Whether a draft editor's write is in flight (its block names the save to wait for).
   let draftEditorSaving = false;
-  let showDraftEditorNavigationBlock = () => {};
+  // A refused leave says why beside the control whose request holds the page (finding 1962).
+  // The configuration, channels and repositories editors write their block into their own
+  // feedback; every other hold writes it here.
+  const leaveNote = element("p", { className: "hint", role: "status" });
+  let leaveNoteText = null;
+  // The authentication form, whose save holds the page from the Credentials tab.
+  let authenticationLeaveAnchor = null;
+  function showLeaveNote(anchor, text, place) {
+    if (!anchor?.isConnected || !text) {
+      return;
+    }
+    const placed =
+      place === "end"
+        ? anchor.lastElementChild === leaveNote
+        : place === "start"
+          ? anchor.firstElementChild === leaveNote
+          : anchor.nextElementSibling === leaveNote;
+    leaveNoteText = text;
+    if (placed) {
+      leaveNote.textContent = text;
+      return;
+    }
+    if (place === "end") {
+      anchor.append(leaveNote);
+    } else if (place === "start") {
+      anchor.prepend(leaveNote);
+    } else {
+      anchor.after(leaveNote);
+    }
+    announceAfterShown(leaveNote, text);
+  }
+  // A tab without its own editor feedback shows its block at the top of the tab panel.
+  const showBlockInPanel = () => showLeaveNote(content, draftEditorNavigationBlock, "start");
+  let showDraftEditorNavigationBlock = showBlockInPanel;
+  // Why the page holds, for each write in flight; editor blocks name their own.
+  function leaveReason() {
+    if (!draftEditorBlocksNavigation()) {
+      return null;
+    }
+    if (deployInFlight) {
+      return "This page stays open until the deploy request finishes.";
+    }
+    if (refreshingDraft) {
+      return "This page stays open until the draft finishes updating.";
+    }
+    if (authenticationSaveState === "saving") {
+      return "This page stays open until the authentication save finishes.";
+    }
+    if (activeCredentials?.isSaving()) {
+      return "This page stays open until the channel Secret bindings save finishes.";
+    }
+    return draftEditorNavigationBlock;
+  }
+  function showLeaveBlock() {
+    const reason = leaveReason();
+    if (deployInFlight) {
+      showLeaveNote(detailPane.querySelector(":scope > .agent-draft-actions"), reason, "end");
+    } else if (refreshingDraft) {
+      // A refresh replaces the draft actions card mid-hold; the tab panel stays until it ends.
+      showLeaveNote(content, reason, "start");
+    } else if (authenticationSaveState === "saving") {
+      showLeaveNote(authenticationLeaveAnchor, reason, "end");
+    } else if (activeCredentials?.isSaving()) {
+      showLeaveNote(activeCredentials.section, reason, "after");
+    } else {
+      showDraftEditorNavigationBlock();
+    }
+  }
   function draftEditorBlocksNavigation() {
     return (
       selected === "draft" &&
@@ -1414,6 +1481,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     revisionControls.set(control, control.disabled);
   }
   function updateNavigationControls() {
+    // The note goes once the hold it explained ends or changes; the next refusal says why anew.
+    if (leaveNoteText !== null && leaveReason() !== leaveNoteText) {
+      leaveNote.remove();
+      leaveNoteText = null;
+    }
     const blocked = Boolean(draftEditorBlocksNavigation());
     for (const [id, control] of tabControls) {
       control.disabled = blocked && id !== selectedTab;
@@ -1457,7 +1529,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           return;
         }
         if (draftEditorBlocksNavigation()) {
-          showDraftEditorNavigationBlock();
+          showLeaveBlock();
           return;
         }
         change(selected, id);
@@ -1878,7 +1950,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const nextRevision = chooser.value;
       if (draftEditorBlocksNavigation()) {
         chooser.value = selected;
-        showDraftEditorNavigationBlock();
+        showLeaveBlock();
         return;
       }
       change(nextRevision, "configuration");
@@ -3109,6 +3181,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       if (mountedTab.reusable && !mountedTab.loading && mountedTab.pending === 0) {
         mountedTab.nodes = [...content.childNodes];
+        // Its editor's block note returns with it, not the last built tab's (finding 1962).
+        mountedTab.showBlock = showDraftEditorNavigationBlock;
         retainedTabs.set(mountedTab.id, mountedTab);
       }
       mountedTab = null;
@@ -3145,10 +3219,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     retainedTabs.delete(tab);
     if (retained && retained.mutations === context.mutationVersion()) {
       mountedTab = retained;
+      showDraftEditorNavigationBlock = retained.showBlock;
       content.replaceChildren(...retained.nodes);
       retained.resumeDrafts();
       return;
     }
+    showDraftEditorNavigationBlock = showBlockInPanel;
     const state = {
       id: tab,
       reusable: true,
@@ -3297,24 +3373,26 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     if (selectedTab === "repositories" && draft) {
       content.append(renderRepositoryEditor(context, data));
     } else if (selectedTab === "plugins") {
-      content.append(
-        renderAgentPlugins(context, {
-          agent,
-          snapshot,
-          draft,
-          path,
-          onState: data.setPluginEditorState,
-          savedNotice,
-          updateAllowed: agentUpdateAllowed,
-          // Saves and reloads rebuild the tab in place (finding 1445's rest).
-          onSaved: (savedAgent) =>
-            refreshDraftInPlace({ agent: savedAgent, saved: "Plugin selections saved." }),
-          onReload: () => {
-            context.drafts.forget("plugins");
-            return reloadDraftInPlace(context, { saved: "Plugin selections reloaded." });
-          },
-        }),
-      );
+      const plugins = renderAgentPlugins(context, {
+        agent,
+        snapshot,
+        draft,
+        path,
+        onState: data.setPluginEditorState,
+        savedNotice,
+        updateAllowed: agentUpdateAllowed,
+        // Saves and reloads rebuild the tab in place (finding 1445's rest).
+        onSaved: (savedAgent) =>
+          refreshDraftInPlace({ agent: savedAgent, saved: "Plugin selections saved." }),
+        onReload: () => {
+          context.drafts.forget("plugins");
+          return reloadDraftInPlace(context, { saved: "Plugin selections reloaded." });
+        },
+      });
+      // Plugin blocks had no note of their own: the sidebar and Back refused in silence.
+      showDraftEditorNavigationBlock = () =>
+        showLeaveNote(plugins, draftEditorNavigationBlock, "after");
+      content.append(plugins);
     } else if (selectedTab === "channels") {
       const channels = renderChannels({
         values,
@@ -3501,6 +3579,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         feedback,
       );
       data.setAuthenticationForm(form);
+      authenticationLeaveAnchor = form;
       let outcomeUnknown = retained?.outcomeUnknown ?? false;
       let pending = false;
       // Set when the caller's permission answer denies Agent update (finding 1530).
@@ -3811,7 +3890,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       { ...agent, agentId: agent.id },
     );
     showDraftEditorNavigationBlock = () => {
-      feedback.textContent = "Save or cancel repository changes before leaving this tab.";
+      feedback.textContent = draftEditorSaving
+        ? draftEditorNavigationBlock
+        : "Save or cancel repository changes before leaving this tab.";
     };
     async function submit() {
       if (save.disabled || !fields.validate()) {
@@ -4327,7 +4408,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         "",
         context.pageUrl(target(selected, selectedTab), namespaceId),
       );
-      showDraftEditorNavigationBlock();
+      showLeaveBlock();
       // A recovery link refused here would look dead again: its refusal shows with the editor.
       if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
         openVersionDetail({ animate: true });
