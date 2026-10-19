@@ -898,11 +898,13 @@ describe("Agent channels", { concurrency: 3 }, () => {
       requests.length = 0;
       await selectSecret(page, "Slack app token", replacementAppSecret);
       await page.getByRole("button", { name: "Save channel Secrets" }).click();
-      await page
-        .getByText(
-          "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret.",
-        )
-        .waitFor();
+      const grantWarning = page.getByText(
+        "Configuration saved, but Secret access grants could not be confirmed. Ask a Namespace administrator to grant this Agent access to the saved Secret.",
+      );
+      await grantWarning.waitFor();
+      // The Configuration saved, so the unconfirmed grant is a warning from the start, not a
+      // refusal that turns into one when another Secret is picked (finding 2003).
+      assert.equal(await grantWarning.getAttribute("data-tone"), "warning");
       assert.equal(
         await page.getByRole("button", { name: "Save channel Secrets" }).isDisabled(),
         false,

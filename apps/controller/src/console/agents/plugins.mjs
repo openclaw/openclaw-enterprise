@@ -375,9 +375,9 @@ export function renderAgentPlugins(
       if (context.isCurrent() && !saved) {
         pending = false;
         updateState();
-        if (outcomeUnknown) {
+        if (outcomeUnknown || reloadRequired) {
           // updateState shows the outcome and its Reload, which takes focus unless the reader
-          // moved it off Save (finding 1978).
+          // moved it off Save (findings 1978, 1998).
           focusSaveOutcome(save, [reload], feedback);
         }
       }

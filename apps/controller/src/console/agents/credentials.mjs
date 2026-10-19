@@ -237,6 +237,12 @@ export function createChannelSecretsPanel({
       : message;
   }
 
+  // A refused save is danger. Secret grants left unconfirmed after a save are a warning, from
+  // the failed grant on: the Configuration itself saved (finding 2003).
+  function saveErrorTone() {
+    return state.saveError && state.saveErrorStep !== "grant" ? "danger" : "warning";
+  }
+
   function canEnterChannelCredentials() {
     return (
       revisionsLoaded &&
@@ -565,7 +571,7 @@ export function createChannelSecretsPanel({
         updateGrantWarning(state.configuration.secretBindings);
         status.textContent = "";
         error.textContent = saveErrorText();
-        setStatusTone(error, "danger");
+        setStatusTone(error, saveErrorTone());
       } finally {
         if (context.isCurrent()) {
           state.saving = false;
@@ -601,10 +607,9 @@ export function createChannelSecretsPanel({
   }
 
   function render() {
-    // A refused save is danger; Secret grants left unconfirmed after a save are a warning.
     const error = element(
       "p",
-      { className: "status", "data-tone": state.saveError ? "danger" : "warning", role: "alert" },
+      { className: "status", "data-tone": saveErrorTone(), role: "alert" },
       state.saveError ? saveErrorText() : state.saveGrantWarning,
     );
     const reloadMessage = state.reloadRequired
