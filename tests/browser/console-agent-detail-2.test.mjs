@@ -3211,6 +3211,13 @@ test("a Workspace reread keeps the caret and scroll of a focused, unedited edito
   const start = before.indexOf("line 30 ");
   assert.equal(after.indexOf("line 30 "), start);
   await waitForInputValue(soul, before);
+  // The files can load while the detail view is still held back for its overview read, and a
+  // hidden editor has no scroll height and takes no focus; wait until SOUL.md is shown and
+  // overflows (finding 2034).
+  await page.waitForFunction(() => {
+    const node = globalThis.document.getElementById("workspace-SOUL.md");
+    return node.scrollHeight > node.clientHeight;
+  });
   // The reader clicks into line 30 and selects a word; the editor scrolls to centre that line.
   // Lines are alike, so the line's share of the text is its share of the scroll height.
   await soul.evaluate((node, offset) => {
