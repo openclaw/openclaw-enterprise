@@ -50,10 +50,10 @@ serviceName = occ-gateway-<first 12 hex characters of SHA-256(gatewayNamespace/g
 hostname    = <serviceName>.<envoyNamespace>.svc
 ```
 
-The chart sets Envoy's Service name to this value. Standard Linux Pod DNS search
-resolves it without a separate DNS record or a fixed `cluster.local` suffix.
-An explicit hostname must match in Helm and Compute and resolve to the Envoy
-Service. The listener certificate uses that same hostname.
+Helm sets that Envoy Service name. Linux Pod DNS search resolves it without
+separate records or a fixed `cluster.local` suffix. Custom hostnames must match
+Helm/Compute and resolve to Envoy. The chart requests DNS SANs, not IP SANs;
+use a certificate-covered DNS name.
 
 `getGatewayEndpoint(revision)` computes the URL without a Kubernetes lookup;
 it does not check whether the gateway is ready. When preparing and activating a
@@ -203,7 +203,7 @@ Helm's `gatewayRouting` settings configure shared infrastructure:
 | `gatewayClassName`             | Required existing Envoy GatewayClass.                                                                                                                     |
 | `gatewayName`                  | `<release>-agent-gateways`. An explicit name must be a DNS-safe Kubernetes resource name of at most 63 characters, the same rule Compute uses at startup. |
 | `envoyNamespace`               | `envoy-gateway-system`. Must be a Kubernetes namespace name: a DNS label of at most 63 characters.                                                        |
-| `hostname`                     | Empty derives Service DNS; custom lowercase DNS hostnames fit 253 characters total, 63 per label, without a port or path.                                 |
+| `hostname`                     | Empty derives Service DNS; custom lowercase DNS hostnames fit 253 characters total, 63 per label, without a port or path. Shorthand IPv4 is refused.      |
 | `apiKeySecretName`             | Required operator-created Secret with entry `occ`.                                                                                                        |
 | `issuerRef.name`               | Empty creates the private CA and issuers.                                                                                                                 |
 | `issuerRef.kind` / `group`     | `ClusterIssuer` / `cert-manager.io` for an explicit issuer.                                                                                               |
@@ -293,6 +293,7 @@ the API proxies HTTP or WebSocket traffic through the private route.
 
 Optional `gatewayRouting.sandbox` in Kubernetes Compute adds a stable per-Agent
 HTTPS origin for dedicated execution under the operator's preview domain.
+Sandbox DNS suffixes refuse numeric or `0x` final labels, including canonical IPv4.
 Embedded OpenClaw retains its native preview configuration. Compute owns the native
 `sandboxOrigin` and `sandboxPort` values and rejects conflicting Agent settings.
 The sandbox backend port is `network.gatewayPort + 1`, so the main port must be

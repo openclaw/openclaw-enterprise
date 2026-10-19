@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
-updated: "2026-10-15"
-last_updated_session: "authoring-run/903d04fd-a3a7-4825-aca7-f94d828ab2d8"
+updated: "2026-10-19"
+last_updated_session: "authoring-run/40820368-0ee7-4901-9224-041654014ae4"
 ---
 
 # Production image upgrade flow
@@ -164,8 +164,9 @@ If the candidate is already present after a lost response, it does not write it
 again. The candidate Installation checksum is included in both OCC Pod
 templates.
 
-A durable marker precedes `helm upgrade`. The candidate migrator and bootstrap
-run in the Helm initialization hook before API and worker rollout. If Helm
+A durable marker precedes `helm upgrade`. The Helm initialization hook checks
+the Installation, then runs the candidate migrator and bootstrap, before API and
+worker rollout. If Helm
 fails, resumption reads its current status and migration state before a retry;
 it does not start the old image to undo a committed schema change.
 
@@ -280,6 +281,10 @@ checks the exported inventory before following the recovery procedure. Empty
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-19 13:31: Retain proxy ownership alongside upstream upgrade preflight. (authoring-run/40820368-0ee7-4901-9224-041654014ae4 - b10157ca9)
+
+- 2026-10-18: The initialization hook checks the Installation before migration.
 
 - 2026-10-15 10:01: Name the canonical control-plane outbound proxy in candidate protection. (authoring-run/903d04fd-a3a7-4825-aca7-f94d828ab2d8 - 313a70262e432192306a2db431bf0b6f0459a957)
 

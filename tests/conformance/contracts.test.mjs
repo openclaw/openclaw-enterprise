@@ -674,9 +674,10 @@ test("a PROCESS_EXIT cause outside the contract's statuses, signals and error co
     ["exit-256", undefined],
     ["error-EVILEXAMPLECOM", undefined],
     ["signal-SIGSEEEXAMPLE-attempt2", undefined],
-    // Recorded as UNRECOGNIZED before the detail was omitted; still read back.
-    ["UNRECOGNIZED", "UNRECOGNIZED"],
-    ["UNRECOGNIZED-attempt2", "UNRECOGNIZED-attempt2"],
+    // What #2763 recorded, or a runtime serves as text: rows holding it still read, without
+    // the detail, and none is recorded (finding 1706).
+    ["UNRECOGNIZED", undefined],
+    ["UNRECOGNIZED-attempt2", undefined],
   ]) {
     // Recorded once, then read back from the stored row.
     const stored = validateFailureData("RUNTIME_MODEL_PROBE_FAILED", failure(served));
@@ -705,6 +706,9 @@ test("a PROCESS_EXIT cause recorded today reads under a controller from before t
     "exit-999",
     "error-EVILEXAMPLECOM",
     "signal-SIGSEEEXAMPLE-attempt2",
+    // A runtime can serve the literal text too (finding 1706).
+    "UNRECOGNIZED",
+    "UNRECOGNIZED-attempt2",
   ]) {
     const stored = validateFailureData("RUNTIME_MODEL_PROBE_FAILED", {
       runtimeFailure: {

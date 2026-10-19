@@ -13,6 +13,7 @@ import {
   RuntimeLogsSandboxNotFoundError,
   SandboxNamespaceRefusedError,
   SandboxRevisionUnsupportedError,
+  SandboxWorkspaceSetupRefusedError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import { setTimeout as delay } from "node:timers/promises";
@@ -68,6 +69,7 @@ import { harnessWorkspacePreparationScript } from "../compute/kubernetes/index.t
 import { nodeProgramArguments } from "../compute/node-program.ts";
 import {
   requireWorkspaceSetupConfiguration,
+  WORKSPACE_SETUP_REFUSED_EXIT_STATUS,
   WORKSPACE_SETUP_RUNTIME,
 } from "../compute/workspace-setup-runtime.ts";
 
@@ -1261,11 +1263,13 @@ const WORKSPACE_SETUP_WAIT = String.raw`{
 // Remote execution can outlive a lost RPC response. Keep the lock across the
 // initializer process so a retry cannot race its writes; kernel locks also release
 // after a crash. Private document bytes travel only through stdin, never argv.
+// The runner's refusal status passes through; any other failure exits 1 (finding 1708).
 const WORKSPACE_SETUP_EXEC = String.raw`
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 let lock;
+let refused = false;
 try {
   const workspace = process.env.OPENCLAW_WORKSPACE_DIR;
   if (!workspace || !path.isAbsolute(workspace)) throw new Error();
@@ -1281,9 +1285,10 @@ try {
     env: { ...process.env, OPENCLAW_WORKSPACE_SETUP_PATH: undefined },
     stdio: ["pipe", "ignore", "ignore", lock], timeout: 250000,
   });
+  refused = !result.error && result.status === ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS};
   if (result.error || result.status !== 0) throw new Error();
 } catch {
-  process.exitCode = 1;
+  process.exitCode = refused ? ${WORKSPACE_SETUP_REFUSED_EXIT_STATUS} : 1;
 } finally {
   if (lock !== undefined) fs.closeSync(lock);
 }
@@ -2859,6 +2864,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     if (current?.phase !== "SANDBOX_PHASE_READY" && current?.phase !== 2) {
       return;
     }
+    let exit: number;
     try {
       const secret = await kubernetes(context).read({
         apiVersion: "v1",
@@ -2888,7 +2894,7 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       ) {
         throw new Error();
       }
-      const exit = await client.execSandbox(
+      exit = await client.execSandbox(
         {
           workspace,
           sandbox: sandbox.resourceName,
@@ -2904,12 +2910,17 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         },
         context.signal,
       );
-      if (exit !== 0) {
-        throw new Error();
-      }
     } catch {
       context.signal.throwIfAborted();
       // Neither API/parser diagnostics nor remote output may disclose initial files.
+      throw new OpenShellSandboxConfigurationFailure("OpenShell workspace initialization failed.");
+    }
+    if (exit === WORKSPACE_SETUP_REFUSED_EXIT_STATUS) {
+      // Every retry would refuse the same way: fail the deployment now, as Kubernetes Compute
+      // does for its init container (finding 1708).
+      throw new SandboxWorkspaceSetupRefusedError("OpenShell workspace initialization refused.");
+    }
+    if (exit !== 0) {
       throw new OpenShellSandboxConfigurationFailure("OpenShell workspace initialization failed.");
     }
   }

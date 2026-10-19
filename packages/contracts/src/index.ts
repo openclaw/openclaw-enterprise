@@ -1787,11 +1787,13 @@ export interface RuntimeFailureEvidence {
 
 /**
  * Why an unready revision is still pending, when Compute knows: its Pods cannot be
- * scheduled, the Namespace's Pod quota refuses to create them, its workspace setup failed
- * and is being retried, or its workloads are ready but the workspace node has not connected.
+ * scheduled, a container image cannot be pulled, the Namespace's Pod quota refuses to
+ * create them, its workspace setup failed and is being retried, or its workloads are ready
+ * but the workspace node has not connected.
  */
 export type ComputePendingReason =
   | "WORKLOAD_UNSCHEDULABLE"
+  | "WORKLOAD_IMAGE_PULL_FAILED"
   | "NAMESPACE_POD_QUOTA_EXCEEDED"
   | "WORKSPACE_NODE_PENDING"
   | "WORKSPACE_SETUP_RETRYING"

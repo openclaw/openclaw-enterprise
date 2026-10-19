@@ -64,6 +64,10 @@ export const AuthSecretReplacement = {
   ...story("authSecretReplacement"),
   name: "Replace model Secret",
 };
+export const AuthSaveRefused = {
+  ...story("authSaveRefused"),
+  name: "Authentication save refused",
+};
 export const AuthSecretGrantDenied = {
   ...story("authSecretGrantDenied"),
   name: "Authentication saved, grant denied",
@@ -71,6 +75,10 @@ export const AuthSecretGrantDenied = {
 export const AuthSecretGrantLoading = {
   ...story("authSecretGrantLoading"),
   name: "Checking model Secret access",
+};
+export const AuthSaveHoldsNavigation = {
+  ...story("authSaveHoldsNavigation"),
+  name: "Authentication save holds navigation",
 };
 export const AuthSaveUnknown = { ...story("authSaveUnknown"), name: "Authentication save unknown" };
 export const AuthenticationNavigation = story("authenticationNavigation");

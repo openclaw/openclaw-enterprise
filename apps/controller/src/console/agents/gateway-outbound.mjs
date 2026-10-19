@@ -12,12 +12,12 @@ const normalize = (selection) => selection ?? { mode: "channelsOnly" };
 
 export function renderGatewayOutbound(
   context,
-  { agent, snapshot, draft, executionMode, path, onState, onSaved, onReload },
+  { agent, snapshot, draft, executionMode, path, onState, onSaved, onReload, savedNotice = "" },
 ) {
   const section = element("section", { className: "agent-card gateway-outbound" });
   const required = element("div");
   const status = element("p", { role: "status", className: "muted" });
-  const feedback = element("p", { role: "status", className: "muted" });
+  const feedback = element("p", { role: "status", className: "muted" }, savedNotice);
   const retained = draft ? context.drafts.get("gatewayOutbound") : null;
   const initial = retained?.initial ?? normalize(agent.gatewayOutbound);
   const mode = element(
@@ -83,6 +83,7 @@ export function renderGatewayOutbound(
     save.disabled =
       !enabled || !dirty() || (mode.value !== "channelsOnly" && capability?.restricted !== true);
     cancel.disabled = pending || outcomeUnknown || reloadRequired || !dirty();
+    reload.disabled = pending;
     onState?.({ dirty: draft && dirty(), saving: pending, outcomeUnknown, reloadRequired });
   }
   function renderRequired(requirements) {
@@ -181,7 +182,11 @@ export function renderGatewayOutbound(
     feedback.textContent = "";
     update();
   });
-  const reload = button("Reload Agent", onReload);
+  const reload = button("Reload Agent", () => {
+    pending = true;
+    update();
+    onReload();
+  });
   const shown = draft
     ? normalize(agent.gatewayOutbound)
     : normalize(snapshot.gatewayOutbound?.selection);

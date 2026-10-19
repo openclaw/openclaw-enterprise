@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-14"
-last_updated_session: "authoring-run/7bd4f79c-2e3a-40b6-b2e9-5e51b495a8f0"
+updated: "2026-10-19"
+last_updated_session: "authoring-run/40820368-0ee7-4901-9224-041654014ae4"
 ---
 
 # Production Startup Flow
@@ -63,22 +63,20 @@ graph TD
 
 ## Execution Trace
 
-The migration, shared bootstrap, API, and worker entrypoints use
-[`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts).
-See [connection authentication settings](../reference/settings/operations.md#postgresql-connection-authentication)
-for password and Azure workload-identity configuration. When PostgreSQL ends
-an idle pooled connection (failover, maintenance restart, `idle_session_timeout`
-or a proxy reset), the pool discards that client and writes one
-`database.idle-client-error` warning with only the error code to stderr; the
-process keeps running and the next query opens a new connection.
+Migration, bootstrap, API and worker use
+[`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts) with
+[password or Azure workload-identity authentication](../reference/settings/operations.md#postgresql-connection-authentication).
+A failover, maintenance restart, `idle_session_timeout` or proxy reset discards
+the idle client and logs `database.idle-client-error` with only its code to stderr.
+The process continues; the next query opens a new connection.
 
 ### 1. Prepare native production inputs
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-Outside the checkout, the operator prepares production values, Installation
-YAML and bootstrap PVC. Helm selects controller images, API endpoint, Secrets,
-claim, client/node selectors and egress. `openclaw.validate` requires a DNS-1123
+The operator prepares values, Installation YAML and bootstrap PVC outside the
+checkout. Helm selects controller images, API endpoint, Secrets, claim,
+client/node selectors and egress. `openclaw.validate` requires a DNS-1123
 release Namespace label of at most 63 characters. Installation YAML selects IAM,
 Configuration, Compute, optional Backends, gateway/Agent images, projected
 workload identity and runtime networking/storage.
@@ -113,14 +111,27 @@ installs initialization isolation before the Job. It and later workload policies
 grant configured DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
 
-`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` validates routing ports and hostnames against Compute. `database.port`,
+`deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` matches Compute routing validation. `database.port`,
 `cluster.port`, and `executionCluster.apiPort` must be 1–65535 without leading zeros.
-Empty hostnames retain Service DNS for Gateway listeners and Certificate SANs.
+Empty hosts retain Service DNS for listeners and Certificate SANs.
+
+`apps/controller/src/drivers/compute/kubernetes/index.ts:validateDnsHostname`
+refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persistence
+opens. Helm also refuses rendering. IPv4 admission does not establish TLS;
+`validateSandboxDomain` refuses numeric/hex suffixes, including canonical IPv4.
+Correct Helm values and Installation YAML per the
+[hostname correction procedure](../guides/deploy/breaking-changes.md#2026-10-14-gateway-hostnames-must-not-be-rewritten-ipv4),
+then upgrade/restart.
+
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
 refuses peer maps Kubernetes rejects, preserving null/empty semantics and accepted labels.
 
+On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` first
+loads the Installation as API startup does, without database or Kubernetes access;
+a refusal fails the hook before migration and API replacement.
+
 The hook keeps the release name and bounds its suffix to 63 characters. Both
-containers optionally mount the CA. Helm validates distinct application and
+database containers optionally mount the CA. Helm validates distinct application and
 migration Secret keys against Kubernetes syntax before use. `installation.key`
 and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
 not `.` or a `..` prefix.
@@ -161,23 +172,19 @@ IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
 database TLS not pinned to the database CA.
 
-After initialization, separate API/worker Deployments start. Before readiness,
-the API validates production listener settings, Better Auth, database access,
-trusted Installation YAML, selected Drivers, Backend membership and Kubernetes
-Compute preflight. Private controller routes, `/healthz` and database-backed
-`/readyz` use the operator-managed endpoint. The `/healthz` startup probe runs
-every second for 120 failures: 2 minutes to listen, with readiness within a
-second of listening.
+API/worker Deployments start after initialization. Before readiness, the API
+validates its listener, Better Auth, database, Installation YAML, Drivers,
+Backend membership and Compute preflight. Private routes, `/healthz` and
+database-backed `/readyz` use the operator-managed endpoint. The startup probe
+allows 120 one-second failures: two minutes to listen, then readiness within a second.
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-On `SIGTERM`, the API stops accepting connections and finishes admitted requests
-with `Connection: close`, avoiding the 72-second keep-alive wait. Its single
-`Recreate` replica has no peer or `preStop` hook; the default 30-second grace
-cuts off requests still running. Logs report `shutdown.started` with `signal`,
-then `shutdown.completed` with `durationMs`. A failed close logs `shutdown.failed`
-and exits `1`; a log ending at `shutdown.started` indicates the grace cut off
-the drain.
+On `SIGTERM`, the API stops accepting connections and drains requests with
+`Connection: close`, avoiding the 72-second keep-alive wait. Its single `Recreate`
+replica has no peer or `preStop`; the 30-second grace cuts off unfinished requests.
+Logs show `shutdown.started` (`signal`), then `shutdown.completed` (`durationMs`),
+or `shutdown.failed` (exit 1). Only `shutdown.started` means an interrupted drain.
 
 Nonempty `controlPlane.nodeSelector` places API, worker, migration and bootstrap
 on reviewed control-plane nodes; empty defaults omit it.
@@ -185,17 +192,19 @@ on reviewed control-plane nodes; empty defaults omit it.
 to `EnvoyProxy.spec.provider.kubernetes.envoyDeployment.pod`, keeping the private
 proxy on that pool. Tenant gateway and Agent placement remain Compute-owned.
 
-`database.caSecretName` mounts read-only CA files at `database.caMountPath`
-for the four database clients. The chart's `_helpers.tpl` rejects overlaps with
-active client mounts, including bootstrap output; disabled features reserve no
-paths.
+With `database.caSecretName`, `_helpers.tpl` rejects CA destinations aliasing active
+client mounts, including relative paths, dot segments and trailing slashes. Linux
+otherwise masks startup files. Emitted paths stay unchanged; noncolliding paths
+remain available.
 
 The [shared egress policy](../../deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml)
-selects release-local `api`, `worker`, and `initialization` Pods. It grants DNS,
-database egress to `database.cidrs`, and Kubernetes API egress to `cluster.cidrs`.
-Each endpoint must be an explicit IPv4 `/32`; refresh changed addresses.
-Collectors have their own DNS/API/exporter policy; hook initialization has its
-own DNS/database grants. Unknown component labels retain default-deny.
+selects only `api`, `worker`, and `initialization` Pods with the release identity.
+It allows DNS, database egress to every `database.cidrs` host, and
+Kubernetes API egress to every `cluster.cidrs` host. Collectors use their separate
+DNS, API, and exporter policy; unknown or missing component labels retain
+default-deny. Pre-install initialization has only its hook DNS/database grants.
+Each configured database or API destination must be an explicit IPv4 `/32`;
+refresh the values when a managed endpoint's addresses change.
 
 `deploy/helm/openclaw-enterprise/templates/networkpolicies.yaml` also renders
 an API-only TCP 443 egress policy when `api.modelDiscoveryCidrs` contains
@@ -204,32 +213,24 @@ maintain those addresses for the optional
 [model-discovery API](../reference/console/create-and-deploy.md#create-an-agent);
 Console model selection and Harness egress do not depend on this policy.
 
-Helm `outboundProxy.enabled` starts the API-only proxy with infrastructure
-`denyCidrs` and no credentials.
-`apps/controller/src/gateway/control-plane-outbound-proxy.mjs:controlPlaneOutboundPolicy`
-derives management destinations from trusted Driver composition and starts
-restricted `runOutboundProxy`. Slack requires exact `slack.com:443`;
-resolved private, reserved, and infrastructure addresses are denied.
-`outbound_proxy.listening` and `/readyz` report startup.
+Helm `outboundProxy.enabled` starts a credential-free API proxy with infrastructure
+`denyCidrs`. `apps/controller/src/gateway/control-plane-outbound-proxy.mjs:controlPlaneOutboundPolicy`
+derives trusted Driver destinations and starts restricted `runOutboundProxy`,
+rejecting private, reserved and infrastructure addresses.
 
-The chart grants release-local API-to-proxy traffic and sets
-`OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL` with its managed host. External
-`api.controlPlaneOutboundProxyUrl` grants an exact IPv4 `/32` and port instead.
-This route works before any Agent exists; [Gateway outbound access](../reference/gateway-outbound.md)
-is revision-owned.
+The chart sets `OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL` and grants release-local API
+traffic. External `api.controlPlaneOutboundProxyUrl` grants an exact IPv4 `/32`
+and port. [Gateway outbound access](../reference/gateway-outbound.md) remains
+revision-owned.
 
-The Kubernetes Compute Driver queries the API server version and verifies
-authenticated Namespace access. Kubernetes 1.35 or later is the supported
-baseline. An older server returns a structured preflight warning instead of
-blocking startup; the API logs `compute.preflight-warning` with the observed and
-minimum versions in its message and continues. An invalid version response,
-unreachable API, or failed Namespace access still fails preflight.
+Compute verifies server version and authenticated Namespace access. Kubernetes
+below 1.35 emits `compute.preflight-warning` with both versions and continues;
+an invalid response, unreachable API or failed Namespace access fails preflight.
 
-The worker independently validates production settings, opens the same
-application-role database, loads selected Drivers, validates IAM, runs Compute
-preflight with the same advisory warning, emits `worker.started`, and polls
-durable Namespace/AgentRevision work. Readiness requires fresh queue-health
-observations; neither process mounts the bootstrap PVC.
+The worker independently validates settings, opens the application-role database,
+loads Drivers, validates IAM, runs Compute preflight, emits `worker.started` and
+polls durable work. Readiness requires fresh queue-health observations; neither
+API nor worker mounts the bootstrap PVC.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
 
@@ -252,8 +253,8 @@ Unix listener; it performs no provider operation. The service and worker share
 only the private control volume, and the Pod uses `Recreate` with a 75-second
 termination grace period. Both containers must pass readiness for the Pod to be
 ready; the worker keeps its queue-health probe and retries unavailable session
-operations through its ordinary Driver contract. This is one service owner,
-without independent worker/service high availability. Repository runtime reconciliation continues in the
+operations through its ordinary Driver contract. Worker and service have no
+independent high availability. Repository runtime reconciliation continues in the
 [Agent repository credential flow](agent-repository-credentials.md).
 
 ### 5. Retrieve the key and prove authenticated access
@@ -287,8 +288,8 @@ until tenant deployment/TUI procedures run.
   followed by `worker.health`. `listening` carries `startupMs` since process
   start and `phasesMs` per startup phase, so a slow boot names its slow phase.
   A stopping API emits `shutdown.started` and then `shutdown.completed`.
-- `compute.preflight-warning` with code `KUBERNETES_VERSION_BELOW_MINIMUM`:
-  startup continues, but upgrade to Kubernetes 1.35 or later for support.
+- `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
+  Kubernetes to 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
   `KUBERNETES_API_UNAVAILABLE` means Compute cannot reach the Kubernetes API at
   the logged `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
@@ -325,6 +326,13 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-18 14:40: Compare database CA mount destinations before rendering. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
+
+- 2026-10-18: Check the Installation before upgrade migration.
+- 2026-10-15 22:24: Validate sandbox suffixes. (authoring-run/13774107-9c73-4561-8bb0-6e910588052a - 417cb2b7b57f)
+
+- 2026-10-14 21:02: Document hostname refusal and correction. (authoring-run/4a613194-6dc8-454f-9cf8-c2a6b46b25af - 44252f8544beb031bf9f9b4d5f9e8093d0b10176)
 
 - 2026-10-14 16:02: Trace accompanying API-only proxy startup. (authoring-run/7bd4f79c-2e3a-40b6-b2e9-5e51b495a8f0 - bd8fe1f7b0b798dca84d6f90b7377ddda79d88a6)
 

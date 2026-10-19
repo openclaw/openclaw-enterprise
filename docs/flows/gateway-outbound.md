@@ -1,7 +1,7 @@
 ---
 created: 2026-10-14
-updated: 2026-10-17
-last_updated_session: authoring-run/3eb9cf81-4deb-49ce-82e7-d52bf1940560
+updated: 2026-10-19
+last_updated_session: authoring-run/40820368-0ee7-4901-9224-041654014ae4
 ---
 
 # Gateway Outbound Flow
@@ -60,6 +60,12 @@ graph TD
 ## Execution Trace
 
 ### 1. Save additional authority on the Agent
+
+`apps/controller/src/console/navigation.mjs:createNavigation` retains the exact
+Network tab through login. `apps/controller/src/console/agents/detail.mjs:reloadDraftInPlace`
+rereads the Agent after a Network save or explicit reload, then rebuilds the editor
+in place with confirmation and focus. Unsaved changes still block deployment;
+the backend's saved selection remains the baseline after cancel or reload.
 
 `packages/occ/src/index.ts:OpenClawController.updateAgent` validates the tagged
 selection, checks exact update plus administer, and locks the Agent. The selected
@@ -207,6 +213,8 @@ compatibility with every native plugin transport or provider.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-19 13:31: Preserve Network login return, editor position and focus through upstream refresh. (authoring-run/40820368-0ee7-4901-9224-041654014ae4 - 6be6b0a00)
 
 - 2026-10-17 19:31: Preserve admitted-access withdrawal on permanent active Sandbox refusal during the worker refresh. (authoring-run/3eb9cf81-4deb-49ce-82e7-d52bf1940560 - 0757fb95d8f3f14e4e3b3d6c1839a19ee64e898a)
 

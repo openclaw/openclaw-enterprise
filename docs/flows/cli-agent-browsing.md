@@ -1,7 +1,7 @@
 ---
 created: 2026-10-10
-updated: 2026-10-10
-last_updated_session: authoring-run/9acffaba-7af3-4c0f-a2ab-f1ac1e7a7afc
+updated: 2026-10-18
+last_updated_session: authoring-run/b64e89ba-6b5d-4d22-854f-ebea78dfe94f
 ---
 
 # CLI Agent metadata browsing flow
@@ -86,7 +86,9 @@ which carry no saved settings and so no `configurationReadError`. If the Agent
 is readable but one historical revision is not, that row's status read answers
 `503`: the CLI prints a notice naming the revision and leaves its status null.
 Healthy siblings retain their normal status reads. When a page is full,
-a notice prints the `--cursor` that continues the history.
+a notice prints the next command with the resolved `--namespace`, the retained
+`--limit` when supplied, and the new `--cursor`. Explicit scope keeps that
+command on the selected Namespace even when `OCC_NAMESPACE` is unset or differs.
 
 Neither branch treats missing settings as empty settings. The command retains
 the API error object in structured output. Explicit deployment, editing, and
@@ -144,6 +146,8 @@ historical revision, and that `--cursor` continues the history. See the PostgreS
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-18 15:11: Preserve the selected Namespace in revision-history continuation commands. (authoring-run/b64e89ba-6b5d-4d22-854f-ebea78dfe94f - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 
 - 2026-10-14: Revision history lists summaries a page at a time; an unreadable historical revision reports its status read on stderr. (fix-1323-lists)
 - 2026-10-10 00:17: Trace CLI metadata browsing and the accompanying saved-settings error consumption fix. (authoring-run/9acffaba-7af3-4c0f-a2ab-f1ac1e7a7afc - bc09216080e8699976a75b778abf256a20388b5d)

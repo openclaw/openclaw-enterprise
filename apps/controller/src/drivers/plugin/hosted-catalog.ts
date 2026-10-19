@@ -5,7 +5,7 @@ import type {
   PluginToolCatalogEntry,
 } from "@openclaw-enterprise/contracts";
 import { PluginDiscoveryError } from "@openclaw-enterprise/occ";
-import { asRecord, isNonEmptyString } from "@openclaw-enterprise/utils";
+import { asRecord, isNonEmptyString, readCappedBody } from "@openclaw-enterprise/utils";
 
 const CATALOG_URL = "https://chatgpt.com/backend-api/ps/";
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -50,34 +50,14 @@ async function readResponse(response: Response): Promise<Record<string, unknown>
     await response.body?.cancel().catch(() => {});
     invalid();
   }
-  const reader = response.body?.getReader();
-  if (!reader) {
+  const contents = await readCappedBody(response.body, MAX_RESPONSE_BYTES);
+  if (contents === undefined) {
     invalid();
   }
-  const chunks: Uint8Array[] = [];
-  let size = 0;
   try {
-    while (true) {
-      const chunk = await reader.read();
-      if (chunk.done) {
-        break;
-      }
-      size += chunk.value.byteLength;
-      if (size > MAX_RESPONSE_BYTES) {
-        invalid();
-      }
-      chunks.push(chunk.value);
-    }
-    try {
-      return record(JSON.parse(Buffer.concat(chunks, size).toString("utf8")));
-    } catch {
-      invalid();
-    }
-  } catch (error) {
-    await reader.cancel().catch(() => {});
-    throw error;
-  } finally {
-    reader.releaseLock();
+    return record(JSON.parse(contents.toString("utf8")));
+  } catch {
+    invalid();
   }
 }
 

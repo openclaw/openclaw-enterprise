@@ -168,6 +168,7 @@ const REVISION_ACCESS_WITHDRAWAL_RECHECK_MS = 1000;
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
   WORKLOAD_UNSCHEDULABLE: "REVISION_UNSCHEDULABLE",
+  WORKLOAD_IMAGE_PULL_FAILED: "REVISION_IMAGE_PULL_FAILED",
   NAMESPACE_POD_QUOTA_EXCEEDED: "NAMESPACE_POD_QUOTA_EXCEEDED",
   WORKSPACE_NODE_PENDING: "WORKSPACE_NODE_PENDING",
   WORKSPACE_SETUP_RETRYING: "WORKSPACE_SETUP_RETRYING",
@@ -530,7 +531,6 @@ const HARNESS_EXPOSURE_WITHDRAWAL_RETRY_BASE_MS = 30_000;
  * in a row regardless, so a queue that is never empty cannot starve it (finding 1695).
  */
 const HARNESS_EXPOSURE_SWEEP_CLAIMED_PASSES = 5;
-/** The code a Sandbox Driver's delete reports when its target vanished between read and delete. */
 
 interface PendingHarnessExposureWithdrawal {
   readonly revision: Readonly<AgentRevision>;

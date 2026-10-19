@@ -36,8 +36,11 @@ import {
   openShellAgentName,
   openShellGatewayName,
   openshellHash as hash,
+  outageAttemptRead,
+  registerOpenShellInstallationCleanups,
 } from "../helpers/openshell-kubernetes-real.mjs";
 import {
+  boundedTeardown,
   diagnosticDeadlineMs,
   diagnosticDeadlinePassed,
   diagnosticRequestTimeout,
@@ -353,6 +356,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     clusterRoleBinding: binding,
     context: `openshell-production-${suffix}`,
   });
+  const tokenMintedAt = new Date().toISOString();
   await kubectl(
     "create",
     "clusterrole",
@@ -376,7 +380,7 @@ async function createScopedController(context, identifier, platformNamespace, ku
     clusterRoleBinding: apiBinding,
     context: `openshell-secret-api-${suffix}`,
   });
-  return { ...identity, tenantRole, apiSecretRole, apiIdentity };
+  return { ...identity, tokenMintedAt, tenantRole, apiSecretRole, apiIdentity };
 }
 
 function nativeCodexConfiguration(gatewayAuth) {
@@ -2040,6 +2044,41 @@ function withFirstPrepareRevisionFailureDiagnostic(computeDriver) {
   });
 }
 
+// The Kubernetes client's rejection of a request the API server refused to authenticate.
+function isKubernetesUnauthorized(error) {
+  return error?.code === 401 || /^HTTP-Code: 401$/m.test(String(error?.message));
+}
+
+// Whether the test's bounded teardown has begun, for the 401 diagnostic below.
+let teardownStarted = () => false;
+
+// Finding 1711: a 401 on prepareRevision names no credential. On the first one, `tokenSources()`
+// names the credentials the call may have used, by name and kind, never a value.
+function withUnauthorizedTokenSourceDiagnostic(computeDriver, tokenSources) {
+  let reported = false;
+  return new Proxy(computeDriver, {
+    get(target, property) {
+      if (property === "prepareRevision") {
+        return async (...args) => {
+          try {
+            return await target.prepareRevision(...args);
+          } catch (error) {
+            if (!reported && isKubernetesUnauthorized(error)) {
+              reported = true;
+              process.stderr.write(
+                `OpenShell integration: Compute prepareRevision got HTTP 401; token sources: ${JSON.stringify(tokenSources())}\n`,
+              );
+            }
+            throw error;
+          }
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 async function prepareProductionInstallation(
   context,
   { harnessId = "codex", controllerPort } = {},
@@ -2222,6 +2261,17 @@ async function prepareProductionInstallation(
     createOpenShellBackend: createSandboxDriver.createBackend,
     createSandboxDriver,
   });
+  // Names and kinds only: no credential value reaches the log.
+  const tokenSources = () => ({
+    compute: {
+      kubeconfigContext: controller.authentication.context,
+      user: `system:serviceaccount:${platformNamespace}:${controller.account}`,
+      kind: "ServiceAccount token (kubectl create token, default lifetime)",
+      mintedAt: controller.tokenMintedAt,
+    },
+    sandboxOperator: { kubeconfigContext: kubernetesContext, kind: "test operator kubeconfig" },
+    teardownStarted: teardownStarted(),
+  });
   const loadWorkerDrivers = async () => {
     const loaded = await loadInstallationConfiguration({
       mode: "production",
@@ -2235,7 +2285,10 @@ async function prepareProductionInstallation(
       workerDrivers: loaded,
       diagnosticWorkerDrivers: {
         ...loaded,
-        computeDriver: withFirstPrepareRevisionFailureDiagnostic(loaded.computeDriver),
+        computeDriver: withUnauthorizedTokenSourceDiagnostic(
+          withFirstPrepareRevisionFailureDiagnostic(loaded.computeDriver),
+          tokenSources,
+        ),
       },
     };
   };
@@ -2265,35 +2318,22 @@ async function prepareProductionInstallation(
   let controllerUrl;
   let placement;
   let gatewayPlacement;
-  context.after(async () => {
-    const cleanupFailures = [];
-    const cleanupStep = async (description, operation) => {
-      try {
-        await operation();
-      } catch (error) {
-        cleanupFailures.push(new Error(`${description}: ${error.message}`, { cause: error }));
-      }
-    };
-
-    await cleanupStep("controller worker", async () => {
+  registerOpenShellInstallationCleanups(context, {
+    workerStop: async () => {
       if (worker !== undefined) {
         await worker.stop();
       } else if (workerPool !== undefined) {
         await workerPool.end();
       }
-    });
-    await cleanupStep("OpenShell management port-forwards", async () => {
-      await createSandboxDriver.disposeGatewayForwards();
-    });
-    await cleanupStep("production app", async () => {
+    },
+    portForwards: () => createSandboxDriver.disposeGatewayForwards(),
+    productionApp: async () => {
       if (productionApp !== undefined) {
         await productionApp.close();
       }
-    });
-    await cleanupStep("observer pool", async () => {
-      await observerPool.end();
-    });
-    await cleanupStep("Kubernetes namespace", async () => {
+    },
+    observerPool: () => observerPool.end(),
+    workloadNamespace: async () => {
       if (placement !== undefined) {
         await kubectl(
           "delete",
@@ -2304,16 +2344,8 @@ async function prepareProductionInstallation(
           "--timeout=120s",
         );
       }
-    });
-    await cleanupStep("temporary directory", async () => {
-      await rm(directory, { recursive: true, force: true });
-    });
-    if (cleanupFailures.length > 0) {
-      throw new AggregateError(
-        cleanupFailures,
-        `OpenShell integration cleanup reported ${cleanupFailures.length} failure(s).`,
-      );
-    }
+    },
+    temporaryDirectory: () => rm(directory, { recursive: true, force: true }),
   });
 
   const existing = await new PostgresPlatformState(observerPool).loadInstallation();
@@ -2667,11 +2699,33 @@ async function prepareProductionInstallation(
 
   const sandbox = await waitForSandbox(placement, deployed.data);
   if (harnessId === "codex") {
-    const initialFile = await request(
-      "GET",
-      `/namespaces/${namespaceId}/agents/${agent.data.id}/workspace/files/AGENTS.md`,
-    );
-    assert.equal(initialFile.status, 200, JSON.stringify(initialFile.error));
+    const initialFilePath = `/namespaces/${namespaceId}/agents/${agent.data.id}/workspace/files/AGENTS.md`;
+    const initialFile = await request("GET", initialFilePath);
+    if (initialFile.status !== 200) {
+      const secrets = failureSecrets([
+        process.env,
+        {
+          APP_SERVER_TOKEN: transport.appServerToken,
+          GATEWAY_API_KEY: workspaceGateway.apiKey,
+        },
+      ]);
+      const detail = await withinDiagnosticDeadline(
+        () =>
+          workspaceReadFailureDiagnostic({
+            request,
+            path: initialFilePath,
+            agentId: agent.data.id,
+            gatewayPlacement,
+            secrets,
+          }),
+        {
+          timedOut: `\nWorkspace read diagnostic timed out after ${diagnosticDeadlineMs / 1_000} s`,
+        },
+      );
+      assert.fail(
+        `The first Workspace read answered ${initialFile.status} ${JSON.stringify(initialFile.error)}${detail}`,
+      );
+    }
     assert.equal(initialFile.data.content, "# Initialized OpenShell workspace\n");
   }
   const harnessPod = await waitForProviderHarnessPod(placement, deployed.data);
@@ -3346,6 +3400,7 @@ async function assertRefreshCredentialSources(topology) {
   const revisionId = current.data.activeRevisionId;
   const harness = await waitForProviderHarnessPod(topology.placement, { id: revisionId, agentId });
   const sourcePath = (source) => `/namespaces/${namespaceId}/credential-sources/${source.id}`;
+  const secrets = turnFailureSecrets(topology);
   const readRefresh = async (source) => {
     const read = await request("GET", sourcePath(source));
     assert.equal(read.status, 200, JSON.stringify(read.error));
@@ -3370,13 +3425,17 @@ async function assertRefreshCredentialSources(topology) {
       .filter(({ method }) => method === "item/completed")
       .map(({ params }) => params?.item)
       .filter((item) => item?.type === "commandExecution");
+    // Output that is not the echo's JSON (finding 1883) is kept, redacted and bounded, so a
+    // failed check shows what the command printed. It has no `placeholder` or `jwt`, so every
+    // check below treats it as a missing token.
     const echoed = (source) => {
       const echo = commands.find(({ command }) => String(command).includes(source.url));
       assert.ok(echo, `the Harness must call ${source.url}`);
+      const output = String(echo.aggregatedOutput ?? "").trim();
       try {
-        return JSON.parse(String(echo.aggregatedOutput ?? "").trim());
+        return JSON.parse(output);
       } catch {
-        return undefined;
+        return { unparsed: redactLogLine(output, secrets, 1_000) };
       }
     };
     return { cc: echoed(clientCredentials), rt: echoed(refreshToken) };
@@ -3395,7 +3454,13 @@ async function assertRefreshCredentialSources(topology) {
     }
   };
   const assertIssued = (observed, source) => {
-    assert.equal(observed?.placeholder, false, `${source.type} must arrive substituted`);
+    assert.equal(
+      observed?.placeholder,
+      false,
+      observed?.unparsed === undefined
+        ? `${source.type} must arrive substituted`
+        : `${source.type} must arrive substituted; the echo call printed ${JSON.stringify(observed.unparsed)}`,
+    );
     assert.equal(observed?.jwt?.valid, true, `${source.type} must carry a valid Keycloak token`);
     assert.equal(observed.jwt.iss, keycloak.issuer);
     assert.equal(observed.jwt.azp, source.clientId);
@@ -4327,6 +4392,79 @@ async function openShellSupervisorPod(topology) {
   return supervisors[0];
 }
 
+// Finding 1882: the first Workspace read once answered 503 DEPENDENCY_UNAVAILABLE right after
+// the Sandbox was ready. The API keeps the cause out of its answer. The read reaches the Agent
+// Gateway through the Envoy Gateway and the host relay; a failed read records the Agent Gateway
+// hop (its Pods, and its log including the Workspace identity's own connect lines), then how a
+// second read answered after them (still failed, or a delay that passed). The test fails either
+// way: a 503 right after "ready" may be a real readiness bug, so the read is not retried.
+async function workspaceReadFailureDiagnostic({
+  request,
+  path,
+  agentId,
+  gatewayPlacement,
+  secrets,
+}) {
+  const shown = (value, limit) =>
+    redactLogLine(typeof value === "string" ? value : JSON.stringify(value), secrets, limit);
+  const sections = [];
+  try {
+    const pods = (await diagnosticResources("pods", gatewayPlacement)).filter(
+      (pod) =>
+        pod.metadata.labels?.["openclaw.dev/workload-role"] === "gateway" &&
+        pod.metadata.labels?.["openclaw.dev/agent"] === agentId,
+    );
+    const states = pods.map((pod) => ({
+      name: pod.metadata.name,
+      phase: pod.status?.phase,
+      deleting: pod.metadata.deletionTimestamp !== undefined,
+      conditions: (pod.status?.conditions ?? []).map(({ type, status, reason }) => ({
+        type,
+        status,
+        reason,
+      })),
+      containers: (pod.status?.containerStatuses ?? []).map((status) => ({
+        name: status.name,
+        ready: status.ready,
+        restartCount: status.restartCount,
+        state: status.state,
+      })),
+    }));
+    sections.push(`Agent Gateway Pods: ${shown(states, 2_000)}`);
+    for (const pod of pods.slice(0, 2)) {
+      const logs = await diagnosticKubectl(
+        "logs",
+        pod.metadata.name,
+        "--namespace",
+        gatewayPlacement,
+        "--tail=500",
+        "--timestamps",
+      );
+      sections.push(
+        `Agent Gateway ${pod.metadata.name} log:\n${newestMatchingLogLines(logs, secrets, {
+          pattern: /error|warn|fail|workspace|ready|listen|start|connect|hello|auth|denied|close/iu,
+          budget: 4_000,
+          lineChars: turnDiagnosticLineChars,
+        })}`,
+      );
+    }
+  } catch (error) {
+    sections.push(
+      `Agent Gateway diagnostics unavailable: ${shown(error?.message ?? String(error), 300)}`,
+    );
+  }
+  try {
+    const again = await request("GET", path);
+    sections.push(
+      `A second read after these diagnostics answered ${again.status}` +
+        (again.status === 200 ? "" : ` ${shown(again.error, 300)}`),
+    );
+  } catch (error) {
+    sections.push(`A second read failed: ${shown(error?.message ?? String(error), 300)}`);
+  }
+  return `\n${sections.join("\n")}`;
+}
+
 function turnFailureSecrets(topology, gatewayPassword) {
   return failureSecrets([
     process.env,
@@ -4902,6 +5040,21 @@ const sandboxProbeFunction = [
   '  printf "%s_EXIT=%s\\n%s_OUT=%s\\n" "$name" "$code" "$name" "$out"; }',
 ];
 
+// Like probe, with a host: after curl's "could not resolve host" (exit 6) only, it prints what
+// the resolver returns for the host as NAME_RESOLVER and the first exit as NAME_FIRST_EXIT, then
+// runs the command once more (finding 1981). Any other exit is final.
+const sandboxResolvingProbeFunction = [
+  "probe_resolving() { local name=$1 host=$2; shift 2; local out code answer resolved;",
+  '  out=$("$@" 2>/dev/null); code=$?;',
+  '  if [ "$code" -eq 6 ]; then',
+  '    answer=$(getent ahosts "$host" 2>&1); resolved=$?;',
+  "    answer=$(printf '%s' \"$answer\" | tr '\\n' ' ' | cut -c1-400);",
+  '    printf "%s_RESOLVER=exit %s: %s\\n" "$name" "$resolved" "$answer";',
+  '    printf "%s_FIRST_EXIT=%s\\n" "$name" "$code"; sleep 2; out=$("$@" 2>/dev/null); code=$?;',
+  "  fi;",
+  '  printf "%s_EXIT=%s\\n%s_OUT=%s\\n" "$name" "$code" "$name" "$out"; }',
+];
+
 /**
  * Writes a probe script into the shared workspace and has Codex run it, so each command is a
  * Sandbox process behind OpenShell's proxy and the model never composes a credentialed command.
@@ -5024,6 +5177,7 @@ async function assertCredentialRouteEnforcement(topology) {
     'printf "PLACEHOLDER_FOUND=%s\\n" "$([ -n "$model" ] && echo yes || echo no)"',
     `printf "PLACEHOLDER_INHERITED=%s\\n" "$([ -n "$${modelCredentialVariable}" ] && echo yes || echo no)"`,
     ...sandboxProbeFunction,
+    ...sandboxResolvingProbeFunction,
     // The model placeholder sent to a tool host that curl may reach.
     `probe FOREIGN curl -sS -o "$body" -w '%{http_code}' --max-time 20 ` +
       `-H "Authorization: Bearer $model" ${toolA.url}`,
@@ -5045,7 +5199,10 @@ async function assertCredentialRouteEnforcement(topology) {
     // Direct connections that skip the proxy, by name and by address.
     // OpenShell may intercept these transparently, so a host the policy allows can still answer;
     // a host it denies must not.
-    `probe BYPASS_ALLOWED curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
+    // A one-off DNS miss on this path is not the policy's answer, so only the allowed host gets
+    // a second try after exit 6; the denied host and the address below get one try each.
+    `probe_resolving BYPASS_ALLOWED www.openclaw.org ` +
+      `curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
       `https://www.openclaw.org`,
     `probe BYPASS_DENIED curl --noproxy '*' -sS -o /dev/null -w '%{http_code}' --max-time 10 ` +
       `https://acme.com`,
@@ -5137,6 +5294,9 @@ async function assertCredentialRouteEnforcement(topology) {
     },
     proxyBypass: {
       allowedHostExitCode: exitCode("BYPASS_ALLOWED"),
+      // Both null unless the first try could not resolve the host (exit 6).
+      allowedHostFirstExitCode: exitCode("BYPASS_ALLOWED_FIRST"),
+      allowedHostResolver: value("BYPASS_ALLOWED_RESOLVER"),
       deniedHostExitCode: exitCode("BYPASS_DENIED"),
       addressExitCode: exitCode("BYPASS_ADDRESS"),
       sandboxDns: exitCode("DNS") === 0 ? "resolved" : "failed",
@@ -5182,7 +5342,9 @@ async function assertCredentialRouteEnforcement(topology) {
   assert.equal(
     observed.proxyBypass.allowedHostExitCode,
     0,
-    "a host the policy allows must stay reachable for the denied checks to mean anything.",
+    `a host the policy allows must stay reachable for the denied checks to mean anything: ${JSON.stringify(
+      observed.proxyBypass,
+    )}`,
   );
   assert.notEqual(
     observed.proxyBypass.deniedHostExitCode,
@@ -5851,21 +6013,34 @@ async function assertOpenShellGatewayOutage(topology) {
     // A claim marks the work `claimed` and counts an attempt; a failed attempt returns it to
     // `queued`. Waiting for that while the gateway is still at zero replicas proves the worker
     // tried the revision against the stopped gateway and did not activate it.
-    const work = await waitFor(
+    // Recorded as they are read, so a timed-out wait still shows what the poll saw.
+    const deploymentStatuses = [];
+    observed.redeployDuringOutage = { deploymentStatuses };
+    const { work, status } = await waitFor(
       `deployment ${redeployed.data.id} to fail an attempt while the gateway is down`,
-      async () => {
-        const { rows } = await observerPool.query(
-          "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
-          [`agent_revision:${redeployed.data.id}:reconcile`],
-        );
-        return rows[0]?.state === "queued" && rows[0].attempt_count >= 1 ? rows[0] : undefined;
-      },
+      outageAttemptRead({
+        readWork: async () =>
+          (
+            await observerPool.query(
+              "SELECT state, reason_code, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+              [`agent_revision:${redeployed.data.id}:reconcile`],
+            )
+          ).rows[0],
+        readStatus: async () => {
+          const deployment = await request("GET", `${agentPath}/deployments/${redeployed.data.id}`);
+          const read = deployment.data?.status ?? null;
+          if (deploymentStatuses.at(-1) !== read) {
+            deploymentStatuses.push(read);
+          }
+          return read;
+        },
+      }),
       180_000,
     );
-    const deployment = await request("GET", `${agentPath}/deployments/${redeployed.data.id}`);
     const during = await request("GET", agentPath);
     observed.redeployDuringOutage = {
-      status: deployment.data?.status ?? null,
+      status,
+      deploymentStatuses,
       work,
       activeRevisionUnchanged: during.data?.activeRevisionId === activeRevisionId,
       gatewayStopped: (await gatewayPods()).length === 0,
@@ -6255,7 +6430,11 @@ test(
     ...requiresOpenShellK3d,
     ...(demoStatePath === undefined ? { timeout: 2_400_000 } : {}),
   },
-  async (context) => {
+  async (testContext) => {
+    // Finding 1711: every cleanup this test registers runs, last-registered first, each bounded.
+    const teardown = boundedTeardown(testContext, { label: "OpenShell integration teardown" });
+    teardownStarted = () => teardown.started;
+    const { context } = teardown;
     if (demoStatePath !== undefined) {
       context.after(() => {
         process.removeListener("SIGINT", resolveDemoStop);

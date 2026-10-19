@@ -136,7 +136,7 @@ TLS Secret; it may share a Secret with the database and repository CA settings.
 For custom DNS, set the same `gatewayRouting.hostname` in Helm and Compute and
 make it resolve to the Envoy Service. Use a lowercase DNS hostname without a port
 or path, at most 253 characters with labels at most 63; both inputs refuse other
-spellings before startup. The selected issuer must be able to issue
+spellings before startup. Shorthand IPv4 is refused. The selected issuer must be able to issue
 for that name. A custom hostname can use either the automatic CA or an existing
 issuer; it does not change CA ownership.
 
