@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fileBrowser, login, newPage, settledView } from "./console-agents-browser-helpers.mjs";
+import {
+  fileBrowser,
+  login,
+  newPage,
+  settledFetches,
+  settledView,
+  trackSettledFetches,
+  waitForIdleFetches,
+  waitForSettledFetches,
+} from "./console-agents-browser-helpers.mjs";
 import { routeInstallationProvisioning } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
@@ -62,36 +71,47 @@ async function routeNamespace(page, namespaceId) {
 
 // A Dedicated plan waiting on the provisioning Namespace, on a controlled clock, with a name
 // being typed: the caret sits inside it.
-async function openGatedForm(t, { fixture, namespace }, viewport) {
+async function openGatedForm(t, { fixture, namespace }, { viewport, keepable = false } = {}) {
   const { page } = await newPage(t, fixture, { browser });
   if (viewport) {
     await page.setViewportSize(viewport);
   }
   await page.clock.install({ time: new Date("2026-10-19T12:00:00Z") });
-  // The console calls fetch as a read starts, so this count is exact once a tick returns. Its
-  // answer's handlers run in the microtasks after the body is read, before the next evaluation.
+  // Settled reads, for a late answer; and started ones: the console calls fetch as a read starts,
+  // so that count is exact once a tick returns.
+  await trackSettledFetches(page);
   await page.addInitScript(() => {
-    globalThis.__namespaceReads = 0;
-    globalThis.__namespaceAnswers = 0;
+    globalThis.namespaceReads = 0;
     const fetch = globalThis.fetch;
     globalThis.fetch = (resource, ...rest) => {
-      const answer = fetch(resource, ...rest);
-      if (new URL(String(resource), globalThis.location.href).pathname !== "/namespaces") {
-        return answer;
+      if (new URL(String(resource), globalThis.location.href).pathname === "/namespaces") {
+        globalThis.namespaceReads += 1;
       }
-      globalThis.__namespaceReads += 1;
-      return answer.then((response) => {
-        const json = response.json.bind(response);
-        response.json = () =>
-          json().finally(() => {
-            globalThis.__namespaceAnswers += 1;
-          });
-        return response;
-      });
+      return fetch(resource, ...rest);
     };
   });
   const namespaces = await routeNamespace(page, namespace.id);
   await routeInstallationProvisioning(page, fixture);
+  if (keepable) {
+    // A return reuses the form only if every read it made succeeded and reads the same again:
+    // this fixture has no GitHub App, and the shared route stamps each answer anew.
+    await page.route(`**/namespaces/${namespace.id}/agents/repository-options`, (route) =>
+      route.fulfill({ json: { data: [], meta: { requestId: "req_repository_choices" } } }),
+    );
+    await page.route(`${fixture.origin}/installation`, (route) =>
+      route.fulfill({
+        json: {
+          data: {
+            id: "ins_00000000-0000-4000-8000-000000000001",
+            name: "Console test installation",
+            createdAt: "2026-10-19T12:00:00.000Z",
+            capabilities: { agentProvisioning: { executionModes: ["dedicated"] } },
+          },
+          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+        },
+      }),
+    );
+  }
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   const view = page.locator(settledView);
   await view.getByRole("button", { name: "Start without Preset" }).click();
@@ -103,13 +123,7 @@ async function openGatedForm(t, { fixture, namespace }, viewport) {
   await name.fill("Probe Agent");
   await name.evaluate((input) => input.setSelectionRange(5, 5));
   namespaces.reads = 0;
-  const started = () => page.evaluate(() => globalThis.__namespaceReads);
-  // Waits until the page has read `count` answers' bodies (bounded by the test's own timeout).
-  const answered = async (count) => {
-    while ((await page.evaluate(() => globalThis.__namespaceAnswers)) < count) {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  };
+  const started = () => page.evaluate(() => globalThis.namespaceReads);
   // One 10 s tick whose read must arrive, so its answer, not the absence of one, decides.
   const poll = async () => {
     const before = namespaces.reads;
@@ -120,7 +134,7 @@ async function openGatedForm(t, { fixture, namespace }, viewport) {
     await read;
     assert.equal(namespaces.reads, before + 1);
   };
-  // Ticks that must start no read: the reads count is checked after each.
+  // Ticks that must start no read.
   const idle = async (ticks = 3) => {
     const before = await started();
     for (let tick = 0; tick < ticks; tick += 1) {
@@ -128,10 +142,7 @@ async function openGatedForm(t, { fixture, namespace }, viewport) {
     }
     assert.equal(await started(), before);
   };
-  await page.evaluate(() => {
-    globalThis.__namespaceAnswers = 0;
-  });
-  return { page, view, create, name, namespaces, poll, idle, started, answered };
+  return { page, view, create, name, namespaces, poll, idle, started };
 }
 
 async function assertDraftIntact(name) {
@@ -196,8 +207,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
 
   await t.test("the note changes in place, so the field being edited stays put", async (t) => {
     const { page, view, create, name, namespaces, poll } = await openGatedForm(t, team, {
-      width: 1440,
-      height: 900,
+      viewport: { width: 1440, height: 900 },
     });
     await page.evaluate(() => globalThis.scrollTo(0, 0));
     const top = () => name.evaluate((input) => input.getBoundingClientRect().top);
@@ -262,20 +272,28 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     assert.equal(await started(), before + 1);
   });
 
-  await t.test("a return to the kept form rechecks the Namespace", async (t) => {
-    const { page, view, create, name, namespaces } = await openGatedForm(t, team);
+  await t.test("a return to the kept form resumes the recheck", async (t) => {
+    const { page, view, create, name, namespaces, poll } = await openGatedForm(t, team, {
+      keepable: true,
+    });
+    // The same form comes back: only a view with no read in flight is kept for a return.
+    await name.evaluate((input) => {
+      input.dataset.kept = "true";
+    });
+    await waitForIdleFetches(page);
     await page.getByRole("link", { name: "Namespaces", exact: true }).click();
     await page.getByRole("list", { name: "Namespaces" }).waitFor();
-    // The form's pending tick passes while it is away.
+    // The form's pending tick passes while it is away, and stops there.
     await page.clock.runFor(10_000);
-    namespaces.status = null;
-    namespaces.reads = 0;
     await page.goBack();
-    await name.waitFor();
+    await view.getByText(WAITS, { exact: true }).waitFor();
+    assert.equal(await name.getAttribute("data-kept"), "true");
+    await waitForIdleFetches(page);
+    namespaces.status = null;
+    await poll();
     await view.getByText(READY_PLAN, { exact: true }).waitFor();
     assert.equal(await create.isDisabled(), false);
     assert.equal(await name.inputValue(), "Probe Agent");
-    assert.ok(namespaces.reads >= 1);
   });
 
   await t.test("Start over after the Namespace became ready shows no wait", async (t) => {
@@ -292,11 +310,12 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
   });
 
   await t.test("a read answered after Start over leaves the replaced form alone", async (t) => {
-    const { page, view, create, namespaces, started, answered } = await openGatedForm(t, team);
+    const { page, view, create, namespaces, started } = await openGatedForm(t, team);
     const release = namespaces.hold();
     const before = await started();
     await page.clock.runFor(10_000);
     assert.equal(await started(), before + 1);
+    const answered = await settledFetches(page, "/namespaces");
     // The replaced form's controls, kept to inspect after its read is answered.
     const replaced = await create.elementHandle();
     page.once("dialog", (dialog) => void dialog.accept());
@@ -304,7 +323,7 @@ test("the open Create Agent form's Namespace recheck", async (t) => {
     await view.getByRole("button", { name: "Start without Preset" }).waitFor();
     namespaces.status = null;
     release();
-    await answered(1);
+    await waitForSettledFetches(page, "/namespaces", answered + 1);
     assert.deepEqual(await replaced.evaluate((node) => [node.isConnected, node.disabled]), [
       false,
       true,
