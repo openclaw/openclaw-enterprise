@@ -52,6 +52,10 @@ test("columns count characters as the reader sees them, not UTF-16 units (findin
   assert.equal(jsonObjectProblem('{\n  "\u{1F600}": 1,\n  x\n}'), at(3, 3));
 });
 
+// The choseong, jungseong, compatibility and halfwidth Hangul fillers.
+const HANGUL_FILLERS = ["\u115F", "\u1160", "\u3164", "\uFFA0"];
+const codePoint = (character) => `U+${character.codePointAt(0).toString(16).toUpperCase()}`;
+
 test("invisible characters earlier on the line take no column (finding 1949)", () => {
   // A left-to-right mark, a soft hyphen and a word joiner: the stray x is the 18th visible
   // character, not the 21st.
@@ -61,9 +65,10 @@ test("invisible characters earlier on the line take no column (finding 1949)", (
   // A joined emoji sequence stays one column, and a non-breaking space, which shows as a space,
   // still takes one.
   assert.equal(jsonObjectProblem('{"a": "\u{1F469}\u200D\u{1F4BB}\u00A0", x}'), at(1, 13));
-  // The Hangul fillers show as blank full-width cells, so each still takes a column.
-  assert.equal(jsonObjectProblem('{"a": "\u3164", x}'), at(1, 12));
-  assert.equal(jsonObjectProblem('{"a": "\uFFA0", x}'), at(1, 12));
+  // The Hangul fillers show as blank cells that advance the text, so each still takes a column.
+  for (const filler of HANGUL_FILLERS) {
+    assert.equal(jsonObjectProblem(`{"a": "p${filler}q", x}`), at(1, 14), codePoint(filler));
+  }
 });
 
 test("an uppercase exponent and an escaped slash are valid JSON before a later error (finding 1950)", () => {
@@ -88,6 +93,13 @@ test("without Intl.Segmenter, columns still count code points, not UTF-16 units 
   assert.equal(fallback.jsonObjectProblem('{"name": "\u{1F600}\u{1F680}", x}'), at(1, 16));
   // Invisible characters take no column there either (finding 1949).
   assert.equal(fallback.jsonObjectProblem('{"a": "x\u200By\u00AD", oops}'), at(1, 13));
+  for (const filler of HANGUL_FILLERS) {
+    assert.equal(
+      fallback.jsonObjectProblem(`{"a": "p${filler}q", x}`),
+      at(1, 14),
+      codePoint(filler),
+    );
+  }
 });
 
 test("CRLF and lone CR end a line; a tab is one column", () => {
