@@ -189,7 +189,7 @@ explicit Cancel or Reload. The Configuration story keeps deployment disabled;
 workspace Save changes only the selected simulated file.
 
 In **Flows → Keep an Agent draft**, fill a default starter form, leave, and
-re-enter: the form returns; Cancel clears it.
+re-enter, also after a refused Create: it returns; Cancel clears it.
 
 In **Pages/Create Agent → Preset with an invalid field**, Use Preset names
 `agent.executionMode` and keeps the chooser. **Agent creation needs an

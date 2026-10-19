@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
-updated: 2026-10-17
-last_updated_session: authoring-run/05ac6c84-8444-4dc1-8311-13c4e84369a3
+updated: 2026-10-18
+last_updated_session: authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d
 ---
 
 # Platform console request flow
@@ -105,7 +105,8 @@ Driver activation. Requests do not reread configuration or credentials.
 and the shared HTML shell with MIME types and same-origin CSP. Unknown console
 paths return the shell with `404`; API routes retain JSON errors.
 `encodedAsset` compresses static scripts and styles once (brotli or gzip, per
-`Accept-Encoding`, with `Vary`). The shell, which also answers sign-in, stays identity.
+`Accept-Encoding`, with `Vary`), unless an explicit `identity` weight beats both
+encodings. The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
 `OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
@@ -378,7 +379,6 @@ refresh and inspection.
 
 ## Changelog
 
-- 2026-10-18 10:30: Count the row loading text's 150 ms from the frame it shows in. (lows-1018f)
-- 2026-10-17 16:30: Keep row loading text 150 ms once shown; refocus at phone width focuses Open navigation. (ui-fix-1680)
+- 2026-10-18 15:02: Honor an explicit higher identity weight when serving static scripts and styles. (authoring-run/fe116f0f-fbc0-4682-affa-70eda6bbbd1d - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.
