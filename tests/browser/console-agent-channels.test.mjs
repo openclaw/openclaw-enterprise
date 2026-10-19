@@ -668,29 +668,24 @@ describe("Agent channels", { concurrency: 3 }, () => {
 
   test("Channel drawer refuses to keep a channel enabled for an Embedded Agent", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Embedded Slack");
-    const { agent } = await createSlackAgent(fixture, namespace, {
-      name: "Embedded Slack Agent",
-      slug: "embedded-slack",
+    // An Embedded OpenClaw Agent whose Configuration was then given an enabled Slack channel: the
+    // Configuration API accepts it, while the Agent cannot serve it (Agent save and deploy refuse).
+    const values = nativeValues("embedded-slack");
+    const agent = await fixture.createAgent(namespace.id, "Embedded Slack Agent", values);
+    assert.equal(agent.executionMode, "embedded");
+    await fixture.updateConfiguration(namespace.id, agent.configurationId, {
+      ...values,
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+        },
+      },
     });
     const { page } = await newPage(t, fixture, { browser });
     const requests = apiRequests(page, fixture.origin);
-    // The API refuses an Embedded Agent with channels, so the browser reads this one as Embedded
-    // to reach the drawer's own guard.
-    await page.route(
-      `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
-      async (route) => {
-        if (route.request().method() !== "GET") {
-          await route.continue();
-          return;
-        }
-        const response = await route.fetch();
-        const body = await response.json();
-        await route.fulfill({
-          response,
-          json: { ...body, data: { ...body.data, executionMode: "embedded" } },
-        });
-      },
-    );
 
     await openDraft(page, fixture, agent, "Embedded Slack Agent");
     await page.getByRole("button", { name: "Edit Slack" }).click();
