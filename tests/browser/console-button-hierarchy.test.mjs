@@ -400,7 +400,8 @@ test("Create Agent shows busy while its request runs and clears it on refusal, s
   await page.waitForURL((url) => /^\/console\/agents\/agt_/.test(url.pathname));
   await page.waitForFunction((node) => node.getAttribute("aria-busy") === "false", handle);
 
-  // Left while the request runs (leaving aborts it): the form it left is not busy.
+  // Left while the request runs: leaving aborts it, so the form it left is not busy even before
+  // the held request is answered.
   create = await openCreateForm(page, fixture, namespace, "Busy left");
   const left = await holdRequests(t, page, validateUrl, { method: "POST", once: true });
   await create.click();
@@ -409,8 +410,8 @@ test("Create Agent shows busy while its request runs and clears it on refusal, s
   handle = await create.elementHandle();
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.waitForURL((url) => url.pathname === "/console/agents");
-  left.release();
   await page.waitForFunction((node) => node.getAttribute("aria-busy") === "false", handle);
+  left.release();
 });
 
 // A Credential Gateway that registers model Secrets as Credential Sources. Only the browser sees
@@ -475,6 +476,10 @@ test("Create Agent is busy only for its own request, not a recovery control's", 
   await uncertain.requested;
   assert.deepEqual(await busyState(create), busy);
   uncertain.release();
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Credential Source registration could not be confirmed." })
+    .waitFor();
   const check = page.getByRole("button", { name: "Check credential registration" });
   await check.waitFor();
   assert.deepEqual(await busyAfter(create), { busy: "false", disabled: true });
