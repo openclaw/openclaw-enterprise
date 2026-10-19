@@ -686,9 +686,19 @@ export function statusBlock(
 /**
  * Gives a feedback line that switches between a quiet hint and a refusal its look: a status
  * block in `tone`, or `fallback` (the hint class) when `tone` is null. It replaces the whole
- * class list, so use it only on a line with no component class of its own.
+ * class list, so use it only on a line with no component class of its own. A line that
+ * announces (role status or alert) becomes an alert in the danger and warning tones and a status
+ * otherwise, as `statusBlock` does; set the tone before writing the text, so the text arrives in
+ * an alert (finding 2005).
  */
 export function setStatusTone(node, tone, fallback = "hint") {
+  const role = node.getAttribute("role");
+  if (role === "status" || role === "alert") {
+    const shownRole = STATUS_ALERT_TONES.has(tone) ? "alert" : "status";
+    if (role !== shownRole) {
+      node.setAttribute("role", shownRole);
+    }
+  }
   const className = tone ? "status" : fallback;
   if (node.className !== className) {
     node.className = className;

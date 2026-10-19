@@ -56,6 +56,12 @@ Each selected Driver validates its own closed configuration schema; unknown
 fields fail startup. OCC routes authorization through the selected IAM Driver,
 whose reviewed implementation is trusted to enforce its policy.
 
+The optional `sandboxNetworkPolicyCeiling` array delegates bounded per-Agent
+network additions. It grants no default access; an absent or empty array delegates
+none. API and worker must use the same trusted value. See
+[Sandbox policies](sandbox-policies.md#authority-and-admission) for
+its grant schema and authorization boundaries.
+
 The optional `observability` block sets one external console destination:
 
 ```yaml

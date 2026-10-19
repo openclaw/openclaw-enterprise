@@ -1,6 +1,7 @@
 import {
   SANDBOX_DELETION_UNCONFIRMED,
   SandboxGatewayUnauthorizedError,
+  SandboxGatewayUnavailableError,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
@@ -133,6 +134,18 @@ export class OpenShellAdmissionLimitError extends TransientDependencyError {
     );
     this.name = "OpenShellAdmissionLimitError";
   }
+}
+
+/** grpc-js answers UNAVAILABLE when it cannot reach the gateway or loses its connection. */
+export const GRPC_UNAVAILABLE = 14;
+
+/**
+ * The gateway did not answer a request (gRPC UNAVAILABLE): it is down or restarting. A revision
+ * pass waits for it within the deployment deadline instead of spending attempts (finding 2040);
+ * every other caller sees a DependencyUnavailableError, as for any other failed request.
+ */
+export class OpenShellGatewayUnavailableError extends SandboxGatewayUnavailableError {
+  readonly grpcStatus = GRPC_UNAVAILABLE;
 }
 
 export const REPLAY_REFUSAL_REASONS: ReadonlySet<string> = new Set([

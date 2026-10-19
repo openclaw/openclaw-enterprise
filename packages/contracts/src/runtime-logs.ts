@@ -1,3 +1,4 @@
+import type { SandboxPolicyDecision } from "./sandbox-policy.ts";
 import type { AgentRevision, Namespace, SandboxHarnessLostCode } from "./index.ts";
 
 /**
@@ -34,6 +35,7 @@ export type RuntimeLogRecord =
       readonly kind: RuntimeLogKind;
       readonly level: RuntimeLogLevel;
       readonly message: string;
+      readonly decision?: SandboxPolicyDecision;
       readonly subsystem?: string;
       readonly fields?: Readonly<Record<string, string | number | boolean>>;
       readonly truncated?: true;
@@ -175,6 +177,7 @@ export interface SandboxLogRequest {
 
 /** One raw Sandbox log line as the Sandbox runtime reported it; OCC sanitizes every field. */
 export interface SandboxLogLine {
+  readonly decision?: SandboxPolicyDecision;
   readonly time: string | null;
   readonly sandboxId: string;
   readonly level: string;

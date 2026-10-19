@@ -50,6 +50,142 @@ function bindWireServer(server) {
   );
 }
 
+test("OpenShell policy updates preserve static and L7 constraints and carry fixed scoped CAS receipts", async (t) => {
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
+    {
+      keepCase: true,
+      longs: String,
+      enums: String,
+      defaults: false,
+      oneofs: true,
+    },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  // These restrictions must survive decode/re-encode when a network grant is added.
+  const policy = {
+    version: 1,
+    filesystem: { read_only: ["/usr"], read_write: ["/tmp"] },
+    process: { run_as_user: "1000", run_as_group: "1000" },
+    network_policies: {
+      api: {
+        name: "api",
+        binaries: [{ path: "/usr/bin/python3.11" }],
+        endpoints: [
+          {
+            host: "example.org",
+            ports: [443],
+            protocol: "rest",
+            tls: "NETWORK_TLS_MODE_SKIP",
+            enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+            rules: [{ allow: { method: "GET", path: "/status" } }],
+            allowed_ips: ["93.184.216.0/24"],
+          },
+        ],
+      },
+    },
+  };
+  const calls = [];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    GetSandbox(call, callback) {
+      callback(null, {
+        sandbox: {
+          metadata: {
+            name: call.request.name,
+            workspace: call.request.workspace_scope.workspace,
+            resource_version: "9007199254740993",
+          },
+          spec: { policy },
+        },
+      });
+    },
+    GetSandboxPolicyStatus(call, callback) {
+      calls.push(["status", call.request]);
+      callback(null, {
+        revision: { version: 7, status: "POLICY_STATUS_LOADED", policy },
+        active_version: 7,
+      });
+    },
+    UpdateConfig(call, callback) {
+      calls.push(["update", call.request]);
+      callback(null, { version: 8 });
+    },
+    GetDraftPolicy(call, callback) {
+      calls.push(["draft", call.request]);
+      callback(null, {
+        draft_version: "19",
+        chunks: [
+          {
+            id: "draft-1",
+            status: "pending",
+            hit_count: 6,
+            proposed_rule: policy.network_policies.api,
+          },
+        ],
+      });
+    },
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  t.after(async () => {
+    client.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
+  });
+  const target = { workspace: "exact-workspace", sandbox: "exact-sandbox" };
+  const observed = await client.getSandbox(
+    { name: target.sandbox, workspace: target.workspace },
+    AbortSignal.timeout(2000),
+  );
+  assert.equal(
+    observed.resourceVersion,
+    "9007199254740993",
+    "sandbox CAS survives without JavaScript numeric rounding",
+  );
+  const status = await client.getPolicyStatus(target, AbortSignal.timeout(2000));
+  assert.equal(status.activeVersion, 7);
+  assert.equal(status.state, "POLICY_STATUS_LOADED");
+  assert.deepEqual(
+    status.policy.network_policies.api.endpoints[0].rules,
+    policy.network_policies.api.endpoints[0].rules,
+  );
+  assert.deepEqual(status.policy.network_policies.api.endpoints[0].allowed_ips, [
+    "93.184.216.0/24",
+  ]);
+  const update = {
+    ...target,
+    policy: status.policy,
+    expectedResourceVersion: "9007199254740993",
+    requestId: "79962864-9cdc-4b12-9561-218b42d004b2",
+  };
+  await client.updatePolicy(update, AbortSignal.timeout(2000));
+  await client.updatePolicy(update, AbortSignal.timeout(2000));
+  assert.deepEqual(
+    calls[1][1],
+    calls[2][1],
+    "a retry must keep the original CAS version and idempotency UUID",
+  );
+  assert.equal(calls[1][1].expected_resource_version, update.expectedResourceVersion);
+  assert.equal(calls[1][1].request_id, update.requestId);
+  assert.deepEqual(calls[1][1].policy, status.policy);
+  const drafts = await client.getPolicyDrafts(target, AbortSignal.timeout(2000));
+  assert.equal(drafts.version, "19");
+  assert.equal(drafts.chunks[0].hit_count, 6);
+  assert.deepEqual(
+    drafts.chunks[0].proposed_rule.endpoints[0].rules,
+    policy.network_policies.api.endpoints[0].rules,
+  );
+  for (const [, request] of calls) {
+    assert.equal(request.sandbox, target.sandbox);
+    assert.equal(request.workspace_scope.workspace, target.workspace);
+    assert.equal(request.global, undefined, "Agent operations never select global policy");
+  }
+  await assert.rejects(
+    client.updatePolicy({ ...update, expectedResourceVersion: "0" }, AbortSignal.timeout(2000)),
+    /nonzero/,
+  );
+  assert.equal(calls.length, 4, "unsafe CAS is refused before provider dispatch");
+});
 test(
   "OpenShell private initialization streams stdin and settles only on a complete exit",
   { timeout: 10_000 },
@@ -1199,6 +1335,79 @@ test("OpenShell client retries setup after a failed first connection", async (t)
     });
   } finally {
     client.close();
+  }
+});
+
+// Finding 2040: only a gateway that does not answer (gRPC UNAVAILABLE: down, restarting, or
+// nothing listening) is a Sandbox gateway outage, which a revision pass waits out instead of
+// spending its attempt budget. It stays a DependencyUnavailableError (HTTP 503, other work's
+// retries), keeps its gRPC status, and never carries the gateway's text. Any other failure keeps
+// the ordinary class.
+test("OpenShell client names only an unanswered gateway request a Sandbox gateway outage", async () => {
+  // The class the worker's revision pass waits on.
+  const { SandboxGatewayUnavailableError } = await import("../../packages/occ/src/index.ts");
+  const proto = await loader.load(
+    join(import.meta.dirname, "../fixtures/openshell-v0.1.4-wire.proto"),
+    { keepCase: true, longs: String, enums: String, defaults: false, oneofs: true },
+  );
+  const OpenShell = grpc.loadPackageDefinition(proto).openshell.v1.OpenShell;
+  const privateDetails = "synthetic gateway detail must never enter errors";
+  const answers = [
+    grpc.status.UNAVAILABLE,
+    grpc.status.INTERNAL,
+    grpc.status.DEADLINE_EXCEEDED,
+    grpc.status.UNKNOWN,
+  ];
+  const server = new grpc.Server();
+  server.addService(OpenShell.service, {
+    Health: (_call, callback) => callback({ code: answers.shift(), details: privateDetails }),
+  });
+  const port = await bindWireServer(server);
+  const client = new GrpcOpenShellGatewayClient({ endpoint: `127.0.0.1:${port}` });
+  // A gateway scaled to zero: nothing listens at its address.
+  const stopped = new GrpcOpenShellGatewayClient({
+    endpoint: "127.0.0.1:1",
+    requestTimeoutMs: 2_000,
+  });
+  const outage = (error) => {
+    assert.ok(error instanceof SandboxGatewayUnavailableError, String(error));
+    assert.ok(error instanceof DependencyUnavailableError);
+    assert.ok(!(error instanceof TransientDependencyError));
+    assert.equal(error.grpcStatus, grpc.status.UNAVAILABLE);
+    assert.equal(error.message.includes(privateDetails), false);
+    return true;
+  };
+  try {
+    await assert.rejects(client.health(AbortSignal.timeout(2_000)), outage);
+    for (const code of [grpc.status.INTERNAL, grpc.status.DEADLINE_EXCEEDED, grpc.status.UNKNOWN]) {
+      await assert.rejects(client.health(AbortSignal.timeout(2_000)), (error) => {
+        assert.ok(error instanceof DependencyUnavailableError, String(error));
+        assert.ok(!(error instanceof SandboxGatewayUnavailableError), String(error));
+        assert.equal(error.grpcStatus, code);
+        assert.equal(error.message.includes(privateDetails), false);
+        return true;
+      });
+    }
+    await assert.rejects(stopped.health(AbortSignal.timeout(3_000)), outage);
+    await assert.rejects(
+      stopped.createSandbox(
+        {
+          name: "outage",
+          workspace: "tenant-workspace",
+          requestId: "0b0f7c43-3c55-4a8a-9d1c-b3f3a0b1d1c9",
+          labels: {},
+          annotations: {},
+          spec: {},
+          serviceExposures: [],
+        },
+        AbortSignal.timeout(3_000),
+      ),
+      outage,
+    );
+  } finally {
+    client.close();
+    stopped.close();
+    await new Promise((resolve) => server.tryShutdown(resolve));
   }
 });
 

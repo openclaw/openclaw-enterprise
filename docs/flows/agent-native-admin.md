@@ -245,7 +245,7 @@ The init container cannot write through the gateway's later mount path.
 
 ## Related docs
 
-- [Proposed Compute preparation contract](../../specs/rfcs/0021-native-admin-deployment-preparation.md)
+- [Proposed Compute preparation contract](../../specs/rfcs/0023-native-admin-deployment-preparation.md)
 - [Agent native admin UI](../reference/agent-native-admin.md)
 - [Platform console](../reference/console.md#open-the-native-admin-ui)
 - [Gateway routing with Envoy](../reference/gateway-routing.md#native-admin-ui-routing)

@@ -1,12 +1,12 @@
 ---
 status: Proposed
-implementation_status: Not implemented
+implementation_status: Implemented
 author: miguelbranco80
 ---
 
 # Proposal: Prepare enabled native administration at deployment admission
 
-- **ID:** RFC-0021
+- **ID:** RFC-0023
 - **Created:** 2026-10-17
 - **RFC and implementation PR:** [#2259](https://github.com/openclaw/openclaw-enterprise/pull/2259)
 - **Related:** [scope-cut RFC #898](https://github.com/openclaw/openclaw-enterprise/pull/898), [trusted-operator pilot #256](https://github.com/openclaw/openclaw-enterprise/pull/256), [issue #2257](https://github.com/openclaw/openclaw-enterprise/issues/2257)
@@ -25,6 +25,15 @@ that RFC or claiming its decisions are accepted. The candidate implementation
 predates the submission-before-code rule; this clarification is submitted before
 refreshing that implementation. Submitting this RFC does not resolve
 the native-admin-owner hold.
+
+## Implementation and decision status
+
+The candidate implementation is present in #2259: the Compute contract, API and
+worker admission paths, Kubernetes preparation, opt-outs and conflict handling.
+`Implemented` records that scoped source delivery, not owner acceptance, a merged
+release or installed-runtime qualification. The decision remains **Proposed**.
+Current evidence and verification limits are recorded in the RFC index and PR;
+genuine current-image Kubernetes/Envoy/model qualification remains unrun.
 
 ## Problem and owner
 

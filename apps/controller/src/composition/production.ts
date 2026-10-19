@@ -251,6 +251,7 @@ export async function composeProduction(config: ProductionConfig) {
 
     phaseCompleted("computePreflight");
     const controller = new OpenClawController(persistedInstallation, {
+      sandboxNetworkPolicyCeiling: config.drivers.installation.sandboxNetworkPolicyCeiling ?? [],
       state,
       recordOperations: true,
       ...(config.nativeAdmin?.enabled === true

@@ -192,6 +192,7 @@ function candidateDeploymentError(scenario, checkedAt) {
 
 export function installFixture(scenario, evidence) {
   const rules = structuredClone(scenario.rules ?? []);
+  const namespaceRechecks = [...(scenario.namespaceRechecks ?? [])];
   let podRolloverStatusReads = 0;
   let signedIn = !scenario.signedOut;
   let repositoryDescriptionRequests = 0;
@@ -611,6 +612,32 @@ export function installFixture(scenario, evidence) {
       });
     }
   }
+  const policyGrant = {
+    id: "python-web",
+    binary: "/usr/bin/python3.11",
+    host: "example.org",
+    ports: [{ from: 443, to: 443 }],
+  };
+  let policyEditing = scenario.policyState !== "disabled";
+  let policyPolls = 0;
+  let sandboxPolicy = {
+    id: "sbp_00000000-0000-4000-8000-000000000001",
+    namespaceId,
+    agentId: agent.id,
+    version: 1,
+    additions: [],
+  };
+  if (scenario.policyState === "failed") {
+    sandboxPolicy.application = {
+      id: "00000000-0000-4000-8000-000000000009",
+      revisionId: candidateRevisionId,
+      policyVersion: 1,
+      state: "failed",
+      requestedBy: "identity_demo",
+      requestedAt: createdAt,
+      reason: "SANDBOX_POLICY_UNCONFIRMED",
+    };
+  }
   const response = (data, status = 200, errorCode, meta = {}, errorMessage, details) =>
     new Response(
       JSON.stringify({
@@ -770,6 +797,20 @@ export function installFixture(scenario, evidence) {
       });
     }
     if (path === "/namespaces" && method === "GET") {
+      // Once the story's actions ran, each read takes the next recheck answer: a status for the
+      // story's Namespace, "missing" to leave it out of the list, or an HTTP status to fail
+      // with. The last one repeats.
+      if (evidence.ready && namespaceRechecks.length) {
+        const next =
+          namespaceRechecks.length > 1 ? namespaceRechecks.shift() : namespaceRechecks[0];
+        if (typeof next === "number") {
+          return error(next);
+        }
+        if (next === "missing") {
+          return response(namespaces.slice(1));
+        }
+        namespaces[0].status = next;
+      }
       return response(namespaces);
     }
     if (path === "/backends" && method === "GET") {
@@ -1262,6 +1303,169 @@ export function installFixture(scenario, evidence) {
         const saved = agents.get(id);
         if (!saved) {
           return error(404);
+        }
+        if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "GET") {
+          if (sandboxPolicy.application?.state === "pending" && ++policyPolls > 1) {
+            sandboxPolicy.application.state = "applied";
+            sandboxPolicy.application.providerVersion = "5";
+            sandboxPolicy.applied = {
+              revisionId: candidateRevisionId,
+              policyVersion: sandboxPolicy.version,
+              providerVersion: "5",
+              appliedAt: createdAt,
+            };
+          }
+          return response({
+            policy: sandboxPolicy,
+            editingEnabled: policyEditing,
+            ceiling: [policyGrant],
+            defaults:
+              scenario.policyState === "unsupported"
+                ? null
+                : {
+                    networkPolicies: [
+                      {
+                        name: "python-default",
+                        binaries: [{ path: policyGrant.binary }],
+                        endpoints: [{ host: "example.com", ports: [443], tls: "skip" }],
+                      },
+                    ],
+                  },
+            ...(scenario.policyState === "unsupported"
+              ? {}
+              : { defaultsRevisionId: candidateRevisionId }),
+            capability:
+              scenario.policyState === "unsupported"
+                ? null
+                : { live: true, wildcards: true, portRanges: true },
+          });
+        }
+        if (
+          scenario.policyState &&
+          suffix === "/sandbox-policy/networking/editing" &&
+          method === "PATCH"
+        ) {
+          policyEditing = body.enabled;
+          return response({ ...agent, sandboxPolicyEditing: policyEditing });
+        }
+        if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "PUT") {
+          if (scenario.policyState === "ceilingDenied") {
+            return error(
+              409,
+              "RESOURCE_CONFLICT",
+              "The requested network grant exceeds the Installation delegation ceiling.",
+            );
+          }
+          if (scenario.policyState === "editDenied") {
+            return error(403, "AUTHORIZATION_DENIED");
+          }
+          if (body.expectedVersion !== sandboxPolicy.version) {
+            return error(409, "RESOURCE_STATE_CONFLICT");
+          }
+          sandboxPolicy = {
+            ...sandboxPolicy,
+            version: sandboxPolicy.version + 1,
+            additions: body.additions,
+          };
+          delete sandboxPolicy.application;
+          return response(sandboxPolicy);
+        }
+        if (
+          scenario.policyState &&
+          suffix === "/sandbox-policy/networking/apply" &&
+          method === "POST"
+        ) {
+          if (scenario.policyState === "applyRejected") {
+            return error(
+              409,
+              "RESOURCE_CONFLICT",
+              "The Agent, revision, editing setting, or policy changed. Reload before applying.",
+            );
+          }
+          sandboxPolicy.application = {
+            id: "00000000-0000-4000-8000-000000000009",
+            revisionId: body.revisionId,
+            policyVersion: sandboxPolicy.version,
+            state: "pending",
+            requestedBy: "identity_demo",
+            requestedAt: createdAt,
+          };
+          policyPolls = 0;
+          return response(sandboxPolicy, 202);
+        }
+        if (scenario.policyState && suffix.endsWith("/sandbox-policy/networking/recommendations")) {
+          if (scenario.policyState === "suggestionsUnavailable") {
+            return error(503, "DEPENDENCY_UNAVAILABLE");
+          }
+          return response({
+            recommendations:
+              scenario.policyState === "empty"
+                ? []
+                : [
+                    {
+                      id: "00000000-0000-4000-8000-000000000011",
+                      status: "pending",
+                      grant:
+                        scenario.policyState === "ceilingDenied"
+                          ? { ...policyGrant, host: "outside.example.org" }
+                          : policyGrant,
+                      observations: 4,
+                    },
+                  ],
+            truncated: false,
+          });
+        }
+        if (scenario.policyState && suffix.endsWith("/runtime/logs")) {
+          const stream = { source: "sandbox", sandbox: "os-demo" };
+          const log = {
+            type: "line",
+            time: createdAt,
+            level: "warn",
+            kind: "sandbox",
+            contentClass: "activity",
+            stream,
+            message: "NET:OPEN DENIED python3.11 → example.org:443",
+            fields: { action: "DENIED", rule_name: "default" },
+            decision:
+              scenario.policyState === "missingMetadata"
+                ? undefined
+                : {
+                    decision: "denied",
+                    enforcement: "blocked",
+                    binary: policyGrant.binary,
+                    host: policyGrant.host,
+                    port: 443,
+                    rule: "default",
+                    engine: "OPA",
+                    reason: "Destination is not in the network policy",
+                  },
+          };
+          return response({
+            revisionId: candidateRevisionId,
+            source: "sandbox",
+            stream,
+            observedAt: createdAt,
+            records:
+              scenario.policyState === "empty" || url.searchParams.has("cursor")
+                ? []
+                : [
+                    ...(scenario.policyState === "gap"
+                      ? [
+                          {
+                            type: "gap",
+                            time: createdAt,
+                            stream,
+                            reason: "buffer_lost",
+                            remedy: "Earlier records are unavailable. Start a fresh window.",
+                          },
+                        ]
+                      : []),
+                    log,
+                  ],
+            cursor: "simulated-policy-cursor",
+            withheld: 0,
+            truncated: false,
+          });
         }
         if (suffix === "/plugins/capabilities" && method === "GET" && scenario.pluginCapabilities) {
           return response({
