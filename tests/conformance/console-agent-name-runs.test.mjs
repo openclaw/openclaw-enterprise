@@ -22,6 +22,10 @@ const joinerNames = {
   "an ideographic combining mark before word joiners": `a${"\u{16fe4}".repeat(18)}\u2060 `.repeat(
     10,
   ),
+  "letter emoji before word joiners": `${"\u26a1\u2060".repeat(10)} `.repeat(10),
+  "hyphens before Devanagari digits after letters":
+    `${"\u00e9-\u0967".repeat(6)}\u00e9\u00e9 `.repeat(10),
+  "word joiners before opening quotes": `${"\u2060\u00ab".repeat(10)} `.repeat(10),
   "word joiners, 1,050 characters": `${"\u2060".repeat(20)} `.repeat(50),
 };
 

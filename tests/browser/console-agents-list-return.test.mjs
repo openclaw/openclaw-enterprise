@@ -960,6 +960,92 @@ const unbrokenNameCases = [
   // A combining mark before a joiner shares its letter's place too (finding 1999).
   { name: "e\u0301\u2060".repeat(10), unbroken: false },
   { name: `${"e\u0301\u2060".repeat(10)}a`, unbroken: true },
+  // Emoji whose line-break class is AL hold like letters (finding 2001); others still break.
+  {
+    name: "\u23e9\u23ec\u25fd\u25fe\u2648\u2653\u2693\u26a1\u26aa\u26ab\u26ce\u2705\u2728\u274c\u274e\u2753\u2755\u2757\u2795\u2797\u27b0",
+    unbroken: true,
+  },
+  {
+    name: "\u27bf\u2b1b\u2b1c\u2b50\u2b55\u{1f18e}\u{1f191}\u{1f19a}\u{1f3b5}\u{1f3b6}\u{1f3bc}\u{1f4a0}\u{1f4a2}\u{1f4a4}\u{1f4af}\u{1f4b1}\u{1f4b2}\u{1f500}\u{1f506}\u{1f517}\u{1f524}",
+    unbroken: true,
+  },
+  { name: `${"a".repeat(18)}\u{1f532}\u{1f53d}b`, unbroken: true },
+  { name: "build\u26a1deploy\u26a1monitor\u26a1agent", unbroken: true },
+  // Opening quotes and the like stay after a hyphen, soft hyphen, dash or wide space (2001).
+  { name: "a-\u00aba-\u037ea-\u0589a-\u060ca-\u2018a-\u201ca-\u2039", unbroken: true },
+  { name: "a-\u203aa-\u2044a-\ufeffa-$aaaaaaaaa", unbroken: true },
+  { name: `${"a".repeat(19)}-\u2012`, unbroken: true },
+  { name: `${"a".repeat(19)}-\u2013`, unbroken: true },
+  { name: `${"a".repeat(19)}-\u2010`, unbroken: true },
+  {
+    name: "a\u00ad\u00aba\u00ad\u037ea\u00ad\u0589a\u00ad\u060ca\u00ad\u2018a\u00ad\u201ca\u00ad\u2039",
+    unbroken: true,
+  },
+  {
+    name: "a\u2009\u203aa\u2009\u2044a\u2009\ufeffa\u2009\u00aba\u2009\u2018a\u2009\u201ca\u2009\u2039",
+    unbroken: true,
+  },
+  {
+    name: "a-\u0301\u00aba-\u0301\u037ea-\u0301\u0589a-\u0301\u060ca-\u0301\u2018a-\u0301\u201ca-\u0301\u2039",
+    unbroken: true,
+  },
+  {
+    name: "a\u00ad\u0301]a\u00ad\u0301}a\u00ad\u0301\u00bba\u00ad\u0301\u2019a\u00ad\u0301\u201da\u00ad\u0301\u2060a\u00ad\u0301\u200d",
+    unbroken: true,
+  },
+  { name: "aaaaa\u00ad\"aaaaa\u00ad'aaaaa\u00ad|", unbroken: true },
+  { name: "a-!a-)a-,a-.a-/a-:a-;", unbroken: true },
+  { name: "a-]a-}a-\u00bba-\u2019a-\u201da-\u2060a-\u200d", unbroken: true },
+  // A hyphen-minus before a digit breaks only between ASCII letters or digits and an ASCII digit,
+  // or before a fullwidth digit; Cyrillic, Devanagari and Arabic-Indic digits hold (finding 2000).
+  {
+    name: "\u0435\u0436\u0435\u043a\u0432\u0430\u0440\u0442\u0430\u043b\u044c\u043d\u044b\u0439\u043e\u0442\u0447\u0451\u0442-2026",
+    unbroken: true,
+  },
+  {
+    name: "\u0930\u093f\u0932\u0940\u091c\u093c\u0915\u093e\u092e\u0938\u094c\u0926\u093e-\u0968\u0966\u0968\u096c-\u0967\u0966-\u0967\u096f-\u0966\u096f-\u0969\u0966",
+    unbroken: true,
+  },
+  { name: `${"x".repeat(18)}A-1`, unbroken: false },
+  { name: `${"x".repeat(18)}a-1`, unbroken: false },
+  { name: `${"x".repeat(18)}A-\u0663`, unbroken: true },
+  { name: `${"x".repeat(18)}a-\u0663`, unbroken: true },
+  { name: `${"x".repeat(18)}0-\u0967`, unbroken: true },
+  { name: `x -\uff11y${"a".repeat(18)}`, unbroken: false },
+  // Dashes held before other dashes, and a dash that starts a word after a no-break space.
+  { name: `${"a".repeat(19)}\u2010-`, unbroken: true },
+  { name: `${"a".repeat(19)}\u2010\u2010`, unbroken: true },
+  { name: `${"a".repeat(19)}\u2010\u2012`, unbroken: true },
+  { name: `x\u00a0\u2012${"a".repeat(20)}`, unbroken: true },
+  { name: `x\u2007\u2010${"b".repeat(20)}`, unbroken: true },
+  { name: `x\u2011\u2010${"a".repeat(20)}`, unbroken: true },
+  { name: `x\u202f\u2010${"c".repeat(20)}`, unbroken: true },
+  { name: `x\u200b\u2013${"a".repeat(20)}`, unbroken: true },
+  { name: `x \u2010(${"a".repeat(19)}`, unbroken: false },
+  // Each of these ends a run: ten letters either side of it are not marked.
+  {
+    name: Array.from(
+      "\u1680\u2000\u2008\u205f\u3000\u200b\u00ad\u2010\u2012\u2013\u2014\u3041\u30a1\uac00\u4e2d\u{1f680}",
+      (separator) => `aaaaaaaaaa${separator}`,
+    )
+      .join("")
+      .concat("aaaaaaaaaa"),
+    unbroken: false,
+  },
+  // A wide space, dash or hyphen a line breaks after stays on it.
+  { name: `${"a".repeat(20)}\u1680b`, unbroken: true },
+  { name: `${"a".repeat(20)}\u00adb`, unbroken: true },
+  // Thresholds: an em-dash run of 21 is marked, 20 is not; marks share their letter's place.
+  { name: "\u2014".repeat(21), unbroken: true },
+  { name: "\u2014".repeat(20), unbroken: false },
+  { name: "e\u0301".repeat(21), unbroken: true },
+  { name: `${"\u30a2\u0301\u200d".repeat(10)}a`, unbroken: true },
+  // No-break characters and underscores keep a run (finding 2002).
+  { name: groups("abcdefgh", "_"), unbroken: true },
+  { name: groups("abcdefgh", "\u2011"), unbroken: true },
+  { name: groups("abcdefgh", "\u202f"), unbroken: true },
+  { name: groups("ijklmnop", "\u2007"), unbroken: true },
+  { name: groups("qrstuvwx", "\ufeff"), unbroken: true },
 ];
 
 test("Agents list marks names with no break opportunity, hyphen and dash runs included", async (t) => {

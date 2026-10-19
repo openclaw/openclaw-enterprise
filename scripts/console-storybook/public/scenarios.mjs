@@ -3806,6 +3806,19 @@ export const scenarios = {
       "Clear Search Agents, then type Joiners one letter at a time. Each letter filters the list at once, and the Agent stays listed.",
     ],
   },
+  agentsLongNameMixed: {
+    group: "Pages/Agents",
+    name: "Long name held by emoji, quotes and digits",
+    deployed: true,
+    agentName: "\u043e\u0442\u0447\u0451\u0442-2026-\u00abbuild\u00bb\u26a1deploy\u26a1"
+      .repeat(10)
+      .slice(0, 200),
+    description:
+      "A 200-character name of Cyrillic words, digits after hyphens, quoted words and lightning emoji. A browser breaks a line at none of these, so the name has no break at all; the console now treats it as unbroken and it wraps within the width of its ID, where before it widened the table (findings 2000 and 2001).",
+    steps: [
+      "At a desktop width the table does not scroll sideways, and every column shows beside the long name.",
+    ],
+  },
   agentsLongNamePhone: {
     group: "Pages/Agents",
     name: "Long unbroken name (phone)",

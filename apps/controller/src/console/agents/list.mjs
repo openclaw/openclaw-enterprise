@@ -263,34 +263,45 @@ const READING_SHOWN_MS = 150;
 // or a hyphen or dash (a name holds no control or line-separator characters). No-break spaces
 // (U+00A0, U+2007, U+202F, U+FEFF), which `\s` counts, do not end it. A hyphen between digits
 // does break ("1000-1001"). Combining marks count with the letter they sit on. Ideographs, kana,
-// Hangul syllables and emoji break on both sides; other scripts (Thai, for one) count per
+// Hangul syllables and most emoji break on both sides; other scripts (Thai, for one) count per
 // character, which can only over-mark: a marked name still shows in full, in a narrower box.
 const WIDE_SPACES = String.raw`\u1680\u2000-\u2006\u2008-\u200a\u205f\u3000`;
 const DASHES = String.raw`\u00ad\u2010\u2012\u2013`; // soft hyphen, hyphen, figure and en dash
 const CLOSING = String.raw`!),./:;\]}\u00bb\u2019\u201d\u2060\u200d`; // and joiners (ZWJ last: lint)
+// Opening quotes and the other characters Chromium keeps after a hyphen, dash or wide space
+// (finding 2001).
+const OPENING = String.raw`\u00ab\u037e\u0589\u060c\u2018\u201c\u2039\u203a\u2044\ufeff`;
 const IDEOGRAPHIC = String.raw`\p{Ideographic}\u3041-\u3096\u30a1-\u30fa\uac00-\ud7a3\p{Emoji_Presentation}`;
+// Emoji whose line-break class is AL, unlike the rest: Chromium keeps them with their neighbours,
+// as it does letters (finding 2001).
+const LETTER_EMOJI = String.raw`\u23e9-\u23ec\u25fd\u25fe\u2648-\u2653\u2693\u26a1\u26aa\u26ab\u26ce\u2705\u2728\u274c\u274e\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55\u{1f18e}\u{1f191}-\u{1f19a}\u{1f3b5}\u{1f3b6}\u{1f3bc}\u{1f4a0}\u{1f4a2}\u{1f4a4}\u{1f4af}\u{1f4b1}\u{1f4b2}\u{1f500}-\u{1f506}\u{1f517}-\u{1f524}\u{1f532}-\u{1f53d}`;
 const UNBROKEN_CHARACTER = [
   String.raw`[^ ${WIDE_SPACES}\u200b${DASHES}\u2014\p{M}${IDEOGRAPHIC}-]`,
+  String.raw`[${LETTER_EMOJI}]`,
   // Where a break character holds the next one on its line:
-  // - a hyphen-minus before closing punctuation, "$", an Arabic-Indic digit, or a hyphen, figure
-  //   dash or en dash; and before any digit when no letter or digit precedes it ("-5");
-  String.raw`-(?=\p{M}*[$\u0660-\u0669\u06f0-\u06f9\u2010\u2012\u2013${CLOSING}])`,
-  String.raw`(?<![\p{L}\p{N}\p{M}])-(?=\p{Nd})(?![\u0660-\u0669\u06f0-\u06f9])`,
-  // - a wide space, soft hyphen or dash before closing punctuation, a quote or a vertical bar;
-  String.raw`[${WIDE_SPACES}${DASHES}](?=\p{M}*["'|${CLOSING}])`,
+  // - a hyphen-minus before closing punctuation, an opening quote, "$", or a hyphen, figure dash
+  //   or en dash;
+  String.raw`-(?=\p{M}*[$\u2010\u2012\u2013${OPENING}${CLOSING}])`,
+  // - a hyphen-minus before a digit, unless the digit is fullwidth, or ASCII after an ASCII letter
+  //   or digit: "1000-1001" and "a-1" break; "x -5", "\u00e9-1" and "a-\u0967" do not (2000);
+  String.raw`(?<![A-Za-z0-9])-(?=\p{Nd})(?![\uff10-\uff19])`,
+  String.raw`(?<=[A-Za-z0-9])-(?=\p{Nd})(?![0-9\uff10-\uff19])`,
+  // - a wide space, soft hyphen or dash before closing punctuation, an opening quote, a quote or a
+  //   vertical bar;
+  String.raw`[${WIDE_SPACES}${DASHES}](?=\p{M}*["'|${OPENING}${CLOSING}])`,
   // - a hyphen or dash (an em dash too) before any of them but an em dash (LB21);
   String.raw`[\u2010\u2012-\u2014](?=[\u2010\u2012\u2013-])`,
-  // - a hyphen, figure dash or en dash that starts a word, before a letter (LB20a);
-  String.raw`(?<=^|[ \u200b])[\u2010\u2012\u2013](?=\p{L})`,
+  // - a hyphen, figure dash or en dash that starts a word, before a letter (LB20a); a no-break
+  //   space or non-breaking hyphen before it starts a word too;
+  String.raw`(?<=^|[ \u00a0\u200b\u2007\u2011\u202f])[\u2010\u2012\u2013](?=\p{L})`,
   // - an ideograph or emoji before a word joiner or zero-width joiner (LB11, LB9). The other
   //   characters a joiner holds already count: ordinary ones always, and a hyphen, dash or wide
   //   space because CLOSING lists the joiners. What follows a joiner keeps its own rules.
-  // No character may match two of these (the Arabic-Indic digits after a hyphen-minus are the
-  // line above's, not the "-5" line's), nor a combining mark start one: each overlap doubles the
+  // No character may match two of these, nor a combining mark start one: each overlap doubles the
   // ways to split a run, so a failed match on a joiner-run name backtracked for seconds (finding
-  // 1999). One ideograph is a combining mark (U+16FE4), so the last line skips marks.
-  // tests/conformance/console-agent-name-runs.test.mjs bounds it.
-  String.raw`(?!\p{M})[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
+  // 1999). One ideograph is a combining mark (U+16FE4), and letter emoji have their own line, so
+  // the last line skips both. tests/conformance/console-agent-name-runs.test.mjs bounds it.
+  String.raw`(?![\p{M}${LETTER_EMOJI}])[${IDEOGRAPHIC}](?=\p{M}*[\u2060\u200d])`,
 ].join("|");
 const RUN_CHARACTER = String.raw`(?:${UNBROKEN_CHARACTER})\p{M}*`;
 // A run of em dashes breaks only at its ends (LB17), so it is a run of its own (finding 1971).
