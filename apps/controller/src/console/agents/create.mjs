@@ -556,6 +556,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     id: "agent-name",
     name: "name",
     required: "",
+    "data-trim": "",
     autocomplete: "off",
   });
   const checkNameLength = () =>

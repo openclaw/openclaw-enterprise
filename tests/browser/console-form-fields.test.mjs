@@ -14,6 +14,7 @@ import {
   nonAuthWriteRequests,
 } from "./console-agents-browser-helpers.mjs";
 import {
+  openAdvancedSettings,
   openCreateSecretDialog,
   routeInstallationWithoutProvisioning,
   waitForCreateFormReads,
@@ -197,9 +198,10 @@ for (const viewport of consoleViewports) {
   });
 }
 
-// The Agent name and a variable with a one-line default are single-line inputs; any other string
-// variable may hold several lines (instructions, a workspace file), so it keeps a textarea.
-test("Preset string variables are inputs only where a value is one line", async (t) => {
+// Only the variable that names the Agent is a single-line input. Any other string variable may hold
+// several lines (instructions, a workspace file), even with a one-line default, so it keeps a
+// textarea; and spaces are a value there, not a missing one.
+test("Preset string variables keep several lines and spaces; only the Agent name is an input", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Preset controls", { ready: true });
@@ -225,6 +227,7 @@ test("Preset string variables are inputs only where a value is one line", async 
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
   const { page } = await newPage(t, fixture, { browser });
+  const invalidEvents = await countInvalidEvents(page);
   await routeInstallationWithoutProvisioning(page, fixture);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByLabel("Preset template", { exact: true }).selectOption(preset.data.id);
@@ -232,8 +235,19 @@ test("Preset string variables are inputs only where a value is one line", async 
   const tag = (label) => page.getByLabel(label, { exact: true }).evaluate((node) => node.tagName);
   assert.deepEqual(
     [await tag("Agent Name"), await tag("Notes"), await tag("Prefix"), await tag("Lines")],
-    ["INPUT", "TEXTAREA", "INPUT", "TEXTAREA"],
+    ["INPUT", "TEXTAREA", "TEXTAREA", "TEXTAREA"],
   );
+  await page.getByLabel("Agent Name", { exact: true }).fill("Preset controls");
+  await page.getByLabel("Notes", { exact: true }).fill(" ");
+  await page.getByLabel("Prefix", { exact: true }).fill("One\nline");
+  await page.getByRole("button", { name: "Use Preset", exact: true }).click();
+  await openAdvancedSettings(page);
+  const values = JSON.parse(
+    await page.getByLabel("Configuration JSON", { exact: true }).inputValue(),
+  );
+  assert.equal(values.messages.responsePrefix, "One\nline First\nSecond");
+  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+  assert.equal(await page.locator(".field-error:visible").count(), 0, "no field errors");
 });
 
 test("Create Agent checks its fields without the browser bubble and focuses the first", async (t) => {

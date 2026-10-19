@@ -544,11 +544,13 @@ function fieldName(control) {
 const TEXT_TYPES = new Set(["text", "search", "email", "url", "tel"]);
 
 // The console's own sentence for a control the browser's checks refuse, or "" when it passes.
-// Text that is only spaces counts as missing, as the API trims it, so this refuses some values
-// checkValidity() accepts: gate a form on validateFields, not on both.
+// A required control marked data-trim (a name or an identifier, which the API trims) also
+// refuses text that is only spaces, which checkValidity() accepts: gate a form on
+// validateFields, not on both. Other text, such as a Preset string, keeps its spaces.
 function fieldProblem(control) {
   const blank =
     control.required &&
+    control.hasAttribute("data-trim") &&
     (control.tagName === "TEXTAREA" || TEXT_TYPES.has(control.type)) &&
     !control.value.trim();
   const { validity } = control;

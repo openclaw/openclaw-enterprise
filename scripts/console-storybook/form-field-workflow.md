@@ -8,8 +8,10 @@ each story at 1440 and at 390.
 
 1. Open **Pages / Create Agent / Preset required fields**. Name, Model and
    Model Secret each show "… is required." in red under the control, above
-   its help. Focus is on Name. Name and Model are single-line inputs, and the
-   Preset template select has the same edge and height as the inputs.
+   its help. Focus is on Name. Name, which names the Agent, is a single-line
+   input; Model stays a textarea, as any other Preset string may hold several
+   lines. The Preset template select has the same edge and height as the
+   inputs.
 2. Type a name. Its error clears; the others stay until Use Preset again,
    which moves focus to Model.
 3. Open **Pages / Create Agent / Create Secret required fields**. The dialog's

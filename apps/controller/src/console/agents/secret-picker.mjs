@@ -450,6 +450,7 @@ export function createSecretReferenceField({
       id: `create-${id}-name`,
       type: "text",
       required: "",
+      "data-trim": "",
       autocomplete: "off",
       value: createSecretName(),
     });
