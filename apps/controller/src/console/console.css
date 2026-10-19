@@ -1651,8 +1651,8 @@ select:not([multiple])[size="1"] {
   }
 }
 /* The sheet sits on the bottom of the visible area: an on-screen keyboard shrinks only that area,
-   which dom.mjs `trackVisualViewport` mirrors into these properties (finding 1957). Its top and
-   bottom resolve against the layout viewport the fixed dialog sits in. */
+   which dom.mjs `trackVisualViewport` mirrors into these insets (finding 1957). They are 0 unless
+   a keyboard or zoom is up, and resolve against the layout viewport the fixed dialog sits in. */
 @media (max-width: 760px) {
   .dialog,
   .dialog--wide,
@@ -1662,15 +1662,19 @@ select:not([multiple])[size="1"] {
     max-width: 100%;
     height: fit-content;
     top: var(--visual-viewport-top, 0px);
-    bottom: calc(100% - var(--visual-viewport-top, 0px) - var(--visual-viewport-height, 100%));
-    max-height: calc(var(--visual-viewport-height, 100%) - var(--space-8));
+    bottom: var(--visual-viewport-bottom, 0px);
+    max-height: calc(
+      100% - var(--visual-viewport-top, 0px) - var(--visual-viewport-bottom, 0px) - var(--space-8)
+    );
     margin: auto 0 0;
     padding: var(--space-4);
     border-bottom: 0;
     border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
   .dialog--wide {
-    height: calc(var(--visual-viewport-height, 100%) - var(--space-8));
+    height: calc(
+      100% - var(--visual-viewport-top, 0px) - var(--visual-viewport-bottom, 0px) - var(--space-8)
+    );
   }
 }
 @media (prefers-reduced-motion: reduce) {

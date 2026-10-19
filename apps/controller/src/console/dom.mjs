@@ -151,22 +151,28 @@ export function dismissOnBackdrop(dialog) {
 /**
  * A phone's on-screen keyboard shrinks the visual viewport, not the layout viewport a modal
  * dialog sits in, so a bottom sheet's actions ended up under the keyboard (finding 1957). This
- * mirrors the visible area's offset and height into `--visual-viewport-top` and
- * `--visual-viewport-height`, which the phone sheet places itself with (console.css). It writes
- * at most once per frame, and only values that changed.
+ * mirrors how far the visible area is inset from the layout viewport's top and bottom
+ * (`innerHeight`, the layout viewport, not the initial containing block) into
+ * `--visual-viewport-top` and `--visual-viewport-bottom`, which the phone sheet places itself
+ * with (console.css). Both are 0 while no keyboard or zoom is up, so a value one frame stale
+ * after a window resize still places the sheet right. It writes at most once per frame, and only
+ * values that changed.
  */
 export function trackVisualViewport(root = document.documentElement) {
   const viewport = globalThis.visualViewport;
   if (!viewport) {
     return;
   }
-  const written = { top: null, height: null };
+  const written = { top: null, bottom: null };
   let frame = 0;
+  const inset = (value) => `${value < 1 ? 0 : value}px`;
   const write = () => {
     frame = 0;
+    const top = viewport.offsetTop;
+    const bottom = globalThis.innerHeight - top - viewport.height;
     for (const [key, value] of [
-      ["top", `${viewport.offsetTop}px`],
-      ["height", `${viewport.height}px`],
+      ["top", inset(top)],
+      ["bottom", inset(bottom)],
     ]) {
       if (written[key] !== value) {
         written[key] = value;

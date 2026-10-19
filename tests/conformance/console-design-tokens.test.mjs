@@ -44,6 +44,8 @@ test("every custom property console.css and channels.css read is defined", () =>
   const defined = new Set(declarations(consoleCss).keys());
   // Set at runtime on the log pane (agents/logs-view.mjs).
   defined.add("--log-time-width").add("--log-time-ems");
+  // Set at runtime on the root element from the visual viewport (dom.mjs trackVisualViewport).
+  defined.add("--visual-viewport-top").add("--visual-viewport-bottom");
   const reads = new Set(
     [...(consoleCss + channelsCss).matchAll(/var\((--[\w-]+)/g)].map(([, name]) => name),
   );
