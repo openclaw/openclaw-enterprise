@@ -40,11 +40,15 @@ export function replaceChildrenIfChanged(parent, children) {
 }
 
 // A live region or alert announces reliably when it is inserted, not when an existing node takes
-// its role, so a node whose role (or the kind of a role node) changes is replaced instead.
+// its role, so a node whose role (or the kind of a role node, a status block's tone included)
+// changes is replaced instead.
 function sameRole(shown, child) {
   const role = child.getAttribute("role");
   return (
-    shown.getAttribute("role") === role && (role === null || shown.className === child.className)
+    shown.getAttribute("role") === role &&
+    (role === null ||
+      (shown.className === child.className &&
+        shown.getAttribute("data-tone") === child.getAttribute("data-tone")))
   );
 }
 
@@ -506,7 +510,8 @@ export function statusBlock(
 
 /**
  * Gives a feedback line that switches between a quiet hint and a refusal its look: a status
- * block in `tone`, or `fallback` (the hint class) when `tone` is null.
+ * block in `tone`, or `fallback` (the hint class) when `tone` is null. It replaces the whole
+ * class list, so use it only on a line with no component class of its own.
  */
 export function setStatusTone(node, tone, fallback = "hint") {
   const className = tone ? "status" : fallback;
@@ -531,7 +536,7 @@ export function revealStatus(node, root = document.body) {
   if (
     !node?.isConnected ||
     !node.textContent ||
-    (active && active !== document.body && !active.disabled && !root.contains(active))
+    (active && active !== document.body && !root.contains(active))
   ) {
     return;
   }

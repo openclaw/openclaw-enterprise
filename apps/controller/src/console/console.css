@@ -492,6 +492,11 @@ p {
 .status:empty {
   display: none;
 }
+/* An error keeps the gap .error gave it from the control above. :where() leaves a component's
+   own margin (.log-error) in charge. */
+.status:where([data-tone="danger"]) {
+  margin-top: var(--space-4);
+}
 .status[data-tone="info"] {
   --status-tone: var(--color-info);
   --status-wash: var(--color-info-subtle);

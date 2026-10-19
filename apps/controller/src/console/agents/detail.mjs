@@ -1388,7 +1388,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // A refused leave says why beside the control whose request holds the page (finding 1962).
   // The configuration, channels and repositories editors write their block into their own
   // feedback; every other hold writes it here.
-  const leaveNote = element("p", { className: "hint", role: "status" });
+  const leaveNote = statusBlock("info", null, null);
   let leaveNoteText = null;
   // The authentication form, whose save holds the page from the Credentials tab.
   let authenticationLeaveAnchor = null;
