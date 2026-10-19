@@ -167,7 +167,14 @@ export class SlackChannelDriver implements ChannelDriver {
             if (typeof identity.bot_id !== "string" || !/^B[A-Z0-9]+$/.test(identity.bot_id)) {
               throw new ChannelCredentialError("credentials_rejected", field);
             }
-            if (typeof identity.team_id !== "string" || !/^T[A-Z0-9]+$/.test(identity.team_id)) {
+            const workspace =
+              typeof identity.team_id === "string" && /^T[A-Z0-9]+$/.test(identity.team_id);
+            const enterprise =
+              identity.is_enterprise_install === true &&
+              typeof identity.enterprise_id === "string" &&
+              /^E[A-Z0-9]+$/.test(identity.enterprise_id) &&
+              identity.team_id === identity.enterprise_id;
+            if (!workspace && !enterprise) {
               throw new ChannelCredentialError("unavailable", field);
             }
           } catch (error) {
