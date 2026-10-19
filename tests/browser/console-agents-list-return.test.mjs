@@ -916,6 +916,11 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     { name: digitGroups, unbroken: true },
     { name: "\u2014".repeat(200), unbroken: true },
     { name: `Release ${"\u2013".repeat(40)}`, unbroken: true },
+    // The threshold: 21 characters with no break are marked, 20 are not (finding 1974), and a
+    // mid-length run (about 600 px unmarked) stays within the column too.
+    { name: `Run ${"W".repeat(21)}`, unbroken: true },
+    { name: `Run ${"W".repeat(20)}`, unbroken: false },
+    { name: `Run ${"W".repeat(40)}`, unbroken: true },
     { name: "nightly-build-2026-10-19-release-candidate", unbroken: false },
   ];
   for (const [index, entry] of cases.entries()) {
@@ -929,7 +934,7 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     const { page } = await newPage(t, fixture, { context: { viewport: { width, height: 900 } } });
     await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
     const table = page.locator(settledView).getByRole("table", { name: "Agents" });
-    await table.getByRole("link", { name: cases[2].name, exact: true }).waitFor();
+    await table.getByRole("link", { name: cases.at(-1).name, exact: true }).waitFor();
     for (const entry of cases) {
       const shown = await table
         .getByRole("link", { name: entry.name, exact: true })
