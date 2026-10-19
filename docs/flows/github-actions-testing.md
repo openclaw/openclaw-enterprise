@@ -13,7 +13,7 @@ The [ordinary CI lanes](../testing/ci.md#ci) reject missing or skipped coverage.
 ## Entry Points
 
 - `.github/workflows/ci.yml:jobs`: PR, main push, merge-group and manual checks on ephemeral runners.
-- `.github/workflows/qa-advisory.yml:jobs`: post-merge QA; trusted pull requests opt in with `full-qa`.
+- `.github/workflows/qa-advisory.yml:jobs`: post-merge and 6-hourly QA on `main`; trusted pull requests opt in with `full-qa`.
 - `.github/workflows/full-integration.yml:jobs`: manual integrations from main or approved Kubernetes model/OpenShell branches, pinned to the dispatched commit.
 
 ## Flow
@@ -93,7 +93,7 @@ PostgreSQL migration and application suites own separate servers; each Kubernete
 
 The application lane gives the native IAM barrier test its own migrated PostgreSQL database; only that test receives its application and migrator connection details, which the CLI keeps out of `GITHUB_ENV`. Its unregistered supplier stays in that disposable database. This fixture does not establish production writer participation in the barrier.
 
-Full CI and Full Integration call the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, selected baseline checks, preparation, execution, unconditional cleanup, and sanitized result upload. Callers own the version, protected environment, explicit credentials and timeout; tests stop five minutes earlier.
+Full CI and Full Integration call the [run-ci-lane action](../../.github/actions/run-ci-lane/action.yml) for setup, selected baseline checks, preparation, execution, unconditional cleanup, and sanitized result upload. Callers own the commit, protected environment, explicit credentials and timeout; tests stop five minutes earlier.
 
 Ordinary PR dependency caches may be restored and saved within GitHub's PR merge-ref scope. Main jobs use main-scoped caches. Test results and credential-bearing state are not dependency caches, and protected jobs do not promote PR build artifacts.
 
@@ -204,7 +204,7 @@ exit; cleanup failure arms that grace immediately. A 60-second backstop covers
 skipped hooks. The parent runner accounts for failures. Failed resources stay in state; cleanup continues.
 
 `CI Required` checks jobs even after failures. Full-mode aggregation verifies
-same-version lane identity, success, required evidence and cleanup; the runner
+matching commit SHAs, success, required evidence and cleanup; the runner
 validates cases. Docs mode checks documentation, audit and skipped test jobs
 without aggregation, proving only those checks. Full Integration accounts for
 its selected `full` group or lane. `ssh-host` stays outside automatic groups until
