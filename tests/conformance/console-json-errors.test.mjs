@@ -52,6 +52,17 @@ test("columns count characters as the reader sees them, not UTF-16 units (findin
   assert.equal(jsonObjectProblem('{\n  "\u{1F600}": 1,\n  x\n}'), at(3, 3));
 });
 
+test("invisible characters earlier on the line take no column (finding 1949)", () => {
+  // A left-to-right mark, a soft hyphen and a word joiner: the stray x is the 18th visible
+  // character, not the 21st.
+  assert.equal(jsonObjectProblem('{"name": "a\u200Eb\u00ADc\u2060d", x}'), at(1, 18));
+  assert.equal(jsonObjectProblem('{"a": "x\u200By", oops}'), at(1, 13));
+  assert.equal(jsonObjectProblem('{"a": "\uFEFF\u200F", x}'), at(1, 11));
+  // A joined emoji sequence stays one column, and a non-breaking space, which shows as a space,
+  // still takes one.
+  assert.equal(jsonObjectProblem('{"a": "\u{1F469}\u200D\u{1F4BB}\u00A0", x}'), at(1, 13));
+});
+
 test("an uppercase exponent and an escaped slash are valid JSON before a later error (finding 1950)", () => {
   assert.equal(jsonObjectProblem('{"a": 1E5, x}'), at(1, 12));
   assert.equal(jsonObjectProblem('{"a": -2.5E-3, x}'), at(1, 16));
@@ -72,6 +83,8 @@ test("without Intl.Segmenter, columns still count code points, not UTF-16 units 
   assert.equal(typeof Intl.Segmenter, "function");
   // Each emoji is one code point, two UTF-16 units: the stray x is the 16th character.
   assert.equal(fallback.jsonObjectProblem('{"name": "\u{1F600}\u{1F680}", x}'), at(1, 16));
+  // Invisible characters take no column there either (finding 1949).
+  assert.equal(fallback.jsonObjectProblem('{"a": "x\u200By\u00AD", oops}'), at(1, 13));
 });
 
 test("CRLF and lone CR end a line; a tab is one column", () => {
