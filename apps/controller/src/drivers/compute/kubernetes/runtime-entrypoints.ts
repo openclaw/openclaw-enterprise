@@ -3339,7 +3339,9 @@ function codexFailureOutputClass(output, error) {
 // codex exec --json reports a failed turn or a fatal error as a turn.failed or error
 // event on stdout, often with nothing on stderr (finding 2043). The model check passes
 // the events it already parsed; only their message strings are read, newest first, the
-// head of each, until one window is full. Nothing else from stdout is read.
+// head of each, until one window is full. Nothing else from stdout is read. Every error
+// event counts, a recovered stream notice too: the class names the output, while the
+// held code and cause name the failure.
 function codexFailureEventText(events) {
   const parts = [];
   let length = 0;
@@ -3364,6 +3366,7 @@ function codexProbeFailureClass(stderr, events, error) {
     codexFailureOutputClass(stderr, error),
     codexFailureOutputClass(Array.isArray(events) ? codexFailureEventText(events) : "", error),
   ];
+  // Both classes are list members, so the fallback is only defensive.
   return CODEX_FAILURE_OUTPUT_PRECEDENCE.find((failureClass) => classes.includes(failureClass)) ?? "unknown";
 }
 `;

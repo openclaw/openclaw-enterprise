@@ -1220,6 +1220,10 @@ test("the Codex failure output classifier reads a bounded tail in linear time", 
 test("Codex runtime classifies a failed model check's stdout error events, never logging them", async (t) => {
   const started = { type: "turn.started" };
   const quiet = { status: 1, stderr: "" };
+  // Fake secrets without a credential marker, so a transient failure keeps its retry.
+  const transientSecrets = (text) =>
+    `${text} (https://api.example.invalid/v1/responses?key=${fakeSecrets[0]}) ` +
+    `Bearer ${fakeSecrets[1]} token ${fakeSecrets[2]}`;
   const held = (detail, provider) => probeFailure({ kind: "PROBE_STATUS", detail }, provider);
   const networkWait = errorEvent(
     "Reconnecting... waiting for network (Connection failed: error sending request)",
@@ -1247,8 +1251,14 @@ test("Codex runtime classifies a failed model check's stdout error events, never
       name: "a retried 5xx failed turn is http_5xx on each attempt",
       native: [
         login(),
-        probe([started, failedTurn("unexpected status 503 Service Unavailable")], quiet),
-        probe([started, failedTurn("unexpected status 503 Service Unavailable")], quiet),
+        probe(
+          [started, failedTurn(transientSecrets("unexpected status 503 Service Unavailable"))],
+          quiet,
+        ),
+        probe(
+          [started, failedTurn(transientSecrets("unexpected status 503 Service Unavailable"))],
+          quiet,
+        ),
       ],
       retryAfterMs: 1000,
       expect: held("turn-failed-attempt2", { status: 503 }),
@@ -1302,6 +1312,20 @@ test("Codex runtime classifies a failed model check's stdout error events, never
     },
     {
       // A recovered stream notice names nothing; the held error event after it does.
+      // A recovered notice is read too: the class names the output, the cause the failure.
+      name: "a recovered stream notice naming a transport error classifies a later tool event",
+      events: [
+        started,
+        errorEvent(
+          "Reconnecting... 1/3 stream disconnected before completion: error sending request for url",
+        ),
+        { type: "item.completed", item: { type: "command_execution" } },
+      ],
+      result: quiet,
+      expect: held("tool-event"),
+      failureClass: "network",
+    },
+    {
       name: "a held error event after a recovered stream notice names its own class",
       events: [
         started,
@@ -1346,7 +1370,7 @@ test("Codex runtime classifies a failed model check's stdout error events, never
 });
 
 test("the Codex model check classifier reads only error event messages, most specific first", () => {
-  const { classifyProbe, eventText, window } = loadClassifier();
+  const { classify, classifyProbe, eventText, window } = loadClassifier();
   const advisory = {
     type: "item.completed",
     item: { type: "error", message: "unexpected status 401 Unauthorized" },
@@ -1388,6 +1412,25 @@ test("the Codex model check classifier reads only error event messages, most spe
     const actual = classifyProbe(stderr, events, error);
     assert.equal(actual, expected, JSON.stringify([stderr, events, error]));
     assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(actual));
+  }
+  // The two sources rank like one output holding both texts, in either order.
+  const samples = [
+    "status 401",
+    "status 503",
+    "status 404",
+    "certificate",
+    "connection reset",
+    "odd",
+    "",
+  ];
+  for (const first of samples) {
+    for (const second of samples) {
+      assert.equal(
+        classifyProbe(first, [errorEvent(second)]),
+        classify(`${first}\n${second}`),
+        JSON.stringify([first, second]),
+      );
+    }
   }
   // The newest messages fill one window, each from its head; older ones are never read.
   assert.equal(
