@@ -18,6 +18,7 @@ import {
   selectSecret,
   setSlackSelection,
   slackSelectionValue,
+  statusTone,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 
@@ -150,13 +151,7 @@ describe("Agent channels", { concurrency: 3 }, () => {
     const dialog = page.getByRole("dialog", { name: "Edit Slack" });
     // The drawer's standing notice is info, not a warning (finding 2006).
     assert.deepEqual(
-      await dialog
-        .getByText(/^New version\. Changes affect future deployments/)
-        .evaluate((node) => ({
-          className: node.className,
-          tone: node.dataset.tone ?? null,
-          role: node.getAttribute("role"),
-        })),
+      await statusTone(dialog.getByText(/^New version\. Changes affect future deployments/)),
       { className: "status", tone: "info", role: "status" },
     );
     const appSecretPath = `/namespaces/${namespace.id}/secrets/${slackAppSecret.id}`;
@@ -694,14 +689,11 @@ describe("Agent channels", { concurrency: 3 }, () => {
     // A refusal is a danger alert (finding 2006), and nothing is written.
     const refusal = dialog.getByText("Channels require Dedicated execution.", { exact: true });
     await refusal.waitFor();
-    assert.deepEqual(
-      await refusal.evaluate((node) => ({
-        className: node.className,
-        tone: node.dataset.tone ?? null,
-        role: node.getAttribute("role"),
-      })),
-      { className: "status", tone: "danger", role: "alert" },
-    );
+    assert.deepEqual(await statusTone(refusal), {
+      className: "status",
+      tone: "danger",
+      role: "alert",
+    });
     assert.deepEqual(nonAuthWriteRequests(requests), []);
   });
 

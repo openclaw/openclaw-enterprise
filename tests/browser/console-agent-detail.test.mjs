@@ -29,6 +29,7 @@ import {
   trackSettledFetches,
   waitForInputValue,
   waitForSettledFetches,
+  statusTone,
 } from "./console-agents-browser-helpers.mjs";
 import { createRuntimeAuthFixture } from "./console-agents-runtime-auth-fixture.mjs";
 import {
@@ -1697,15 +1698,6 @@ test("Dedicated OpenClaw credentials and plugins do not offer Codex-only control
   await dialog.getByRole("button", { name: "Done", exact: true }).click();
   assert.equal(await page.getByLabel("Plugin selections JSON").isEnabled(), true);
 });
-
-// The look and announcement of a status line: its class, tone and role (finding 2006).
-function statusTone(locator) {
-  return locator.evaluate((node) => ({
-    className: node.className,
-    tone: node.dataset.tone ?? null,
-    role: node.getAttribute("role"),
-  }));
-}
 
 test("Agent credentials choose existing Secrets for harness authentication", async (t) => {
   const fixture = await createConsoleAppFixture(t);

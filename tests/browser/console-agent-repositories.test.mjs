@@ -18,6 +18,7 @@ import {
   newPage,
   pathRequests,
   repositoryCheckbox,
+  statusTone,
   waitForCondition,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -65,16 +66,9 @@ test("Agent repository access labels target the right repository when references
   });
 });
 
-// The look and announcement of a status line: its class, tone and role (finding 2006). The
-// per-repository notes are danger blocks with no role on purpose: they are rebuilt on each render,
-// so an alert would be announced again every time; the picker's status line does the announcing.
-function statusTone(locator) {
-  return locator.evaluate((node) => ({
-    className: node.className,
-    tone: node.dataset.tone ?? null,
-    role: node.getAttribute("role"),
-  }));
-}
+// The per-repository notes are danger blocks with no role on purpose: they are rebuilt on each
+// render, so an alert would be announced again every time; the picker's status line does the
+// announcing (finding 2006).
 
 test("Agent repository access preserves inheritance, custom overrides, and explicit repair through create and edit", async (t) => {
   const { fixture, namespace, replacePolicy } = await createRepositoryLaunchFixture(
