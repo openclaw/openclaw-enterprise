@@ -92,25 +92,20 @@ export function outageAttemptRead({ readWork, readStatus }) {
 // turn script prints it as its error, and kubectl's failure carries it on stderr (finding 1946).
 const modelAtCapacity = /^Error: Selected model is at capacity\./m;
 
-// "retry" when the model answered at capacity and the in-Pod client, which owns the turn's
-// state, reported that its own turn's final error ended the turn before it began any action
-// (retrySafe in its execution summary); "unsafe" when it answered at capacity without that
-// verdict; undefined for any other failure.
+// The in-Pod client's positive receipt that a turn is safe to run again: our own turn's final
+// error was the at-capacity answer, before the turn began any action. The client exits with
+// this status and writes exactly this to stdout only then; stderr stays diagnostic, so nothing
+// in it (or a truncated copy of it) can authorize another turn.
+const modelAtCapacityExitCode = 75;
+const modelAtCapacityReceipt = "occ-codex-turn: retry-safe: model at capacity before any action";
+
+// "retry" with the client's exact receipt; "unsafe" when stderr shows the at-capacity answer
+// without it; undefined for any other failure.
 export function modelAtCapacityOutcome(error) {
-  const stderr = String(error?.stderr ?? "");
-  if (!modelAtCapacity.test(stderr)) {
-    return undefined;
+  if (error?.code === modelAtCapacityExitCode && error?.stdout === modelAtCapacityReceipt) {
+    return "retry";
   }
-  // pendingCommands is the summary's last field, so the object ends at the first "]}". The
-  // client writes its error first, so only the last summary line can be its own.
-  const summary = [...stderr.matchAll(/^Native execution summary: (\{.*?\]\})/gm)].at(-1)?.[1];
-  let retrySafe;
-  try {
-    retrySafe = JSON.parse(summary ?? "null")?.retrySafe === true;
-  } catch {
-    retrySafe = false;
-  }
-  return retrySafe ? "retry" : "unsafe";
+  return modelAtCapacity.test(String(error?.stderr ?? "")) ? "unsafe" : undefined;
 }
 
 // Runs a real-model Codex turn, and runs it again, a bounded number of times, when the model
@@ -127,9 +122,10 @@ export async function retryModelAtCapacity(
     log = (message) => process.stderr.write(`${message}\n`),
   } = {},
 ) {
-  // Keeps kubectl's stderr and exit code for callers that read them.
+  // Keeps kubectl's output and exit code for callers that read them.
   const atCapacity = (line, error) =>
     Object.assign(new Error(`${line}\n${error.message}`, { cause: error }), {
+      stdout: error.stdout,
       stderr: error.stderr,
       code: error.code,
     });
@@ -144,7 +140,7 @@ export async function retryModelAtCapacity(
       }
       if (outcome === "unsafe") {
         throw atCapacity(
-          `The real model was at capacity ("Selected model is at capacity"), but the turn's client did not report it safe to run again (it may have begun an action), so it is not run again (attempt ${attempt}/${attempts}).`,
+          `The real model was at capacity ("Selected model is at capacity"), but the turn's client gave no receipt that it is safe to run again (it may have begun an action), so it is not run again (attempt ${attempt}/${attempts}).`,
           error,
         );
       }
@@ -1328,18 +1324,30 @@ export function createOpenShellKubernetesFixture({
         });
       }
 
-      // retrySafe: the model's final error ended the turn before it began any action.
-      function fail(error, { retrySafe = false } = {}) {
+      // Diagnostics only: the caller never decides from stderr whether to run the turn again.
+      function writeFailure(error, retrySafe) {
         clearTimeout(timeout);
         process.stderr.write(error?.stack || String(error));
         process.stderr.write("\nNative execution summary: " + JSON.stringify({
           failedCommands, approvalRequests, sandboxSignals: [...sandboxSignals],
           commandGraceMs: ${codexCommandGraceMs},
           sinceTurnEndMs: turnCompletedAt === undefined ? null : Math.floor(performance.now() - turnCompletedAt),
-          retrySafe: retrySafe && !actionSeen,
+          retrySafe,
           pendingCommands: pendingCommandTimes(),
         }));
+      }
+
+      function fail(error) {
+        writeFailure(error, false);
         process.exit(1);
+      }
+
+      // The only way the caller may run this turn again: a dedicated exit status and an exact
+      // stdout receipt, for our own turn's final at-capacity error before any action.
+      function failRetrySafe(error) {
+        finished = true;
+        writeFailure(error, true);
+        process.stdout.write(${JSON.stringify(modelAtCapacityReceipt)}, () => process.exit(${modelAtCapacityExitCode}));
       }
 
       function unknownCommandOutcome() {
@@ -1505,11 +1513,13 @@ export function createOpenShellKubernetesFixture({
             waitForCommandDeadline();
             return;
           }
-          // Only our own turn's final error can make the turn safe to run again.
-          fail(error, {
-            retrySafe: typeof threadId === "string" && typeof turnId === "string" &&
-              params?.threadId === threadId && params?.turnId === turnId && params?.willRetry === false,
-          });
+          // Only our own turn's final at-capacity error, before any action, is safe to run again.
+          const ours = typeof threadId === "string" && typeof turnId === "string" &&
+            params?.threadId === threadId && params?.turnId === turnId && params?.willRetry === false;
+          if (ours && !actionSeen && /^Selected model is at capacity\./.test(error.message)) {
+            return failRetrySafe(error);
+          }
+          fail(error);
         }
       });
       socket.addEventListener("error", () => {
