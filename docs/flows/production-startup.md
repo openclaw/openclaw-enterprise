@@ -256,16 +256,18 @@ independent high availability. Repository runtime reconciliation continues in th
 
 ### 5. Retrieve the key and prove authenticated access
 
+Fresh bootstrap [checks both output paths](../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap) before creating credentials.
+
 `internal/occclient/client.go:Client.GetInstallation`
 
-After Helm readiness, the operator retrieves
+After Helm readiness, retrieve
 `initial-admin-service-key.json` from protected bootstrap storage through an
-approved reader path and stores it in an owner-readable file. A completed Job is
+approved reader path into an owner-readable file. A completed Job is
 not an exec endpoint, and the API and worker cannot retrieve this file for the
 operator.
 
 From an approved client, `occ installation get` reads the protected key file
-and displays the Installation. Startup proof requires its `ID` to match the key
+and displays the Installation. Its `ID` must match the key
 response's `meta.installationId`. The operator records that ID in the Installation
 startup Secret's `openclaw.dev/installation-id` annotation; coordinated upgrades
 use this marker to bind their OCC endpoint to the selected Installation.
