@@ -241,6 +241,18 @@ export function createRepositoryFields(context, onChange, initial = {}) {
     return `${profileLabel(effective(ref))} · ${override === null ? "Agent default" : "Custom"}`;
   }
 
+  // Red only for a choice that is not approved. Loading choices is not a problem, and a failed
+  // read is a warning with its own Retry (finding 1970).
+  function accessTone(ref) {
+    if (!isSettled()) {
+      return "info";
+    }
+    if (blocksCreate()) {
+      return "warning";
+    }
+    return invalid(ref) ? "danger" : "info";
+  }
+
   function resetSearch() {
     searchState = { query: "", browsing: false, dismissed: false, page: 0 };
     search.value = "";
@@ -681,7 +693,7 @@ export function createRepositoryFields(context, onChange, initial = {}) {
             {
               id: `repository-summary-${ref}`,
               className: "badge repository-access-summary",
-              "data-tone": invalid(ref) ? "danger" : "info",
+              "data-tone": accessTone(ref),
             },
             accessSummary(ref, override),
           ),

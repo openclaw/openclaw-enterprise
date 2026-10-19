@@ -248,7 +248,10 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
     },
   ]);
   await page.reload();
-  await page.getByText("Choose approved access", { exact: true }).waitFor();
+  const chooseAccess = page.getByText("Choose approved access", { exact: true });
+  await chooseAccess.waitFor();
+  // Red only for a real refusal: this choice is not approved (finding 1970).
+  assert.equal(await chooseAccess.getAttribute("data-tone"), "danger");
   assert.equal(await page.locator("#repository-inherit-documentation").isVisible(), true);
   await page.locator("#repository-override-documentation-git-full").check();
   const issues = page.locator("#repository-access-documentation .repository-customize summary");
@@ -275,18 +278,28 @@ test("Agent repository access preserves inheritance, custom overrides, and expli
   );
   await page.getByText("Read-only · Custom", { exact: true }).waitFor();
   const optionsPath = `**/namespaces/${namespace.id}/agents/${legacy.data.id}/repository-options`;
-  await page.route(optionsPath, (route) =>
-    route.fulfill({
+  const optionsHeld = Promise.withResolvers();
+  t.after(() => optionsHeld.resolve());
+  await page.route(optionsPath, async (route) => {
+    await optionsHeld.promise;
+    await route.fulfill({
       status: 503,
       contentType: "application/json",
       body: JSON.stringify({
         error: { code: "DEPENDENCY_UNAVAILABLE", message: "Discovery unavailable" },
       }),
-    }),
-  );
+    });
+  });
   await page.reload();
+  const awaiting = page.getByText("Access awaiting verification", { exact: true });
+  await awaiting.waitFor();
+  // Choices that are still loading are not a problem: info, not red (finding 1970).
+  assert.equal(await awaiting.getAttribute("data-tone"), "info");
+  optionsHeld.resolve();
   await page.getByText(/Retry repository choices before saving repository access/).waitFor();
-  await page.getByText("Access awaiting verification", { exact: true }).waitFor();
+  await awaiting.waitFor();
+  // A failed read is a warning with its own Retry, not a refusal.
+  assert.equal(await awaiting.getAttribute("data-tone"), "warning");
   assert.equal(await page.getByText(/This repository is no longer available/).count(), 0);
   assert.equal(
     await page

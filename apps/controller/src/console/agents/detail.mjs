@@ -61,13 +61,38 @@ async function readRevisionPage(request, path, cursor = null) {
   return { revisions: page.data, nextCursor: page.meta?.nextCursor ?? null };
 }
 
+// The pending write of each status that announceAfterShown is waiting to fill.
+const pendingAnnouncements = new WeakMap();
+
 // Empties a status just inserted with `text` and writes it again once screen readers have seen
 // it empty, so they announce it as a change. A timer, unlike a frame, also runs in a hidden tab.
+// A newer call replaces the pending write, so the status is written once (finding 1976).
 function announceAfterShown(status, text) {
+  clearTimeout(pendingAnnouncements.get(status)?.timer);
   status.textContent = "";
-  setTimeout(() => {
-    status.textContent = text;
+  const pending = { text };
+  pending.timer = setTimeout(() => {
+    pendingAnnouncements.delete(status);
+    status.textContent = pending.text;
   }, 100);
+  pendingAnnouncements.set(status, pending);
+}
+
+// Sets a status's text, or, while announceAfterShown waits to fill it, the text it will write:
+// writing now as well would make a screen reader speak it twice.
+function setAnnouncedText(status, text) {
+  const pending = pendingAnnouncements.get(status);
+  if (pending) {
+    pending.text = text;
+  } else {
+    status.textContent = text;
+  }
+}
+
+// Drops a status's pending write, for a status taken off the page.
+function cancelAnnouncement(status) {
+  clearTimeout(pendingAnnouncements.get(status)?.timer);
+  pendingAnnouncements.delete(status);
 }
 
 // A 503 the deploy request answered before admission: no version was created, so Deploy stays
@@ -1395,7 +1420,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           : anchor.nextElementSibling === leaveNote;
     leaveNoteText = text;
     if (placed) {
-      leaveNote.textContent = text;
+      setAnnouncedText(leaveNote, text);
       return;
     }
     if (place === "end") {
@@ -1474,6 +1499,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function updateNavigationControls() {
     // The note goes once the hold it explained ends or changes; the next refusal says why anew.
     if (leaveNoteText !== null && leaveReason() !== leaveNoteText) {
+      cancelAnnouncement(leaveNote);
       leaveNote.remove();
       leaveNoteText = null;
     }

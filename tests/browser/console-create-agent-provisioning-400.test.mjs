@@ -409,6 +409,8 @@ test("Credential registration removal preserves the safety fence and retries the
   await page.getByRole("button", { name: "Check credential registration" }).click();
   const remove = page.getByRole("button", { name: "Remove failed credential registration" });
   await remove.waitFor();
+  // Removal deletes the registration on the server: the destructive tone (finding 1967).
+  assert.match(await remove.getAttribute("class"), /\bbutton--danger\b/);
   const sourceId = calls[0].sourceId;
   const sourcePath = `/namespaces/${namespace.id}/credential-sources/${sourceId}`;
   const deleted = () =>
