@@ -43,7 +43,8 @@ const refusalView = (page) =>
       return {
         text: alert.textContent,
         focused: globalThis.document.activeElement === alert,
-        error: alert.classList.contains("error"),
+        // The danger status block (UX plan C1).
+        error: alert.classList.contains("status") && alert.dataset.tone === "danger",
         // Sub-pixel layout can end the line a fraction past the viewport it was aligned to.
         inView: top >= 0 && bottom <= globalThis.innerHeight + 1,
         rect: [Math.round(top), Math.round(bottom), globalThis.innerHeight, globalThis.scrollY],

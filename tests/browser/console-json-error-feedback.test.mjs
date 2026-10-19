@@ -26,8 +26,11 @@ const defaultCodexPreset = JSON.parse(
 // One Chromium for the file; each test still gets its own context.
 const browser = fileBrowser();
 
+// "danger" for an error (the danger status block, UX plan C1), otherwise the line's class.
 const feedbackClass = (page) =>
-  page.locator("#configuration-editor-feedback").getAttribute("class");
+  page
+    .locator("#configuration-editor-feedback")
+    .evaluate((node) => (node.className === "status" ? node.dataset.tone : node.className));
 
 async function openEditor(page, fixture, namespace, agent, marker) {
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -78,7 +81,7 @@ test("a refused or stale Configuration save is an error; editing again is a hint
 
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
   await page.getByText("Refused for this test.").waitFor();
-  assert.equal(await feedbackClass(page), "error");
+  assert.equal(await feedbackClass(page), "danger");
 
   // The next note is guidance again, not a leftover error colour.
   await page.getByLabel("Configuration JSON", { exact: true }).press("End");
@@ -92,7 +95,7 @@ test("a refused or stale Configuration save is an error; editing again is a hint
   patchAnswer = "stale";
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
   await page.getByText("The saved Configuration changed while you were editing.").waitFor();
-  assert.equal(await feedbackClass(page), "error");
+  assert.equal(await feedbackClass(page), "danger");
 
   // The rebuilt editor still needs a reload, and says so as an error.
   await leaveAndReturn(page);
@@ -100,7 +103,7 @@ test("a refused or stale Configuration save is an error; editing again is a hint
     .locator("#configuration-editor-feedback")
     .getByText("Reload this draft before saving again.", { exact: true })
     .waitFor();
-  assert.equal(await feedbackClass(page), "error");
+  assert.equal(await feedbackClass(page), "danger");
 });
 
 test("an unknown Configuration save outcome stays an error when the editor is rebuilt", async (t) => {
@@ -134,11 +137,11 @@ test("an unknown Configuration save outcome stays an error when the editor is re
   await openEditor(page, fixture, namespace, agent, "unknown");
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
   await outcomeUnknown.waitFor();
-  assert.equal(await feedbackClass(page), "error");
+  assert.equal(await feedbackClass(page), "danger");
 
   await leaveAndReturn(page);
   await outcomeUnknown.waitFor();
-  assert.equal(await feedbackClass(page), "error");
+  assert.equal(await feedbackClass(page), "danger");
 });
 
 test("Create Agent: Reset template clears a JSON error; a primary or fallback model mismatch focuses the JSON", async (t) => {

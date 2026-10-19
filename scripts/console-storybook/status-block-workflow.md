@@ -1,0 +1,26 @@
+# Check status blocks
+
+An error, warning or notice is one `.status` block: a 3 px stripe in its
+tone's colour on that tone's light wash, the light edge, the medium radius and
+12/16 px padding. The text stays in the body colour; only a block's label
+(such as "Startup warnings") takes the tone. `data-tone` is danger (red),
+warning (amber), info (blue) or success (green). Check each story at 1440 and
+at 390.
+
+1. Open **Pages / Create Agent / Plugin refusal after the Configuration is
+   saved**. The refusal is a danger block with `role="alert"`. It has focus,
+   sits above the "Secret saved" line and is fully on screen at 390. Its long
+   setting path wraps inside the block.
+2. Open **Pages / Agent detail / Plugin selections refused by the
+   Configuration**. The Save plugin selections refusal is a danger block, not
+   the grey hint, and has focus.
+3. Open **Pages / Agent detail / Sharing outcome uncertain**. The refusal
+   above the Share Agent form is a danger block.
+4. Open **Pages / Create Agent / Experimental Dedicated OpenClaw**. The
+   "Experimental: Dedicated OpenClaw…" line is a warning block.
+5. Open **Pages / Agent detail / New version failed**. The failed version's
+   "CONVERGENCE_DEADLINE_EXCEEDED: …" line is a danger block.
+6. Open **Pages / Agent detail / Log access lost after output appears** and
+   select Follow. The log access refusal is a danger block.
+7. Open **Pages / Agent detail / Edit Configuration**. The line above the tab
+   ("New version. Changes affect future deployments…") is an info block.

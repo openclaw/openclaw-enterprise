@@ -40,11 +40,15 @@ export function replaceChildrenIfChanged(parent, children) {
 }
 
 // A live region or alert announces reliably when it is inserted, not when an existing node takes
-// its role, so a node whose role (or the kind of a role node) changes is replaced instead.
+// its role, so a node whose role (or the kind of a role node, a status block's tone included)
+// changes is replaced instead.
 function sameRole(shown, child) {
   const role = child.getAttribute("role");
   return (
-    shown.getAttribute("role") === role && (role === null || shown.className === child.className)
+    shown.getAttribute("role") === role &&
+    (role === null ||
+      (shown.className === child.className &&
+        shown.getAttribute("data-tone") === child.getAttribute("data-tone")))
   );
 }
 
@@ -453,4 +457,90 @@ export function fieldError(input) {
       }
     },
   };
+}
+
+const STATUS_ALERT_TONES = new Set(["danger", "warning"]);
+
+/**
+ * A status block (UX plan C1, console.css "Status block"): an error, warning or notice. `tone` is
+ * "info", "success", "warning" or "danger". `label` is an optional short heading (text, or a
+ * heading node to keep the outline), `body` text or nodes, and `actions` optional buttons or
+ * links shown beneath. Danger and warning blocks are alerts, info and success ones statuses;
+ * `attributes.role` overrides that (null for no role), and `attributes.className` adds a
+ * component's own class. With no label or actions it is one `p` whose text is the body, so a
+ * caller can still set its textContent.
+ */
+export function statusBlock(
+  tone,
+  label,
+  body,
+  actions = [],
+  { className, role, ...attributes } = {},
+) {
+  const shownRole = role === undefined ? (STATUS_ALERT_TONES.has(tone) ? "alert" : "status") : role;
+  const shared = {
+    className: ["status", className].filter(Boolean).join(" "),
+    "data-tone": tone,
+    ...(shownRole ? { role: shownRole } : {}),
+    ...attributes,
+  };
+  const bodyNodes = (Array.isArray(body) ? body : [body]).filter(
+    (child) => child !== null && child !== undefined,
+  );
+  if (!label && !actions.length) {
+    return element("p", shared, ...bodyNodes);
+  }
+  if (label && typeof label !== "string") {
+    label.classList.add("status-label");
+  }
+  return element(
+    "div",
+    shared,
+    label
+      ? typeof label === "string"
+        ? element("p", { className: "status-label" }, label)
+        : label
+      : null,
+    ...bodyNodes.map((child) =>
+      typeof child === "string" ? element("p", { className: "status-body" }, child) : child,
+    ),
+    actions.length ? element("div", { className: "status-actions" }, ...actions) : null,
+  );
+}
+
+/**
+ * Gives a feedback line that switches between a quiet hint and a refusal its look: a status
+ * block in `tone`, or `fallback` (the hint class) when `tone` is null. It replaces the whole
+ * class list, so use it only on a line with no component class of its own.
+ */
+export function setStatusTone(node, tone, fallback = "hint") {
+  const className = tone ? "status" : fallback;
+  if (node.className !== className) {
+    node.className = className;
+  }
+  if (tone) {
+    if (node.dataset.tone !== tone) {
+      node.dataset.tone = tone;
+    }
+  } else if (node.hasAttribute("data-tone")) {
+    node.removeAttribute("data-tone");
+  }
+}
+
+/**
+ * A refusal after a request: the block takes focus and scrolls into view, so it is not read as
+ * progress below the fold (findings 1862, 1864). Focus the reader moved elsewhere stays there.
+ */
+export function revealStatus(node, root = document.body) {
+  const active = document.activeElement;
+  if (
+    !node?.isConnected ||
+    !node.textContent ||
+    (active && active !== document.body && !root.contains(active))
+  ) {
+    return;
+  }
+  node.tabIndex = -1;
+  node.focus({ preventScroll: true });
+  node.scrollIntoView({ block: "nearest" });
 }

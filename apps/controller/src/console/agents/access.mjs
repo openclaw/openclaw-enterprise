@@ -1,4 +1,4 @@
-import { button, element } from "../dom.mjs";
+import { button, element, revealStatus, setStatusTone } from "../dom.mjs";
 import { message, namespacePath, rejectionMessage } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }];
@@ -137,6 +137,11 @@ export function renderAgentAccess(context, agent) {
         : []),
       ...(state.error ? [element("p", { className: "error", role: "alert" }, state.error)] : []),
     );
+    // A refusal shows in the danger status block (UX plan C1).
+    const refusal = feedback.querySelector("[role=alert]");
+    if (refusal) {
+      setStatusTone(refusal, "danger");
+    }
     grants.replaceChildren();
     if (!state.loaded) {
       grants.append(
@@ -339,6 +344,9 @@ export function renderAgentAccess(context, agent) {
       if (context.isCurrent()) {
         state.pending = false;
         render();
+        // Share disables while it runs, which dropped focus to the page and left a refusal
+        // above the form unread; it takes focus and comes into view (findings 1862, 1864).
+        revealStatus(feedback.querySelector("[role=alert]"), section);
       }
     }
   }

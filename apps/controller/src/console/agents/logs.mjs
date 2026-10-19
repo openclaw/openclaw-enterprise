@@ -1,4 +1,4 @@
-import { button, element, replaceChildrenIfChanged, setText } from "../dom.mjs";
+import { button, element, replaceChildrenIfChanged, setText, statusBlock } from "../dom.mjs";
 import { displayDate, namespacePath } from "./list.mjs";
 import { fitLogTimeColumn } from "./logs-view.mjs";
 import { SOURCE_LABELS, podCard, recordRow, visibleText } from "./logs-view.mjs";
@@ -227,9 +227,13 @@ export function renderAgentLogs(
   filterInput.addEventListener("input", () => applyFilters());
   const filterStatus = element("p", { className: "log-filter-status", role: "status" });
   const retention = element("p", { className: "log-retention" });
-  const sourceHint = element("p", { className: "log-source-hint", role: "note", hidden: true });
+  const sourceHint = statusBlock("warning", null, null, [], {
+    className: "log-source-hint",
+    role: "note",
+    hidden: true,
+  });
   const logStatus = element("p", { className: "log-output-status", role: "status" });
-  const logError = element("p", { className: "log-error", role: "alert", hidden: true });
+  const logError = statusBlock("danger", null, null, [], { className: "log-error", hidden: true });
   const pane = element("div", {
     className: "log-pane",
     role: "log",
