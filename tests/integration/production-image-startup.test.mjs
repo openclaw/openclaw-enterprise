@@ -213,6 +213,7 @@ function assertStartupFailureCode(output, event, code) {
     .find((line) => line?.event === event);
   assert.ok(diagnostic, output);
   assert.equal(diagnostic.code, code);
+  return diagnostic;
 }
 
 async function productionFixture(t) {
@@ -298,8 +299,20 @@ test(
       "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
       image,
     ]);
-    assertStartupFailureCode(output, "startup-error", "GATEWAY_STORAGE_CLASS_INVALID");
-    assert.doesNotMatch(output, /SQLite-compatible gateway storage class/);
+    const diagnostic = assertStartupFailureCode(
+      output,
+      "startup-error",
+      "DRIVER_CONFIGURATION_INVALID",
+    );
+    assert.deepEqual(diagnostic.details, [
+      {
+        path: "/runtime/gatewayStorageClassName",
+        code: "INVALID_FORMAT",
+        message:
+          "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+      },
+    ]);
+    assert.doesNotMatch(output, /Bad_Class/);
     assert.doesNotMatch(output, /PERSISTENCE_UNAVAILABLE/);
     assertNoPackagingFailure(output);
   },

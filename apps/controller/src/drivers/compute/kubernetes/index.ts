@@ -1,6 +1,7 @@
 import {
   validateConfiguration as validateDriverConfiguration,
   requireConfiguration,
+  ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
 import {
@@ -1600,9 +1601,13 @@ function validateResources(value: V1ResourceRequirements, description: string, p
       );
     }
     if (compared > 0) {
-      throw new ConfigurationFailure(
-        `${description} ${kind} request (${path}.requests.${resource}) cannot exceed its limit (${path}.limits.${resource}).`,
-      );
+      throw new ConfigurationValidationError([
+        {
+          path: `/${path.replaceAll(".", "/")}/requests/${resource}`,
+          code: "INVALID_RANGE",
+          message: `${description} ${kind} request (${path}.requests.${resource}) cannot exceed its limit (${path}.limits.${resource}).`,
+        },
+      ]);
     }
   }
 }
@@ -1793,7 +1798,7 @@ function cidrSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): b
   return left.size === right.size && [...left].every((cidr) => right.has(cidr));
 }
 
-function validateDnsHostname(value: string, description: string): void {
+function validateDnsHostname(value: string, description: string, path?: string): void {
   if (
     value.length > 253 ||
     !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
@@ -1804,9 +1809,11 @@ function validateDnsHostname(value: string, description: string): void {
     const addressHint = /(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(value)
       ? " A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers."
       : "";
-    throw new ConfigurationFailure(
-      `${description} must be a DNS hostname without a port or path.${addressHint}`,
-    );
+    const message = `${description} must be a DNS hostname without a port or path.${addressHint}`;
+    if (path !== undefined) {
+      throw new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]);
+    }
+    throw new ConfigurationFailure(message);
   }
 }
 
@@ -1815,22 +1822,25 @@ function validateDnsHostname(value: string, description: string): void {
 const SANDBOX_DOMAIN_MAX_LENGTH = 253 - "agent-.".length - 32;
 
 function validateSandboxDomain(value: string): void {
+  const path = "/gatewayRouting/sandbox/domain";
+  const invalid = (message: string) =>
+    new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]);
   // This is a suffix: even canonical IPv4 is invalid after agent-<32 hex>.
   if (/(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(value)) {
-    throw new ConfigurationFailure(
+    throw invalid(
       "Sandbox domain must be a DNS hostname usable after an Agent label; use a DNS suffix such as previews.example.com, not a numeric or 0x last label.",
     );
   }
-  validateDnsHostname(value, "Sandbox domain");
+  validateDnsHostname(value, "Sandbox domain", path);
   // Like the chart, require two labels: browsers and Node refuse a wildcard certificate
   // directly under a single label (*.localhost), so such a domain could never serve previews.
   if (!value.includes(".")) {
-    throw new ConfigurationFailure(
+    throw invalid(
       "Sandbox domain must have at least two DNS labels, such as previews.example.com.",
     );
   }
   if (value.length > SANDBOX_DOMAIN_MAX_LENGTH) {
-    throw new ConfigurationFailure(
+    throw invalid(
       `Sandbox domain must not exceed ${SANDBOX_DOMAIN_MAX_LENGTH} characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames.`,
     );
   }
@@ -2964,7 +2974,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               envoyHttpsTargetPort: { type: "integer", minimum: 1, maximum: 65535 },
             },
           },
-          caBundle: { type: "string", minLength: 1 },
+          caBundle: { type: "string", minLength: 1, maxLength: 65536 },
           network: {
             type: "object",
             additionalProperties: false,
@@ -3371,10 +3381,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
             options.runtime.gatewayStorageClassName,
             "SQLite-compatible gateway storage class",
           );
-          validateKubernetesResourceName(
-            gatewayStorageClassName,
-            "SQLite-compatible gateway storage class",
-          );
+          if (!isKubernetesResourceName(gatewayStorageClassName)) {
+            throw new ConfigurationValidationError([
+              {
+                path: "/runtime/gatewayStorageClassName",
+                code: "INVALID_FORMAT",
+                message:
+                  "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+              },
+            ]);
+          }
           const nativeOpenClawSessionCapacity = options.runtime.nativeOpenClawSessionCapacity;
           if (
             nativeOpenClawSessionCapacity !== undefined &&
@@ -3460,23 +3476,42 @@ export class KubernetesComputeDriver implements ComputeDriver {
             cidrs.forEach((cidr, index) => scopedCidr(cidr, description, index));
           }
           if (execution.caBundle !== undefined) {
-            const certificates = execution.caBundle.match(
-              /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
-            );
-            if (
-              !certificates?.length ||
-              execution.caBundle
-                .replace(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g, "")
-                .trim()
-            ) {
-              throw new ConfigurationFailure("Execution trust must contain only PEM certificates.");
-            }
-            try {
-              for (const certificate of certificates) {
-                new X509Certificate(certificate);
+            const begin = "-----BEGIN CERTIFICATE-----";
+            const end = "-----END CERTIFICATE-----";
+            const bundle = execution.caBundle;
+            let offset = 0;
+            let count = 0;
+            const invalid = (message: string) =>
+              new ConfigurationValidationError([
+                {
+                  path: "/executionCluster/caBundle",
+                  code: "INVALID_FORMAT",
+                  message,
+                },
+              ]);
+            // The schema bounds the bundle; each delimiter scan advances past its consumed block.
+            while (offset < bundle.length) {
+              while (offset < bundle.length && bundle[offset]!.trim() === "") {
+                offset += 1;
               }
-            } catch {
-              throw new ConfigurationFailure("Execution trust contains an invalid certificate.");
+              if (offset === bundle.length) {
+                break;
+              }
+              const finish = bundle.indexOf(end, offset + begin.length);
+              if (!bundle.startsWith(begin, offset) || finish === -1) {
+                throw invalid("Execution trust must contain only PEM certificates.");
+              }
+              const next = finish + end.length;
+              try {
+                new X509Certificate(bundle.slice(offset, next));
+              } catch {
+                throw invalid("Execution trust contains an invalid certificate.");
+              }
+              count += 1;
+              offset = next;
+            }
+            if (count === 0) {
+              throw invalid("Execution trust must contain only PEM certificates.");
             }
           }
         }
@@ -3492,7 +3527,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
               );
             }
             if (routing.hostname.length > 0) {
-              validateDnsHostname(routing.hostname, "Gateway routing hostname");
+              validateDnsHostname(
+                routing.hostname,
+                "Gateway routing hostname",
+                "/gatewayRouting/hostname",
+              );
             }
           }
           validatePort(routing.endpointPort ?? 443, "Gateway routing endpoint port");

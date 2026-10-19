@@ -107,6 +107,14 @@ credential, Kubernetes, tenant, and authorization authority. An untrusted or
 malicious package can violate authorization and tenant isolation; package
 validation and lockfile integrity do not establish publisher trust.
 
+Local Setup also calls the shared admission path before provisioning:
+`internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` invokes
+`scripts/validate-sandbox-network-policy.mjs`, which consumes the Driver result
+through `requireConfiguration`. A failure stops before creating development state
+or invoking a container engine. API and worker startup log
+`DRIVER_CONFIGURATION_INVALID` with bounded field diagnostics; semantic messages
+identify the setting without echoing submitted values.
+
 ### 2. Construct the single authoritative runtime bundle
 
 `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`,

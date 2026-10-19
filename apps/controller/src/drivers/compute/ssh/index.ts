@@ -1,6 +1,7 @@
 import {
   validateConfiguration as validateDriverConfiguration,
   requireConfiguration,
+  ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
 import { readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
@@ -367,7 +368,13 @@ export class SshComputeDriver implements ComputeDriver {
         const start = port(range.start, 1024, "Gateway port range start");
         const end = port(range.end, 1024, "Gateway port range end");
         if (start > end) {
-          throw new ConfigurationFailure("Gateway port range start must not exceed end.");
+          throw new ConfigurationValidationError([
+            {
+              path: "/network/gatewayPortRange/end",
+              code: "INVALID_RANGE",
+              message: "Gateway port range start must not exceed end.",
+            },
+          ]);
         }
       },
     );

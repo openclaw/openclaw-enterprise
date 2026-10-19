@@ -5746,6 +5746,43 @@ test("Kubernetes keeps a revision's gateway document rendered before the lan bin
     ...twoClusterOptions().executionCluster,
     caBundle: await readFile(certificate, "utf8"),
   };
+  await t.test(
+    "execution trust accepts certificate chains and rejects malformed or oversized bundles",
+    () => {
+      const admit = (caBundle) =>
+        createKubernetesComputeDriver({
+          ...twoClusterOptions(),
+          executionCluster: { ...executionCluster, caBundle },
+        });
+      assert.doesNotThrow(() =>
+        admit(`\n${executionCluster.caBundle}\n${executionCluster.caBundle}\n`),
+      );
+      // Delimiters alone cannot establish trust: DER parsing must still succeed. Repeated
+      // unterminated markers also exercise the input that caused repeated regex rescanning.
+      for (const [bundle, code, message] of [
+        [" \n ", "INVALID_FORMAT", /only PEM certificates/],
+        [
+          "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
+          "INVALID_FORMAT",
+          /invalid certificate/,
+        ],
+        [`${executionCluster.caBundle}unexpected`, "INVALID_FORMAT", /only PEM certificates/],
+        ["-----BEGIN CERTIFICATE-----\n".repeat(1024), "INVALID_FORMAT", /only PEM certificates/],
+        ["-----BEGIN CERTIFICATE-----\n".repeat(3000), "TOO_LONG", /maxLength/],
+      ]) {
+        assert.throws(
+          () => admit(bundle),
+          (error) => {
+            assert.ok(error instanceof SharedConfigurationValidationError);
+            assert.equal(error.error.details[0].path, "/executionCluster/caBundle");
+            assert.equal(error.error.details[0].code, code);
+            assert.match(error.error.details[0].message, message);
+            return true;
+          },
+        );
+      }
+    },
+  );
   const endpoint = "https://models.example.test/api/v1";
   for (const [bind, modelEndpoint, cluster] of [
     [undefined, undefined],

@@ -89,6 +89,13 @@ A later Storybook-only fix removes a root-package import from isolated asset
 preparation. Its build and refreshed browser walkthrough passed without changing
 the runtime implementation or policy proof.
 
+The PR fix pass restores Local Setup’s canonical validation before provisioning,
+retains safe field-specific startup diagnostics, bounds execution-cluster certificate
+parsing, and constructs flagged synthetic URL fixtures through the existing helper.
+Targeted Go, SSH, Helm packaging, certificate, and API/worker startup checks passed.
+These startup and fixture fixes do not change the runtime policy lifecycle above.
+Final-head CI and input-safety re-evaluation remain pending.
+
 Required proof through existing real callers:
 
 - `tests/integration/driver-plugin-installation.test.mjs` and startup coverage:

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -862,7 +863,17 @@ test("production native examples satisfy the current Helm, Installation, and PVC
       mode: "production",
       environment: { OCC_CONFIG_PATH: unquotedPath },
     }),
-    /drivers\.compute\.configuration does not match its Driver configuration schema at \/resources\/gateway\/limits\/cpu: must be string/,
+    (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.deepEqual(error.error.details, [
+        {
+          path: "/resources/gateway/limits/cpu",
+          code: "INVALID_TYPE",
+          message: "Configuration does not satisfy type.",
+        },
+      ]);
+      return true;
+    },
   );
   // Trusted Installation startup must reject a validly spelled request that
   // Kubernetes refuses against its smaller limit, before any cluster operation.
@@ -875,7 +886,16 @@ test("production native examples satisfy the current Helm, Installation, and PVC
       mode: "production",
       environment: { OCC_CONFIG_PATH: impossiblePath },
     }),
-    /Gateway CPU request \(resources\.gateway\.requests\.cpu\) cannot exceed its limit/,
+    (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.equal(error.error.details[0].path, "/resources/gateway/requests/cpu");
+      assert.equal(error.error.details[0].code, "INVALID_RANGE");
+      assert.match(
+        error.error.details[0].message,
+        /Gateway CPU request .* cannot exceed its limit/,
+      );
+      return true;
+    },
   );
   const values = loadYaml(await readFile(new URL("values.yaml", productionExamples), "utf8"));
   assert.equal(values.gatewayRouting.enabled, true);
@@ -970,12 +990,19 @@ test(
           ? render(helmValues, { strings: { "gatewayRouting.hostname": hostname } })
           : render(helmValues);
       if (invalid.includes(hostname)) {
-        await assert.rejects(
-          load(),
-          hostname === "api.123"
-            ? /Gateway routing hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/
-            : /Gateway routing hostname must be a DNS hostname without a port or path/,
-        );
+        await assert.rejects(load(), (error) => {
+          assert.ok(error instanceof ConfigurationValidationError);
+          assert.equal(error.error.details[0].path, "/gatewayRouting/hostname");
+          assert.equal(error.error.details[0].code, "INVALID_FORMAT");
+          assert.match(
+            error.error.details[0].message,
+            hostname === "api.123"
+              ? /Gateway routing hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/
+              : /Gateway routing hostname must be a DNS hostname without a port or path/,
+          );
+          assert.doesNotMatch(JSON.stringify(error.error.details), /Bad_Host/);
+          return true;
+        });
         await assert.rejects(
           renderHostname(),
           ({ stderr }) =>
@@ -1028,7 +1055,16 @@ test(
         });
       const rendered = () => render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain });
       if (domain === "192.0.2.1") {
-        await assert.rejects(load(), /Sandbox domain must be a DNS hostname.*Agent label/);
+        await assert.rejects(load(), (error) => {
+          assert.ok(error instanceof ConfigurationValidationError);
+          assert.equal(error.error.details[0].path, "/gatewayRouting/sandbox/domain");
+          assert.equal(error.error.details[0].code, "INVALID_FORMAT");
+          assert.match(
+            error.error.details[0].message,
+            /Sandbox domain must be a DNS hostname.*Agent label/,
+          );
+          return true;
+        });
         await assert.rejects(
           rendered(),
           /gatewayRouting\.sandbox\.domain must be a DNS hostname.*Agent label/,

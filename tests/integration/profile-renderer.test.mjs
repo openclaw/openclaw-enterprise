@@ -1839,7 +1839,13 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     // So is an empty user info, which Node drops: any @ before the host, with or without the
     // slashes, and before an IPv4 host too.
     "http://@grafana.example.internal/d",
-    "https://:@grafana.example.internal/d",
+    syntheticCredentialUrl({
+      protocol: "https",
+      username: "",
+      password: "",
+      host: "grafana.example.internal",
+      pathname: "/d",
+    }),
     "http:@grafana.example.internal/d",
     "http:\t//@grafana.example.internal/d",
     "http://@192.0.2.10:3000/d",
@@ -2814,7 +2820,12 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ],
     ["https://@models.example.com/v1", "must not contain user info or an @ before the host."],
     [
-      "https://user:pass@models.example.com/v1",
+      syntheticCredentialUrl({
+        username: "fixture-user",
+        password: "fixture-password",
+        host: "models.example.com",
+        pathname: "/v1",
+      }),
       "must not contain user info or an @ before the host.",
     ],
     ["http://models.example.com/v1", general],

@@ -235,6 +235,46 @@ test("Installation startup validates the optional external observability URL", a
   );
 });
 
+test("API and worker log safe field diagnostics before persistence", async (t) => {
+  const configuration = installation();
+  configuration.occ.cluster = "production-west";
+  configuration.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+  const path = await fixture(t, configuration);
+  const environment = {
+    PATH: process.env.PATH,
+    NODE_ENV: "production",
+    OCC_CONFIG_PATH: path,
+    OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+    OCC_HOST: "192.0.2.10",
+    OCC_PORT: "8080",
+    OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+    OCC_AUTH_BASE_URL: "https://console.example.test",
+  };
+  // Both real process entrypoints must reject startup before touching persistence,
+  // identify the operator's setting, and omit the submitted value and file path.
+  await settled(
+    [
+      ["apps/controller/src/server.mjs", "startup-error"],
+      ["apps/controller/src/worker.mjs", "worker.startup-error"],
+    ].map(async ([script, event]) => {
+      const result = await boot(script, environment, 15_000);
+      assert.equal(result.status, 1);
+      const diagnostic = startupDiagnostic(result.stderr, event);
+      assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID");
+      assert.deepEqual(diagnostic.details, [
+        {
+          path: "/runtime/gatewayStorageClassName",
+          code: "INVALID_FORMAT",
+          message:
+            "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+        },
+      ]);
+      assert.ok(!result.stderr.includes(path));
+      assert.doesNotMatch(result.stderr, /Bad_Class|PERSISTENCE_UNAVAILABLE/);
+    }),
+  );
+});
+
 test("API and worker refuse a bad observability host or runtime image before opening PostgreSQL", async (t) => {
   const configuration = installation();
   configuration.occ.cluster = "production-west";
