@@ -85,6 +85,9 @@ and review remain delivery blockers.
 Implementation is in [draft PR #2980](https://github.com/openclaw/openclaw-enterprise/pull/2980).
 The runtime proof covers implementation commit `4d57c6eda955a37643cb0d8e9818f09994b29b1f`;
 the subsequent delivery-record update changes documentation only. No merge has occurred.
+A later Storybook-only fix removes a root-package import from isolated asset
+preparation. Its build and refreshed browser walkthrough passed without changing
+the runtime implementation or policy proof.
 
 Required proof through existing real callers:
 

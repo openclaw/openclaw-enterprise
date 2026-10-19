@@ -1,4 +1,4 @@
-import networkPolicySchema from "/console/network-policy-schema.mjs";
+import networkPolicySchema from "./network-policy-schema.mjs";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
