@@ -715,7 +715,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
   }
   assert.equal(agents[0].name.length, 60);
   const columns = ["Agent", "Execution mode", "Current version", "Latest deployment", "Created"];
-  for (const width of [390, 360, 600, 760, 761, 1440]) {
+  for (const width of [390, 360, 600, 760, 761, 1024, 1440]) {
     const desktop = width > 760;
     const { page } = await newPage(t, fixture, {
       context: { viewport: { width, height: desktop ? 900 : 844 } },
@@ -743,12 +743,9 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       const view = document.documentElement;
       const scroll = node.closest(".table-scroll");
       const tableBox = node.getBoundingClientRect();
-      const rows = [...node.querySelectorAll("tbody tr")].map((row) => {
-        const cells = [...row.cells];
-        const id = cells[0].querySelector(".resource-id");
-        // Where each line of the ID starts: the character before it ends the previous line.
+      // Where each line of a text starts: the character before it ends the previous line.
+      const lineBreaks = (text) => {
         const breaks = [];
-        const text = id.firstChild;
         let top = null;
         for (let index = 0; index < text.length; index += 1) {
           const range = document.createRange();
@@ -760,12 +757,19 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
           }
           top = rect.top;
         }
-        const name = cells[0].querySelector("a").getBoundingClientRect();
+        return breaks;
+      };
+      const rows = [...node.querySelectorAll("tbody tr")].map((row) => {
+        const cells = [...row.cells];
+        const breaks = lineBreaks(cells[0].querySelector(".resource-id").firstChild);
+        const link = cells[0].querySelector("a");
+        const name = link.getBoundingClientRect();
         const first = cells[0].getBoundingClientRect();
         return {
           name: {
             width: name.width,
             inside: name.left >= first.left - 0.5 && name.right <= first.right + 0.5,
+            breaks: lineBreaks(link.firstChild),
           },
           overflows: cells.some((cell) => {
             const box = cell.getBoundingClientRect();
@@ -795,7 +799,15 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
           ),
         };
       });
+      // The table's width without the unbroken name's row, which must not widen it.
+      const unbroken = node.tBodies[0].rows[node.tBodies[0].rows.length - 1];
+      const width = scroll.scrollWidth;
+      unbroken.style.setProperty("display", "none");
+      const ordinaryWidth = scroll.scrollWidth;
+      unbroken.style.removeProperty("display");
       return {
+        width,
+        ordinaryWidth,
         pageFits: view.scrollWidth <= view.clientWidth,
         tableFits: scroll.scrollWidth <= scroll.clientWidth,
         headerShown: node.tHead.getBoundingClientRect().height > 1,
@@ -804,16 +816,27 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       };
     });
     assert.equal(layout.pageFits, true, `${width}: the page scrolls sideways`);
-    // At 761 px the five columns still scroll inside their card (finding 1907).
-    if (width !== 761) {
+    // At 761 and 1024 px these rows' five columns still scroll inside their card (finding 1907),
+    // but the unbroken name makes the table no wider than its other rows do.
+    if (width !== 761 && width !== 1024) {
       assert.equal(layout.tableFits, true, `${width}: the table scrolls sideways`);
     }
+    assert.ok(
+      layout.width <= layout.ordinaryWidth + 2,
+      `${width}: the unbroken name widens the table from ${layout.ordinaryWidth} to ${layout.width} px`,
+    );
     assert.equal(layout.rows.length, AGENTS);
     for (const [index, row] of layout.rows.entries()) {
       assert.equal(row.overflows, false, `${width}: row ${index} overflows the table`);
       assert.equal(row.name.inside, true, `${width}: row ${index} name overflows its cell`);
       if (desktop) {
         assert.ok(row.name.width <= 310.5, `${width}: row ${index} name is ${row.name.width} px`);
+      }
+      // Ordinary names wrap only between words.
+      if (index < AGENTS - 1) {
+        for (const character of row.name.breaks) {
+          assert.equal(character, " ", `${width}: row ${index} name breaks inside a word`);
+        }
       }
       assert.deepEqual(
         row.labels.map(({ label }) => label),
