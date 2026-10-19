@@ -306,6 +306,13 @@ test("a failed image build keeps its failed step's output as redacted QA evidenc
   // BuildKit's plain progress (finding 2020's shape): steps interleave, each line prefixed by
   // its step; the failed step's output is gone from the final summary's last lines.
   const stderr = [
+    // An earlier build in the same dev-up that succeeded: its step numbers repeat.
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
+    "#41 [controller 9/9] RUN node build.mjs",
+    "#41 DONE 4.0s",
+    '#0 building with "default" instance using docker driver',
+    "#1 [internal] load build definition from Dockerfile",
     "#40 [openclaw-build 13/18] COPY --from=openclaw-source /source/ ./",
     "#41 [openclaw-build 14/18] RUN --network=none OPENCLAW_VITEST_MAX_WORKERS=1 node scripts/test-projects.mts src/gateway/server.required-placement-scopes.test.ts",
     "#40 DONE 2.1s",
@@ -355,6 +362,14 @@ test("a failed image build keeps its failed step's output as redacted QA evidenc
   podman.push('Error: building at STEP "RUN node test.mjs": while running runtime: exit status 1');
   assert.equal(imageBuildFailureOutput(podman.join("\n")).length, 200);
   assert.match(imageBuildFailureOutput(podman.join("\n")).at(-1), /^Error: building at STEP/);
+
+  // Newer buildx words the summary "failed to build: failed to solve".
+  assert.deepEqual(
+    imageBuildFailureOutput(
+      stderr.replace("ERROR: failed to solve: ", "ERROR: failed to build: failed to solve: "),
+    ),
+    step,
+  );
 
   // Any other command failure records nothing.
   assert.equal(

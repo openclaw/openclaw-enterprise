@@ -59,15 +59,26 @@ export function launcherEnvironment() {
 // build's own error keeps only its last lines, which name the step but not why it failed (an
 // upstream test run inside the runtime image build, finding 2020). BuildKit prefixes every line
 // of a step's output with "#<step> " and interleaves steps, so the failed step is the one whose
-// "#<step> ERROR:" line comes last; without one (podman), the last lines of stderr.
+// "#<step> ERROR:" line comes last; without one (podman), the last lines of stderr. One dev-up can
+// run several builds, each numbering its steps from #0, so only the last build is read: a build
+// stops dev-up at its first failure.
 export function imageBuildFailureOutput(stderr, { lines = 200 } = {}) {
   const text = String(stderr ?? "").trimEnd();
-  if (!/^ERROR: failed to solve: |^Error: building at STEP /m.test(text)) {
+  // Newer buildx says "ERROR: failed to build: failed to solve: ...".
+  if (!/^ERROR: (?:failed to build: )?failed to solve: |^Error: building at STEP /m.test(text)) {
     return undefined;
   }
   const all = text.split("\n");
-  const step = all.findLast((line) => /^#\d+ ERROR: /.test(line))?.match(/^#\d+ /)[0];
-  return (step ? all.filter((line) => line.startsWith(step)) : all).slice(-lines);
+  const build = all.slice(
+    Math.max(
+      0,
+      all.findLastIndex((line) =>
+        /^#0 building with |^#1 \[internal\] load build definition/.test(line),
+      ),
+    ),
+  );
+  const step = build.findLast((line) => /^#\d+ ERROR: /.test(line))?.match(/^#\d+ /)[0];
+  return (step ? build.filter((line) => line.startsWith(step)) : build).slice(-lines);
 }
 
 // Records a failed image build step's output, redacted like any QA command output, as a QA
