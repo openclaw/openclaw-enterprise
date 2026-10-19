@@ -193,6 +193,96 @@ test("the workspace file editor shows an oversized file's error under the file",
   assert.equal(await editor.getAttribute("aria-invalid"), null);
 });
 
+// A Reload that finds the file gone empties the editor for a new file: the refused text's error
+// goes with it, as it does on a Reload that reads the file (finding 1996).
+test("the workspace file editor drops an oversized file's error when Reload finds no file", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Workspace missing", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Workspace Missing", nativeValues("wm"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const writes = [];
+  let missing = false;
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/workspace/files/*`,
+    (route) => {
+      if (route.request().method() !== "GET") {
+        writes.push(route.request().method());
+      }
+      return route.fulfill(
+        missing
+          ? {
+              status: 404,
+              contentType: "application/json",
+              body: JSON.stringify({
+                error: {
+                  code: "NOT_FOUND",
+                  message: "The requested workspace file was not found.",
+                },
+              }),
+            }
+          : {
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({ data: { name: "AGENTS.md", content: "before" } }),
+            },
+      );
+    },
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
+  );
+  const editor = page.getByLabel("AGENTS.md", { exact: true });
+  await page.getByText("AGENTS.md loaded.", { exact: true }).waitFor();
+  await editor.fill("a".repeat(16_385));
+  await page.getByRole("button", { name: "Save AGENTS.md", exact: true }).click();
+  await assertShownError(
+    editor,
+    "Use valid Unicode without NUL characters, within 16 KiB of UTF-8 content.",
+  );
+  // Removed elsewhere since it loaded.
+  missing = true;
+  await page.getByRole("button", { name: "Reload AGENTS.md", exact: true }).click();
+  await page.getByText("AGENTS.md is missing. Save to create it.", { exact: true }).waitFor();
+  assert.equal(await editor.inputValue(), "");
+  assert.equal(await shownError(editor), null);
+  assert.equal(await editor.getAttribute("aria-invalid"), null);
+  assert.deepEqual(writes, []);
+});
+
+// Choosing an issued ChatGPT service account without picking one is the console's check too: the
+// error under the account list, which takes focus, not only the grey status line (finding 1997).
+test("the authentication source form shows a missing service account under its field", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Account fields", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Account Fields",
+    nativeValues("acf", { harnessId: "codex" }),
+    { executionMode: "dedicated", harnessAuth: null },
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  const invalidEvents = await countInvalidEvents(page);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByLabel("Authentication source", { exact: true }).selectOption("service_account");
+  // The list is enabled once the Namespace's accounts are read; it has none.
+  await page
+    .getByText("No issued ChatGPT accounts available in this Namespace.", { exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "Save authentication source", exact: true }).click();
+  assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+  await assertShownError(
+    page.getByLabel("Issued ChatGPT service account", { exact: true }),
+    "Issued ChatGPT service account is required.",
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
 // A Plugins save outcome takes focus only from the page or the disabled Save button: a reader
 // who moved focus while the save ran keeps it (finding 1978).
 const outcomes = [
