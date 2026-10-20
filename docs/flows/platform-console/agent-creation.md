@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-10-20
-last_updated_session: docs-split-1020
+last_updated_session: fix-1020c
 ---
 
 # Console Agent creation
@@ -99,7 +99,10 @@ Agent/Configuration for [workspace setup](../workspace-files.md).
 
 `create.mjs:grantConfigurationSecretAccess` grants exact Secret `operate` for final
 same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
-rereads grants without duplication. Failed Agent writes retain Configuration ID
+rereads grants without duplication. Grants are Installation administration: a session
+whose `/observability` probe was refused sends no IAM request and names the administrator
+step, and a member's refused grant offers no retry. After a refused Installation read, a
+failed permission read offers **Retry permission check**, which rereads only that answer. Failed Agent writes retain Configuration ID
 and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
 save no version and start no runtime.
 

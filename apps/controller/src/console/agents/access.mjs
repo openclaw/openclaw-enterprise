@@ -40,8 +40,9 @@ function matchesRole(role, namespaceId, permissions) {
 }
 
 // The Agent page's Access tab (spec 3.8). `onDenied` runs when the policy read is refused, after
-// the panel hides itself.
-export function renderAgentAccess(context, agent, { onDenied } = {}) {
+// the panel hides itself. `onWriting` runs with true when a share or removal starts and false
+// when it ends: the page holds version and page changes meanwhile (finding 2108).
+export function renderAgentAccess(context, agent, { onDenied, onWriting } = {}) {
   const { namespaceId } = context;
   const path = `${namespacePath(namespaceId)}/iam`;
   const section = element("section", {
@@ -356,6 +357,7 @@ export function renderAgentAccess(context, agent, { onDenied } = {}) {
     state.saved = false;
     let mutationStarted = false;
     render();
+    onWriting?.(true);
     try {
       // Read first so explicit retries reuse current policy; writes are never replayed automatically.
       await readPolicy();
@@ -366,6 +368,7 @@ export function renderAgentAccess(context, agent, { onDenied } = {}) {
         failure(error, mutationStarted, sharing && mutationStarted);
       }
     } finally {
+      onWriting?.(false);
       if (context.isCurrent()) {
         state.pending = false;
         render();

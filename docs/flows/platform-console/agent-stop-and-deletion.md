@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-10-20
-last_updated_session: ux-p8
+last_updated_session: authoring-run/28365356-ae7e-47dc-9790-888c3592251f
 ---
 
 # Console Agent stop and deletion
@@ -62,7 +62,10 @@ and no readable versions yet (`setNoReadableVersions`), the Stop row is hidden u
 just used it. The overview's **Runtime** row reports a requested stop.
 
 Refresh reads desired state and selected version, not live health. Denial stays inline; changed
-state updates panels in place. An uncertain write blocks another Stop until readback succeeds.
+state updates panels in place. If the read finds deletion in progress, Agent detail switches to
+the deletion recovery controls without sending a write. Focus moves to **Refresh deletion status**
+only when the reader stayed on the disappearing Stop control. An uncertain write blocks another
+Stop until readback succeeds.
 [Deploy to resume](../../reference/agents/deployment.md#stop-and-resume); the lifecycle
 reference covers worker shutdown and preservation of versions, credentials, and state.
 
@@ -115,4 +118,5 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
+- 2026-10-20 07:57: Describe deletion discovered by a stop-status read in the accompanying change. (authoring-run/28365356-ae7e-47dc-9790-888c3592251f - 6aedac546aad8308b4e9954648268f14545e39b2)
 - 2026-10-20 05:00: Split from the Agent editing flow's steps 7 and 8. (docs-split-1020)

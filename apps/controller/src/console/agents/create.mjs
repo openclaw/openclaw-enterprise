@@ -463,6 +463,18 @@ export function renderCreateAgent(context, draft) {
 // A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
 const MEMBER_CREDENTIAL_ACCESS =
   "An Installation administrator then gives the new Agent access to its Secrets.";
+const MEMBER_GRANT_REFUSED =
+  "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration access: open the saved Agent and ask an Installation administrator to grant it.";
+const INSTALLATION_REFUSAL =
+  "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
+// The Installation read was refused and the Namespace's permission answer is unknown (its read
+// failed), so whether this account may create Agents here is not known (finding 2110).
+const PERMISSIONS_UNREAD =
+  "Your permissions in this Namespace could not be checked, and Installation-wide capabilities are not readable with your access. Retry the permission check before creating an Agent.";
+// A refused Configuration create names the grants it needs, as a refused save does
+// (SAVE_REFUSALS): one fixed text for every 403 (finding 2111).
+const CONFIGURATION_CREATE_REFUSAL =
+  "You do not have permission to create this Agent's Configuration. Ask an administrator for Configuration create access in this Namespace, plus Secret operate on each Secret it binds.";
 
 // What Create Agent knows of its Namespace: missing from a list the form read (kept for Start
 // over, which renders from the same context), otherwise its status.
@@ -1260,6 +1272,14 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   // and when anything is saved. capabilityDiscoveryDone stays false, so no hint claims an outcome.
   let capabilitiesUnreadable = false;
   const capabilitiesSettled = () => capabilityDiscoveryDone || capabilitiesUnreadable;
+  // The Namespace's permission answer this form decides with. A retry rereads it when the
+  // console's read failed (finding 2110); the API still decides every write.
+  let namespacePermissions = context.permissions;
+  let permissionsUnknown = false;
+  let permissionsReading = false;
+  // Granting the saved Agent its credential access is Installation administration, which the API
+  // refused this account: a retry cannot succeed, so the form offers none (finding 2109).
+  let credentialGrantRefused = false;
   const provisionableExecutionModes = new Set();
   let nativeWorkersAvailable = false;
   // The OpenClaw execution modes the Installation admits, or undefined from a server that does
@@ -1439,7 +1459,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     { tone: "danger" },
   );
   const retryCapabilityDiscovery = button("Retry capability check", () => {
-    void loadInstallationCapabilities();
+    // A refused Installation read stays refused: reread only the permission answer.
+    void (capabilityDiscoveryDenied ? rereadPermissions() : loadInstallationCapabilities());
   });
   const recoveryMessage = element("p", { className: "muted" });
   const requireRepositoryReload = () => {
@@ -1774,6 +1795,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         drafts: context.drafts,
         baseline: JSON.stringify([values, configurationSecretBindings]),
         operatorId: context.operatorId,
+        installationAdmin: context.installationAdmin,
         namespaceId,
         request,
         agentName: () => name.value,
@@ -2225,6 +2247,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       pending ||
       outcomeUnknown ||
       !capabilitiesSettled() ||
+      permissionsReading ||
+      credentialGrantRefused ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
@@ -2245,8 +2269,13 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     removeCredentialRegistration.disabled = pending;
     retryProvisioning.hidden = !provisioningAttempt;
     retryProvisioning.disabled = pending || !provisioningAttempt;
-    retryCapabilityDiscovery.hidden = !capabilityDiscoveryFailed || capabilityDiscoveryDenied;
-    retryCapabilityDiscovery.disabled = pending;
+    retryCapabilityDiscovery.hidden =
+      !capabilityDiscoveryFailed || (capabilityDiscoveryDenied && !permissionsUnknown);
+    retryCapabilityDiscovery.disabled = pending || permissionsReading;
+    retryCapabilityDiscovery.textContent = capabilityDiscoveryDenied
+      ? "Retry permission check"
+      : "Retry capability check";
+    submit.hidden = credentialGrantRefused;
     submit.textContent = savedAgent ? "Retry credential access" : "Create Agent";
     submit.setAttribute("aria-busy", createPending ? "true" : "false");
     waitForNamespace();
@@ -2303,6 +2332,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     capabilityDiscoveryFailed = false;
     capabilityDiscoveryDenied = false;
     capabilitiesUnreadable = false;
+    permissionsUnknown = false;
     accessStatus.hidden = true;
     updateControls();
     try {
@@ -2352,22 +2382,64 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         return;
       }
       capabilityDiscoveryFailed = true;
-      // A denial is permanent for this account, so retrying cannot help. A member the Namespace
-      // lets create Agents goes on without the Installation's capabilities (UX plan A2); only an
-      // explicit grant does, so an unknown permission answer keeps the refusal below.
+      // A denial is permanent for this account, so retrying the read cannot help.
       capabilityDiscoveryDenied = error.status === 403;
-      if (capabilityDiscoveryDenied && context.permissions?.agents?.create === true) {
-        capabilitiesUnreadable = true;
-        accessStatus.hidden = false;
+      if (capabilityDiscoveryDenied) {
+        settleRefusedCapabilities();
         return;
       }
-      capabilityStatus.textContent = capabilityDiscoveryDenied
-        ? "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent."
-        : `Installation capabilities unavailable. ${message(error)} Retry before creating an Agent.`;
+      capabilityStatus.textContent = `Installation capabilities unavailable. ${message(error)} Retry before creating an Agent.`;
     } finally {
       if (context.isCurrent()) {
         updateControls();
       }
+    }
+  }
+  // After a refused Installation read, the permission answer decides. A member the Namespace lets
+  // create Agents goes on without the Installation's capabilities (UX plan A2); only an explicit
+  // grant does. A known denial keeps the refusal; an unknown answer says the check failed and
+  // offers a retry of it (finding 2110).
+  function settleRefusedCapabilities() {
+    const create = namespacePermissions?.agents?.create;
+    permissionsUnknown = typeof create !== "boolean";
+    if (create === true) {
+      capabilitiesUnreadable = true;
+      accessStatus.hidden = false;
+      return;
+    }
+    capabilityStatus.textContent = permissionsUnknown ? PERMISSIONS_UNREAD : INSTALLATION_REFUSAL;
+  }
+  async function rereadPermissions() {
+    permissionsReading = true;
+    capabilityStatus.textContent = "Checking your permissions in this Namespace…";
+    updateControls();
+    try {
+      namespacePermissions = await request(`${namespacePath(namespaceId)}/permissions`);
+      // Start over renders from this context: it keeps the answer instead of asking again.
+      context.permissions = namespacePermissions;
+    } catch (error) {
+      if (context.isCurrent() && error.status === 401) {
+        context.onExpired();
+        return;
+      }
+    } finally {
+      permissionsReading = false;
+    }
+    if (!context.isCurrent()) {
+      return;
+    }
+    settleRefusedCapabilities();
+    updateControls();
+    // The retry hides once answered: its outcome takes focus rather than the page.
+    const active = document.activeElement;
+    if (
+      retryCapabilityDiscovery.hidden &&
+      (!active || active === document.body || active === retryCapabilityDiscovery)
+    ) {
+      const outcome = accessStatus.hidden ? capabilityStatus : accessStatus;
+      outcome.tabIndex = -1;
+      outcome.focus({ preventScroll: true });
+      outcome.scrollIntoView({ block: "nearest" });
     }
   }
   void loadInstallationCapabilities();
@@ -2524,6 +2596,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       pending ||
       outcomeUnknown ||
       provisioningAttempt ||
+      credentialGrantRefused ||
       (!savedAgent && repositoryRetryLocked()) ||
       !capabilitiesSettled() ||
       selectedModeUnavailable() ||
@@ -2758,6 +2831,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
             values,
             ...(Object.keys(bindings).length ? { secretBindings: bindings } : {}),
           },
+        }).catch((error) => {
+          if (error?.status === 403) {
+            error.refusal = CONFIGURATION_CREATE_REFUSAL;
+          }
+          throw error;
         });
         if (!context.isCurrent()) {
           return;
@@ -2784,6 +2862,23 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         modelCredentialSecret ??
         presetExistingSecret ??
         (hasBoundModelCredential && binding.source.kind === "secret" ? binding.source : undefined);
+      // The grants are Installation administration (the IAM routes), which this session's
+      // /observability read already found refused to this account. Reading IAM now is certain to
+      // be refused and audited as a denial, so name who finishes the step instead (finding 2109).
+      if (
+        context.installationAdmin === false &&
+        (body.harnessAuth?.method === "credential_source" ||
+          modelSecret?.kind === "secret" ||
+          modelSecret?.ref?.kind === "secret" ||
+          Object.values(savedConfiguration.secretBindings ?? {}).some(
+            (binding) => binding?.source?.kind === "secret",
+          ))
+      ) {
+        credentialGrantRefused = true;
+        feedback.textContent = MEMBER_GRANT_REFUSED;
+        focusFeedbackLine(feedback);
+        return;
+      }
       if (body.harnessAuth?.method === "credential_source") {
         await ensureCredentialOperateBinding(context, savedAgent, {
           kind: "credential_source",
@@ -2846,13 +2941,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         ? ` This form cannot edit saved Configuration ${savedConfiguration.id}. Deselect plugin ${refusedPlugin} under Plugins and select Create Agent again; to use the plugin, fix the setting on the new Agent's Configuration tab, then select the plugin on its Plugins tab.`
         : "";
       // A member's grant of the new Agent's credential access is refused as Installation
-      // administration: name who finishes it (UX plan A2).
+      // administration: name who finishes it (UX plan A2), and offer no retry of it (finding 2109).
       const memberGrantRefused =
         savedAgent && !credentialRegistration && capabilitiesUnreadable && error.status === 403;
+      credentialGrantRefused ||= memberGrantRefused;
       feedback.textContent =
-        (memberGrantRefused
-          ? "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration access: open the saved Agent and ask an Installation administrator to grant it."
-          : detail) +
+        (memberGrantRefused ? MEMBER_GRANT_REFUSED : detail) +
         guidance +
         (error.requestId ? ` Request ID: ${error.requestId}` : "");
       focusFeedbackLine(feedback);

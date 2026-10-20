@@ -406,7 +406,7 @@ const devdayAdminCheckpoint = [
 ];
 
 const shareExistingPerson = [
-  { selector: "#share-principal-id", value: "person-demo" },
+  { selector: "#share-principal-id", value: "prn_person-demo" },
   { selector: ".agent-access-consent input", click: true },
   click("Share Agent"),
 ];
@@ -2946,7 +2946,7 @@ export const scenarios = {
   },
   createCapabilitiesDenied: {
     group: "Pages/Create Agent",
-    name: "Agent creation needs an administrator",
+    name: "Permission check failed",
     path: create,
     actions: form,
     rules: [
@@ -2954,8 +2954,12 @@ export const scenarios = {
       { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
     ],
     description:
-      "Without a permission answer that grants Agent create, a caller without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
-    gap: "The permission read fails here; with a grant the form goes on (Member with Agent create).",
+      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, the page says the permission check failed, and Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal.",
+    steps: [
+      'Under the form fields, read "Your permissions in this Namespace could not be checked".',
+      "Retry permission check is offered; the fixture keeps failing the read, so the text stays.",
+    ],
+    gap: "The live retry that succeeds is in tests/browser/console-create-agent-member.test.mjs.",
   },
   createMember: {
     group: "Pages/Create Agent",
@@ -2970,6 +2974,20 @@ export const scenarios = {
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
     gap: "The live check is a member account on a real Installation (tests/browser/console-create-agent-member.test.mjs).",
+  },
+  createMemberGrantRefused: {
+    group: "Pages/Create Agent",
+    name: "Member Agent created, grant needs an administrator",
+    path: create,
+    observabilityDenied: true,
+    actions: [...readyForm, click("Create Agent")],
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
+    steps: [
+      "Read the alert: giving the Agent access to its Secrets needs Installation administration access.",
+      "The request log shows no /iam/ request, and only Cancel and Start over remain beside the saved-resources line.",
+    ],
   },
   createRestricted: {
     group: "Pages/Create Agent",
@@ -3493,7 +3511,7 @@ export const scenarios = {
     description:
       "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
     steps: [
-      "Enter person-demo as the existing Principal ID.",
+      "Enter prn_person-demo as the existing Principal ID.",
       "Review the native-access disclosure, acknowledge it, and share.",
       "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
     ],
@@ -3505,6 +3523,28 @@ export const scenarios = {
     actions: shareExistingPerson,
     description:
       "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
+  },
+  agentSharingHoldsNavigation: {
+    group: "Pages/Agent detail",
+    name: "Sharing holds navigation",
+    path: `${draft}&tab=access`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/iam/access-bindings",
+        method: "POST",
+        delayMs: 4000,
+        once: true,
+      },
+    ],
+    actions: [...shareExistingPerson, { selector: 'a[data-nav="agents"]', click: true }],
+    description:
+      "The story shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
+    steps: [
+      "While the note “This page stays open until sharing finishes.” shows, check that the versions in the Versions rail are disabled, and that ← Agents and Refresh keep the page. Select Reset story to replay the hold.",
+      "Switch to Plugins and back to Access while the note shows: tabs still switch, and the share keeps running.",
+      "When the grants are written, the note goes, Direct Agent grants lists the new binding, and the versions and Agents in the sidebar work again.",
+    ],
   },
   agentSharingRemoved: {
     group: "Pages/Agent detail",
@@ -6971,6 +7011,18 @@ export const scenarios = {
     ],
     description:
       "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+  },
+  stopReadDiscoversDeletion: {
+    group: "Components/Stop Agent",
+    name: "Deletion discovered",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    deletingOnRefresh: true,
+    description: "Another actor starts deletion after the page loads.",
+    steps: [
+      "Choose Refresh stop status. The page shows deletion recovery and focuses Refresh deletion status without sending a write.",
+    ],
   },
   stopRepeatConfirm: {
     group: "Components/Stop Agent",

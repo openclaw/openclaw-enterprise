@@ -204,6 +204,9 @@ Open **Stop Agent**, inspect or cancel the confirmation, then confirm. The
 fixture records the requested stopped state; **Refresh stop status** rereads it
 without proving live shutdown.
 
+In **Components/Stop Agent → Deletion discovered**, refresh stop status to see
+the deletion recovery controls and focus move to **Refresh deletion status**.
+
 Resume by deploying a new version; disabling Slack does not stop an Agent. See
 [Stop and resume](../reference/agents/deployment.md#stop-and-resume).
 

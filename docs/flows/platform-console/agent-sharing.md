@@ -35,7 +35,9 @@ graph TD
   D --> E["Bind Namespace read to the exact Namespace"]
   E --> F["Find or create Agent read/administer Role"]
   F --> G["Bind it to the selected Agent"]
+  C --> P["Hold version and page changes"]
   G -->|confirmed steps| H["Show progress and direct grants"]
+  H --> U["Release the hold"]
   C -->|uncertain| Q["Block writes until policy refresh"]
   H --> R["Remove one selected Agent binding"]
 ```
@@ -68,7 +70,20 @@ resource on each write. Confirmed progress survives later failure; unknown
 results disable mutations until an explicit current-policy refresh. Readback is
 configuration evidence, not a historical receipt, and never triggers a write.
 
-### 3. Remove one explicit binding
+### 3. Hold the page while writes run
+
+`apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
+
+Each request belongs to the page and stops when the page goes. So while a share or
+removal runs, the panel's `onWriting` callback has Agent detail hold version and
+page changes, as it does for a draft's writes. The held changes are the Versions
+rail, Create new version, version links, ← Agents, the sidebar, the Namespace
+selector, Back and Forward, the header's Refresh, and the page's own reloads. The
+page shows "This page stays open until sharing finishes." Tabs still switch. The
+hold ends when the last request settles. At worst that is five requests of up to
+15 s each, about 75 s. Session expiry and sign-out still leave.
+
+### 4. Remove one explicit binding
 
 `apps/controller/src/console/agents/access.mjs:renderAgentAccess`
 

@@ -1292,6 +1292,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   ];
   let selectedTab = tabsForSelection.includes(tab) ? tab : "configuration";
   let deployInFlight = false;
+  // A share or binding removal in flight. Its writes belong to this page, so other versions and
+  // pages wait for it (finding 2108); tabs do not, since the panel stays with the page.
+  let sharingWrite = false;
   let authenticationSaveState = "idle";
   let activeCredentials = null;
   // Channel Secret choices that Reload draft carries into the rebuilt panel (finding 1512). The
@@ -1322,7 +1325,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return node;
   }
   const change = (revision, tab) => {
-    if (draftEditorBlocksNavigation()) {
+    if (draftEditorBlocksNavigation() || (sharingWrite && revision !== selected)) {
       showLeaveBlock();
       return;
     }
@@ -1337,8 +1340,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
   context.setPageActions?.(headerActions);
   // The note that holds the tabs also holds ← Agents and the Namespace selector (finding 1902).
-  const refuseLeave = ({ pendingOnly = false } = {}) => {
-    if (!(pendingOnly ? draftWriteInFlight() : draftEditorBlocksNavigation())) {
+  // Refresh rebuilds the page, so only a share in flight holds it.
+  const refuseLeave = ({ pendingOnly = false, refresh = false } = {}) => {
+    if (
+      !sharingWrite &&
+      (refresh || !(pendingOnly ? draftWriteInFlight() : draftEditorBlocksNavigation()))
+    ) {
       return false;
     }
     showLeaveBlock();
@@ -1524,7 +1531,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       deletion.section,
     ),
   );
-  function showDeleting() {
+  function showDeleting({ focus = false } = {}) {
     deleting = true;
     headerActions.replaceChildren(
       element("span", { className: "badge", "data-tone": "warning" }, "Deleting"),
@@ -1532,8 +1539,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
     // A deleting Agent can no longer be stopped; its deletion row is all the page shows.
     stopPanel.section.remove();
-    deletion.showOnPage();
     view.replaceChildren(dangerZone);
+    deletion.showOnPage({ focus });
     context.revealed?.();
   }
   if (deleting) {
@@ -1615,7 +1622,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // Why the page holds, for each write in flight; editor blocks name their own.
   function leaveReason() {
     if (!draftEditorBlocksNavigation()) {
-      return null;
+      return sharingWrite ? "This page stays open until sharing finishes." : null;
     }
     if (deployInFlight) {
       return "This page stays open until the deploy request finishes.";
@@ -1633,7 +1640,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   function showLeaveBlock() {
     const reason = leaveReason();
-    if (deployInFlight) {
+    if (!draftEditorBlocksNavigation()) {
+      showLeaveNote(content, reason, "start");
+      // The note tops the tab panel, which may be scrolled out of view; focus stays put.
+      if (leaveNote.isConnected) {
+        leaveNote.scrollIntoView({ block: "nearest" });
+      }
+    } else if (deployInFlight) {
       showLeaveNote(versionSummary.querySelector(":scope > .agent-draft-actions"), reason, "end");
     } else if (refreshingDraft) {
       // A refresh replaces the draft actions card mid-hold; the tab panel stays until it ends.
@@ -1689,7 +1702,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
     }
     for (const [control, originallyDisabled] of revisionControls) {
-      control.disabled = blocked || originallyDisabled;
+      control.disabled = blocked || sharingWrite || originallyDisabled;
     }
   }
   // A tab list (UX plan C7): one Tab stop on the selected tab, Left/Right (and Home/End) move
@@ -2370,7 +2383,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     railFocusKeys.set(chooser, "chooser");
     chooser.addEventListener("change", () => {
       const nextRevision = chooser.value;
-      if (draftEditorBlocksNavigation()) {
+      if (draftEditorBlocksNavigation() || sharingWrite) {
         chooser.value = selected;
         showLeaveBlock();
         return;
@@ -3824,6 +3837,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       // finishes, and its progress shows again, when the reader leaves the tab and comes back.
       state.reusable = false;
       accessPanel ??= renderAgentAccess(context, agent, {
+        onWriting: (writing) => {
+          sharingWrite = writing;
+          if (context.isCurrent()) {
+            updateNavigationControls();
+          }
+        },
         onDenied: () => {
           // A refused policy read (the session probe could not tell) hides the tab, as the
           // panel hid on the overview; a reader on it is taken to Configuration instead. Focus
@@ -5052,12 +5071,19 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       !context.isCurrent() ||
       deleting ||
       next.pathname !== url.pathname ||
-      next.searchParams.get("namespace") !== namespaceId ||
-      (nextRevision === selected && nextTab === selectedTab)
+      next.searchParams.get("namespace") !== namespaceId
     ) {
       return false;
     }
-    if (draftEditorBlocksNavigation()) {
+    if (nextRevision === selected && nextTab === selectedTab) {
+      // The page's own reloads (a retry, a draft re-read) rebuild it: a share waits for them too.
+      if (!sharingWrite) {
+        return false;
+      }
+      showLeaveBlock();
+      return true;
+    }
+    if (draftEditorBlocksNavigation() || (sharingWrite && nextRevision !== selected)) {
       history.replaceState(
         history.state,
         "",

@@ -331,6 +331,7 @@ export function installFixture(scenario, evidence) {
   } else if (scenario.deployed) {
     selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
   }
+  let agentReadCount = 0;
   const agent = {
     id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -1505,6 +1506,9 @@ export function installFixture(scenario, evidence) {
         }
         if (suffix === "") {
           if (method === "GET") {
+            if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
+              saved.status = "deleting";
+            }
             if (deleted.has(id)) {
               agents.delete(id);
               return error(404);

@@ -656,6 +656,111 @@ test("Agent detail hides sharing instead of showing an error to non-administrato
   assert.equal(await focused(), "Policy denials");
 });
 
+const FORBIDDEN = {
+  status: 403,
+  contentType: "application/json",
+  body: JSON.stringify({
+    error: { code: "FORBIDDEN", message: "Access denied." },
+    meta: { requestId: "req_00000000-0000-4000-8000-000000000403" },
+  }),
+};
+
+// The session probe could not tell (/observability failed): only a known denial leaves the
+// Access tab out, so an administrator keeps it. The tab is about the whole Agent, so the viewed
+// version's evidence steps aside while it is open.
+test("An unknown Installation access answer keeps the Access tab", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Access unknown", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Unknown Agent", nativeValues("v1"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await page.route(`${fixture.origin}/observability`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "SERVICE_UNAVAILABLE", message: "Unavailable." },
+        meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+      }),
+    }),
+  );
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  const evidence = page.locator(".version-evidence");
+  await evidence.waitFor();
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page
+    .getByRole("region", { name: "Share Agent", exact: true })
+    .getByText("Current policy loaded.", { exact: true })
+    .waitFor();
+  assert.equal(await evidence.isHidden(), true);
+});
+
+// A refused policy read with focus on the Access tab hides the tab, moves focus to
+// Configuration's and replaces the Access entry in history, so Back does not return to it.
+test("A refused sharing read moves focus off the hidden Access tab", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Sharing refused", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Refused Agent", nativeValues("x"));
+  const { page } = await newPage(t, fixture);
+  const read = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/iam/roles`,
+    { method: "GET", once: true, fulfill: FORBIDDEN },
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("heading", { name: "Refused Agent" }).waitFor();
+  const entries = await page.evaluate(() => globalThis.history.length);
+  const access = page.getByRole("tab", { name: "Access", exact: true });
+  await access.focus();
+  await access.press("Enter");
+  await read.requested;
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), "Access");
+  read.release();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
+  const configuration = page.getByRole("tab", { name: "Configuration", selected: true });
+  await configuration.waitFor();
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.textContent === "Configuration",
+  );
+  assert.equal(await page.evaluate(() => globalThis.history.length), entries + 1);
+});
+
+// The read is refused after the reader left the tab: Back to it opens Configuration in its
+// place, never the hidden panel.
+test("Back to a refused Access tab opens Configuration", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Sharing left", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Left Agent", nativeValues("x"));
+  const { page } = await newPage(t, fixture);
+  const read = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/iam/roles`,
+    { method: "GET", once: true, fulfill: FORBIDDEN },
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await page.getByRole("heading", { name: "Left Agent" }).waitFor();
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await read.requested;
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "plugins");
+  read.release();
+  await page.getByRole("tab", { name: "Access" }).waitFor({ state: "detached" });
+  await page.goBack();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  assert.equal(await page.locator(".agent-access").count(), 0);
+});
+
 function routeDeploymentStatus(page, fixture, namespace, agent, revision, status, error = null) {
   return page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,

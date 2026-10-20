@@ -13,6 +13,10 @@ runtime prerequisites, and limits.
 3. Review the full native administration warning and select the acknowledgment.
 4. Choose **Share Agent** and read each reported step.
 
+While the share runs, the page stays open until it finishes, usually within
+seconds and at most about 75 s; tabs still switch. Signing out or an expired
+session still leaves.
+
 The person gains Namespace discovery and access to this Agent's native
 conversations, settings, tools and accessible credentials. They do not
 automatically receive separate personal chat identity.

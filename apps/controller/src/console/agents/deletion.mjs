@@ -40,8 +40,6 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     error: null,
     // Set once this viewer opens the confirmation, so the row never vanishes under them.
     used: false,
-    // Set when the page shows only this row because another read found the Agent deleting.
-    pageDeleting: false,
   };
   let pollTimer;
   // A repeat confirmed while a quiet poll reads. Reads and writes stay serialized, so it is sent
@@ -99,7 +97,7 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     // A viewer whose permission answer denies Agent delete has no row (UX spec 3.9). A missing
     // answer keeps it, and the API still decides. A deleting Agent keeps it: the row is the
     // page's only report of the cleanup.
-    setHidden(section, state.forbidden && !state.used && !state.deleting && !state.pageDeleting);
+    setHidden(section, state.forbidden && !state.used && !state.deleting);
     const shown = state.accessEnded
       ? []
       : state.deleting || state.needsRefresh
@@ -114,12 +112,14 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
     }
   }
 
-  function setDeleting() {
+  function setDeleting({ notifyPage = true } = {}) {
     state.deleting = true;
     state.needsRefresh = false;
     state.notice = "";
-    onDeleting();
     schedulePoll();
+    if (notifyPage) {
+      onDeleting();
+    }
   }
 
   function schedulePoll() {
@@ -430,9 +430,14 @@ export function createAgentDeletion(context, path, agent, onDeleting, allowed = 
   return {
     section,
     // The page found the Agent deleting through another read and now shows only this row.
-    showOnPage() {
-      state.pageDeleting = true;
+    showOnPage({ focus = false } = {}) {
+      if (!state.deleting) {
+        setDeleting({ notifyPage: false });
+      }
       render();
+      if (focus) {
+        refresh.focus();
+      }
     },
   };
 }

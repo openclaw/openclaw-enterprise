@@ -167,11 +167,15 @@ export const CreatePresetInvalidField = {
 };
 export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),
-  name: "Agent creation needs an administrator",
+  name: "Permission check failed",
 };
 export const CreateMember = {
   ...story("createMember"),
   name: "Member with Agent create",
+};
+export const CreateMemberGrantRefused = {
+  ...story("createMemberGrantRefused"),
+  name: "Member Agent created, grant needs an administrator",
 };
 export const CreateRestricted = {
   ...story("createRestricted"),
