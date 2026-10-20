@@ -1419,7 +1419,7 @@ select:not([multiple])[size="1"] {
 /* The overview: the stat card (facts + the page's one disclosure), then the deployment card. */
 .agent-overview-status {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--space-6);
   margin-bottom: var(--space-8);
   overflow-wrap: anywhere;
 }
@@ -1482,11 +1482,45 @@ select:not([multiple])[size="1"] {
   line-height: var(--text-xl--line-height);
   font-weight: var(--weight-semibold);
 }
+.stat-label,
+.stat-value {
+  overflow-wrap: normal;
+}
 .stat-help {
   margin: 0;
 }
 .stat-help:empty {
   display: none;
+}
+/* Beside the sidebar (761-1100) the columns narrow; a fourth fact (Stop requested) stacks. */
+@media (max-width: 1100px) {
+  .stat {
+    padding-inline: var(--space-4);
+  }
+  .stats:has(> .stat:nth-child(4)) {
+    grid-auto-flow: row;
+    grid-template-columns: 1fr;
+  }
+  .stats:has(> .stat:nth-child(4)) > .stat {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    column-gap: var(--space-4);
+    padding: var(--space-3) 0;
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+  }
+  .stats:has(> .stat:nth-child(4)) > .stat:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+  .stats:has(> .stat:nth-child(4)) > .stat:last-child {
+    padding-bottom: 0;
+  }
+  .stats:has(> .stat:nth-child(4)) .stat-help {
+    flex-basis: 100%;
+  }
 }
 /* Phone: one column, label and value on one line, help beneath. */
 @media (max-width: 760px) {
@@ -1547,7 +1581,7 @@ select:not([multiple])[size="1"] {
   transform: rotate(-45deg);
 }
 .disclosure[open] > summary::after {
-  transform: rotate(45deg);
+  transform: translateY(-2px) rotate(45deg);
 }
 .disclosure > ul {
   max-width: var(--prose-max);
