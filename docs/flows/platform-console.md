@@ -61,7 +61,7 @@ graph TD
     M3 --> M4["Worker creates resources, grants and first deployment"]
     M1 -->|returned Configuration ID| M["POST creates Agent draft only"]
     M --> M2["Console grants Agent use of selected Secrets"]
-    E2 --> N["GET draft Configuration or immutable revision"]
+    E2 --> N["GET draft Configuration or immutable Agent revision"]
     E3 --> O["PATCH Configuration, then grant selected Secret access"]
     E4 --> P["DELETE exact Agent"]
     E5 --> P2["POST exact Agent stop"]
@@ -83,7 +83,7 @@ graph TD
     P2 -->|denied| K
     P -->|denied| K
     Q -->|Agent not found| R["Return to Agents list"]
-    I --> J["Render list, draft, revision, or channel state"]
+    I --> J["Render list, draft, Agent revision, or channel state"]
     F -->|denied or unavailable| K["Clear rows and show recovery"]
     J -->|Logout| L["Hide private state and confirm sign-out"]
   end
@@ -115,7 +115,7 @@ the full commit; invalid or absent metadata remains unknown.
 `runtime-images.mjs:renderRuntimeImages` issues at most three concurrent reads for
 readable Agents in the selected Namespace.
 `packages/occ/src/index.ts:OpenClawController.getAgentRuntimeImages` authorizes
-exact Agent read, resolves its active revision, then calls its Compute Driver.
+exact Agent read, resolves its selected version, then calls its Compute Driver.
 The [Compute contract](../reference/drivers/compute.md) owns workload inspection
 and Enterprise/OpenClaw provenance. Navigation preserves `debug=true`; removing it
 stops reads. Missing provenance stays explicit.
@@ -150,7 +150,7 @@ reads, password input, and mutations prevent reuse; read-only catalog and diagno
 list, not each row’s deployment read. On reuse, `agents/list.mjs:renderAgentList`
 sets visible deployment cells to **Reading deployment…**, hidden for 250 ms and, once shown, kept at least 150 ms, before paint, then shows
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
-not a link to the old revision. Unfinished or failed row reads never prevent reuse; resuming rereads them.
+not a link to the old version. Unfinished or failed row reads never prevent reuse; resuming rereads them.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
@@ -185,12 +185,12 @@ Installation-wide collection. No readable selection means no Agent request.
 returning safe startup summaries. Empty configuration returns an empty list;
 missing wiring or failed dependencies return errors.
 
-`apps/controller/src/console/namespaces.mjs:renderNamespaces` sends validated
-names through tracked `POST /namespaces`. `OpenClawController.createNamespace`
-authorizes creation and queues provisioning; `perform` audits it.
-Success offers Agents or refresh. Pending writes block dismissal.
-Conflicts retain input; denials block resubmission. Unconfirmed responses require
-list inspection before retry, never substituting creation responses for authorized lists.
+`apps/controller/src/console/namespaces.mjs:renderNamespaces` sends Name-rule-valid names
+through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
+and queues provisioning; `perform` audits. Open Agents needs the Namespace in the
+reread list; closing refocuses the opener. Pending writes block dismissal; 400s mark
+names. Conflicts retain input; denials block resubmission. Unconfirmed responses
+require list inspection.
 
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
 is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;
@@ -201,9 +201,9 @@ OCC still authorizes every write. See
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides
 restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editing.
 `capabilities.pluginPolicies` gates policy edits; unsupported reviewers remain clearable.
-The picker keeps a compact credential/access reminder beside an expandable
-**Access and credential setup** disclosure. Its bounded instructions, list, and
-details scroll within the dialog while search and pagination remain reachable.
+A credential/access reminder sits beside the expandable
+**Access and credential setup** disclosure. Instructions, list, and details
+scroll within the dialog; search and pagination remain reachable.
 While mounted, Available and Configured retain separate selected plugins, queries,
 tool filters, and expanded rows without fetching pages or changing drafts.
 Removed selections clear their details; discovery resets clear both tabs.
@@ -238,7 +238,7 @@ failures block submission.
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](agent-provisioning.md), even after
 that outage. The worker reauthorizes, creates resources and exact Secret grants,
-and deploys; Console polls, then opens the revision.
+and deploys; Console polls and opens the saved version.
 
 Ordinary drafts first check values and plugins with
 `POST /namespaces/:namespaceId/agents/validate`, then post
@@ -252,7 +252,7 @@ Agent/Configuration for [workspace setup](workspace-files.md).
 same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
 rereads grants without duplication. Failed Agent writes retain Configuration ID
 and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
-admit no revision and start no runtime.
+save no version and start no runtime.
 
 `agents/harness-auth.mjs` edits bindings and shows
 [Secret identities](platform-console/agent-editing.md#4-render-draft-revision-or-channels),
@@ -262,7 +262,7 @@ Switching methods hides that feedback without changing the lookup or saved choic
 
 ### 4–6. Edit the Agent and access runtime files
 
-[Agent editing](platform-console/agent-editing.md) traces revision rendering,
+[Agent editing](platform-console/agent-editing.md) traces version rendering,
 channels, credentials, workspace files, stopping, and deletion;
 [Agent sharing](platform-console/agent-sharing.md) traces policy writes.
 Responses follow the ordering checks below.
@@ -275,10 +275,10 @@ Kubernetes `prepareRevision` carries them into `openclaw.json` without adding de
 
 `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` registers tab
 navigation with `console.mjs:loadPage`. For the same Agent, Namespace, and
-revision, tab clicks/history replace only tab content; shell, native-admin panel,
-and revision controls stay mounted. Configuration and revision reads are shared;
-direct Workspace URLs start neither. Refresh, revision changes, and successful
-channel/authentication edits reload fully. A `403` on the configuration or revision
+version, tab clicks/history replace only tab content; shell, native-admin panel,
+and version controls stay mounted. Configuration and Agent revision reads are shared;
+direct Workspace URLs start neither. Refresh, version changes, and successful
+channel/authentication edits reload fully. A `403` on the configuration or Agent revision
 read is an audited denial, so `console.mjs:deniedReadsFor` remembers that path in tab
 `sessionStorage` for the session owner; later views show **Configuration unavailable**
 without asking again, and **Retry** forgets the path and rereads. Logout clears it.
@@ -295,7 +295,7 @@ Password values clear while [draft captures](platform-console/agent-editing.md#4
 Secret saves update the shared draft snapshot used by other tabs and deployment
 preflight.
 
-**Open vN Logs** opens the failed revision from any version or draft. Logs reserves space;
+**Open vN Logs** opens the failed version from any version or draft. Logs reserves space;
 Stop and Delete stay put. Direct navigation focuses and scrolls to the output; selecting
 the tab leaves visible output in place. Recovery links scroll their version tab into view
 and focus its tab control, smoothly unless the page rebuilds or motion is reduced.
@@ -325,7 +325,7 @@ remains and the reader hasn’t moved on. Draft save baselines and Namespace sco
 Authorization and dependency failures clear affected content and expose recovery;
 a current protected `401` clears all private state. `pagehide` clears
 private DOM, previews, and drafts even for BFCache; persisted `pageshow` performs
-a fresh load. Failure views show local reasons and bounded request IDs, never
+a fresh load. Failure views show local reasons and `req_<UUID>` request IDs, never
 backend error text. Backend authorization denial clears every retained preview,
 including other Namespace selections, because the permission is Installation-wide.
 
@@ -333,7 +333,7 @@ The [detail action flow](platform-console/agent-editing.md#stop-agent) traces
 confirmed Stop and Delete requests and permissions. Acceptance
 is not completed shutdown or deletion. Uncertain outcomes block replay until
 readback; only confirmed absence returns to Agents. Deployment resumes
-a stopped Agent through a new revision. The [Agent reference](../reference/agents.md#deletion)
+a stopped Agent through a new Agent revision. The [Agent reference](../reference/agents.md#deletion)
 owns asynchronous cleanup.
 
 Logout first hides private state, then calls the sign-out endpoint.
@@ -344,7 +344,9 @@ this client never infers it from a network error.
 
 <span id="deploy-the-saved-draft"></span>
 
-## Deploy the new revision
+<span id="deploy-the-new-revision" class="anchor-alias"></span>
+
+## Deploy the new version
 
 The **Create new version** draft exposes **Deploy new version**.
 **Operator-managed credentials** persist `{ "method": "runtime" }` and bypass
@@ -352,7 +354,7 @@ managed credential setup in Console; OCC does not validate host credentials.
 Deployment checks the Agent, Configuration association, and generation, then sends
 bodyless
 `POST /namespaces/:namespaceId/agents/:agentId/deploy`. The server authorizes
-and admits the revision. Its read-only details open while **Deployment
+and saves the version. Its read-only details open while **Deployment
 activity** follows the latest visible deployment. Workspace reads check gateway
 startup and file availability. An uncertain response disables replay until
 refresh and inspection.

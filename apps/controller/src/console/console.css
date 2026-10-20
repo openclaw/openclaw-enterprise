@@ -169,6 +169,18 @@ button,
 a {
   touch-action: manipulation;
 }
+/* Links are ink with a quiet underline that goes full ink on hover; the accent is for actions,
+   the current nav item, selection and focus (UX plan C8, spec 3.3). :where() keeps this at zero
+   specificity, so any class (a.button, .nav a, table names) sets its own colour and decoration. */
+:where(a) {
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--color-border-strong);
+}
+:where(a:hover) {
+  text-decoration-color: currentColor;
+}
 /* Button hierarchy (UX plan C2). A plain button is the secondary tone, edged at 3:1 against the
    surface; .button gives a link the same chrome. Tones: --primary (accent fill, at most one per
    view), --ghost (no edge: toolbars and Refresh), --danger (destructive), --link (inline text).
@@ -237,6 +249,11 @@ button.danger:not(:disabled):hover {
   padding: var(--space-1) var(--space-2);
   border-color: transparent;
   background: none;
+}
+/* Disclosures that open more detail read as link buttons, not accent text. */
+.button--link,
+.native-document > summary,
+.plugin-access-details > summary {
   color: var(--color-link);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -292,9 +309,6 @@ button[aria-busy="true"] {
 .repository-profile:has(:focus-visible) {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
-}
-a {
-  color: var(--accent);
 }
 [hidden] {
   display: none !important;
@@ -891,7 +905,13 @@ p {
 }
 .resource-linked .resource-name a {
   color: var(--text-strong);
-  text-decoration: none;
+  font-weight: var(--weight-medium);
+  text-decoration-color: transparent;
+}
+/* The whole row is the target; its name underlines while the pointer is anywhere on it. */
+.resource-linked:hover .resource-name a,
+.resource-linked .resource-name a:focus-visible {
+  text-decoration-color: currentColor;
 }
 .resource-linked .resource-name a::after {
   content: "";
@@ -1724,9 +1744,16 @@ select:not([multiple])[size="1"] {
   max-width: 310px;
   overflow-wrap: anywhere;
 }
-.agent-table a {
-  font-weight: 550;
-  text-decoration: none;
+/* A row's name is its primary link: ink, and underlined only on hover, since a column of
+   underlined names reads as noise (spec 3.3). The revision and deployment links keep theirs. */
+.agent-table td:first-child > a {
+  color: var(--color-text-strong);
+  font-weight: var(--weight-medium);
+  text-decoration-color: transparent;
+}
+.agent-table td:first-child > a:hover,
+.agent-table td:first-child > a:focus-visible {
+  text-decoration-color: currentColor;
 }
 .agent-tabs {
   display: flex;
@@ -1790,8 +1817,9 @@ select:not([multiple])[size="1"] {
   margin-top: 24px;
 }
 .native-document summary {
+  width: fit-content;
   cursor: pointer;
-  color: var(--accent);
+  font-weight: var(--weight-medium);
 }
 .native-document pre {
   max-height: 480px;
@@ -2271,9 +2299,9 @@ select:not([multiple])[size="1"] {
   font-size: 12px;
 }
 .plugin-access-details > summary {
-  color: var(--accent);
+  width: fit-content;
   cursor: pointer;
-  font-weight: 500;
+  font-weight: var(--weight-medium);
 }
 .plugin-access-instructions {
   max-height: min(12rem, 25dvh);

@@ -10,11 +10,13 @@ export const NamespacesDenied = { ...story("namespacesDenied"), name: "Access de
 export const CreateNamespace = { ...story("namespaceCreate") };
 export const CreateNamespaceMobile = { ...story("namespaceCreateMobile") };
 export const CreateRequired = { ...story("namespaceCreateRequired") };
+export const CreateInvalidName = { ...story("namespaceCreateInvalidName") };
 export const CreateConflict = { ...story("namespaceCreateConflict") };
 export const CreateDenied = { ...story("namespaceCreateDenied") };
 export const CreatePending = { ...story("namespaceCreatePending") };
 export const CreateUnknown = { ...story("namespaceCreateUnknown") };
 export const CreateSuccess = { ...story("namespaceCreateSuccess") };
+export const CreateUnreadable = { ...story("namespaceCreateUnreadable") };
 
 export const NamespacesUnavailable = { ...story("namespacesUnavailable") };
 export const NamespacesUnavailableMobile = { ...story("namespacesUnavailableMobile") };

@@ -40,7 +40,7 @@ graph TD
   G -- "Secret-backed method" --> Z["<b>409 conflict</b><br/>No env fallback"]
   G -- "admitted" --> H["<b>Freeze snapshot</b><br/>sourceId, gateway, type, loginMode"]
   H --> I{"<b>Worker dispatch</b><br/>grants and live record"}
-  I -- "mismatch or unavailable" --> W["<b>Permanent failure</b><br/>Revision stays inactive"]
+  I -- "mismatch or unavailable" --> W["<b>Permanent failure</b><br/>Version stays inactive"]
   I -- "ready" --> J["<b>Compute receives source</b><br/>Attachment handoff"]
   J --> P{"<b>Source login mode</b>"}
   P -- "api_key" --> Q["<b>Sandbox provisions Harness</b><br/>API-key placeholder"]
@@ -156,7 +156,7 @@ model Secret and passes the resolved source to Sandbox provisioning.
 `admitCredentialSources` requires a Sandbox (`409`), rechecks caller binding
 grants, authorizes the Agent principal's `operate` on every listed source,
 including the Harness source, checks catalog types, and freezes `{ sourceId,
-credentialGatewayId, sourceType }` in revision `credential_sources`.
+credentialGatewayId, sourceType }` in Agent revision `credential_sources`.
 
 ### 6. Resolve the source at dispatch
 
@@ -184,7 +184,7 @@ Neither refresh tokens nor legacy bundles reach Codex. See the
 `apps/controller/src/drivers/credential-gateway/openshell.ts:removeSource`
 
 Deletion authorizes `delete`, requires a selected gateway (`409`), and locks
-the source. Draft, active-revision or pending-deployment references return `409`;
+the source. Draft, selected version or pending-deployment references return `409`;
 withdrawal-only references return `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`; another
 owning Driver returns `503`. It moves `registering` or `ready` to `deleting`;
 triggers forbid leaving that state or returning to `registering`. Outside the
@@ -226,13 +226,13 @@ updates use the [Refresh Driver](credential-source-refresh.md#4-update-and-rotat
 `apps/controller/src/drivers/compute/kubernetes/index.ts:withdrawCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:withdraw`
 
-The API authorizes `agent:operate` and requires the active revision to list the
-source in `credential_sources`. For that revision, each later revision
-admitted with the source, and each earlier one not yet retired, it inserts a `pending` `credential_withdrawals` row keyed by revision
+The API authorizes `agent:operate` and requires the selected version to list the
+source in `credential_sources`. For that version, each later version
+admitted with the source, and each earlier one not yet retired, it inserts a `pending` `credential_withdrawals` row keyed by version
 and source unless one exists. It makes the caller `requested_by` of
-each pending row and queues revision-scoped work with target `credentials_withdrawn`
+each pending row and queues version-scoped work with target `credentials_withdrawn`
 (`packages/occ/src/state/controller-work.ts:credentialWithdrawalWorkKey`) or
-expedites outstanding work. That work never deploys the revision.
+expedites outstanding work. That work never deploys the version.
 
 The worker rechecks `agent:operate` for each pending withdrawal's
 `requested_by` and calls Compute's
@@ -247,17 +247,16 @@ also marks the row `revoked` and appends
 `openclaw.agents.lifecycle.credentials_withdraw`. Other states retry with
 backoff. The read
 (`packages/occ/src/index.ts:readAgentCredentialWithdrawal`) prefers these
-revisions' exhausted rows, then `pending` ones, the active revision's first. Without Compute maintenance, failing the work queues
-a bounded later series (`apps/controller/src/worker.ts:scheduleCredentialWithdrawalRecovery`). `withdrawalInProgress` reflects outstanding
-work, so `false` means only a replay or maintenance queues another attempt.
+versions' exhausted rows, then `pending` ones, the selected version's first. Without Compute maintenance, failed work queues
+at most 15 recovery series (`apps/controller/src/worker.ts:scheduleCredentialWithdrawalRecovery`). `withdrawalInProgress` reflects outstanding
+work; `false` means replay or maintenance must queue another attempt.
 
-Maintenance of the active revision (scheduled only when Compute or repository
-credentials set an interval) stops preparing it once its Harness source is
-withdrawn
+Maintenance runs only with a Compute or repository credential interval. It stops
+preparing the selected version after its Harness source is withdrawn
 (`apps/controller/src/worker.ts:completeWithdrawnRevisionMaintenance`). While
 any withdrawal is `pending`, the pass keeps the chain; once all are `revoked`, it stops. Deploy and repair work never re-attach a withdrawn source:
 a Harness source fails them with `CREDENTIAL_WITHDRAWN`. Either maintenance pass re-queues
-pending withdrawals with no work outstanding, the other revisions' too
+pending withdrawals with no work outstanding, the other versions' too
 (`apps/controller/src/worker.ts:recoverPendingCredentialWithdrawals`); one denied
 or refused waits for a replay. `authorizeRevision` skips the
 `operate` recheck for withdrawn sources, so removing their grants cannot end
@@ -265,7 +264,7 @@ maintenance.
 
 A withdrawal that finds no Sandbox records `revoked`, yet a create OpenShell
 accepted before its worker lost the claim can land later with the source. So
-every preparation, and every pass of a Harness-withdrawn revision,
+every preparation, and every pass of a Harness-withdrawn version,
 rechecks `revoked` rows
 (`apps/controller/src/worker.ts:recheckRevokedCredentialSources`): the OpenShell
 Driver detaches the provider again only if `SandboxSpec.providers` lists it.
@@ -273,7 +272,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 ## Debugging and Verification
 
 - `node --test tests/conformance/credential-source-occ.test.mjs` covers catalog,
-  grants, lifecycle, compensation/recovery, audit and revision admission with
+  grants, lifecycle, compensation/recovery, audit and version admission with
   an in-process gateway double.
 - `node --test tests/integration/credential-source-api.test.mjs` exercises
   Fastify/IAM/OCC/OpenShell Driver validation, deletion recovery, profile isolation
@@ -285,7 +284,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 - The credential withdrawal cases in
   `tests/integration/postgres-worker-agent-revision.test.mjs` run the real queue
   and worker against PostgreSQL with a Compute double: retries, outages, replays,
-  refusals, maintenance, denials, other revisions, lost grants, and late creates.
+  refusals, maintenance, denials, other versions, lost grants, and late creates.
 - The [real OpenShell suite](../testing/openshell.md#openshell-sandbox) registers
   the selected PAT/API-key source through the production API, reads live status,
   updates it, and withdraws tool and model sources. The echo service stops
@@ -294,7 +293,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
   reachable; `GET` shows its live `status`.
 - Worker reason codes `CREDENTIAL_GATEWAY_MISMATCH` and
   `HARNESS_AUTH_SOURCE_UNAVAILABLE` mean a changed selection or an unavailable
-  source; `CREDENTIAL_WITHDRAWN` a withdrawn revision source, and
+  source; `CREDENTIAL_WITHDRAWN` a withdrawn version source, and
   `CREDENTIAL_WITHDRAWAL_PENDING` an unconfirmed revocation. `CREDENTIALS_WITHDRAWN` and `WITHDRAWAL_REVISION_RETIRED` complete the work,
   and `CREDENTIAL_WITHDRAWAL_UNSUPPORTED`, `COMPUTE_DRIVER_MISMATCH`,
   `CREDENTIAL_WITHDRAWAL_MISCONFIGURED`, `CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT`,
@@ -351,7 +350,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 - 2026-10-08 17:30: Withdrawal covers unretired predecessors. (fix-816-819)
 - 2026-10-08 16:00: Preparation rechecks revoked withdrawals against a late Sandbox create. (fix-790)
 - 2026-10-08 14:00: An unoffered source type is a `409` naming the fix, not `404`; worker credential codes have their own status messages. (fix-821-824)
-- 2026-10-08 12:00: A withdrawal also covers later revisions admitted with the source. (fix-810)
+- 2026-10-08 12:00: A withdrawal also covers later versions admitted with the source. (fix-810)
 - 2026-10-08 11:45: DELETE checks gateway ownership before `deleting`. (fix-811-812 - e461e1621)
 - 2026-10-08 11:42: Reconciled binding and withdrawal behavior with endpoint validation; trimmed repeated lifecycle detail. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 1eceea5dfb864ff469dce04a42fe3cce9c7f5f75)
 
@@ -364,7 +363,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 - 2026-10-07 18:00: Unified binding: one `credentialSources` list holds every source, and a credential-source `harnessAuth` names a listed entry. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - ee950468c)
 - 2026-10-07 12:07: Unify imported and managed PAT authentication while preserving source ownership and existing OAuth behavior. (01a0e5ec-d802-7800-9eb6-8022c1ac0d06 - be5006e62)
-- 2026-10-06 21:30: Keep tool-withdrawal recovery scheduled after model revocation without preparing the revision again. (pr-851-rebase - bb6c7449b)
+- 2026-10-06 21:30: Keep tool-withdrawal recovery scheduled after model revocation without preparing the version again. (pr-851-rebase - bb6c7449b)
 - 2026-10-06 16:12: Reject normalized hostname stars, zero ports, and OpenShell bracket hosts before credential-source persistence. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 129b9b98812a861cfbdcec386daf5258902ebba8)
 - 2026-10-05 11:36: Validate source configuration before persistence and recover invalid rows without guessing remote ownership. (agent:roboclaw:dashboard:9d0532e1-befb-4fc3-935e-7cd2a0c72110 - 9958ef0412565864efba7b13995536d7c2a51d22)
 
@@ -380,7 +379,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 - 2026-10-01 11:37: Updated the OpenShell wire-fixture pin to v0.1.3-pre.2. (authoring-run/f1f395c4-2594-4b07-9e92-ae829a5b5dd4 - f22a584e6ce21d505b40a72fdb5ae1c6e74c1c84)
 - 2026-09-30 21:14: Updated the independent OpenShell wire-contract verification pointer to v0.1.3-pre.1. (authoring-run/b158c89c-3010-42ae-95b4-350b05de7441 - 37bbee705ea3808ad000413dd54bdcc718980179)
 
-- 2026-09-30 04:00: Recorded withdrawal attempt reasons, replay deduplication, and maintenance of a withdrawn revision; corrected the update ordering. (pr-553-alignment - 3a5e48035)
+- 2026-09-30 04:00: Recorded withdrawal attempt reasons, replay deduplication, and maintenance of a withdrawn version; corrected the update ordering. (pr-553-alignment - 3a5e48035)
 - 2026-09-28 18:00: Added source update and per-Agent withdrawal through worker-executed revocation. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - 7cd4a210)
 - 2026-09-28 05:13: Documented the controller transaction boundary for credential source writes. (authoring-run/5da74b2e-b249-44da-87e4-ca85f018c832 - 646b067220f6b7f8f3059eaa0710db2654b61499)
 - 2026-09-27 22:51: Extended credential-source Harness delivery to dedicated native OpenClaw without projecting the model Secret. (authoring-run/88764ea7-c6bb-4ac8-919f-c21071946c37 - 859c0b11e5f1c350acda231c89ad3573504324eb)

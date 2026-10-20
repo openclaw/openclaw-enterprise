@@ -14,8 +14,8 @@ the [upgrade operations guidance](../../reference/settings/operations.md).
 This path uses the App installation's authority. Personal GitHub user delegation
 is not implemented. This procedure uses Kubernetes Compute, embedded
 OpenClaw, `api_key` Harness authentication, and no Sandbox Driver. The separate
-credential service holds the App key and GitHub tokens; OCC delivers bounded
-gateway session material to the Agent. Do not put keys, tokens, or gateway bearers
+credential service holds the App key and GitHub tokens. OCC gives the Agent
+gateway session credentials with a time limit and repository permissions. Do not put keys, tokens, or gateway bearers
 in Agent configuration, images, examples, or logs.
 
 ## Register and install the GitHub App
@@ -132,7 +132,7 @@ grant. Its create request includes:
 ```
 
 This is a fragment of the Agent request, not a complete request or a model
-credential. Wait for the requested revision to become active, then send the
+credential. Wait for OCC to select the requested version, then send the
 Agent a normal task through the [TUI procedure](../repository-credentials.md#ask-the-agent-to-work-in-the-repository).
 Ask it to use a fresh approved branch and repository-local author identity:
 
@@ -158,7 +158,7 @@ Agent does not run `gh auth login`, receive a PAT, or open a session manually.
 ## Verify, troubleshoot, and finish
 
 Have a human inspect the remote branch's commit and draft PR. Record the source
-commit, immutable images, Agent/revision IDs, commit SHA, and PR URL without
+commit, immutable images, Agent IDs, Agent revision IDs, commit SHA, and PR URL without
 credentials. A ready Pod or valid configuration does not prove this workflow;
 repeat the installed check after changing controller/runtime images.
 
@@ -168,7 +168,7 @@ repeat the installed check after changing controller/runtime images.
 | TLS error or connection timeout                         | Check DNS, certificate SAN/public CA, Service 443 → 8443, and effective DNS/HTTPS NetworkPolicies. Keep certificate verification enabled.                                                                                                                                                                                      |
 | GitHub access denied                                    | Check repository selection, approved App permissions, numeric repository identity, repository rules and the selected access level. For this PR workflow, use Contributor with issue management off (`git-write`); in the Console choose **Contributor**, open **Customize access**, and turn off **Create and manage issues**. |
 | Push or PR response uncertain                           | Inspect GitHub's branch/PR state before retrying; do not blindly repeat a possible write.                                                                                                                                                                                                                                      |
-| Session lost after service restart, or deadline reached | Inspect retained cleanup obligations, then explicitly deploy a new authorized revision. Its deployment does not settle earlier cleanup or replay operations.                                                                                                                                                                   |
+| Session lost after service restart, or deadline reached | Inspect retained cleanup obligations, then explicitly deploy a new authorized version. Its deployment does not settle earlier cleanup or replay operations.                                                                                                                                                                    |
 
 When finished, stop the Agent through its normal lifecycle. Confirm runtime
 retirement and [credential cleanup](../../reference/repository-credentials.md#sessions-and-closure);

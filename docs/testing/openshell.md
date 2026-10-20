@@ -168,7 +168,7 @@ only one. Then run:
 node scripts/first-agent.mjs my-agent --harness codex --control-ui
 ```
 
-A successful model turn prints `Model response verified:`. An active revision or
+A successful model turn prints `Model response verified:`. A selected version or
 ready Sandbox alone is not a model proof. For an invalid key, rerun with
 `--replace-key`. The starter disables tools. In this Compose/OpenShell profile, `--control-ui` prints both the OCE console and OpenClaw Control UI URLs. Trust the browser CA printed by startup before opening them. Run `./scripts/dev-down` with the same state
 directory when finished.

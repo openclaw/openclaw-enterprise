@@ -48,6 +48,7 @@
     "tests/conformance/console-agent-name-runs.test.mjs": 500,
     "tests/conformance/console-api-client.test.mjs": 500,
     "tests/conformance/console-carry.test.mjs": 100,
+    "tests/conformance/console-namespace-name.test.mjs": 100,
     "tests/conformance/contracts.test.mjs": 200,
     "tests/conformance/controller-stop-yields.test.mjs": 200,
     "tests/conformance/credential-source-occ.test.mjs": 500,
