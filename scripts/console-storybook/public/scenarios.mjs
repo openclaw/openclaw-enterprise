@@ -3373,9 +3373,10 @@ export const scenarios = {
     // The page brings the editor into view itself.
     scrollToTabs: false,
     description:
-      "Edit current Configuration on a version's Configuration tab opens the draft with its Configuration editor already open, brought into view and focused. It used to open the draft at the top of the page and still need an Edit Configuration click far below.",
+      "Edit current Configuration on a version's Configuration tab opens the draft with its Configuration editor already open, brought into view and focused. It used to open the draft at the top of the page and still need an Edit Configuration click far below. The draft's \"New version\" notice comes to the top with the editor below it, so the screen says this is the draft; a window too short for both brings the editor to the top instead.",
     steps: [
-      "The page shows the draft. Configuration JSON is in view with the caret in it; no Edit Configuration button is left to press.",
+      'The page shows the draft. The notice "New version. Changes affect future deployments using this Configuration." sits at the top of the window, and Configuration JSON is in view below it with the caret in it; no Edit Configuration button is left to press. Check this at desktop and phone widths.',
+      "In a window about 420 px tall, open the story again: Configuration JSON comes to the top with the caret in it, and the notice is above the window.",
       "Choose Cancel: the editor closes and Edit Configuration takes focus.",
     ],
   },
