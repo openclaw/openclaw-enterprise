@@ -192,7 +192,7 @@ outcome disables deployment until **Reload draft**. Whether the write committed 
 
 Browsing never deploys. Deploy credential changes; workspace edits apply immediately.
 Native JSON omits Agent-owned Backend and execution mode. See [versions and Slack
-sender access](../reference/console.md#inspect-detail-revisions-and-channel-drafts).
+sender access](../reference/console/versions-and-channel-drafts.md).
 
 In **Enable gateway password access**, Cancel discards the staged reference.
 To apply it, save Configuration, then deploy. Compare configured, save-denied,
