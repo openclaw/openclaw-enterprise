@@ -1768,6 +1768,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     "Credentials",
     "Workspace files",
     "Policy denials",
+    "Access",
   ];
   assert.deepEqual(await list.getByRole("tab").allTextContents(), names);
   // Which tab is selected, which one is the Tab stop, which has focus, and the URL's tab=.
@@ -1806,9 +1807,9 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   for (const [key, focused] of [
     ["ArrowLeft", "Plugins"],
     ["ArrowLeft", "Configuration"],
-    ["ArrowLeft", "Policy denials"],
+    ["ArrowLeft", "Access"],
     ["ArrowRight", "Configuration"],
-    ["End", "Policy denials"],
+    ["End", "Access"],
     ["Home", "Configuration"],
   ]) {
     await page.keyboard.press(key);
@@ -1889,7 +1890,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await list.getByRole("tab", { name: "Configuration", exact: true }).focus();
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
-  await page.waitForURL("**tab=policy**");
+  await page.waitForURL("**tab=access**");
   await page.goBack();
   await page.waitForURL("**tab=configuration**");
   await page.waitForFunction(
@@ -1903,7 +1904,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await page.keyboard.press("End");
   await page.setViewportSize({ width: 360, height: 844 });
   await frames();
-  assert.deepEqual(await focusedInView(), { name: "Policy denials", inView: true }, "after resize");
+  assert.deepEqual(await focusedInView(), { name: "Access", inView: true }, "after resize");
   await page.setViewportSize({ width: 390, height: 844 });
   await strip.evaluate((node) => {
     node.scrollLeft = node.scrollWidth;
