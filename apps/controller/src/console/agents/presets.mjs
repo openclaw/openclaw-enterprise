@@ -86,6 +86,23 @@ export function createPresetFields(context, apply) {
     },
     { tone: "primary", disabled: true },
   );
+  // The chooser named no Preset beside its default shortcut (finding 2066).
+  const defaultHint = element("p", {
+    className: "hint",
+    id: `${selector.id}-default-hint`,
+    hidden: true,
+  });
+  // Once a Preset is chosen, Use Preset is the next step, so it takes the filled style from the
+  // default shortcut; clearing the choice gives it back (finding 2066).
+  function emphasize(chosen) {
+    for (const [node, primary] of [
+      [startDefault, !chosen],
+      [applyButton, chosen],
+    ]) {
+      node.classList.toggle("button", primary);
+      node.classList.toggle("button--primary", primary);
+    }
+  }
   let selected;
   let fields = [];
   let loadVersion = 0;
@@ -274,6 +291,7 @@ export function createPresetFields(context, apply) {
   selector.addEventListener("change", async () => {
     const version = ++loadVersion;
     const selectedId = selector.value;
+    emphasize(Boolean(selectedId));
     const applyDefault = origin === "shortcut";
     origin = undefined;
     if (retained?.id !== selectedId) {
@@ -443,6 +461,8 @@ export function createPresetFields(context, apply) {
         context.onExpired();
       } else {
         feedback.textContent = message(error);
+        // Use Preset stays disabled, so the filled style goes back to the shortcut.
+        emphasize(false);
       }
     } finally {
       if (version === loadVersion) {
@@ -466,6 +486,11 @@ export function createPresetFields(context, apply) {
       selector.disabled = false;
       defaultId = presets.find((preset) => preset.name === "default-codex")?.id;
       startDefault.disabled = !defaultId;
+      if (defaultId) {
+        defaultHint.textContent = "The default Preset is default-codex.";
+        defaultHint.hidden = false;
+        startDefault.setAttribute("aria-describedby", defaultHint.id);
+      }
       if (retained && presets.some((preset) => preset.id === retained.id)) {
         selector.value = retained.id;
         selector.dispatchEvent(new Event("change"));
@@ -487,5 +512,5 @@ export function createPresetFields(context, apply) {
         status.textContent = `Presets unavailable. ${message(error)} Try again or ask an administrator to check Preset access.`;
       }
     });
-  return { section, startDefault };
+  return { section, startDefault, defaultHint };
 }

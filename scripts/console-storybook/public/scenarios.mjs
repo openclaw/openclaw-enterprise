@@ -2710,7 +2710,11 @@ export const scenarios = {
     path: create,
     actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
     description:
-      "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft.",
+      "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft. With a Preset chosen, Use Preset is the filled button and Start with default Preset is secondary.",
+    steps: [
+      'Under Start with default Preset, the hint reads "The default Preset is default-codex."',
+      "Use Preset is filled and Start with default Preset is secondary. Choose Choose a Preset in Preset template: the filled style returns to Start with default Preset.",
+    ],
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
   },
   createPresetExistingSecret: {
