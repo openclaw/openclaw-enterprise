@@ -3891,6 +3891,9 @@ export const scenarios = {
     candidateDeploymentStatus: "queued",
     description:
       "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified. Deployment details keep Last recorded result, Reason and Since rows (not recorded yet), so the first result fills them in place.",
+    steps: [
+      'Selected version reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+    ],
   },
   deploymentRunning: {
     group: "Pages/Agent detail",
@@ -3900,6 +3903,23 @@ export const scenarios = {
     candidateDeploymentStatus: "running",
     description:
       "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
+    steps: [
+      'Selected version reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+    ],
+  },
+  deploymentRunningActivates: {
+    group: "Pages/Agent detail",
+    name: "New version in progress, then current",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    description:
+      "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      'Within about 5 s the notice begins "Current version" and Selected version reads v7.',
+    ],
   },
   deploymentDeferred: {
     group: "Pages/Agent detail",
@@ -4186,6 +4206,9 @@ export const scenarios = {
     ],
     description:
       "Watch v7 change from running to failed. Recovery appears below Deployment activity instead of pushing the overview down. The status and details update in place. The deployment and failure are simulated.",
+    steps: [
+      'On arrival v7\'s Configuration tab notice begins "Deploying version". Once v7 reads Failed, it begins "Historical version" and Selected version still reads v6.',
+    ],
   },
   deploymentModelProbeRetried: {
     group: "Pages/Agent detail",

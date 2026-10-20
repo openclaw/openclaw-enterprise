@@ -2545,7 +2545,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                 }
               }
               renderLatestDeployment();
-              renderVersionNotice();
+              // A success is shown once the Agent reread makes the version current; until then
+              // the notice keeps "Deploying" rather than flash "Historical".
+              if (status !== "succeeded") {
+                renderVersionNotice();
+              }
               refreshDeployControls();
             },
           )
@@ -3306,6 +3310,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       mountedTab = retained;
       showDraftEditorNavigationBlock = retained.showBlock;
       content.replaceChildren(...retained.nodes);
+      // The deployment may have settled while this tab was parked.
+      renderVersionNotice();
       retained.resumeDrafts();
       return;
     }

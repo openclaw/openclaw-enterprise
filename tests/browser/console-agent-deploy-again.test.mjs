@@ -460,17 +460,13 @@ test("Open version draft waits for the Configuration read to succeed", async (t)
 // While v2 deploys, v1 is still the current version. Right after Deploy new version the page
 // selected v2 and called it "Historical" beside "Selected version v1" until the deployment
 // finished (finding 2065). Its notice says it is deploying until it becomes current.
-test("A version that is deploying is labelled Deploying, not Historical, until it becomes current", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Deploying label");
-  const agent = await fixture.createAgent(
-    namespace.id,
-    "Deploying label Agent",
-    nativeValues("v1"),
-  );
+async function deployingVersion(t, name) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
+  const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1"));
   const { revision: current } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const next = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
-  let status = "running";
+  const record = { status: "running" };
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${next.id}`,
     (route) =>
@@ -482,8 +478,11 @@ test("A version that is deploying is labelled Deploying, not Historical, until i
             deploymentId: next.id,
             namespaceId: namespace.id,
             agentId: agent.id,
-            status,
-            error: null,
+            status: record.status,
+            error:
+              record.status === "failed"
+                ? persistedDeploymentError("DEPENDENCY_UNAVAILABLE")
+                : null,
             warnings: [],
             progress: null,
           },
@@ -495,14 +494,38 @@ test("A version that is deploying is labelled Deploying, not Historical, until i
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
   await summary.getByText("v2 · In progress", { exact: true }).waitFor();
-  // v1 is still the version selected for service.
-  assert.equal(await summary.getByText("v1", { exact: true }).count(), 1);
   await page
     .getByText(
       "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes.",
       { exact: true },
     )
     .waitFor();
+  return { fixture, namespace, agent, current, next, page, record, summary };
+}
+
+// Every text the version notice shows, in order, from now on.
+const watchNotice = (page) =>
+  page.evaluate(() => {
+    const seen = [];
+    globalThis.noticeTexts = seen;
+    const note = () => {
+      const text = globalThis.document.querySelector(".version-selection-notice")?.textContent;
+      if (text && seen.at(-1) !== text) {
+        seen.push(text);
+      }
+    };
+    new globalThis.MutationObserver(note).observe(globalThis.document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+
+test("A version that is deploying is labelled Deploying, not Historical, until it becomes current", async (t) => {
+  const { fixture, namespace, agent, current, next, page, record, summary } =
+    await deployingVersion(t, "Deploying label");
+  // v1 is still the version selected for service.
+  assert.equal(await summary.getByText("v1", { exact: true }).count(), 1);
   assert.equal(await page.getByText(/^Historical version/).count(), 0);
 
   // v1 itself is still the current version.
@@ -511,11 +534,31 @@ test("A version that is deploying is labelled Deploying, not Historical, until i
   await page.goBack();
   await page.getByText(/^Deploying version · read-only admitted snapshot/).waitFor();
 
-  // Completion makes v2 current, and the deploying labels go.
+  // Completion makes v2 current, and the notice goes from Deploying to Current with no
+  // Historical in between.
+  await watchNotice(page);
   await fixture.activateRevision(namespace.id, agent.id, next.id, current.id);
-  status = "succeeded";
+  record.status = "succeeded";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await page.getByText(/^Current version · read-only admitted snapshot/).waitFor();
   await summary.getByText("v2", { exact: true }).waitFor();
+  assert.equal(await page.getByText(/^Deploying version/).count(), 0);
+  const labels = (await page.evaluate(() => globalThis.noticeTexts)).map(
+    (text) => text.split(" ·")[0],
+  );
+  assert.equal(labels.at(-1), "Current version");
+  assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
+});
+
+// A Configuration tab parked while the deployment fails shows Historical when it comes back.
+test("A deploying version's parked Configuration tab says Historical once the deployment fails", async (t) => {
+  const { page, record } = await deployingVersion(t, "Deploying parked");
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.getByRole("tab", { name: "Plugins", exact: true, selected: true }).waitFor();
+  record.status = "failed";
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await page.getByText("v2 · Failed", { exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deploying version/).count(), 0);
 });

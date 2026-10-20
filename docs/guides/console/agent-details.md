@@ -68,9 +68,7 @@ work never started.
 
 **Selected version** is OCC's selection, not live health. Deployment may still
 be in progress; a successful historical record does not confirm a response.
-While the newest version's deployment is `queued` or `running`, its page calls
-it the **Deploying version**; **Selected version** names the previous one until
-the deployment completes.
+A newer version still deploying is labelled **Deploying version**.
 Verify the runtime and a real response with
 [Agent troubleshooting](../topics/agent-troubleshoot.md).
 
