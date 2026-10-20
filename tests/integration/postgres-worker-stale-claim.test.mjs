@@ -390,6 +390,159 @@ test(
 );
 
 test(
+  "a worker whose lease renewal answers after the lease drops the claim before its Compute effect",
+  requiresPostgres,
+  async (context) => {
+    const [
+      { Pool },
+      { createControllerWorker },
+      { createDevelopmentComputeDriver },
+      { PostgresPlatformState },
+      { PostgresWorkQueue },
+      { authorizedPrincipal, ensureInstallation },
+    ] = await Promise.all([
+      import("pg"),
+      import("../../apps/controller/src/worker.ts"),
+      import("../helpers/development.mjs"),
+      import("../../packages/occ/src/state/postgres-state.ts"),
+      import("../../packages/occ/src/state/postgres-work-queue.ts"),
+      import("../helpers/postgres-backend-state.mjs"),
+    ]);
+
+    const leaseDurationMs = 30_000;
+    const observerPool = new Pool({ connectionString: databaseUrl, max: 8 });
+    const workerPool = new Pool({ connectionString: databaseUrl, max: 4 });
+    const state = new PostgresPlatformState(observerPool);
+    const installation = await ensureInstallation(state, "worker-stale-claim");
+    const actor = authorizedPrincipal(await state.loadNativeIAMState(), [["create", "namespace"]]);
+    assert.ok(actor, "persisted IAM must contain an unrestricted Namespace-create Principal");
+
+    const namespace = {
+      id: `ns_${randomUUID()}`,
+      name: `worker-late-renewal-${randomUUID()}`,
+      status: "provisioning",
+      createdAt: new Date().toISOString(),
+    };
+    const idempotencyKey = `namespace:${namespace.id}:reconcile:ready`;
+
+    // The worker's clock runs on: its first renewal of this work succeeds but answers
+    // 2.6 s after the lease it confirmed ran out, like a loaded host (finding 2137).
+    // Nothing really waits, so the database lease stays valid throughout.
+    const realNow = performance.now.bind(performance);
+    let skewMs = 0;
+    performance.now = () => realNow() + skewMs;
+    const heartbeat = PostgresWorkQueue.prototype.heartbeat;
+    let lateRenewals = 0;
+    PostgresWorkQueue.prototype.heartbeat = async function (claim) {
+      const renewed = await heartbeat.call(this, claim);
+      if (claim.idempotencyKey === idempotencyKey && lateRenewals === 0) {
+        lateRenewals += 1;
+        skewMs += leaseDurationMs + 2_558;
+      }
+      return renewed;
+    };
+    const warnings = [];
+    const onWarning = (warning) => warnings.push(warning);
+    process.on("warning", onWarning);
+
+    const calls = [];
+    const events = [];
+    const developmentCompute = createDevelopmentComputeDriver();
+    const worker = createControllerWorker({
+      pool: workerPool,
+      installationId: installation.id,
+      pollIntervalMs: 20,
+      leaseDurationMs,
+      maxAttempts: 5,
+      computeDriver: {
+        ...developmentCompute,
+        async ensureNamespace(candidate) {
+          calls.push(candidate.id);
+          return developmentCompute.ensureNamespace(candidate);
+        },
+      },
+      emit(event) {
+        events.push(event);
+      },
+    });
+    context.after(async () => {
+      await worker.stop();
+      PostgresWorkQueue.prototype.heartbeat = heartbeat;
+      delete performance.now;
+      process.off("warning", onWarning);
+      await observerPool.end();
+    });
+
+    await state.transactWithQueue(async (unit, queue) => {
+      await unit.namespaces.createNamespace(namespace);
+      await queue.enqueue({
+        idempotencyKey,
+        namespaceId: namespace.id,
+        namespaceTarget: "ready",
+        actorId: actor.id,
+        availableAt: new Date(0),
+      });
+    });
+    await worker.start();
+
+    const lost = await waitFor("the late renewal's claim-loss error", async () =>
+      events.find(({ event, code }) => event === "worker.error" && code === "CLAIM_LOST"),
+    );
+    assert.deepEqual(lost, {
+      event: "worker.error",
+      code: "CLAIM_LOST",
+      workId: idempotencyKey,
+      attempt: 1,
+      operation: "namespace.ensure",
+      cause: "CLAIM_RENEWAL_LATE",
+    });
+    const late = events.filter(({ event }) => event === "worker.claim-renewal-warning");
+    assert.equal(late.length, 1);
+    assert.deepEqual(
+      { ...late[0], durationMs: undefined },
+      {
+        event: "worker.claim-renewal-warning",
+        workId: idempotencyKey,
+        attempt: 1,
+        operation: "namespace.ensure",
+        code: "CLAIM_RENEWAL_LATE",
+        durationMs: undefined,
+      },
+    );
+    assert.ok(late[0].durationMs > leaseDurationMs, `durationMs ${late[0].durationMs}`);
+    // No timer was armed with the negative remainder, and Compute never ran on the claim.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(
+      warnings
+        .filter(({ name }) => name === "TimeoutNegativeWarning")
+        .map(({ message }) => message),
+      [],
+    );
+    assert.deepEqual(calls, []);
+
+    // The claim stays with lease recovery; once it expires the work runs again and converges.
+    await observerPool.query(
+      `UPDATE occ.controller_work
+       SET lease_expires_at = clock_timestamp() - interval '1 second'
+       WHERE idempotency_key = $1 AND state = 'claimed'`,
+      [idempotencyKey],
+    );
+    await waitFor("the recovered work to converge the Namespace", async () => {
+      const rows = await observerPool.query(
+        `SELECT namespaces.status, work.state, work.attempt_count
+         FROM occ.namespaces AS namespaces
+         JOIN occ.controller_work AS work ON work.namespace_id = namespaces.id
+         WHERE namespaces.id = $1 AND work.idempotency_key = $2`,
+        [namespace.id, idempotencyKey],
+      );
+      const current = rows.rows[0];
+      return current.status === "ready" && current.state === "succeeded" ? current : undefined;
+    });
+    assert.deepEqual(calls, [namespace.id]);
+  },
+);
+
+test(
   "a worker that loses its claim before committing plugin warnings cannot write them",
   requiresPostgres,
   async (context) => {
