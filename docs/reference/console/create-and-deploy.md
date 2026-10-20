@@ -29,9 +29,8 @@ block direct Secret-backed model and environment projection.
    **Create Agent**.
 2. Choose a [Preset](../presets.md), fill its variables, and select **Use Preset**.
    Review defaults and choose an existing or new model Secret.
-   **Start with default Preset** loads `default-codex`, as the hint under it says;
-   **Start without Preset** skips Presets. Once a Preset is chosen, **Use Preset**
-   is the filled button.
+   **Start with default Preset** loads `default-codex`; **Start without Preset**
+   skips Presets.
 3. Enter a unique name within the Namespace. Choose **Provider**, then
    **Harness**. OpenAI offers **Codex** by default and **OpenClaw**;
    Anthropic offers only **OpenClaw**. Codex uses Dedicated **Execution mode**. OpenClaw
