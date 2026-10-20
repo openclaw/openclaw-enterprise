@@ -3408,6 +3408,8 @@ export const scenarios = {
     steps: [
       "Check that v8, v7, and v6 are listed with Show older versions below them.",
       "Select Show older versions until v1 is listed and the button is gone.",
+      "With the keyboard, Tab into the list: focus lands on v8. Down and Up move between versions and wrap at either end; Home and End jump to v8 and v1. Tab leaves the list in one press, and Shift+Tab returns to v8, not the version the arrows last reached.",
+      "Press Down twice, to v6, then Enter. v6 opens, and the next Tab into the list lands on v6, the viewed version.",
     ],
     gap: "The fixture uses three versions per page; the API default is 50.",
   },
@@ -4262,6 +4264,7 @@ export const scenarios = {
     steps: [
       "Above the facts, the failure is one danger status block: a red stripe on a light red wash, the label DEPLOYMENT FAILED · V7, the title This Agent may be offline, and CONVERGENCE_DEADLINE_EXCEEDED in code at the end of the first sentence. Open v7 Logs is the page's one filled button; at 390 wide it spans the block.",
       "In Deployment details, the three step tiles are white cards with a light edge; only the failed Deployment work tile has a red wash, and each marker carries its step's colour.",
+      'In the Versions list, v7 reads "v7", a space, then a red "Failed" badge; v6 keeps its blue "Current" badge and no other version has an outcome badge. A screen reader announces "View version v7, deployment failed".',
       "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
       "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
     ],
