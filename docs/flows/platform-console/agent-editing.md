@@ -269,6 +269,19 @@ and `workspaceDefaultsId`. OCC stages these privately for Compute's initializati
 before execution; no gateway is needed. The [workspace setup flow](../workspace-files.md)
 owns initialization, retries, and cleanup. Live editing requires deployment.
 
+<span id="stop-agent"></span>
+
+### 7. Request a stop and read back the Agent
+
+Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-and-read-back-the-agent).
+
+<span id="7-confirm-deletion-and-read-back-the-agent"></span>
+<span id="7.-confirm-deletion-and-read-back-the-agent"></span>
+
+### 8. Confirm deletion and read back the Agent
+
+Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion-and-read-back-the-agent).
+
 ## Debugging and Verification
 
 - A denied Secret list requires collection `read`; a missing menu entry may lack
