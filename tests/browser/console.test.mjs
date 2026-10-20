@@ -1498,6 +1498,8 @@ test("recovery-only password sign-in keeps the form behind Recovery sign-in", as
   await page.goto(`${fixture.origin}/console/?authError=github`);
   const recovery = page.getByRole("button", { name: "Recovery sign-in" });
   await recovery.waitFor();
+  // Without the form, the line that describes its email field is hidden too.
+  assert.equal(await page.locator("#username-hint").isVisible(), false);
   // Without a password to fall back on, the provider error points to an administrator.
   await page
     .getByText(
