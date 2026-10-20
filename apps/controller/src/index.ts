@@ -307,7 +307,7 @@ const SAFE_JSON_VALUE_SOURCE = JSON.stringify(JsonValue);
 const responseSerializers = new Map<string, SerializerSelector.Serializer>();
 const requestValidators = new Map<string, unknown>();
 
-// Content ids of shared schemas: one JSON.stringify per stored schema object, and short keys.
+// Content ids of shared schemas: one cacheKey per stored schema object, and short keys.
 const schemaSources = new Map<string, number>();
 const schemaContentIds = new WeakMap<object, number | null>();
 function schemaContentId(schema: unknown): number | undefined {
@@ -317,12 +317,10 @@ function schemaContentId(schema: unknown): number | undefined {
   let id = schemaContentIds.get(schema);
   if (id === undefined) {
     id = null;
-    try {
-      const source = JSON.stringify(schema);
+    const source = cacheKey(schema);
+    if (source !== undefined) {
       id = schemaSources.get(source) ?? schemaSources.size;
       schemaSources.set(source, id);
-    } catch {
-      // A schema JSON cannot express (a cycle or a BigInt keyword) is never cached.
     }
     schemaContentIds.set(schema, id);
   }
@@ -332,39 +330,45 @@ function schemaContentId(schema: unknown): number | undefined {
 // The shared schemas of one encapsulation context, by $id and content, or undefined when one
 // of them has no JSON form.
 function sharedSchemasKey(externalSchemas: unknown): string | undefined {
-  const ids: string[] = [];
+  const ids: [string, number][] = [];
   for (const [id, schema] of Object.entries((externalSchemas ?? {}) as Record<string, unknown>)) {
     const contentId = schemaContentId(schema);
     if (contentId === undefined) {
       return undefined;
     }
-    ids.push(`${id}=${contentId}`);
+    ids.push([id, contentId]);
   }
-  return ids.join(",");
+  return JSON.stringify(ids);
 }
 
-// Compiler options by value, with each function (an ajv plugin, onCreate) named by identity.
-const optionFunctionIds = new WeakMap<object, number>();
-let nextOptionFunctionId = 0;
-function optionsKey(options: unknown): string | undefined {
+// A value by its JSON, except that JSON cannot tell functions (an ajv plugin, onCreate, a custom
+// keyword) or other non-plain objects (a RegExp format) apart, so those are named by identity.
+const identityIds = new WeakMap<object, number>();
+let nextIdentityId = 0;
+function cacheKey(value: unknown): string | undefined {
   try {
-    return JSON.stringify(options ?? {}, (_key, value: unknown) => {
-      if (typeof value !== "function") {
-        return value;
+    return JSON.stringify(value ?? {}, (_key, entry: unknown) => {
+      if ((typeof entry !== "object" || entry === null) && typeof entry !== "function") {
+        return entry;
       }
-      let id = optionFunctionIds.get(value);
+      const prototype = typeof entry === "function" ? undefined : Object.getPrototypeOf(entry);
+      if (prototype === Object.prototype || prototype === Array.prototype || prototype === null) {
+        return entry;
+      }
+      let id = identityIds.get(entry);
       if (id === undefined) {
-        id = nextOptionFunctionId++;
-        optionFunctionIds.set(value, id);
+        id = nextIdentityId++;
+        identityIds.set(entry, id);
       }
-      return `[function ${id}]`;
+      return `[identity ${id}]`;
     });
   } catch {
+    // A cycle or a BigInt keyword is never cached.
     return undefined;
   }
 }
 
-// Returns `compile(route)` from `cache` by `prefix` and the route schema's JSON, compiling once.
+// Returns `compile(route)` from `cache` by `prefix` and the route schema, compiling once.
 function cachedCompile<T>(
   cache: Map<string, T>,
   prefix: string | undefined,
@@ -374,12 +378,11 @@ function cachedCompile<T>(
     return compile;
   }
   return (route) => {
-    let key: string;
-    try {
-      key = prefix + JSON.stringify(route.schema);
-    } catch {
+    const schema = cacheKey(route.schema);
+    if (schema === undefined) {
       return compile(route);
     }
+    const key = prefix + schema;
     let compiled = cache.get(key);
     if (compiled === undefined) {
       compiled = compile(route);
@@ -421,7 +424,7 @@ export function cachedResponseSerializers(): SerializerSelector.SerializerFactor
   return (externalSchemas, options) => {
     const compile = buildSerializerCompiler(serializedSchemas(externalSchemas), options);
     const shared = sharedSchemasKey(externalSchemas);
-    const configuration = optionsKey(options);
+    const configuration = cacheKey(options);
     return cachedCompile(
       responseSerializers,
       shared === undefined || configuration === undefined
@@ -430,6 +433,27 @@ export function cachedResponseSerializers(): SerializerSelector.SerializerFactor
       compile as (route: { schema?: unknown }) => SerializerSelector.Serializer,
     );
   };
+}
+
+// Fastify lowercases the property names of a route's headers schema before compiling it, as
+// request header names arrive lowercased, but only with its default validator compiler; with
+// ours it passes the schema unchanged. So refuse a headers schema that names a header in
+// another case rather than let it never match.
+function assertLowercaseHeaders(route: { schema?: unknown; httpPart?: unknown }): void {
+  if (route.httpPart !== "headers" || typeof route.schema !== "object" || route.schema === null) {
+    return;
+  }
+  const { properties, required } = route.schema as { properties?: unknown; required?: unknown };
+  const names = [
+    ...(typeof properties === "object" && properties !== null ? Object.keys(properties) : []),
+    ...(Array.isArray(required)
+      ? required.filter((name): name is string => typeof name === "string")
+      : []),
+  ];
+  const mixed = names.find((name) => name !== name.toLowerCase());
+  if (mixed !== undefined) {
+    throw new Error(`Route headers schemas must name headers in lowercase: ${mixed}`);
+  }
 }
 
 export function cachedRequestValidators(): ValidatorSelector.BuildCompilerFromPool {
@@ -448,14 +472,18 @@ export function cachedRequestValidators(): ValidatorSelector.BuildCompilerFromPo
       return compile(route);
     };
     const shared = sharedSchemasKey(externalSchemas);
-    const configuration = optionsKey(options);
-    return cachedCompile(
+    const configuration = cacheKey(options);
+    const cached = cachedCompile(
       requestValidators,
       shared === undefined || configuration === undefined
         ? undefined
         : `${configuration}|${shared}|`,
       compileOnce,
     );
+    return (route: { schema?: unknown; httpPart?: unknown }) => {
+      assertLowercaseHeaders(route);
+      return cached(route);
+    };
   };
   return factory as unknown as ValidatorSelector.BuildCompilerFromPool;
 }

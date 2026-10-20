@@ -291,6 +291,18 @@ test("apps share a compiled validator or serializer only for equal shared schema
   assert.equal(integer({ value: "a" }), false);
   assert.notEqual(validator("string", { customOptions: { coerceTypes: true } }), text);
   assert.notEqual(validator("string", { customOptions: {}, plugins: [() => {}] }), text);
+  const format = (pattern) => ({ customOptions: { formats: { item: pattern } } });
+  assert.notEqual(validator("string", format(/a/)), validator("string", format(/b/)));
+  // Fastify lowercases headers schemas only for its default compiler.
+  const headers = (name) =>
+    cachedRequestValidators()(shared("string"), { customOptions: {} })({
+      schema: { type: "object", required: [name], properties: { [name]: { type: "string" } } },
+      method: "GET",
+      url: "/",
+      httpPart: "headers",
+    });
+  assert.equal(headers("x-item")({ "x-item": "a" }), true);
+  assert.throws(() => headers("X-Item"), /must name headers in lowercase: X-Item/);
 
   const serializer = (type) => cachedResponseSerializers()(shared(type), undefined)(route());
   assert.equal(serializer("string"), serializer("string"));
