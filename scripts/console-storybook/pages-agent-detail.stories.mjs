@@ -153,6 +153,7 @@ export const PluginsRequiredFields = { ...story("agentPluginsRequiredFields") };
 export const AuthenticationRequiredFields = { ...story("agentAuthenticationRequiredFields") };
 export const WorkspaceRequiredFields = { ...story("agentWorkspaceRequiredFields") };
 export const SharingGranted = { ...story("agentSharingGranted") };
+export const SharingHoldsNavigation = { ...story("agentSharingHoldsNavigation") };
 export const SharingRemoved = { ...story("agentSharingRemoved") };
 export const SharingDenied = { ...story("agentSharingDenied") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };
