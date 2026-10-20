@@ -1047,7 +1047,7 @@ export const scenarios = {
       { click: "Cancel" },
     ],
     description:
-      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. A browser reload asks the API again.",
+      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. Refresh or a browser reload offers creation again.",
   },
   namespaceCreate: {
     group: "Pages/Namespaces",

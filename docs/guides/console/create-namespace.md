@@ -30,7 +30,7 @@ with Installation administration and operator-prepared infrastructure.
 A name conflict preserves the input: choose another name and submit again.
 Deleted Namespaces reserve their names. A permission denial asks you to contact
 an administrator and disables resubmission. After you close the form,
-**Create Namespace** stays disabled until you reload the page.
+**Create Namespace** stays disabled until you select **Refresh** or reload the page.
 
 While creation is pending, the form cannot be dismissed. If the response is
 interrupted or unconfirmed, submission stays disabled. Select **Check

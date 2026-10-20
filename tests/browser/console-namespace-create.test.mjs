@@ -3,6 +3,7 @@ import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { grantRole } from "../helpers/iam-grants.mjs";
 import {
   apiRequests,
   fileBrowser,
@@ -12,6 +13,8 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 
 const browser = fileBrowser();
+const REFUSED =
+  "Your access does not include creating Namespaces in this Installation. After an administrator grants access, select Refresh to try again.";
 const isPrimary = (locator) =>
   locator.evaluate((node) => node.classList.contains("button--primary"));
 const creates = (requests) =>
@@ -344,36 +347,23 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   await dialog.getByRole("button", { name: "Cancel" }).click();
   // The refusal is the API's answer for this person: the page stops offering creation, says
   // why, and keeps focus on that reason rather than on a disabled button.
-  const refused = "Your access does not include creating Namespaces in this Installation.";
-  await page.getByRole("status").filter({ hasText: refused }).waitFor();
+  await page.getByRole("status").filter({ hasText: REFUSED }).waitFor();
   assert.equal(await opener.isDisabled(), true);
   assert.equal(
-    await page.getByRole("button", { name: "Create Namespace", description: refused }).count(),
+    await page.getByRole("button", { name: "Create Namespace", description: REFUSED }).count(),
     1,
   );
-  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), refused);
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), REFUSED);
   assert.equal(
     await emptyText.textContent(),
     "Ask an administrator to create a Namespace or grant access to an existing one.",
   );
-  // Refresh rerenders the list (a second list read) and keeps the refusal.
-  const listReads = () =>
-    requests.filter(({ method, path }) => method === "GET" && path === "/namespaces").length;
-  const readsBefore = listReads();
-  await page.locator("#namespace-create-refused").evaluate((node) => {
-    node.dataset.old = "";
-  });
+  // The page's Refresh offers creation again, as the refusal says (finding 2083); Escape after
+  // the next refusal also leaves focus on it.
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.locator(settledView).locator("#namespace-create-refused:not([data-old])").waitFor();
-  assert.ok(listReads() > readsBefore);
-  assert.equal(await opener.isDisabled(), true);
-  // A browser reload asks the API again; Escape after that refusal also leaves focus on it.
-  await page.reload();
-  await page
-    .locator(settledView)
-    .getByRole("heading", { name: "No accessible namespaces", exact: true })
-    .waitFor();
+  await page.locator(settledView).locator(".state-panel").waitFor();
   assert.equal(await opener.isEnabled(), true);
+  assert.equal(await page.locator("#namespace-create-refused").count(), 0);
   await opener.click();
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
@@ -384,7 +374,7 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   await page.keyboard.press("Escape");
   await dialog.waitFor({ state: "detached" });
   assert.equal(await opener.isDisabled(), true);
-  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), refused);
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), REFUSED);
   assert.equal(creates(requests).length, 2);
   assert.equal(
     (await fixture.request("GET", "/namespaces")).data.some(
@@ -400,6 +390,145 @@ test("a member is not invited to create, and a real IAM denial disables Create N
           event.kind === "authorization_denial" && event.action === "openclaw.namespaces.create",
       ),
   );
+});
+
+// Creates a Namespace through the open page's dialog and returns its error alert, if any.
+async function submitCreate(page, name) {
+  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
+  await dialog.getByLabel("Namespace name").fill(name);
+  await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  return dialog;
+}
+
+// After a refusal, an administrator's grant was never seen: in-app navigation and Refresh kept
+// Create Namespace disabled, and only a browser reload asked again (finding 2083). Navigation
+// still keeps the refusal; Refresh offers creation again.
+test("a Refresh after an administrator grants Namespace create offers creation again", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const team = await fixture.createNamespace("Alpha team", { ready: true });
+  const member = await fixture.createAccountWithPolicy("namespace-reader", (principal) =>
+    grantRole(fixture.policy, principal.id, {
+      id: "role-namespace-reader",
+      namespaceId: team.id,
+      permissions: { namespace: ["read"], agent: ["read"] },
+    }),
+  );
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, "/console/namespaces", member.credentials);
+  const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
+  const dialog = await submitCreate(page, "Granted team");
+  await dialog
+    .getByRole("alert")
+    .filter({ hasText: /do not have permission to create Namespaces/ })
+    .waitFor();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("status").filter({ hasText: REFUSED }).waitFor();
+  assert.equal(await opener.isDisabled(), true);
+  // Another page and back keeps the refusal.
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.locator(settledView).getByRole("button", { name: "Create Agent" }).waitFor();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.locator(settledView).getByText(REFUSED).waitFor();
+  assert.equal(await opener.isDisabled(), true);
+
+  grantRole(fixture.policy, member.principal.id, {
+    id: "role-namespace-creator",
+    permissions: { namespace: ["create"] },
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page
+    .locator(settledView)
+    .getByRole("link", { name: /Alpha team/ })
+    .waitFor();
+  assert.equal(await page.getByText(REFUSED).count(), 0);
+  assert.equal(await opener.isEnabled(), true);
+  assert.equal(await opener.getAttribute("aria-describedby"), null);
+  await submitCreate(page, "Granted team");
+  await page.getByRole("dialog", { name: "Namespace created", exact: true }).waitFor();
+  assert.ok(
+    (await fixture.request("GET", "/namespaces")).data.some((item) => item.name === "Granted team"),
+  );
+});
+
+// An unknown administrator answer (the probe failed, not refused) keeps Create Namespace the
+// page's primary action (finding 2087).
+test("an unknown administrator answer keeps Create Namespace the primary action", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(`${fixture.origin}/observability`, (route) =>
+    route.fulfill({
+      status: 503,
+      json: { error: { code: "UNAVAILABLE", message: "Try again." } },
+    }),
+  );
+  const probed = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/observability",
+  );
+  await login(page, fixture, "/console/namespaces");
+  assert.equal((await probed).status(), 503);
+  await page.locator(settledView).locator(".namespace-toolbar").waitFor();
+  const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
+  assert.equal(await isPrimary(opener), true);
+});
+
+// A refused administrator loses the primary action on the next render too, and the refusal
+// belongs to the account the API refused: another account signed in later in the same tab is
+// offered creation (finding 2087).
+test("a refused administrator's refusal stays with that account", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const member = await fixture.createAccountWithPolicy("namespace-member", () => {});
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(`${fixture.origin}/namespaces`, (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 403,
+          json: { error: { code: "FORBIDDEN", message: "Forbidden." } },
+        })
+      : route.fallback(),
+  );
+  await login(page, fixture, "/console/namespaces");
+  const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
+  assert.equal(await isPrimary(opener), true);
+  const dialog = await submitCreate(page, "Refused team");
+  await dialog
+    .getByRole("alert")
+    .filter({ hasText: /do not have permission/ })
+    .waitFor();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.getByRole("status").filter({ hasText: REFUSED }).waitFor();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await page.locator(settledView).getByRole("button", { name: "Create Agent" }).waitFor();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.locator(settledView).getByText(REFUSED).waitFor();
+  assert.equal(await opener.isDisabled(), true);
+  assert.equal(await isPrimary(opener), false);
+
+  // Sign out and in as another account without reloading the tab.
+  await page.locator(".account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.getByLabel("Email", { exact: true }).fill(member.credentials.email);
+  await page.getByLabel("Password").fill(member.credentials.password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
+  assert.equal(await opener.isEnabled(), true);
+  assert.equal(await page.getByText(REFUSED).count(), 0);
+
+  // The refused administrator signs in again: a page built afresh still shows the refusal, and
+  // not as the primary action.
+  await page.locator(".account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
+  await page.getByLabel("Password").fill(fixture.credentials.password);
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.locator(settledView).getByText(REFUSED).waitFor();
+  assert.equal(await opener.isDisabled(), true);
+  assert.equal(await isPrimary(opener), false);
 });
 
 test("a lost Namespace creation response requires inspection before another attempt", async (t) => {

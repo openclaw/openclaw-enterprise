@@ -2025,7 +2025,11 @@ async function loadPage({
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });
       showChatLinkFailure(shell.view, chatLinkFailure);
     } else if (current.feature === "namespaces") {
-      renderNamespaces({ ...agentContext, reload: () => loadPage() }, items, renderRows);
+      renderNamespaces(
+        { ...agentContext, reload: () => loadPage(), fromRefresh },
+        items,
+        renderRows,
+      );
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;
