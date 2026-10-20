@@ -461,48 +461,74 @@ test("Open version draft waits for the Configuration read to succeed", async (t)
 
 // While v2 deploys, v1 is still the current version. Right after Deploy new version the page
 // selected v2 and called it "Historical" beside "Selected version v1" until the deployment
-// finished (finding 2065). Its notice says it is deploying until it becomes current.
-async function deployingVersion(t, name) {
+// finished (finding 2065). Its notice says it is deploying until it becomes current. `record`
+// drives the newest deployment's answer: its status, or a 503 while `fail` is set; `agentFail`
+// answers the Agent read with a 503. With `older`, a version admitted before the deploying one
+// is neither current nor deploying.
+const UNAVAILABLE = {
+  status: 503,
+  contentType: "application/json",
+  body: JSON.stringify({
+    error: { code: "UNAVAILABLE", message: "Try again." },
+    meta: { requestId: "req_test_unavailable" },
+  }),
+};
+
+async function deployingVersion(t, name, { status = "running", older = false } = {}) {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, name);
   const agent = await fixture.createAgent(namespace.id, `${name} Agent`, nativeValues("v1"));
   const { revision: current } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const previous = older ? await fixture.deployAgent(namespace.id, agent.id) : null;
   const next = await fixture.deployAgent(namespace.id, agent.id);
   const { page } = await newPage(t, fixture, { browser });
-  const record = { status: "running" };
+  const record = { status, fail: false, agentFail: false };
+  await page.route(
+    (url) => url.pathname === `/namespaces/${namespace.id}/agents/${agent.id}`,
+    (route) =>
+      record.agentFail && route.request().method() === "GET"
+        ? route.fulfill(UNAVAILABLE)
+        : route.fallback(),
+  );
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${next.id}`,
     (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId: next.id,
-            namespaceId: namespace.id,
-            agentId: agent.id,
-            status: record.status,
-            error:
-              record.status === "failed"
-                ? persistedDeploymentError("DEPENDENCY_UNAVAILABLE")
-                : null,
-            warnings: [],
-            progress: null,
-          },
-          meta: { requestId: "req_test_deploying_label" },
-        }),
-      }),
+      record.fail
+        ? route.fulfill(UNAVAILABLE)
+        : route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              data: {
+                deploymentId: next.id,
+                namespaceId: namespace.id,
+                agentId: agent.id,
+                status: record.status,
+                error:
+                  record.status === "failed"
+                    ? persistedDeploymentError("DEPENDENCY_UNAVAILABLE")
+                    : null,
+                warnings: [],
+                progress: null,
+              },
+              meta: { requestId: "req_test_deploying_label" },
+            }),
+          }),
   );
   await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"));
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
-  await summary.getByText("v2 · In progress", { exact: true }).waitFor();
+  await summary
+    .getByText(`v${next.revision} · ${status === "queued" ? "Queued" : "In progress"}`, {
+      exact: true,
+    })
+    .waitFor();
   await page
     .getByText(
       "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes.",
       { exact: true },
     )
     .waitFor();
-  return { fixture, namespace, agent, current, next, page, record, summary };
+  return { fixture, namespace, agent, current, previous, next, page, record, summary };
 }
 
 // Every text the version notice shows, in order, from now on.
@@ -563,4 +589,71 @@ test("A deploying version's parked Configuration tab says Historical once the de
   await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
   assert.equal(await page.getByText(/^Deploying version/).count(), 0);
+});
+
+// A queued deployment is deploying too, and only the deploying version is: an older version
+// browsed meanwhile is Historical (finding 2088).
+test("A queued version is labelled Deploying, and an older version browsed meanwhile Historical", async (t) => {
+  const { fixture, namespace, agent, previous, page } = await deployingVersion(t, "Queued label", {
+    status: "queued",
+    older: true,
+  });
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, previous.id, "configuration").href);
+  await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
+  assert.equal(await page.getByText(/^Deploying version/).count(), 0);
+  await page.goBack();
+  await page.getByText(/^Deploying version · read-only admitted snapshot/).waitFor();
+});
+
+// A completed deployment whose Agent reread failed kept "Deploying" beside "v2 · Completed"
+// (finding 2085). The record says the deployment completed, so the notice says so.
+test("A completed deployment whose Agent reread fails is labelled Deployed, not Deploying", async (t) => {
+  const { fixture, namespace, agent, current, next, page, record, summary } =
+    await deployingVersion(t, "Deployed label");
+  await watchNotice(page);
+  await fixture.activateRevision(namespace.id, agent.id, next.id, current.id);
+  record.status = "succeeded";
+  record.agentFail = true;
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await page
+    .getByText(
+      "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
+    )
+    .waitFor();
+  await summary.getByText("v2 · Completed", { exact: true }).waitFor();
+  await page
+    .getByText(
+      "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed.",
+      { exact: true },
+    )
+    .waitFor();
+  const labels = (await page.evaluate(() => globalThis.noticeTexts)).map(
+    (text) => text.split(" ·")[0],
+  );
+  assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
+});
+
+// One failed status read while v2 still deployed flipped the notice to Historical (the finding
+// 2065 mislabel) and stopped polling, so it stayed there after the API recovered (finding 2085).
+// The notice keeps the last record's label, polling goes on, and a completion read right after
+// the failure still rereads the Agent.
+test("One failed status read keeps a deploying version Deploying and polling", async (t) => {
+  const { fixture, namespace, agent, current, next, page, record, summary } =
+    await deployingVersion(t, "Status blip");
+  await watchNotice(page);
+  record.fail = true;
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await summary.getByText("v2 · Unavailable", { exact: true }).waitFor();
+  assert.equal(await page.getByText(/^Deploying version · /).count(), 1);
+  // The next poll still comes, and it finds the deployment completed.
+  record.fail = false;
+  await fixture.activateRevision(namespace.id, agent.id, next.id, current.id);
+  record.status = "succeeded";
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await summary.getByText("v2 · Completed", { exact: true }).waitFor();
+  await page.getByText(/^Current version · read-only admitted snapshot/).waitFor();
+  const labels = (await page.evaluate(() => globalThis.noticeTexts)).map(
+    (text) => text.split(" ·")[0],
+  );
+  assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
 });

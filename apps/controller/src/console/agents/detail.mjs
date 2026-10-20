@@ -444,6 +444,13 @@ export const DEPLOYMENT_POLL_MS = 5000;
 export const FIRST_ACTIVITY_WAIT_MS = 2000;
 const PENDING_DEPLOYMENT_STATUSES = new Set(["queued", "running"]);
 
+// A read failure that a later read can clear: no answer (a network error), a timeout, a rate
+// limit or a server error. A refusal or a missing record is an answer, and polling stops on it.
+function transientReadError(error) {
+  const status = error?.status;
+  return !(status >= 400 && status < 500) || status === 408 || status === 429;
+}
+
 // A recovery link opens a version tab far below the banner it sits in. Only the URL changed and
 // the page stayed at the top, so the link looked dead (finding 1586). The page the link opens,
 // switched in place, rebuilt or restored for Back, brings that tab into view and focuses it.
@@ -525,6 +532,9 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
   // Tallest the details have been since a deploy was seen pending; see render().
   let reservedHeight = null;
   let pollTimer = null;
+  // The last record read. A transient read failure (a network error, a timeout, a 5xx) does not
+  // end a pending deploy, so polling goes on from it (finding 2085).
+  let lastRecord = null;
 
   // A poll that fired while the view was retained stopped; restoring the view re-arms it.
   context.onResume?.(() => {
@@ -533,14 +543,18 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
     }
   });
 
-  // Queued and running records are reread until they record a result or a read fails.
+  // Queued and running records are reread until they record a result or a read is refused.
   function schedulePoll() {
     clearTimeout(pollTimer);
     pollTimer = null;
+    const record = state.error
+      ? transientReadError(state.error)
+        ? lastRecord
+        : null
+      : state.status;
     if (
-      state.error ||
-      (!PENDING_DEPLOYMENT_STATUSES.has(state.status?.status) &&
-        !PENDING_DEPLOYMENT_STATUSES.has(state.status?.cleanup?.status))
+      !PENDING_DEPLOYMENT_STATUSES.has(record?.status) &&
+      !PENDING_DEPLOYMENT_STATUSES.has(record?.cleanup?.status)
     ) {
       return;
     }
@@ -559,7 +573,8 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
     }
     clearTimeout(pollTimer);
     pollTimer = null;
-    const previousStatus = state.status?.status ?? null;
+    // After a failed read, the record before it.
+    const previousStatus = lastRecord?.status ?? null;
     state.loading = true;
     state.polling = poll;
     state.error = null;
@@ -584,6 +599,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
       }
       if (statusResult.status === "fulfilled") {
         state.status = statusResult.value;
+        lastRecord = statusResult.value;
       } else {
         state.status = null;
         state.error = statusResult.reason;
@@ -618,6 +634,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
           state.error !== null,
           state.status?.error?.code ?? null,
           state.status,
+          state.overviewError,
         );
         if (
           state.refreshQueued ||
@@ -1859,6 +1876,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let latestDeploymentErrorCode = null;
   let latestDeploymentErrorMessage = null;
   let latestDeploymentRecord = null;
+  // The newest version's status from its last record read; a failed read keeps it, so one
+  // failure does not relabel a deploying version Historical (finding 2085).
+  let latestRecordedStatus = null;
   let versionRecord = null;
   const revisionsPromise = readRevisionPage(request, path);
   // Every revision summary listed so far, from the newest page and from older pages the viewer
@@ -1882,7 +1902,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         ? "Current version · read-only admitted snapshot. Selection does not confirm that this version is serving."
         : deployingRevision()?.id === selected
           ? "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."
-          : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
+          : deployedRevision()?.id === selected
+            ? "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."
+            : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
   }
 
   // The newest version while its deployment is queued or running and it is not yet current. Right
@@ -1892,7 +1914,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return latest &&
       latest.id !== currentRevisionId &&
       activityRevisionId === latest.id &&
-      PENDING_DEPLOYMENT_STATUSES.has(latestDeploymentStatus)
+      PENDING_DEPLOYMENT_STATUSES.has(latestRecordedStatus)
+      ? latest
+      : null;
+  }
+
+  // The newest version once its deployment completed, while the Agent read that would make it
+  // current failed. It is not Deploying beside "Completed" (finding 2085), nor Historical: a
+  // completed deployment makes its version current unless a hidden current version is newer.
+  function deployedRevision() {
+    const latest = visibleRevisions[0];
+    return latest &&
+      latest.id !== currentRevisionId &&
+      activityRevisionId === latest.id &&
+      latestRecordedStatus === "succeeded" &&
+      !revisionHidden(currentRevisionId)
       ? latest
       : null;
   }
@@ -2529,6 +2565,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       // The version's record panel no longer gets this panel's reads.
       versionRecord?.release();
       latestDeploymentStatus = null;
+      latestRecordedStatus = null;
       latestDeploymentRecord = null;
       latestDeploymentError = false;
       latestDeploymentErrorCode = null;
@@ -2560,12 +2597,15 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                 { status: "fulfilled", value: freshRevisions },
                 snapshot,
               ),
-            (status, unavailable, errorCode, record) => {
+            (status, unavailable, errorCode, record, overviewUnavailable) => {
               if (activityRevisionId !== mostRecent.id) {
                 return;
               }
               showPanel(nextPanel, status === "failed");
               latestDeploymentStatus = status;
+              if (record) {
+                latestRecordedStatus = status;
+              }
               latestDeploymentError = unavailable;
               latestDeploymentErrorCode = errorCode;
               latestDeploymentErrorMessage = record?.error?.message || null;
@@ -2585,8 +2625,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               }
               renderLatestDeployment();
               // A success is shown once the Agent reread makes the version current; until then
-              // the notice keeps "Deploying" rather than flash "Historical".
-              if (status !== "succeeded") {
+              // the notice keeps "Deploying" rather than flash "Historical". A reread that failed
+              // leaves the version labelled from its record (finding 2085).
+              if (status !== "succeeded" || overviewUnavailable) {
                 renderVersionNotice();
               }
               refreshDeployControls();
