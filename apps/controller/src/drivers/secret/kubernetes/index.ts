@@ -1,6 +1,7 @@
 import {
   validateConfiguration as validateDriverConfiguration,
   requireConfiguration,
+  ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
 /// <reference lib="es2024.string" />
 
@@ -180,7 +181,8 @@ export class KubernetesSecretDriver implements SecretDriver {
         }
         validateKubernetesAuthentication(
           value.authentication,
-          (message) => new SecretValidationError(message),
+          (message, path) =>
+            new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]),
         );
       },
     );
