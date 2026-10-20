@@ -915,6 +915,21 @@ export const scenarios = {
       "Confirm Search Agents keeps its text and focus, Research assistant is still listed, and Create Agent is enabled with no description pointing at the note. No further Namespace reads happen.",
     ],
   },
+  agentsNamespaceMissing: {
+    group: "Pages/Agents",
+    name: "Namespace leaves the list while provisioning",
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    // Rechecks start once the page shows its search box, so the first load still lists it.
+    actions: [{ selector: 'input[type="search"]', focus: true }],
+    description:
+      "The Namespace list the Agents page rereads while its Namespace provisions no longer holds it: it was deleted, or the reader lost access. The wait ends, the note asks for another Namespace, as Create Agent's does, and Create Agent is disabled.",
+    steps: [
+      'Within about 10 s the note "Namespace status: Provisioning." becomes "This Namespace is missing or you no longer have access. Choose another Namespace."',
+      'Confirm Create Agent is disabled and described by that note, the empty state reads "Agents cannot be created in this Namespace.", and no further Namespace reads happen.',
+    ],
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
@@ -1047,7 +1062,7 @@ export const scenarios = {
       { click: "Cancel" },
     ],
     description:
-      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. A browser reload asks the API again.",
+      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. Refresh or a browser reload offers creation again.",
   },
   namespaceCreate: {
     group: "Pages/Namespaces",
@@ -1188,6 +1203,23 @@ export const scenarios = {
       "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
       "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
       "At a phone width, Sign out spans the Session card.",
+    ],
+  },
+  settingsNameIsEmail: {
+    group: "Pages/Settings",
+    name: "Account without a display name",
+    path: "/console/settings",
+    // Sign-in providers that have no display name record the email as the name.
+    sessionUser: {
+      id: "storybook-operator",
+      name: "operator@example.com",
+      email: "operator@example.com",
+    },
+    description:
+      "An account whose recorded name is its email address. The account card names it once, by email.",
+    steps: [
+      "Check that the account card shows the initial O and operator@example.com under Email, with no Name row repeating the address.",
+      "Compare Account: a distinct display name still shows under Name.",
     ],
   },
   settingsSignOutFailure: {
@@ -3408,6 +3440,8 @@ export const scenarios = {
     steps: [
       "Check that v8, v7, and v6 are listed with Show older versions below them.",
       "Select Show older versions until v1 is listed and the button is gone.",
+      "With the keyboard, Tab into the list: focus lands on v8. Down and Up move between versions and wrap at either end; Home and End jump to v8 and v1. Tab leaves the list in one press, and Shift+Tab returns to v8, not the version the arrows last reached.",
+      "Press Down twice, to v6, then Enter. v6 opens, and the next Tab into the list lands on v6, the viewed version.",
     ],
     gap: "The fixture uses three versions per page; the API default is 50.",
   },
@@ -3452,7 +3486,7 @@ export const scenarios = {
   agentSharing: {
     group: "Pages/Agent detail",
     name: "Share an Agent",
-    path: draft,
+    path: `${draft}&tab=access`,
     description:
       "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
     steps: [
@@ -3464,7 +3498,7 @@ export const scenarios = {
   agentSharingGranted: {
     group: "Pages/Agent detail",
     name: "Agent shared",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: shareExistingPerson,
     description:
       "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
@@ -3472,7 +3506,7 @@ export const scenarios = {
   agentSharingRemoved: {
     group: "Pages/Agent detail",
     name: "Direct Agent grant removed",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: [...shareExistingPerson, click("Remove binding")],
     description:
       "The selected direct Agent binding was removed. Namespace discovery and unrelated grants are preserved.",
@@ -3480,7 +3514,7 @@ export const scenarios = {
   agentSharingDenied: {
     group: "Pages/Agent detail",
     name: "Sharing administration denied",
-    path: draft,
+    path: `${draft}&tab=access`,
     rules: [{ suffix: "/iam/roles", status: 403 }],
     description:
       "An Agent's other controls retain their own permissions when sharing administration is unavailable.",
@@ -3488,7 +3522,7 @@ export const scenarios = {
   agentSharingUnknown: {
     group: "Pages/Agent detail",
     name: "Sharing outcome uncertain",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: shareExistingPerson,
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
     description:
@@ -3497,7 +3531,7 @@ export const scenarios = {
   agentSharingRequiredFields: {
     group: "Pages/Agent detail",
     name: "Share Agent required fields",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: [click("Share Agent")],
     description:
       "Share Agent with no Principal ID and no acknowledgement: both fields show their errors and focus moves to the Principal ID, with no browser bubble.",
@@ -4032,6 +4066,45 @@ export const scenarios = {
       'Within about 5 s the notice begins "Current version" and Selected version reads v7.',
     ],
   },
+  deploymentCompletesRereadFails: {
+    group: "Pages/Agent detail",
+    name: "New version completes, Agent reread fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The page's own Agent read answers; the reread after the deployment completes fails.
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 503 }],
+    description:
+      "v7's deployment completes, but the Agent reread that would make it current fails. The notice says the deployment completed and that the current version could not be refreshed, rather than Deploying beside Completed. The deployment and the failure are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      'Within about 5 s Latest visible deployment reads "v7 · Completed", the page says the current version and version history could not be refreshed, and the notice reads "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."',
+    ],
+  },
+  deploymentStatusReadRecovers: {
+    group: "Pages/Agent detail",
+    name: "New version in progress, one status read fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The first poll after arrival fails once; the next one records success.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        status: 503,
+      },
+    ],
+    description:
+      "One deployment status read fails while v7 is deploying. The notice keeps Deploying version rather than turning Historical, polling continues, and the next read records success and makes v7 current. The deployment, failure and activation are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment reads "v7 · Unavailable" and the notice still begins "Deploying version".',
+      'Within about 10 s the notice begins "Current version" and Selected version reads v7, with no "Historical version" in between.',
+    ],
+  },
   deploymentDeferred: {
     group: "Pages/Agent detail",
     name: "Deployment waiting for runtime",
@@ -4310,6 +4383,7 @@ export const scenarios = {
     steps: [
       "Above the facts, the failure is one danger status block: a red stripe on a light red wash, the label DEPLOYMENT FAILED · V7, the title This Agent may be offline, and CONVERGENCE_DEADLINE_EXCEEDED in code at the end of the first sentence. Open v7 Logs is the page's one filled button; at 390 wide it spans the block.",
       "In Deployment details, the three step tiles are white cards with a light edge; only the failed Deployment work tile has a red wash, and each marker carries its step's colour.",
+      'In the Versions list, v7 reads "v7", a space, then a red "Failed" badge; v6 keeps its blue "Current" badge and no other version has an outcome badge. A screen reader announces "View version v7, deployment failed".',
       "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
       "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
     ],

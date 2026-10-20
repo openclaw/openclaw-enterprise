@@ -18,7 +18,9 @@ Check each story at 1440 and at 390.
    badge, with the date on the next line. Current is blue, not green: it means
    only that OCC selected the version, which can be stopped or failed. Its row is as tall as the other
    versions' rows. A screen reader still announces "View version v6, current
-   version".
+   version". The failed v7 row reads "v7", a space, then a red "Failed" badge,
+   announced as "View version v7, deployment failed". Only the latest
+   deployment's version carries an outcome badge.
 4. Open **Components / Credentials / One Slack token missing**. The bound
    Slack token reads "Bound" in a green badge, and the other reads "Missing"
    in a red one.

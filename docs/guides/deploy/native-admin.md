@@ -26,7 +26,7 @@ Agent into native admin access:
 4. Save the Configuration and select **Deploy new version**. After its deployment succeeds,
    request status again and expect `available` with the same origin. Open
    **Native admin UI** on the Agent detail page. For stale drafts or uncertain
-   saves, follow the [Configuration editor recovery](../console/agent-details.md#configuration-tab).
+   saves, follow the [Configuration editor recovery](../console/configuration-plugins-and-files.md#configuration-tab).
 
 For the Compose control plane with Kubernetes Compute and OpenShell, the
 [first-Agent command](../first-agent.md) can perform these per-Agent steps with
@@ -162,7 +162,7 @@ await fetch("/namespaces/<namespaceId>/agents/<agentId>/native-admin", {
 }).then((response) => response.json());
 ```
 
-A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/agent-details.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
+A `200` response with `data.status: "unsupported"` can still include `data.host`, `data.origin`, `data.activeRevisionId`, and `data.url`. Copy the exact returned `data.origin`, including any port. In the [console Configuration editor](../console/configuration-plugins-and-files.md#configuration-tab), merge the following JSON fields into the selected Agent's existing Configuration:
 
 ```json
 {

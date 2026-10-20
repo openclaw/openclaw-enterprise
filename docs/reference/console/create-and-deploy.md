@@ -288,7 +288,7 @@ deploy. Deployment uses saved Configuration and the Agent plugin map; it does
 not redeploy or roll back viewed snapshots. Every accepted request creates an
 immutable Agent revision, even with unchanged Configuration generation. Earlier versions
 retain their snapshots; see the
-[Agent detail guide](../../guides/console/agent-details.md#plugins-tab).
+[Plugins tab guide](../../guides/console/configuration-plugins-and-files.md#plugins-tab).
 
 The console rereads Agent and Configuration before admission. Refresh if
 generation, association, authentication, or plugins changed since loading.

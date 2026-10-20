@@ -246,6 +246,13 @@ test("Create Agent leads with ← Agents and puts the Namespace under its title"
     { "← Agents": "header", Refresh: "actions", Namespace: "meta" },
   );
   assert.equal(await page.getByRole("link", { name: "← Agents", exact: true }).count(), 1);
+  // The intro card's heading sits a step under the page title, not at its size (finding 2097).
+  const sizes = await page.evaluate(() => {
+    const size = (selector) =>
+      globalThis.getComputedStyle(globalThis.document.querySelector(selector)).fontSize;
+    return { title: size(".page-header h1"), card: size(".launch-intro h2") };
+  });
+  assert.deepEqual(sizes, { title: "24px", card: "18px" });
 
   await page.getByRole("link", { name: "← Agents", exact: true }).click();
   await page.getByRole("heading", { name: "Agents", exact: true, level: 1 }).waitFor();
