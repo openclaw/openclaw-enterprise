@@ -247,7 +247,7 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
           editable() ? button("Review suggestion", () => prefill(entry.grant)) : null,
         ),
       ),
-      suggestionsDenied ? null : button("Refresh suggestions", () => void loadSuggestions()),
+      ...(suggestionsDenied ? [] : [button("Refresh suggestions", () => void loadSuggestions())]),
     );
   }
 
@@ -673,7 +673,7 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
       policyPanel.replaceChildren(
         element("h2", {}, "Agent network policy"),
         element("p", { role: "alert" }, errorText(error, "read this Agent’s policy")),
-        error.status === 403 ? null : button("Retry policy read", () => void loadPolicy()),
+        ...(error.status === 403 ? [] : [button("Retry policy read", () => void loadPolicy())]),
       );
     }
   }

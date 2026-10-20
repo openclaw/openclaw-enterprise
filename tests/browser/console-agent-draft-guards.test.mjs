@@ -228,6 +228,8 @@ test("A refused policy read offers no Retry", async (t) => {
   await tab.getByText("You do not have permission to read policy suggestions.").waitFor();
   assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
   assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);
+  // Only the refusals stand in for the omitted controls.
+  assert.equal(await tab.getByText("null", { exact: true }).count(), 0);
 });
 
 const delegatedPolicyGrant = {
