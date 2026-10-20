@@ -141,7 +141,7 @@ CONFIGURATION_ID="$(./bin/occ configuration create --file configuration.json -o 
 ```
 
 The OpenShell Sandbox Driver freezes `"sandbox": "danger-full-access"` and
-`"approvalsReviewer": "user"` for dedicated Codex revisions and removes
+`"approvalsReviewer": "user"` for dedicated Codex versions and removes
 `appServer.networkProxy`. `approvalPolicy` stays configured. The bridge selects the native `:danger-full-access` profile,
 which the Codex account must allow. OpenShell enforces the outer sandbox;
 restricted native profiles require nested bubblewrap namespaces that it blocks.
@@ -181,8 +181,8 @@ DEPLOYMENT_ID="$(./bin/occ agent deploy "$AGENT_ID" -o json | jq -r .id)"
 ```
 
 Expected result: OCC accepts the deployment and freezes
-`{"method": "credential_source", "sourceId": "cs_…"}` in the revision. Compute
-starts the Agent Gateway, then OpenShell creates the Sandbox, and the revision
+`{"method": "credential_source", "sourceId": "cs_…"}` in the version. Compute
+starts the Agent Gateway, then OpenShell creates the Sandbox, and the version
 becomes active once the Harness workspace node connects to the Gateway. Startup
 can take several minutes. Without the access binding, the deploy request fails
 with `403`.
@@ -243,9 +243,9 @@ the profile instead.
   method. With a Credential Gateway selected, only `credential_source` is
   accepted.
 - **`credential-source delete` returns `409`:** an Agent draft, active
-  revision, or pending deployment still references the source. With
+  version, or pending deployment still references the source. With
   `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`, only withdrawal work still retrying for
-  an earlier revision that held the source blocks it: wait up to about an hour,
+  an earlier version that held the source blocks it: wait up to about an hour,
   or delete the Agent.
 - **`iam role delete` returns `409`:** an access binding still uses the Role.
   Deleting the source removes its bindings; otherwise find the binding with

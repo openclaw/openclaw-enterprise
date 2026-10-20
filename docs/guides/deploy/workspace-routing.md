@@ -21,7 +21,7 @@ The current dedicated Codex implementation requires private routing, native node
 Gateway and Harness images containing the matching OpenClaw workspace changes.
 [Storage integration #76](https://github.com/openclaw/openclaw-enterprise/issues/76)
 tracks the current runtime PRs and remaining limits. The Codex plugin must include
-the matching attachment changes. Compute rejects dedicated runtime revisions
+the matching attachment changes. Compute rejects dedicated runtime versions
 without routing or an enrollment client before provisioning workloads.
 
 These prerequisites describe the [Kubernetes Codex implementation](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#shared-contracts-and-the-codex-implementation).
@@ -209,7 +209,7 @@ for node enrollment.
 Plan a maintenance window for the gateway restart and Namespace-wide ingress
 change. Preserve Agent IDs, Configuration IDs, PVC/PV identities, workspace
 contents, session IDs, and model/channel credentials. Back up the current native
-Configuration, active revision, protected Helm/Installation inputs, and the
+Configuration, selected version, protected Helm/Installation inputs, and the
 namespace resources before changing them. Check whether other Agents share the
 Configuration before replacing its values.
 
@@ -221,7 +221,7 @@ Configuration before replacing its values.
 2. For each Agent being routed, request
    `POST /namespaces/:namespaceId/agents/:agentId/deploy` for the same Agent.
    Retain and poll the returned deployment ID. Do not recreate the Agent or
-   retire its current revision before successful cutover: its PVCs belong to
+   retire its current version before successful cutover: its PVCs belong to
    that Agent and must survive the gateway replacement.
 3. Reconcile existing ready Namespaces as described below. Agent activation
    alone is not proof that its HTTPRoute is accepted or files are accessible.

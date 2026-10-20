@@ -10,7 +10,7 @@ import { clearRuntimeDenials } from "./agents/logs.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
-import { createShell, panel, sorted } from "./shell.mjs";
+import { createShell, initials, panel, sorted } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
 import { renderNamespaces } from "./namespaces.mjs";
@@ -476,6 +476,8 @@ const stillCheckingDelayMs = 1000;
 let mountedRouteKey = null;
 // The page whose shell is on screen. A held page keeps its own navigation and header.
 let shownFeature = null;
+// The shown header's page: an Agent's ({ agentId }), Create Agent ({ creating: true }) or null.
+let shownPage = null;
 let mountedAgent = null;
 let mountedViewState = null;
 let resumePending = null;
@@ -635,17 +637,23 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
     return null;
   }
   const focused = document.activeElement;
-  const focusHeld =
-    keepFocus &&
-    (view.contains(focused) ||
-      focused === app.querySelector(".content h1") ||
-      app.querySelector(".sidebar")?.contains(focused) === true);
   const title = app.querySelector(".content h1")?.textContent;
   const scope = app.querySelector(".content .scope")?.textContent;
   const diagnostics = app.querySelector(".runtime-debug");
   const scrollY = window.scrollY;
   const recovery = app.querySelector(".content > .namespace-recovery, .content > p.scope") !== null;
-  const shell = renderShell(shownFeature ?? current.feature, true, { recovery });
+  // An Agent page's own header actions (Create new version) stay with it, inert like the page.
+  const pageActions = app.querySelector(".content .page-header .page-view-actions");
+  const focusHeld =
+    keepFocus &&
+    (view.contains(focused) ||
+      pageActions?.contains(focused) === true ||
+      focused === app.querySelector(".content h1") ||
+      app.querySelector(".sidebar")?.contains(focused) === true);
+  const shell = renderShell(shownFeature ?? current.feature, true, {
+    recovery,
+    page: shownFeature ? shownPage : headerPage(current),
+  });
   if (title) {
     app.querySelector(".content h1").textContent = title;
   }
@@ -654,6 +662,10 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
   }
   view.inert = true;
   view.setAttribute("aria-busy", "true");
+  if (pageActions) {
+    pageActions.inert = true;
+    shell.actions.append(pageActions);
+  }
   // Navigation dims the held page after a moment (finding 1447); a refocus recheck keeps its
   // look. The class lives on this load's shell, so the next shell drops it.
   app.querySelector(".content").classList.toggle("holding", busyCue);
@@ -718,6 +730,10 @@ function mountRetainedView(current, retained) {
   retained.snapshot.inert = false;
   shell.view.replaceWith(retained.snapshot);
   shell.view = retained.snapshot;
+  if (retained.state?.pageActions) {
+    retained.state.pageActions.inert = false;
+    shell.actions.append(retained.state.pageActions);
+  }
   if (shell.diagnostics && retained.state?.diagnostics) {
     retained.state.diagnostics.inert = false;
     shell.diagnostics.replaceWith(retained.state.diagnostics);
@@ -752,8 +768,25 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
   return lifetime.reset();
 }
 
-function renderShell(feature, namespaceAdmissionPending = false, { recovery = true } = {}) {
+// The header shape for a route: an Agent's page and Create Agent lead with ← Agents and carry a
+// meta row (the ID, the Namespace) under the title; collections do not (UX spec 3.2).
+function headerPage(current) {
+  if (current.feature !== "agents") {
+    return null;
+  }
+  if (current.creating) {
+    return { creating: true };
+  }
+  return current.agentId ? { agentId: current.agentId } : null;
+}
+
+function renderShell(
+  feature,
+  namespaceAdmissionPending = false,
+  { recovery = true, page = headerPage(route()) } = {},
+) {
   shownFeature = feature;
+  shownPage = page;
   const shell = shellUI.renderShell(feature, {
     session,
     namespaces,
@@ -761,6 +794,7 @@ function renderShell(feature, namespaceAdmissionPending = false, { recovery = tr
     observabilityUrl,
     namespaceAdmissionPending,
     recovery,
+    page,
   });
   if (feature === "backends" && backendsDenied && shell.scopeSelector) {
     shell.scopeSelector.hidden = true;
@@ -823,24 +857,24 @@ function showLogin(message = "", destination = null) {
     required: "",
   });
   const feedback = statusBlock("danger", null, describe(true));
+  // The page's one line under the title also describes the email field (UX spec 3.12).
   const usernameHint = element(
-    "span",
-    { id: "username-hint", className: "hint" },
-    "Use your account email",
+    "p",
+    { id: "username-hint", className: "muted auth-intro" },
+    "Use your account email.",
   );
   // Recovery-only password sign-in hides the form until the recovery path is chosen.
   let recoveryOnly = false;
   const submit = element(
     "button",
     { type: "submit", className: "button button--primary" },
-    "Login",
+    "Sign in",
   );
   const form = element(
     "form",
     {},
-    element("label", { for: "username" }, "Username"),
+    element("label", { for: "username" }, "Email"),
     username,
-    usernameHint,
     element("label", { for: "password" }, "Password"),
     password,
     feedback,
@@ -905,6 +939,7 @@ function showLogin(message = "", destination = null) {
       feedback.textContent = "";
       form.insertBefore(feedback, submit);
       form.hidden = false;
+      usernameHint.hidden = false;
       username.focus();
     },
     { tone: "link", className: "auth-recovery", hidden: true },
@@ -952,7 +987,7 @@ function showLogin(message = "", destination = null) {
           : error.status === 400 || error.status === 401 || error.status === 403
             ? recoveryOnly
               ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
-              : "Could not sign in. Check your username and password."
+              : "Could not sign in. Check your email and password."
             : "Sign-in is unavailable. Try again.";
     } finally {
       if (lifetime.isCurrent(active)) {
@@ -971,12 +1006,13 @@ function showLogin(message = "", destination = null) {
         element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
         "OpenClaw Enterprise",
       ),
-      element("h1", {}, "Welcome back"),
-      element("p", { className: "muted" }, "Sign in to your Installation."),
+      element("h1", {}, "Sign in"),
+      usernameHint,
       form,
       providers,
       recovery,
     ),
+    ...signInFooter(),
   );
   void request("/api/auth/providers")
     .then((available) => {
@@ -1002,10 +1038,11 @@ function showLogin(message = "", destination = null) {
           if (feedback.textContent === describe(true)) {
             feedback.textContent = describe(false);
           }
-          usernameHint.textContent = "Use the recovery account's email";
+          usernameHint.textContent = "Use the recovery account's email.";
           // Never pull the form away from someone already using it.
           if (!pending && username.value === "" && password.value === "") {
             form.hidden = true;
+            usernameHint.hidden = true;
             providers.after(feedback);
             recovery.hidden = false;
           }
@@ -1015,6 +1052,21 @@ function showLogin(message = "", destination = null) {
     .catch(() => {
       // Password sign-in remains available when provider discovery fails.
     });
+}
+
+// The sign-in page footer names the build it serves, from the meta tag the image bakes in; a
+// development build has none, so the footer is left out.
+function signInFooter() {
+  const revision = document.querySelector('meta[name="occ-build-revision"]')?.content ?? "";
+  return /^[a-f0-9]{40}$/.test(revision)
+    ? [
+        element(
+          "footer",
+          { className: "auth-footer" },
+          `OpenClaw Enterprise · build ${revision.slice(0, 8)}`,
+        ),
+      ]
+    : [];
 }
 
 function showCheckingSession(checking = () => true) {
@@ -1073,7 +1125,7 @@ async function loadPage({
   // page the reader tried to reach stays in history for a later Back. This follows the tab
   // handler, which keeps same-Agent tab changes.
   if (fromHistory && mountedRouteKey !== null && leaveGuard?.({ pendingOnly: true })) {
-    history.pushState({ previousCollection: navigation.previousCollection }, "", mountedRouteKey);
+    history.pushState(null, "", mountedRouteKey);
     return;
   }
   const knownPrivateState = session !== null && Object.hasOwn(pages, current.feature);
@@ -1437,12 +1489,7 @@ async function loadPage({
         namespaces[0]
       )?.id ??
       null;
-    navigation.restoreHistory();
-    history.replaceState(
-      { previousCollection: navigation.previousCollection },
-      "",
-      pageUrl(current.target),
-    );
+    history.replaceState(null, "", pageUrl(current.target));
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
@@ -1705,23 +1752,7 @@ async function loadPage({
       attachDiagnostics(shell.diagnostics);
     }
     if (current.feature === "settings") {
-      shell.view.append(
-        element(
-          "section",
-          { className: "state-panel" },
-          element("h2", {}, "Signed-in account"),
-          element(
-            "dl",
-            { className: "settings" },
-            element("dt", {}, "Name"),
-            element("dd", {}, session.user.name),
-            element("dt", {}, "Email"),
-            element("dd", {}, session.user.email),
-          ),
-          element("p", {}, "No configurable settings in this release."),
-          button("Back", () => navigate(navigation.previousCollection)),
-        ),
-      );
+      shell.view.append(settingsView());
       markMountedRoute(current);
       return;
     }
@@ -1792,6 +1823,16 @@ async function loadPage({
           const navigateTab = (next) => shownStandIn === null && handler(next);
           viewState.tabNavigation = navigateTab;
           navigateAgentTab = navigateTab;
+        }
+      },
+      // The page's own header actions (an Agent's Create new version) sit beside Refresh. A
+      // page rendering behind a stand-in gets them when its shell reveals.
+      setPageActions(node) {
+        node.classList.add("page-view-actions");
+        viewState.pageActions = node;
+        if (!shownStandIn && shell.actions?.isConnected) {
+          shell.actions.querySelector(":scope > .page-view-actions")?.remove();
+          shell.actions.append(node);
         }
       },
       setLeaveGuard(guard) {
@@ -1906,6 +1947,9 @@ async function loadPage({
           shell.view.replaceWith(detailView);
           shell.view = detailView;
           detailView.hidden = false;
+          if (viewState.pageActions) {
+            shell.actions.append(viewState.pageActions);
+          }
           if (shell.diagnostics) {
             attachDiagnostics(shell.diagnostics);
           }
@@ -1960,7 +2004,11 @@ async function loadPage({
       renderAgentList({ ...agentContext, items, permissions: firstPermissions });
       showChatLinkFailure(shell.view, chatLinkFailure);
     } else if (current.feature === "namespaces") {
-      renderNamespaces({ ...agentContext, reload: () => loadPage() }, items, renderRows);
+      renderNamespaces(
+        { ...agentContext, reload: () => loadPage(), fromRefresh },
+        items,
+        renderRows,
+      );
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;
@@ -2198,14 +2246,22 @@ async function revalidateMountedAgent(current) {
     routeKey(route()) === key &&
     view.isConnected;
   const path = `/namespaces/${encodeURIComponent(selectedNamespace)}/agents/${encodeURIComponent(agent.id)}`;
-  const focused = view.contains(document.activeElement) ? document.activeElement : null;
+  const pageActions = mountedViewState?.pageActions?.isConnected
+    ? mountedViewState.pageActions
+    : null;
+  const activeElement = document.activeElement;
+  const focused =
+    view.contains(activeElement) || pageActions?.contains(activeElement) ? activeElement : null;
   const selection =
     typeof focused?.selectionStart === "number"
       ? [focused.selectionStart, focused.selectionEnd]
       : null;
   let checking = "session";
-  // Block stale controls during admission without losing an editor's caret on return.
+  // Block stale controls during admission without losing focus or an editor's caret on return.
   view.inert = true;
+  if (pageActions) {
+    pageActions.inert = true;
+  }
   let clearStillChecking = null;
   const stillChecking = setTimeout(() => {
     if (isCurrent()) {
@@ -2317,6 +2373,9 @@ async function revalidateMountedAgent(current) {
     // A newer load may hold this same node on screen; only this check's lifetime releases it.
     if (view.isConnected && lifetime.isCurrent(active)) {
       view.inert = false;
+      if (pageActions?.isConnected) {
+        pageActions.inert = false;
+      }
       if (
         isCurrent() &&
         focused?.isConnected &&
@@ -2364,6 +2423,55 @@ function resumePage() {
   });
 }
 
+// Settings (UX spec 3.10): the signed-in account, and this session with Sign out. The session
+// read carries no sign-in method, sign-in time or expiry, so the cards show only what it has.
+function settingsView() {
+  const { user } = session;
+  return element(
+    "div",
+    { className: "settings-page" },
+    element(
+      "section",
+      { className: "card" },
+      element("h2", {}, "Signed-in account"),
+      element(
+        "div",
+        { className: "settings-account" },
+        element(
+          "span",
+          { className: "account-avatar account-avatar--lg", "aria-hidden": "true" },
+          initials(user),
+        ),
+        element(
+          "dl",
+          { className: "settings" },
+          // An account with no display name carries its email as the name; the email row
+          // already says it (finding 2099).
+          ...(user.name && user.name !== user.email
+            ? [element("dt", {}, "Name"), element("dd", {}, user.name)]
+            : []),
+          element("dt", {}, "Email"),
+          element("dd", {}, user.email),
+        ),
+      ),
+    ),
+    element(
+      "section",
+      { className: "card" },
+      element("h2", {}, "Session"),
+      button("Sign out", () => void logout(), {
+        className: "settings-sign-out",
+        "aria-describedby": "settings-sign-out-help",
+      }),
+      element(
+        "p",
+        { className: "hint", id: "settings-sign-out-help" },
+        "Signing out ends this session on this device only.",
+      ),
+    ),
+  );
+}
+
 async function logout() {
   loggingOut = true;
   pendingIntent = null;
@@ -2391,7 +2499,6 @@ async function logout() {
   }
   if (confirmed) {
     loggingOut = false;
-    navigation.resetHistory();
     showLogin();
   } else {
     publicPanel(

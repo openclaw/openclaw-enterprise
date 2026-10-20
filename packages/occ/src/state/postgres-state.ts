@@ -123,6 +123,7 @@ import {
   asWork,
   WorkClaimLostError,
   PostgresWorkQueue,
+  repositoryCleanupSql,
   type PostgresQueryClient,
   type PostgresWorkQueueOptions,
 } from "./postgres-work-queue.ts";
@@ -4997,6 +4998,7 @@ export class PostgresPlatformState implements PlatformStateStore {
                         namespace_target, agent_target
                  FROM occ.controller_work
                  WHERE work_kind = 'lifecycle'
+                   AND NOT ${repositoryCleanupSql("controller_work")}
                  ORDER BY created_at, idempotency_key`,
               )
             ).rows,

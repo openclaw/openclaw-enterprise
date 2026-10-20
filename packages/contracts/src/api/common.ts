@@ -242,7 +242,7 @@ export const AgentRevisionListQuery = Type.Object(
     limit: Type.Optional(
       Type.String({
         pattern: "^(?:[1-9][0-9]?|100)$",
-        description: "Revisions per page, 1 to 100; default 50.",
+        description: "Agent revisions per page, 1 to 100; default 50.",
       }),
     ),
     cursor: Type.Optional(

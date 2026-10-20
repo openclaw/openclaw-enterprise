@@ -1,6 +1,7 @@
 # Worker, Compose, and PostgreSQL settings
 
-See the [settings reference](../settings.md) for startup configuration and precedence.
+This reference owns worker, compose, and postgresql settings. Start with the
+[settings reference](../settings.md) for startup configuration and precedence.
 
 ## PostgreSQL connection authentication
 
@@ -51,7 +52,7 @@ Classify a database without applying migrations:
 pnpm db:migrate --check
 ```
 
-An exit-0 `migration.checked` record reports a reviewed history shape:
+Exit-0 `migration.checked` reports:
 `empty`, `prePresetsMain`, `main`, `repositoryCredentials`,
 `repositoryRetention`, `workspaceSetup`, `agentProvisioning`,
 `backendCompleted`, `providerCompleted`, `backendTerminology`, `prePluginApprovers`,
@@ -91,22 +92,21 @@ has 46 through `0046_model_probe_failure_cause`;
 `0047_provisioning_configuration_release`; `preCodexPatSources` has 48 through
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
-through `0050_agent_credential_sources`; `preComputeRevisionAdmission` has 54
-through `0054_credential_source_pat`; `preHeldAuthenticationSession` has 55 through
-`0055_compute_revision_admission`; `preCanonicalHarnessAuth` has 56 through
-`0056_held_authentication_session`; `preSandboxPolicies` has 57 through
-`0057_canonical_harness_auth`; `preSandboxPolicyAdministrator` has 58 through
-`0058_sandbox_policies`; `preRuntimeRoles` has 59 through
-`0059_administrator_sandbox_policy_grants`. `completed` has 60 receipts through
-`0060_agent_runtime_roles`.
-The source manifest is
-[`migrations/meta/canonical-history.json`](../../../migrations/meta/canonical-history.json).
-Empty schemas may be absent or have only their owner's `CREATE` and
+through `0050_agent_credential_sources`. Later shapes:
+`preComputeRevisionAdmission`: 54, `0054_credential_source_pat`;
+`preHeldAuthenticationSession`: 55, `0055_compute_revision_admission`;
+`preCanonicalHarnessAuth`: 56, `0056_held_authentication_session`;
+`preSandboxPolicies`: 57, `0057_canonical_harness_auth`;
+`preSandboxPolicyAdministrator`: 58, `0058_sandbox_policies`;
+`preRuntimeRoles`: 59, `0059_administrator_sandbox_policy_grants`;
+`completed`: 60, `0060_agent_runtime_roles`.
+See [`canonical-history.json`](../../../migrations/meta/canonical-history.json).
+Empty schemas may be absent or have only their owner's ordinary `CREATE` and
 `USAGE` privileges, with no objects or unexpected default privileges. An empty
 stock Drizzle ledger left by a rolled-back first migration is also supported.
 
-After a successful check, run `pnpm db:migrate` for development or
-`pnpm db:migrate:production` for production. Both validate source hashes,
+Run `pnpm db:migrate` for development or `pnpm db:migrate:production` for
+production after a successful check. Both commands validate source hashes,
 receipts, catalog definitions, effective application privileges, and role
 separation under one PostgreSQL advisory lock. Drizzle applies the pending SQL
 and receipts in its normal transaction on that same connection. Existing
@@ -144,9 +144,9 @@ Migration `0049_codex_pat_sources` fails with `Unsupported legacy managed PAT
 authentication: recreate development Agents, revisions, and provisioning
 requests before migrating` when an Agent draft, any AgentRevision, or a
 provisioning plan still holds a retired `chatgpt_service_account` binding. No
-API deletes a revision or provisioning request on its own: delete each affected
-Agent, which also deletes its revisions and requests, and create it again after
-the upgrade. Changing an Agent's binding does not clear historical revisions.
+API deletes an Agent revision or provisioning request on its own: delete each affected
+Agent, which also deletes its Agent revisions and requests, and create it again after
+the upgrade. Changing an Agent's binding does not clear earlier Agent revisions.
 
 A provisioning request that never created an Agent survives Agent deletion.
 Let queued or running requests finish. Then, as the migration role, list the
@@ -272,15 +272,17 @@ NODE_ENV=production node apps/controller/src/worker.mjs
 
 The worker never handles controller API sessions. In production it claims,
 recovers, and counts Namespace work plus embedded OpenClaw and dedicated Codex
-AgentRevision work. Each Agent has its own active revision; the worker does not
+AgentRevision work. Each Agent has its own selected version; the worker does not
 impose a Namespace-wide Agent limit.
 
 ## Local Compose and PostgreSQL configuration
 
-The Compose development stack starts PostgreSQL 18.6, migrations, bootstrap,
-API and worker. `occ dev up` and checkout-local `scripts/dev-up` start this profile.
-Startup validates configuration, waits for services, copies the bootstrap
-service-key response to a private file and proves authenticated access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
+The root Compose development stack starts PostgreSQL 18.6, migrations,
+bootstrap, API, and worker. `occ dev up` starts the supported development
+profile; the checkout-local `scripts/dev-up` entry point uses the same path.
+Startup validates Compose configuration, waits for services, copies
+the bootstrap service-key response to a private file, and proves authenticated
+access. `OCC_DEVELOPMENT_COMPUTE_DRIVER` selects Docker Compute or Kubernetes
 Compute. Kubernetes Compute can use a Compose control plane or the
 [Kubernetes-only profile](../../guides/deploy/local-kubernetes-development.md).
 The helper prefers a usable Docker Engine and otherwise selects Podman directly,
@@ -339,7 +341,7 @@ least-privilege local roles:
 
 Never give the controller the migrator or administrator URL. The application
 role cannot create schema objects, modify migration history, or rewrite
-immutable audit and revision records.
+immutable audit and Agent revision records.
 
 For database-only debugging, start PostgreSQL and apply migrations using its
 dedicated role:

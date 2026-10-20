@@ -315,6 +315,43 @@ describe("Agent channels", { concurrency: 3 }, () => {
     });
   }
 
+  // Every deployment needs a model authentication source. An Agent with its API key bound was
+  // still told to configure model credentials "before first deploy" (finding 2063).
+  test("Channel drawer asks for model credentials only while the Agent has none", async (t) => {
+    const { fixture, namespace } = await readyNamespace(t, "notice");
+    const NOTICE = "New version. Changes affect future deployments using this Configuration.";
+    const { agent: keyed } = await createSlackAgent(fixture, namespace, {
+      name: "Keyed Agent",
+      slug: "keyed",
+    });
+    assert.equal(keyed.harnessAuth?.method, "api_key");
+    const { agent: unkeyed } = await createSlackAgent(fixture, namespace, {
+      name: "Unkeyed Agent",
+      slug: "unkeyed",
+      harnessAuth: null,
+    });
+    const { page } = await newPage(t, fixture, { browser });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, keyed.namespaceId, keyed.id, "draft", "channels"),
+    );
+    const notice = async (agent, heading) => {
+      await page.goto(detailUrl(fixture, agent.namespaceId, agent.id, "draft", "channels").href);
+      await page.getByRole("heading", { name: heading }).waitFor();
+      await page.getByRole("button", { name: "Edit Slack" }).click();
+      const dialog = page.getByRole("dialog", { name: "Edit Slack" });
+      const text = await dialog.locator(".status").first().textContent();
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      return text;
+    };
+    assert.equal(await notice(keyed, "Keyed Agent"), NOTICE);
+    assert.equal(
+      await notice(unkeyed, "Unkeyed Agent"),
+      `${NOTICE} Configure model credentials in the Credentials tab before deploying.`,
+    );
+  });
+
   test("Channel drawer binds existing Slack Secrets without dropping unsaved channel edits", async (t) => {
     const { fixture, namespace } = await readyNamespace(t, "Unbound Slack credentials");
     const slackAppSecretValue = "never-visible-menu-app-token";

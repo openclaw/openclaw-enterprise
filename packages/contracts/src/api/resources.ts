@@ -527,7 +527,7 @@ export const SecretConsumersSchema = Type.Object(
     agents: Type.Array(AgentId, {
       maxItems: SECRET_CONSUMER_LIMIT,
       description:
-        "Readable Agents whose draft, active revision, or pending deployment references the Secret. Each needs a new deployment to receive a rotated value.",
+        "Agents that you can read. Each Agent has a Secret reference in its saved settings, selected Agent revision, or pending deployment. Deploy each Agent again to use a rotated value.",
     }),
     configurations: Type.Array(ConfigurationId, {
       maxItems: SECRET_CONSUMER_LIMIT,
@@ -947,12 +947,12 @@ export const CredentialWithdrawalSchema = Type.Object(
     revisionId: Type.String({
       ...RevisionId,
       description:
-        "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
+        "Identifies the Agent revision for the reported withdrawal. This is the selected Agent revision unless another Agent revision that can still run has a `pending` withdrawal for this source. A status read first reports a `pending` withdrawal with no queued or running attempt. `revoked` means every Agent revision that can still run with this source has confirmed withdrawal.",
     }),
     credentialSourceId: CredentialSourceId,
     state: Type.Union([Type.Literal("pending"), Type.Literal("revoked")], {
       description:
-        "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve.",
+        "`revoked` only after the Credential Gateway confirms that the Agent revision's placeholders no longer resolve.",
     }),
     requestedBy: Type.String({
       minLength: 1,
@@ -972,7 +972,7 @@ export const CredentialWithdrawalSchema = Type.Object(
     lastAttemptAt: Type.Optional(Type.String({ format: "date-time" })),
     withdrawalInProgress: Type.Boolean({
       description:
-        "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
+        "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no queued or running attempt. OCC maintenance can queue a new attempt. To request another attempt, send the withdraw request again.",
     }),
   },
   { additionalProperties: false },
@@ -1186,7 +1186,7 @@ export const AgentRevisionResponse = Type.Object(
 );
 
 const agentRevisionReadDescription =
-  "An immutable revision with readable saved settings, or revision metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits saved configuration fields.";
+  "Returns an Agent revision with saved settings that cannot change. If OCC cannot read them, the response omits saved configuration fields and includes `configurationReadError` with code `SAVED_CONFIGURATION_UNREADABLE` and the unreadable field.";
 
 export const AgentRevisionReadSchema = Type.Union(
   [
@@ -1234,7 +1234,7 @@ export const AgentRevisionSummarySchema = Type.Pick(
   ],
   {
     description:
-      "Revision summary without saved settings. Read the exact revision for its configuration, or for configurationReadError when the saved settings are unreadable.",
+      "Agent revision summary without saved settings. Read this Agent revision for its configuration. If OCC cannot read the saved settings, the response contains `configurationReadError`.",
   },
 );
 
@@ -1242,14 +1242,14 @@ export const AgentRevisionListResponse = Type.Object(
   {
     data: Type.Array(AgentRevisionSummarySchema, {
       maxItems: 100,
-      description: "Readable revisions, newest first.",
+      description: "Agent revisions that you can read, newest first.",
     }),
     meta: Type.Object(
       {
         ...Meta.properties,
         nextCursor: Type.Union([Type.String({ maxLength: 32 }), Type.Null()], {
           description:
-            "Pass as `cursor` to read older revisions. A cursor indicates that an older revision was found readable when checked during this request; a later page may be empty if access changes. `null` means no older revision was found readable when checked.",
+            "Pass this value as `cursor` to read older Agent revisions. OCC returns a cursor only when it finds an older Agent revision that you can read during this request. A later page can be empty if access changes. `null` means OCC found no older Agent revision that you can read.",
         }),
       },
       { additionalProperties: false },
@@ -1284,7 +1284,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Durable retirement of this exact revision, independent of its deployment outcome. Null means no retirement obligation was registered; succeeded confirms cleanup completed.",
+          "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete.",
       },
     ),
     progress: Type.Union(
@@ -1375,7 +1375,7 @@ export const AgentDeploymentStatusSchema = Type.Object(
       ],
       {
         description:
-          "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence; a component, check or code outside the runtime's own vocabulary reads UNRECOGNIZED. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned.",
+          "`null` unless deployment failed. A failure contains `code`, a fixed safe message, and optional data with known fields. `CONVERGENCE_DEADLINE_EXCEEDED` can include `data.timeoutMs` and `data.runtimeFailure` with startup failure details. A component, check, or code unknown to the runtime is shown as `UNRECOGNIZED`. `RUNTIME_MODEL_PROBE_FAILED` can include `data.runtimeFailure` with the cause of the failed startup model check. The response never includes native error text.",
       },
     ),
     warnings: Type.Array(
@@ -1674,7 +1674,7 @@ export const AgentRuntimeDescriptionSchema = Type.Object(
         {
           additionalProperties: false,
           description:
-            "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited.",
+            "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
         },
       ),
     ),

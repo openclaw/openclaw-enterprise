@@ -36,7 +36,7 @@ Agent create, provision, and update requests can use `repositoryAccess`:
 
 An omitted entry profile inherits `defaultProfile`. An explicit profile remains
 custom even when equal to the default. Responses retain this intent alongside
-resolved `repositoryBindings`; admitted revisions contain concrete profiles.
+resolved `repositoryBindings`; saved versions contain concrete profiles.
 Changing desired access affects future deployments only. An empty repositories
 array removes attachments while retaining the default.
 

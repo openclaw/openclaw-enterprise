@@ -9,8 +9,8 @@ last_updated_session: "authoring-run/dc9ec1fb-19a3-4d2b-8e27-d5596378b7d2"
 ## Overview
 
 Trace how Agent detail shares one Agent with an existing Principal and removes
-one explicit Agent binding. The trace starts when Agent detail mounts the
-sharing panel and stops at policy configuration; native gateway admission and
+one explicit Agent binding. The trace starts when Agent detail's Access tab
+mounts the sharing panel and stops at policy configuration; native gateway admission and
 runtime readiness belong to the [native admin flow](../agent-native-admin.md).
 See the [parent flow](../platform-console.md) and the
 [sharing reference](../../reference/console/agent-sharing.md).
@@ -18,8 +18,9 @@ See the [parent flow](../platform-console.md) and the
 ## Entry Points
 
 - `apps/controller/src/console/agents/access.mjs:renderAgentAccess` renders the
-  sharing panel inside Agent detail.
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts it.
+  sharing panel on Agent detail's Access tab.
+- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts it when
+  that tab first opens.
 - Assumptions: a signed-in Installation administrator, an existing Principal ID,
   and the Namespace IAM policy endpoints.
 
@@ -27,7 +28,7 @@ See the [parent flow](../platform-console.md) and the
 
 ```mermaid
 graph TD
-  A["Agent detail mounts sharing panel"] --> B["Read Namespace policy and saved role catalog"]
+  A["Access tab mounts sharing panel"] --> B["Read Namespace policy and saved role catalog"]
   B -->|policy denied| K["Keep other Agent panels available"]
   B -->|catalog unavailable| L["Disable role selection; retain removal"]
   B --> C["Submit share for an existing Principal"]
@@ -35,7 +36,9 @@ graph TD
   D --> E["Bind Namespace read to the exact Namespace"]
   E --> F["Find or create Agent read/use Role"]
   F --> G["Check reviewed Configuration; bind selected Agent role"]
+  C --> P["Hold version and page changes"]
   G -->|confirmed steps| H["Show progress and direct grants"]
+  H --> U["Release the hold"]
   C -->|uncertain| Q["Block writes until policy refresh"]
   H --> R["Remove one selected Agent binding"]
 ```
@@ -46,18 +49,22 @@ graph TD
 
 `apps/controller/src/console/agents/access.mjs:renderAgentAccess`
 
-Agent detail mounts sharing independently of revision/configuration reads and
-native admission, but not when the console's observability probe already showed
-the person lacks Installation administration: the policy endpoints require it and
-the API audits each denial. The panel loads `/agents/:agentId/runtime-roles` and the selected Namespace's existing
+The Access tab mounts sharing independently of version/configuration reads and
+native admission. Agent detail leaves the tab out when the console's observability
+probe already showed the person lacks Installation administration: the policy
+endpoints require it and the API audits each denial. The panel reads `/agents/:agentId/runtime-roles` and the selected Namespace’s
 `/iam/roles` and `/iam/access-bindings` endpoints. A policy `403` hides the
-sharing panel and leaves the other panels usable; a current `401` retains global
-session expiry. The catalog carries saved Configuration ID/generation, assignable roles, desired runtime state and optional active-revision role summaries. The panel displays configured and deployed permissions independently, including stopped and undeployed states. A failed role-catalog read clears role choices and retains removal.
-Sharing owns catalog return checks through `context.onRevalidate`. Catalog reads
-use `rereadOnResume` and skip the generic GET cache, so an unavailable optional
-Compute capability cannot discard unrelated drafts or live logs. An unfinished
-Sharing read forces a rebuild. Completed panels refresh their role choices in
-place, clear consent when the catalog changes, and retain catalog-independent removal.
+panel and the tab, opens Configuration, and leaves the other panels usable; a current `401` retains global
+session expiry.
+
+The catalog carries saved Configuration ID/generation, assignable roles, desired
+runtime state and optional active-revision role summaries. Configured and deployed
+permissions are shown separately, including before deployment and while stopped.
+A failed catalog read clears role choices and retains removal.
+Sharing owns catalog return checks through `context.onRevalidate`, using
+`rereadOnResume` outside the generic GET cache. An unfinished read rebuilds the
+panel; a completed panel refreshes its choices in place and clears consent when
+the catalog changes. Catalog failure leaves unrelated drafts and live logs intact.
 
 ### 2. Serialize Role and binding writes
 
@@ -80,7 +87,19 @@ configuration evidence, not a historical receipt, and never triggers a write.
 
 The selector PATCHes `runtimeRole` and `runtimeRoleConfiguration` (the reviewed Configuration ID and generation). OCC holds policy-management authority, then checks the saved Configuration under the same Namespace lock used by Configuration and Agent updates. A changed ID or generation rejects the write with `409` before mutating the assignment; a missing role returns `400`. The assignment and audit commit in the existing transaction. Only `runtimeRole` is persisted on the binding. The binding identity, OCE Role and exact resource remain unchanged. An uncertain response blocks further writes until explicit readback. Runtime and proxy admission resolve the new role on subsequent requests.
 
-### 4. Remove one explicit binding
+### 4. Hold the page while writes run
+
+`apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
+
+Each request belongs to the page and stops when the page goes. So while sharing, role changes or
+removal run, the panel's `onWriting` callback has Agent detail hold version and
+page changes, as it does for a draft's writes. The held changes are the Versions
+rail, Create new version, version links, ← Agents, the sidebar, the Namespace
+selector, Back and Forward, the header's Refresh, and the page's own reloads. The
+page shows "This page stays open until sharing finishes." Tabs still switch. The
+hold ends when the last request settles. Each request has the client’s 15-second timeout. Session expiry and sign-out still leave.
+
+### 5. Remove one explicit binding
 
 `apps/controller/src/console/agents/access.mjs:renderAgentAccess`
 
@@ -90,7 +109,7 @@ The panel retains discovery grants and explains other possible access sources.
 
 ## Debugging and Verification
 
-- A `403` on the policy reads hides only the sharing panel; check Installation
+- A `403` on the policy reads hides only the Access tab; check Installation
   administration before treating a missing panel as a console fault.
 - After an uncertain write, select **Refresh sharing** and inspect the direct
   grants before submitting again. A present binding does not prove an earlier

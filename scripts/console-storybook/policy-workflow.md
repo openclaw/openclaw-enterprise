@@ -24,6 +24,7 @@ Review its exact executable and endpoint, or select **Review suggestion**.
 
 Compare empty, disabled, unsupported, gap, missing-metadata, permission-denied,
 loading, unavailable-credential, and unconfirmed-application stories. Confirm
-manual editing remains available without logs or suggestions. These previews
+manual editing remains available without logs or suggestions. The unsupported
+story shows one sentence and no editor. A permission refusal offers no retry. These previews
 prove simulated presentation only; use the OpenShell real-runtime lane for
 persistence and enforcement proof.

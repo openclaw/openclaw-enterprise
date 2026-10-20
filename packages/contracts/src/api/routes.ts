@@ -1020,7 +1020,7 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Revoke one credential source from an Agent's active revision",
+    summary: "Revoke one credential source from the selected Agent revision",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1469,7 +1469,7 @@ export const occApiRoutes = [
     iamAction: "manage_policy",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Apply the saved policy to the exact running revision",
+    summary: "Apply the saved policy to the running Agent revision",
     tags: ["Agents"],
     schema: {
       params: SandboxPolicyParams,
@@ -1505,7 +1505,7 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Read bounded policy suggestions for one exact revision",
+    summary: "Read policy suggestions for the requested Agent revision",
     tags: ["Agents"],
     schema: {
       params: SandboxPolicyRevisionParams,
@@ -1576,7 +1576,7 @@ export const occApiRoutes = [
     iamAction: "delete",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Begin or retry deletion of an exact Namespace-owned Agent and its AgentRevisions",
+    summary: "Begin or retry deletion of the requested Agent and its Agent revisions",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1658,7 +1658,7 @@ export const occApiRoutes = [
     iamAction: "deploy",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Admit an immutable revision from the Agent's saved draft",
+    summary: "Save an Agent revision from the Agent's saved settings",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1674,7 +1674,7 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent",
-    summary: "Stop one Agent while retaining its revision and persistent state",
+    summary: "Stop one Agent and keep its saved Agent revision and persistent state",
     tags: ["Agents"],
     schema: {
       querystring: EmptyQuery,
@@ -1730,7 +1730,8 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "agent",
     authorizationTarget: "agent_collection",
-    summary: "List authorized immutable revision summaries for one exact Agent, newest first",
+    summary:
+      "List Agent revision summaries that you can read for the requested Agent, newest first",
     tags: ["Agent revisions"],
     schema: {
       querystring: AgentRevisionListQuery,
@@ -1746,7 +1747,7 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "agent_revision",
     authorizationTarget: "requested_revision",
-    summary: "Get an exact authorized immutable Agent revision",
+    summary: "Get an Agent revision that you can read",
     tags: ["Agent revisions"],
     schema: {
       querystring: EmptyQuery,
@@ -1762,7 +1763,7 @@ export const occApiRoutes = [
     iamAction: "read",
     resourceKind: "agent_revision",
     authorizationTarget: "requested_revision",
-    summary: "Get the durable deployment status for one admitted Agent revision",
+    summary: "Get the saved deployment status for an Agent revision",
     tags: ["Agent deployments"],
     schema: {
       querystring: EmptyQuery,
@@ -1778,7 +1779,7 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent_deployment_diagnostics",
-    summary: "Run explicit current-runtime diagnostics for one exact Agent revision",
+    summary: "Check the current runtime for an Agent revision",
     tags: ["Agent deployments"],
     schema: {
       querystring: EmptyQuery,
@@ -1794,7 +1795,7 @@ export const occApiRoutes = [
     iamAction: "operate",
     resourceKind: "agent",
     authorizationTarget: "agent_deployment_runtime",
-    summary: "Read Pod status, restarts, Events and log sources for one exact Agent revision",
+    summary: "Read Pod status, restart counts, Events, and log sources for an Agent revision",
     tags: ["Agent deployments"],
     schema: {
       querystring: EmptyQuery,
@@ -1810,7 +1811,7 @@ export const occApiRoutes = [
     iamAction: "read_logs",
     resourceKind: "agent",
     authorizationTarget: "agent_deployment_runtime_logs",
-    summary: "Read one bounded, redacted page of container output for one exact Agent revision",
+    summary: "Read one page of redacted container output for an Agent revision",
     tags: ["Agent deployments"],
     schema: {
       querystring: AgentRuntimeLogsQuery,

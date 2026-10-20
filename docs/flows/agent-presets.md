@@ -10,7 +10,7 @@ last_updated_session: authoring-run/23d60562-6525-4593-ad0c-29ce57483c38
 
 The Console renders a Namespace Preset and saves an independent Configuration
 and Agent through existing APIs. This flow stops at the draft; deployment follows
-[revision admission](configuration-driver/persistence-and-revisions.md).
+[version admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
 
@@ -56,7 +56,7 @@ graph TD
   O -->|Grant fails| R["Retain Agent and retry credential access"]
   F -->|Invalid variable| E
   I -->|Agent save fails| K["Keep Configuration ID for safe retry"]
-  J --> L["Credential preparation and revision admission"]
+  J --> L["Credential preparation and version admission"]
 ```
 
 ## Execution Trace
@@ -148,14 +148,12 @@ path records mutations and denials without template or variable contents.
 
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
-[`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists readable Preset summaries, requiring Namespace read, then reads the selection
-once with `revalidate: false` for an independent draft. **Start with default Preset** reads the listed `default-codex` resource.
-Variable-free templates apply immediately; customized variables keep the chooser
-and its shortcut origin. Missing defaults or failed reads do not open a hardcoded
-starter; other readable Presets remain selectable. **Start without Preset** opens
-the form without a Preset read, not as a fallback for a denied selection. Normal
-creation authorization applies.
+Lists Namespace-visible summaries, then reads the selection once with
+`revalidate: false` for an independent draft. **Start with default Preset**
+reads `default-codex`.
+Templates without variables apply immediately; otherwise the chooser and shortcut origin remain. Missing defaults or failed reads never open a hardcoded starter; other readable
+Presets stay selectable. **Start without Preset** skips Preset reads; it cannot
+bypass denial. Creation authorization applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -251,10 +249,11 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-Saving creates an Agent without a Preset reference or variable-input map; rendered
-values become Agent and Configuration settings. Credential preparation
-and [revision admission](configuration-driver/persistence-and-revisions.md) read
-those resources. Preset changes affect neither drafts nor revisions.
+The saved Agent has a new identity and no Preset reference. Variable inputs are
+not stored as a separate map. Rendered values are ordinary Agent/Configuration
+settings. Credential preparation and [version admission](configuration-driver/persistence-and-revisions.md)
+read those resources, not the Preset. Later Preset changes cannot change a draft
+or an immutable saved version.
 
 ## Debugging and Verification
 

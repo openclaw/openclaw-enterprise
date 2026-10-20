@@ -6,10 +6,10 @@ environment; this procedure does not establish production support.
 
 ## Prepare images and trust
 
-Select official OpenShell `v0.1.4`, source revision
+Select official OpenShell `v0.1.4`, source commit
 `5a7728c304b5528e954e9ae900cf21f84e1a12b1`, for the gateway, supervisor, and
 static sandbox launcher. Use immutable image digests and gateway/Workspace Helm
-charts from that revision. This release includes operator `GetProviderCredentials`
+charts from that version. This release includes operator `GetProviderCredentials`
 from [OpenShell #4357](https://github.com/NVIDIA/OpenShell/pull/4357) and the alias
 resolver correction in [#4390](https://github.com/NVIDIA/OpenShell/pull/4390).
 
@@ -21,7 +21,7 @@ resolver correction in [#4390](https://github.com/NVIDIA/OpenShell/pull/4390).
 
 OCE keeps its JWT wrapper: Codex needs the local account claims, while the
 supervisor replaces the whole alias with the live credential. Stable-handle
-aliases already worked upstream across rotation. #4390 fixes revision-alias
+aliases already worked upstream across rotation. #4390 fixes version-alias
 resolution after cache eviction and corrects `EndpointMismatch` reporting for
 disallowed endpoints; it does not add JWT parsing or change refresh ownership.
 
@@ -33,7 +33,7 @@ versions. Earlier `dev.8` and `dev.47` evidence remains bound to its tested pins
 neither qualifies `v0.1.4`. The release update does not establish a fix for the
 known provider-environment disconnect or a successful restart/withdrawal proof.
 
-The previous selection was `0.1.4-dev.47+g6a6401b9c`, source revision
+The previous selection was `0.1.4-dev.47+g6a6401b9c`, source commit
 `6a6401b9c359b66a3202f584a715fc24c13429d6`.
 
 Configure the shared [OpenShell Backend](../reference/backends.md#openshell-gateway)
@@ -60,7 +60,7 @@ Harness endpoint.
 Build the base OCE image using the OpenClaw, Codex, and Node versions pinned by
 [the runtime Dockerfile](../../deploy/runtime/Dockerfile) and follow the
 [runtime recipe](../../deploy/runtime/README.md). Keep its frozen lockfile,
-source checksum, and native filesystem checks. Record the tested source revision
+source checksum, and native filesystem checks. Record the tested source commit
 and actual launched versions with each proof; earlier runtime evidence does not
 qualify a newer pin.
 
@@ -150,7 +150,7 @@ outcomes either.
 
 For real-provider proof, use the Console for fresh device login, select the
 resulting source on a dedicated Codex Agent, and verify initial workspace files,
-an active deployment, a real model response, and a subsequent revision using
+an active deployment, a real model response, and a subsequent version using
 the same source. Select `codex-plugin` with `catalogSource: hosted` to verify
 directory discovery. Selected runtime plugins remain unsupported; discovery
 does not prove plugin execution. The remaining qualification boundaries are below.
@@ -158,7 +158,7 @@ does not prove plugin execution. The remaining qualification boundaries are belo
 ## Receiver fixtures and full-stack qualification
 
 `tests/integration/device-authorization-api.test.mjs` exercises real Fastify,
-OCC, IAM and credential-source storage through login, Agent creation/revision
+OCC, IAM and credential-source storage through login, Agent creation/version
 admission and plugin discovery. The external credential services and provider HTTP
 are simulated. It verifies session fencing, source grants, configuration discovery after
 session closure/expiry, and rejection of credential leakage. The Console OAuth

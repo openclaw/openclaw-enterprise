@@ -1,7 +1,8 @@
 # Console Storybook
 
-Console previews use in-memory fixtures. They contact no services and
-run no workloads. Use dummy credentials.
+Browse production Console pages, components, and Agent workflows against an
+in-memory fixture. Previews contact no services and run no workloads. Use dummy
+credentials.
 
 ## Run locally
 
@@ -48,7 +49,7 @@ Compare [before](../assets/console-style/agents-before.png),
 [walkthrough](../assets/console-style/walkthrough.mp4): simulated Storybook
 evidence, not live backend or deployment proof. The
 [reference screen](../assets/console-style/openclaw-reference-light.png) shows
-OpenClaw's disconnected gateway screen at the revision above.
+OpenClaw's disconnected gateway screen at the commit above.
 
 ## Pages and components
 
@@ -60,10 +61,10 @@ Stories reach error states through real controls after loading fixture data.
 | Agents                                                                     | Populated and empty collections, no search matches, inaccessible Namespace, no readable Namespaces, permission denial, read failure, loading.                                                                                                                                                                                                                                                                     |
 | Backends                                                                   | Configured, empty, discovery failure, and access denied.                                                                                                                                                                                                                                                                                                                                                          |
 | [Namespaces](../../scripts/console-storybook/namespace-create-workflow.md) | Creation, status cards, empty, denied, recovery.                                                                                                                                                                                                                                                                                                                                                                  |
-| Settings and navigation                                                    | Signed-in account and unknown route.                                                                                                                                                                                                                                                                                                                                                                              |
+| Settings and navigation                                                    | Account, sign-out failure, unknown route.                                                                                                                                                                                                                                                                                                                                                                         |
 | Create Agent                                                               | Installed default, missing/loading/denied Presets, Preset variables, fixed model choices before credential entry and manual model IDs, OpenAI Codex/OpenClaw and Anthropic OpenClaw harnesses, Service Accounts switching and bound Presets, seeded workspace files, storage/grant denial, repository selection/discovery and rejected-grant recovery, invalid JSON, partial save/conflict, unknown save outcome. |
 | Agent detail                                                               | First and later drafts, version details, native JSON and plugin editors, immutable plugin snapshot, queued/running/succeeded/failed activity, exact-version diagnostics, error and permission states.                                                                                                                                                                                                             |
-| Navigation components                                                      | Account menu, Namespace switcher, mobile drawer, admin link and denial, OCE branding, simulated OCC revision, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                                              |
+| Navigation components                                                      | Account menu, Namespace switcher, mobile drawer, admin link and denial, OCE branding, simulated OCC version, missing development metadata, debug runtime image identities and unavailable metadata.                                                                                                                                                                                                               |
 | Channels                                                                   | Unconfigured cards, Slack editor with pairing/open/disabled policies, everyone and restricted channel sender access, incomplete sender access, unsupported mixed sender lists, unsupported wildcard channel maps, read-only snapshot, save conflict.                                                                                                                                                              |
 | Credentials                                                                | Named Secret selection and creation, API-key and Slack Secret switching, denied metadata and grants, partially missing tokens, missing authentication, operator-managed credentials, issued ChatGPT account, model Secret replacement, pending grants, and unknown authentication saves.                                                                                                                          |
 | Native admin                                                               | Available launch, stopped, UI configuration required, assigned role missing, insufficient pairing permissions, unsupported Compute transport, administrator self-assignment and explicit Refresh recovery, disabled panel hidden, and ordinary-user denial hidden. Launch opens a fixture page.                                                                                                                   |
@@ -86,7 +87,9 @@ In **Components/Native admin → Administrator Needs Assignment**, self-assign
 In **Return to loaded pages**, **Return to Agent panels**, and **Slow rechecks**,
 Back preserves search, expanded panels, and Credentials. Refresh reloads.
 
-## Agent flows and UI gaps
+<a id="agent-flows-and-ui-gaps" class="anchor-alias"></a>
+
+## Namespace navigation and Agent flows
 
 In **Components → Navigation → Namespace switcher**, switch Engineering/Research
 and check URL, collection, and Back behavior. **Mobile Namespace selector** checks
@@ -108,59 +111,12 @@ guidance. Simulated examples:
 [Namespaces page, no selector](../assets/console-namespace-selector/namespaces.png),
 and a [switching walkthrough](../assets/console-namespace-selector/namespace-switching.webm).
 
+Agent creation, editing, deployment, Stop, and Delete stories are in
+[Console Storybook Agent workflows](console-storybook-agent-workflows.md).
+
 ### Create and deploy
 
-Compare **New version queued**, **Deployment waiting for runtime**, and
-**Deployment retry after dependency failure**; switch versions and check
-**Since**.
-
-**First deployment creates credentials** accepts **Deploy new version** without
-a separate credential action. Its initial state is not a Stop request; OCC
-generation is simulated.
-
-Choose a Preset, fill variables, review seeded files, and create a Codex Agent.
-The Console submits Configuration and Secret references, then simulates
-provisioning. The default Preset uses Codex and a model Secret; edit IDENTITY.md and clear USER.md.
-OpenClaw and unsupported-runtime stories keep the draft workflow: provision
-credentials and deploy from Agent detail.
-
-**Plugins Curated** exercises token-free discovery against simulated Driver
-responses, leaving access unverified. Hosted discovery requires an eligible Codex
-service-account token. Workspace and Standard OpenClaw stories preview file and
-harness settings. Preset Secret stories cover existing, pending, denied, and empty
-results while keeping new-token entry.
-
-The [DevDay storyboard](../../scripts/console-storybook/devday-storyboard.md) covers SWE Agent creation and a simulated Admin UI without gateway, Slack, credentials or model connections.
-
-**Choose provider, harness, and authentication** covers the supported
-combinations; models appear before credentials. **Enter another model ID**
-allows manual entry but does not prove access. Execution mode follows the
-harness; saved tokens require Codex. **Experimental Dedicated OpenClaw** shows
-the runtime-build warning; Embedded OpenClaw does not.
-
-In **Enter another model ID**, switch to **Choose a model from the list** and
-back. Listed models and other settings should survive; focus moves to the active
-input. Enter another listed model ID, return, and check its selection. A custom
-ID requires a new selection. Change the provider through Configuration JSON;
-the list must match without retaining the old provider's model.
-
-The fixture supplies a ready Namespace, Preset, and model Secret. Namespace
-provisioning, Preset CRUD, and service-account issuance have no dedicated console
-pages. One Secret picker selects or creates new version model Secrets and Slack
-tokens (Credentials tab and Channels drawer). See
-[Create and deploy in the console](../reference/console/create-and-deploy.md)
-for the supported installation workflow, prerequisites, and Teams deployment limits.
-
-Repository previews cover access levels, empty or pending discovery, unavailable
-choices, denied or unverified authorization, and reselection after a rejected save.
-In **Locale-stable repository search**, search `ibm`, select `acme/platform`, and
-confirm reference `IBM-platform`. Simulated data does not prove GitHub App access
-or credential delivery.
-In **Repository choices unavailable**, follow the setup link (no retry); creation
-without repository access stays available. The recovery story keeps its saved
-Configuration and needs a current nonempty repository selection to retry.
-The fixture does not verify operator prerequisites: GitHub App setup, Namespace
-approvals, runtime images, and credential-service networking.
+Moved to [Agent workflows](console-storybook-agent-workflows.md#create-and-deploy).
 
 ### Sharing
 
@@ -171,152 +127,39 @@ the assignment. Self-assignment is explained above.
 
 ### Return to loaded pages
 
-In **Return to loaded pages**, Tab to Namespaces and press Enter: focus reaches
-its heading, then Refresh. Check editor retention through Back/Forward, Refresh,
-refocus, and Namespace switches.
-
-**Return Backend access denied** checks Installation-wide denial.
-**Return access denied** and **Return session expired** must remove retained
-private content on response. These fixtures prove presentation only; the
-[browser suite](../testing/local.md#console-browser-checks) proves authorization.
-Reset story clears retained state.
+Moved to [Agent workflows](console-storybook-agent-workflows.md#return-to-loaded-pages).
 
 ### Keep edits while navigating
 
-In **Pages/Agent detail → Keep Configuration edits**, **Components/Workspace →
-Keep unsaved files**, **Components/Credentials → Keep authentication choices**,
-and **Components/Channels → Keep Slack edits**, edit the form, visit another tab
-or Namespaces, and return with Back/Forward. Check empty and invalid text, then
-explicit Cancel or Reload. The Configuration story keeps deployment disabled;
-workspace Save changes only the selected simulated file.
+Moved to [Agent workflows](console-storybook-agent-workflows.md#keep-edits-while-navigating).
 
-In **Flows → Keep an Agent draft**, fill a default starter form, leave, and
-re-enter, also after a refused Create: it returns; Cancel clears it.
+<a id="choose-and-switch-revision-secrets" class="anchor-alias"></a>
 
-In **Pages/Create Agent → Preset with an invalid field**, Use Preset names
-`agent.executionMode` and keeps the chooser. **Agent creation needs an
-administrator** shows the denied capability check without retry; **Capability
-check failure** keeps the retry.
+### Choose and switch version Secrets
 
-Use **Pages/Create Agent → Keep Preset variables** before applying a Preset and
-**Keep an unsaved Preset draft** afterward. Ordinary fields survive; token inputs
-clear. Revisit the Agents list to check its search filter. Denied, loading,
-missing-file, and uncertain-write stories verify retention never bypasses the
-editor's access or recovery controls.
+Moved to [Agent workflows](console-storybook-agent-workflows.md#choose-and-switch-version-secrets).
 
-### Choose and switch revision Secrets
+<a id="inspect-bound-secrets-in-revisions" class="anchor-alias"></a>
 
-**Slack token switch** blocks Deploy until you save or reselect the saved Secret.
-In **Discard an unsaved Secret choice**, that Secret isn’t listed; reload to discard unsaved edits.
+### Inspect bound Secrets in versions
 
-**Secret list denied** retains IDs. **Slack grant denied** requires recovery.
-In **Issued service accounts unavailable**, switch authentication methods:
-account feedback hides, then returns with the saved issued-account selection.
-
-In **Components/Channels → Slack Secret menu**, search names/IDs and select with
-arrows and Enter. **Slack create Secret modal** shows Name and masked value.
-In **Slack duplicate Secret name**, rename and retry without reentering the value;
-browser tests cover controller rejection.
-
-### Inspect bound Secrets in revisions
-
-In **Components/Channels → Revision read only**, inspect Slack Secret identities;
-switch to **Configuration** for Harness authentication. Values never appear.
-
-The **Revision Secret metadata** denied, missing, and loading stories retain IDs
-during failed or pending reads.
-**Revision without Slack bindings** shows **No Secret bound**.
+Moved to [Agent workflows](console-storybook-agent-workflows.md#inspect-bound-secrets-in-versions).
 
 ### Discover and configure plugins
 
-Plugin fixtures simulate catalogs, Secret metadata and policy capabilities;
-installation, invocation access, runtime enforcement and Agent turns remain unverified.
-
-In **Create Agent / Discover plugins with a service account token**, expand
-**Access and credential setup** and inspect its links. Collapse it; at 390×844
-and 390×640, check scrolling and reachable pagination. **Add Calendar**, edit a
-tool, then **Done**: **Plugin selections JSON** shows the draft. **Search plugins**
-queries the catalog; **Filter tools** filters locally. Credential changes clear
-the catalog and keep selections.
-
-**Preload plugins after entering a service account token** starts with the picker
-closed; opening it reuses the background request. **Plugin search loading** holds
-the response: loading starts while typing, keeps focus, and replaces empty-result
-feedback. **Plugin tools loading** holds Calendar's details: check loading status
-and disabled **Add Calendar**. Reset to replay pending states before timeout.
-
-In **Discover plugins with a selected PAT Secret**, choose Calendar, then change
-the Secret: discovery clears. **Selected PAT Secret discovery denied** previews
-permission failure. Preset PAT Secrets enable discovery; API keys do not.
-
-**Components/Plugins → Unavailable reason popover** covers keyboard access,
-dismissal, compact rows, help links, detail guidance, and disabled **Add**.
-
-In **Components/Plugins**, expand a tool to inspect inherited enablement and
-approval. Unsupported per-tool review opens the plugin default. New plugins omit
-tool defaults; omitted reviewers inherit the Harness reviewer. **Unsupported
-saved tool reviewer** can be cleared to inherit. Tool IDs match JSON keys.
-
-**Create Agent / Edit existing plugin policies** exercises the policy form.
-
-**Pages/Agent detail → Edit plugins in new version** starts with Calendar saved;
-**Plugins** preloads the catalog with its Service Accounts Secret. In **Configure
-plugins**, add Documents, change Calendar's policy, save, and deploy. **Plugins in
-admitted revision** shows the frozen snapshot.
+Moved to [Agent workflows](console-storybook-agent-workflows.md#discover-and-configure-plugins).
 
 ### Update
 
-Compare **New version in progress** (v7 deploying) with **Current version during
-deployment** (v6 current). Check queued, failed, activated, and unavailable states.
-In **First version**, wrapped lines align under each step, not its number.
-
-Press Enter on **Deploy new version**. Focus moves to “Deploying…”, then:
-
-- **Deployment refused before admission:** back to Deploy, enabled and described by the refusal.
-- **Deployment outcome unknown:** to “Outcome unknown.” Deploy stays disabled; inspect the saved state before retrying.
-
-Open v7 Logs from **New version failed**, then go Back. At 390px, the selected
-tab and log rows stay visible. [Lose and regain log or Pod access](../../scripts/console-storybook/runtime-access-workflow.md)
-to check Follow, Download, and permission changes. These stories use simulated responses.
-
-Unreadable Configuration does not hide version metadata. Check the [draft and
-revision banners](../../scripts/console-storybook/unreadable-configuration-workflow.md)
-and their navigation.
-
-**Current observations** starts without a request. Compare v7, unknown v6, and
-unavailable observations: requesting timestamped diagnostics must not change the
-recorded deployment result.
-
-In **Components/Channels** and **Components/Credentials**, an unknown write
-outcome disables deployment until **Reload draft**. Whether the write committed is still unknown.
-
-Browsing never deploys. Deploy credential changes; workspace edits apply immediately.
-Native JSON omits Agent-owned Backend and execution mode. See [versions and Slack
-sender access](../reference/console.md#inspect-detail-revisions-and-channel-drafts).
-
-In **Enable gateway password access**, Cancel discards the staged reference.
-To apply it, save Configuration, then deploy. Compare configured, save-denied,
-and save-in-progress stories; none proves credential delivery or login.
+Moved to [Agent workflows](console-storybook-agent-workflows.md#update).
 
 ### Stop
 
-Open **Stop Agent**, inspect or cancel, then confirm. **Refresh stop status**
-rereads the fixture's requested stopped state without proving live shutdown.
-
-Resume by deploying a new version; disabling Slack does not stop an Agent. See
-[Stop and resume](../reference/agents/deployment.md#stop-and-resume).
+Moved to [Agent workflows](console-storybook-agent-workflows.md#stop).
 
 ### Delete
 
-Open **Delete Agent**, inspect or cancel, then confirm permanent deletion.
-Cleanup state removes editing/deployment controls.
-**Refresh deletion status** completes the fixture and returns to the Agent list.
-Detailed cleanup progress is unavailable. Namespace-owned Configurations
-and Secrets remain; manage them separately. See
-[Agent deletion](../reference/agents.md#deletion).
-
-Serving health, routing cutover, shutdown, channel delivery and model responses
-require runtime verification. The console shows persisted deployment status.
+Moved to [Agent workflows](console-storybook-agent-workflows.md#delete).
 
 ## Maintain coverage
 

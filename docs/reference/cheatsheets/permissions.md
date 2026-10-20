@@ -14,9 +14,9 @@ override grants, and one action never implies another. See
 | `read`       | Read a resource or include it in a list; Secret reads return metadata, not values.                                                                |
 | `update`     | Change a resource or its credential.                                                                                                              |
 | `delete`     | Request deletion of the exact resource.                                                                                                           |
-| `deploy`     | Admit a new Agent revision.                                                                                                                       |
+| `deploy`     | Create a new Agent revision.                                                                                                                      |
 | `operate`    | Stop an Agent, provision its runtime credentials, write its workspace files, read its runtime status, or use a bound Secret or credential source. |
-| `administer` | Run Installation administration, read the exact Agent’s runtime log text. It does not imply `read`, `deploy`, or other actions.                   |
+| `administer` | Run Installation administration or read the exact Agent’s runtime log text. It does not imply `read`, `deploy`, or other actions.                 |
 | `use`        | Enter an Agent runtime as a human with an exact runtime-role assignment. Does not imply OCE management permissions.                               |
 | `read_logs`  | Read the exact Agent’s runtime log text without `administer`. Not granted by bootstrap; grant it through a Namespace Role.                        |
 
@@ -95,9 +95,9 @@ needs its principal’s own grants; it does not inherit the issuer’s. See
   requires `agent:operate`, `agent:read` and `agent_revision:read`;
   [runtime log text](../api.md#get-namespacesnamespaceidagentsagentiddeploymentsdeploymentidruntimelogs)
   requires `agent:read_logs` or `agent:administer`, plus `agent:read`, for every
-  revision of the Agent; a `read_logs` Restriction also blocks `administer`. See
+  Agent revision; a `read_logs` Restriction also blocks `administer`. See
   [Agent logs](../../guides/topics/agent-logs.md#who-can-see-what).
-- A first [Agent deployment](../agents/deployment.md#revisions-and-deployment)
+- A first [Agent deployment](../agents/deployment.md#versions-and-deployment)
   also requires exact-Agent `read` and `operate` when the selected Compute Driver
   must create missing generated transport credentials.
 - [Namespace IAM operations](../api.md#iam) require `installation:administer`

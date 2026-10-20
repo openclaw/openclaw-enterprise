@@ -284,9 +284,8 @@ routing policies, PostgreSQL or worker execution. Selecting only one image fails
 ### Native Gateway sharing
 
 `gateway-routing` selects `tests/integration/native-admin-k3d-real.test.mjs`.
-It checks cookies, exact grants, sibling/Configuration denials, Console launch,
-model turns and WebSocket revocation within 30 seconds. Another person
-continues. Role assignment before deployment, changes while stopped and
+It checks cookies, grants, sibling/Configuration denials, Console launch,
+model turns and WebSocket revocation within 30 seconds. Others continue. Role assignment before deployment, changes while stopped and
 redeployment are covered; account enrollment, per-chat authority, Git and
 OpenShell are not.
 
@@ -454,7 +453,7 @@ Supply public CA certificates only. Enable the CP chart's
 `workerKubeconfigSecretName`, `apiCidrs`, and `apiPort`, and set
 `gatewayRouting.remoteNodeCidrs` to the observed DP sources. Workloads do not
 receive kubeconfigs. Canonical model, channel, and transport Secrets stay in CP;
-selected model and transport material is delivered to revision-owned DP Secrets.
+selected model and transport material is delivered to data-plane Secrets for each Agent revision.
 
 Use a `coredns-custom` ConfigMap with a separate `*.server` zone. Resolve the CP
 Gateway hostname to its Service IP in CP and its reachable ingress address in DP,

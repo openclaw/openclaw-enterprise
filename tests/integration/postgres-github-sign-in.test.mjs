@@ -827,7 +827,7 @@ test(
     );
     await page.goto(`${origin}/console/agents/${agent.id}?namespace=${namespaceId}&revision=draft`);
     assert.equal((await (await detailResponse).json()).data.id, agent.id);
-    await page.getByRole("heading", { name: "Create new version" }).waitFor();
+    await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
     await page.getByRole("tab", { name: "Configuration", exact: true }).waitFor();
     assert.ok((await page.locator("body").textContent()).includes(agent.name));
     const after = await state.loadNativeIAMState(installation.id);

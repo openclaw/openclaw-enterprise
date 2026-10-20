@@ -543,6 +543,58 @@ describe("CI preparation", { concurrency }, () => {
     });
   }
 
+  // Finding 2103: a cold image build probe ran to a fixed 20 min, the build after it took 4 more
+  // and the tests got 40 s. In a lane with a deadline the build keeps the reserve for the tests
+  // and otherwise stops preparation with a message saying why.
+  for (const { scenario, aheadMs, probes, outcome } of [
+    // The probe (a full build on a cache miss) outlasts the budget: no second build starts.
+    { scenario: "image-probe-hung", aheadMs: 6_000, probes: 1, outcome: "out-of-time" },
+    // The probe resolves an image the engine lacks, and the loading build outlasts the budget.
+    { scenario: "image-build-hung", aheadMs: 10_000, probes: 1, outcome: "absent" },
+    // Nothing is left of the budget when the build would start.
+    { scenario: "image-out-of-time", aheadMs: 0, probes: 0, outcome: "out-of-time" },
+  ]) {
+    test(`image lanes stop when the image build runs out of the lane's time: ${scenario}`, async (t) => {
+      const reserveMs = 2_000;
+      const commands = await fixtureImageCommands(t, scenario, "images-runtime-startup-3", {
+        ...imageCacheEnv,
+        GITHUB_EVENT_NAME: "pull_request",
+        OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS: String(reserveMs),
+        OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "200",
+        CI_RUNNER_DEADLINE_MS: String(Date.now() + reserveMs + aheadMs),
+      });
+      const started = performance.now();
+      const prepared = await commands.prepare();
+      assert.notEqual(prepared.status, 0, prepared.stderr);
+      // Stopped by the budget, well before the hung command's own exit.
+      assert.ok(performance.now() - started < 30_000);
+      assertStderrMatch(
+        prepared.stderr,
+        /The runtime image did not finish building within this lane's time.*keeps 2 s before its deadline for the rest of preparation and its tests/,
+      );
+      assert.match(
+        prepared.stdout,
+        /^::error title=Image build out of lane time::The runtime image /m,
+      );
+      assertStderrMatch(
+        prepared.stderr,
+        new RegExp(`"stage":"runtime-image-reuse","outcome":"${outcome}"`),
+      );
+      const calls = (await commands.commands()).filter(({ command }) => command === "docker");
+      const builds = calls.filter(({ args }) => args[0] === "buildx");
+      assert.equal(
+        builds.filter(({ args }) => args.includes("type=image,push=false,store=false")).length,
+        probes,
+      );
+      assert.equal(
+        builds.filter(({ args }) => args.includes("--load")).length,
+        scenario === "image-build-hung" ? 1 : 0,
+      );
+      const cleaned = await commands.cleanup();
+      assert.equal(cleaned.status, 0, cleaned.stderr);
+    });
+  }
+
   const warmCacheEnv = {
     ...imageCacheEnv,
     GITHUB_REF: "refs/heads/main",
