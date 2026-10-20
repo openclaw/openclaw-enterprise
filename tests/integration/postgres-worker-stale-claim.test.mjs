@@ -425,8 +425,8 @@ test(
     };
     const idempotencyKey = `namespace:${namespace.id}:reconcile:ready`;
 
-    // The worker's clock runs on: its first renewal of this work succeeds but answers
-    // 2.6 s after the lease it confirmed ran out, like a loaded host (finding 2137).
+    // The worker's clock runs on: each renewal of the work's first attempt succeeds but
+    // answers 2.6 s after the lease it confirmed ran out, like a loaded host (finding 2137).
     // Nothing really waits, so the database lease stays valid throughout.
     const realNow = performance.now.bind(performance);
     let skewMs = 0;
@@ -435,7 +435,7 @@ test(
     let lateRenewals = 0;
     PostgresWorkQueue.prototype.heartbeat = async function (claim) {
       const renewed = await heartbeat.call(this, claim);
-      if (claim.idempotencyKey === idempotencyKey && lateRenewals === 0) {
+      if (claim.idempotencyKey === idempotencyKey && claim.attemptCount === 1) {
         lateRenewals += 1;
         skewMs += leaseDurationMs + 2_558;
       }
@@ -485,17 +485,32 @@ test(
     });
     await worker.start();
 
-    const lost = await waitFor("the late renewal's claim-loss error", async () =>
-      events.find(({ event, code }) => event === "worker.error" && code === "CLAIM_LOST"),
+    // On the old code the negative timer fired a tick later, after Compute had started.
+    await waitFor("the worker to act on the late renewal", async () =>
+      lateRenewals > 0 && (calls.length > 0 || events.some(({ event }) => event === "worker.error"))
+        ? true
+        : undefined,
     );
-    assert.deepEqual(lost, {
-      event: "worker.error",
-      code: "CLAIM_LOST",
-      workId: idempotencyKey,
-      attempt: 1,
-      operation: "namespace.ensure",
-      cause: "CLAIM_RENEWAL_LATE",
-    });
+    await new Promise((resolve) => setImmediate(resolve));
+    // No timer was armed with the negative remainder, and Compute never ran on the claim.
+    assert.deepEqual(
+      warnings
+        .filter(({ name }) => name === "TimeoutNegativeWarning")
+        .map(({ message }) => message),
+      [],
+    );
+    assert.deepEqual(calls, []);
+    assert.deepEqual(
+      events.find(({ event }) => event === "worker.error"),
+      {
+        event: "worker.error",
+        code: "CLAIM_LOST",
+        workId: idempotencyKey,
+        attempt: 1,
+        operation: "namespace.ensure",
+        cause: "CLAIM_RENEWAL_LATE",
+      },
+    );
     const late = events.filter(({ event }) => event === "worker.claim-renewal-warning");
     assert.equal(late.length, 1);
     assert.deepEqual(
@@ -510,15 +525,6 @@ test(
       },
     );
     assert.ok(late[0].durationMs > leaseDurationMs, `durationMs ${late[0].durationMs}`);
-    // No timer was armed with the negative remainder, and Compute never ran on the claim.
-    await new Promise((resolve) => setImmediate(resolve));
-    assert.deepEqual(
-      warnings
-        .filter(({ name }) => name === "TimeoutNegativeWarning")
-        .map(({ message }) => message),
-      [],
-    );
-    assert.deepEqual(calls, []);
 
     // The claim stays with lease recovery; once it expires the work runs again and converges.
     await observerPool.query(
