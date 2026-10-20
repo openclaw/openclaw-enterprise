@@ -54,8 +54,7 @@ Slack searches, focus, and the Namespace selector; at phone width, focus in the 
 and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
 **Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
-**Settings**, which shows the signed-in account without configurable settings,
-and **Sign out**.
+**Settings** (the signed-in account, with **Sign out**) and **Sign out**.
 
 The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
 ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**

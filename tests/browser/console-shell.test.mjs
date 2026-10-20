@@ -172,6 +172,92 @@ test("the phone top bar opens the account menu from its avatar and the drawer fr
   await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
 });
 
+// Settings (UX spec 3.10): an account card with the avatar, name and email, and a Session card
+// whose secondary Sign out ends this session, in a 720 px column without a Namespace selector.
+// The session read carries no sign-in method or expiry, so neither row is shown.
+test("Settings shows the account and session cards, and its Sign out ends the session", async (t) => {
+  for (const context of [desktop, phone]) {
+    const size = `${context.viewport.width}px`;
+    const { fixture, page } = await openAgents(t, context);
+    const { email, name } = fixture.credentials;
+    await page.goto(new URL("/console/settings", fixture.origin).href);
+    await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
+    const view = page.locator(settledView);
+    await view.waitFor();
+    assert.equal(await page.locator(".page-header .scope").textContent(), "Your account", size);
+    assert.equal(await page.locator("#namespace-selector").count(), 0, `${size}: no selector`);
+
+    const card = (heading) =>
+      view.locator("section.card", {
+        has: page.getByRole("heading", { name: heading, exact: true }),
+      });
+    const account = card("Signed-in account");
+    const avatar = account.locator(".account-avatar");
+    assert.equal(await avatar.textContent(), "CA", size);
+    const circle = await avatar.boundingBox();
+    assert.deepEqual([circle.width, circle.height], [64, 64], `${size}: a 64 px avatar`);
+    assert.deepEqual(
+      await account
+        .locator("dl.settings")
+        .evaluate((list) => [...list.children].map((node) => node.textContent)),
+      ["Name", name, "Email", email],
+      `${size}: name and email only`,
+    );
+
+    const session = card("Session");
+    const signOut = session.getByRole("button", { name: "Sign out", exact: true });
+    assert.equal(
+      await signOut.evaluate(
+        (node) =>
+          globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
+      ),
+      "Signing out ends this session on this device only.",
+      size,
+    );
+    // Secondary: the plain button, not the primary fill or the danger edge.
+    assert.deepEqual(
+      await style(signOut, "backgroundColor", "borderTopColor"),
+      {
+        backgroundColor: await tokenColor(page, "--color-surface"),
+        borderTopColor: await tokenColor(page, "--color-border-strong"),
+      },
+      size,
+    );
+    assert.equal(await view.getByText("No configurable settings", { exact: false }).count(), 0);
+    assert.equal(await view.getByRole("button", { name: "Back", exact: true }).count(), 0);
+
+    const column = await view.locator(".settings-page").boundingBox();
+    const button = await signOut.boundingBox();
+    if (context === desktop) {
+      assert.equal(column.width, 720, "the Settings column is 720 px wide");
+      assert.ok(button.width < column.width / 2, "Sign out keeps its own width on desktop");
+    } else {
+      // Full width inside the card at phone width, with a 44 px target.
+      const inner = await session.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const padding = globalThis.getComputedStyle(node);
+        return box.width - parseFloat(padding.paddingLeft) - parseFloat(padding.paddingRight) - 2;
+      });
+      assert.equal(button.width, inner, "Sign out spans the card at phone width");
+      assert.ok(button.height >= 44, `Sign out is ${button.height}px tall, at least 44`);
+    }
+
+    const signedOut = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname === "/api/auth/sign-out" &&
+        response.request().method() === "POST",
+    );
+    await signOut.click();
+    assert.equal((await signedOut).ok(), true, `${size}: the sign-out request succeeds`);
+    await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+    assert.equal(
+      (await page.evaluate(async () => (await globalThis.fetch("/api/auth/session")).json())).data,
+      null,
+      `${size}: the session has ended`,
+    );
+  }
+});
+
 // Each layout has its own account menu; the one a resize hides closes, so it does not reappear
 // open in the drawer or on a return to desktop.
 test("changing between desktop and phone layouts closes the account menu left behind", async (t) => {
