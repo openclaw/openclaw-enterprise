@@ -87,20 +87,21 @@ const literalsOf = (value) =>
   (value.match(lengthLiteral) ?? []).filter((literal) => !/^-?0*\.?0+[a-z]+$/.test(literal));
 
 test("spacing and radius use the design-language scale (UX plan B3, spec P12)", () => {
-  // Kept on purpose: each is geometry tied to a border or a fixed-size mark, not spacing.
+  // Kept on purpose: each is geometry tied to a border or a fixed-size mark, not spacing. Only
+  // the exact value is allowed, so other spacing on these rules still has to use the scale.
   const allowed = new Map([
-    [
-      '.nav a[aria-current="page"] padding-left',
-      "forced colours draw the 3px bar as a border; subtract it so the label stays put",
-    ],
-    [".checklist-mark margin-top", "centres the 20px mark on the first text line"],
-    [
-      '.checklist > li[data-state="done"] .checklist-mark::after margin',
-      "the check glyph inside the 20px mark",
-    ],
-    [".plugin-list-item .badge margin-left", "aligns under the name: the 32px logo plus the gap"],
-    [".repository-result-row + .repository-result-row margin-top", "overlaps the 1px row border"],
-    [".log-level padding", "1px block padding keeps the 10px caps chip one line high"],
+    // Forced colours draw the 3px bar as a border; subtract it so the label stays put.
+    ['.nav a[aria-current="page"] padding-left', "calc(var(--space-3) - 3px)"],
+    // Centres the 20px mark on the first text line.
+    [".checklist-mark margin-top", "1px"],
+    // The check glyph inside the 20px mark.
+    ['.checklist > li[data-state="done"] .checklist-mark::after margin', "2px auto 0"],
+    // Aligns under the name: the 32px logo plus the identity gap.
+    [".plugin-list-item .badge margin-left", "calc(32px + var(--space-3))"],
+    // Overlaps the 1px row border.
+    [".repository-result-row + .repository-result-row margin-top", "-1px"],
+    // 1px block padding keeps the 10px caps chip one line high.
+    [".log-level padding", "1px var(--space-2)"],
   ]);
   const spacing = /^(padding|margin|gap|row-gap|column-gap)(-[a-z-]+)?$/;
   const radius = /^border(-[a-z]+)*-radius$/;
@@ -110,7 +111,7 @@ test("spacing and radius use the design-language scale (UX plan B3, spec P12)", 
     if ((!spacing.test(prop) && !radius.test(prop)) || !literalsOf(value).length) {
       continue;
     }
-    if (allowed.has(`${selector} ${prop}`)) {
+    if (allowed.get(`${selector} ${prop}`) === value) {
       used.add(`${selector} ${prop}`);
       continue;
     }
