@@ -54,15 +54,8 @@ pnpm db:migrate --check
 An exit-0 `migration.checked` record reports one reviewed history shape:
 `empty`, `prePresetsMain`, `main`, `repositoryCredentials`,
 `repositoryRetention`, `workspaceSetup`, `agentProvisioning`,
-`backendCompleted`, `providerCompleted`, `backendTerminology`, `prePluginApprovers`,
-`preBrokerReceipts`, `preAgentDeletion`, `preDeploymentProgress`,
-`preHumanAuthentication`, `preAgentDeletionTakeover`,
-`preNamespaceDeletionTakeover`, `preRepositoryAccess`, `preRestrictionReadLogs`,
-`preOAuth`, `preCredentialWithdrawals`, `preBrokerReceiptFence`,
-`preModelProbeFailureCause`, `preProvisioningConfigurationRelease`, `preAdministratorCredentialSourceGrants`,
-`preCodexPatSources`, `preAgentCredentialSources`,
-`preCredentialWithdrawalRequester`, `pre*` shapes through
-`preOpenShellExpiredGit`, or `completed`.
+`backendCompleted`, `providerCompleted`, `backendTerminology`, a `pre*` shape
+listed below, or `completed`.
 `prePresetsMain` means
 the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
@@ -94,9 +87,7 @@ through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
 through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
 `preStaticEgress` (59). `preOpenShellExpiredGit` has the catalog through
 `0060_credential_proxy`; `completed` includes `0061_openshell_expired_git`.
-Databases that ran the public Credential Proxy preview keep its original receipts.
-See the [upgrade paths](../../guides/deploy/protected-egress-development.md#upgrade-an-existing-development-installation)
-before upgrading one.
+Public preview databases keep their original receipts; see the [upgrade paths](../../guides/deploy/protected-egress-development.md#upgrade-an-existing-development-installation).
 The source manifest is
 [`migrations/meta/_canonical-history.json`](../../../migrations/meta/_canonical-history.json).
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and
