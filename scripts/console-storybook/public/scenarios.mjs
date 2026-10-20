@@ -2915,7 +2915,7 @@ export const scenarios = {
     description:
       "A member whose Namespace grants Agent create cannot read the Installation. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
     steps: [
-      'Above the form, "Your access" says you can create Agents in Engineering and that giving the new Agent access to its Secrets needs Installation administration access.',
+      'Above the form, "Your access" says you can create Agents in Engineering and that an Installation administrator then gives the new Agent access to its Secrets.',
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
     gap: "The live check is a member account on a real Installation (tests/browser/console-create-agent-member.test.mjs).",

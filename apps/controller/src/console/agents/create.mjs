@@ -461,7 +461,7 @@ export function renderCreateAgent(context, draft) {
 
 // A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
 const MEMBER_CREDENTIAL_ACCESS =
-  "Giving a new Agent access to its Secrets needs Installation administration access.";
+  "An Installation administrator then gives the new Agent access to its Secrets.";
 
 // A complete Namespace list the open form read without its Namespace: it was deleted, or the
 // reader lost access. Waiting changes nothing, so the reader chooses another one.
@@ -1309,12 +1309,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const accessStatus = statusBlock(
     "info",
     "Your access",
-    [
+    `${
       typeof presetOptions.presetName === "string"
         ? `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so the options below come from this Namespace's Presets.`
-        : `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so Create Agent checks the Configuration with the server before saving it.`,
-      MEMBER_CREDENTIAL_ACCESS,
-    ],
+        : `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so Create Agent checks the Configuration with the server before saving it.`
+    } ${MEMBER_CREDENTIAL_ACCESS}`,
     [],
     { id: "create-agent-access", hidden: true },
   );
@@ -2859,7 +2858,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         savedAgent && !credentialRegistration && capabilitiesUnreadable && error.status === 403;
       feedback.textContent =
         (memberGrantRefused
-          ? `The Agent was created as a draft. ${MEMBER_CREDENTIAL_ACCESS} Open the saved Agent and ask an Installation administrator to grant it access to its saved model and channel Secrets.`
+          ? "The Agent was created as a draft. Giving it access to its saved model and channel Secrets needs Installation administration access: open the saved Agent and ask an Installation administrator to grant it."
           : detail) +
         guidance +
         (error.requestId ? ` Request ID: ${error.requestId}` : "");
