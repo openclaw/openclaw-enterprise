@@ -107,8 +107,9 @@ test("spacing and radius use the design-language scale (UX plan B3, spec P12)", 
   const offScale = [];
   const used = new Set();
   for (const { selector, prop, value } of rules(consoleCss + channelsCss)) {
-    if (!spacing.test(prop) && !radius.test(prop)) continue;
-    if (!literalsOf(value).length) continue;
+    if ((!spacing.test(prop) && !radius.test(prop)) || !literalsOf(value).length) {
+      continue;
+    }
     if (allowed.has(`${selector} ${prop}`)) {
       used.add(`${selector} ${prop}`);
       continue;
