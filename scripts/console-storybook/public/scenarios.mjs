@@ -4358,9 +4358,10 @@ export const scenarios = {
       },
     ],
     description:
-      "Watch v7 change from running to failed. Recovery appears below Deployment activity instead of pushing the overview down. The status and details update in place. The deployment and failure are simulated.",
+      "Watch v7 change from running to failed. The recovery card then leads the page, as it does on a reload, and Deployment details fold under it. The deployment and failure are simulated.",
     steps: [
       'On arrival v7\'s Configuration tab notice begins "Deploying version". Once v7 reads Failed, it begins "Historical version" and Selected version still reads v6.',
+      'Once v7 fails, "Deployment failed · v7" is the first card and Deployment details are folded. Open them: they show the failure\'s record and stay open.',
     ],
   },
   deploymentModelProbeRetried: {

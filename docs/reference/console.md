@@ -122,13 +122,13 @@ while the catalog list and plugin details scroll within the picker.
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
 binding, but API permissions and topology checks still apply. **Selected version** shows `activeRevisionId`, a selected pointer, not serving health.
 **Deployment details** follows the newest readable deployment. Routine completion
-starts folded; pending work, failures, startup warnings, and cleanup are expanded.
+starts folded; pending work, warnings, and cleanup are expanded.
 The viewed version retains its own result. Unreadable outcomes remain unknown.
 Bootstrap failures retain safe evidence; cleanup refreshes separately.
 
-A failure puts **Open vN Logs** near the top. It opens the failed version's
-[Logs panel](../guides/topics/agent-logs.md), showing output or the applicable
-access or availability message, even from the draft or another version.
+A failure's card leads the page and folds the details. Its **Open vN Logs** opens
+the failed version's [Logs panel](../guides/topics/agent-logs.md), showing
+output or the applicable access or availability message, even from the draft or another version.
 
 **Run diagnostics for this version** fills **Current observations** with a
 bodyless POST that checks the exact viewed version. It requires Agent

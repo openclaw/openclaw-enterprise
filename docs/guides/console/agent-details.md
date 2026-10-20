@@ -32,9 +32,9 @@ configurable settings. Sign out ends your console session.
 
 ## Follow deployment activity
 
-**Deployment activity** follows the latest readable version, even while viewing
-another version or the draft. Open **Deployment details** to inspect a routine
-completion. Pending work, failures, startup warnings, and cleanup are expanded.
+**Deployment activity** follows the latest readable version while viewing
+another version or the draft. Routine completions and failures fold, a failure
+under its leading card; pending work, warnings and cleanup stay open.
 Milestones show the saved record:
 
 | Milestone               | Evidence                                                                          |
