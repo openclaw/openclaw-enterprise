@@ -459,6 +459,10 @@ export function renderCreateAgent(context, draft) {
   );
 }
 
+// A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
+const MEMBER_CREDENTIAL_ACCESS =
+  "Giving a new Agent access to its Secrets needs an Installation administrator.";
+
 // A complete Namespace list the open form read without its Namespace: it was deleted, or the
 // reader lost access. Waiting changes nothing, so the reader chooses another one.
 const NAMESPACE_MISSING = {
@@ -1257,6 +1261,12 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   let capabilityDiscoveryDone = false;
   let capabilityDiscoveryFailed = false;
   let capabilityDiscoveryDenied = false;
+  // The Installation read is refused, but the Namespace's permission answer grants Agent create
+  // (UX plan A2, finding 1901). The form proceeds without the Installation's capabilities, so it
+  // refuses no option the API might accept: the preflight and Agent create still decide, before
+  // and when anything is saved. capabilityDiscoveryDone stays false, so no hint claims an outcome.
+  let capabilitiesUnreadable = false;
+  const capabilitiesSettled = () => capabilityDiscoveryDone || capabilitiesUnreadable;
   const provisionableExecutionModes = new Set();
   let nativeWorkersAvailable = false;
   // The OpenClaw execution modes the Installation admits, or undefined from a server that does
@@ -1292,6 +1302,31 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     { id: "create-agent-capability-status", className: "hint", role: "status" },
     "Checking installation capabilities…",
   );
+  // Above the form, not mid-form: why a member's form offers what it does (UX plan A2).
+  // Granting an Agent access to its Secrets is Installation administration, so the member learns
+  // before Create that an administrator finishes that step.
+  const namespaceName = context.namespace?.name ?? "this Namespace";
+  const accessStatus = statusBlock(
+    "info",
+    "Your access",
+    [
+      typeof presetOptions.presetName === "string"
+        ? `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so the options below come from this Namespace's Presets.`
+        : `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so Create Agent checks your choices with the server before saving anything.`,
+      MEMBER_CREDENTIAL_ACCESS,
+    ],
+    [],
+    { id: "create-agent-access", hidden: true },
+  );
+  // The Preset this form started from (flows.md C8).
+  const presetBadge =
+    typeof presetOptions.presetName === "string"
+      ? element(
+          "p",
+          { className: "create-agent-origin" },
+          element("span", { className: "badge" }, `From Preset · ${presetOptions.presetName}`),
+        )
+      : null;
   let pending = false;
   // Create's own request. `pending` also covers the recovery controls' requests, which must not
   // mark Create busy (finding 1961).
@@ -1506,6 +1541,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
   const form = element(
     "form",
     { id: formId, className: "agent-form agent-card", novalidate: "" },
+    ...(presetBadge ? [presetBadge] : []),
     field("Agent name", name, "Unique within this Namespace."),
     authSection,
     capabilityStatus,
@@ -2015,7 +2051,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
               ? "Codex uses Dedicated execution. This installation selects a Sandbox Driver, so OpenClaw uses Dedicated execution too. Slack requires Dedicated execution."
               : "Codex uses Dedicated execution. OpenClaw uses Dedicated execution with a Sandbox Driver that provisions it, and Embedded execution without a Sandbox Driver. Slack requires Dedicated execution.";
     }
-    if (capabilityDiscoveryDone) {
+    if (capabilitiesSettled()) {
       let nextStatus = "";
       if (!savedAgent && namespaceRefusesAgents()) {
         nextStatus = notReady.missing
@@ -2030,7 +2066,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
             : "Dedicated Agents are provisioned and deployed when created."
           : mode.value === "embedded"
             ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."
-            : "This installation creates draft Agents for later deployment.";
+            : capabilitiesUnreadable
+              ? "This Agent is saved as a draft. Deploy it from the Agent page after creation."
+              : "This installation creates draft Agents for later deployment.";
       }
       if (capabilityStatus.textContent !== nextStatus) {
         capabilityStatus.textContent = nextStatus;
@@ -2193,7 +2231,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           repositories.blocksCreate())) ||
       pending ||
       outcomeUnknown ||
-      !capabilityDiscoveryDone ||
+      !capabilitiesSettled() ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
@@ -2201,7 +2239,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     // Create Agent names why it waits: the status line above says so (finding 2007).
     if (
       !savedAgent &&
-      capabilityDiscoveryDone &&
+      capabilitiesSettled() &&
       (namespaceRefusesAgents() || (!selectedModeUnavailable() && provisioningWaitsForNamespace()))
     ) {
       submit.setAttribute("aria-describedby", capabilityStatus.id);
@@ -2271,6 +2309,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     capabilityDiscoveryDone = false;
     capabilityDiscoveryFailed = false;
     capabilityDiscoveryDenied = false;
+    capabilitiesUnreadable = false;
+    accessStatus.hidden = true;
     updateControls();
     try {
       const installation = await request("/installation");
@@ -2319,9 +2359,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         return;
       }
       capabilityDiscoveryFailed = true;
-      // A denial is permanent for this account: creating Agents needs Installation access,
-      // which only Installation administrators hold, so retrying cannot help.
+      // A denial is permanent for this account, so retrying cannot help. A member the Namespace
+      // lets create Agents goes on without the Installation's capabilities (UX plan A2); only an
+      // explicit grant does, so an unknown permission answer keeps the refusal below.
       capabilityDiscoveryDenied = error.status === 403;
+      if (capabilityDiscoveryDenied && context.permissions?.agents?.create === true) {
+        capabilitiesUnreadable = true;
+        accessStatus.hidden = false;
+        return;
+      }
       capabilityStatus.textContent = capabilityDiscoveryDenied
         ? "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent."
         : `Installation capabilities unavailable. ${message(error)} Retry before creating an Agent.`;
@@ -2486,7 +2532,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       outcomeUnknown ||
       provisioningAttempt ||
       (!savedAgent && repositoryRetryLocked()) ||
-      !capabilityDiscoveryDone ||
+      !capabilitiesSettled() ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
@@ -2768,15 +2814,17 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
       const detail = credentialRegistration
         ? `Credential Source registration could not be confirmed. ${message(error)} Check credential registration before retrying; the selected Secret remains saved.`
-        : savedAgent
-          ? `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
-          : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
-            ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
-            : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
-              ? error.serverMessage === AGENT_NAME_CONFLICT
-                ? AGENT_NAME_CONFLICT
-                : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
-              : rejectionMessage(error, mutationStarted);
+        : savedAgent && capabilitiesUnreadable && error.status === 403
+          ? `The Agent was created as a draft. ${MEMBER_CREDENTIAL_ACCESS} Open the saved Agent and ask one to grant it access to its saved model and channel Secrets.`
+          : savedAgent
+            ? `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
+            : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
+              ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
+              : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
+                ? error.serverMessage === AGENT_NAME_CONFLICT
+                  ? AGENT_NAME_CONFLICT
+                  : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
+                : rejectionMessage(error, mutationStarted);
       outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
       const knownRejection = [400, 403, 404, 409, 429].includes(error.status);
       if (!savedAgent && savedConfiguration && knownRejection) {
@@ -2825,6 +2873,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       { className: "muted" },
       "Choose a model and repository access. Add Slack when you want this Agent to work with your team.",
     ),
+    accessStatus,
     form,
     channelEditor,
     // The outcome leads; the saved-resources line explains what a retry reuses (finding 1862).
