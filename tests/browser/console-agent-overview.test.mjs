@@ -1233,12 +1233,14 @@ for (const c of [
       await open.waitFor();
       await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
       assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
-      const below = await page.evaluate(
+      // The detail starts low in the first screen or below it: with the Deployment details folded
+      // under the card (finding 2094), it can start above the fold at 1440.
+      const start = await page.evaluate(
         () =>
-          globalThis.document.querySelector(".agent-version-detail").getBoundingClientRect().top -
+          globalThis.document.querySelector(".agent-version-detail").getBoundingClientRect().top /
           globalThis.innerHeight,
       );
-      assert.ok(below > 0, `the version's detail starts ${below} px below the fold`);
+      assert.ok(start >= 0.5, `the version's detail starts ${start} windows down`);
 
       await open.click();
       // The draft already open below keeps its address.
@@ -1555,10 +1557,10 @@ for (const viewport of [
     t.diagnostic(`${size} reloaded: ${JSON.stringify(loaded)}`);
     assert.deepEqual(watched, loaded, "the watched failure renders as a reload of the page does");
     // The card leads the page with its action in the first screen, and the folded details leave
-    // the card and the selected version's own record as the only places the error shows.
+    // the card as the one place the error shows.
     assert.equal(watched.leadsOverview, true);
     assert.equal(watched.detailsOpen, false);
-    assert.equal(watched.errorShown, 2);
+    assert.equal(watched.errorShown, 1);
     assert.ok(
       (await logs.boundingBox()).y + 40 < viewport.height,
       "the card's action is above the fold",
