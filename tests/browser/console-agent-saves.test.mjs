@@ -1892,7 +1892,14 @@ test("Edit current Configuration in a short window brings the editor to the top"
   await page.waitForFunction(() => {
     const active = globalThis.document.activeElement;
     const box = active?.getBoundingClientRect();
-    return active?.id === "configuration-json" && box.top >= 0 && box.top < 120;
+    const notice = globalThis.document.querySelector(".version-selection-notice");
+    // The editor, not the notice, is at the top: the notice is above the window.
+    return (
+      active?.id === "configuration-json" &&
+      box.top >= 0 &&
+      box.top < 120 &&
+      notice?.getBoundingClientRect().bottom <= 0
+    );
   });
 });
 
