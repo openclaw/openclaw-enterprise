@@ -83,7 +83,9 @@ loading.
 In **Return to loaded pages**, **Return to Agent panels**, and **Slow rechecks**,
 Back preserves search, expanded panels, and Credentials. Refresh reloads.
 
-## Agent flows and UI gaps
+<a id="agent-flows-and-ui-gaps" class="anchor-alias"></a>
+
+## Namespace navigation and Agent flows
 
 In **Components → Navigation → Namespace switcher**, switch Engineering/Research
 and check URL, collection, and Back behavior. **Mobile Namespace selector** checks
