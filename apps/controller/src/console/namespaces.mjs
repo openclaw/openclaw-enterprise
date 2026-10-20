@@ -27,12 +27,41 @@ export function namespaceNameProblem(value) {
   return "";
 }
 
+// The session owner whose Namespace creation the API refused (403) since this page loaded. The
+// API has no advisory Installation permission answer, so a refusal is the only exact sign that
+// creation is not allowed; a browser reload asks again (finding 2059).
+let createRefusedFor = null;
+
 export function renderNamespaces(context, items, renderRows) {
   const collection = element("div");
+  const refused = createRefusedFor !== null && createRefusedFor === context.operatorId;
+  // A person who does not administer the Installation may still hold a Namespace create grant,
+  // so Create Namespace stays available to them, but not as the page's filled primary action or
+  // the empty list's invitation (finding 2059). An unknown answer keeps both.
+  const administrator = context.installationAdmin !== false;
   const create = button("Create Namespace", openCreate, {
-    tone: "primary",
+    ...(administrator && !refused ? { tone: "primary" } : {}),
     "data-create-namespace": "",
   });
+  const refusal = element(
+    "p",
+    { className: "muted", role: "status", id: "namespace-create-refused" },
+    "Your access does not include creating Namespaces in this Installation.",
+  );
+  const emptyText = element("p");
+  // The API refused this person's creation: the control says so instead of offering another
+  // attempt that it would refuse again.
+  function showRefused() {
+    create.classList.remove("button", "button--primary");
+    create.disabled = true;
+    create.setAttribute("aria-describedby", refusal.id);
+    collection.before(refusal);
+    emptyText.textContent =
+      "Ask an administrator to create a Namespace or grant access to an existing one.";
+  }
+  emptyText.textContent = administrator
+    ? "Create a Namespace to get started, or ask an administrator for access to an existing one."
+    : "Ask an administrator for access to an existing Namespace, or create one if your role allows it.";
   context.view.replaceChildren(
     element(
       "div",
@@ -54,13 +83,12 @@ export function renderNamespaces(context, items, renderRows) {
         "section",
         { className: "state-panel" },
         element("h2", {}, "No accessible namespaces"),
-        element(
-          "p",
-          {},
-          "Create a Namespace to get started, or ask an administrator for access to an existing one.",
-        ),
+        emptyText,
       ),
     );
+  }
+  if (refused) {
+    showRefused();
   }
 
   function openCreate() {
@@ -124,6 +152,13 @@ export function renderNamespaces(context, items, renderRows) {
         return;
       }
       dialog.close();
+      if (forbidden) {
+        showRefused();
+        // The opener the dialog returned focus to is disabled now; focus the reason instead.
+        refusal.tabIndex = -1;
+        refusal.focus();
+        return;
+      }
       if (created || unknown) {
         // The reload replaces the Create Namespace button the dialog returned focus to; focus
         // its replacement, unless the reader has moved focus elsewhere (finding 2045).
@@ -244,6 +279,9 @@ export function renderNamespaces(context, items, renderRows) {
           return;
         }
         forbidden = error.status === 403;
+        if (forbidden) {
+          createRefusedFor = context.operatorId;
+        }
         unknown = ![400, 403, 404, 409, 429].includes(error.status);
         let message;
         if (unknown) {
