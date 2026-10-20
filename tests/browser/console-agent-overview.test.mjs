@@ -351,9 +351,24 @@ test("A failed version raises no recovery while the current version is on no loa
   assert.equal(await page.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   assert.equal(await page.getByRole("link", { name: "Open Configuration" }).count(), 0);
 
+  // Show older versions follows the Versions list rather than sitting in it: the arrows stay on
+  // versions and Tab reaches it next. Focus stays on it while it loads, then moves to the first
+  // older version (finding 2115).
+  const rail = page.getByRole("toolbar", { name: "Versions" });
+  assert.equal(await rail.getByRole("button", { name: "Show older versions" }).count(), 0);
+  await rail.getByRole("button", { name: /^View version v2/ }).focus();
+  await page.keyboard.press("Tab");
+  const focusedName = () =>
+    page.evaluate(() => {
+      const active = globalThis.document.activeElement;
+      return active.getAttribute("aria-label") ?? active.textContent;
+    });
+  assert.equal(await focusedName(), "Show older versions");
   // With every page loaded, the current version is known to be hidden.
-  await page.getByRole("button", { name: "Show older versions" }).click();
-  await page.getByRole("button", { name: /^View version v1/ }).waitFor();
+  await page.keyboard.press("Enter");
+  await rail.getByRole("button", { name: /^View version v1/ }).waitFor();
+  assert.equal(await focusedName(), "View version v1");
+  assert.equal(await page.getByRole("button", { name: "Show older versions" }).count(), 0);
   await statusLine
     .getByText(
       /The current version, rev_.*, is one you cannot read, so this page cannot tell whether the failed v2 deployment affects it\. Ask an Agent administrator for read access/,
@@ -2132,24 +2147,34 @@ for (const viewport of [
 // and each version was its own Tab stop, 51 on one Agent (finding 2101). The latest version now
 // carries its deployment's outcome while it is in progress or failed, and the
 // list is one Tab stop on the viewed version: Up/Down (wrapping) and Home/End move focus, Enter
-// opens a version, and Tab leaves the list.
+// opens a version, and Tab leaves the list. A poll that lands the outcome rebuilds the list and
+// keeps focus on the same version (finding 2115).
 test("Versions list marks the latest version's outcome and is one Tab stop", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Version rail", "Rail Agent");
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await fixture.deployAgent(namespace.id, agent.id);
   const latest = await fixture.deployAgent(namespace.id, agent.id);
-  let record = deploymentRecord(namespace, agent, latest, "running");
-  await page.route(deploymentUrl(fixture, namespace, agent, latest), (route) =>
-    route.fulfill(record),
-  );
+  const recordUrl = deploymentUrl(fixture, namespace, agent, latest);
+  let record = deploymentRecord(namespace, agent, latest, "queued");
+  await page.route(recordUrl, (route) => route.fulfill(record));
   await page.setViewportSize({ width: 1200, height: 800 });
   await trackSettledFetches(page);
+  await page.clock.install();
   await login(
     page,
     fixture,
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
   );
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  // Polls run only when the test advances the clock.
+  const now = await page.evaluate(() => Date.now());
+  await page.clock.pauseAt(new Date(now + 1000));
+  const poll = async () => {
+    const read = page.waitForResponse(recordUrl);
+    await page.clock.runFor(DEPLOYMENT_POLL_MS);
+    await read;
+    await waitForIdleFetches(page);
+  };
   const rail = page.getByRole("toolbar", { name: "Versions" });
   assert.equal(await rail.getAttribute("aria-orientation"), "vertical");
   const state = () =>
@@ -2167,18 +2192,25 @@ test("Versions list marks the latest version's outcome and is one Tab stop", asy
           : null,
       };
     });
-  await rail.getByRole("button", { name: "View version v3, deployment in progress" }).waitFor();
+  await rail.getByRole("button", { name: "View version v3, deployment queued" }).waitFor();
   const first = await state();
-  assert.deepEqual(first.outcomes, ["In progress/info", null, null]);
+  assert.deepEqual(first.outcomes, ["Queued/info", null, null]);
   assert.deepEqual(first.names, [
-    "View version v3, deployment in progress",
+    "View version v3, deployment queued",
     "View version v2",
     "View version v1, current version",
   ]);
   assert.equal(first.stops.length, 1);
   assert.match(first.stops[0], /^v1/);
 
-  // The deploy fails; Refresh deployment reads it and v3 takes the Failed badge.
+  // A reader arrows to v2 while the deploy runs, then fails: each poll marks v3, and the one that
+  // reads the failure rebuilds the list without taking focus off v2.
+  await rail.getByRole("button", { name: "View version v1, current version" }).focus();
+  await page.keyboard.press("ArrowUp");
+  record = deploymentRecord(namespace, agent, latest, "running");
+  await poll();
+  await rail.getByRole("button", { name: "View version v3, deployment in progress" }).waitFor();
+  assert.deepEqual((await state()).outcomes, ["In progress/info", null, null]);
   record = deploymentRecord(
     namespace,
     agent,
@@ -2186,14 +2218,14 @@ test("Versions list marks the latest version's outcome and is one Tab stop", asy
     "failed",
     persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
   );
-  await page
-    .locator(".deployment-status")
-    .getByRole("button", { name: "Refresh deployment" })
-    .click();
+  await poll();
   await rail.getByRole("button", { name: "View version v3, deployment failed" }).waitFor();
-  assert.deepEqual((await state()).outcomes, ["Failed/danger", null, null]);
-  // A poll that read the failure first rereads the Agent and rebuilds the list; let it settle.
-  await waitForIdleFetches(page);
+  const failed = await state();
+  assert.deepEqual(failed.outcomes, ["Failed/danger", null, null]);
+  assert.equal(failed.focused, "v2");
+  assert.equal(failed.stops.length, 1);
+  assert.match(failed.stops[0], /^v2/);
+  await page.clock.resume();
 
   // One Tab stop on the viewed version; the arrows move focus without opening a version.
   await rail.getByRole("button", { name: "View version v1, current version" }).focus();

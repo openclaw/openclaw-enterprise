@@ -1979,6 +1979,14 @@ select:not([multiple])[size="1"] {
   color: var(--muted);
   text-align: center;
 }
+/* Show older versions follows the scrolling list (finding 2115): the list's gap above it, its
+   bottom margin below. */
+.version-list:has(+ .version-older) {
+  margin-bottom: var(--space-2);
+}
+.version-list + .version-older {
+  margin-bottom: 22px;
+}
 .version-item[aria-current="page"],
 .revision-create[aria-current="page"] {
   background: var(--accent-subtle);
