@@ -22,7 +22,7 @@ permission; saving and deploying have separate access checks.
 | **Selected version**          | Version in the Agent's `activeRevisionId`. It may differ from the latest or viewed version.                                                                                                                                                                         |
 | **Latest visible deployment** | Newest readable version and its recorded deployment status. **Newer version hidden** means the current version is one you cannot read; ask for read access to new versions.                                                                                         |
 | **Live serving**              | Unverified by this page. **May be offline** means a newer dedicated deployment failed, and the current version was probably stopped for it, or the selected version's own deployment failed (an embedded redeploy selects its version before its gateway is ready). |
-| **Deployment activity**       | Most recent visible version and its persisted deployment status.                                                                                                                                                                                                    |
+| **Deployment activity**       | Most recent visible version and its persisted deployment status. Hidden until a version exists.                                                                                                                                                                     |
 | `agt_…`                       | Stable Agent identifier for API calls and support (**Copy Agent ID**).                                                                                                                                                                                              |
 
 The **Namespace** selector at the top of the page changes your scope; from Agent
@@ -113,6 +113,10 @@ The Console cannot roll back or deploy an old version again. See
 
 Select **Create new version** to open the current saved settings. Edit and save
 Configuration, plugin selections, channel settings, or credentials.
+**Prepare this version**, beside **Versions**, checks off saved settings and
+credentials and holds **Deploy new version** with its status. A model credential
+the last deployment rejected keeps the credentials step open: deploying again
+does not fix it.
 **Deploy new version** submits those saved settings for a new version; it does
 not redeploy a version you were viewing. It
 checks freshness and required model and channel credentials; missing prerequisites
@@ -125,9 +129,10 @@ OCC cannot regenerate them through initial provisioning. A successful request
 opens the new version's Workspace files view. Bound channel Secrets do not
 prove successful authentication or a working channel.
 
-The **Configuration**, **Plugins**, **Channels**, **Repositories**, **Credentials**, and
-**Workspace files** tabs change the panel below. Repositories and Credentials are available
-only on the new version draft; Logs only on a version.
+The **Configuration**, **Plugins**, **Channels**, **Repositories**, **Credentials**,
+**Workspace files**, **Policy denials**, **Logs**, and **Access** tabs change the panel below.
+Repositories and Credentials are available only on the new version draft; Logs only on a
+version; Access only to Installation administrators.
 **Repositories** edits the draft's repository selections and access levels; see
 [repository access](../../reference/console/create-and-deploy.md#create-an-agent).
 Browser Back and Forward restore the selected tab. Leaving a tab clears entered

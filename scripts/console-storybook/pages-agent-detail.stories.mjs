@@ -56,6 +56,7 @@ export const DeploymentFailed = story("deploymentFailed");
 export const AgentHeader = story("agentHeader");
 export const AgentHeaderMobile = story("agentHeaderMobile");
 export const AgentHeaderNoClipboard = story("agentHeaderNoClipboard");
+export const DraftCredentialRejected = story("draftCredentialRejected");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
 export const DeploymentModelProbeFailed = story("deploymentModelProbeFailed");
 export const DeploymentFailsWhileWatching = story("deploymentFailsWhileWatching");

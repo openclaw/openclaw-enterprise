@@ -3359,7 +3359,7 @@ export const scenarios = {
     name: "First version",
     path: draft,
     steps: [
-      "Resize through desktop, tablet, and phone widths. Prepare this version keeps each numbered step on its own row, with continuation lines aligned under the step text.",
+      "Resize through desktop, tablet, and phone widths. Prepare this version sits beside Versions on a desktop and above it below 1,100 px. Each step shows a check when done or an open ring, with its detail line under the step text; Deploy new version stays on the first screen at 1440x900.",
       "Focus the selected tab and press Left, Right, Home and End: focus moves between tabs without opening one. Enter opens the focused tab. Tab leaves the strip and Shift+Tab returns to the selected tab. At phone width the edge with more tabs past it fades.",
     ],
     description:
@@ -4360,6 +4360,21 @@ export const scenarios = {
     description:
       "Where the browser offers no clipboard (an http origin, say), Copy Agent ID selects the ID instead, so it can be copied by hand.",
     steps: ["Check that the Agent ID is selected and no Copied status appears."],
+  },
+  draftCredentialRejected: {
+    group: "Pages/Agent detail",
+    name: "Next step after a rejected credential",
+    path: draft,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateCredentialRejected: true,
+    description:
+      "The provider rejected v7's model credential and the draft still uses it. Prepare this version keeps Check authentication and credentials open and never says Ready to deploy: deploying again does not fix the credential.",
+    steps: [
+      "In Prepare this version, the first step has a check and the second an open ring with the detail The last deployment's model credential was rejected.",
+      "Beside Deploy new version the status asks to update or replace the credential in Credentials first. Deploy stays enabled because a Secret value can be updated in place.",
+    ],
+    gap: "The rejected credential is simulated deployment evidence; this story does not call a model provider.",
   },
   deploymentFailedLogsFromDraft: {
     group: "Pages/Agent detail",

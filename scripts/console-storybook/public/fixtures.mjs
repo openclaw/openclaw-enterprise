@@ -150,6 +150,13 @@ function candidateDeploymentError(scenario, checkedAt) {
   }
   // Deployment error messages copy deploymentErrorMessage in
   // packages/occ/src/state/controller-work.ts; keep them in step.
+  if (scenario.candidateCredentialRejected) {
+    return {
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      message:
+        "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
+    };
+  }
   if (scenario.candidateModelProbeCause) {
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
