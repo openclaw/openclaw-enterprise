@@ -1,7 +1,7 @@
 ---
 created: 2026-10-20
 updated: 2026-10-20
-last_updated_session: docs-split-1020
+last_updated_session: ux-p8
 ---
 
 # Console Agent stop and deletion
@@ -16,7 +16,7 @@ readback. See the [parent flow](../platform-console.md) and
 
 - `apps/controller/src/console/agents/stop.mjs:createAgentStop` sends the stop request.
 - `apps/controller/src/console/agents/deletion.mjs:createAgentDeletion` sends the deletion request.
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts both.
+- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts both as rows of one **Danger zone** card.
 - A signed-in caller needs Agent `operate` to stop and Agent `delete` to delete.
 
 ## Flow
@@ -46,9 +46,9 @@ graph TD
 
 ### 7. Request a stop and read back the Agent
 
-[Permission advice](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions) can disable
-Stop before confirmation. If the dialog is open, a negative answer disables confirmation and
-focuses Cancel. Missing advice leaves the normal path available; late advice cannot recall a request.
+A negative [permission answer](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions)
+hides the Stop or Delete row, and the card when neither remains. If the dialog is open, it disables
+confirmation, focuses Cancel and keeps the row. A missing answer keeps the rows; late advice cannot recall a request.
 
 `apps/controller/src/console/agents/stop.mjs:createAgentStop` sends a bodyless `POST` to the
 Agent’s `/stop` route. OCC’s `packages/occ/src/index.ts:stopAgent` checks Agent `operate`,
@@ -58,7 +58,7 @@ not that Compute has shut down. Cancel restores focus to the invoking button; su
 
 For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
 version; the Console cannot inspect history or candidate cleanup. With no selected version
-and no readable versions yet (`setNoReadableVersions`), the Stop card is hidden unless the viewer
+and no readable versions yet (`setNoReadableVersions`), the Stop row is hidden unless the viewer
 just used it. The overview's **Runtime** row reports a requested stop.
 
 Refresh reads desired state and selected version, not live health. Denial stays inline; changed
