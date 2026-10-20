@@ -794,21 +794,6 @@ function clearDrafts() {
   draftUserId = null;
 }
 
-// The sign-in page footer names the build it serves, from the meta tag the image bakes in; a
-// development build has none, so the footer is left out.
-function signInFooter() {
-  const revision = document.querySelector('meta[name="occ-build-revision"]')?.content ?? "";
-  return /^[a-f0-9]{40}$/.test(revision)
-    ? [
-        element(
-          "footer",
-          { className: "auth-footer" },
-          `OpenClaw Enterprise · build ${revision.slice(0, 8)}`,
-        ),
-      ]
-    : [];
-}
-
 function showLogin(message = "", destination = null) {
   // A message may depend on whether ordinary accounts can use a password.
   const describe = typeof message === "function" ? message : () => message;
@@ -1033,6 +1018,21 @@ function showLogin(message = "", destination = null) {
     .catch(() => {
       // Password sign-in remains available when provider discovery fails.
     });
+}
+
+// The sign-in page footer names the build it serves, from the meta tag the image bakes in; a
+// development build has none, so the footer is left out.
+function signInFooter() {
+  const revision = document.querySelector('meta[name="occ-build-revision"]')?.content ?? "";
+  return /^[a-f0-9]{40}$/.test(revision)
+    ? [
+        element(
+          "footer",
+          { className: "auth-footer" },
+          `OpenClaw Enterprise · build ${revision.slice(0, 8)}`,
+        ),
+      ]
+    : [];
 }
 
 function showCheckingSession(checking = () => true) {
