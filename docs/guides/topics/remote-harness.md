@@ -28,19 +28,21 @@ config:
     padding: 12
 ---
 flowchart LR
-  Gateway["<b>Gateway</b><br/>Routing and policy"]
-  Harness["<b>Harness</b><br/>Codex or native OpenClaw<br/>Workspace service"]
+  Gateway["<b>Gateway</b><br/>Routing and sessions<br/>Tool policy"]
+  Runtime["<b>Harness execution</b><br/>Codex or native OpenClaw<br/>Model and native tools"]
+  Node["<b>Workspace service</b><br/>Enrolled Harness node"]
   GatewayState[("<b>Gateway storage</b><br/>Conversations, index<br/>Delivery media")]
-  Workspace[("<b>Harness storage</b><br/>Agent files<br/>Execution workspaces")]
-  Gateway -->|dispatch turns| Harness
-  Gateway -->|access files| Harness
+  Workspace[("<b>Harness storage</b><br/>Agent workspace files<br/>Execution workspaces")]
+  Gateway -->|dispatch turns| Runtime
+  Gateway -->|access files| Node
   Gateway -->|persist| GatewayState
-  Harness -->|read/write| Workspace
+  Runtime -->|native tools| Workspace
+  Node -->|read/write| Workspace
 
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   class GatewayState,Workspace state
-  class Gateway,Harness operation
+  class Gateway,Runtime,Node operation
 ```
 
 Each Agent revision uses one Harness runtime. Codex uses an app-server plus a
