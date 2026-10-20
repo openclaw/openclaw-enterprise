@@ -5,7 +5,6 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare.mjs";
-import { compileCacheEnvironment } from "./compile-cache.mjs";
 
 // Shared by ci-prepare.test.mjs and ci-prepare-k3d.test.mjs, which split the
 // preparation cases so Checks and Conformance 2 can run them at the same time.
@@ -110,7 +109,6 @@ export async function fixtureImageCommands(
   const githubEnv = join(root, "github.env");
   // No inherited credentials, infrastructure selectors, or real command fallback.
   const env = {
-    ...compileCacheEnvironment,
     HOME: home,
     PATH: bin,
     TMPDIR: root,
