@@ -44,7 +44,6 @@ import {
 } from "./console-agents-browser-helpers.ts";
 import { trackSettledFetches, waitForIdleFetches } from "./console-fetch-accounting.ts";
 import {
-  ACCESS_TAB_UNAVAILABLE,
   BOUND_SECRET_UNLISTED,
   CONFIGURATION_SAVE_DENIED,
   SECRET_CREATE_DENIED,
@@ -1740,7 +1739,13 @@ describe("Agent channels", { concurrency: 3 }, () => {
       // The Access tab reads the policy as only an administrator may: its refusal settles "not an
       // administrator" for this tab.
       await page.getByRole("tab", { name: "Access", exact: true }).click();
-      await page.getByText(ACCESS_TAB_UNAVAILABLE, { exact: true }).waitFor();
+      await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
+      await page
+        .getByText(
+          "OCC sharing requires Installation administration. Direct Control UI access is checked separately.",
+          { exact: true },
+        )
+        .waitFor();
       await waitForIdleFetches(page);
       // The Agent page opened again takes that answer: it sends no grant the API would refuse.
       if (viewport.width < 800) {

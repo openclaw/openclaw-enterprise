@@ -276,6 +276,11 @@ async function assertAgentSavesDisabled(
     }
   }
   assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.deepEqual(
+    pathRequests(requests, "GET", `/namespaces/${namespace.id}/agents/${agent.id}/gateway/people`),
+    [],
+    "a known administer denial must not send an audited roster probe",
+  );
 }
 
 // Repository access reads as a summary: its choices read needs Agent update (finding 2454).

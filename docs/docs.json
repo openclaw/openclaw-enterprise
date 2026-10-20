@@ -357,6 +357,8 @@
               "reference/security/runtime-isolation",
               "reference/agents",
               "reference/agents/workspace-files",
+              "reference/agents/gateway-people",
+              "guides/console/agent-people",
               "reference/agent-plugins",
               "reference/presets"
             ]
@@ -1297,6 +1299,7 @@
               "flows/agent-provisioning",
               "flows/agent-native-admin",
               "flows/agent-http-chat",
+              "flows/agent-gateway-people",
               "flows/kubernetes-existing-namespace-placement",
               "flows/production-tui",
               "flows/production-tui/native-client",

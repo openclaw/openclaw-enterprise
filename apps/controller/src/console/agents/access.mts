@@ -45,8 +45,8 @@ const agentPermissions = [
 type PolicyBinding = ReturnType<typeof policyBinding>;
 type PolicyRole = ReturnType<typeof policyRole>;
 
-// The Agent page's Access tab (spec 3.8). `onDenied` runs when the policy read is refused, after
-// the panel hides itself. `onWriting` runs with true when a share or removal starts and false
+// OCC sharing is independent of the direct Gateway roster. `onWriting` runs
+// with true when a share or removal starts and false
 // when it ends: the page holds version and page changes meanwhile (finding 2108). `recheck` reads
 // the policy again for a reader who returns to the tab. `rereadAccess` runs before Refresh sharing
 // reads the policy: the page rereads the caller's permission answers, which audit nothing.
@@ -54,11 +54,9 @@ export function renderAgentAccess(
   context: AgentAccessContext,
   agent: Pick<Agent, "id">,
   {
-    onDenied,
     onWriting,
     rereadAccess,
   }: {
-    onDenied?(): void;
     onWriting?(writing: boolean): void;
     rereadAccess?(): Promise<unknown>;
   } = {},
@@ -124,7 +122,12 @@ export function renderAgentAccess(
     element(
       "div",
       { className: "card agent-access-share" },
-      element("h3", { id: "agent-access-title" }, "Share Agent"),
+      element("h3", { id: "agent-access-title" }, "Share Agent through OCC"),
+      element(
+        "p",
+        { className: "hint" },
+        "OCC sharing applies to the whole Agent, not to one saved version. It does not change the direct Gateway identities.",
+      ),
       statusBlock(
         "info",
         "What sharing grants",
@@ -321,6 +324,7 @@ export function renderAgentAccess(
       }
       await readPolicy();
       section.hidden = false;
+      // The policy read used current request authority; an initial UI hint cannot override it.
       state.needsRefresh = false;
       // What the listed bindings cannot confirm is said once, in the page's disclosure. A recheck
       // keeps what the panel said, a share's outcome too.
@@ -329,11 +333,16 @@ export function renderAgentAccess(
       }
     } catch (error) {
       if (context.isCurrent()) {
+        state.progress = [];
         state.loaded = false;
         if (requestFailure(error).status === 403) {
-          // Sharing is an Installation administration task; hide it rather than show an error.
-          section.hidden = true;
-          onDenied?.();
+          // Retire previously readable policy without hiding independently authorized direct users.
+          state.loaded = false;
+          state.needsRefresh = true;
+          state.bindings = [];
+          state.roles = [];
+          state.error =
+            "OCC sharing requires Installation administration. Direct Control UI access is checked separately.";
         } else {
           failure(error, false);
         }

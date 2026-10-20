@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
-updated: 2026-09-28
-last_updated_session: authoring-run/462d5207-c3a1-4203-af4a-8db2551ccb9a
+updated: 2026-11-06
+last_updated_session: https://team.openclaw.ai/chat/roboclaw/~key/dashboard/41b05c36-846f-4b31-8a13-14ee0d0f6cea
 ---
 
 # Console Agent sharing and removal
@@ -46,24 +46,21 @@ graph TD
 
 ### 1. Mount the panel and read policy
 
-`apps/controller/src/console/agents/access.mjs:renderAgentAccess`
+`apps/controller/src/console/agents/access.mts:renderAgentAccess`
 
-The Access tab mounts sharing independently of version/configuration reads and
-native admission. Agent detail leaves the tab out when the console's Installation-access
-answer already showed the person lacks Installation administration: the policy
-endpoints require it and the API audits each denial. The panel reads the selected Namespace's existing
-`/iam/roles` and `/iam/access-bindings` endpoints, one list at a time, so a
-person whose administration ended after the page loaded gets one audited `403`.
-A policy `403` hides the
-panel and the tab, opens Configuration, and leaves the other panels usable; a current `401` retains global
-session expiry. The panel is built once per page. A return to the tab reads the
-policy again, with the controls disabled, so a `403` after
-administration ends takes the same path. **Refresh sharing** first rereads the
-Agent's and the Namespace's permission answers, which are not audited. Agent
-detail follows the Agent answer. When the console already settled that the
-person lacks Installation administration, the policy is read again only if the
-Namespace answer reports it, so administration granted again applies without a
-page reload; otherwise the tab gives way to Configuration with no audited read.
+The Access tab remains available to Agent readers. Its OCC sharing panel mounts
+independently of version/configuration reads and direct Control UI access. A
+settled Installation-administration denial shows the refusal inside the OCC
+sharing region without an audited policy probe; it does not select Configuration
+or remove Access.
+
+When sharing administration is available, the panel reads the selected
+Namespace’s `/iam/roles` and `/iam/access-bindings` endpoints in sequence. A
+current `403` retires earlier grants and mutation controls in that region while
+leaving Access and independent direct access usable. A current `401` retains
+global session expiry. Returning to the panel revalidates its policy;
+**Refresh sharing** first checks current permission advice before another policy
+read. A known denial stays local instead of causing repeated audited probes.
 
 ### 2. Serialize Role and binding writes
 

@@ -2,6 +2,7 @@ import { createConnectionTemplateFixture } from "./connection-template-fixture.m
 import { createNetworkPolicyFixture } from "./network-policy-fixture.mts";
 import { createPresetFixtures } from "./preset-fixture.mts";
 import type {
+  AgentGatewayPerson,
   AgentPluginCredentialSlot,
   CredentialSourceMetadata,
   CredentialSourceReference,
@@ -111,6 +112,7 @@ type FixtureScenario = Parameters<typeof createConfigurationStore>[0] &
     runtimeLogDownloadNoPod?: boolean;
     denySecretCreate?: boolean;
     emptySecrets?: boolean;
+    gatewayPeople?: readonly AgentGatewayPerson[] | null;
   };
 
 type FixtureEvidence = Parameters<typeof serveChannelDirectory>[2] & {
@@ -898,6 +900,12 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
         ) {
           return error(503, "DEPENDENCY_UNAVAILABLE");
         }
+
+        if (suffix === "/gateway/people" && method === "GET") {
+          return response({
+            people: scenario.gatewayPeople === undefined ? [] : scenario.gatewayPeople,
+          });
+        }
         if (suffix === "/native-admin" && method === "GET") {
           return response({
             status: scenario.nativeAdmin ?? "disabled",
@@ -910,6 +918,10 @@ export function installFixture(scenario: FixtureScenario, evidence: FixtureEvide
               (id === lifecycle.seedAgent().id ? scenario.nativeAdminUrl : undefined) ??
               "/storybook-fixtures/native-admin.html",
           });
+        }
+        if (/^\/gateway\/people\/[^/]+\/avatar$/.test(suffix) && method === "GET") {
+          // The avatar story intentionally exercises the initials fallback, not a private image.
+          return error(404);
         }
         if (suffix === "/harness-status" && method === "GET") {
           // A scenario's harness answers for the current version, as OCC reads it.

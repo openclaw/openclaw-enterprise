@@ -17,7 +17,12 @@ import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/driv
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { withNativeAdminGateway } from "../helpers/harness-configuration.mjs";
 import { createTestKubernetesComputeDriver } from "../helpers/kubernetes-compute.mjs";
-import { isRecord, nativeValues, pathRequests } from "./console-agents-browser-helpers.ts";
+import {
+  fetchFixtureRoute,
+  isRecord,
+  nativeValues,
+  pathRequests,
+} from "./console-agents-browser-helpers.ts";
 
 import type { GitHubRepositoryRegistration } from "../../apps/controller/src/drivers/repo/github/access/registry.ts";
 
@@ -36,9 +41,13 @@ export async function replyWithDifferentAgentId(
   route: Route,
   agentId: string,
   expectedStatus: number,
+  fetchRequest?: (request: Request) => Promise<Response>,
 ) {
-  const response = await route.fetch();
-  assert.equal(response.status(), expectedStatus);
+  const response = fetchRequest
+    ? await fetchFixtureRoute(route, fetchRequest)
+    : await route.fetch();
+  const status = response instanceof Response ? response.status : response.status();
+  assert.equal(status, expectedStatus);
   const body: unknown = await response.json();
   assert.ok(isRecord(body), "expected an object response envelope");
   const { data, meta } = body;
@@ -52,7 +61,9 @@ export async function replyWithDifferentAgentId(
     "expected response request metadata",
   );
   await route.fulfill({
-    response,
+    status,
+    headers:
+      response instanceof Response ? Object.fromEntries(response.headers) : response.headers(),
     json: { ...body, data: { ...data, id: `agt_${randomUUID()}` } },
   });
 }

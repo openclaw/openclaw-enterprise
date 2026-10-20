@@ -6,7 +6,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID, createHash, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer as createHttpsServer } from "node:https";
-import { request as httpRequest } from "node:http";
+import { Agent, request as httpRequest } from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -231,9 +231,14 @@ export async function startHttpsIngress({
       await rm(directory, { recursive: true, force: true });
     }
   }
+  assert.ok(Number.isInteger(upstreamPort) && upstreamPort > 0 && upstreamPort <= 65535);
+  // Only this fixture's existing loopback API socket uses this Agent. Preserve the
+  // real browser Host/Origin/cookies instead of routing the local hop via env proxy.
+  const agent = new Agent({ keepAlive: false });
   const ingress = createHttpsServer({ key, cert }, (incoming, outgoing) => {
     const upstream = httpRequest(
       {
+        agent,
         hostname: "127.0.0.1",
         port: upstreamPort,
         method: incoming.method,
@@ -260,6 +265,7 @@ export async function startHttpsIngress({
   return {
     cert,
     async close() {
+      agent.destroy();
       await new Promise((resolve, reject) => {
         ingress.close((error) => (error ? reject(error) : resolve()));
         ingress.closeAllConnections();
@@ -461,6 +467,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     metrics: options.metrics,
     ...(options.logger === undefined ? {} : { logger: options.logger }),
     workspaceFilesAccess: options.workspaceFilesAccess,
+    gatewayPeopleAccess: options.gatewayPeopleAccess,
     auth,
     iamDriver,
     auditSink,

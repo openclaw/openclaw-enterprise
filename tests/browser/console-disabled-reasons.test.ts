@@ -447,10 +447,17 @@ test("a missing harness grant names the administrator once a revoke makes Save u
   await waitForEnabled(save);
 
   revoke();
-  // The Access tab's policy read is refused, which settles that she no longer administers the
-  // Installation; the page reads its permission answer again and leaves for Configuration.
+  // A refused OCC sharing policy settles the revoked administration answer. Access stays
+  // available for its independent direct-Gateway section; Credentials must still lose Save.
   await page.getByRole("tab", { name: "Access", exact: true }).click();
-  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
+  await page
+    .getByRole("region", { name: "Share Agent through OCC", exact: true })
+    .getByText(
+      "OCC sharing requires Installation administration. Direct Control UI access is checked separately.",
+      { exact: true },
+    )
+    .waitFor();
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByText(HARNESS_GRANT_MISSING_ASK, { exact: true }).waitFor();
   assert.equal(await page.getByText(HARNESS_GRANT_MISSING, { exact: true }).count(), 0);

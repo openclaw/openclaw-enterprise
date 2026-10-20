@@ -442,13 +442,25 @@ async function deployWithoutVersionRead(t: TestContext, name: string) {
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
     async (route) => {
-      const response = await route.fetch();
-      const body = record(await response.json());
+      const original = route.request();
+      const requestBody = original.postData();
+      const response = await fixture.fetch(
+        new Request(original.url(), {
+          method: original.method(),
+          headers: await original.allHeaders(),
+          ...(requestBody === null ? {} : { body: requestBody }),
+        }),
+      );
+      const body = record(await response.clone().json());
       const id = (body.data == null ? undefined : record(body.data).id) ?? body.id;
       assert.ok(typeof id === "string");
       deployed.push(id);
       denyRevisionRead(fixture, namespace, { id });
-      await route.fulfill({ response });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        body: Buffer.from(await response.arrayBuffer()),
+      });
     },
   );
   // Each refused version read is audited as a denial the member never attempted (finding D758).

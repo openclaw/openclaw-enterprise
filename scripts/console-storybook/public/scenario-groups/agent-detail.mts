@@ -134,6 +134,22 @@ export function createAgentDetailScenarios({
   currentVersion: string;
   candidateVersion: string;
 }) {
+  const protectedHarnessReturn: Pick<
+    AgentDetailScenario,
+    "group" | "path" | "deployed" | "auth" | "harnessOverrides"
+  > = {
+    group: "Pages/Agent detail",
+    path: draft,
+    deployed: true,
+    auth: "api-source",
+    harnessOverrides: {
+      modelProvider: {
+        baseUrl: "https://evaluation.example.com/v1",
+        protocol: "openai-responses",
+        supportsStandaloneWebSearch: false,
+      },
+    },
+  };
   const newerDeployment: AgentRevisionSummaryWire = {
     id: "rev_00000000-0000-4000-8000-000000000008",
     namespaceId: "ns_00000000-0000-4000-8000-000000000001",
@@ -299,6 +315,35 @@ export function createAgentDetailScenarios({
         path: draft,
         description: "Admission refuses the requested settings without creating a version.",
         rules: [{ method: "POST", suffix: "/deploy", status: 403 }],
+      },
+      harnessReauthorizationPending: {
+        ...protectedHarnessReturn,
+        name: "Harness reauthorization pending",
+        rules: [
+          { method: "GET", pathIncludes: "/configurations/", skip: 1, once: true, delayMs: 4000 },
+        ],
+        description:
+          "A retained Harness editor waits for its snapshot authorization before the page-level controls return. The allowed read preserves the same unsaved controls and input.",
+        steps: [
+          "On Configuration, open Harness destination, choose Override model provider, and enter https://evaluation.example.com/v1. Do not deploy.",
+          "Open Access, focus another window and return to this preview, then open Configuration. During its four-second read, the draft checklist, Deploy and Harness destination cards stay hidden. After success, the same choice and typed URL return.",
+        ],
+        nextStory: "harnessReauthorizationRefused",
+        gap: "Simulated HTTP delay only. Real controller/Native IAM retained-revalidation coverage proves authorization, cancellation and normal Save behavior; this fixture does not prove persistence, source consent or inference routing.",
+      },
+      harnessReauthorizationRefused: {
+        ...protectedHarnessReturn,
+        name: "Harness reauthorization refused",
+        rules: [
+          { method: "GET", pathIncludes: "/configurations/", skip: 1, delayMs: 4000, status: 403 },
+        ],
+        description:
+          "After a refused retained snapshot read, neither the draft actions nor the page-level Harness destination card remains. Independent Access stays available.",
+        steps: [
+          "Reset this story. Open Harness destination and enter an unsaved provider request without deploying. Visit Access, focus another window and return, then open Configuration.",
+          "The four-second pending read must expose neither shared card. The simulated 403 then shows Configuration unavailable and removes both cards. Return to Access: it stays selected and usable without a Configuration read.",
+        ],
+        gap: "Simulated HTTP refusal, not a real permission withdrawal. The real-controller retained workflow separately proves exact Configuration read denial; this fixture does not qualify installed runtime or IdP behavior.",
       },
       draft: {
         group: "Pages/Agent detail",
@@ -614,9 +659,9 @@ export function createAgentDetailScenarios({
         rules: [{ suffix: "/iam/roles", status: 403, skip: 1 }],
         actions: [{ text: "Current policy loaded." }, click("Configuration"), click("Access")],
         description:
-          "The story loads the Access tab, opens Configuration, then returns to Access, whose policy reread is refused as after a revoke. The tab gives way to Configuration and says why; the earlier grants and Remove binding are gone.",
+          "The story loads Access, opens Configuration, then returns to Access, whose policy reread is refused as after a revoke. Access stays selected and shows the refusal in its OCC sharing region; the earlier grants and Remove binding are gone.",
         steps: [
-          "Configuration is selected and the note reads “The Access tab needs Installation administration, which your access does not include. Showing Configuration.” The Access tab is gone.",
+          "Access remains selected. Its OCC sharing region shows the authorization refusal, without exposing the earlier grants or Remove binding. Direct Control UI access is checked separately.",
           "The request log shows one refused /iam/roles read on the return and no /iam/access-bindings read after it.",
         ],
         gap: "Simulated UI proof: the refused reread stands in for administration revoked while the page is open.",
