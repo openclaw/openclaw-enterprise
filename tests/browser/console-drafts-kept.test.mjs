@@ -375,15 +375,15 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     await sidebarLink(page, "Namespaces").click();
     assert.equal(page.url(), pageUrl);
     // So does Back to another page (the Agents list, before the Agent and its three tab
-    // changes): the page stays and its URL is restored before the history event ends.
+    // changes). The browser returns to this entry without discarding the intervening tabs.
     await page.evaluate(
       () =>
         new Promise((resolve) => {
-          globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), { once: true });
+          globalThis.addEventListener("popstate", resolve, { once: true });
           globalThis.history.go(-4);
         }),
     );
-    assert.equal(page.url(), pageUrl);
+    await page.waitForURL(pageUrl);
     assert.equal(await deploy.isDisabled(), true);
     await note.waitFor();
     // On a phone the refusal closes the navigation drawer, which would hide the reason.
@@ -399,8 +399,8 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
     held.release();
   }
   await page.getByText(/Configuration .*generation 2/).waitFor();
-  // The refused Back kept the Agents list in history, so Back now reaches it.
-  await page.goBack();
+  // The refused traversal kept all four entries, so the same traversal now reaches the list.
+  await page.evaluate(() => globalThis.history.go(-4));
   await heading(page, "Agents").waitFor();
 });
 
@@ -488,19 +488,16 @@ for (const pending of [
       await reason.evaluateAll((nodes) => nodes.forEach((node) => node.remove()));
       await leave();
       await reason.waitFor();
-      assert.equal(page.url(), pageUrl);
+      await page.waitForURL(pageUrl);
     };
     try {
       await refusedWithReason(() => sidebarLink(page, "Agents").click());
-      // Back to the Agents list (past the tab change, where one was made): the URL returns
-      // before the history event ends.
+      // Back to the Agents list, past the tab change where one was made.
       await refusedWithReason(() =>
         page.evaluate(
           (steps) =>
             new Promise((resolve) => {
-              globalThis.addEventListener("popstate", () => setTimeout(resolve, 0), {
-                once: true,
-              });
+              globalThis.addEventListener("popstate", resolve, { once: true });
               globalThis.history.go(steps);
             }),
           pending.tab === "configuration" ? -1 : -2,

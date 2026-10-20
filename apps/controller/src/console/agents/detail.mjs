@@ -1313,6 +1313,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         openVersionDetail({ animate: true, deploy });
         return;
       }
+      // A link to another version must not add a history entry if sharing keeps this one open.
+      if (sharingWrite && revision !== selected) {
+        showLeaveBlock();
+        return;
+      }
       // The load this navigation starts is the next one.
       linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1, deploy };
       context.navigate(target(revision, tab));
@@ -5034,7 +5039,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       showLeaveBlock();
       return true;
     }
-    if (draftEditorBlocksNavigation() || (sharingWrite && nextRevision !== selected)) {
+    if (draftEditorBlocksNavigation()) {
       history.replaceState(
         history.state,
         "",

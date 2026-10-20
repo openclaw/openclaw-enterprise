@@ -396,7 +396,7 @@ const navigation = createNavigation({
   isLoggingOut: () => loggingOut,
   loadPage,
 });
-const { route, pageUrl, captureIntent, validIntent, intentUrl, navigate } = navigation;
+const { route, pageUrl, captureIntent, validIntent, intentUrl, navigate, replaceUrl } = navigation;
 function forgetLoginIntent() {
   try {
     sessionStorage.removeItem(loginIntentStorageKey);
@@ -449,7 +449,7 @@ function takeNativeFragment(current) {
     return null;
   }
   const match = /^#native-agent=([0-9a-f]{32})$/.exec(current.url.hash);
-  history.replaceState(history.state, "", current.url.pathname + current.url.search);
+  replaceUrl(current.url.pathname + current.url.search);
   return match ? { kind: "native", key: match[1] } : null;
 }
 
@@ -840,7 +840,7 @@ function showLogin(message = "", destination = null) {
   takeExternalAttempt();
   pendingIntent = null;
   forgetLoginIntent();
-  history.replaceState(null, "", "/console/login");
+  replaceUrl("/console/login");
   const username = element("input", {
     id: "username",
     name: "username",
@@ -975,7 +975,7 @@ function showLogin(message = "", destination = null) {
       pinSessionKey(signedIn?.sessionKey);
       password.value = "";
       pendingIntent = destination;
-      history.replaceState(null, "", "/console/agents");
+      replaceUrl("/console/agents");
       await loadPage();
     } catch (error) {
       if (!lifetime.isCurrent(active)) {
@@ -1096,7 +1096,7 @@ async function loadPage({
   reuseView = fromNavigation,
   fromRefresh = false,
   // Set only by Back and Forward (popstate).
-  fromHistory = false,
+  restoreHistory = null,
   openingAgent = false,
   // Set only by the load that follows a chat-link lookup that failed (finding 1450).
   chatLinkFailure = null,
@@ -1120,12 +1120,10 @@ async function loadPage({
     markMountedRoute(route());
     return;
   }
-  // Back or Forward to another page while the shown page waits on a write keeps it and says
-  // why, as ← Agents and the sidebar do (finding 1937). Its URL returns as a new entry, so the
-  // page the reader tried to reach stays in history for a later Back. This follows the tab
-  // handler, which keeps same-Agent tab changes.
-  if (fromHistory && mountedRouteKey !== null && leaveGuard?.({ pendingOnly: true })) {
-    history.pushState(null, "", mountedRouteKey);
+  // Same-version tab changes stay in the mounted page. Leaving it during a pending write
+  // returns the browser to the entry we kept open, preserving both Back and Forward.
+  if (restoreHistory && mountedRouteKey !== null && leaveGuard?.({ pendingOnly: true })) {
+    restoreHistory(mountedRouteKey);
     return;
   }
   const knownPrivateState = session !== null && Object.hasOwn(pages, current.feature);
@@ -1422,21 +1420,21 @@ async function loadPage({
           tab: null,
         };
         pendingIntent = null;
-        history.replaceState(null, "", intentUrl(target) ?? "/console/agents");
+        replaceUrl(intentUrl(target) ?? "/console/agents");
       } catch (error) {
         if (!lifetime.isCurrent(active)) {
           return;
         }
         pendingIntent = null;
         failure = [400, 403, 404].includes(error.status) ? "unavailable" : "interrupted";
-        history.replaceState(null, "", "/console/agents");
+        replaceUrl("/console/agents");
       }
       void loadPage({ chatLinkFailure: failure });
       return;
     }
     if (destination || current.feature === "login") {
       pendingIntent = null;
-      history.replaceState(null, "", intentUrl(destination) ?? "/console/agents");
+      replaceUrl(intentUrl(destination) ?? "/console/agents");
       void loadPage();
       return;
     }
@@ -1489,7 +1487,7 @@ async function loadPage({
         namespaces[0]
       )?.id ??
       null;
-    history.replaceState(null, "", pageUrl(current.target));
+    replaceUrl(pageUrl(current.target));
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
@@ -2516,7 +2514,7 @@ window.addEventListener("popstate", () => {
   if (!loggingOut) {
     // Browser history can change Agent tabs while the mounted view is inert.
     // Recheck admission for the new route before exposing its cached panel.
-    void loadPage({ fromNavigation: !resumePending, fromHistory: true });
+    navigation.traverse({ fromNavigation: !resumePending, mountedUrl: mountedRouteKey });
   }
 });
 window.addEventListener("focus", resumePage);

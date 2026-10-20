@@ -3524,7 +3524,7 @@ export const scenarios = {
   agentSharingHoldsNavigation: {
     group: "Pages/Agent detail",
     name: "Sharing holds navigation",
-    path: `${draft}&tab=access`,
+    path: `${draft}&tab=configuration`,
     deployed: true,
     rules: [
       {
@@ -3534,13 +3534,18 @@ export const scenarios = {
         once: true,
       },
     ],
-    actions: [...shareExistingPerson, { selector: 'a[data-nav="agents"]', click: true }],
+    actions: [
+      { selector: 'button[aria-label^="View version v1"]', click: true },
+      click("Access"),
+      ...shareExistingPerson,
+      { selector: 'a[data-nav="agents"]', click: true },
+    ],
     description:
-      "The story shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
+      "The story opens a version from the draft, shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
     steps: [
       "While the note “This page stays open until sharing finishes.” shows, check that the versions in the Versions rail are disabled, and that ← Agents and Refresh keep the page. Select Reset story to replay the hold.",
-      "Switch to Plugins and back to Access while the note shows: tabs still switch, and the share keeps running.",
-      "When the grants are written, the note goes, Direct Agent grants lists the new binding, and the versions and Agents in the sidebar work again.",
+      "Open the preview in its own tab to try browser Back. While sharing, Back opens Configuration. Back again keeps that version open and explains why.",
+      "When the grants are written, the note goes, Direct Agent grants lists the new binding, and navigation is available again. If you tried Back above, Back now reaches the draft and Forward returns through Configuration to Access.",
     ],
   },
   agentSharingRemoved: {

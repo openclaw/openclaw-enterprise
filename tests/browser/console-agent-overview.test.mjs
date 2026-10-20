@@ -2077,7 +2077,7 @@ test("A share in flight holds version and page changes until it finishes", async
 
 // The same hold from a version's Access tab: Create new version and Back to another version
 // keep the page (and its history) while the share runs (finding 2108).
-test("A share in flight on a version holds Create new version and Back", async (t) => {
+test("A share in flight on a version preserves Back to the draft and Forward to Access", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Share hold version", {
     provisionedPeople: ["hold-version-recipient"],
   });
@@ -2091,7 +2091,18 @@ test("A share in flight on a version holds Create new version and Back", async (
     `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
     { method: "POST", once: true },
   );
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  await page
+    .locator(".agent-toolbar-actions")
+    .getByRole("button", { name: "Create new version" })
+    .click();
+  const draft = page.getByRole("heading", { name: "Configuration draft" });
+  await draft.waitFor();
+  const draftUrl = page.url();
   await page.getByRole("button", { name: "View version v1, current version" }).click();
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   await page.getByRole("tab", { name: "Access", exact: true }).click();
@@ -2123,7 +2134,7 @@ test("A share in flight on a version holds Create new version and Back", async (
   assert.equal(new URL(configurationUrl).searchParams.get("revision"), revision.id);
   await page.goBack();
   await held.waitFor();
-  assert.equal(page.url(), configurationUrl);
+  await page.waitForURL(configurationUrl);
   assert.equal(await entries(), before);
 
   write.release();
@@ -2132,6 +2143,18 @@ test("A share in flight on a version holds Create new version and Back", async (
     await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
   ).data.filter((binding) => binding.subjectId === person.principal.id);
   assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
+
+  // A held Back used to overwrite the draft entry. Visit the actual destinations in both
+  // directions: replacing the draft or pushing a copy of Configuration loses one of them.
+  await page.goBack();
+  assert.equal(page.url(), draftUrl);
+  await draft.waitFor();
+  await page.goForward();
+  await page.waitForURL(configurationUrl);
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page.goForward();
+  await page.waitForURL(accessUrl);
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
 });
 
 // A draft's next step (UX spec 3.7, plan D1): beside the Versions rail, a checklist whose steps
