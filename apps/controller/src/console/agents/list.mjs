@@ -347,7 +347,7 @@ export function renderAgentList(context) {
   const createDenied = context.permissions?.agents?.create === false;
   // A Namespace that is not ready names its status here, so the first sign is never a refused
   // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
-  const notReady = namespaceCreation(context.namespace);
+  let notReady = namespaceCreation(context.namespace);
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     tone: "primary",
   });
@@ -357,23 +357,22 @@ export function renderAgentList(context) {
   if (notReady) {
     create.setAttribute("aria-describedby", "namespace-not-ready");
   }
+  // The Namespace status block (dom.mjs statusBlock's markup), a polite status on load.
+  const namespaceNote = (tone, text) =>
+    element(
+      "p",
+      {
+        className: "status",
+        "data-tone": tone,
+        role: "status",
+        ...(tone === "warning" ? { id: "namespace-not-ready" } : {}),
+      },
+      text,
+    );
+  let notReadyNote = notReady ? namespaceNote("warning", notReady.note) : null;
   view.replaceChildren(
     element("div", { className: "agent-toolbar" }, search, create),
-    ...(notReady
-      ? [
-          // A warning status block (dom.mjs statusBlock's markup), a polite status on load.
-          element(
-            "p",
-            {
-              className: "status",
-              "data-tone": "warning",
-              role: "status",
-              id: "namespace-not-ready",
-            },
-            notReady.note,
-          ),
-        ]
-      : []),
+    ...(notReadyNote ? [notReadyNote] : []),
     ...(createDenied
       ? [
           element(
@@ -627,27 +626,58 @@ export function renderAgentList(context) {
   });
   search.addEventListener("input", render);
   render();
-  // A provisioning Namespace becomes ready on its own. A refocus, return or Refresh rechecks the
-  // page and drops the note, but a reader who stayed on the list kept seeing "Provisioning"
-  // (finding 2058). While the note waits on provisioning, reread the Namespace at Create Agent's
-  // cadence; once its status changes, recheck the page as a refocus does. A hidden tab stops,
-  // and its return rechecks the page anyway.
-  if (context.namespace?.status === "provisioning" && context.recheckPage) {
+  // A provisioning Namespace becomes ready on its own. A refocus, return or Refresh rebuilds the
+  // list, but a reader who stayed on it kept seeing "Provisioning" (finding 2058). While the note
+  // waits on provisioning, reread the Namespace at Create Agent's cadence and, as Create Agent
+  // does, update the note and the gate in place, so search text and focus stay (findings 2012,
+  // 2024). A hidden tab reads nothing; the next check after it shows again does.
+  if (context.namespace?.status === "provisioning") {
     let timer = null;
     let reading = false;
+    const showNamespace = (namespace) => {
+      context.namespace = namespace;
+      notReady = namespaceCreation(namespace);
+      create.disabled = createDenied || notReady?.blocked === true;
+      if (notReady) {
+        create.setAttribute("aria-describedby", "namespace-not-ready");
+      } else {
+        create.removeAttribute("aria-describedby");
+      }
+      // A ready Namespace says so where the warning was, at the warning's height, so the rows
+      // below it do not jump; a new width reflows the page anyway (finding 2024).
+      const replacement = notReady
+        ? namespaceNote("warning", notReady.note)
+        : namespaceNote(
+            "success",
+            "Namespace status: Ready. Agents created here can be deployed now.",
+          );
+      replacement.style.minHeight = `${notReadyNote.getBoundingClientRect().height}px`;
+      window.addEventListener("resize", () => replacement.style.removeProperty("min-height"), {
+        once: true,
+      });
+      notReadyNote.replaceWith(replacement);
+      notReadyNote = replacement;
+      // Only the empty state's sentence depends on the Namespace; rows keep their focus.
+      if (!rows.querySelector("table")) {
+        render();
+      }
+    };
     const recheckNamespace = async () => {
       timer = null;
-      if (!context.isCurrent() || document.hidden || reading) {
+      if (!context.isCurrent() || reading) {
+        return;
+      }
+      if (document.hidden) {
+        waitForNamespace();
         return;
       }
       reading = true;
-      let status;
+      let namespaces = null;
       try {
-        const namespaces = await context.request("/namespaces", {
+        namespaces = await context.request("/namespaces", {
           revalidate: false,
           rereadOnResume: true,
         });
-        status = namespaces.find((item) => item.id === context.namespaceId)?.status ?? null;
       } catch {
         // A failed read changes nothing on screen; the next check comes at the usual cadence.
       } finally {
@@ -656,12 +686,17 @@ export function renderAgentList(context) {
       if (!context.isCurrent()) {
         return;
       }
-      // The page recheck rebuilds this list, which ends this wait. A recheck that could not run
-      // now (an open dialog, another recheck) leaves it waiting for the next check.
-      if (status !== undefined && status !== "provisioning") {
-        context.recheckPage();
+      const namespace = namespaces?.find((item) => item.id === context.namespaceId);
+      // A list without the Namespace ends the wait; the page's own recheck names that.
+      if (namespaces && !namespace) {
+        return;
       }
-      waitForNamespace();
+      if (namespace && namespace.status !== context.namespace.status) {
+        showNamespace(namespace);
+      }
+      if (context.namespace.status === "provisioning") {
+        waitForNamespace();
+      }
     };
     const waitForNamespace = () => {
       if (timer === null) {
@@ -670,6 +705,10 @@ export function renderAgentList(context) {
     };
     waitForNamespace();
     // A retained list comes back with its timer stopped, as Create Agent's does.
-    context.onResume?.(waitForNamespace);
+    context.onResume?.(() => {
+      if (context.namespace?.status === "provisioning") {
+        waitForNamespace();
+      }
+    });
   }
 }
