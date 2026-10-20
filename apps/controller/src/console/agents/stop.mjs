@@ -174,7 +174,7 @@ export function createAgentStop(
         return;
       }
       if (current?.status === "deleting") {
-        onDeleting();
+        onDeleting({ focus: returnFocus });
         return;
       }
       if (current?.status === "active") {
@@ -229,7 +229,7 @@ export function createAgentStop(
       }
       if (stopped?.status === "deleting") {
         dialog.close();
-        onDeleting();
+        onDeleting({ focus: true });
         return;
       }
       if (stopped?.status !== "active" || stopped?.desiredRuntimeState !== "stopped") {

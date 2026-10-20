@@ -2541,6 +2541,43 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
   );
 });
 
+test("Refresh stop status switches to deletion recovery when another actor starts deletion", async (t) => {
+  const { fixture, namespace, state } = await createRuntimeAuthFixture(t, "Deletion discovered");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Deletion Candidate",
+    nativeValues("deletion"),
+  );
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await state.transact((unit) =>
+    unit.agents.transitionAgentDesiredRuntimeState(namespace.id, agent.id, "running", "stopped"),
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, active.revision.id));
+  const refreshStop = page.getByRole("button", { name: "Refresh stop status" });
+  await refreshStop.waitFor();
+  requests.length = 0;
+
+  // Another actor changes lifecycle state after this page loads; the operator only reads it.
+  const deleting = await state.transact((unit) =>
+    unit.agents.transitionAgentStatus(namespace.id, agent.id, "active", "deleting"),
+  );
+  assert.equal(deleting.status, "deleting");
+  await refreshStop.click();
+  await page.getByText(/Deletion was requested\./).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Delete Agent", exact: true }).count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "Request deletion again" }).isVisible(),
+    true,
+  );
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.textContent),
+    "Refresh deletion status",
+  );
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+});
+
 // An Agent created through the API starts with desiredRuntimeState stopped and no version,
 // so no stop was ever requested and nothing runs to stop (finding 1394). The page shows no
 // Stop card and reports no stop request until a deploy creates a version (finding 1899).

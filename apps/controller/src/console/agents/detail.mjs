@@ -1519,7 +1519,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       deletion.section,
     ),
   );
-  function showDeleting() {
+  function showDeleting({ focus = false } = {}) {
     deleting = true;
     headerActions.replaceChildren(
       element("span", { className: "badge", "data-tone": "warning" }, "Deleting"),
@@ -1527,8 +1527,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
     // A deleting Agent can no longer be stopped; its deletion row is all the page shows.
     stopPanel.section.remove();
-    deletion.showOnPage();
     view.replaceChildren(dangerZone);
+    deletion.showOnPage({ focus });
     context.revealed?.();
   }
   if (deleting) {

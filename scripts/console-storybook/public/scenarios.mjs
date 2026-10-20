@@ -6959,6 +6959,18 @@ export const scenarios = {
     description:
       "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
   },
+  stopReadDiscoversDeletion: {
+    group: "Components/Stop Agent",
+    name: "Deletion discovered",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    deletingOnRefresh: true,
+    description: "Another actor starts deletion after the page loads.",
+    steps: [
+      "Choose Refresh stop status. The page shows deletion recovery and focuses Refresh deletion status without sending a write.",
+    ],
+  },
   stopRepeatConfirm: {
     group: "Components/Stop Agent",
     name: "Repeat confirmation",
