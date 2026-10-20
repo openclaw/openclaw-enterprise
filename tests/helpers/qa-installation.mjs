@@ -291,24 +291,75 @@ export function describeDeploymentObservation(value, statusForMs) {
   });
 }
 
+// Runtime text reaches the API as Kubernetes sent it, and OCC may shorten it there. QA
+// redaction replaces whole registered values, so a shortened string could keep part of one.
+// The timeout therefore names only familiar Kubernetes words and says "other" for the rest;
+// event messages are left out.
+const familiarPodPhases = new Set(["Pending", "Running", "Succeeded", "Failed", "Unknown"]);
+const familiarContainerReasons = new Set([
+  "ContainerCreating",
+  "PodInitializing",
+  "CrashLoopBackOff",
+  "ImagePullBackOff",
+  "ErrImagePull",
+  "ErrImageNeverPull",
+  "InvalidImageName",
+  "CreateContainerConfigError",
+  "CreateContainerError",
+  "RunContainerError",
+  "PreStartHookError",
+  "PostStartHookError",
+  "StartError",
+  "ContainerCannotRun",
+  "ContainerStatusUnknown",
+  "Completed",
+  "Error",
+  "OOMKilled",
+  "DeadlineExceeded",
+]);
+const familiarEventReasons = new Set([
+  "FailedScheduling",
+  "FailedMount",
+  "FailedAttachVolume",
+  "FailedCreatePodSandBox",
+  "FailedKillPod",
+  "FailedPreStopHook",
+  "FailedPostStartHook",
+  "FailedSync",
+  "FailedCreate",
+  "Failed",
+  "BackOff",
+  "Unhealthy",
+  "ProbeWarning",
+  "InspectFailed",
+  "ErrImageNeverPull",
+  "NetworkNotReady",
+  "Evicted",
+  "NodeNotReady",
+  "OutOfmemory",
+  "OutOfcpu",
+]);
+
+function familiar(words, value) {
+  return value === null || value === undefined || words.has(value) ? value : "other";
+}
+
 export function describeDeploymentRuntime(runtime) {
   const pods = (runtime?.pods ?? []).slice(0, 4).map((pod) => ({
     role: pod.role,
-    phase: pod.phase,
+    phase: familiar(familiarPodPhases, pod.phase),
     ready: pod.ready,
     containers: (pod.containers ?? []).map(({ name, state, reason, restartCount }) => ({
       name,
       state,
-      reason,
+      reason: familiar(familiarContainerReasons, reason),
       restartCount,
     })),
-    // The API lists events newest first. Event messages are raw Kubernetes text (a failed
-    // probe's output, for one) and are left out: QA redaction matches whole registered values,
-    // so a cut message could keep part of a secret.
+    // The API lists events newest first.
     warnings: (pod.events ?? [])
       .filter(({ type }) => type === "Warning")
       .slice(0, 3)
-      .map(({ reason, count }) => ({ reason, count })),
+      .map(({ reason, count }) => ({ reason: familiar(familiarEventReasons, reason), count })),
   }));
   return JSON.stringify({
     pods,

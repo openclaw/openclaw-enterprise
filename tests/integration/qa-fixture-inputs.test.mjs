@@ -534,8 +534,15 @@ test("QA waits report the last observation when they time out", async () => {
 });
 
 // Finding 2106: six QA cells failed "Timed out: Agent deployment" at 600 s with no status.
-test("a QA Agent deployment timeout names its last status, attempt and Pods", async () => {
+test("a QA Agent deployment timeout names its last status, attempt and Pods", async (t) => {
   const { deployQaAgentAndWait } = await import("../helpers/qa-installation.mjs");
+  const { createQaReport } = await import("../helpers/qa-report.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  // An invented 48-character registered value. Runtime text that OCC shortened could keep
+  // part of it, which whole-value redaction cannot match.
+  const privateValue = "qa-deploy-fixture-private-0123456789abcdefghijkl";
+  assert.equal(privateValue.length, 48);
+  registerQaSecret(privateValue);
   const base = "/namespaces/namespace-1/agents/agent-1";
   function fixture({ runtime, finalStatus = "running" } = {}) {
     let clock = 0;
@@ -603,6 +610,16 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
             startedAt: null,
             lastTermination: null,
           },
+          {
+            name: "setup",
+            state: "terminated",
+            // Cut at the API's 128 characters, inside the registered value.
+            reason: ("r".repeat(100) + privateValue).slice(0, 128),
+            ready: false,
+            restartCount: 1,
+            startedAt: null,
+            lastTermination: null,
+          },
         ],
         // Newest first, as the API lists them.
         events: [
@@ -610,7 +627,8 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
             type: "Warning",
             container: null,
             reason: "Unhealthy",
-            message: "Readiness probe failed: token=fixture-event-private-value " + "x".repeat(300),
+            // Probe output can reach an event message; the value starts at character 176.
+            message: "Readiness probe failed: " + "x".repeat(152) + privateValue,
             count: 4,
             lastObservedAt: "2026-10-19T19:45:00Z",
           },
@@ -625,7 +643,8 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
           {
             type: "Warning",
             container: null,
-            reason: "BackOff",
+            // A long reason from a legacy Event producer, cut inside the registered value.
+            reason: ("e".repeat(100) + privateValue).slice(0, 128),
             message: "Back-off pulling image",
             count: 2,
             lastObservedAt: "2026-10-19T19:43:00Z",
@@ -650,12 +669,20 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
       },
     ],
   };
+  // Through the real report stage, which redacts before it saves the reason.
+  const directory = await mkdtemp(join(tmpdir(), "qa-deploy-timeout-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const reportPath = join(directory, "matrix.json");
+  const report = createQaReport(reportPath, {});
+  const parent = { test: async (_name, _options, run) => run() };
   const timedOut = fixture({ runtime });
   await assert.rejects(
-    deployQaAgentAndWait(timedOut.f, timedOut.agent, timedOut.options),
+    report.stage(parent, "compose/Codex", "deploy", () =>
+      deployQaAgentAndWait(timedOut.f, timedOut.agent, timedOut.options),
+    ),
     (error) => {
-      // Event messages can carry probe output; none reaches the error.
-      assert.doesNotMatch(error.message, /fixture-event-private-value|Readiness probe failed/);
+      // No runtime text that could hold part of a secret reaches the error.
+      assert.doesNotMatch(error.message, /qa-deploy-fixture|Readiness probe failed|rrrr|eeee/);
       const [observation, pods] = error.message
         .replace(/^Timed out: Agent deployment; last observation: /, "")
         .split("; runtime: ");
@@ -679,11 +706,12 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
             ready: false,
             containers: [
               { name: "gateway", state: "waiting", reason: "ContainerCreating", restartCount: 0 },
+              { name: "setup", state: "terminated", reason: "other", restartCount: 1 },
             ],
-            // The three newest Warnings, by reason and count only.
+            // The three newest Warnings, by familiar reason and count only.
             warnings: [
               { reason: "Unhealthy", count: 4 },
-              { reason: "BackOff", count: 2 },
+              { reason: "other", count: 2 },
               { reason: "FailedScheduling", count: 3 },
             ],
           },
@@ -694,6 +722,11 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
   );
   assert.equal(timedOut.calls.at(-1), `GET ${base}/deployments/rev-1/runtime`);
   assert.deepEqual(timedOut.records, []);
+  const saved = await readFile(reportPath, "utf8");
+  const [outcome] = JSON.parse(saved).outcomes;
+  assert.equal(outcome.outcome, "failed");
+  assert.match(outcome.reason, /^Timed out: Agent deployment; last observation: /);
+  assert.doesNotMatch(saved, new RegExp(privateValue.slice(0, 8)));
 
   // Runtime details are best effort: the timeout keeps its status when they are unavailable.
   const noRuntime = fixture();
