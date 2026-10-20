@@ -145,7 +145,7 @@ func prepareOpenShellAdmission(directory string) (string, error) {
 	return path, nil
 }
 
-func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, timeout time.Duration) (*openShellDevelopmentAssets, error) {
+func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, timeout time.Duration) (_ *openShellDevelopmentAssets, resultErr error) {
 	images, err := r.selectOpenShellImages(state.SandboxDriver)
 	if err != nil {
 		return nil, err
@@ -195,16 +195,26 @@ func (r *runner) prepareOpenShell(ctx context.Context, state *developmentState, 
 	if err != nil {
 		return nil, err
 	}
+	supervisor, localSupervisor := images.supervisor, images.revision != ""
+	if trust := r.env[openShellSupervisorCASelector]; trust != "" {
+		derived, release, err := r.trustOpenShellSupervisor(ctx, state, root, images.supervisor, localSupervisor, trust)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { resultErr = errors.Join(resultErr, release()) }()
+		supervisor, localSupervisor = derived, true
+	}
 	for _, selected := range []struct {
 		component string
 		source    string
+		local     bool
 		target    *string
 	}{
-		{"gateway", images.gateway, &assets.gatewayImage},
-		{"sandbox", images.sandbox, &assets.sandboxImage},
-		{"supervisor", images.supervisor, &assets.supervisorImage},
+		{"gateway", images.gateway, images.revision != "", &assets.gatewayImage},
+		{"sandbox", images.sandbox, images.revision != "", &assets.sandboxImage},
+		{"supervisor", supervisor, localSupervisor, &assets.supervisorImage},
 	} {
-		imported, err := r.importOpenShellImage(ctx, state, root, selected.component, selected.source, images.revision != "")
+		imported, err := r.importOpenShellImage(ctx, state, root, selected.component, selected.source, selected.local)
 		if err != nil {
 			return nil, err
 		}
@@ -364,18 +374,23 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 			return err
 		}
 	}
-	if !state.ProtectedEgress {
+	if !state.openShellNativePKI() {
 		if err := r.ensureOpenShellJWTSecret(ctx, state, namespace); err != nil {
 			return err
 		}
 	}
-	var protectedValues string
-	if state.ProtectedEgress {
-		var err error
-		protectedValues, err = r.writeProtectedOpenShellValues(state)
-		if err != nil {
-			return err
-		}
+	var valuesFile string
+	var err error
+	switch {
+	case state.ProtectedEgress:
+		valuesFile, err = r.writeProtectedOpenShellValues(state)
+	case state.OpenShellGit:
+		// The middleware registration follows once the worker serves it: stock
+		// Gateway startup calls Describe and refuses an unavailable service.
+		valuesFile, err = writeOpenShellGitGatewayValues(state, "openshell-git-values.json", false)
+	}
+	if err != nil {
+		return err
 	}
 	args := []string{"upgrade", "--install", openShellGatewayService, assets.gatewayChart, "--namespace", namespace, "--kubeconfig", filepath.Join(state.directory, "kubeconfig"), "--kube-context", "k3d-" + state.Cluster, "--timeout", timeout.String()}
 	// The registry contacts OCC at startup. Install both releases before waiting
@@ -383,7 +398,7 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 	if !state.ProtectedEgress {
 		args = append(args, "--wait")
 	}
-	args = append(args, openShellGatewayValues(state, assets, protectedValues)...)
+	args = append(args, openShellGatewayValues(state, assets, valuesFile)...)
 	if err := r.run(ctx, "helm", args...); err != nil {
 		return err
 	}
@@ -399,7 +414,10 @@ func (r *runner) installOpenShellGateway(ctx context.Context, state *development
 	return nil
 }
 
-func openShellGatewayValues(state *developmentState, assets *openShellDevelopmentAssets, protectedValues string) []string {
+// openShellGatewayValues selects the launcher's Gateway values. A nonempty
+// valuesFile ("-" for stdin) carries a native-PKI profile; otherwise the
+// Gateway is the unauthenticated development profile.
+func openShellGatewayValues(state *developmentState, assets *openShellDevelopmentAssets, valuesFile string) []string {
 	values := []string{
 		"--set-string=fullnameOverride=" + openShellGatewayService,
 		"--set-string=serviceAccount.name=" + openShellGatewayService,
@@ -415,8 +433,8 @@ func openShellGatewayValues(state *developmentState, assets *openShellDevelopmen
 		"--set=sandboxRuntime.image.pullPolicy=Never",
 		"--set=supervisor.image.pullPolicy=Never",
 	}
-	if protectedValues != "" {
-		values = append(values, "-f", protectedValues)
+	if valuesFile != "" {
+		values = append(values, "-f", valuesFile)
 	} else {
 		values = append(values, "--set=pkiInitJob.enabled=false", "--set=server.disableTls=true", "--set=server.auth.allowUnauthenticatedUsers=true")
 	}

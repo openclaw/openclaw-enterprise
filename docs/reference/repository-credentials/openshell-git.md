@@ -30,6 +30,9 @@ Check these before the trial; each one stops Git or the Agent:
   an unattended trial, set it to `never`, which removes the approval step.
 - **PATH.** Draft creation needs the helper on PATH; see the login-shell note below.
 
+For a disposable local trial, `occ dev up` wires the installation steps below and checks the
+kernel first; see [the local OpenShell Git route](../../guides/deploy/local-repository-credentials.md#use-the-openshell-git-route).
+
 ## Prepare the installation
 
 Start with the [repository installation inputs](../../guides/repository-credentials/installation.md)

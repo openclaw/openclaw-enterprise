@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 	"go.yaml.in/yaml/v3"
@@ -22,17 +23,8 @@ func (r *runner) checkProtectedOpenShellChart(ctx context.Context, state *develo
 	if !filepath.IsAbs(chart) || filepath.Clean(chart) != chart {
 		return fmt.Errorf("protected egress requires %s to be an absolute canonical chart path", selector)
 	}
-	values, err := json.Marshal(developmentProtectedOpenShellValues(state))
-	if err != nil {
-		return err
-	}
-	// Only the offline render skips the chart's live Agent Sandbox API discovery.
-	// Image imports can change the local repository names, not the middleware values.
-	args := []string{"template", openShellGatewayService, chart, "--namespace", state.PlatformNamespace, "--set=agentSandbox.preflight.enabled=false"}
-	assets := &openShellDevelopmentAssets{gatewayImage: images.gateway, sandboxImage: images.sandbox, supervisorImage: images.supervisor}
-	cmd := r.command(ctx, "helm", append(args, openShellGatewayValues(state, assets, "-")...)...)
-	cmd.Stdin = bytes.NewReader(values)
-	rendered, err := cmd.Output()
+	assets := &openShellDevelopmentAssets{gatewayChart: chart, gatewayImage: images.gateway, sandboxImage: images.sandbox, supervisorImage: images.supervisor}
+	rendered, err := r.renderOpenShellGatewayChart(ctx, state, assets, developmentProtectedOpenShellValues(state))
 	if err != nil {
 		return fmt.Errorf("cannot render protected OpenShell Gateway chart %s: %w", chart, err)
 	}
@@ -43,7 +35,42 @@ func (r *runner) checkProtectedOpenShellChart(ctx context.Context, state *develo
 	return nil
 }
 
+// renderOpenShellGatewayChart renders the Gateway release offline with the
+// launcher's own arguments and one complete values document on stdin.
+func (r *runner) renderOpenShellGatewayChart(ctx context.Context, state *developmentState, assets *openShellDevelopmentAssets, values map[string]any) ([]byte, error) {
+	data, err := json.Marshal(values)
+	if err != nil {
+		return nil, err
+	}
+	// Only the offline render skips the chart's live Agent Sandbox API discovery.
+	// Image imports can change the local repository names, not the middleware values.
+	args := []string{"template", openShellGatewayService, assets.gatewayChart, "--namespace", state.PlatformNamespace, "--set=agentSandbox.preflight.enabled=false"}
+	cmd := r.command(ctx, "helm", append(args, openShellGatewayValues(state, assets, "-")...)...)
+	cmd.Stdin = bytes.NewReader(data)
+	return cmd.Output()
+}
+
+// gatewayMiddleware is one supervisor middleware registration a profile requires.
+type gatewayMiddleware struct {
+	name, endpoint, audience, timeout, caConfigMap string
+	payload                                        int
+}
+
+func protectedGatewayMiddleware(state *developmentState) gatewayMiddleware {
+	return gatewayMiddleware{name: developmentEgressMiddleware, endpoint: developmentAuthorityEndpoint(state), audience: developmentEgressAudience,
+		timeout: developmentEgressTimeout, caConfigMap: developmentEgressCA, payload: developmentEgressPayload}
+}
+
 func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) error {
+	return verifyOpenShellGatewayChart(rendered, state, []gatewayMiddleware{protectedGatewayMiddleware(state)})
+}
+
+// verifyOpenShellGatewayChart requires the rendered gateway.toml to register
+// exactly the profile's middleware, each over secure transport with its public
+// CA mounted read-only in the Gateway container. A profile never inherits
+// another profile's registration: protected egress and OpenShell Git are
+// mutually exclusive (the OCE chart refuses openshellGit with egressAuthority).
+func verifyOpenShellGatewayChart(rendered []byte, state *developmentState, want []gatewayMiddleware) error {
 	const configMap = openShellGatewayService + "-config"
 	var config string
 	var pod protectedGatewayPod
@@ -89,15 +116,29 @@ func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) err
 		return fmt.Errorf("rendered gateway.toml is not valid TOML")
 	}
 	registry := gateway.Openshell.Supervisor.Middleware
-	if len(registry) != 1 || registry[0].Name != developmentEgressMiddleware {
-		return fmt.Errorf("rendered gateway.toml must register exactly one supervisor middleware, %s", developmentEgressMiddleware)
+	names := make([]string, len(want))
+	for i, w := range want {
+		names[i] = w.name
 	}
-	m := registry[0]
-	if m.Endpoint != developmentAuthorityEndpoint(state) || m.Audience != developmentEgressAudience ||
-		m.Insecure == nil || *m.Insecure || m.Payload != developmentEgressPayload || m.Timeout != developmentEgressTimeout {
-		return fmt.Errorf("rendered %s registration does not select the required HTTPS endpoint, audience, secure transport and request limits", m.Name)
+	matches := len(registry) == len(want)
+	for i := 0; matches && i < len(want); i++ {
+		matches = registry[i].Name == want[i].name
 	}
-
+	if !matches {
+		if len(want) == 1 {
+			return fmt.Errorf("rendered gateway.toml must register exactly one supervisor middleware, %s", want[0].name)
+		}
+		return fmt.Errorf("rendered gateway.toml must register exactly the supervisor middleware %s", strings.Join(names, ", "))
+	}
+	for i, w := range want {
+		m := registry[i]
+		// The stock Gateway defaults allow_insecure_transport to false; a launcher
+		// registration still states it so the render proves the selected value.
+		if m.Endpoint != w.endpoint || m.Audience != w.audience ||
+			m.Insecure == nil || *m.Insecure || m.Payload != w.payload || m.Timeout != w.timeout {
+			return fmt.Errorf("rendered %s registration does not select the required HTTPS endpoint, audience, secure transport and request limits", m.Name)
+		}
+	}
 	for _, c := range pod.Containers {
 		if c.Name != openShellGatewayService {
 			continue
@@ -107,9 +148,11 @@ func verifyProtectedOpenShellChart(rendered []byte, state *developmentState) err
 		if !path.IsAbs(configPath) || i < 0 || i+1 >= len(c.Args) || c.Args[i+1] != configPath {
 			return fmt.Errorf("rendered Gateway must load gateway.toml from ConfigMap %s", configMap)
 		}
-		caPath := pod.mountedConfigMapKey(c.Mounts, developmentEgressCA, "ca.crt")
-		if !path.IsAbs(caPath) || caPath != m.CAPath {
-			return fmt.Errorf("rendered Gateway must mount public ConfigMap %s key ca.crt read-only at the registration's tls_ca_cert_path", developmentEgressCA)
+		for i, w := range want {
+			caPath := pod.mountedConfigMapKey(c.Mounts, w.caConfigMap, "ca.crt")
+			if !path.IsAbs(caPath) || caPath != registry[i].CAPath {
+				return fmt.Errorf("rendered Gateway must mount public ConfigMap %s key ca.crt read-only at the registration's tls_ca_cert_path", w.caConfigMap)
+			}
 		}
 		return nil
 	}

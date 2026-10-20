@@ -36,7 +36,11 @@ func Up(ctx context.Context, opts Options) (result error) {
 	if controlPlane != "compose" && controlPlane != "kubernetes" {
 		return fmt.Errorf("OCC_DEVELOPMENT_CONTROL_PLANE must be compose or kubernetes")
 	}
-	if _, err := r.protectedEgressSelection(controlPlane, sandboxDriver); err != nil {
+	protected, err := r.protectedEgressSelection(controlPlane, sandboxDriver)
+	if err != nil {
+		return err
+	}
+	if _, err := r.openShellGitSelection(controlPlane, sandboxDriver, protected); err != nil {
 		return err
 	}
 	if _, err := r.selectedDevelopmentDatabase(controlPlane); err != nil {

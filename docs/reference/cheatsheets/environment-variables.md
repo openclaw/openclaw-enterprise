@@ -123,6 +123,9 @@ for supported engines, images, and security restrictions.
 - `OCC_KUBERNETES_RUNTIME_IMAGE` — Existing local Kubernetes runtime image; Kubernetes-only startup requires a matching controller digest and checkout commit.
 - `OCC_DEVELOPMENT_CONTROLLER_IMAGE` — Existing local OCE controller digest matching the runtime and checkout commit for the Kubernetes-only profile.
 - `OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY` — Private local repository registry, App key, and approved upstream IPv4 `/32` endpoint inputs.
+- `OCC_DEVELOPMENT_OPENSHELL_GIT` — `0` or unset by default; `1` selects the [OpenShell Git route](../../guides/deploy/local-repository-credentials.md#use-the-openshell-git-route) with the repository inputs.
+- `OCC_DEVELOPMENT_OPENSHELL_GIT_FIXTURE_NETWORK` — Optional Docker network of a synthetic origin answering as GitHub for the OpenShell Git route.
+- `OCC_DEVELOPMENT_OPENSHELL_SUPERVISOR_CA_FILE` — Optional PEM bundle the OpenShell supervisor image must also trust.
 - `OCC_DEVELOPMENT_REPOSITORY_IMAGE` — Optional matching immutable repository service image for the Kubernetes-only profile.
 - `OCC_DEVELOPMENT_POSTGRES_IMAGE` — Existing local PostgreSQL image for the Kubernetes-only profile; defaults to the pinned PostgreSQL 18.6 image.
 - `OCC_DEVELOPMENT_NODE_BASE_IMAGE` — Immutable Node 24 base used when building the Kubernetes-only OCE controller image.

@@ -45,12 +45,22 @@ type developmentState struct {
 	KeyOwned                    bool   `json:"keyOwned"`
 	SignIn                      string `json:"signIn,omitempty"`
 	ProtectedEgress             bool   `json:"protectedEgress,omitempty"`
+	OpenShellGit                bool   `json:"openShellGit,omitempty"`
 	DatabaseName                string `json:"databaseName,omitempty"`
 	OpenShellHostGatewayIP      string `json:"openShellHostGatewayIP,omitempty"`
 	SandboxNetworkPolicies      []any  `json:"sandboxNetworkPolicies,omitempty"`
 	SandboxNetworkPolicyCeiling []any  `json:"sandboxNetworkPolicyCeiling,omitempty"`
-	egressKeyID                 string
-	directory                   string
+	// gatewayKeyID is the OpenShell Gateway JWT key identifier, read after
+	// native PKI generation; never persisted.
+	gatewayKeyID string
+	directory    string
+}
+
+// openShellNativePKI reports whether the OpenShell Gateway generates its own
+// server, client and JWT material and serves mTLS. Both supervisor middleware
+// profiles need it: the middleware authenticates Gateway-signed JWTs.
+func (s *developmentState) openShellNativePKI() bool {
+	return s.ProtectedEgress || s.OpenShellGit
 }
 
 func (s *developmentState) composeCommand() []string {

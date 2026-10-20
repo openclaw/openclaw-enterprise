@@ -39,6 +39,13 @@ func CheckDevelopmentProfile() error {
 	if protected && r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "kubernetes" {
 		return fmt.Errorf("protected egress requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes")
 	}
+	git, err := r.openShellGitSelection(controlPlane, sandbox, protected)
+	if err != nil {
+		return err
+	}
+	if git && r.env["OCC_DEVELOPMENT_COMPUTE_DRIVER"] != "kubernetes" {
+		return fmt.Errorf("%s requires OCC_DEVELOPMENT_COMPUTE_DRIVER=kubernetes", openShellGitSelector)
+	}
 	if _, err := r.selectedDevelopmentDatabase(controlPlane); err != nil {
 		return err
 	}
@@ -165,7 +172,7 @@ func (r *runner) readDevelopmentEgressKeyID(ctx context.Context, state *developm
 	if !regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`).MatchString(kid) {
 		return fmt.Errorf("OpenShell JWT key identifier is invalid")
 	}
-	state.egressKeyID = kid
+	state.gatewayKeyID = kid
 	return nil
 }
 
@@ -177,7 +184,7 @@ func developmentEgressConfiguration(state *developmentState) map[string]any {
 			"certificatePath":     "/etc/openclaw/egress/tls/tls.crt",
 			"privateKeyPath":      "/etc/openclaw/egress/tls/tls.key",
 			"issuerPublicKeyPath": "/etc/openclaw/egress/issuer/issuer.pub",
-			"issuer":              "openshell-gateway:" + openShellGatewayService, "audience": developmentEgressAudience, "keyId": state.egressKeyID,
+			"issuer":              "openshell-gateway:" + openShellGatewayService, "audience": developmentEgressAudience, "keyId": state.gatewayKeyID,
 		},
 	}}
 }

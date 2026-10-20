@@ -41,11 +41,21 @@ type developmentRepositoryInputs struct {
 	preparedOrigin string
 	preparedPort   int
 	issuerCA       []byte
+	// openShellGit selects the OpenShell request-phase route: prepared Git
+	// custody in the worker for github.com and api.github.com on port 443.
+	openShellGit bool
+}
+
+// prepared reports whether the worker holds prepared Git custody.
+func (inputs *developmentRepositoryInputs) prepared() bool {
+	return inputs.preparedOrigin != "" || inputs.openShellGit
 }
 
 // loadDevelopmentRepositoryInputs admits only explicitly scoped operator input.
 // The sole placeholder is replaced with the Namespace OCC actually bootstraps.
-func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*developmentRepositoryInputs, error) {
+// With openShellGit the OpenShell Sandbox Driver is admitted: the route's
+// selection (openShellGitSelection) already required it.
+func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string, openShellGit bool) (*developmentRepositoryInputs, error) {
 	directory := r.env["OCC_DEVELOPMENT_REPOSITORY_INPUT_DIRECTORY"]
 	origin := r.env["OCC_DEVELOPMENT_PREPARED_GIT_PROVIDER_ORIGIN"]
 	var port int
@@ -68,8 +78,8 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 		}
 		return nil, nil
 	}
-	if sandboxDriver != "none" {
-		return nil, fmt.Errorf("repository credentials require the Kubernetes profile without a Sandbox Driver")
+	if sandboxDriver != "none" && !openShellGit {
+		return nil, fmt.Errorf("repository credentials require the Kubernetes profile without a Sandbox Driver, or %s=1", openShellGitSelector)
 	}
 	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
 		return nil, fmt.Errorf("repository input directory must be an absolute canonical path")
@@ -165,6 +175,12 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 				return nil, fmt.Errorf("prepared Git qualification requires explicit Git or draft PR transport, git-write and one review ref")
 			}
 		}
+		if openShellGit {
+			base, _ := policy["pullRequestBase"].(string)
+			if policy["transport"] != "git-only" && (policy["transport"] != "git-and-draft-pr" || base == "") {
+				return nil, fmt.Errorf("the OpenShell Git route requires transport git-only, or git-and-draft-pr with a pullRequestBase")
+			}
+		}
 		seenProfiles := map[string]bool{}
 		for _, profile := range profiles {
 			name, ok := profile.(string)
@@ -207,7 +223,23 @@ func (r *runner) loadDevelopmentRepositoryInputs(sandboxDriver string) (*develop
 	if parseErr != nil || !ok || (rsaKey.N.BitLen() < 2048 || rsaKey.N.BitLen() > 8192) {
 		return nil, fmt.Errorf("repository App key must be an RSA private key of 2048 to 8192 bits")
 	}
-	inputs := &developmentRepositoryInputs{registry: registry, backendID: backendID, upstreamCIDRs: cidrs, appKey: key}
+	inputs := &developmentRepositoryInputs{registry: registry, backendID: backendID, upstreamCIDRs: cidrs, appKey: key, openShellGit: openShellGit}
+	if openShellGit {
+		// The GitHub origin's CA is optional: a public GitHub needs none, a local fixture does.
+		if _, err := os.Lstat(filepath.Join(directory, "issuer-ca.crt")); err == nil {
+			ca, err := read("issuer-ca.crt", false)
+			if err != nil {
+				return nil, err
+			}
+			if err := parseDevelopmentCABundle(ca); err != nil {
+				return nil, fmt.Errorf("repository input issuer-ca.crt: %w", err)
+			}
+			inputs.issuerCA = ca
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("repository input issuer-ca.crt must be a regular file")
+		}
+		inputs.preparedPort = 443
+	}
 	if origin != "" {
 		if !reflect.DeepEqual(cidrs, []string{r.env["OCC_DEVELOPMENT_PREPARED_GIT_HOST_IP"] + "/32"}) {
 			return nil, fmt.Errorf("prepared Git fixture must select exactly its private HTTPS address")
@@ -360,7 +392,7 @@ func replaceDevelopmentFile(path string, data []byte) error {
 	return nil
 }
 
-func (r *runner) enableDevelopmentRepository(ctx context.Context, state *developmentState, inputs *developmentRepositoryInputs, image, namespaceID string, client *occclient.Client, timeout time.Duration) error {
+func (r *runner) enableDevelopmentRepository(ctx context.Context, state *developmentState, inputs *developmentRepositoryInputs, image, namespaceID string, client *occclient.Client, openShell *openShellDevelopmentAssets, timeout time.Duration) error {
 	for _, entry := range inputs.registry["repositories"].([]any) {
 		entry.(map[string]any)["namespaces"].([]any)[0].(map[string]any)["namespaceId"] = namespaceID
 	}
@@ -378,6 +410,13 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	if inputs.preparedOrigin != "" {
 		backend["kind"] = "github-prepared-git-registry"
 		backend["gitOrigin"], backend["apiOrigin"], backend["gitCaFile"] = inputs.preparedOrigin, inputs.preparedOrigin, preparedCA
+	}
+	if inputs.openShellGit {
+		backend["kind"] = "github-prepared-git-registry"
+		backend["gitOrigin"], backend["apiOrigin"] = openShellGitOrigin, openShellGitAPIOrigin
+		if len(inputs.issuerCA) > 0 {
+			backend["gitCaFile"] = preparedCA
+		}
 	}
 	config, err := json.Marshal(map[string]any{
 		"gateway":       map[string]any{"listen": "0.0.0.0:8443", "controlSocket": "/run/openclaw/repository-control/private/control.sock"},
@@ -403,7 +442,7 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 		{"generic", "occ-repository-ca", "--from-file=ca.crt=" + filepath.Join(state.directory, "repository-ca.crt")},
 		{"tls", "occ-repository-tls", "--cert=" + filepath.Join(state.directory, "repository-tls.crt"), "--key=" + filepath.Join(state.directory, "repository-tls.key")},
 	}
-	if inputs.preparedOrigin != "" {
+	if inputs.prepared() {
 		key := make([]byte, 32)
 		if _, err := rand.Read(key); err != nil {
 			return err
@@ -413,6 +452,8 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 			return err
 		}
 		secrets = append(secrets, []string{"generic", "occ-repository-custody", "--from-file=custody.key=" + keyPath})
+	}
+	if len(inputs.issuerCA) > 0 {
 		ca := map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": kubernetesMetadata("occ-repository-provider-ca", namespace, labels), "immutable": true, "data": map[string]string{"ca.crt": string(inputs.issuerCA)}}
 		if err := r.writeAndApply(ctx, state, "repository-provider-ca", ca); err != nil {
 			return err
@@ -437,12 +478,25 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 		return fmt.Errorf("development Installation has no Drivers")
 	}
 	drivers["repo"] = map[string]any{"id": "repository-credentials", "configuration": map[string]any{"controlSocket": "/run/openclaw/repository-control/private/control.sock", "sessionDurationSeconds": inputs.registry["maximumDurationSeconds"], "publicCaPath": "/etc/openclaw/repository-ca/ca.crt"}}
-	if inputs.preparedOrigin != "" {
-		drivers["repo"].(map[string]any)["preparedGitHub"] = map[string]any{
+	if inputs.prepared() {
+		prepared := map[string]any{
 			"privateKeyPath": "/etc/openclaw/prepared-repository/private-key.pem",
 			"custodyKeyPath": "/etc/openclaw/prepared-repository/custody.key",
-			"issuerCaPath":   preparedCA, "apiOrigin": inputs.preparedOrigin,
+			"apiOrigin":      inputs.preparedOrigin,
 		}
+		if inputs.openShellGit {
+			prepared["apiOrigin"] = openShellGitAPIOrigin
+		}
+		if len(inputs.issuerCA) > 0 {
+			prepared["issuerCaPath"] = preparedCA
+		}
+		drivers["repo"].(map[string]any)["preparedGitHub"] = prepared
+	}
+	if inputs.openShellGit {
+		if state.gatewayKeyID == "" {
+			return fmt.Errorf("the OpenShell Git route requires the generated OpenShell JWT key identifier")
+		}
+		drivers["repo"].(map[string]any)["openShell"] = openShellGitRepoDriver(state)
 	}
 	// Keep the installed Compute and model backend selection unchanged.
 	backends, _ := installation["backend"].([]any)
@@ -481,11 +535,19 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 		return err
 	}
 	values["repositoryCredentials"] = map[string]any{"enabled": true, "image": image, "serviceName": "git", "backendId": inputs.backendID, "registryConfigMapName": "occ-repository-registry-v1", "serviceConfigSecretName": "occ-repository-service", "appKeySecretName": "occ-repository-app", "tlsSecretName": "occ-repository-tls", "publicCaSecretName": "occ-repository-ca", "upstreamCidrs": inputs.upstreamCIDRs}
-	if inputs.preparedOrigin != "" {
+	if inputs.prepared() {
 		v := values["repositoryCredentials"].(map[string]any)
 		v["authority"], v["upstreamPort"] = "prepared-git", inputs.preparedPort
 		v["preparedCustodySecretName"] = "occ-repository-custody"
-		v["preparedProviderCaConfigMapName"] = "occ-repository-provider-ca"
+		if len(inputs.issuerCA) > 0 {
+			v["preparedProviderCaConfigMapName"] = "occ-repository-provider-ca"
+		}
+	}
+	if inputs.openShellGit {
+		values["openshellGit"] = openShellGitHelmValues(state)
+		if err := r.prepareOpenShellGitMaterial(ctx, state); err != nil {
+			return err
+		}
 	}
 	valuesData, err = json.Marshal(values)
 	if err != nil {
@@ -499,6 +561,11 @@ func (r *runner) enableDevelopmentRepository(ctx context.Context, state *develop
 	}
 	if err := r.run(ctx, "kubectl", "-n", namespace, "rollout", "status", "deployment/openclaw-enterprise-worker", "--timeout", timeout.String()); err != nil {
 		return err
+	}
+	if inputs.openShellGit {
+		if err := r.registerOpenShellGitMiddleware(ctx, state, openShell, timeout); err != nil {
+			return err
+		}
 	}
 	expected := map[string]map[string]bool{}
 	for _, entry := range inputs.registry["repositories"].([]any) {

@@ -72,7 +72,16 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	if err != nil {
 		return err
 	}
-	repositoryInputs, err := r.loadDevelopmentRepositoryInputs(sandboxDriver)
+	openShellGit, err := r.openShellGitSelection("kubernetes", sandboxDriver, protectedEgress)
+	if err != nil {
+		return err
+	}
+	if openShellGit {
+		if err := checkOpenShellGitPolicies(networkPolicies); err != nil {
+			return err
+		}
+	}
+	repositoryInputs, err := r.loadDevelopmentRepositoryInputs(sandboxDriver, openShellGit)
 	if err != nil {
 		return err
 	}
@@ -121,6 +130,7 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		SandboxNetworkPolicyCeiling: ceiling,
 		Version:                     3,
 		ProtectedEgress:             protectedEgress,
+		OpenShellGit:                openShellGit,
 		DatabaseName:                databaseName,
 		OpenShellHostGatewayIP:      r.env["OCC_DEVELOPMENT_OPENSHELL_HOST_GATEWAY_IP"],
 		Repository:                  opts.Repository,
@@ -186,6 +196,14 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 	}
 	if err := r.validateDevelopmentRepositoryImage(ctx); err != nil {
 		return err
+	}
+	if openShellGit {
+		if err := r.checkOpenShellGitKernel(ctx); err != nil {
+			return err
+		}
+		if err := r.checkOpenShellGitFixture(ctx, repositoryInputs); err != nil {
+			return err
+		}
 	}
 	state.ContainerEngine = r.engine
 	state.DockerHost = r.env["DOCKER_HOST"]
@@ -327,6 +345,11 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		if err != nil {
 			return err
 		}
+		if state.OpenShellGit {
+			if err := r.checkOpenShellGitChart(ctx, state, assets); err != nil {
+				return err
+			}
+		}
 	}
 	if err := r.installDevelopmentPlatform(ctx, state, developmentPlatformInputs{
 		openShell: assets, runtimeImage: runtimeImage, controllerImage: controllerImage,
@@ -374,8 +397,13 @@ func upK3d(ctx context.Context, opts Options, sandboxDriver string, networkPolic
 		}
 	}
 	if repositoryInputs != nil {
+		if state.OpenShellGit {
+			if err := r.attachOpenShellGitFixture(ctx, state, repositoryInputs, timeout); err != nil {
+				return err
+			}
+		}
 		fmt.Fprintln(r.opts.Out, "Configuring scoped repository credentials for the initial Namespace...")
-		if err := r.enableDevelopmentRepository(ctx, state, repositoryInputs, repositoryImage, namespaceID, client, timeout); err != nil {
+		if err := r.enableDevelopmentRepository(ctx, state, repositoryInputs, repositoryImage, namespaceID, client, assets, timeout); err != nil {
 			return err
 		}
 	}
@@ -427,7 +455,7 @@ func (r *runner) installDevelopmentPlatform(ctx context.Context, state *developm
 	} else {
 		fmt.Fprintf(r.opts.Out, "Installing OCE in Namespace %s...\n", state.PlatformNamespace)
 	}
-	if state.ProtectedEgress {
+	if state.openShellNativePKI() {
 		if err := r.readDevelopmentEgressKeyID(ctx, state); err != nil {
 			return err
 		}
@@ -731,8 +759,10 @@ func (r *runner) installKubernetesControlPlane(ctx context.Context, state *devel
 		"api":          map[string]any{"clients": []any{map[string]any{"namespace": namespace, "podLabels": map[string]string{"app.kubernetes.io/name": "occ-kubernetes-dev-client"}}}},
 		"resources":    resources,
 	}
-	if state.ProtectedEgress {
+	if state.openShellNativePKI() {
 		values["backend"] = map[string]any{"openshell": map[string]string{"clientSecretName": "openshell-client-tls"}}
+	}
+	if state.ProtectedEgress {
 		values["egressAuthority"] = developmentEgressChartValues(state)
 	}
 	if routing {
