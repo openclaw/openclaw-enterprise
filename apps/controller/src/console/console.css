@@ -2490,10 +2490,13 @@ select:not([multiple])[size="1"] {
 /* The Access tab (spec 3.8): a Share Agent card, then a Direct Agent grants card. */
 .agent-access {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--space-6);
 }
 .agent-access > .card > h3:first-child {
-  margin-top: 0;
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg--line-height);
+  font-weight: var(--weight-semibold);
 }
 .agent-access-share > .status {
   margin-block: var(--space-3);

@@ -619,8 +619,18 @@ test("Agent detail hides sharing instead of showing an error to non-administrato
   );
   // The refused read hides the tab too, and Configuration opens in its place.
   await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
-  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  const configuration = page.getByRole("tab", { name: "Configuration", selected: true });
+  await configuration.waitFor();
   assert.equal(await page.getByRole("tab", { name: "Access" }).count(), 0);
+  // The arrow keys skip the hidden tab: End and wrapping stop at Policy denials.
+  const focused = () => page.evaluate(() => globalThis.document.activeElement?.textContent);
+  await configuration.focus();
+  await page.keyboard.press("End");
+  assert.equal(await focused(), "Policy denials");
+  await page.keyboard.press("ArrowRight");
+  assert.equal(await focused(), "Configuration");
+  await page.keyboard.press("ArrowLeft");
+  assert.equal(await focused(), "Policy denials");
 });
 
 function routeDeploymentStatus(page, fixture, namespace, agent, revision, status, error = null) {

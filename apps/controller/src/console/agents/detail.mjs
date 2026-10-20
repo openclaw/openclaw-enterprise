@@ -755,7 +755,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
   }
 
   // A deploy's details grow when its first attempt is recorded and shrink when it settles, and
-  // each change moved the cards below, Share Agent among them (finding 1598). Once a deploy is
+  // each change moved the cards below, Share Agent then among them (finding 1598). Once a deploy is
   // seen pending, the details keep the tallest height they have shown, until the reader's own
   // Refresh after the deploy gives the space back.
   function reserveHeight(changed) {
@@ -1718,7 +1718,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   );
   view.replaceChildren(recovery, nativeAdmin.section, overviewStatus, versionLayout);
   // Recovery or native administration can appear above the facts. Keep the Agent heading and
-  // controls in place, then reveal the overview once its first deployment and access reads settle.
+  // controls in place, then reveal the overview once its first deployment reads settle.
   // The bounded wait still exposes loading, refresh and the version controls on a slow read.
   view.classList.add("agent-detail-pending");
   let revealTimer = null;
@@ -1893,10 +1893,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // Replaces an Access tab whose policy read was refused with Configuration, in place, once the
   // page shows (a page still behind its loading stand-in would rebuild instead) and the
   // navigation that opened the tab has finished.
-  function leaveDeniedAccess() {
+  function leaveDeniedAccess({ refocus = false } = {}) {
     void revealed.then(() => {
       if (selectedTab === "access" && context.isCurrent() && !deleting) {
         context.navigate(target(selected, "configuration"), namespaceId, true);
+      }
+      if (refocus && context.isCurrent() && document.activeElement === document.body) {
+        tabControls.get(selectedTab)?.focus({ preventScroll: true });
       }
     });
   }
@@ -3469,9 +3472,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       accessPanel ??= renderAgentAccess(context, agent, {
         onDenied: () => {
           // A refused policy read (the session probe could not tell) hides the tab, as the
-          // panel hid on the overview; a reader on it is taken to Configuration instead.
-          tabControls.get("access").hidden = true;
-          leaveDeniedAccess();
+          // panel hid on the overview; a reader on it is taken to Configuration instead. Focus
+          // on the hidden tab moves to Configuration's.
+          const control = tabControls.get("access");
+          const focused = document.activeElement === control;
+          control.hidden = true;
+          leaveDeniedAccess({ refocus: focused });
         },
       });
       if (tabControls.get("access").hidden) {

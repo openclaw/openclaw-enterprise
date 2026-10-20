@@ -61,7 +61,7 @@ export function renderAgentAccess(context, agent, { onDenied } = {}) {
   const acknowledge = element("input", { type: "checkbox", required: true });
   // The Agent page's one primary action is its next deployment step, not sharing.
   const share = element("button", { type: "submit" }, "Share Agent");
-  const refresh = button("Refresh sharing", () => void load(), { tone: "ghost", size: "sm" });
+  const refresh = button("Refresh sharing", () => void load(), { size: "sm" });
   const form = element(
     "form",
     { className: "agent-access-form" },
