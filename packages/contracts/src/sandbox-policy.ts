@@ -1,6 +1,10 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import { requireConfiguration, validateConfiguration } from "./configuration-definition.ts";
+import {
+  ConfigurationValidationError,
+  requireConfiguration,
+  validateConfiguration,
+} from "./configuration-definition.ts";
 import type { ErrorDetail } from "./api/common.ts";
 import type { OpenClawConfigurationDocument } from "./index.ts";
 
@@ -105,8 +109,23 @@ export interface SandboxPolicyRecommendations {
 /** Validate all destinations in each grant; sampling a wildcard or range cannot prove containment. */
 export function validateSandboxNetworkGrants(
   value: unknown,
+  inputPath = "/additions",
 ): asserts value is readonly SandboxNetworkGrant[] {
-  requireConfiguration(SandboxNetworkPolicyConfiguration, { additions: value });
+  try {
+    requireConfiguration(SandboxNetworkPolicyConfiguration, { additions: value });
+  } catch (error) {
+    if (!(error instanceof ConfigurationValidationError) || inputPath === "/additions") {
+      throw error;
+    }
+    // The owning caller supplies its grant-array pointer; the shared Agent definition
+    // still validates additions, but its wrapper is not part of that caller's input.
+    throw new ConfigurationValidationError(
+      error.error.details.map((detail) => ({
+        ...detail,
+        path: `${inputPath}${detail.path.slice("/additions".length)}`,
+      })) as [ErrorDetail, ...ErrorDetail[]],
+    );
+  }
 }
 
 const NetworkPolicyConfigurationSchema = Type.Object(

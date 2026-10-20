@@ -521,7 +521,7 @@ export async function loadInstallationConfiguration(options: {
   const cluster = nonempty(occ.cluster, "occ.cluster");
   const sandboxNetworkPolicyCeiling = configuration.sandboxNetworkPolicyCeiling;
   if (sandboxNetworkPolicyCeiling !== undefined) {
-    validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling);
+    validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
   }
   const observability = observabilityConfiguration(configuration.observability);
   const runtime = runtimeConfiguration(configuration.runtime);

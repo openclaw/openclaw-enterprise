@@ -1602,7 +1602,10 @@ export class OpenClawController {
       name: installation.name,
       createdAt: installation.createdAt,
     });
-    validateSandboxNetworkGrants(options.sandboxNetworkPolicyCeiling ?? []);
+    validateSandboxNetworkGrants(
+      options.sandboxNetworkPolicyCeiling ?? [],
+      "/sandboxNetworkPolicyCeiling",
+    );
     this.sandboxNetworkPolicyCeiling = immutableCopy(options.sandboxNetworkPolicyCeiling ?? []);
     for (const registration of options.driverConfigurations ?? []) {
       this.configurations.register(registration);

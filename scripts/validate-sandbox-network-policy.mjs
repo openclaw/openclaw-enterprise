@@ -15,7 +15,7 @@ try {
   }
   const configuration = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if (process.argv[2] === "--ceiling") {
-    validateSandboxNetworkGrants(configuration);
+    validateSandboxNetworkGrants(configuration, "/grants");
   } else {
     requireConfiguration({ configurationSchema, validateConfiguration }, configuration);
   }
