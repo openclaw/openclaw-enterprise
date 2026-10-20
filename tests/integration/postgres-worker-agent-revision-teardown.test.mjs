@@ -1089,12 +1089,10 @@ test(
     // A provider outage leaves cleanup pending without making fleet inventory
     // unavailable, marking the stopped Agent as deploying, or settling the cleanup.
     // This does not guard the inventory's repository-cleanup filter (#2572): while
-    // the Agent lives, its cleanup work resolves to the revision's :reconcile work,
-    // so the read passes with or without the filter. Cleanup that Agent deletion
-    // detached from its owners is what needs the filter; the -stop sibling covers
-    // it in "Agent deletion completes with unresolved repository sessions retained
-    // as evidence" and "deployment inventory survives retained completed
-    // repository cleanup and preserves deployment guards".
+    // the Agent lives, its cleanup work resolves to the revision's settled
+    // :reconcile work, so the read passes with or without the filter. Cleanup that
+    // Agent deletion detached from its owners needs the filter; the -stop sibling's
+    // inventory reads after Agent deletion cover it.
     const pendingCleanup = async () =>
       (
         await fixture.observerPool.query(
