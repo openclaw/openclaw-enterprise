@@ -2930,23 +2930,24 @@ test("a read-only principal sees Agent mutation controls disabled or absent befo
   }
 });
 
-// Waits until the page has applied the caller's permission answer to the danger zone, then
-// checks which rows show. The zone is attached at the end of the page build, so a missing zone
-// is not taken as hidden.
+// Waits until the danger zone shows exactly the given rows. The zone is attached at the end of
+// the page build and the view is held back while it loads, so neither a missing zone nor a
+// pending view counts: a row is judged by the hidden flag its component sets, the zone by
+// whether it renders.
 async function waitForDangerZoneRows(page, rows) {
-  await page.waitForFunction(
-    ({ stop, delete: remove }) => {
-      const zone = globalThis.document.querySelector("section.danger-zone");
-      const stopRow = zone?.querySelector("section.stop-note");
-      const deleteRow = zone?.querySelector("section.deletion-note");
-      if (!stopRow || !deleteRow) {
-        return false;
-      }
-      const shown = (node) => node.getClientRects().length > 0;
-      return shown(stopRow) === stop && shown(deleteRow) === remove && shown(zone) === (stop || remove);
-    },
-    rows,
-  );
+  await page.waitForFunction(({ stop, delete: remove }) => {
+    const zone = globalThis.document.querySelector("section.danger-zone");
+    const stopRow = zone?.querySelector("section.stop-note");
+    const deleteRow = zone?.querySelector("section.deletion-note");
+    if (!stopRow || !deleteRow || zone.closest(".agent-detail-pending")) {
+      return false;
+    }
+    return (
+      !stopRow.hidden === stop &&
+      !deleteRow.hidden === remove &&
+      zone.getClientRects().length > 0 === (stop || remove)
+    );
+  }, rows);
 }
 
 // Stop and Delete were two full cards, each a heading, a paragraph and one button (finding
@@ -2980,10 +2981,7 @@ for (const viewport of [
       "Delete Agent",
     ]);
     // The zone closes the page: nothing renders below it.
-    assert.equal(
-      await zone.evaluate((node) => node.nextElementSibling === null),
-      true,
-    );
+    assert.equal(await zone.evaluate((node) => node.nextElementSibling === null), true);
 
     const rows = [
       {
@@ -2999,7 +2997,8 @@ for (const viewport of [
           "Permanently deletes this Agent, its versions and its workspace data. Cannot be undone.",
         dialog: "Delete Danger Zone Agent?",
         confirm: "Permanently delete Agent",
-        prose: /This permanently deletes the Agent, its version history, and its workspace data\. This cannot be undone\./,
+        prose:
+          /This permanently deletes the Agent, its version history, and its workspace data\. This cannot be undone\./,
       },
     ];
     const danger = "rgb(185, 28, 28)";
@@ -3025,7 +3024,7 @@ for (const viewport of [
       // The row's button is outlined; only the confirmation's is filled.
       const paint = (locator) =>
         locator.evaluate((node) => {
-          const style = getComputedStyle(node);
+          const style = globalThis.getComputedStyle(node);
           return { color: style.color, border: style.borderTopColor, fill: style.backgroundColor };
         });
       const outlined = await paint(action);
@@ -3098,9 +3097,41 @@ test("the danger zone offers only the rows the caller's permission answer allows
   assert.equal(
     await zone
       .locator("section.deletion-note")
-      .evaluate((node) => getComputedStyle(node).borderTopStyle),
+      .evaluate((node) => globalThis.getComputedStyle(node).borderTopStyle),
     "none",
   );
+});
+
+// Only a negative answer hides a row: without an answer the page keeps both, and the API decides.
+test("the danger zone keeps both rows when the permission answer fails", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No permission answer", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Unanswered Agent", nativeValues("ua"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const permissionPath = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/permissions`;
+  await page.route(permissionPath, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ error: { code: "DEPENDENCY_UNAVAILABLE", message: "Unavailable." } }),
+    }),
+  );
+  const answered = page.waitForResponse((response) => response.url() === permissionPath);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  assert.equal((await answered).status(), 503);
+  await page.getByRole("heading", { name: "Unanswered Agent" }).first().waitFor();
+  await waitForDangerZoneRows(page, { stop: true, delete: true });
+  await settlePageRequests(page);
+  const zone = page.getByRole("region", { name: "Danger zone", exact: true });
+  for (const name of ["Stop Agent", "Delete Agent"]) {
+    assert.equal(await zone.getByRole("button", { name, exact: true }).isEnabled(), true, name);
+  }
 });
 
 // A member's full load of Agents painted Create Agent enabled, then disabled it and put the note
@@ -3388,11 +3419,24 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     await page.locator("dialog[open]").waitFor({ state: "detached" });
     // The row this viewer used stays, with the reason, instead of vanishing under them.
     const row = page.getByRole("region", { name: action + " Agent", exact: true });
-    await row.getByRole("status").getByText(/Your access does not include/).waitFor();
+    await row
+      .getByRole("status")
+      .getByText(/Your access does not include/)
+      .waitFor();
     assert.equal(
       await row.getByRole("button", { name: action + " Agent", exact: true }).isDisabled(),
       true,
     );
+    // Focus lands on the row's heading, which the visible row can take.
+    const heading = action === "Stop" ? "agent-stop-title" : "agent-deletion-title";
+    await page
+      .waitForFunction((id) => globalThis.document.activeElement?.id === id, heading, {
+        timeout: 3000,
+      })
+      .catch(async (error) => {
+        const active = await page.evaluate(() => globalThis.document.activeElement?.outerHTML);
+        throw new Error(`focus is on ${active?.slice(0, 200)}`, { cause: error });
+      });
     await page.unroute(permissionPath);
   }
 });

@@ -4,7 +4,7 @@ Open **Agents**, then select an Agent. For setup, see
 [Create and deploy Agents](../../reference/console/create-and-deploy.md).
 Saved settings don’t establish Agent or Slack connection health.
 
-The Console explains why Deploy, Stop, or Delete is unavailable. Reload after access changes.
+The Console explains why Deploy is unavailable and leaves out Stop or Delete without access. Reload after access changes.
 The API checks every request. Opening a version draft needs no Agent update
 permission; saving and deploying have separate access checks.
 
@@ -196,7 +196,7 @@ administrators [share Agents](agent-sharing.md) from the **Access** tab.
 
 ## Stop and resume
 
-**Stop Agent** opens a confirmation explaining that shutdown interrupts running
+**Stop Agent**, in the **Danger zone** card at the end of the page, opens a confirmation explaining that shutdown interrupts running
 work but preserves version history, credentials, gateway state, and workspace
 files. A chat that was mid-reply can keep showing the reply as in progress;
 reload it after the Agent is deployed again. **Cancel** closes it without a
@@ -207,13 +207,13 @@ An accepted stop shows **Runtime: Stop requested** in the overview; it does not
 prove the runtime finished. **Refresh stop status** reads desired state and
 selected version. An uncertain result blocks another stop until a refresh.
 With no selected or readable version, as before a first deploy, there is no Stop
-card. To resume,
+row. To resume,
 open **Create new version** and select **Deploy new version**, which creates a new
 version. See [Stop and resume](../../reference/agents/deployment.md#stop-and-resume).
 
 ## Delete Agent and error recovery
 
-**Delete Agent** opens a confirmation dialog. **Cancel** closes it without changes.
+**Delete Agent**, in the same card, opens a confirmation dialog. **Cancel** closes it without changes.
 **Permanently delete Agent** irreversibly removes the Agent, version history,
 and workspace data; Namespace Configurations and Secrets remain. The dialog
 gives the commands that delete the Agent's Configuration and, if it has one, its

@@ -2415,6 +2415,20 @@ select:not([multiple])[size="1"] {
 .revision-selector .resource-id {
   overflow-wrap: anywhere;
 }
+.deletion-note,
+.stop-note {
+  border-color: var(--danger-subtle);
+}
+.deletion-note .danger,
+.stop-note .danger {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+.deletion-note .danger:not(:disabled):hover,
+.stop-note .danger:not(:disabled):hover {
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
 /* Danger zone (UX spec 3.9): one card at the end of the Agent page with a row each for Stop and
    Delete: title and one sentence, the outlined danger button at the right, and any status the
    row reports full width below. The confirmations carry the detail. */
@@ -2480,15 +2494,15 @@ select:not([multiple])[size="1"] {
   }
 }
 /* Only the Stop and Delete confirmations' own button is filled; the rows' buttons stay
-   outlined. */
-.agent-stop-dialog .danger,
-.agent-delete-dialog .danger {
+   outlined. The dialogs sit inside the rows, so these outrank the row rules above. */
+.dialog.agent-stop-dialog .danger,
+.dialog.agent-delete-dialog .danger {
   background: var(--color-danger);
   border-color: var(--color-danger);
   color: var(--color-on-accent);
 }
-.agent-stop-dialog button.danger:not(:disabled):hover,
-.agent-delete-dialog button.danger:not(:disabled):hover {
+.dialog.agent-stop-dialog button.danger:not(:disabled):hover,
+.dialog.agent-delete-dialog button.danger:not(:disabled):hover {
   background: var(--color-danger);
   color: var(--color-on-accent);
 }
