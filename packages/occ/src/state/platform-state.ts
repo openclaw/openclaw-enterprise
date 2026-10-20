@@ -1290,6 +1290,9 @@ function assertCredentialSource(source: CredentialSource): void {
   }
 }
 
+// A write stores an `immutableCopy` and returns that same value: it is a deep-frozen clone of
+// plain data (the contract types hold no Date, Map, Set or buffer), so the caller cannot change
+// the stored state through it. Copying it again only doubled the cost of every write.
 function repositories(
   snapshot: PlatformSnapshot,
   iamSubjects: IAMSubjectSource,
@@ -1307,7 +1310,7 @@ function repositories(
       }
       const saved = immutableCopy(installation);
       snapshot.installation = saved;
-      return immutableCopy(saved);
+      return saved;
     },
     // In-memory State has no human accounts, and its units are serialized.
     holdPrincipalAccount: async () => true,
@@ -1363,7 +1366,7 @@ function repositories(
       }
       const saved = immutableCopy(namespace);
       snapshot.namespaces.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     lockNamespace: async (namespaceId, options = {}) => {
       const namespace = snapshot.namespaces.get(namespaceId);
@@ -1424,7 +1427,7 @@ function repositories(
       }
       const saved = immutableCopy({ ...namespace, status: next });
       snapshot.namespaces.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     markNamespaceDeleted: async (namespaceId, deletedAt) => {
       const key = namespaceId;
@@ -1462,7 +1465,7 @@ function repositories(
       }
       const saved = immutableCopy({ ...namespace, deletedAt });
       snapshot.namespaces.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
   };
 
@@ -1528,7 +1531,7 @@ function repositories(
       }
       const saved = immutableCopy(preset);
       snapshot.presets.set(agentKey(preset.namespaceId, preset.id), saved);
-      return immutableCopy(saved);
+      return saved;
     },
     lockPreset: findPreset,
     updatePreset: async (namespaceId, presetId, changes) => {
@@ -1548,7 +1551,7 @@ function repositories(
         throw new ResourceStateConflictError(PRESET_NAME_CONFLICT);
       }
       snapshot.presets.set(agentKey(namespaceId, presetId), saved);
-      return immutableCopy(saved);
+      return saved;
     },
     deletePreset: async (namespaceId, presetId) => {
       if ((await findPreset(namespaceId, presetId)) === undefined) {
@@ -1610,7 +1613,7 @@ function repositories(
         ...(secretBindings === undefined ? {} : { secretBindings }),
       });
       snapshot.configurations.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     lockConfiguration: async (namespaceId, configurationId) =>
       configurations.findConfiguration(namespaceId, configurationId),
@@ -1639,7 +1642,7 @@ function repositories(
         ...(secretBindings === undefined ? {} : { secretBindings }),
       });
       snapshot.configurations.set(agentKey(namespaceId, configurationId), updated);
-      return immutableCopy(updated);
+      return updated;
     },
     deleteConfiguration: async (namespaceId, configurationId) => {
       const existing = await configurations.findConfiguration(namespaceId, configurationId);
@@ -1710,7 +1713,7 @@ function repositories(
       }
       const saved = immutableCopy(secret);
       snapshot.secrets.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     listReferences: async (namespaceId, secretId, limit) => {
       if ((await secrets.findSecret(namespaceId, secretId)) === undefined) {
@@ -1865,7 +1868,7 @@ function repositories(
         withdrawalKey(withdrawal.namespaceId, withdrawal.revisionId, withdrawal.credentialSourceId),
         saved,
       );
-      return immutableCopy(saved);
+      return saved;
     },
     reassignCredentialWithdrawal: async (
       namespaceId,
@@ -1885,7 +1888,7 @@ function repositories(
         withdrawalKey(namespaceId, revisionId, credentialSourceId),
         saved,
       );
-      return immutableCopy(saved);
+      return saved;
     },
     recordCredentialWithdrawalAttempt: async (
       namespaceId,
@@ -1909,7 +1912,7 @@ function repositories(
         withdrawalKey(namespaceId, revisionId, credentialSourceId),
         saved,
       );
-      return immutableCopy(saved);
+      return saved;
     },
     markCredentialWithdrawalRevoked: async (
       namespaceId,
@@ -1926,7 +1929,7 @@ function repositories(
         withdrawalKey(namespaceId, revisionId, credentialSourceId),
         saved,
       );
-      return immutableCopy(saved);
+      return saved;
     },
     listCredentialSources: async (namespaceId) => {
       if (snapshot.namespaces.get(namespaceId)?.deletedAt !== undefined) {
@@ -1980,7 +1983,7 @@ function repositories(
       }
       const saved = immutableCopy(source);
       snapshot.credentialSources.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     replaceCredentialSourceSecrets: async (namespaceId, credentialSourceId, secrets) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
@@ -1999,7 +2002,7 @@ function repositories(
       }
       const saved = immutableCopy({ ...current, secrets: { ...secrets } });
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
-      return immutableCopy(saved);
+      return saved;
     },
     markCredentialSourceReady: async (namespaceId, credentialSourceId) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
@@ -2008,7 +2011,7 @@ function repositories(
       }
       const saved = immutableCopy({ ...current, state: "ready" as const });
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
-      return immutableCopy(saved);
+      return saved;
     },
     markCredentialSourceDeleting: async (namespaceId, credentialSourceId) => {
       const current = await findCredentialSource(namespaceId, credentialSourceId);
@@ -2017,7 +2020,7 @@ function repositories(
       }
       const saved = immutableCopy({ ...current, state: "deleting" as const });
       snapshot.credentialSources.set(agentKey(namespaceId, credentialSourceId), saved);
-      return immutableCopy(saved);
+      return saved;
     },
     hasReferences: async (namespaceId, credentialSourceId) =>
       (await credentialSources.findBlockingReference(namespaceId, credentialSourceId)) !==
@@ -2140,7 +2143,7 @@ function repositories(
       }
       const saved = immutableCopy(account);
       snapshot.serviceAccounts.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     lockServiceAccount: async (namespaceId, serviceAccountId) =>
       serviceAccounts.findServiceAccount(namespaceId, serviceAccountId),
@@ -2154,7 +2157,7 @@ function repositories(
       }
       const updated = immutableCopy({ ...current, credential });
       snapshot.serviceAccounts.set(agentKey(namespaceId, serviceAccountId), updated);
-      return immutableCopy(updated);
+      return updated;
     },
     hasReferences: async (namespaceId, serviceAccountId) => {
       if ((await serviceAccounts.findServiceAccount(namespaceId, serviceAccountId)) === undefined) {
@@ -2335,7 +2338,7 @@ function repositories(
         ...(defaultsId === undefined ? {} : { defaultsId }),
       });
       snapshot.workspaceSetups.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     complete: async (namespaceId, agentId, id) => {
       const key = agentKey(namespaceId, agentId);
@@ -2346,7 +2349,7 @@ function repositories(
       const { files: _files, ...metadata } = setup;
       const completed = immutableCopy({ ...metadata, completed: true });
       snapshot.workspaceSetups.set(key, completed);
-      return immutableCopy(completed);
+      return completed;
     },
     delete: async (namespaceId, agentId) =>
       snapshot.workspaceSetups.delete(agentKey(namespaceId, agentId)),
@@ -2480,7 +2483,7 @@ function repositories(
           additions: [],
         }),
       );
-      return immutableCopy(saved);
+      return saved;
     },
     lockAgent: async (namespaceId, agentId) => agents.findAgent(namespaceId, agentId),
     transitionAgentDesiredRuntimeState: async (namespaceId, agentId, expected, next) => {
@@ -2496,7 +2499,7 @@ function repositories(
       }
       const saved = immutableCopy({ ...agent, desiredRuntimeState: next });
       snapshot.agents.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     transitionAgentStatus: async (namespaceId, agentId, expected, next) => {
       const key = agentKey(namespaceId, agentId);
@@ -2519,7 +2522,7 @@ function repositories(
       }
       const saved = immutableCopy({ ...agent, status: next });
       snapshot.agents.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     updateConfiguration: async (
       namespaceId,
@@ -2612,7 +2615,7 @@ function repositories(
         ...(repositoryAccess === undefined ? {} : { repositoryAccess }),
       });
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
-      return immutableCopy(updated);
+      return updated;
     },
     compareAndClearActiveRevision: async (namespaceId, agentId, expectedRevisionId) => {
       const current = await agents.findAgent(namespaceId, agentId);
@@ -2622,7 +2625,7 @@ function repositories(
       const { activeRevisionId: _activeRevisionId, ...stopped } = current;
       const updated = immutableCopy(stopped);
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
-      return immutableCopy(updated);
+      return updated;
     },
     compareAndSetActiveRevision: async (
       namespaceId,
@@ -2640,7 +2643,7 @@ function repositories(
       }
       const updated = immutableCopy({ ...current, activeRevisionId: candidateRevisionId });
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
-      return immutableCopy(updated);
+      return updated;
     },
   };
 
@@ -2762,7 +2765,7 @@ function repositories(
         ...(plugins === undefined ? {} : { plugins }),
       });
       snapshot.revisions.set(key, Object.freeze([...previous, saved]));
-      return immutableCopy(saved);
+      return saved;
     },
   };
 
@@ -2887,7 +2890,7 @@ function repositories(
       }
       const saved = immutableCopy(role);
       snapshot.roles.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     deleteRole: async (namespaceId, roleId) => {
       const key = iamPolicyKey(namespaceId, roleId);
@@ -2970,7 +2973,7 @@ function repositories(
       }
       const saved = immutableCopy(binding);
       snapshot.bindings.set(key, saved);
-      return immutableCopy(saved);
+      return saved;
     },
     deleteAccessBinding: async (namespaceId, bindingId) =>
       snapshot.bindings.delete(iamPolicyKey(namespaceId, bindingId)),
