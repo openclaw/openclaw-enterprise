@@ -366,7 +366,7 @@ test("Notices and the sign-in alert", async (t) => {
       const box = await page.locator("form p.status[role=alert]").boundingBox();
       assert.equal(box?.height, 0, "the empty alert takes no space");
       signIn.release();
-      await page.getByText("Could not sign in. Check your username and password.").waitFor();
+      await page.getByText("Could not sign in. Check your email and password.").waitFor();
       const refused = await signInAlert();
       assert.deepEqual(refused, { backendNodeId: pending.backendNodeId, role: "alert" });
     },
