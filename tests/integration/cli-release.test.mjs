@@ -9,10 +9,9 @@ test("CLI release builds four installable platform binaries and rejects changed 
   const directory = await mkdtemp(join(tmpdir(), "oce-cli-release-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const output = join(directory, "dist");
-  const environment = {
-    ...process.env,
-    GOCACHE: process.env.GOCACHE ?? join(directory, "go-cache"),
-  };
+  // Build with the toolchain's own cache, which CI restores: a fresh cache in the temporary
+  // directory recompiled the standard library for all four platforms on every run.
+  const environment = process.env;
   const script = "scripts/ci/cli-release.mjs";
   execFileSync(process.execPath, [script, "package", output], { env: environment });
 
