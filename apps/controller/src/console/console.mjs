@@ -987,7 +987,7 @@ function showLogin(message = "", destination = null) {
           : error.status === 400 || error.status === 401 || error.status === 403
             ? recoveryOnly
               ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
-              : "Could not sign in. Check your username and password."
+              : "Could not sign in. Check your email and password."
             : "Sign-in is unavailable. Try again.";
     } finally {
       if (lifetime.isCurrent(active)) {

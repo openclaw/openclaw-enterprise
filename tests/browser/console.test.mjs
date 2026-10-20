@@ -89,13 +89,14 @@ test("a collection body disconnected after headers shows interruption and Retry 
   );
 });
 
-// Waits up to settleMs for the locator's element to hold focus. Returns what held focus at the
-// first and the last check (role, accessible text, class, connected), so a failed check names
-// the element that took focus instead of saying `false !== true` (finding 2016).
-async function focusSettles(locator, settleMs = 1000) {
-  const deadline = Date.now() + settleMs;
-  let first;
-  for (;;) {
+// Whether the locator's element holds focus, and what does (role, accessible text, class), so a
+// failed check names the element that took focus instead of saying `false !== true`.
+// Playwright resolves a locator and runs evaluate in separate steps. A shell render between
+// them (the loading page 250 ms into a load, say) hands evaluate the node it replaced, detached,
+// while focus is already on the replacement (finding 2016). A detached node is no verdict, so
+// resolve the locator again.
+async function focusState(locator) {
+  for (let attempt = 1; ; attempt += 1) {
     const sample = await locator.evaluate((node) => {
       const active = globalThis.document.activeElement;
       const describe = (element) => {
@@ -112,13 +113,16 @@ async function focusSettles(locator, settleMs = 1000) {
           `${element.isConnected ? "" : " (detached)"}`
         );
       };
-      return { held: node === active, active: describe(active), target: describe(node) };
+      return {
+        held: node === active,
+        detached: !node.isConnected,
+        active: describe(active),
+        target: describe(node),
+      };
     });
-    first ??= sample;
-    if (sample.held || Date.now() >= deadline) {
-      return { ...sample, first: first.active };
+    if (!sample.detached || attempt === 5) {
+      return sample;
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 
@@ -882,14 +886,11 @@ for (const focus of ["navigation link", "account menu"]) {
       focused = page.getByRole("menuitem", { name: "Settings", exact: true });
     }
     await focused.waitFor();
-    const opened = await focusSettles(focused);
-    if (opened.held && opened.first !== opened.active) {
-      t.diagnostic(`focus settled on the ${focus} after ${opened.first}`);
-    }
+    const opened = await focusState(focused);
     if (!opened.held) {
       assert.fail(
         `The opened drawer focuses its ${focus} ${opened.target}; focus is on ${opened.active}` +
-          ` (first check: ${opened.first}; drawer ${await toggle.getAttribute("aria-expanded")})`,
+          ` (drawer ${await toggle.getAttribute("aria-expanded")})`,
       );
     }
     await releaseHeldRoute(page, namespacesPattern, namespacesHold);
@@ -898,8 +899,7 @@ for (const focus of ["navigation link", "account menu"]) {
 
     assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
     assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
-    // No settling here: the re-render must not move focus at all.
-    const kept = await focusSettles(focused, 0);
+    const kept = await focusState(focused);
     assert.equal(
       kept.held,
       true,
@@ -938,7 +938,12 @@ test("an open mobile drawer keeps its navigation link focused when an address wi
   const agents = page.getByRole("link", { name: "Agents", exact: true });
   await agents.waitFor();
   assert.equal(await agents.getAttribute("href"), "/console/agents");
-  assert.equal(await agents.evaluate((node) => node === globalThis.document.activeElement), true);
+  const opened = await focusState(agents);
+  assert.equal(
+    opened.held,
+    true,
+    `The opened drawer focuses its navigation link ${opened.target}; focus is on ${opened.active}`,
+  );
   await releaseHeldRoute(page, namespacesPattern, namespacesHold);
   await page.getByText("Cold drawer Agent", { exact: true }).waitFor();
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
@@ -946,10 +951,11 @@ test("an open mobile drawer keeps its navigation link focused when an address wi
   assert.equal(await toggle.getAttribute("aria-expanded"), "true", "The drawer stays open");
   assert.equal(await page.locator("main").evaluate((node) => node.inert), true);
   assert.equal(await agents.getAttribute("href"), `/console/agents?namespace=${namespace.id}`);
+  const kept = await focusState(agents);
   assert.equal(
-    await agents.evaluate((node) => node === globalThis.document.activeElement),
+    kept.held,
     true,
-    "The re-rendered drawer keeps focus on its navigation link",
+    `The re-rendered drawer keeps focus on its navigation link ${kept.target}; focus is on ${kept.active}`,
   );
   await page.keyboard.press("Escape");
   assert.equal(await toggle.getAttribute("aria-expanded"), "false", "Escape closes it");
