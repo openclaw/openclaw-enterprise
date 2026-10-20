@@ -187,7 +187,9 @@
       "path": "tests/integration/postgres-worker-stale-claim.test.mjs",
       "expectedTests": [
         "a worker that loses its claim during Compute cannot publish Namespace status, lifecycle audit, or completion",
-        "a worker whose lease renewal answers after the lease drops the claim before its Compute effect"
+        "a worker whose lease renewal answers after the lease drops the claim before its Compute effect",
+        "a stale worker whose held renewal succeeds after a takeover starts no Compute effect",
+        "a stale worker whose held interval renewal succeeds after a takeover stopped its effect first"
       ]
     },
     {
