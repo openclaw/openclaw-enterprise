@@ -643,18 +643,14 @@ export function renderAgentList(context) {
       } else {
         create.removeAttribute("aria-describedby");
       }
-      // A ready Namespace says so where the warning was, at the warning's height, so the rows
-      // below it do not jump; a new width reflows the page anyway (finding 2024).
+      // A ready Namespace says so where the warning was. The list holds no field being edited,
+      // so the note keeps its own height (Create Agent keeps the warning's, finding 2024).
       const replacement = notReady
         ? namespaceNote("warning", notReady.note)
         : namespaceNote(
             "success",
             "Namespace status: Ready. Agents created here can be deployed now.",
           );
-      replacement.style.minHeight = `${notReadyNote.getBoundingClientRect().height}px`;
-      window.addEventListener("resize", () => replacement.style.removeProperty("min-height"), {
-        once: true,
-      });
       notReadyNote.replaceWith(replacement);
       notReadyNote = replacement;
       // Only the empty state's sentence depends on the Namespace; rows keep their focus.
