@@ -2814,17 +2814,15 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       }
       const detail = credentialRegistration
         ? `Credential Source registration could not be confirmed. ${message(error)} Check credential registration before retrying; the selected Secret remains saved.`
-        : savedAgent && capabilitiesUnreadable && error.status === 403
-          ? `The Agent was created as a draft. ${MEMBER_CREDENTIAL_ACCESS} Open the saved Agent and ask one to grant it access to its saved model and channel Secrets.`
-          : savedAgent
-            ? `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
-            : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
-              ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
-              : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
-                ? error.serverMessage === AGENT_NAME_CONFLICT
-                  ? AGENT_NAME_CONFLICT
-                  : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
-                : rejectionMessage(error, mutationStarted);
+        : savedAgent
+          ? `The Agent was created, but credential access is not confirmed. ${message(error)} Retry credential access, or open the saved Agent and ask an administrator to check access to its saved model and channel Secrets.`
+          : error.status === 409 && creatingSecret && error.code !== "NAMESPACE_NOT_READY"
+            ? `A Secret named "${body.name}" already exists in this Namespace, possibly from an earlier Agent with this name. Choose another Agent name, delete that Secret, or select Start over, choose the Preset again, and set its Secret source to Use existing Secret.`
+            : error.status === 409 && savedConfiguration && error.code !== "NAMESPACE_NOT_READY"
+              ? error.serverMessage === AGENT_NAME_CONFLICT
+                ? AGENT_NAME_CONFLICT
+                : "Agent creation conflicts with the saved state. Check the Agent name and selections, then try again."
+              : rejectionMessage(error, mutationStarted);
       outcomeUnknown = mutationStarted && ![400, 403, 404, 409, 429].includes(error.status);
       const knownRejection = [400, 403, 404, 409, 429].includes(error.status);
       if (!savedAgent && savedConfiguration && knownRejection) {
@@ -2854,8 +2852,16 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       const guidance = refusedPlugin
         ? ` This form cannot edit saved Configuration ${savedConfiguration.id}. Deselect plugin ${refusedPlugin} under Plugins and select Create Agent again; to use the plugin, fix the setting on the new Agent's Configuration tab, then select the plugin on its Plugins tab.`
         : "";
+      // A member's grant of the new Agent's credential access is refused as Installation
+      // administration: name who finishes it (UX plan A2).
+      const memberGrantRefused =
+        savedAgent && !credentialRegistration && capabilitiesUnreadable && error.status === 403;
       feedback.textContent =
-        detail + guidance + (error.requestId ? ` Request ID: ${error.requestId}` : "");
+        (memberGrantRefused
+          ? `The Agent was created as a draft. ${MEMBER_CREDENTIAL_ACCESS} Open the saved Agent and ask one to grant it access to its saved model and channel Secrets.`
+          : detail) +
+        guidance +
+        (error.requestId ? ` Request ID: ${error.requestId}` : "");
       focusFeedbackLine(feedback);
       keepDraftAfterRefusal();
     } finally {
