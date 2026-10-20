@@ -206,7 +206,7 @@ button,
   color: var(--color-text-strong);
   text-decoration: none;
 }
-button:not(:disabled):hover,
+button:not(:disabled, [aria-disabled="true"]):hover,
 a.button:hover {
   background: var(--color-surface-hover);
 }
@@ -1988,7 +1988,12 @@ select:not([multiple])[size="1"] {
   margin-bottom: var(--space-2);
 }
 .version-list + .version-older {
-  margin-bottom: 22px;
+  margin-bottom: var(--space-6);
+}
+/* Loading older versions keeps focus, so the button is aria-disabled rather than disabled; it
+   looks disabled, and aria-busy gives it the busy cursor. */
+.version-older[aria-disabled="true"] {
+  opacity: 0.6;
 }
 .version-item[aria-current="page"],
 .revision-create[aria-current="page"] {

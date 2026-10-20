@@ -2253,6 +2253,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function renderVersions(revisions, snapshot, historyError = null) {
     const focusKey = railFocusKeys.get(document.activeElement);
     const shownKeys = new Set(railFocusKeys.values());
+    // The rebuilt list keeps the reader's scroll position.
+    const listScroll = selector.querySelector(".version-list")?.scrollTop ?? 0;
     railFocusKeys = new Map();
     revisionControls.clear();
     versionControls.clear();
@@ -2337,7 +2339,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         () => void loadOlderRevisions(),
         {
           className: "version-item version-older",
-          ...(olderLoading ? { "aria-disabled": "true" } : {}),
+          ...(olderLoading ? { "aria-disabled": "true", "aria-busy": "true" } : {}),
         },
       );
       trackRevisionControl(older);
@@ -2407,18 +2409,27 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       ].filter(Boolean),
     );
     updateNavigationControls();
+    list.scrollTop = listScroll;
     // A rebuild while the reader is in the rail (a poll that lands an outcome, or older versions
     // loading) keeps focus on the same control. Once every older version is shown, focus goes to
-    // the first one that just loaded.
+    // the first one that just loaded, below those shown before (a poll may add a newer one
+    // meanwhile), else the last version. A version no longer listed gives focus to the list's
+    // Tab stop.
     if (focusKey !== undefined && !selector.contains(document.activeElement)) {
-      const controls = [...railFocusKeys].filter(([control]) => !control.disabled);
+      const usable = items.filter((item) => !item.disabled);
+      const lastShown = usable.findLastIndex((item) => shownKeys.has(railFocusKeys.get(item)));
       const target =
-        controls.find(([, key]) => key === focusKey)?.[0] ??
+        [...railFocusKeys].find(([control, key]) => key === focusKey && !control.disabled)?.[0] ??
         (focusKey === "older"
-          ? controls.find(([control, key]) => items.includes(control) && !shownKeys.has(key))?.[0]
-          : undefined);
+          ? (usable.find(
+              (item, index) => index > lastShown && !shownKeys.has(railFocusKeys.get(item)),
+            ) ?? usable.at(-1))
+          : ["new", "chooser"].includes(focusKey)
+            ? undefined
+            : (usable.find((item) => item.tabIndex === 0) ?? usable[0]));
       if (items.includes(target)) {
         focusVersion(target);
+        target.scrollIntoView({ block: "nearest" });
       } else {
         target?.focus({ preventScroll: true });
       }
