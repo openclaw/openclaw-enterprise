@@ -45,6 +45,7 @@ import {
   NAMESPACE_NOT_READY_MESSAGE,
   NEUTRAL_DEPLOYMENT_NOTES,
   deploymentOutcome,
+  outcomeLabel,
   neutralDeploymentOutcome,
   preAdmissionRefusal,
 } from "./list.mjs";
@@ -690,7 +691,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
       element(
         "p",
         { className: "deployment-outcome" },
-        `Recorded status: ${deploymentOutcome(state.status)}`,
+        `Recorded status: ${outcomeLabel(deploymentOutcome(state.status))}`,
       ),
       state.status.error ? deploymentResult(state.status) : null,
       state.status.warnings?.length
@@ -870,7 +871,7 @@ function createVersionDeploymentRecord(
           ? element(
               "div",
               {},
-              element("p", {}, `Recorded outcome: ${deploymentOutcome(status)}`),
+              element("p", {}, `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}`),
               deploymentResult(status),
               status.warnings?.length
                 ? element(
@@ -2223,14 +2224,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       setLiveServing(false);
       return;
     }
-    const label = {
-      queued: "Queued",
-      running: "In progress",
-      succeeded: "Completed",
-      failed: "Failed",
-      superseded: "Superseded",
-      stopped: "Stopped",
-    }[latestDeploymentStatus];
+    const label = latestDeploymentStatus ? outcomeLabel(latestDeploymentStatus) : undefined;
     // A superseded or stopped deployment is neutral: it raises no banner and says nothing about
     // serving.
     const neutral = latestDeploymentStatus === "superseded" || latestDeploymentStatus === "stopped";
@@ -2271,7 +2265,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       setText(latestDeploymentValue, "Newer version hidden");
       setText(
         latestDeploymentNote,
-        `You cannot read the current version. v${latest.revision} (${latestDeploymentStatus}) is older.`,
+        `You cannot read the current version. v${latest.revision} (${outcomeLabel(latestDeploymentStatus)}) is older.`,
       );
     } else if (!latestDeploymentStatus && !latestDeploymentError) {
       setDelayedText(latestDeploymentValue, `v${latest.revision} · `, "Loading…");

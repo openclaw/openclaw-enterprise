@@ -1,4 +1,4 @@
-import { element, button } from "../dom.mjs";
+import { element, button, setText } from "../dom.mjs";
 
 export const displayDate = (value) => new Date(value).toLocaleString();
 export const shortId = (value) => `${value.slice(0, 12)}…${value.slice(-6)}`;
@@ -86,6 +86,22 @@ export function deploymentOutcome(status) {
   return neutralDeploymentOutcome(status) ?? status.status;
 }
 
+// One word per recorded outcome wherever the console shows one: the Agents list, the Agent's
+// overview and its deployment records (finding 2093).
+const DEPLOYMENT_OUTCOME_LABELS = {
+  queued: "Queued",
+  running: "In progress",
+  succeeded: "Completed",
+  failed: "Failed",
+  superseded: "Superseded",
+  stopped: "Stopped",
+};
+
+// The label for a recorded outcome (deploymentOutcome's value).
+export function outcomeLabel(outcome) {
+  return DEPLOYMENT_OUTCOME_LABELS[outcome] ?? outcome;
+}
+
 export const NEUTRAL_DEPLOYMENT_NOTES = {
   superseded: "Superseded by a newer version",
   stopped: "Stopped before it finished",
@@ -93,7 +109,9 @@ export const NEUTRAL_DEPLOYMENT_NOTES = {
 
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
-async function latestReadableRevision(context, path, options) {
+// The current version, `activeId`, is usually on that page too; when it is not, it is read on its
+// own, and an unreadable one is null.
+async function latestReadableRevision(context, path, options, activeId = null) {
   let cursor = null;
   do {
     const page = await context.request(
@@ -101,11 +119,17 @@ async function latestReadableRevision(context, path, options) {
       { ...options, includeMeta: true },
     );
     if (page.data.length > 0) {
-      return page.data[0];
+      const active =
+        !activeId || page.data.some((revision) => revision.id === activeId)
+          ? (page.data.find((revision) => revision.id === activeId) ?? null)
+          : await context
+              .request(`${path}/${encodeURIComponent(activeId)}`, options)
+              .catch(() => null);
+      return { latest: page.data[0], active };
     }
     cursor = page.meta?.nextCursor ?? null;
   } while (cursor);
-  return null;
+  return { latest: null, active: null };
 }
 
 export function message(error, mutation = false) {
@@ -255,6 +279,8 @@ export function assertReadableConfiguration(resource) {
 // focusable holder wraps stays readable to a screen reader meanwhile.
 const readingDeployment = (className = "delayed-status") =>
   element("span", { className }, "Reading deployment…");
+// A row's current version until that read finds its number, on the same 250 ms rule.
+const readingVersion = () => element("span", { className: "delayed-status" }, "Reading version…");
 // With a dozen rows, reads that landed just after the 250 ms rule's delay (console.css
 // .delayed-status and .delayed-text) replaced the text a frame or a few after it showed (16-133
 // ms, finding 1683), so once shown it stays at least READING_SHOWN_MS.
@@ -401,18 +427,21 @@ export function renderAgentList(context) {
   const rowRead = { revalidate: false, rereadOnResume: true };
   function readDeployment(item) {
     const agentPath = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}`;
-    return latestReadableRevision(context, `${agentPath}/revisions`, rowRead).then(
-      async (latest) => {
-        if (!latest) {
-          return null;
-        }
-        const status = await context.request(
-          `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
-          rowRead,
-        );
-        return { revision: latest, status };
-      },
-    );
+    return latestReadableRevision(
+      context,
+      `${agentPath}/revisions`,
+      rowRead,
+      item.activeRevisionId,
+    ).then(async ({ latest, active }) => {
+      if (!latest) {
+        return { active };
+      }
+      const status = await context.request(
+        `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
+        rowRead,
+      );
+      return { revision: latest, status, active };
+    });
   }
   // Fills a row's deployment cell. Focus in the cell moves to its new link, or to the row's Agent
   // link when it has none.
@@ -425,7 +454,24 @@ export function renderAgentList(context) {
       });
     }
   }
-  function showDeployment(item, deployment) {
+  // Fills a row's Current version cell: the version's number once its row's read finds it, else
+  // its ID as before, for a current version the reader cannot read (finding 2093).
+  function fillCurrent(current, item, active) {
+    if (!item.activeRevisionId) {
+      return;
+    }
+    const label = active ? `v${active.revision}` : shortId(item.activeRevisionId);
+    const shown = current.querySelector("a");
+    if (shown) {
+      setText(shown, label);
+      shown.classList.toggle("agent-revision-link", !active);
+      return;
+    }
+    const version = link(label, `agents/${item.id}?revision=${item.activeRevisionId}`, context);
+    version.classList.toggle("agent-revision-link", !active);
+    current.replaceChildren(version);
+  }
+  function showDeployment(item, deployment, current) {
     if (!deployments.has(item.id)) {
       deployments.set(item.id, readDeployment(item));
     }
@@ -442,14 +488,16 @@ export function renderAgentList(context) {
     // A read that lands before the text shows, or after it has shown long enough, fills the cell
     // now; otherwise once it has. A later resume or render replaces the text, and its own read
     // fills the cell instead.
-    const fill = (...content) => {
+    const fill = (active, ...content) => {
       const wait = shownAt === undefined ? 0 : shownAt + READING_SHOWN_MS - performance.now();
       if (wait <= 0) {
+        fillCurrent(current, item, active);
         fillDeployment(deployment, ...content);
         return;
       }
       setTimeout(() => {
         if (context.isCurrent() && reading.isConnected) {
+          fillCurrent(current, item, active);
           fillDeployment(deployment, ...content);
         }
       }, wait);
@@ -460,8 +508,8 @@ export function renderAgentList(context) {
         if (!context.isCurrent()) {
           return;
         }
-        if (result === null) {
-          fill("No visible deployments");
+        if (!result.revision) {
+          fill(result.active, "No visible deployments");
           return;
         }
         const neutral = neutralDeploymentOutcome(result.status);
@@ -471,8 +519,9 @@ export function renderAgentList(context) {
             : null;
         // A long failure fits one line; its title and the Agent page give the whole text.
         fill(
+          result.active,
           link(
-            `v${result.revision.revision} · ${deploymentOutcome(result.status)}`,
+            `v${result.revision.revision} · ${outcomeLabel(deploymentOutcome(result.status))}`,
             `agents/${item.id}?revision=${result.revision.id}`,
             context,
           ),
@@ -492,7 +541,7 @@ export function renderAgentList(context) {
         if (!context.isCurrent()) {
           return;
         }
-        fill(error.status === 403 ? "Deployment access denied" : "Deployment unavailable");
+        fill(null, error.status === 403 ? "Deployment access denied" : "Deployment unavailable");
       });
   }
   function render() {
@@ -544,14 +593,12 @@ export function renderAgentList(context) {
     );
     const body = element("tbody");
     for (const item of matches) {
-      const revision = item.activeRevisionId
-        ? link(
-            shortId(item.activeRevisionId),
-            `agents/${item.id}?revision=${item.activeRevisionId}`,
-            context,
-          )
-        : null;
-      revision?.classList.add("agent-revision-link");
+      // The current version's number comes with the row's deployment read.
+      const current = element(
+        "td",
+        { "data-label": "Current version" },
+        item.activeRevisionId ? readingVersion() : "No current version",
+      );
       // The cell keeps its column's width once its read lands, and its outcome link and one
       // note line fit the two lines the Agent cell already gives the row (finding 1488).
       const deployment = element(
@@ -559,8 +606,8 @@ export function renderAgentList(context) {
         { className: "agent-deployment", "data-label": "Latest deployment" },
         readingDeployment(),
       );
-      cells.set(deployment, item);
-      showDeployment(item, deployment);
+      cells.set(deployment, { item, current });
+      showDeployment(item, deployment, current);
       body.append(
         element(
           "tr",
@@ -587,7 +634,7 @@ export function renderAgentList(context) {
             { "data-label": "Execution mode" },
             item.executionMode === "dedicated" ? "Dedicated" : "Embedded",
           ),
-          element("td", { "data-label": "Current version" }, revision ?? "No current version"),
+          current,
           deployment,
           element("td", { "data-label": "Created" }, displayDate(item.createdAt)),
         ),
@@ -616,7 +663,7 @@ export function renderAgentList(context) {
   // be an active link.
   context.onResume?.(() => {
     deployments.clear();
-    for (const [deployment, item] of cells) {
+    for (const [deployment, { item, current }] of cells) {
       // A cell still reading from an earlier resume keeps the address it was given.
       const shown =
         deployment.querySelector("a")?.href ??
@@ -630,7 +677,7 @@ export function renderAgentList(context) {
             )
           : readingDeployment(),
       );
-      showDeployment(item, deployment);
+      showDeployment(item, deployment, current);
     }
   });
   search.addEventListener("input", render);

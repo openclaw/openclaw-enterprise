@@ -1204,7 +1204,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await page.getByRole("heading", { name: "Native admin follow Agent" }).waitFor();
   const activity = page.locator(".deployment-status");
   const card = page.locator(".native-admin-access");
-  await activity.getByText("Recorded status: running").waitFor();
+  await activity.getByText("Recorded status: In progress").waitFor();
   await card
     .getByText(
       "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
@@ -1216,7 +1216,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await fixture.activateRevision(namespace.id, agent.id, pending.id);
   deploymentStatus = "succeeded";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await activity.getByText("Recorded status: succeeded").waitFor();
+  await activity.getByText("Recorded status: Completed").waitFor();
   await card
     .getByText(
       "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
@@ -2823,7 +2823,7 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   const userReread = await holdRequests(t, page, `${fixture.origin}${userPath}`, { once: true });
   await page
     .locator(".deployment-status")
-    .getByText("Recorded status: running")
+    .getByText("Recorded status: In progress")
     .waitFor({ state: "attached" });
 
   // The reader is typing in AGENTS.md with a selection in the middle of the text.
@@ -2850,7 +2850,7 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await page
     .locator(".deployment-status")
-    .getByText("Recorded status: succeeded")
+    .getByText("Recorded status: Completed")
     .waitFor({ state: "attached" });
   await waitForInputValue(soul, `# SOUL.md served by ${second.id}\n`);
   await userReread.requested;

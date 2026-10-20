@@ -120,7 +120,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await overview.nth(2).getByText("Not verified").waitFor();
   const activity = page.locator(".deployment-status");
   await activity.getByText("Most recent visible deployment · v2").waitFor();
-  await activity.getByText("Recorded status: queued").waitFor();
+  await activity.getByText("Recorded status: Queued").waitFor();
   await activity.getByText("Waiting for a worker claim.").waitFor();
   await activity.getByText("No reconciliation result is available yet.").waitFor();
   // Simulate a subsequent status read. Persistence and attribution are proved
@@ -141,7 +141,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByText("Successful completion is not recorded yet.").waitFor();
   const versionRecord = page.locator(".version-deployment-record");
   await versionRecord.getByRole("heading", { name: "This version’s deployment record" }).waitFor();
-  await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
+  await versionRecord.getByText("Recorded outcome: Completed").waitFor();
   // D331: a startup warning says what happened to the plugin, not only its code.
   await versionRecord
     .getByText(
@@ -289,8 +289,8 @@ test("Agent detail separates the current version, viewed version, and latest dep
   // That run started by dropping the earlier result's description, and nothing described the
   // button again.
   assert.equal(await runDiagnostics.getAttribute("aria-describedby"), null);
-  await versionRecord.getByText("Recorded outcome: succeeded").waitFor();
-  await activity.getByText("Recorded status: queued").waitFor();
+  await versionRecord.getByText("Recorded outcome: Completed").waitFor();
+  await activity.getByText("Recorded status: Queued").waitFor();
   assert.ok(pathRequests(requests, "GET", deploymentPath).length >= 1);
   assert.ok(
     pathRequests(
@@ -345,7 +345,7 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
   await overview.nth(0).getByText("v3", { exact: true }).waitFor();
   await overview.nth(1).getByText("v3 · Failed").waitFor();
-  await activity.getByText("Recorded status: failed").waitFor();
+  await activity.getByText("Recorded status: Failed").waitFor();
   await activity
     .getByText("REVISION_FINALIZATION_INCOMPLETE: Deployment reconciliation failed.")
     .waitFor();
