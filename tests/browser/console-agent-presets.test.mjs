@@ -2758,8 +2758,8 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   // Signing back in without reloading must not recover the previous session's in-memory draft.
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Private session draft");
-  await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await page.locator(".account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.getByLabel("Username").fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
   await page.getByRole("button", { name: "Login", exact: true }).click();

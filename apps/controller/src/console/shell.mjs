@@ -85,6 +85,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   const mobileLayout = window.matchMedia("(max-width: 760px)");
 
   mobileLayout.addEventListener("change", (event) => {
+    // The account menu of the layout being left is hidden; close it so it doesn't reappear open.
+    menuControls?.close();
     if (!event.matches) {
       drawerControls?.close(false);
     }
@@ -109,6 +111,22 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     return svg;
   }
 
+  // A 20 px line icon for the icon-only buttons of the phone top bar and drawer.
+  function lineIcon(d) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "line-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+    return svg;
+  }
+
   function publicPanel(title, description, actionLabel, action) {
     menuControls = null;
     drawerControls = null;
@@ -129,36 +147,29 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
-  function accountMenu() {
-    // A page load can render the shell twice (a Loading or retained preview, then the
-    // fresh view). Keep the same menu so one opened in between stays open and clickable.
-    // reset(), publicPanel() and a session-less render drop it, so each navigation
-    // starts with a closed menu.
-    if (menuControls) {
-      return menuControls.account;
-    }
-    const account = element("div", { className: "account" });
+  // Initials for the account avatar: the first letters of the first and last words of the
+  // name, or of the email when the account has no name.
+  function initials(user) {
+    const words = (user?.name ?? "").trim().split(/\s+/).filter(Boolean);
+    const letters = (words.length > 1 ? [words[0], words.at(-1)] : words).map(
+      (word) => [...word][0],
+    );
+    return (letters.join("") || [...(user?.email ?? "")][0] || "?").toUpperCase();
+  }
+
+  function accountControl({ id, rootClass, toggle, menuFirst }) {
+    const account = element("div", { className: rootClass });
     const menu = element("div", {
       className: "menu",
-      id: "account-menu",
+      id,
       role: "menu",
       "aria-label": "Account",
       hidden: "",
     });
-    const toggle = button(
-      "OpenClaw Enterprise",
-      () => (menu.hidden ? openAccount() : closeAccount()),
-      {
-        className: "account-toggle",
-        "aria-haspopup": "menu",
-        "aria-expanded": "false",
-        "aria-controls": "account-menu",
-      },
-    );
-    toggle.replaceChildren(
-      element("span", { className: "account-label" }, "OpenClaw Enterprise"),
-      element("span", { className: "account-chevron", "aria-hidden": "true" }, "⌃"),
-    );
+    toggle.setAttribute("aria-haspopup", "menu");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", id);
+    toggle.addEventListener("click", () => (menu.hidden ? openAccount() : closeAccount()));
     function closeAccount(focus = true) {
       menu.hidden = true;
       toggle.setAttribute("aria-expanded", "false");
@@ -182,19 +193,73 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     enableMenuKeys(menu, closeAccount);
     menu.append(
       button("Settings", () => navigate("settings"), { role: "menuitem", tabindex: "-1" }),
-      button("Logout", () => void logout(), { role: "menuitem", tabindex: "-1" }),
+      button("Sign out", () => void logout(), { role: "menuitem", tabindex: "-1" }),
     );
-    account.append(menu, toggle);
+    account.append(...(menuFirst ? [menu, toggle] : [toggle, menu]));
     account.addEventListener("focusout", (event) => {
       if (event.relatedTarget && !account.contains(event.relatedTarget)) {
         closeAccount(false);
       }
     });
+    return { account, close: () => closeAccount(false) };
+  }
+
+  function accountMenus() {
+    // A page load can render the shell twice (a Loading or retained preview, then the
+    // fresh view). Keep the same menus so one opened in between stays open and clickable.
+    // reset(), publicPanel() and a session-less render drop them, so each navigation
+    // starts with closed menus.
+    if (menuControls) {
+      return menuControls;
+    }
+    const user = session.user;
+    const name = user?.name || user?.email || "Account";
+    // The sidebar's account row: avatar, name and email. At phone width the sidebar is the
+    // navigation drawer, so the top bar's avatar opens its own copy of the menu.
+    const toggle = element(
+      "button",
+      { type: "button", className: "account-toggle" },
+      element("span", { className: "account-avatar", "aria-hidden": "true" }, initials(user)),
+      element(
+        "span",
+        { className: "account-text" },
+        element("span", { className: "account-name" }, name),
+        // Flex items drop this space visually; it keeps the name and email apart in the
+        // button's accessible name.
+        user?.email && user.email !== name ? " " : null,
+        user?.email && user.email !== name
+          ? element("span", { className: "account-email" }, user.email)
+          : null,
+      ),
+      element("span", { className: "account-chevron", "aria-hidden": "true" }, "⌃"),
+    );
+    const avatar = element(
+      "button",
+      { type: "button", className: "topbar-avatar", "aria-label": `Account: ${name}` },
+      element("span", { className: "account-avatar", "aria-hidden": "true" }, initials(user)),
+    );
+    const side = accountControl({
+      id: "account-menu",
+      rootClass: "account",
+      toggle,
+      menuFirst: true,
+    });
+    const top = accountControl({
+      id: "account-menu-top",
+      rootClass: "topbar-account",
+      toggle: avatar,
+      menuFirst: false,
+    });
     menuControls = {
-      account,
-      close: () => closeAccount(false),
+      side,
+      top,
+      contains: (node) => side.account.contains(node) || top.account.contains(node),
+      close: () => {
+        side.close();
+        top.close();
+      },
     };
-    return account;
+    return menuControls;
   }
 
   function updateNamespaceSelector() {
@@ -374,7 +439,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     const recovery = state.recovery ?? true;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
-    const menuFocus = menuControls?.account.contains(document.activeElement)
+    const menuFocus = menuControls?.contains(document.activeElement)
       ? document.activeElement
       : null;
     // Like the menu, a mobile drawer opened between a page load's two renders stays open.
@@ -470,8 +535,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "p",
         { className: "brand" },
-        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
-        "OCE",
+        element("img", { src: "/console/oce-mascot.png", alt: "", width: "20", height: "20" }),
+        "OpenClaw Enterprise",
         debug
           ? element(
               "span",
@@ -485,7 +550,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       ),
       nav,
       diagnostics,
-      session ? accountMenu() : null,
+      session ? accountMenus().side.account : null,
     );
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
@@ -566,12 +631,26 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       }
     }
     main.append(view);
-    const mobileToggle = button("Open navigation", () => openDrawer(), {
+    const mobileToggle = button(lineIcon("M4 6h16M4 12h16M4 18h16"), () => openDrawer(), {
       className: "mobile-toggle",
+      "aria-label": "Open navigation",
       "aria-controls": "navigation-drawer",
       "aria-expanded": "false",
     });
-    const wrapper = element("div", {}, mobileToggle, main);
+    // The phone top bar: navigation toggle, wordmark, and the account avatar.
+    const topbar = element(
+      "div",
+      { className: "topbar" },
+      mobileToggle,
+      element(
+        "p",
+        { className: "brand brand--bar" },
+        element("img", { src: "/console/oce-mascot.png", alt: "", width: "20", height: "20" }),
+        "OpenClaw Enterprise",
+      ),
+      session ? accountMenus().top.account : null,
+    );
+    const wrapper = element("div", {}, topbar, main);
     const shell = element("div", { className: "shell" }, sidebar, wrapper);
     function closeDrawer(focus = true) {
       shell.classList.remove("drawer-open");
@@ -582,6 +661,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       }
     }
     function openDrawer(focus = true) {
+      menuControls?.top.close();
       shell.classList.add("drawer-open");
       main.inert = true;
       mobileToggle.setAttribute("aria-expanded", "true");
@@ -589,7 +669,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         nav.querySelector("a").focus();
       }
     }
-    sidebar.prepend(button("Close navigation", () => closeDrawer(), { className: "drawer-close" }));
+    sidebar.prepend(
+      button(lineIcon("M6 6l12 12M18 6L6 18"), () => closeDrawer(), {
+        className: "drawer-close",
+        "aria-label": "Close navigation",
+      }),
+    );
     shell.append(
       button("Close navigation overlay", () => closeDrawer(), {
         className: "scrim",
@@ -706,8 +791,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   document.addEventListener("pointerdown", (event) => {
-    if (menuControls && !menuControls.account.contains(event.target)) {
-      menuControls.close();
+    for (const control of [menuControls?.side, menuControls?.top]) {
+      if (control && !control.account.contains(event.target)) {
+        control.close();
+      }
     }
   });
   document.addEventListener("keydown", (event) => {
@@ -740,7 +827,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     updateNamespaces,
     // The shown shell's control, outside its page view, that matches one from an earlier
     // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
-    // toggle. A new shell's account menu starts closed, so its items give way to the toggle. At
+    // toggle. A new shell's account menus start closed, so their items give way to their toggle (the
+    // account row, or the top bar's avatar). At
     // phone width its navigation drawer starts closed too, so every control from the open drawer
     // gives way to the drawer's toggle (finding 1680).
     matchingControl(node) {
@@ -757,6 +845,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       }
       if (node.closest(".account")) {
         return shell.querySelector(".account-toggle");
+      }
+      if (node.closest(".topbar-account")) {
+        return shell.querySelector(".topbar-avatar");
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);

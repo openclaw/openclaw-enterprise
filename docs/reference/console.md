@@ -26,7 +26,7 @@ See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-de
 
 ## Identify the control-plane build
 
-With `debug=true`, the sidebar shows **OCE** followed by the first eight
+With `debug=true`, the sidebar wordmark is followed by the first eight
 characters of the running OCC image's source commit, or **dev** for builds
 without metadata; hover for the full commit. Published images bake the checked
 release commit into the console HTML.
@@ -55,9 +55,9 @@ Slack searches, focus, and the Namespace selector; at phone width, focus in the 
 **Open navigation**. Views belong to one account, session, route,
 and Namespace. Sign-out, session changes, exit, or Backend denial clear them.
 
-**Namespace** switches readable scopes; Namespaces omits this selector. **OpenClaw Enterprise** at the bottom offers
+**Namespace** switches readable scopes; Namespaces omits this selector. The account menu offers
 **Settings**, which shows the signed-in account without configurable settings,
-and **Logout**.
+and **Sign out**.
 
 The URL keeps `?namespace=<id>` across navigation, reload, and Back. An unreadable
 ID shows **Namespace unavailable**; on Namespaces, **Choose a valid namespace**

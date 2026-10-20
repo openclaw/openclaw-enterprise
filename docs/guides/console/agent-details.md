@@ -12,7 +12,7 @@ permission; saving and deploying have separate access checks.
 
 | Component                     | What it does                                                                                                                                                                                                                                                        |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OCE**                       | Product mark at the top of the console navigation.                                                                                                                                                                                                                  |
+| **OpenClaw Enterprise**       | Product mark atop the console navigation.                                                                                                                                                                                                                           |
 | **Agents** / **← Agents**     | Opens the Agents list in the selected Namespace.                                                                                                                                                                                                                    |
 | **Namespaces**                | Lists the Namespaces you can read.                                                                                                                                                                                                                                  |
 | **Observability**             | Opens the Installation's configured observability dashboard in a new tab. Shown only to Installation administrators, and only when one is configured.                                                                                                               |
@@ -26,9 +26,9 @@ permission; saving and deploying have separate access checks.
 | `agt_…`                       | Agent identifier for API calls and support (**Copy Agent ID**).                                                                                                                                                                                                     |
 
 The **Namespace** selector at the top of the page changes your scope; from Agent
-detail it returns to the new Namespace's Agents list. The bottom **OpenClaw
-Enterprise** menu contains **Settings** and **Logout**. Settings displays your
-account; it does not offer configurable settings. Logout ends your console session.
+detail it returns to the new Namespace's Agents list. The account menu contains
+**Settings** and **Sign out**. Settings displays your account; it does not offer
+configurable settings. Sign out ends your console session.
 
 ## Follow deployment activity
 

@@ -123,7 +123,7 @@ async function focusSettles(locator, settleMs = 1000) {
 }
 
 async function openShellMenu(page) {
-  await page.getByRole("button", { name: /OpenClaw Enterprise/ }).click();
+  await page.locator(".account-toggle").click();
 }
 
 async function chooseNamespace(page, name, options) {
@@ -316,7 +316,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
   assert.match(page.url(), new RegExp(`/console/agents\\?namespace=${beta.id}$`));
   // Resource content must remain text; the shared shell includes the OCE mascot.
   assert.equal(await page.locator(".content img").count(), 0);
-  assert.equal(await page.locator(".sidebar .brand").textContent(), "OCE");
+  assert.equal(await page.locator(".sidebar .brand").textContent(), "OpenClaw Enterprise");
   assert.equal(await page.locator(".occ-version").count(), 0);
   assert.equal(await page.locator(".runtime-debug").count(), 0);
 
@@ -351,7 +351,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await page.getByRole("heading", { name: "Settings" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/settings\\?namespace=${beta.id}$`));
   await page.reload();
-  await page.getByText(fixture.credentials.email.toLowerCase()).waitFor();
+  await page.locator("#main").getByText(fixture.credentials.email.toLowerCase()).waitFor();
   await page.goBack();
   await page.getByRole("heading", { name: "Backends" }).waitFor();
   assert.match(page.url(), new RegExp(`/console/backends\\?namespace=${beta.id}$`));
@@ -362,7 +362,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
   assert.match(page.url(), new RegExp(`/console/agents\\?namespace=${alpha.id}$`));
 
   await openShellMenu(page);
-  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.waitForURL(/\/console\/login$/);
   await page.getByRole("button", { name: "Login" }).waitFor();
   await expectNoText(page, /Alpha|Beta|openai-primary/);
@@ -438,7 +438,7 @@ test("console shows the external observability link only to Installation adminis
   );
   assert.ok(adminAnswer);
   await openShellMenu(page);
-  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
   // Navigating away before the sign-out request is answered aborts it, and the old session
   // then opens the Console again instead of the login form.
   await page.waitForURL(/\/console\/login$/);
@@ -591,7 +591,10 @@ test("an unchanged retained view without a Namespace selection selects the defau
 
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page.getByText(fixture.credentials.email.toLowerCase(), { exact: true }).waitFor();
+  await page
+    .locator("#main")
+    .getByText(fixture.credentials.email.toLowerCase(), { exact: true })
+    .waitFor();
   fixture.policy.restrictions.splice(fixture.policy.restrictions.indexOf(denyAll), 1);
   // The retained Backends view revalidates unchanged, but its shell was built without a selection.
   await page.goBack();
@@ -731,7 +734,10 @@ test("console keeps loaded route families visible while return reads refresh", a
 
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Settings", exact: true }).click();
-  await page.getByText(fixture.credentials.email.toLowerCase(), { exact: true }).waitFor();
+  await page
+    .locator("#main")
+    .getByText(fixture.credentials.email.toLowerCase(), { exact: true })
+    .waitFor();
   await page.getByRole("link", { name: "Agents", exact: true }).click();
   await page.getByText("Retained route Agent", { exact: true }).waitFor();
   const sessionPattern = "**/api/auth/session";
@@ -2054,7 +2060,7 @@ test("console clears private content after session expiry, access revocation, an
     await route.abort("failed");
   });
   await openShellMenu(page);
-  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.getByText("Could not confirm logout").waitFor();
   await expectNoText(page, /Revoked agent/);
   await page.unroute("**/api/auth/sign-out");
