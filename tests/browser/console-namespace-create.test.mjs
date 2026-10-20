@@ -431,7 +431,9 @@ test("an unexpected Namespace creation failure shows its request ID", async (t) 
     .getByRole("alert")
     .filter({ hasText: /Outcome unknown/ })
     .waitFor();
-  await dialog.getByText("Request ID: req_00000000-0000-4000-8000-000000000503", { exact: true }).waitFor();
+  await dialog
+    .getByText("Request ID: req_00000000-0000-4000-8000-000000000503", { exact: true })
+    .waitFor();
 });
 
 test("a lost Namespace creation response requires inspection before another attempt", async (t) => {
