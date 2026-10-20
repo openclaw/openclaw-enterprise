@@ -189,8 +189,11 @@ missing wiring or failed dependencies return errors.
 through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
 and queues provisioning; `perform` audits. Open Agents needs the Namespace in the
 reread list; closing refocuses the opener. Pending writes block dismissal; 400s mark
-names. Conflicts retain input; denials block resubmission. Unconfirmed responses
-require list inspection.
+names. Conflicts retain input; denials block resubmission. After a 403, closing instead
+disables Create Namespace with the refusal as its description and focuses that sentence;
+the page remembers the refusal for that operator (Refresh keeps it) until a browser
+reload. Without an Installation-scope create signal, the opener is emphasized only for
+administrators and stays enabled for others. Unconfirmed responses require list inspection.
 
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
 is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;
