@@ -3913,12 +3913,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                   "div",
                   { className: "form-actions" },
                   button("Edit current Configuration", () => {
-                    // The draft this navigation opens takes it with its editor open, unless
-                    // the caller is known to be refused Agent updates (its Save would fail).
+                    // The draft this navigation opens takes it with its editor open. Saving
+                    // patches the Configuration, which the API authorizes on its own.
                     linkedVersionView = {
                       key: linkedKey("draft", "configuration"),
                       load: consoleLoads + 1,
-                      edit: callerPermissions?.update !== false,
+                      edit: true,
                     };
                     context.navigate(target("draft", "configuration"));
                   }),

@@ -156,7 +156,7 @@ reference; authentication mode and proxy settings stay unchanged. The Compute
 Driver owns the password; the Console shows only its reference.
 
 **Edit Configuration** edits native JSON. **Save Configuration** requires an object;
-**Cancel** discards edits. **Edit current Configuration** opens the current draft,
+**Cancel** discards edits. **Edit current Configuration** opens the current draft's editor,
 not a historical copy. Saving preserves Secret bindings and saved versions;
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.
