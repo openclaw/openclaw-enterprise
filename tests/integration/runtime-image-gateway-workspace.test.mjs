@@ -19,7 +19,7 @@ import {
   assertGatewayLogEntry,
 } from "../helpers/runtime-image-startup.mjs";
 
-// Dedicated Codex Gateway cases on the real runtime image, split from
+// Codex Gateway cases on the real runtime image, split from
 // runtime-image-startup.test.mjs by measured case durations so CI runs them
 // beside it: the Gateway hot-loads its workspace node binding in place, and
 // custom-provider subagents keep their native model IDs in the remote workspace.
