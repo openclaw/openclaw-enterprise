@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, lstat, mkdtemp, open, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
@@ -674,6 +674,35 @@ test(
     }
   },
 );
+
+for (const variable of ["OCC_BOOTSTRAP_PASSWORD_FILE", "OCC_BOOTSTRAP_SERVICE_KEY_FILE"]) {
+  test(
+    `fresh production bootstrap rejects a trailing separator in ${variable} before creating credentials`,
+    requiresFailurePostgres,
+    async (context) => {
+      const directory = await prepareBootstrapFailureFixture(context, "trailing-separator");
+      const env = productionEnvironment({
+        directory,
+        email: "trailing-separator@example.test",
+        name: "Bootstrap trailing separator",
+      });
+      // lstat can report ENOENT for this path, but an exclusive file create cannot use it.
+      env[variable] += sep;
+      const result = await runProductionBootstrap(env);
+      assert.equal(result.ok, false);
+      const failure = jsonLines(result.stderr).find(
+        (line) => line.event === "installation.bootstrap-failed",
+      );
+      assert.equal(failure?.code, "BOOTSTRAP_FAILED");
+      assert.equal("attempt" in failure, false);
+      assert.equal((result.stdout + result.stderr).includes(directory), false, "path disclosed");
+      assert.deepEqual(await readdir(directory), []);
+      for (const [table, count] of Object.entries(await rowCounts())) {
+        assert.equal(count, 0, table);
+      }
+    },
+  );
+}
 
 test(
   "known bootstrap failures preserve created artifacts and report safe diagnostics",
