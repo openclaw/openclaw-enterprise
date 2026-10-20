@@ -9,7 +9,7 @@ last_updated_session: authoring-run/d2f628d3-43ac-470f-907d-2a17c299f7c2
 ## Overview
 
 Trusted startup configuration selects the OCC logging level. Authorized Agent
-deployment freezes runtime logging in an immutable AgentRevision. Optional
+deployment freezes runtime logging in an immutable Agent revision. Optional
 Collectors export reviewed operational records; PostgreSQL audit remains separate
 durable evidence.
 
@@ -35,7 +35,7 @@ graph TD
     B --> E["Authorized Agent deployment starts"]
     E --> F["Sandbox may transform a Configuration copy"]
     F --> G["Admission stamps platform-owned native logging fields"]
-    G --> H["Persist immutable AgentRevision"]
+    G --> H["Persist immutable Agent revision"]
   end
 
   subgraph Runtime["Managed runtime"]
@@ -49,7 +49,7 @@ graph TD
     J --> K
     K -->|"yes"| M["Collector reads container output and protected metadata"]
     M --> N["Classify records and strip unapproved content"]
-    N --> O["Bounded queue and OTLP HTTP exporter"]
+    N --> O["Queue with a size limit and OTLP HTTP exporter"]
   end
   O --> P["Optional demo Loki stores event body and structured metadata"]
   P --> Q["Grafana filters and formats retained metadata"]
@@ -81,7 +81,7 @@ failure diagnostics. Before Pino writes, `apps/controller/src/logging.ts:emitOcc
 keeps reviewed scalar fields and drops unapproved fields, credentials, provider
 payloads, request/reply objects, and unsafe strings. This source boundary precedes
 the separate Collector filter in step 7. For worker records, the Collector retains
-allowlisted `work.operation` values and bounded `work.id` shapes. Agent stop keys
+allowlisted `work.operation` values and allowed `work.id` formats. Agent stop keys
 and credential withdrawal keys include the operation UUID; deletion keys have no
 operation suffix. Provisioning keys use `agent-provisioning:` and exactly 32
 lowercase hexadecimal characters, matching the work ID the API and worker share.
@@ -90,7 +90,7 @@ The local worker emitter also retains `stopYields` from throttled drain-yield an
 completion records as a nonnegative safe integer; the Collector does not export this count.
 
 Compute preparation failures may include a Driver-reviewed stage, classification,
-status, and bounded message. The worker never serializes the raw exception, and
+status, and a message of at most 256 characters. The worker never serializes the raw exception, and
 the sanitizer drops secret-shaped messages before local output.
 
 ### 3. Admission freezes runtime logging
@@ -107,9 +107,11 @@ Configuration. Deployment stamps native fields before validation: matching
 `logging.level` and `logging.consoleLevel`, JSON console style, and
 `diagnostics.otel.logs=false`. It drops the retired `logging.redactSensitive` key.
 Runtime code owns console and tool redaction. The source Configuration is unchanged;
-the immutable AgentRevision retains the admitted policy across restarts and later edits.
+the immutable Agent revision retains the admitted policy across restarts and later edits.
 
-### 4. Compute renders settings from the revision
+<a id="4-compute-renders-settings-from-the-revision" class="anchor-alias"></a>
+
+### 4. Compute renders settings from the version
 
 `apps/controller/src/drivers/compute/docker/index.ts:DockerComputeDriver.prepareRevision`
 
@@ -186,7 +188,7 @@ Codex turn and tool-call bodies are fixed text, and a `codex.operational` body
 keeps a short plain-text Codex message only from `codex_app_server` or the fixed
 `codex_core::responses_retry` retry messages; a Codex warning without such a
 message is dropped (as are span lifecycle records).
-OCC `compute.preflight-warning` records retain WARN severity and bounded `occ.code`;
+OCC `compute.preflight-warning` records retain WARN severity and `occ.code` values of at most 64 allowed characters;
 the local diagnostic message is excluded from remote export.
 `authentication.sign-in-limit-warning` and `authentication.forwarded-refused-warning` keep
 `occ.code`, and
@@ -195,17 +197,17 @@ hash is not exported. `authentication.provider-unavailable-warning` keeps
 `occ.sign_in.provider`, `.step` (`authorization`, `token`, `jwks`, `profile` or
 `membership`), `.cause` and `.status`, plus a transport code as `occ.code`; the provider
 instance ID stays local.
-`worker.repository-cleanup-warning` keeps `occ.code` and its bounded cause as
+`worker.repository-cleanup-warning` keeps `occ.code` and its cause code of at most 64 allowed characters as
 `occ.worker.cause`.
-`worker.compute-prepare-failed` (a Compute Driver could not prepare a revision) is
-ERROR and keeps `occ.code` plus the Namespace, Agent and revision IDs and work identity
+`worker.compute-prepare-failed` (a Compute Driver could not prepare a version) is
+ERROR and keeps `occ.code` plus the Namespace, Agent and Agent revision IDs and work identity
 other worker events keep; the stage, error class, status and message stay local.
 API lifecycle and dependency warnings are exported too. `shutdown.started`,
 `shutdown.completed` and `shutdown.failed` (ERROR, `occ.code`) carry the drain's
 `duration_ms` once it ends; the signal stays local. `database.idle-client-error`
 keeps its SQLSTATE or transport code as `occ.code`. `device_authorization.start_failed`
 keeps `request.id`, `occ.device_authorization.reason` (`unreachable` or `unavailable`)
-and its bounded failure (such as `TimeoutError`) as `occ.device_authorization.failure`.
+and its failure class of at most 64 allowed characters (such as `TimeoutError`) as `occ.device_authorization.failure`.
 `agent_runtime_credentials.cluster_denied` keeps only `request.id`; the denied verb,
 resource and Kubernetes namespace stay local. `agent_provisioning.compute_refused` (the
 Compute Driver refused a provisioning plan for a reason the caller cannot fix) keeps only
@@ -213,9 +215,8 @@ Compute Driver refused a provisioning plan for a reason the caller cannot fix) k
 of an API `503 DEPENDENCY_UNAVAILABLE`, whose response keeps generic text) keeps only
 `request.id`; its route, error class, message and causes stay in the API's local log.
 `native_admin.websocket_audit_failed`
-keeps the Namespace, Agent and revision IDs, and `native_admin.websocket_denial_audit_failed`
-carries none. `native_admin.compute_owner_mismatch` (native admin refused because the active
-revision belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
+keeps the Namespace, Agent and Agent revision IDs, and `native_admin.websocket_denial_audit_failed`
+carries none. `native_admin.compute_owner_mismatch` (native admin refused because the selected version belongs to another Compute Driver) keeps the same three IDs; the Driver IDs and
 implementations stay local. `authentication.activation-warning`, `authentication.password-sign-in-warning`
 and `authentication.recovery-seed-warning` keep at most `occ.code`; account IDs and
 messages stay local.
@@ -264,10 +265,10 @@ for panels, correlation, and authorization limits.
 ## Debugging and Verification
 
 - For unexpected process levels, check the startup snapshot; for runtime levels,
-  compare the admitted AgentRevision with rendered container settings.
+  compare the saved version with rendered container settings.
 - Use the [observability guide](../guides/observability.md#tests) for delivery,
   Collector metrics, and deployment troubleshooting.
-- Packaging and Collector tests prove configuration, filtering, bounded queues,
+- Packaging and Collector tests prove configuration, filtering, queue size limits,
   and startup boundaries. Select real runtime suites separately for gateway,
   Codex, model-turn, or OpenShell deployment proof.
 - If a runtime Pod enters `CrashLoopBackOff` before a model turn with a config
@@ -314,7 +315,7 @@ for panels, correlation, and authorization limits.
 
 - 2026-10-01 16:37: Added the sanitized Compute preparation diagnostic boundary. (authoring-run/dda71266-f9f6-404c-aaba-b0c03f010ae2 - 987c8c2b4ace1e152262ef6920b6d0f9ff26a086)
 
-- 2026-10-01 14:45: Export sign-in provider outage warnings with bounded provider, step, cause and status attributes. (collector-auth-warning - 769c8cd88)
+- 2026-10-01 14:45: Export sign-in provider outage warnings with allowed provider, step, cause and status attributes. (collector-auth-warning - 769c8cd88)
 
 - 2026-09-25 11:31: Documented query-time operational summaries and filtering in the accompanying demo dashboard change. (redacted - 1a458b227585c572ec0ac70fd10efc3834165075)
 
@@ -326,5 +327,5 @@ for panels, correlation, and authorization limits.
 
 - 2026-09-04 21:04: Documented that native logging admission drops the retired redaction key while preserving JSON levels, disabled OTLP logs, runtime redaction ownership and read-only Kubernetes config mounting. (redacted - 87234e1766e5802b45424523246a52a4b2d45590)
 
-- 2026-09-02 10:42: Added the source-backed common logging flow for startup policy, revision admission, runtime rendering, and Collector export. (redacted - 1242406b6863c8953abe4827c601c2173129ee50)
+- 2026-09-02 10:42: Added the source-backed common logging flow for startup policy, version admission, runtime rendering, and Collector export. (redacted - 1242406b6863c8953abe4827c601c2173129ee50)
 - 2026-09-03 17:56: Simplified repeated settings and guide detail while preserving the logging lifecycle, admission, Collector filtering, and audit boundaries. (redacted - 61ef68bc61129c90130bb65b0fc48373f0c70866)

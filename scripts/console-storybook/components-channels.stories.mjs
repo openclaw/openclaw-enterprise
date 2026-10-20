@@ -8,6 +8,10 @@ export const SlackEnterpriseDm = { ...story("slackEnterpriseDm") };
 export const SlackThreadedDefault = { ...story("slackThreadedDefault") };
 export const SlackReplyOverride = { ...story("slackReplyOverride") };
 export const SlackDrawer = { ...story("slackDrawer"), name: "Slack editor" };
+export const SlackDrawerNoAuthentication = {
+  ...story("slackDrawerNoAuthentication"),
+  name: "Slack editor, no model authentication",
+};
 export const SlackDirectoryChannels = story("slackDirectoryChannels");
 export const SlackDirectorySavedNames = story("slackDirectorySavedNames");
 export const SlackDirectoryQualifiedNames = story("slackDirectoryQualifiedNames");

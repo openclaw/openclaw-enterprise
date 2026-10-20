@@ -199,7 +199,7 @@ and bind it to each target:
 | Each AgentRevision                        | `read`                                                       |
 
 A binding applies only the Role's permissions for its target's kind. Omit
-`delete` to keep the Agent's removal with administrators. Bind each new revision
+`delete` to keep the Agent's removal with administrators. Bind each new Agent revision
 after it is deployed, or the person cannot see its status; see
 [Agent revisions](agent-revisions.md). Secret reads return metadata, never values.
 

@@ -9,7 +9,10 @@ import { chromium } from "playwright";
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
-import { deploymentErrorForWork } from "../../packages/occ/src/state/controller-work.ts";
+import {
+  deploymentErrorForWork,
+  deploymentProgressForWork,
+} from "../../packages/occ/src/state/controller-work.ts";
 
 // The in-memory fixture has no worker records. A test that supplies a failed deployment
 // record builds its error with the API's own code, so the console shows the exact code,
@@ -139,9 +142,9 @@ export async function login(
   credentials = fixture.credentials,
 ) {
   await page.goto(new URL(path, fixture.origin).href);
-  await page.getByLabel("Username").fill(credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
 }
 
@@ -488,6 +491,35 @@ export const consoleViewports = Object.freeze([
   Object.freeze({ width: 390, height: 844 }),
 ]);
 
+// The getAgentDeployment response for an admitted revision when the fixture has no worker.
+export function deploymentStatusResponse(
+  { id: deploymentId, namespaceId, agentId, createdAt },
+  { status, error = null, attempt },
+) {
+  const progress =
+    status === "queued" || status === "running"
+      ? deploymentProgressForWork(
+          { state: status === "queued" ? "queued" : "claimed", availableAt: new Date(createdAt) },
+          attempt,
+        )
+      : null;
+  return {
+    json: {
+      data: {
+        deploymentId,
+        namespaceId,
+        agentId,
+        status,
+        cleanup: null,
+        error,
+        warnings: [],
+        progress,
+      },
+      meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
+    },
+  };
+}
+
 // Answers the browser's read of one deployment with a failed record that carries the API's own
 // error for `code`, so the Agent page shows that version's recovery card.
 export async function routeFailedDeployment(
@@ -495,26 +527,16 @@ export async function routeFailedDeployment(
   fixture,
   { namespaceId, agentId, deploymentId, code = "DEPENDENCY_UNAVAILABLE" },
 ) {
+  const error = persistedDeploymentError(code);
+  const response = deploymentStatusResponse(
+    { id: deploymentId, namespaceId, agentId },
+    { status: "failed", error },
+  );
   await page.route(
     `${fixture.origin}/namespaces/${namespaceId}/agents/${agentId}/deployments/${deploymentId}`,
-    (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId,
-            namespaceId,
-            agentId,
-            status: "failed",
-            error: persistedDeploymentError(code),
-            warnings: [],
-            progress: null,
-          },
-          meta: { requestId: "req_test_failed_deployment" },
-        }),
-      }),
+    (route) => route.fulfill(response),
   );
+  return error;
 }
 
 // WCAG 2 contrast between two sRGB colours given as [r, g, b] in 0-255.

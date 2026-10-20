@@ -218,7 +218,7 @@ test("Share Agent refusals", async (t) => {
       nativeValues(`status-${agents}`),
     );
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    await login(page, fixture, detailUrl(fixture, target.id, agent.id, "draft", "configuration"));
+    await login(page, fixture, detailUrl(fixture, target.id, agent.id, "draft", "access"));
     const panel = page.getByRole("region", { name: "Share Agent", exact: true });
     await panel
       .getByLabel("Existing person’s Principal ID")
@@ -356,9 +356,9 @@ test("Notices and the sign-in alert", async (t) => {
       await page.goto(new URL("/console/login", fixture.origin).href);
       // The sign-in request is held until the empty alert has been read.
       const signIn = await holdRequests(t, page, "**/api/auth/sign-in/email");
-      await page.getByLabel("Username").fill(fixture.credentials.email);
+      await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
       await page.getByLabel("Password").fill("not-the-password");
-      await page.getByRole("button", { name: "Login" }).click();
+      await page.getByRole("button", { name: "Sign in" }).click();
       await signIn.requested;
       const pending = await signInAlert();
       assert.equal(await page.locator("form p.status[role=alert]").textContent(), "");
@@ -366,7 +366,7 @@ test("Notices and the sign-in alert", async (t) => {
       const box = await page.locator("form p.status[role=alert]").boundingBox();
       assert.equal(box?.height, 0, "the empty alert takes no space");
       signIn.release();
-      await page.getByText("Could not sign in. Check your username and password.").waitFor();
+      await page.getByText("Could not sign in. Check your email and password.").waitFor();
       const refused = await signInAlert();
       assert.deepEqual(refused, { backendNodeId: pending.backendNodeId, role: "alert" });
     },
@@ -936,15 +936,17 @@ test("Run diagnostics access and outcomes", async (t) => {
   };
 
   // Run diagnostics needs Agent operate. A reader without it saw the button enabled beside a
-  // disabled Stop and Delete, and its 403 landed below the fold at 1440 (finding 1992).
+  // disabled Stop and Delete (now hidden), and its 403 landed below the fold at 1440 (finding 1992).
   await t.test(
     "Run diagnostics is disabled with its reason for a reader without operate",
     async (t) => {
       const version = await activeAgent();
       const { page } = await newPage(t, fixture, { browser });
       const { observations, run } = await openVersion(page, version, reader.credentials);
-      // The same answer that disables Stop disables Run diagnostics.
-      await page.getByText("Your access does not include stopping this Agent.").waitFor();
+      // The same answer that hides the Stop row disables Run diagnostics.
+      await page.waitForFunction(
+        () => globalThis.document.querySelector("section.stop-note")?.hidden === true,
+      );
       const reason = observations.getByRole("status").filter({ hasText: DIAGNOSTICS_REASON });
       await reason.waitFor();
       assertPaint(await statusPaint(reason), "info", "diagnostics reason");

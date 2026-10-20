@@ -4,14 +4,14 @@ Use `scripts/upgrade-production-images` to release the OpenClaw Control Plane
 (OCC), Agent runtimes, or both. Select the images you intend to change:
 
 - `--controller-image` updates the OCC API and worker without requesting Agent
-  deployments. A restarted repository broker can interrupt existing revisions.
+  deployments. A restarted repository broker can interrupt existing versions.
 - `--runtime-image` keeps the current controller image, updates the gateway and
-  Agent runtime image, and deploys a new revision for every running Agent.
+  Agent runtime image, and deploys a new version for every running Agent.
 - `--broker-image` selects the repository broker when credentials are enabled.
 
 Every release stops the OCC API and worker during migration and rollout. Runtime
 upgrades also restart the fleet concurrently. Schedule an interruption window
-and provide enough capacity for old and replacement revisions to overlap.
+and provide enough capacity for old and replacement versions to overlap.
 Before either kind of release, complete the
 [upgrade checklist](upgrade-checklist.md).
 
@@ -71,20 +71,20 @@ availability or admission, image trust, database durability, or session disposal
 
 The OCC identity needs Installation `read`. A runtime upgrade additionally needs
 Installation `administer`, exact `read` access to every Namespace, Agent, and
-active Agent revision, plus exact `deploy` access to every running Agent.
-Revision read access must also cover the replacement revisions.
+selected Agent revision, plus exact `deploy` access to every running Agent.
+Agent revision read access must also cover the replacement versions.
 
 Review saved Agent and Configuration drafts before a runtime upgrade. Each
-deployment snapshots the current draft, not the previous active revision.
+deployment snapshots the current draft, not the previous selected version.
 
 A controller-only release does not deploy Agents, but the new worker can
 restart their Pods once
 ([details](breaking-changes-before-2026-10-11.md#2026-10-10-controller-only-releases-can-restart-agent-pods-once)).
 Restarting the repository
 broker loses delivered sessions. Before a release,
-plan interruption and authorized replacement revisions for affected Agents;
+plan interruption and authorized replacement versions for affected Agents;
 review their drafts and deploy grants. Stop if recovery cannot be performed
-safely. A lost delivered session fails its revision and queues retirement;
+safely. A lost delivered session fails its version and queues retirement;
 inspect its retained cleanup. Follow the
 [broker recovery procedure](../repository-credentials/installation.md#install-and-verify).
 
@@ -244,7 +244,7 @@ its initialization hooks succeed. The helper verifies rollout and OCC access.
 Helm runs the candidate controller's database migration init container with the
 migration role, then runs bootstrap. The API and worker do not roll out unless
 both hooks succeed. The command does not request fleet inventory or Agent
-deployment authority. A later replacement revision does not settle old cleanup
+deployment authority. A later replacement version does not settle old cleanup
 or replay repository operations.
 
 For the first release that introduces `occ installation deployment-inventory`,
@@ -281,7 +281,7 @@ When repository credentials are enabled, also pass `--controller-image` (current
 digest) and `--broker-image` (selected digest). The worker and broker still restart.
 
 Before mutation, the command requires a complete authorized inventory with no
-deployment in progress. Every running Agent must have a readable active revision
+deployment in progress. Every running Agent must have a readable selected version
 in a ready Namespace. A running Agent without one, usually a failed initial
 deployment, stops the command before any change; the refusal lists up to ten
 such Agents by ID, name, and Namespace. Stop or delete each such Agent, or
@@ -294,7 +294,7 @@ The Installation checksum restarts the API and worker so they load the new
 configuration; their software version does not change.
 
 After OCC recovers, the command deploys every recorded running Agent, waits for
-durable success, confirms each new active revision, and requires its Pods to be
+durable success, confirms each new selected version, and requires its Pods to be
 `Running` and `Ready` on the requested runtime digest. Stopped and deleting
 Agents remain untouched. An empty fleet updates the saved runtime selection but
 does not prove that the image starts.
@@ -325,7 +325,7 @@ worker images.
 
 For a controller-only release, confirm gateways are ready again (affected Agents
 restart once) and
-verify any repository-bound Agents that required replacement revisions. For a runtime release, inspect
+verify any repository-bound Agents that required replacement versions. For a runtime release, inspect
 `deployments.jsonl`, `status/*.doctor.json`, and the before/after workload
 inventories. Then follow
 [Verify production workloads](production-agents.md#verify-production-workloads)
@@ -347,7 +347,7 @@ Migration `0037` adds the human sign-in state, and `helm rollback` never reverse
 - No canary, batching, general runtime compatibility check, automatic rollback,
   or cluster-wide upgrade lock.
 - Runtime upgrades start all recorded Agent deployments concurrently.
-- Agent deployments use current drafts rather than recreating active revisions.
+- Agent deployments use current drafts rather than recreating selected versions.
 - One runtime image is used for both gateway and Agent containers.
 - Model, channel, provider, native-access, and restore checks remain manual.
 

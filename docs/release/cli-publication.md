@@ -8,16 +8,17 @@ Advance the SemVer version in root `package.json` and keep the Helm chart's
 `version` and `appVersion` equal to it. Merge the version and release code to
 `main`, then wait for that exact main-push CI run to pass, including
 `CI Required`. Configure the main-only `container-publish` environment from
-[operator setup](containers.md#operator-setup) before dispatch. Use the same source revision for the chart and image publication
+[operator setup](containers.md#operator-setup) before dispatch. Use the same source commit for the chart and image publication
 when releasing the complete OCE version. This workflow checks version equality
 but does not prove that GHCR publication succeeded.
 
-Dispatch **Release OCC CLI** on `main` with the full `source_sha` of that main
-revision and its successful `ci_run_id`. The workflow checks the selected
-workflow revision and CI identity, cross-compiles `darwin` and `linux` binaries
-for `amd64` and `arm64` with pinned Go 1.27.1, then checks each binary's source
-revision, platform metadata, and the
-runner-native command. It uploads those exact bytes and checksums as a run
+Dispatch **Release OCC CLI** on `main` with the full `source_sha` of the selected
+`main` commit and its successful `ci_run_id`. The workflow requires the source
+commit SHA to match the selected workflow commit and checks CI identity. It
+cross-compiles `darwin` and `linux` binaries for `amd64` and `arm64` with pinned
+Go 1.27.1, then checks each binary's source commit SHA and platform metadata.
+It also runs the binary for the runner's platform to check its release version
+and help output. It uploads those exact bytes and checksums as a run
 artifact before the protected publication job starts. A failed-job rerun uses
 the artifact name from the successful build job, even when the run attempt
 number changes.

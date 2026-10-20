@@ -44,7 +44,7 @@ graph TD
     G --> H["Issue token and store account Secret"]
     H --> I["Persist credential ID and Secret reference"]
     I --> J["Save nullable Agent backendId"]
-    J --> K["Validate binding and freeze revision"]
+    J --> K["Validate binding and freeze Agent revision"]
   end
   subgraph Worker["Worker and Compute"]
     D --> L["Reauthorize deployment actor"]
@@ -95,7 +95,7 @@ account does not issue a token, and later issuance or deletion requires that
 exact binding to match the current configured Backend and member Driver.
 
 Before deletion, OCC locks the Namespace and account, then checks Agent drafts,
-active revisions, queued or claimed revision work, and queued or running Agent
+selected versions, queued or claimed Agent revision work, and queued or running Agent
 provisioning plans through `serviceAccounts.hasReferences`. A conflict returns
 before any Driver call can revoke the credential or remove its Secret. Namespace locking serializes this
 check with draft changes and deployment admission; the PostgreSQL reference
@@ -128,7 +128,9 @@ With no ServiceAccount Driver selected (no ChatGPT Backend), issuance answers
 `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED` naming the fix after the grant and
 account lookup; a selected Driver that fails stays `503`.
 
-### 4. Save Agent Backend intent and admit the revision
+<span id="4-save-agent-backend-intent-and-admit-the-revision" class="anchor-alias"></span>
+
+### 4. Save Agent Backend intent and admit the Agent revision
 
 `packages/occ/src/index.ts:OpenClawController.createAgent`, `updateAgent`, `deployAgent`
 
@@ -145,7 +147,7 @@ the exact nonnull Backend, selected member Driver, workspace, account, recorded
 credential issuance, and dedicated Codex execution. An account without an issued
 credential cannot deploy; without a ChatGPT Backend that refusal is
 `409 SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED`. Admission freezes the account identity, exact credential
-reference, private Backend binding, and Agent `backendId` in the revision.
+reference, private Backend binding, and Agent `backendId` in the Agent revision.
 Supplied API keys use the same [harness binding path](native-service-account-credential-delivery.md)
 through an OCC Secret; native account references are not model-auth selectors.
 
@@ -162,7 +164,7 @@ and credential values stay private.
 
 `KubernetesComputeDriver.prepareRevision` uses its internal `prepareHarnessAuth`
 rendering step and `CODEX_LOGIN_MODE=codex_pat`, then delivers the account token
-into a revision-owned data-plane Secret for dedicated Codex. Embedded execution
+into a data-plane Secret for that Agent revision. Only dedicated Codex receives it. Embedded execution
 is rejected for managed access tokens. The Gateway receives no model credential.
 The trusted worker reads the CP source and manages the DP projection; workload
 ServiceAccounts receive no Secret API permission. Workspace ownership remains
@@ -197,7 +199,7 @@ Refresh, rotation, and automated reconciliation remain deferred.
   `OCC_TEST_CHATGPT_WORKSPACE_ID`, disposable Kubernetes/PostgreSQL, and real
   digest-pinned OpenClaw/Codex images; do not use `OPENAI_API_KEY`.
 - Verify the provider account, private credential ID, exact-account Secret,
-  revision-scoped Codex-only projection, and genuine model response. For ownership,
+  Codex-only projection for that Agent revision, and genuine model response. For ownership,
   compensation, and ambiguous commits, see the [service-account guide](../reference/service-accounts.md)
   and [security model](../reference/security.md).
 

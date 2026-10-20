@@ -37,8 +37,8 @@ AppArmor or SELinux restrictions separately. Successful execution through
 An EKS investigation on Amazon Linux 2023, kernel `6.12.103`, containerd `2.2.7`,
 and Codex `0.156.0` found that the effective profile defaulted to
 `SCMP_ACT_ERRNO`. Its `clone` mask excluded namespace flags, and it omitted
-`unshare`, `mount`, and `pivot_root` allowances. A bounded host probe as UID 1000
-with no-new-privileges could create a user namespace. This isolated the
+`unshare`, `mount`, and `pivot_root` allowances. A host probe for user-namespace creation, run as UID 1000
+with no-new-privileges, could create a user namespace. This isolated the
 container syscall policy as the blocker without changing host sysctls.
 
 Do not infer the same cause on another node image. Stop if the captured policy
@@ -49,8 +49,8 @@ or host probe contradicts that diagnosis.
 On each distinct eligible node configuration, create a disposable probe Pod
 using your approved runtime digest, `RuntimeDefault`, UID/GID 1000, dropped
 capabilities, `allowPrivilegeEscalation: false`, and a read-only root filesystem.
-Give it bounded writable workspace, home, and temporary volumes without Agent
-credentials or persistent data. Keep the default kubeconfig unchanged.
+Set size limits for its writable workspace, home, and temporary volumes. Do not
+include Agent credentials or persistent data. Keep the default kubeconfig unchanged.
 
 Through your authorized host-management channel, capture only the running
 probe container's effective seccomp policy. On a containerd node with `crictl`

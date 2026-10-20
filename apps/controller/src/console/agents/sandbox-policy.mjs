@@ -100,6 +100,34 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
   let additions = [];
   let recommendations = [];
   let suggestionsReading = false;
+  // A permission refusal is not retried from here: the same request gets the same answer.
+  let suggestionsDenied = false;
+  // The first policy read says whether the Sandbox Driver supports per-Agent network policy.
+  // Without it there is no Sandbox log source and no suggestions, so the tab says so once instead
+  // of reading both, showing their refusals and offering an editor (finding 2060). A refused or
+  // failed policy read leaves the logs and suggestions to their own permissions.
+  let policyAnswered;
+  const firstPolicyRead = new Promise((resolve) => {
+    policyAnswered = resolve;
+  });
+  async function policySupported() {
+    await firstPolicyRead;
+    if (!current()) {
+      return false;
+    }
+    if (view?.capability === null) {
+      section.replaceChildren(
+        element("h2", {}, "Policy denials"),
+        element(
+          "p",
+          { role: "status" },
+          "This Sandbox Driver does not support per-Agent network policy. Policy denials, suggestions and Agent network rules are not available for this Agent.",
+        ),
+      );
+      return false;
+    }
+    return true;
+  }
   let logTimer;
   let suggestionTimer;
   let policyTimer;
@@ -162,6 +190,9 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
 
   async function readLogs(restart = false) {
     if (!current() || reading || revisionId === "draft") {
+      return;
+    }
+    if (!(await policySupported()) || reading) {
       return;
     }
     clearTimeout(logTimer);
@@ -245,7 +276,7 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
           editable() ? button("Review suggestion", () => prefill(entry.grant)) : null,
         ),
       ),
-      button("Refresh suggestions", () => void loadSuggestions()),
+      ...(suggestionsDenied ? [] : [button("Refresh suggestions", () => void loadSuggestions())]),
     );
   }
 
@@ -258,6 +289,9 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
       renderSuggestions();
       return;
     }
+    if (!(await policySupported()) || suggestionsReading) {
+      return;
+    }
     clearTimeout(suggestionTimer);
     suggestionsReading = true;
     try {
@@ -268,17 +302,19 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
         return;
       }
       recommendations = result.recommendations;
+      suggestionsDenied = false;
       suggestionStatus.textContent = `Suggestions loaded: ${recommendations.length}${result.providerVersion ? ` · Provider draft version ${result.providerVersion}` : ""}${result.truncated ? " · Some suggestions were omitted or exceed the read limit." : ""}`;
     } catch (error) {
       if (!current()) {
         return;
       }
       recommendations = [];
+      suggestionsDenied = error.status === 403;
       suggestionStatus.textContent = errorText(error, "read policy suggestions");
     }
     suggestionsReading = false;
     renderSuggestions();
-    if (current() && follow.checked) {
+    if (current() && follow.checked && !suggestionsDenied) {
       suggestionTimer = setTimeout(() => {
         if (follow.checked) {
           void loadSuggestions();
@@ -640,6 +676,11 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
       }
       const wasPending = view?.policy.application?.state === "pending";
       view = loaded;
+      if (view.capability === null) {
+        // The draft tab reads no logs or suggestions, so the unsupported state is shown from here too.
+        void policySupported();
+        return;
+      }
       if (wasPending && view.policy.application?.state !== "pending") {
         feedback.textContent = "Policy refreshed.";
         if (view.policy.application?.state === "applied") {
@@ -669,8 +710,10 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
       policyPanel.replaceChildren(
         element("h2", {}, "Agent network policy"),
         element("p", { role: "alert" }, errorText(error, "read this Agent’s policy")),
-        button("Retry policy read", () => void loadPolicy()),
+        ...(error.status === 403 ? [] : [button("Retry policy read", () => void loadPolicy())]),
       );
+    } finally {
+      policyAnswered();
     }
   }
 

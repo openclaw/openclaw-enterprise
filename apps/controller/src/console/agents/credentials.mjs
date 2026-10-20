@@ -299,9 +299,10 @@ export function createChannelSecretsPanel({
     delete state.pendingSecretGrants[secret.id];
   }
 
-  function canDeploy() {
+  // Channel credentials are saved and complete: the next-step card's credentials step (UX spec
+  // 3.7). Deploy also needs the version history.
+  function credentialsReady() {
     return (
-      revisionsLoaded &&
       !state.saving &&
       !state.outcomeUnknown &&
       !state.reloadRequired &&
@@ -309,6 +310,10 @@ export function createChannelSecretsPanel({
       !state.unsavedSecrets &&
       hasRequiredChannelCredentials(state.values, state.configuration)
     );
+  }
+
+  function canDeploy() {
+    return revisionsLoaded && credentialsReady();
   }
 
   function deployGateMessage() {
@@ -667,6 +672,7 @@ export function createChannelSecretsPanel({
   return {
     section: slackEnabled(values) || state.carriedNote ? section : null,
     canDeploy,
+    credentialsReady,
     deployGateMessage,
     isSaving: () => state.saving,
     mutationPending: () => state.saving || state.outcomeUnknown || state.reloadRequired,

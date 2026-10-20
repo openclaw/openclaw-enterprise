@@ -72,8 +72,8 @@ with explicit file paths instead.
 
 Plan session capacity before enabling many Agents. The single sidecar holds
 every repository session in the installation: one per binding of each deployed
-revision. A closing session keeps its slot until disposal, so stopped or
-replaced revisions can hold slots for a while. The default limit is 16
+version. A closing session keeps its slot until disposal, so stopped or
+replaced versions can hold slots for a while. The default limit is 16
 sessions, and one Agent may have up to 16 bindings. When the limit is reached, new sessions
 fail with a retryable `overloaded` error until slots free. To raise it, add
 `"limits": { "sessions": 64 }` (any positive integer) to `config.json`. Other
@@ -269,9 +269,9 @@ with [Agent creation, deployment and a repository task](../repository-credential
 to verify the actual consumer. Registry or certificate mismatch fails closed;
 check IDs, exact paths, DNS SAN and public trust first. A service restart loses
 in-memory sessions. A lost session already delivered to an Agent fails its
-revision and queues runtime retirement; worker maintenance does not recreate it.
+version and queues runtime retirement; worker maintenance does not recreate it.
 Inspect retained cleanup obligations before explicitly deploying a new authorized
-revision. That deployment does not settle old cleanup or replay repository
+version. That deployment does not settle old cleanup or replay repository
 operations. See [restart and cleanup limits](../../reference/repository-credentials.md#repo-driver-contract).
 Updating policy requires a new immutable registry ConfigMap and consistent
 selection by all three consumers; existing admitted grants are not silently widened.

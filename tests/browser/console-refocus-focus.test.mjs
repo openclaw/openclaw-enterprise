@@ -120,7 +120,7 @@ test("refocusing the Agents list while a row reads its deployment keeps the read
   row.release();
   const deployment = page.locator(settledView).locator(".agent-deployment a");
   await deployment.waitFor();
-  assert.match(await deployment.textContent(), /^v1 · succeeded/);
+  assert.match(await deployment.textContent(), /^v1 · Completed/);
   assert.equal(await isFocused(link), true);
   // The aborted read did not make the list one a later refocus rebuilds.
   await refocusHeld(t, page);
@@ -134,7 +134,7 @@ test("refocusing during a deployment reread keeps focus on that deployment", asy
   const { fixture, namespace, page } = await openDeployedList(t, "Refocus reread");
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   const cell = page.locator(settledView).locator(".agent-deployment");
-  const deployment = cell.getByRole("link", { name: "v1 · succeeded", exact: true });
+  const deployment = cell.getByRole("link", { name: "v1 · Completed", exact: true });
   await deployment.waitFor();
   await deployment.focus();
   await tagList(page);
@@ -174,7 +174,7 @@ test("refocusing the Agents list after a row read failed keeps the reader's plac
   await refocusHeld(t, page);
   assert.equal(await isFocused(link), true, "keep focus on the Agent link");
   assert.equal(await listKept(page), true, "reuse the list");
-  await cell.getByRole("link", { name: "v1 · succeeded", exact: true }).waitFor();
+  await cell.getByRole("link", { name: "v1 · Completed", exact: true }).waitFor();
 });
 
 // Shell controls outside the page are replaced by the recheck's shells; focus returns to the
