@@ -100,7 +100,7 @@ test("spacing and radius use the design-language scale (UX plan B3, spec P12)", 
     [".plugin-list-item .badge margin-left", "calc(32px + var(--space-3))"],
     // Overlaps the 1px row border.
     [".repository-result-row + .repository-result-row margin-top", "-1px"],
-    // 1px block padding keeps the 10px caps chip one line high.
+    // 1px block padding keeps the 11px caps chip inside the log line.
     [".log-level padding", "1px var(--space-2)"],
   ]);
   const spacing = /^(padding|margin|gap|row-gap|column-gap)(-[a-z-]+)?$/;
@@ -142,6 +142,8 @@ test("type uses the design-language scale (UX plan B3, spec P12)", () => {
     ["input, select, textarea font-size", phoneInputMinimum],
     [".log-picker select, .log-search input font-size", phoneInputMinimum],
     [".channel-field input, .channel-field select font-size", phoneInputMinimum],
+    // The nav glyphs are fixed at 16px to match their 16px box (spec 6.1), not a type step.
+    [".nav-icon font-size", "16px"],
     // Fits the timestamp to its cell: 4px is the cell's slack, not a size.
     [".log-time-text font-size", "min(var(--text-xs), (100cqi - 4px) / var(--log-time-ems, 19.4))"],
   ]);
@@ -150,9 +152,9 @@ test("type uses the design-language scale (UX plan B3, spec P12)", () => {
   for (const { selector, prop, value } of rules(consoleCss + channelsCss)) {
     const key = `${selector} ${prop}`;
     const checks = {
-      "font-size": () => literalsOf(value).length > 0,
-      font: () => literalsOf(value).length > 0,
-      "font-weight": () => /\d/.test(value),
+      "font-size": () => literalsOf(value).length > 0 || /%|calc\(|smaller|larger/.test(value),
+      font: () => literalsOf(value).length > 0 || /%|calc\(/.test(value),
+      "font-weight": () => /\d|\b(bold|bolder|lighter)\b/.test(value),
       "font-family": () => !/^(var\(--font-(sans|mono)\)|inherit)$/.test(value),
       "letter-spacing": () => !/^(var\(--tracking-(tight|caps)\)|normal)$/.test(value),
     };

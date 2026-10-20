@@ -694,7 +694,7 @@ p {
   }
 }
 .nav-icon {
-  font-size: var(--text-lg);
+  font-size: 16px;
   width: 16px;
   text-align: center;
 }
@@ -1385,9 +1385,6 @@ p {
   }
   .state-panel {
     padding: var(--space-6);
-  }
-  h1 {
-    font-size: var(--text-2xl);
   }
 }
 
@@ -4038,6 +4035,7 @@ select:not([multiple])[size="1"] {
   font-family: var(--font-sans);
   font-size: var(--text-xs);
   font-weight: var(--weight-semibold);
+  line-height: var(--text-xs--line-height);
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
