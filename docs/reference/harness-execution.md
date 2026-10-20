@@ -137,8 +137,8 @@ Codex requires a successful native model probe before serving.
 API-key/PAT/external-token state stays ephemeral; `chatgptAuthTokens` delegates
 refresh externally with no refresh token or native fallback. Dedicated Gateways
 do not receive the selected Harness inference credential. Configuration
-`secretBindings` can supply separate Gateway feature credentials, including Memory
-embeddings; the initial runtime credential API supplies transport/channel authentication.
+`secretBindings` supply channel and Gateway feature credentials, including Memory
+embeddings; the initial runtime credential API supplies transport authentication.
 
 For initial and replacement deployments, Kubernetes OpenClaw runs one native
 model probe (20 seconds plus 45 CPU-seconds at its CPU limit, 256 output tokens)

@@ -21,7 +21,8 @@ The file node's explicit command allowlist disables OpenClaw worker hosting;
 this launcher is not an OpenClaw remote worker launcher.
 
 [Dedicated native OpenClaw](../../harness-execution.md#native-worker-support)
-has an experimental worker path with Sandbox-owned provisioning and storage.
+has an experimental worker path with Sandbox-owned Harness provisioning.
+Compute manages the Harness PVC and supplies its approved storage mounts.
 [Issue #77](https://github.com/openclaw/openclaw-enterprise/issues/77) tracks outstanding
 end-to-end qualification of model/tool turns, replacement, and retirement.
 Codex validation does not qualify native workers or require them to use Codex
