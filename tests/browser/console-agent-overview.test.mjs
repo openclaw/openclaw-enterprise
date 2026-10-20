@@ -1088,7 +1088,9 @@ test("opening the Logs tab by click does not move the cards below it", async (t)
     const { shifts } = await takeLayoutShifts(page);
     const shift = shifts
       .filter((entry) =>
-        entry.sources.some((source) => /stop-note|deletion-note|agent-logs|log-/.test(source.node)),
+        entry.sources.some((source) =>
+          /danger-zone|stop-note|deletion-note|agent-logs|log-/.test(source.node),
+        ),
       )
       .reduce((sum, entry) => sum + entry.value, 0);
     t.diagnostic(`${viewport.width}x${viewport.height} shift ${shift}: ${JSON.stringify(shifts)}`);
