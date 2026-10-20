@@ -2946,7 +2946,7 @@ export const scenarios = {
   },
   createCapabilitiesDenied: {
     group: "Pages/Create Agent",
-    name: "Agent creation needs an administrator",
+    name: "Permission check failed",
     path: create,
     actions: form,
     rules: [
@@ -2954,8 +2954,12 @@ export const scenarios = {
       { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
     ],
     description:
-      "Without a permission answer that grants Agent create, a caller without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
-    gap: "The permission read fails here; with a grant the form goes on (Member with Agent create).",
+      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, the page says the permission check failed, and Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal.",
+    steps: [
+      'Under the form fields, read "Your permissions in this Namespace could not be checked".',
+      "Retry permission check is offered; the fixture keeps failing the read, so the text stays.",
+    ],
+    gap: "The live retry that succeeds is in tests/browser/console-create-agent-member.test.mjs.",
   },
   createMember: {
     group: "Pages/Create Agent",
@@ -2970,6 +2974,20 @@ export const scenarios = {
       'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
     ],
     gap: "The live check is a member account on a real Installation (tests/browser/console-create-agent-member.test.mjs).",
+  },
+  createMemberGrantRefused: {
+    group: "Pages/Create Agent",
+    name: "Member Agent created, grant needs an administrator",
+    path: create,
+    observabilityDenied: true,
+    actions: [...readyForm, click("Create Agent")],
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
+    steps: [
+      "Read the alert: giving the Agent access to its Secrets needs Installation administration access.",
+      "The request log shows no /iam/ request, and only Cancel and Start over remain beside the saved-resources line.",
+    ],
   },
   createRestricted: {
     group: "Pages/Create Agent",

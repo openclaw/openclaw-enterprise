@@ -153,6 +153,9 @@ Successful draft saves retain IDs and freeze inputs, including authentication.
 Correct names or permissions, then retry failed resources.
 If model/Slack Secret grants fail after Agent creation,
 select **Retry credential access** or ask an administrator to check its grants.
+A member without Installation administration gets no retry: open the saved Agent and
+ask an Installation administrator to grant it. If your permissions could not be checked,
+select **Retry permission check**.
 Uncertain responses block another attempt: check displayed IDs and the Agents list;
 give the request ID to your operator if the outcome remains unknown.
 
