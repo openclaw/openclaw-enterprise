@@ -1637,6 +1637,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const reason = leaveReason();
     if (!draftEditorBlocksNavigation()) {
       showLeaveNote(content, reason, "start");
+      // The note tops the tab panel, which may be scrolled out of view; focus stays put.
+      if (leaveNote.isConnected) {
+        leaveNote.scrollIntoView({ block: "nearest" });
+      }
     } else if (deployInFlight) {
       showLeaveNote(versionSummary.querySelector(":scope > .agent-draft-actions"), reason, "end");
     } else if (refreshingDraft) {
@@ -5018,10 +5022,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       !context.isCurrent() ||
       deleting ||
       next.pathname !== url.pathname ||
-      next.searchParams.get("namespace") !== namespaceId ||
-      (nextRevision === selected && nextTab === selectedTab)
+      next.searchParams.get("namespace") !== namespaceId
     ) {
       return false;
+    }
+    if (nextRevision === selected && nextTab === selectedTab) {
+      // The page's own reloads (a retry, a draft re-read) rebuild it: a share waits for them too.
+      if (!sharingWrite) {
+        return false;
+      }
+      showLeaveBlock();
+      return true;
     }
     if (draftEditorBlocksNavigation() || (sharingWrite && nextRevision !== selected)) {
       history.replaceState(
