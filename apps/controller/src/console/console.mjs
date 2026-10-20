@@ -2245,17 +2245,19 @@ async function revalidateMountedAgent(current) {
     routeKey(route()) === key &&
     view.isConnected;
   const path = `/namespaces/${encodeURIComponent(selectedNamespace)}/agents/${encodeURIComponent(agent.id)}`;
-  const focused = view.contains(document.activeElement) ? document.activeElement : null;
+  const pageActions = mountedViewState?.pageActions?.isConnected
+    ? mountedViewState.pageActions
+    : null;
+  const activeElement = document.activeElement;
+  const focused =
+    view.contains(activeElement) || pageActions?.contains(activeElement) ? activeElement : null;
   const selection =
     typeof focused?.selectionStart === "number"
       ? [focused.selectionStart, focused.selectionEnd]
       : null;
   let checking = "session";
-  // Block stale controls during admission without losing an editor's caret on return.
+  // Block stale controls during admission without losing focus or an editor's caret on return.
   view.inert = true;
-  const pageActions = mountedViewState?.pageActions?.isConnected
-    ? mountedViewState.pageActions
-    : null;
   if (pageActions) {
     pageActions.inert = true;
   }

@@ -3233,6 +3233,21 @@ export const scenarios = {
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
   },
+  agentHeaderActions: {
+    group: "Pages/Agent detail",
+    name: "Header actions",
+    path: revision,
+    deployed: true,
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1500 }],
+    description:
+      "The Agent header keeps its identity and actions visible while access is rechecked. The delay and Agent data are simulated.",
+    steps: [
+      "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
+      "Focus Create new version, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
+      "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
+      "Choose Create new version, open Edit Configuration, and make an unsaved edit. Use the Agents back link or Namespace selector: navigation stays on the Agent until the edit is resolved.",
+    ],
+  },
   longVersionHistory: {
     group: "Pages/Agent detail",
     name: "Long version history",
