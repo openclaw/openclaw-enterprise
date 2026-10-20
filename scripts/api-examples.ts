@@ -267,6 +267,7 @@ export const parameterExamples = {
   harnessOverrides: "{}",
   namespaceId,
   agentId,
+  profileId: "profile-alice",
   configurationId,
   revisionId,
   deploymentId: revisionId,
@@ -333,6 +334,7 @@ export const requestExamples = {
   updateConfiguration: { expectedGeneration: 1, values: configuration },
   createAgent: { name: agent.name, configurationId, executionMode: "dedicated", harnessAuth },
   updateAgent: { configurationId, executionMode: "dedicated", harnessAuth },
+  updateAgentControlUiBookmark: { url: "https://control.example.test/agent", expectedVersion: 0 },
   provisionAgent: {
     name: agent.name,
     requestId: provisioning.requestId,
@@ -467,6 +469,8 @@ export const responseExamples = {
   getAgent: agent,
   createAgent: agent,
   updateAgent: agent,
+  getAgentControlUiBookmark: { url: null, version: 0 },
+  updateAgentControlUiBookmark: { url: "https://control.example.test/agent", version: 1 },
   deleteAgent: { ...agent, status: "deleting" },
   stopAgent: agent,
   createConfiguration: config,
@@ -559,6 +563,17 @@ export const responseExamples = {
     intentId: uuid,
     exchange: "e".repeat(43),
     redeemUrl: `${nativeBrowserOrigin}/__occ/native-admin/redeem`,
+  },
+  getAgentGatewayPeople: {
+    people: [
+      {
+        identity: "oidc:member-01",
+        profileId: "profile-alice",
+        displayName: "Alice",
+        role: "member",
+        hasAvatar: false,
+      },
+    ],
   },
   getAgentRuntimeImages: { status: "undeployed", images: [] },
   getAgentRuntimeCredentials: { transportConfigured: true },

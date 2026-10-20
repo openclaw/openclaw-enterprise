@@ -1996,7 +1996,17 @@ async function canonicalData(db) {
         `SELECT to_jsonb(t) - $1::pg_catalog.text[] AS value FROM occ."${table}" t ORDER BY to_jsonb(t)::pg_catalog.text`,
         [migrationOwnedColumns[table] ?? []],
       )
-    ).rows;
+    ).rows.map((row) => {
+      if (table !== "agents") {
+        return row;
+      }
+      // Older rows have no bookmark columns. Normalize only their absence to the
+      // new defaults; retain every stored URL and version to detect data loss.
+      return {
+        ...row,
+        value: { control_ui_bookmark_url: null, control_ui_bookmark_version: 0, ...row.value },
+      };
+    });
   }
   return result;
 }
@@ -2192,6 +2202,7 @@ test(
       [73, "preFiniteRepositorySessionWithdrawal"],
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preAgentControlUiBookmark"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2218,6 +2229,27 @@ test(
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
+        if (history === "preAgentControlUiBookmark") {
+          // Preserve actual bookmark data in snapshots, not just the newly added defaults.
+          const url = "https://control.example.test/migration-preserved/path";
+          await db.app.query(
+            "UPDATE occ.agents SET control_ui_bookmark_url = $1, control_ui_bookmark_version = 7 WHERE namespace_id = $2",
+            [url, namespaceId],
+          );
+          const bookmarked = await canonicalData(db);
+          assert.equal(bookmarked.agents[0].value.control_ui_bookmark_url, url);
+          assert.equal(bookmarked.agents[0].value.control_ui_bookmark_version, 7);
+          assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "completed" });
+          assert.deepEqual(await canonicalData(db), bookmarked);
+          await db.app.query(
+            "UPDATE occ.agents SET control_ui_bookmark_url = NULL, control_ui_bookmark_version = 8 WHERE namespace_id = $1",
+            [namespaceId],
+          );
+          const cleared = await canonicalData(db);
+          assert.equal(cleared.agents[0].value.control_ui_bookmark_url, null);
+          assert.equal(cleared.agents[0].value.control_ui_bookmark_version, 8);
+          assert.notDeepEqual(cleared, bookmarked);
+        }
         // Upgrading an existing revision must never invent a recoverable first-deployment intent.
         const existingBindings = await db.app.query(
           "SELECT first_deployment_digest FROM occ.agent_revisions",
@@ -2685,6 +2717,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preAgentControlUiBookmark"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2880,6 +2913,7 @@ test(
     for (const [prefix, history] of [
       [74, "preHumanAuthenticationResults"],
       [75, "preNativeBrowserAccess"],
+      [76, "preAgentControlUiBookmark"],
     ]) {
       const previous = await historyDatabase(context, fixture, "previous", { prefix });
       const restored = await restoreHistoryArchive(
@@ -2969,6 +3003,7 @@ test(
       [59, "preCredentialProxy"],
       [62, "prePreparedAttemptSettlement"],
       [75, "preNativeBrowserAccess"],
+      [76, "preAgentControlUiBookmark"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2992,6 +3027,7 @@ test(
         // All three pending receipts, schema changes and main-row annotations roll back.
         // Reject native browser trigger creation after its tables and grants; all of 0076 must roll back.
         const rollbackTag = [
+          [76, "ALTER TABLE"],
           [75, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],

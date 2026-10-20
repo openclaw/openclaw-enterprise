@@ -1476,7 +1476,29 @@ const other = await prepareFile({
 assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_CI, undefined);
 assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE, undefined);
 assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL, undefined);
+assert.equal(other.env.OCC_TEST_AGENT_CONTROL_UI_BOOKMARK_MIGRATION_DATABASE_URL, undefined);
 await other.cleanup();
+// The bookmark audit-failure proof receives a migrator for only its prepared database.
+const bookmark = await prepareFile({
+  lane: "postgres-platform",
+  file: "tests/integration/postgres-agent-control-ui-bookmark.test.ts",
+  statePath,
+});
+const bookmarkApp = new URL(bookmark.env.OCC_TEST_DATABASE_URL);
+const bookmarkMigrator = new URL(bookmark.env.OCC_TEST_AGENT_CONTROL_UI_BOOKMARK_MIGRATION_DATABASE_URL);
+assert.equal(bookmarkApp.username, "occ_app");
+assert.equal(bookmarkMigrator.username, "occ_migrator");
+assert.equal(bookmarkApp.pathname, bookmarkMigrator.pathname);
+assert.notEqual(bookmarkApp.pathname, app.pathname);
+assert.equal(bookmark.env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL, undefined);
+await bookmark.cleanup();
+const platformSibling = await prepareFile({
+  lane: "postgres-platform",
+  file: "tests/integration/postgres-agent-update-authority.test.ts",
+  statePath,
+});
+assert.equal(platformSibling.env.OCC_TEST_AGENT_CONTROL_UI_BOOKMARK_MIGRATION_DATABASE_URL, undefined);
+await platformSibling.cleanup();
 const finalState = JSON.parse(await readFile(statePath, "utf8"));
 // The server and its lane template, which lane cleanup drops.
 assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, laneTemplate]), [["compose-postgres", undefined], ["postgres-database", "ci"]]);
@@ -1498,13 +1520,13 @@ assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, lan
     ];
     const commandLog = sessions();
     // One migrated lane template, then a copy per file, each copy one session.
-    assert.equal(commandLog.length, 7);
+    assert.equal(commandLog.length, 11);
     assert.equal(commandLog.filter((line) => line.startsWith("migrate\t")).length, 1);
     const createCommands = commandLog.filter((line) => line.includes("CREATE DATABASE"));
     const dropCommands = commandLog.filter((line) => line.includes("DROP DATABASE"));
-    assert.equal(createCommands.length, 3);
-    assert.equal(createCommands.filter((line) => line.includes(" TEMPLATE ")).length, 2);
-    assert.equal(dropCommands.length, 2);
+    assert.equal(createCommands.length, 5);
+    assert.equal(createCommands.filter((line) => line.includes(" TEMPLATE ")).length, 4);
+    assert.equal(dropCommands.length, 4);
     assert.ok(createCommands.every((line) => line.startsWith("postgres\tCREATE DATABASE ")));
     const githubEnv = join(root, "github.env");
     // Neither GITHUB_ENV nor --github-env may publish the barrier outside the runner.
@@ -1530,7 +1552,7 @@ assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, lan
       assert.match(blocked.stderr, /must be prepared within the test runner/);
       await assert.rejects(() => stat(githubEnv), { code: "ENOENT" });
     }
-    assert.equal(sessions().length, 7);
+    assert.equal(sessions().length, 11);
   });
 
   test("prepareFile copies a per-test database from a ready template it owns without migrating", async (t) => {

@@ -26,6 +26,7 @@ import { apiErrorResponse } from "../helpers/api-error.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
 import {
+  fetchFixtureRoute,
   persistedDeploymentError,
   accessBindingPostRequests,
   accessibleDescription,
@@ -335,10 +336,14 @@ test("Agent credential Secret picker distinguishes action labels from Secret nam
   );
   const { page } = await newPage(t, fixture);
   await page.route(`**/namespaces/${namespace.id}/secrets`, async (route) => {
-    const response = await route.fetch();
-    const body = wireBody(fixture, SecretListResponse, await response.json());
+    const response = await fetchFixtureRoute(route, fixture.fetch);
+    const body = wireBody(fixture, SecretListResponse, await response.clone().json());
     body.data = body.data.filter((secret) => secret.id !== original.id);
-    await route.fulfill({ response, json: body });
+    await route.fulfill({
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+      json: body,
+    });
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
   await login(page, fixture, url);
@@ -461,11 +466,15 @@ for (const listOutcome of ["arrives", "fails"]) {
         return;
       }
       listReads += 1;
-      const response = await route.fetch();
+      const response = await fetchFixtureRoute(route, fixture.fetch);
       await listGate;
       await route.fulfill(
         listOutcome === "arrives"
-          ? { response }
+          ? {
+              status: response.status,
+              headers: Object.fromEntries(response.headers),
+              body: Buffer.from(await response.arrayBuffer()),
+            }
           : { status: 500, contentType: "application/json", body: "{}" },
       );
     });
@@ -533,12 +542,16 @@ test("a different Secret in a create response cannot stage a binding or repeat t
     if (request.method() !== "POST") {
       return route.continue();
     }
-    const response = await route.fetch();
-    assert.equal(response.status(), 201);
-    const body = wireBody(fixture, SecretResponse, await response.json());
+    const response = await fetchFixtureRoute(route, fixture.fetch);
+    assert.equal(response.status, 201);
+    const body = wireBody(fixture, SecretResponse, await response.clone().json());
     assert.equal(body.data.name, name);
     // The create succeeded. Substitute valid metadata for a different Secret in its reply.
-    await route.fulfill({ response, json: { ...body, data: original } });
+    await route.fulfill({
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+      json: { ...body, data: original },
+    });
   });
   await picker.fill("no matching Secret");
   const create = page.getByRole("option", { name: "Create new Secret...", exact: true });
@@ -974,12 +987,13 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
   const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
   assert.notEqual(other.servicePrincipalId, agent.servicePrincipalId);
   await page.route(agentUrl, async (route) => {
-    const response = await route.fetch();
-    assert.equal(response.status(), 200);
-    const { data, meta } = wireBody(fixture, AgentResponse, await response.json());
+    const response = await fetchFixtureRoute(route, fixture.fetch);
+    assert.equal(response.status, 200);
+    const { data, meta } = wireBody(fixture, AgentResponse, await response.clone().json());
     assert.equal(data.servicePrincipalId, agent.servicePrincipalId);
     await route.fulfill({
-      response,
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
       json: { data: { ...data, servicePrincipalId: other.servicePrincipalId }, meta },
     });
   });
@@ -1354,7 +1368,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
       return;
     }
     interceptedPatches += 1;
-    await route.fetch();
+    await fetchFixtureRoute(route, fixture.fetch);
     await route.fulfill({
       status: 503,
       contentType: "application/json",
@@ -1423,12 +1437,16 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
     if (request.method() !== "PATCH") {
       return route.continue();
     }
-    const response = await route.fetch();
-    assert.equal(response.status(), 200);
-    const { data, meta } = wireBody(fixture, ConfigurationResponse, await response.json());
+    const response = await fetchFixtureRoute(route, fixture.fetch);
+    assert.equal(response.status, 200);
+    const { data, meta } = wireBody(fixture, ConfigurationResponse, await response.clone().json());
     assert.equal(data.id, agent.configurationId);
     assert.deepEqual(data.values, otherValues);
-    await route.fulfill({ response, json: { data: { ...data, id: `cfg_${randomUUID()}` }, meta } });
+    await route.fulfill({
+      status: response.status,
+      headers: Object.fromEntries(response.headers),
+      json: { data: { ...data, id: `cfg_${randomUUID()}` }, meta },
+    });
   });
   const save = page.getByRole("button", { name: "Save Configuration", exact: true });
   const editor = page.getByLabel("Configuration JSON");
@@ -1893,7 +1911,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
       return;
     }
     interceptedStops += 1;
-    await replyWithDifferentAgentId(route, agent.id, 202);
+    await replyWithDifferentAgentId(route, agent.id, 202, fixture.fetch);
   });
 
   await login(
@@ -1927,7 +1945,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   // A read for a different Agent cannot unlock another destructive request either.
   await page.route(
     fixture.origin + agentPath,
-    (route) => replyWithDifferentAgentId(route, agent.id, 200),
+    (route) => replyWithDifferentAgentId(route, agent.id, 200, fixture.fetch),
     { times: 1 },
   );
   await page.getByRole("button", { name: "Refresh stop status" }).click();
@@ -1954,15 +1972,19 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   await page.route(
     fixture.origin + agentPath,
     async (route) => {
-      const response = await route.fetch();
-      assert.equal(response.status(), 200);
-      const { data, meta } = wireBody(fixture, AgentResponse, await response.json());
+      const response = await fetchFixtureRoute(route, fixture.fetch);
+      assert.equal(response.status, 200);
+      const { data, meta } = wireBody(fixture, AgentResponse, await response.clone().json());
       const { desiredRuntimeState, ...rest } = data;
       assert.equal(rest.id, agent.id);
       assert.equal(rest.namespaceId, namespace.id);
       assert.equal(rest.status, "active");
       assert.equal(desiredRuntimeState, "stopped");
-      await route.fulfill({ response, json: { data: rest, meta } });
+      await route.fulfill({
+        status: response.status,
+        headers: Object.fromEntries(response.headers),
+        json: { data: rest, meta },
+      });
     },
     { times: 1 },
   );
@@ -2530,6 +2552,7 @@ test("a version editor without Agent update can recover a failed deployment from
   // option must be labelled again when it lands (finding 2405).
   const firstPermissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
+    fetchRequest: fixture.fetch,
     once: true,
   });
   await page.clock.install();
@@ -2775,6 +2798,7 @@ test("a late permission answer relabels a reader's version entry and skips plugi
   const capabilities = () => pathRequests(requests, "GET", `${path}/plugins/capabilities`);
   const firstAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
+    fetchRequest: fixture.fetch,
     once: true,
   });
   await page.clock.install();
@@ -2798,6 +2822,7 @@ test("a late permission answer relabels a reader's version entry and skips plugi
 
   const secondAnswer = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
+    fetchRequest: fixture.fetch,
     once: true,
   });
   await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "plugins").href);
@@ -3017,6 +3042,7 @@ test("a late permission answer turns a reader's Channels and Channel Secrets rea
   const requests = apiRequests(page, fixture.origin);
   const firstPermissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
+    fetchRequest: fixture.fetch,
     once: true,
   });
   await page.clock.install();
@@ -3276,7 +3302,7 @@ for (const heldMetadata of [false, true]) {
           t,
           page,
           `${fixture.origin}/namespaces/${namespace.id}/secrets/${botId}`,
-          { method: "GET", once: true, afterServer: true },
+          { method: "GET", once: true, afterServer: true, fetchRequest: fixture.fetch },
         )
       : null;
     await login(
@@ -3306,6 +3332,7 @@ for (const heldMetadata of [false, true]) {
           method: "GET",
           once: true,
           afterServer: true,
+          fetchRequest: fixture.fetch,
         })
       : null;
     const permission = page.waitForResponse((response) =>
@@ -3356,6 +3383,7 @@ for (const tab of ["plugins", "credentials"]) {
         method: "GET",
         once: true,
         afterServer: true,
+        fetchRequest: fixture.fetch,
       },
     );
     await login(
@@ -3412,6 +3440,7 @@ test("late Configuration Secret names preserve an open focused native disclosure
       method: "GET",
       once: true,
       afterServer: true,
+      fetchRequest: fixture.fetch,
     },
   );
   await login(
@@ -3468,6 +3497,7 @@ test("a superseded draft Secret metadata read cannot replace the current Configu
       method: "GET",
       once: true,
       afterServer: true,
+      fetchRequest: fixture.fetch,
     },
   );
   await login(
@@ -3545,6 +3575,7 @@ for (const agentUpdate of [false, true]) {
         method: "GET",
         once: true,
         afterServer: true,
+        fetchRequest: fixture.fetch,
       },
     );
     const botRead = page.waitForResponse((response) =>
@@ -3934,6 +3965,7 @@ test("a Channels tab parked before a reader's permission answer returns read-onl
   const { page } = await newPage(t, fixture);
   const firstPermissions = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
+    fetchRequest: fixture.fetch,
     once: true,
   });
   await page.clock.install();
@@ -4004,10 +4036,11 @@ test("a permission reread after a save turns the draft read-only", async (t) => 
     t,
     page,
     `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
-    { method: "PATCH", afterServer: true, once: true },
+    { method: "PATCH", afterServer: true, fetchRequest: fixture.fetch, once: true },
   );
   const reread = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
+    fetchRequest: fixture.fetch,
     once: true,
   });
   await page.getByRole("button", { name: "Save Configuration" }).click();
@@ -4057,6 +4090,7 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     // Delay delivery, not authorization: these are the controller's actual flags for this viewer.
     const permissions = await holdRequests(t, page, permissionPath, {
       afterServer: true,
+      fetchRequest: fixture.fetch,
       timeout: 0,
     });
     if (action === "Stop") {
@@ -4071,8 +4105,8 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     await page.clock.fastForward(FIRST_ACTIVITY_WAIT_MS);
     assert.deepEqual(
       {
-        status: received.status(),
-        data: wireBody(fixture, AgentCallerPermissionsResponse, await received.json()).data,
+        status: received.status,
+        data: wireBody(fixture, AgentCallerPermissionsResponse, await received.clone().json()).data,
       },
       {
         status: 200,
@@ -4293,6 +4327,7 @@ test("a Plugins tab shown before the reread answers becomes editable when it lan
   await selectSecret(page, "Slack bot token", own);
   const reread = await holdRequests(t, page, `${fixture.origin}${path}/permissions`, {
     afterServer: true,
+    fetchRequest: fixture.fetch,
     once: true,
   });
   const saving = page.waitForResponse(

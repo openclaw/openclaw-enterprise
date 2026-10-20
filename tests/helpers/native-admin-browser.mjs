@@ -1110,6 +1110,31 @@ export async function runNativeAdminScenario(context) {
   });
 
   await saveGatewayManagedMode(topology, false);
+  // The topology owns Gateway proxy setup. Save the direct human in the ordinary
+  // draft Configuration so the deployed runtime, not a profile fixture, admits it.
+  const configuredIdentity = "oidc:member-01";
+  const configurationPath =
+    "/namespaces/" +
+    topology.agent.namespaceId +
+    "/configurations/" +
+    topology.agent.configurationId;
+  const configuration = await topology.request("GET", configurationPath);
+  assert.equal(configuration.status, 200, JSON.stringify(configuration.error));
+  const values = structuredClone(configuration.data.values);
+  values.gateway.auth.trustedProxy.allowUsers = [
+    ...new Set([...values.gateway.auth.trustedProxy.allowUsers, configuredIdentity]),
+  ];
+  values.gateway.auth.identityScopes = {
+    ...values.gateway.auth.identityScopes,
+    [configuredIdentity]: ["operator.read"],
+  };
+  const configured = await topology.request("PATCH", configurationPath, {
+    values,
+    ...(configuration.data.secretBindings === undefined
+      ? {}
+      : { secretBindings: configuration.data.secretBindings }),
+  });
+  assert.equal(configured.status, 200, JSON.stringify(configured.error));
   const expectedTarget = await redeployWithNativeAdminAccess(
     topology,
     ingress.origin,
@@ -1123,6 +1148,20 @@ export async function runNativeAdminScenario(context) {
   assert.equal(status.bootstrapUrl, undefined);
   assert.equal(status.url, expectedTarget.origin + "/");
   assert.equal(status.activeRevisionId, topology.revision.id);
+
+  // Read deployed native config through the installed OCC route. The admitted
+  // direct human has never connected; the shared file proxy is not a person.
+  const people = await topology.adminRequest("GET", agentPath(topology, "/gateway/people"));
+  assert.equal(people.status, 200, JSON.stringify(people.error));
+  assert.deepEqual(people.data.people, [
+    {
+      identity: configuredIdentity,
+      profileId: null,
+      displayName: "",
+      role: null,
+      hasAvatar: false,
+    },
+  ]);
 
   const route = await resource("httproute", topology.gatewayServiceName, topology.gatewayPlacement);
   assert.ok(

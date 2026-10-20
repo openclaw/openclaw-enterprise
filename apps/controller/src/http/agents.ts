@@ -1,10 +1,12 @@
 import {
   WORKSPACE_DEFAULTS_ID,
+  isValidAgentControlUiBookmarkUrl,
   harnessAuthBindingFromSnapshot,
   normalizeInitialWorkspaceFiles,
   type Agent,
   type OpenClawConfigurationDocument,
   type AgentRead,
+  type UpdateAgentControlUiBookmark,
   type AgentRevisionRead,
   type AgentRuntimeCredentialsBody,
   type FirstDeploymentIntent,
@@ -409,6 +411,51 @@ export function createAgentHandlers(options: AgentHandlerOptions) {
         ),
         meta: { requestId: request.id },
       });
+    },
+    async getAgentControlUiBookmark({ controller, context, namespaceId, params, reply, request }) {
+      const bookmark = await controller.getAgentControlUiBookmark(
+        context.actorId,
+        namespaceId,
+        params.agentId!,
+      );
+      reply.send({ data: bookmark, meta: { requestId: request.id } });
+    },
+    async updateAgentControlUiBookmark({
+      controller,
+      context,
+      namespaceId,
+      params,
+      body,
+      reply,
+      mutationEvent,
+      request,
+    }) {
+      if (!isValidAgentControlUiBookmarkUrl(body!.url)) {
+        throw failure(
+          400,
+          "INVALID_REQUEST",
+          "The Control UI bookmark must be an HTTPS URL without credentials, query, fragment, or control characters, at most 2048 characters.",
+        );
+      }
+      const bookmark = await controller.transact(async (unit) => {
+        const updated = await controller.updateAgentControlUiBookmark(
+          context.actorId,
+          namespaceId,
+          params.agentId!,
+          {
+            url: body!.url as UpdateAgentControlUiBookmark["url"],
+            expectedVersion: body!.expectedVersion as number,
+          },
+        );
+        await unit.audit.append(
+          mutationEvent(
+            { kind: "agent", id: params.agentId!, namespaceId },
+            { version: updated.version, cleared: updated.url === null },
+          ),
+        );
+        return updated;
+      });
+      reply.send({ data: bookmark, meta: { requestId: request.id } });
     },
     async updateAgent({
       controller,

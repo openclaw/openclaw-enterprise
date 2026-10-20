@@ -417,6 +417,25 @@ export const NamespaceSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const AgentControlUiBookmarkSchema = Type.Object(
+  {
+    url: Type.Union([Type.String({ maxLength: 2048 }), Type.Null()]),
+    version: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+  },
+  { additionalProperties: false },
+);
+export const AgentControlUiBookmarkResponse = Type.Object(
+  { data: AgentControlUiBookmarkSchema, meta: Meta },
+  { additionalProperties: false },
+);
+export const UpdateAgentControlUiBookmarkBody = Type.Object(
+  {
+    url: AgentControlUiBookmarkSchema.properties.url,
+    expectedVersion: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+  },
+  { additionalProperties: false },
+);
+
 export const AgentSchema = Type.Object(
   {
     sandboxPolicyEditing: Type.Optional(Type.Boolean()),
@@ -2029,6 +2048,30 @@ export const AgentRuntimeLogsResponse = Type.Object(
   { data: AgentRuntimeLogPageSchema, meta: Meta },
   { $id: "AgentRuntimeLogsResponse", additionalProperties: false },
 );
+
+export const AgentGatewayPersonSchema = Type.Object(
+  {
+    identity: Type.String({ minLength: 1 }),
+    profileId: Type.Union([Type.String({ minLength: 1, maxLength: 200 }), Type.Null()]),
+    displayName: Type.String({ maxLength: 256 }),
+    role: Type.Union([Type.String({ maxLength: 128 }), Type.Null()]),
+    hasAvatar: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentGatewayPeopleResponse = Type.Object(
+  {
+    data: Type.Object(
+      { people: Type.Union([Type.Array(AgentGatewayPersonSchema), Type.Null()]) },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+export type AgentGatewayPerson = Type.Static<typeof AgentGatewayPersonSchema>;
 
 export const WorkspaceFileResponse = Type.Object(
   {
