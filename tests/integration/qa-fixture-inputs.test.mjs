@@ -604,22 +604,47 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
             lastTermination: null,
           },
         ],
+        // Newest first, as the API lists them.
         events: [
-          {
-            type: "Normal",
-            container: null,
-            reason: "Scheduled",
-            message: "Successfully assigned",
-            count: 1,
-            lastObservedAt: null,
-          },
           {
             type: "Warning",
             container: null,
             reason: "FailedMount",
             message: "MountVolume.SetUp failed for volume " + "x".repeat(300),
             count: 4,
-            lastObservedAt: null,
+            lastObservedAt: "2026-10-19T19:45:00Z",
+          },
+          {
+            type: "Normal",
+            container: null,
+            reason: "Pulled",
+            message: "Container image already present",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:44:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "BackOff",
+            message: "Back-off pulling image",
+            count: 2,
+            lastObservedAt: "2026-10-19T19:43:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedScheduling",
+            message: "0/1 nodes are available",
+            count: 3,
+            lastObservedAt: "2026-10-19T19:38:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedCreatePodSandBox",
+            message: "Failed to create pod sandbox",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:37:00Z",
           },
         ],
       },
@@ -653,12 +678,15 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
             containers: [
               { name: "gateway", state: "waiting", reason: "ContainerCreating", restartCount: 0 },
             ],
+            // The three newest Warnings, each message cut to 200 characters.
             warnings: [
               {
                 reason: "FailedMount",
                 message: ("MountVolume.SetUp failed for volume " + "x".repeat(300)).slice(0, 200),
                 count: 4,
               },
+              { reason: "BackOff", message: "Back-off pulling image", count: 2 },
+              { reason: "FailedScheduling", message: "0/1 nodes are available", count: 3 },
             ],
           },
         ],

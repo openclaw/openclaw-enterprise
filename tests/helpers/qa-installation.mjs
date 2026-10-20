@@ -302,9 +302,10 @@ export function describeDeploymentRuntime(runtime) {
       reason,
       restartCount,
     })),
+    // The API lists events newest first.
     warnings: (pod.events ?? [])
       .filter(({ type }) => type === "Warning")
-      .slice(-3)
+      .slice(0, 3)
       .map(({ reason, message, count }) => ({ reason, message: message.slice(0, 200), count })),
   }));
   return JSON.stringify({
