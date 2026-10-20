@@ -187,10 +187,10 @@ dependency errors.
 
 `apps/controller/src/console/namespaces.mjs:renderNamespaces` sends Name-rule-valid names
 through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
-and queues provisioning; `perform` audits. Open Agents needs the Namespace in the
-reread list; closing refocuses the opener, or the refusal after a 403 disables it.
-Pending writes block dismissal; 400s mark names; conflicts retain input. Unconfirmed
-responses need list inspection.
+each attempt, queues provisioning; `perform` audits. Open Agents needs the Namespace
+relisted. Closing refocuses the opener; a 403 disables it per account, across
+navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
+mark names; conflicts keep input; unconfirmed responses need inspection.
 
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
 is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;
