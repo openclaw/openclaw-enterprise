@@ -147,10 +147,12 @@ a newly readable Namespace, or Refresh rebuilds the view. Pending or failed
 reads, password input, and mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
-list, not each row’s deployment read. On reuse, `agents/list.mjs:renderAgentList`
-sets visible deployment cells to **Reading deployment…**, hidden for 250 ms and, once shown, kept at least 150 ms, before paint, then shows
+list, not row reads. Each row's newest readable revisions page feeds its deployment
+and `agents/list.mjs:currentRevision`, which reads an off-page current version alone;
+`deniedReadsFor` keeps a `403`. On reuse, `renderAgentList` sets visible deployment
+cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, before paint, then shows
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
-not a link to the old version. Unfinished or failed row reads never prevent reuse; resuming rereads them.
+not the old version's link. Unfinished or failed row reads never prevent reuse; resuming rereads them.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.
@@ -201,9 +203,6 @@ OCC authorizes every write. See [Agent creation](../reference/console/create-and
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides
 restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editing.
 `capabilities.pluginPolicies` gates policy edits; unsupported reviewers remain clearable.
-A credential/access reminder sits beside the expandable
-**Access and credential setup** disclosure. Instructions, list, and details
-scroll within the dialog; search and pagination remain reachable.
 While mounted, Available and Configured retain separate selected plugins, queries,
 tool filters, and expanded rows without fetching pages or changing drafts.
 Removed selections clear their details; discovery resets clear both tabs.

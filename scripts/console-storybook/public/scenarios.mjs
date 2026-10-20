@@ -4197,6 +4197,9 @@ export const scenarios = {
     latestDeploymentReadStatus: 403,
     description:
       "Agent identity and current pointer remain visible while deployment access is denied.",
+    steps: [
+      "Current version cannot be named by number without the versions read, so it shows the selected version's short ID as a link, in code type.",
+    ],
   },
   agentsDeploymentLoading: {
     group: "Pages/Agents",
@@ -4206,6 +4209,50 @@ export const scenarios = {
     latestDeploymentReadDelay: 6000,
     description:
       "Deployment reads show loading beside the current pointer, then show the visible result.",
+    steps: [
+      'Current version reads "Reading version…" and Latest deployment "Reading deployment…" until the versions read lands; then they read "v1" and "v1 · Completed".',
+    ],
+  },
+  agentsCurrentVersionOlder: {
+    group: "Pages/Agents",
+    name: "Current version older than the first page",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    revisionPageSize: 1,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000006",
+        delayMs: 4000,
+        once: true,
+      },
+    ],
+    description:
+      "The newest page of versions lists only v7, so the current v6 is read on its own while the latest deployment fills from that page.",
+    steps: [
+      'Latest deployment reads "v7 · Failed" while Current version still reads "Reading version…". About 4 s later it reads "v6".',
+    ],
+    gap: "The fixture lists one version per page so the current version falls off the first page; the API default is 50.",
+  },
+  agentsCurrentVersionDenied: {
+    group: "Pages/Agents",
+    name: "Current version unreadable",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    revisionPageSize: 1,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000006",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "The current v6 is off the first page and its own read is refused, so Current version keeps its short ID. The console remembers the refusal for the session, as the Agent page does, and does not ask again.",
+    steps: [
+      'Current version shows the short ID as a link, in code type, and Latest deployment reads "v7 · Failed".',
+    ],
   },
   agentsReturnWhileDeploymentsLoad: {
     group: "Pages/Agents",
