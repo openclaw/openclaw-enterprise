@@ -2547,6 +2547,7 @@ test("Refresh stop status switches to deletion recovery when another actor start
     namespace.id,
     "Deletion Candidate",
     nativeValues("deletion"),
+    { harnessAuth: { method: "runtime" } },
   );
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   await state.transact((unit) =>
