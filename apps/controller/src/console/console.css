@@ -264,7 +264,7 @@ a.button.button--link:hover {
 }
 .button--sm {
   min-height: var(--control-h-sm);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-1) var(--space-3);
   font-size: var(--text-md);
   line-height: var(--text-md--line-height);
 }
@@ -782,7 +782,7 @@ p {
   width: 100%;
   text-align: left;
   border: 0;
-  padding: var(--space-3) var(--space-3);
+  padding: var(--space-3);
   font-size: 14px;
   overflow-wrap: anywhere;
 }
@@ -939,7 +939,7 @@ p {
   width: 240px;
   max-width: 100%;
   min-height: 42px;
-  padding: var(--space-3) var(--space-3);
+  padding: var(--space-3);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
   text-overflow: ellipsis;
@@ -1440,7 +1440,7 @@ select:not([multiple])[size="1"] {
 }
 .agent-toolbar input {
   width: min(360px, 100%);
-  padding: var(--space-3) var(--space-3);
+  padding: var(--space-3);
   border: 1px solid var(--input-border);
   border-radius: var(--radius);
 }
@@ -1680,7 +1680,7 @@ select:not([multiple])[size="1"] {
 .deployment-evidence summary {
   width: fit-content;
   max-width: 53%;
-  padding: var(--space-4) 0;
+  padding: var(--space-3) 0;
   cursor: pointer;
   color: var(--text-strong);
   font-weight: 600;
@@ -1694,7 +1694,7 @@ select:not([multiple])[size="1"] {
 .overview-text-button {
   background: transparent;
   border-color: transparent;
-  padding: var(--space-2) var(--space-1);
+  padding: var(--space-1);
   font-size: 12px;
 }
 .deployment-evidence-content {
@@ -1820,7 +1820,7 @@ select:not([multiple])[size="1"] {
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
-  padding: var(--space-4);
+  padding: var(--space-3);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -2177,7 +2177,7 @@ select:not([multiple])[size="1"] {
 }
 .secret-typeahead-listbox [role="option"],
 .secret-typeahead-empty {
-  padding: var(--space-3) var(--space-3);
+  padding: var(--space-3);
   overflow-wrap: anywhere;
 }
 .secret-typeahead-listbox [role="option"] {
@@ -2291,7 +2291,7 @@ select:not([multiple])[size="1"] {
 }
 .agent-table th,
 .agent-table td {
-  padding: var(--space-4) var(--space-4);
+  padding: var(--space-4);
   text-align: left;
   border-bottom: 1px solid var(--line);
 }
@@ -3093,7 +3093,7 @@ select:not([multiple])[size="1"] {
 .plugin-tabs button,
 .plugin-pagination button {
   flex: 1;
-  padding: var(--space-3) var(--space-2);
+  padding: var(--space-2);
   font-size: 0.875rem;
 }
 .plugin-pagination {
@@ -3240,7 +3240,7 @@ select:not([multiple])[size="1"] {
   height: 20px;
   margin: 0;
   border: 1px solid var(--color-border-strong);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-pill);
   background: var(--color-surface-2);
   cursor: pointer;
 }
@@ -3483,7 +3483,7 @@ select:not([multiple])[size="1"] {
   gap: var(--space-3);
   width: 100%;
   min-height: 44px;
-  padding: var(--space-3) var(--space-3);
+  padding: var(--space-3);
   border: 1px solid var(--input-border);
   background: var(--surface);
   cursor: pointer;
@@ -3661,9 +3661,6 @@ select:not([multiple])[size="1"] {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 @media (max-width: 520px) {
-  .repository-selection {
-    padding: var(--space-4);
-  }
   .repository-card-settings .repository-profiles {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3728,7 +3725,7 @@ select:not([multiple])[size="1"] {
   width: 20rem;
   max-width: calc(100vw - 32px);
   margin: var(--space-2);
-  padding: var(--space-4) var(--space-4);
+  padding: var(--space-4);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   color: var(--text);
@@ -4177,11 +4174,11 @@ select:not([multiple])[size="1"] {
     margin-top: var(--space-1);
   }
 }
-/* A whole en-US timestamp beside the level needs 40 px phone row padding, 218 px time, 10 px
+/* A whole en-US timestamp beside the level needs 44 px phone row padding, 218 px time, 12 px
    gap and up to 78 px for the level. In a narrower card (a window under about 400 px) the time
    takes its own line, down to a 320 px window, and the level moves beside the origin (finding
    1844). A longer timestamp shrinks to fit. The .log-row prefix outranks the phone rules below. */
-@container log-viewer (width < 346px) {
+@container log-viewer (width < 352px) {
   .log-row .log-line {
     grid-template-columns: var(--log-level-column) minmax(0, 1fr);
   }
@@ -4240,7 +4237,6 @@ select:not([multiple])[size="1"] {
   }
   .log-row {
     padding-right: var(--space-3);
-    padding-left: var(--space-8);
   }
   .log-line {
     /* The reserved level column gives every row's time the same width, so a shrunk timestamp
@@ -4260,7 +4256,6 @@ select:not([multiple])[size="1"] {
 .sandbox-policy .agent-card {
   padding: var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
 }
 .sandbox-decision {
   padding: var(--space-4);
