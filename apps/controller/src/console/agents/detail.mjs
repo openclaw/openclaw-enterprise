@@ -3164,7 +3164,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           : rejected
             ? "The last deployment's model credential was rejected"
             : authenticationReady
-              ? harnessAuthDescription(agent.harnessAuth)
+              ? `Saved · ${harnessAuthDescription(agent.harnessAuth)}`
               : "Finish in Credentials",
       );
       setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");

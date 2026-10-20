@@ -2030,7 +2030,7 @@ for (const viewport of [
       );
     assert.deepEqual(steps, [
       ["done", "Done: ", `Saved · Configuration ${agent.configurationId} · generation 1`],
-      ["done", "Done: ", "API key · Secret configured"],
+      ["done", "Done: ", "Saved · API key · Secret configured"],
       ["pending", "Not done: ", "Creates an immutable version from the saved draft"],
     ]);
 
