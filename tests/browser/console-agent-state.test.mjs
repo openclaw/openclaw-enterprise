@@ -770,7 +770,7 @@ test("Agent detail reports a failed dedicated replacement as probably not servin
   await summary.getByText("May be offline", { exact: true }).waitFor();
   await page
     .getByText(
-      /v2 did not deploy successfully. v1 is still selected, but its runtime was probably stopped/,
+      /v2 did not deploy successfully \(RUNTIME_AUTHENTICATION_FAILED\)\. v1 is still selected, but its runtime was probably stopped/,
     )
     .waitFor();
 });

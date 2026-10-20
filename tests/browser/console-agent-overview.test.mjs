@@ -430,7 +430,7 @@ test("Recovery offers no draft link without Agent update or deploy permission", 
   await page.getByRole("button", { name: "Open version draft" }).first().waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
-  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Open Configuration" }).count(), 0);
   assert.equal(await recovery.getByRole("link").count(), 1);
 });
@@ -461,7 +461,10 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
-    .getByText(`v2 failed its startup model check. ${PROBE_FAILED_MESSAGE}`, { exact: true })
+    .getByText(
+      `v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED). ${PROBE_FAILED_MESSAGE}`,
+      { exact: true },
+    )
     .waitFor();
   await recovery.getByRole("link", { name: "Open v2 Logs" }).click();
   await page
@@ -471,7 +474,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   // The denial updates the recovery at once: it says who can check the logs instead of
   // steering the reader into another denied read.
   const askForLogs = recovery.getByText(
-    `v2 failed its startup model check. ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
+    `v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED). ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
     { exact: true },
   );
   await askForLogs.waitFor();
@@ -481,7 +484,7 @@ test("Recovery stops offering a failed version's Logs once this page saw log tex
   await askForLogs.waitFor();
   assert.equal(await recovery.getByRole("link", { name: "Open v2 Logs" }).count(), 0);
   const configuration = recovery.getByRole("link", { name: "Open Configuration" });
-  assert.equal(await configuration.getAttribute("class"), "overview-primary");
+  assert.equal(await configuration.getAttribute("class"), "button button--primary");
 
   // A later visit in this page session starts without the Logs link too.
   await page.getByRole("link", { name: "← Agents" }).click();
@@ -529,7 +532,7 @@ test("A replaced current version still says who can check the logs once Logs is 
     .waitFor();
   await recovery
     .getByText(
-      `v2 failed its startup model check. v1 is still selected, but its runtime was probably stopped for this deployment. ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
+      `v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED). v1 is still selected, but its runtime was probably stopped for this deployment. ${PROBE_FAILED_MESSAGE} Ask someone with log access to check the failed version’s logs.`,
       { exact: true },
     )
     .waitFor();
@@ -579,10 +582,12 @@ test("Recovery waits for the caller's permission answer before offering the draf
   assert.equal(await page.getByRole("link", { name: "Open Configuration" }).count(), 0);
 
   permissions.release();
-  await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+  await recovery
+    .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })
+    .waitFor();
   assert.equal(
     await recovery.getByRole("link", { name: "Open v2 Logs" }).getAttribute("class"),
-    "overview-primary",
+    "button button--primary",
   );
   await recovery.getByRole("link", { name: "Open Configuration" }).waitFor();
 });
@@ -615,7 +620,7 @@ test("Recovery offers no draft link when the caller's permission answer fails", 
   await recovery.getByText("v2 deployment failed").waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
-  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Open Configuration" }).count(), 0);
   assert.equal(await recovery.getByRole("link").count(), 1);
 });
@@ -628,16 +633,19 @@ for (const c of [
     code: "RUNTIME_AUTHENTICATION_FAILED",
     step: "update or replace the Agent's model credential",
     action: "Open Credentials",
+    primary: "Open v1 Logs",
   },
   {
     code: "DEPENDENCY_UNAVAILABLE",
     step: "Deploy again; if it keeps failing, ask an admin to check the controller worker log.",
     action: "Deploy again",
+    primary: "Deploy again",
   },
   {
     code: "CONVERGENCE_DEADLINE_EXCEEDED",
     step: "Check its logs and runtime diagnostics",
     action: "Open v1 Logs",
+    primary: "Open v1 Logs",
   },
 ]) {
   for (const viewport of [
@@ -665,7 +673,7 @@ for (const c of [
       const recovery = page.getByRole("region", { name: "Deployment needs attention" });
       const { message } = persistedDeploymentError(c.code);
       assert.ok(message.includes(c.step), `${c.code}: ${message}`);
-      const text = recovery.getByText(`v1 did not deploy successfully. ${message}`, {
+      const text = recovery.getByText(`v1 did not deploy successfully (${c.code}). ${message}`, {
         exact: true,
       });
       await text.waitFor();
@@ -691,13 +699,66 @@ for (const c of [
         await recovery.getByText("before deploying a new version", { exact: false }).count(),
         0,
       );
+      // A danger status block (spec 3.4): the label names the failed version, the code ends the
+      // message's first sentence, and the page's one primary is Deploy again where the message
+      // says to deploy again, else the failed version's Logs; the other actions are secondary.
+      assert.equal(await recovery.getAttribute("data-tone"), "danger");
+      assert.equal(await recovery.locator(".status-label").textContent(), "Deployment failed · v1");
+      assert.equal(await recovery.locator(".status-body code").textContent(), c.code);
+      const actions = await recovery.locator(".status-actions a").evaluateAll((links) =>
+        links.map((link) => {
+          const box = link.getBoundingClientRect();
+          const row = link.parentElement.getBoundingClientRect();
+          return {
+            name: link.textContent,
+            className: link.className,
+            fullWidth: Math.abs(box.width - row.width) < 1,
+          };
+        }),
+      );
+      assert.deepEqual(
+        actions.map((link) => [link.name, link.className]),
+        actions.map((link) => [
+          link.name,
+          link.name === c.primary ? "button button--primary" : "button",
+        ]),
+      );
+      assert.ok(
+        actions.some((link) => link.name === c.primary),
+        `${c.primary} offered`,
+      );
+      // The page's only accent-filled control is that primary: the draft's own Deploy new version
+      // steps down while the block offers an action.
+      assert.deepEqual(
+        await page.evaluate(() => {
+          const probe = globalThis.document.createElement("div");
+          probe.style.backgroundColor = "var(--color-accent)";
+          globalThis.document.body.append(probe);
+          const accent = globalThis.getComputedStyle(probe).backgroundColor;
+          probe.remove();
+          return [...globalThis.document.querySelectorAll("a, button")]
+            .filter(
+              (node) =>
+                node.checkVisibility() &&
+                globalThis.getComputedStyle(node).backgroundColor === accent,
+            )
+            .map((node) => node.textContent);
+        }),
+        [c.primary],
+      );
+      // At phone width the actions stack, each the block's full width.
+      assert.deepEqual(
+        actions.map((link) => link.fullWidth),
+        actions.map(() => viewport.width < 520),
+        JSON.stringify(actions),
+      );
       // Only a message that says to deploy again offers it, as the step's own link.
       assert.equal(
         await recovery.getByRole("link", { name: "Deploy again" }).count(),
         c.action === "Deploy again" ? 1 : 0,
       );
       if (c.action === "Deploy again") {
-        assert.equal(await action.getAttribute("class"), "overview-primary");
+        assert.equal(await action.getAttribute("class"), "button button--primary");
         // It opens the draft with its Deploy new version in view.
         await action.click();
         // The link scrolls smoothly; wait for it to settle with Deploy new version focused.
@@ -800,7 +861,7 @@ test("A failed deployment's banner keeps the logs advice when the message names 
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
   await recovery
     .getByText(
-      `v1 did not deploy successfully. ${persistedDeploymentError("AGENT_GATEWAY_UNAVAILABLE").message} Check the failed version’s logs before deploying a new version.`,
+      `v1 did not deploy successfully (AGENT_GATEWAY_UNAVAILABLE). ${persistedDeploymentError("AGENT_GATEWAY_UNAVAILABLE").message} Check the failed version’s logs before deploying a new version.`,
       { exact: true },
     )
     .waitFor();
@@ -845,7 +906,7 @@ test("A failed deployment's banner offers no Deploy again once the Configuration
   await logs.waitFor();
   await page.waitForFunction(
     () =>
-      globalThis.document.querySelector(".deployment-recovery-actions .overview-primary")
+      globalThis.document.querySelector(".deployment-recovery-actions .button--primary")
         ?.textContent === "Open v1 Logs",
   );
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
@@ -919,7 +980,7 @@ test("A failed deployment's banner offers Deploy again only with deploy permissi
     .waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
-  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
 });
 
@@ -1063,7 +1124,11 @@ test("a failed version's banner does not move the overview on a slow link", asyn
     // A full load, so no recent input excuses a shift.
     await page.goto(detailUrl(fixture, namespace.id, agent.id, "draft", "configuration").href);
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
-    await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+    await recovery
+      .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", {
+        exact: false,
+      })
+      .waitFor();
     await page
       .locator(".agent-current-summary")
       .getByText("v2 · Failed", { exact: true })
@@ -1462,7 +1527,11 @@ for (const viewport of [
     const read = page.waitForResponse(recordUrl);
     await page.clock.runFor(DEPLOYMENT_POLL_MS);
     await read;
-    await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+    await recovery
+      .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", {
+        exact: false,
+      })
+      .waitFor();
     await waitForIdleFetches(page);
     assert.deepEqual(await tops(), before, "the overview stays in place");
     // The card follows the deployment's activity, and its first action is the page's one primary:

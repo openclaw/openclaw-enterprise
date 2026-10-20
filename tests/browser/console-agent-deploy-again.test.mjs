@@ -150,7 +150,7 @@ for (const tab of ["configuration", "logs", "channels"]) {
     // Only a successful read shows the Configuration is readable, so the page asks.
     await denied;
     await nextFrames(page);
-    assert.equal(await logs.getAttribute("class"), "overview-primary");
+    assert.equal(await logs.getAttribute("class"), "button button--primary");
     assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
     assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
     const configurationDenials = auditSink
@@ -202,7 +202,7 @@ test("A failed Configuration read leaves Deploy again hidden and is not repeated
       .length,
     1,
   );
-  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
 });
 
@@ -228,7 +228,7 @@ test("The draft offers no Deploy again when its Configuration read fails", async
   await failed;
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
   await nextFrames(page);
-  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
   assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
 });
@@ -253,12 +253,12 @@ test("Recovery on another version offers Deploy again only after the Configurati
   await read.requested;
   await nextFrames(page);
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
-  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await logs.getAttribute("class"), "button button--primary");
 
   read.release();
   const again = recovery.getByRole("link", { name: "Deploy again" });
   await again.waitFor();
-  assert.equal(await again.getAttribute("class"), "overview-primary");
+  assert.equal(await again.getAttribute("class"), "button button--primary");
 });
 
 // Opens Deploy again from v1's Configuration tab with the draft's own Configuration read held, and
@@ -352,7 +352,7 @@ test("Recovery offers no Deploy again when the caller's permission answer fails"
   // The draft's Configuration read succeeded, so only the permission answer withholds the link.
   await page.getByRole("button", { name: "Deploy new version" }).waitFor();
   await nextFrames(page);
-  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Deploy again" }).count(), 0);
   assert.equal(await page.evaluate(() => globalThis.deployAgainSeen), false);
 });
@@ -396,14 +396,16 @@ test("A deployer who cannot read the Configuration gets no Open version draft", 
   assert.equal(answer.deploy, true);
   assert.equal(answer.update, false);
   const recovery = recoveryOf(page);
-  await recovery.getByText("v2 failed its startup model check.", { exact: false }).waitFor();
+  await recovery
+    .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", { exact: false })
+    .waitFor();
   const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
   await logs.waitFor();
   // The link used to render with Logs, before any Configuration read.
   assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
   await denied;
   await nextFrames(page);
-  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await logs.getAttribute("class"), "button button--primary");
   assert.equal(await recovery.getByRole("link", { name: "Open version draft" }).count(), 0);
   assert.equal(await page.evaluate(() => globalThis.openDraftSeen), false);
   const configurationDenials = auditSink
@@ -450,7 +452,7 @@ test("Open version draft waits for the Configuration read to succeed", async (t)
   await read.requested;
   await nextFrames(page);
   assert.equal(await openDraft.count(), 0);
-  assert.equal(await logs.getAttribute("class"), "overview-primary");
+  assert.equal(await logs.getAttribute("class"), "button button--primary");
 
   read.release();
   await openDraft.waitFor();

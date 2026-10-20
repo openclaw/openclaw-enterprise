@@ -1648,13 +1648,33 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
   detailPane.append(detailHeading, versionEvidence, tabs, content);
   const nativeAdmin = renderNativeAdminAccess(context, path);
+  // A danger status block (spec 3.4): the failed version in the label, the code at the end of
+  // the message's first sentence, and one primary action. Each part is its own node, so a poll
+  // that reads back the same failure writes nothing.
+  const recoveryLabel = element("p", { className: "status-label" });
   const recoveryTitle = element("h2");
-  const recoveryMessage = element("p");
-  const recoveryActions = element("div", { className: "deployment-recovery-actions" });
+  const recoveryLead = document.createTextNode("");
+  const recoveryCode = element("code", { hidden: true });
+  const recoveryRest = document.createTextNode("");
+  const recoveryMessage = element(
+    "p",
+    { className: "status-body" },
+    recoveryLead,
+    recoveryCode,
+    recoveryRest,
+  );
+  const recoveryActions = element("div", {
+    className: "status-actions deployment-recovery-actions",
+  });
   const recovery = element(
     "section",
-    { className: "deployment-recovery", hidden: true, "aria-label": "Deployment needs attention" },
-    element("span", { className: "recovery-label" }, "Deployment needs attention"),
+    {
+      className: "status deployment-recovery",
+      "data-tone": "danger",
+      hidden: true,
+      "aria-label": "Deployment needs attention",
+    },
+    recoveryLabel,
     recoveryTitle,
     recoveryMessage,
     recoveryActions,
@@ -2260,13 +2280,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const modelCheck = ["RUNTIME_MODEL_PROBE_FAILED", "RUNTIME_MODEL_PROBE_TIMEOUT"].includes(
         code,
       );
+      setText(recoveryLabel, `Deployment failed · ${version}`);
       setText(
         recoveryTitle,
         mayBeOffline ? "This Agent may be offline" : `${version} deployment failed`,
       );
       const failure = modelCheck
-        ? `${version} failed its startup model check.`
-        : `${version} did not deploy successfully.`;
+        ? `${version} failed its startup model check`
+        : `${version} did not deploy successfully`;
       // Offer only links the caller's permission answer and this tab's remembered denials
       // allow; the API still authorizes each page they open (finding 1458).
       const logsAllowed =
@@ -2299,7 +2320,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         // Without the Logs link this is the reader's only way to the logs (finding 1484).
         impact += " Ask someone with log access to check the failed version’s logs.";
       }
-      setText(recoveryMessage, `${failure} ${impact}`);
+      // The code ends the first sentence, so the reader can match it to Logs and to occ.
+      setText(recoveryLead, code ? `${failure} (` : `${failure}.`);
+      setText(recoveryCode, code ?? "");
+      setHidden(recoveryCode, !code);
+      setText(recoveryRest, code ? `). ${impact}` : ` ${impact}`);
       // Deploying again is the whole next step only where the API's message says so. The draft
       // it opens builds Deploy new version only from a readable Configuration, so the link waits
       // for a successful read of it (finding 1931).
@@ -2341,10 +2366,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           : null;
         const logs = logsAllowed ? versionLink(`Open ${version} Logs`, latest.id, "logs") : null;
         const next = tab ? versionLink(nextLabel, "draft", tab) : null;
+        // The first action is the one primary on the page: Deploy again where the message says
+        // to, else the failed version's Logs. The others are secondary buttons.
         const actions = [again, logs, next].filter(Boolean);
-        if (actions.length) {
-          actions[0].className = "overview-primary";
-        }
+        actions.forEach((action, index) => {
+          action.className = index === 0 ? "button button--primary" : "button";
+        });
         recoveryActions.replaceChildren(...actions);
         recoveryActions.hidden = actions.length === 0;
       }
