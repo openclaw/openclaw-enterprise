@@ -1210,6 +1210,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let visibleRevisionsLoaded = false;
   const selected = url.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
   const tab = url.searchParams.get("tab");
+  // Sharing policy reads need Installation administration and a denial is audited, so the
+  // Access tab is left out (not disabled) when the session probe already showed that access is
+  // missing (spec 3.8). It is about the whole Agent, so every version's strip has it, last.
+  const sharingTab = context.installationAdmin !== false;
   const tabsForSelection = [
     "configuration",
     "plugins",
@@ -1218,6 +1222,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     "workspace",
     "policy",
     ...(selected === "draft" ? [] : ["logs"]),
+    ...(sharingTab ? ["access"] : []),
   ];
   let selectedTab = tabsForSelection.includes(tab) ? tab : "configuration";
   let deployInFlight = false;
@@ -1601,6 +1606,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     ["workspace", "Workspace files"],
     ["policy", "Policy denials"],
     ...(selected === "draft" ? [] : [["logs", "Logs"]]),
+    ...(sharingTab ? [["access", "Access"]] : []),
   ]) {
     const control = button(
       label,
@@ -1626,7 +1632,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     tabs.append(control);
   }
   tabs.addEventListener("keydown", (event) => {
-    const enabled = [...tabControls.values()].filter((control) => !control.disabled);
+    const enabled = [...tabControls.values()].filter(
+      (control) => !control.disabled && !control.hidden,
+    );
     const at = enabled.indexOf(document.activeElement);
     const next = {
       ArrowLeft: at - 1,
@@ -1708,15 +1716,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     statusLine,
     deploymentStatus,
   );
-  view.replaceChildren(
-    recovery,
-    nativeAdmin.section,
-    overviewStatus,
-    // Sharing policy reads need Installation administration and a denial is audited, so
-    // skip the panel when the session probe already showed that access is missing.
-    ...(context.installationAdmin === false ? [] : [renderAgentAccess(context, agent)]),
-    versionLayout,
-  );
+  view.replaceChildren(recovery, nativeAdmin.section, overviewStatus, versionLayout);
   // Recovery or native administration can appear above the facts. Keep the Agent heading and
   // controls in place, then reveal the overview once its first deployment and access reads settle.
   // The bounded wait still exposes loading, refresh and the version controls on a slow read.
@@ -1888,6 +1888,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let settledDetails = null;
   const retainedTabs = new Map();
   let mountedTab = null;
+  // The Access tab's sharing panel, built the first time the tab opens.
+  let accessPanel = null;
+  // Replaces an Access tab whose policy read was refused with Configuration, in place, once the
+  // page shows (a page still behind its loading stand-in would rebuild instead) and the
+  // navigation that opened the tab has finished.
+  function leaveDeniedAccess() {
+    void revealed.then(() => {
+      if (selectedTab === "access" && context.isCurrent() && !deleting) {
+        context.navigate(target(selected, "configuration"), namespaceId, true);
+      }
+    });
+  }
   // Shown once by the tab a draft refresh rebuilds after a save (finding 1445).
   let savedNotice = "";
   // Set while a saved draft refreshes in place; tab and version changes wait for it.
@@ -1954,6 +1966,21 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
 
   function renderDetailHeading() {
+    if (selectedTab === "access") {
+      detailHeading.replaceChildren(
+        element(
+          "div",
+          {},
+          element("h2", {}, "Agent access"),
+          element(
+            "p",
+            { className: "muted" },
+            "Sharing applies to the whole Agent, not to one version.",
+          ),
+        ),
+      );
+      return;
+    }
     if (selectedTab === "workspace") {
       detailHeading.replaceChildren(
         element(
@@ -3365,7 +3392,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // page the heading stays in view instead.
     const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
-    versionEvidence.hidden = selectedTab === "workspace" || selectedTab === "logs";
+    versionEvidence.hidden = ["workspace", "logs", "access"].includes(selectedTab);
     if (stripTop !== null) {
       const moved = tabs.getBoundingClientRect().top - stripTop;
       if (Math.abs(moved) >= 1) {
@@ -3430,6 +3457,29 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       const workspace = renderWorkspaceFiles(tabContext, currentAgent, path);
       state.refresh = workspace.refresh;
       content.append(workspace.section);
+      state.loading = false;
+      content.style.minHeight = "";
+      return;
+    }
+    if (tab === "access") {
+      // Share Agent moved here from the overview (spec 3.8, plan D1). The panel is built once per
+      // page with the page's context, as it was on the overview: a share or removal in flight
+      // finishes, and its progress shows again, when the reader leaves the tab and comes back.
+      state.reusable = false;
+      accessPanel ??= renderAgentAccess(context, agent, {
+        onDenied: () => {
+          // A refused policy read (the session probe could not tell) hides the tab, as the
+          // panel hid on the overview; a reader on it is taken to Configuration instead.
+          tabControls.get("access").hidden = true;
+          leaveDeniedAccess();
+        },
+      });
+      if (tabControls.get("access").hidden) {
+        // Back to a tab whose policy read was refused.
+        leaveDeniedAccess();
+      } else {
+        content.append(accessPanel);
+      }
       state.loading = false;
       content.style.minHeight = "";
       return;

@@ -3415,7 +3415,7 @@ export const scenarios = {
   agentSharing: {
     group: "Pages/Agent detail",
     name: "Share an Agent",
-    path: draft,
+    path: `${draft}&tab=access`,
     description:
       "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
     steps: [
@@ -3427,7 +3427,7 @@ export const scenarios = {
   agentSharingGranted: {
     group: "Pages/Agent detail",
     name: "Agent shared",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: shareExistingPerson,
     description:
       "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
@@ -3435,7 +3435,7 @@ export const scenarios = {
   agentSharingRemoved: {
     group: "Pages/Agent detail",
     name: "Direct Agent grant removed",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: [...shareExistingPerson, click("Remove binding")],
     description:
       "The selected direct Agent binding was removed. Namespace discovery and unrelated grants are preserved.",
@@ -3443,7 +3443,7 @@ export const scenarios = {
   agentSharingDenied: {
     group: "Pages/Agent detail",
     name: "Sharing administration denied",
-    path: draft,
+    path: `${draft}&tab=access`,
     rules: [{ suffix: "/iam/roles", status: 403 }],
     description:
       "An Agent's other controls retain their own permissions when sharing administration is unavailable.",
@@ -3451,7 +3451,7 @@ export const scenarios = {
   agentSharingUnknown: {
     group: "Pages/Agent detail",
     name: "Sharing outcome uncertain",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: shareExistingPerson,
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
     description:
@@ -3460,7 +3460,7 @@ export const scenarios = {
   agentSharingRequiredFields: {
     group: "Pages/Agent detail",
     name: "Share Agent required fields",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: [click("Share Agent")],
     description:
       "Share Agent with no Principal ID and no acknowledgement: both fields show their errors and focus moves to the Principal ID, with no browser bubble.",

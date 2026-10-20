@@ -1,4 +1,11 @@
-import { button, element, revealStatus, setStatusTone, validateOnSubmit } from "../dom.mjs";
+import {
+  button,
+  element,
+  revealStatus,
+  setStatusTone,
+  statusBlock,
+  validateOnSubmit,
+} from "../dom.mjs";
 import { message, namespacePath, rejectionMessage } from "./list.mjs";
 
 const discoveryPermissions = [{ action: "read", resourceKind: "namespace" }];
@@ -32,11 +39,13 @@ function matchesRole(role, namespaceId, permissions) {
   );
 }
 
-export function renderAgentAccess(context, agent) {
+// The Agent page's Access tab (spec 3.8). `onDenied` runs when the policy read is refused, after
+// the panel hides itself.
+export function renderAgentAccess(context, agent, { onDenied } = {}) {
   const { namespaceId } = context;
   const path = `${namespacePath(namespaceId)}/iam`;
   const section = element("section", {
-    className: "agent-card agent-access",
+    className: "agent-access",
     "aria-labelledby": "agent-access-title",
   });
   // role=status is an implicit polite live region without matching the page-view selector.
@@ -88,28 +97,40 @@ export function renderAgentAccess(context, agent) {
     // Set once the API accepts a write in the current change.
     saved: false,
   };
+  // Two cards (spec 3.8): sharing, then the direct grants it lists. The region keeps the
+  // "Share Agent" name and holds both.
   section.append(
-    element("h2", { id: "agent-access-title" }, "Share Agent"),
     element(
-      "p",
-      { className: "notice" },
-      "Recipients can access and administer this Agent’s native conversations, settings, tools and accessible credentials. This is not restricted chat and does not give each chat an automatic personal identity.",
+      "div",
+      { className: "card agent-access-share" },
+      element("h3", { id: "agent-access-title" }, "Share Agent"),
+      statusBlock(
+        "info",
+        "What sharing grants",
+        "Recipients can access and administer this Agent’s native conversations, settings, tools and accessible credentials. This is not restricted chat and does not give each chat an automatic personal identity.",
+        [],
+        { role: null },
+      ),
+      element(
+        "p",
+        { className: "muted" },
+        "Sharing adds read access to this Namespace for discovery and read plus native administration for this Agent. It does not grant access to other Agents, OCE configuration, deployment or secrets.",
+      ),
+      feedback,
+      form,
     ),
     element(
-      "p",
-      { className: "muted" },
-      "Sharing adds read access to this Namespace for discovery and read plus native administration for this Agent. It does not grant access to other Agents, OCE configuration, deployment or secrets.",
+      "div",
+      { className: "card agent-access-grants" },
+      element("h3", {}, "Direct Agent grants"),
+      element(
+        "p",
+        { className: "hint" },
+        "These are explicit bindings to this Agent, not all effective access. Groups, other grants and Installation administration can still provide access. Removing a binding keeps Namespace discovery access.",
+      ),
+      grants,
+      refresh,
     ),
-    feedback,
-    form,
-    element("h3", {}, "Direct Agent grants"),
-    element(
-      "p",
-      { className: "hint" },
-      "These are explicit bindings to this Agent, not all effective access. Groups, other grants and Installation administration can still provide access. Removing a binding keeps Namespace discovery access.",
-    ),
-    grants,
-    refresh,
   );
 
   function render() {
@@ -266,6 +287,7 @@ export function renderAgentAccess(context, agent) {
         if (error.status === 403) {
           // Sharing is an Installation administration task; hide it rather than show an error.
           section.hidden = true;
+          onDenied?.();
         } else {
           failure(error, false);
         }

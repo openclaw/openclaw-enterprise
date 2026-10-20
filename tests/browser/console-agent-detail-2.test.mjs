@@ -1539,7 +1539,7 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     if (variant === "workspace") {
       revision = (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).revision.id;
     }
-    const tab = variant === "sharing" ? "configuration" : variant;
+    const tab = variant === "sharing" ? "access" : variant;
     const { page } = await newPage(t, fixture);
     const url = detailUrl(fixture, namespace.id, agent.id, revision, tab);
     await login(page, fixture, url);
@@ -1984,7 +1984,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
     args: [...fixture.browserArgs, `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1`],
   };
   const { page, artifacts } = await newPage(t, fixture, browserOptions);
-  const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+  const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
@@ -2051,11 +2051,14 @@ test("Agent sharing grants existing people exact discovery and native access, th
     0,
   );
   await recipient.getByRole("link", { name: "Open admin console" }).waitFor();
-  // A non-administrator never reads sharing policy: each denial would be audited.
+  // A non-administrator never reads sharing policy: each denial would be audited. The link to
+  // the Access tab opens Configuration, and the strip has no Access tab.
   assert.equal(
     await recipient.getByRole("region", { name: "Share Agent", exact: true }).count(),
     0,
   );
+  assert.equal(await recipient.getByRole("tab", { name: "Access" }).count(), 0);
+  await recipient.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   assert.deepEqual(
     recipientRequests.filter((request) => request.path.includes("/iam/")),
     [],
@@ -2157,7 +2160,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   const person = fixture.provisionedAccounts[0];
   const { page, artifacts } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
@@ -2326,7 +2329,7 @@ test("Agent sharing rejects emails locally and names an unknown Principal ID", a
   const agent = await fixture.createAgent(namespace.id, "Subject Agent", nativeValues("subject"));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   const principal = panel.getByLabel("Existing person’s Principal ID");
@@ -2375,7 +2378,7 @@ test("Agent sharing creates exact Roles instead of reusing strict superset Roles
     supersets.push(role.data.id);
   }
   const { page } = await newPage(t, fixture);
-  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);

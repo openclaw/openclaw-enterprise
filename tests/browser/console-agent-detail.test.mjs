@@ -684,7 +684,7 @@ test("Agent sharing shows a rejected write's reason, but generic text after an a
   const namespace = await fixture.createNamespace("Sharing rejection");
   const agent = await fixture.createAgent(namespace.id, "Sharing Agent", nativeValues("sharing"));
   const { page } = await newPage(t, fixture);
-  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
   const policyPath = `${fixture.origin}/namespaces/${namespace.id}/iam`;
   const reason = "The request does not match the operation contract: body /name is too long.";

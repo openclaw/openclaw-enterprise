@@ -218,7 +218,7 @@ test("Share Agent refusals", async (t) => {
       nativeValues(`status-${agents}`),
     );
     const { page } = await newPage(t, fixture, { browser, context: { viewport } });
-    await login(page, fixture, detailUrl(fixture, target.id, agent.id, "draft", "configuration"));
+    await login(page, fixture, detailUrl(fixture, target.id, agent.id, "draft", "access"));
     const panel = page.getByRole("region", { name: "Share Agent", exact: true });
     await panel
       .getByLabel("Existing person’s Principal ID")

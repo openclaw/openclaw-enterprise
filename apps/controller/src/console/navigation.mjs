@@ -53,6 +53,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     "workspace",
     "policy",
     "logs",
+    "access",
   ]);
 
   function validIntent(intent) {

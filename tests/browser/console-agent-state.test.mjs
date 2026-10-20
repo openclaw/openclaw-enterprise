@@ -607,7 +607,8 @@ test("Agent detail hides sharing instead of showing an error to non-administrato
       }),
     }),
   );
-  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  // A link to the Access tab, where sharing is (UX spec 3.8).
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Shared Agent" }).waitFor();
   const panel = page.locator(".agent-access");
@@ -616,6 +617,10 @@ test("Agent detail hides sharing instead of showing an error to non-administrato
     await page.getByText(/Sharing policy requires Installation administration/).count(),
     0,
   );
+  // The refused read hides the tab too, and Configuration opens in its place.
+  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  assert.equal(await page.getByRole("tab", { name: "Access" }).count(), 0);
 });
 
 function routeDeploymentStatus(page, fixture, namespace, agent, revision, status, error = null) {

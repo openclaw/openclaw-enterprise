@@ -263,7 +263,7 @@ the active gateway in a new tab, even while you view a draft or older version.
 The native UI can change the gateway outside OCE's version tracking. Use OCE for
 durable configuration. See [native admin access](../../reference/agent-native-admin.md)
 for permissions and stopped, unavailable, or unsupported states. Installation
-administrators can [share an Agent](agent-sharing.md) with existing people.
+administrators [share Agents](agent-sharing.md) from the **Access** tab.
 
 ## Stop and resume
 

@@ -363,7 +363,7 @@ test("Refresh sharing, the Configuration editor and the Create Agent shortcuts k
   });
   const agent = await fixture.createAgent(namespace.id, "Kept Focus", nativeValues("focus"));
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
   await page.getByRole("heading", { name: "Kept Focus" }).waitFor();
 
   const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
@@ -376,6 +376,7 @@ test("Refresh sharing, the Configuration editor and the Create Agent shortcuts k
 
   // Edit Configuration opens the editor in place of the pressed button; the editor takes
   // focus instead of the document, without scrolling the page to fit it (finding 1620).
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
   const edit = page.getByRole("button", { name: "Edit Configuration" });
   await edit.evaluate((node) => node.scrollIntoView({ block: "end" }));
   const editScroll = await page.evaluate(() => globalThis.scrollY);
