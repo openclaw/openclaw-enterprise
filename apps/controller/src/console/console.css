@@ -408,8 +408,11 @@ p {
 .auth .auth-intro {
   margin-bottom: 0;
 }
+.auth .brand {
+  margin-bottom: var(--space-10);
+}
 .auth-footer {
-  margin: 0 auto var(--space-10);
+  margin: var(--space-6) auto var(--space-10);
   padding: 0 var(--space-4);
   text-align: center;
   font-size: var(--text-sm);
@@ -966,10 +969,10 @@ p {
   grid-template-columns: var(--namespace-columns);
   gap: var(--space-4);
   align-items: center;
-  padding: 0 var(--space-6);
+  padding: 0 var(--space-4);
 }
 .namespace-table-head {
-  min-height: var(--control-h);
+  min-height: var(--space-12);
   background: var(--color-surface-2);
   border-bottom: 1px solid var(--color-border);
   color: var(--color-text-muted);
@@ -987,8 +990,10 @@ p {
 .namespace-row:last-child {
   border-bottom: 0;
 }
+/* Names match the Agents table: body size, medium weight. */
 .namespace-row .resource-name {
   margin-bottom: var(--space-1);
+  font-size: var(--text-base);
 }
 .namespace-cell-name {
   min-width: 0;
@@ -1007,6 +1012,11 @@ p {
 /* The table clips its corners, so the focused row draws its ring inside. */
 .namespace-rows .namespace-row:has(.resource-name a:focus-visible) {
   outline-offset: var(--focus-offset-inset);
+}
+@media (max-width: 1100px) {
+  .namespace-table {
+    --namespace-columns: minmax(0, 1fr) 9rem 12rem;
+  }
 }
 /* Phone: the badge sits beside the name and Created goes underneath, labelled. */
 @media (max-width: 760px) {
