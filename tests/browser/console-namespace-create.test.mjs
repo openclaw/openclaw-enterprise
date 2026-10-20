@@ -405,37 +405,6 @@ test("a member is not invited to create, and a real IAM denial disables Create N
   );
 });
 
-// An unexpected failure keeps its request ID for support, unlike a refusal the reader can fix.
-test("an unexpected Namespace creation failure shows its request ID", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const { page } = await newPage(t, fixture, { browser });
-  await page.route(`${fixture.origin}/namespaces`, (route) =>
-    route.request().method() === "POST"
-      ? route.fulfill({
-          status: 503,
-          contentType: "application/json",
-          json: {
-            error: { code: "UNAVAILABLE", message: "Try again later." },
-            meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
-          },
-        })
-      : route.continue(),
-  );
-  await login(page, fixture, "/console/namespaces");
-  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
-  await dialog.getByLabel("Namespace name").fill("Busy team");
-  await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
-  await dialog
-    .getByRole("alert")
-    .filter({ hasText: /Outcome unknown/ })
-    .waitFor();
-  await dialog
-    .getByText("Request ID: req_00000000-0000-4000-8000-000000000503", { exact: true })
-    .waitFor();
-});
-
 test("a lost Namespace creation response requires inspection before another attempt", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -470,4 +439,35 @@ test("a lost Namespace creation response requires inspection before another atte
     .waitFor();
   assert.equal(creates(requests).length, 1);
   await focusReturnsToOpener(page);
+});
+
+// An unexpected failure keeps its request ID for support, unlike a refusal the reader can fix.
+test("an unexpected Namespace creation failure shows its request ID", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(`${fixture.origin}/namespaces`, (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          json: {
+            error: { code: "UNAVAILABLE", message: "Try again later." },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+          },
+        })
+      : route.continue(),
+  );
+  await login(page, fixture, "/console/namespaces");
+  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
+  await dialog.getByLabel("Namespace name").fill("Busy team");
+  await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  await dialog
+    .getByRole("alert")
+    .filter({ hasText: /Outcome unknown/ })
+    .waitFor();
+  await dialog
+    .getByText("Request ID: req_00000000-0000-4000-8000-000000000503", { exact: true })
+    .waitFor();
 });
