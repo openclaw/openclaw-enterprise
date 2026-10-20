@@ -195,7 +195,7 @@ button,
   background: var(--color-surface);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
-  padding: 8px 14px;
+  padding: var(--space-2) var(--space-4);
   font-weight: var(--weight-medium);
 }
 /* Low specificity, so a tone's own colour wins. */
@@ -264,7 +264,7 @@ a.button.button--link:hover {
 }
 .button--sm {
   min-height: var(--control-h-sm);
-  padding: 5px var(--space-3);
+  padding: var(--space-2) var(--space-3);
   font-size: var(--text-md);
   line-height: var(--text-md--line-height);
 }
@@ -323,7 +323,7 @@ h1 {
   font-size: 24px;
   font-weight: 600;
   letter-spacing: -0.5px;
-  margin-bottom: 9px;
+  margin-bottom: var(--space-3);
 }
 h2 {
   color: var(--text-strong);
@@ -340,7 +340,7 @@ p {
 .startup {
   /* Padding, not margin: a margin collapses through #app and body, so the page jumps when it is replaced. */
   margin: 0;
-  padding: calc(14vh + 28px) 28px;
+  padding: calc(14vh + var(--space-8)) var(--space-8);
   color: var(--muted);
   text-align: center;
   /* A load that settles within the loading delay never flashes its status (finding 1444). Full
@@ -432,7 +432,7 @@ p {
   font-size: var(--text-base);
   font-weight: var(--weight-semibold);
   color: var(--color-text-strong);
-  margin-bottom: 38px;
+  margin-bottom: var(--space-10);
 }
 .brand img {
   flex: none;
@@ -441,7 +441,7 @@ p {
 .auth label {
   display: block;
   font-weight: 550;
-  margin: 24px 0 8px;
+  margin: var(--space-6) 0 var(--space-2);
 }
 .auth input {
   display: block;
@@ -455,23 +455,23 @@ p {
 }
 .hint {
   display: block;
-  margin-top: 8px;
+  margin-top: var(--space-2);
   font-size: 13px;
   color: var(--muted);
 }
 .auth .primary,
 .auth .button--primary {
   width: 100%;
-  margin-top: 28px;
+  margin-top: var(--space-8);
 }
 .auth-providers button {
   width: 100%;
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 .auth-provider-icon {
   width: 18px;
   height: 18px;
-  margin-right: 10px;
+  margin-right: var(--space-3);
   vertical-align: middle;
   background: var(--color-surface);
 }
@@ -496,11 +496,11 @@ p {
 }
 .auth .auth-recovery {
   display: block;
-  margin: 20px auto 0;
+  margin: var(--space-5) auto 0;
 }
 .error {
   color: var(--danger);
-  margin-top: 18px;
+  margin-top: var(--space-5);
   /* Refusals name long setting paths and request IDs; wrap them in a phone-width card. */
   overflow-wrap: anywhere;
 }
@@ -635,7 +635,7 @@ p {
   font-family: ui-monospace, monospace;
 }
 .runtime-debug {
-  margin: 24px 8px 12px;
+  margin: var(--space-6) var(--space-2) var(--space-3);
   min-height: 0;
   overflow-y: auto;
   font-size: 12px;
@@ -648,17 +648,17 @@ p {
   overflow-wrap: anywhere;
 }
 .runtime-debug details {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 .runtime-debug summary {
   cursor: pointer;
 }
 .runtime-debug dt {
-  margin-top: 10px;
+  margin-top: var(--space-3);
   color: var(--muted);
 }
 .runtime-debug dd {
-  margin: 3px 0 0;
+  margin: var(--space-1) 0 0;
 }
 .nav {
   display: grid;
@@ -764,7 +764,7 @@ p {
   color: var(--color-text-muted);
 }
 .menu {
-  padding: 6px;
+  padding: var(--space-2);
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -782,7 +782,7 @@ p {
   width: 100%;
   text-align: left;
   border: 0;
-  padding: 12px 10px;
+  padding: var(--space-3) var(--space-3);
   font-size: 14px;
   overflow-wrap: anywhere;
 }
@@ -792,11 +792,11 @@ p {
   font-weight: 600;
 }
 .menu .muted {
-  margin: 12px;
+  margin: var(--space-3);
   font-size: 13px;
 }
 .content {
-  padding: 32px;
+  padding: var(--space-8);
   max-width: 1300px;
   width: 100%;
 }
@@ -808,7 +808,7 @@ p {
   justify-content: space-between;
   align-items: end;
   gap: var(--space-4) var(--space-6);
-  margin-bottom: 28px;
+  margin-bottom: var(--space-8);
 }
 .page-title {
   min-width: 0;
@@ -923,12 +923,12 @@ p {
 }
 .checking-status {
   margin: 0;
-  padding-block: 10px;
+  padding-block: var(--space-3);
   color: var(--muted);
 }
 .namespace-selector {
   display: grid;
-  gap: 6px;
+  gap: var(--space-2);
   max-width: 100%;
   font-size: 14px;
 }
@@ -939,9 +939,9 @@ p {
   width: 240px;
   max-width: 100%;
   min-height: 42px;
-  padding: 10px 12px;
+  padding: var(--space-3) var(--space-3);
   border: 1px solid var(--color-border-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   text-overflow: ellipsis;
 }
 /* The header's compact control: one 32 px box, "Namespace" as a muted prefix inside it, as wide
@@ -1007,7 +1007,7 @@ p {
   padding: 0;
   margin: 0;
   display: grid;
-  gap: 12px;
+  gap: var(--space-3);
 }
 /* Section, card and badge patterns (UX plan C4). A section is a heading, an optional description
    and its content; it is not a card. Cards live inside sections. */
@@ -1045,10 +1045,10 @@ p {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
+  gap: var(--space-6);
 }
 .resource-name {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
   font-size: 16px;
   font-weight: 550;
   overflow-wrap: anywhere;
@@ -1220,7 +1220,7 @@ p {
   }
 }
 .state-panel {
-  padding: 36px;
+  padding: var(--space-10);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -1230,7 +1230,7 @@ p {
   max-width: 560px;
 }
 .namespace-recovery {
-  margin-bottom: 20px;
+  margin-bottom: var(--space-5);
 }
 .state-panel .request-id {
   font-family: ui-monospace, monospace;
@@ -1381,10 +1381,10 @@ p {
   }
   .resource {
     align-items: start;
-    gap: 12px;
+    gap: var(--space-3);
   }
   .state-panel {
-    padding: 24px;
+    padding: var(--space-6);
   }
   h1 {
     font-size: 24px;
@@ -1420,7 +1420,7 @@ select:not([multiple])[size="1"] {
     right 22px center,
     right 16px center;
   background-size: 6px 6px;
-  padding-right: 40px;
+  padding-right: var(--space-10);
   text-overflow: ellipsis;
 }
 @media (forced-colors: active) {
@@ -1434,28 +1434,28 @@ select:not([multiple])[size="1"] {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
-  margin: 20px 0;
+  gap: var(--space-4);
+  margin: var(--space-5) 0;
   flex-wrap: wrap;
 }
 .agent-toolbar input {
   width: min(360px, 100%);
-  padding: 11px 12px;
+  padding: var(--space-3) var(--space-3);
   border: 1px solid var(--input-border);
   border-radius: var(--radius);
 }
 .agent-toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   flex-wrap: wrap;
 }
 .overview-text-button:not(:hover) {
   color: var(--muted);
 }
 .native-admin-access {
-  padding: clamp(15px, 2vw, 24px);
-  margin-bottom: 16px;
+  padding: clamp(var(--space-4), 2vw, var(--space-6));
+  margin-bottom: var(--space-4);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -1662,7 +1662,7 @@ select:not([multiple])[size="1"] {
   white-space: nowrap;
 }
 .native-admin-access p {
-  margin: 2px 0 0;
+  margin: var(--space-1) 0 0;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
@@ -1680,7 +1680,7 @@ select:not([multiple])[size="1"] {
 .deployment-evidence summary {
   width: fit-content;
   max-width: 53%;
-  padding: 13px 0;
+  padding: var(--space-4) 0;
   cursor: pointer;
   color: var(--text-strong);
   font-weight: 600;
@@ -1694,19 +1694,19 @@ select:not([multiple])[size="1"] {
 .overview-text-button {
   background: transparent;
   border-color: transparent;
-  padding: 5px 2px;
+  padding: var(--space-2) var(--space-1);
   font-size: 12px;
 }
 .deployment-evidence-content {
-  padding-bottom: 12px;
+  padding-bottom: var(--space-3);
 }
 .native-admin-heading {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   justify-content: space-between;
-  gap: 8px 16px;
-  margin-bottom: 8px;
+  gap: var(--space-2) var(--space-4);
+  margin-bottom: var(--space-2);
 }
 .native-admin-heading h2 {
   margin: 0;
@@ -1714,7 +1714,7 @@ select:not([multiple])[size="1"] {
   letter-spacing: -0.025em;
 }
 .native-admin-access .overview-text-button {
-  margin-top: 4px;
+  margin-top: var(--space-1);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
@@ -1795,12 +1795,12 @@ select:not([multiple])[size="1"] {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--space-4);
   flex-wrap: wrap;
 }
 .deployment-heading h2,
 .agent-version-heading h2 {
-  margin-bottom: 4px;
+  margin-bottom: var(--space-1);
 }
 .deployment-heading p,
 .agent-version-heading p {
@@ -1809,18 +1809,18 @@ select:not([multiple])[size="1"] {
 .deployment-progress {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: var(--space-3);
   list-style: none;
   padding: 0;
-  margin: 20px 0;
+  margin: var(--space-5) 0;
 }
 /* Step tiles are inner cards (spec 3.4): a hairline edge on the surface, the marker carries the
    tone, and only a failed step takes its tone's wash. */
 .deployment-step {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
-  padding: 14px;
+  gap: var(--space-3);
+  padding: var(--space-4);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
@@ -1830,7 +1830,7 @@ select:not([multiple])[size="1"] {
   display: block;
 }
 .deployment-step span:not(.deployment-step-marker) {
-  margin-top: 3px;
+  margin-top: var(--space-1);
   color: var(--muted);
   font-size: 12px;
 }
@@ -1839,7 +1839,7 @@ select:not([multiple])[size="1"] {
   width: 12px;
   height: 12px;
   flex: none;
-  margin-top: 4px;
+  margin-top: var(--space-1);
   border-radius: 50%;
   border: 2px solid var(--input-border);
   background: var(--surface);
@@ -1935,15 +1935,15 @@ select:not([multiple])[size="1"] {
   padding: var(--space-2) 0 0;
 }
 .agent-version-heading .resource-id {
-  margin: 8px 0 4px;
+  margin: var(--space-2) 0 var(--space-1);
   overflow-wrap: anywhere;
 }
 .version-list {
   display: grid;
-  gap: 8px;
+  gap: var(--space-2);
   max-height: 480px;
   overflow-y: auto;
-  margin: 14px 0 22px;
+  margin: var(--space-4) 0 var(--space-6);
 }
 @media (max-width: 1100px) {
   /* Stacked: the rail, then the version's summary and tabs. A draft's next step leads the rail,
@@ -1968,9 +1968,9 @@ select:not([multiple])[size="1"] {
 .version-item,
 .revision-create {
   display: grid;
-  gap: 3px;
+  gap: var(--space-1);
   width: 100%;
-  padding: 12px;
+  padding: var(--space-3);
   text-align: left;
   border-color: var(--line);
 }
@@ -2098,8 +2098,8 @@ select:not([multiple])[size="1"] {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  padding: 24px;
-  margin: 20px 0;
+  padding: var(--space-6);
+  margin: var(--space-5) 0;
 }
 .agent-form {
   max-width: 960px;
@@ -2167,7 +2167,7 @@ select:not([multiple])[size="1"] {
 .secret-typeahead-listbox {
   position: absolute;
   z-index: 20;
-  inset: calc(100% + 4px) 0 auto;
+  inset: calc(100% + var(--space-1)) 0 auto;
   max-height: 240px;
   overflow: auto;
   border: 1px solid var(--input-border);
@@ -2177,7 +2177,7 @@ select:not([multiple])[size="1"] {
 }
 .secret-typeahead-listbox [role="option"],
 .secret-typeahead-empty {
-  padding: 10px 12px;
+  padding: var(--space-3) var(--space-3);
   overflow-wrap: anywhere;
 }
 .secret-typeahead-listbox [role="option"] {
@@ -2195,10 +2195,10 @@ select:not([multiple])[size="1"] {
 }
 .form-actions {
   display: flex;
-  gap: 10px;
+  gap: var(--space-3);
   justify-content: flex-end;
   flex-wrap: wrap;
-  margin-top: 20px;
+  margin-top: var(--space-5);
 }
 .namespace-toolbar {
   display: flex;
@@ -2216,20 +2216,20 @@ select:not([multiple])[size="1"] {
   flex-shrink: 0;
 }
 .repository-selection {
-  margin: 24px 0;
-  padding: 20px;
+  margin: var(--space-6) 0;
+  padding: var(--space-5);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--bg);
 }
 .repository-selection h2 {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
 }
 .repository-options,
 .repository-profiles {
   display: grid;
-  gap: 10px;
-  margin-top: 14px;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
 }
 .repository-options {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2237,9 +2237,9 @@ select:not([multiple])[size="1"] {
 .repository-option,
 .repository-profile {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: flex-start;
-  padding: 13px;
+  padding: var(--space-4);
   border: 1px solid var(--input-border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -2250,7 +2250,7 @@ select:not([multiple])[size="1"] {
   accent-color: var(--accent);
   flex: 0 0 auto;
   width: auto;
-  margin: 3px 0 0;
+  margin: var(--space-1) 0 0;
 }
 .repository-option:has(input:checked),
 .repository-profile:has(input:checked) {
@@ -2259,10 +2259,10 @@ select:not([multiple])[size="1"] {
 }
 .repository-option .hint,
 .repository-profile .hint {
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 .repository-profile-group {
-  margin: 22px 0 0;
+  margin: var(--space-6) 0 0;
   padding: 0;
   border: 0;
 }
@@ -2270,9 +2270,9 @@ select:not([multiple])[size="1"] {
   font-weight: 550;
 }
 .repository-access-details {
-  margin-top: 18px;
+  margin-top: var(--space-5);
   border-top: 1px solid var(--line);
-  padding-top: 14px;
+  padding-top: var(--space-4);
 }
 .repository-access-details summary {
   cursor: pointer;
@@ -2291,7 +2291,7 @@ select:not([multiple])[size="1"] {
 }
 .agent-table th,
 .agent-table td {
-  padding: 14px 16px;
+  padding: var(--space-4) var(--space-4);
   text-align: left;
   border-bottom: 1px solid var(--line);
 }
@@ -2330,7 +2330,7 @@ select:not([multiple])[size="1"] {
 }
 .agent-table .resource-id {
   display: block;
-  margin-top: 7px;
+  margin-top: var(--space-2);
   max-width: 310px;
   overflow-wrap: anywhere;
 }
@@ -2357,9 +2357,9 @@ select:not([multiple])[size="1"] {
   display: flex;
   overflow-x: auto;
   max-width: 100%;
-  gap: 16px;
+  gap: var(--space-4);
   border-bottom: 1px solid var(--line);
-  margin-bottom: 20px;
+  margin-bottom: var(--space-5);
 }
 .agent-tabs button {
   flex: 0 0 auto;
@@ -2394,7 +2394,7 @@ select:not([multiple])[size="1"] {
 }
 .notice {
   color: var(--warning);
-  padding: 16px;
+  padding: var(--space-4);
   background: var(--warning-subtle);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -2402,7 +2402,7 @@ select:not([multiple])[size="1"] {
 .configuration-summary {
   display: grid;
   grid-template-columns: 160px minmax(0, 1fr);
-  gap: 14px 20px;
+  gap: var(--space-4) var(--space-5);
 }
 .configuration-summary dt {
   color: var(--muted);
@@ -2412,7 +2412,7 @@ select:not([multiple])[size="1"] {
   overflow-wrap: anywhere;
 }
 .native-document {
-  margin-top: 24px;
+  margin-top: var(--space-6);
 }
 .native-document summary {
   width: fit-content;
@@ -2423,7 +2423,7 @@ select:not([multiple])[size="1"] {
   max-height: 480px;
   overflow: auto;
   background: var(--surface-muted);
-  padding: 18px;
+  padding: var(--space-5);
   border-radius: var(--radius);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2621,7 +2621,7 @@ select:not([multiple])[size="1"] {
 }
 @media (max-width: 760px) {
   .agent-card {
-    padding: 18px;
+    padding: var(--space-5);
   }
   .deployment-progress {
     grid-template-columns: 1fr;
@@ -2631,10 +2631,10 @@ select:not([multiple])[size="1"] {
   }
   .configuration-summary {
     grid-template-columns: 1fr;
-    gap: 7px;
+    gap: var(--space-2);
   }
   .configuration-summary dd {
-    margin-bottom: 12px;
+    margin-bottom: var(--space-3);
   }
 }
 /* Phone: each Agent is a stacked row, its name and ID first, then each cell beside its column's
@@ -2718,17 +2718,17 @@ select:not([multiple])[size="1"] {
 }
 
 .revision-selector {
-  padding: 18px 22px;
+  padding: var(--space-5) var(--space-6);
 }
 .revision-selector > p {
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
   font-size: 13px;
 }
 .revision-selector h2 {
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 .revision-selector .form-actions {
-  margin: 12px 0;
+  margin: var(--space-3) 0;
 }
 .revision-selector label {
   font-size: 13px;
@@ -2755,8 +2755,8 @@ select:not([multiple])[size="1"] {
 .credential-status-list {
   display: grid;
   grid-template-columns: 130px minmax(0, 1fr);
-  gap: 10px 16px;
-  margin: 18px 0 4px;
+  gap: var(--space-3) var(--space-4);
+  margin: var(--space-5) 0 var(--space-1);
 }
 .credential-status-list dt {
   color: var(--muted);
@@ -2768,7 +2768,7 @@ select:not([multiple])[size="1"] {
   justify-content: flex-start;
 }
 .credential-form {
-  margin-top: 12px;
+  margin-top: var(--space-3);
 }
 
 /* The Access tab (spec 3.8): a Share Agent card, then a Direct Agent grants card. */
@@ -2806,7 +2806,7 @@ select:not([multiple])[size="1"] {
 .agent-access-consent {
   display: flex;
   align-items: flex-start;
-  gap: 0.6rem;
+  gap: var(--space-2);
 }
 
 .agent-access-consent input {
@@ -2817,30 +2817,30 @@ select:not([multiple])[size="1"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
-  padding-block: 0.75rem;
+  gap: var(--space-4);
+  padding-block: var(--space-3);
   overflow-wrap: anywhere;
 }
 
 .agent-access-grant p {
-  margin-block: 0.25rem;
+  margin-block: var(--space-1);
 }
 
 .agent-access-progress {
-  padding-left: 1.25rem;
+  padding-left: var(--space-4);
   line-height: 1.6;
 }
 
 .plugin-fields {
-  margin-block: 1.5rem;
+  margin-block: var(--space-5);
 }
 .slack-approver-field {
   display: grid;
-  gap: 0.5rem;
-  margin-block: 1rem;
-  padding: 0.9rem;
+  gap: var(--space-2);
+  margin-block: var(--space-4);
+  padding: var(--space-3);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 .slack-approver-field[hidden],
 .slack-directory-field[hidden],
@@ -2852,7 +2852,7 @@ select:not([multiple])[size="1"] {
 .slack-approver-field label,
 .slack-directory-field > label {
   display: grid;
-  gap: 0.35rem;
+  gap: var(--space-1);
   font-weight: 600;
 }
 .slack-approver-field select {
@@ -2866,8 +2866,8 @@ select:not([multiple])[size="1"] {
 .slack-directory-field {
   position: relative;
   display: grid;
-  gap: 0.5rem;
-  margin-block: 1rem;
+  gap: var(--space-2);
+  margin-block: var(--space-4);
   min-width: 0;
 }
 .slack-directory-field p:empty,
@@ -2879,17 +2879,17 @@ select:not([multiple])[size="1"] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--input-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface);
 }
 .slack-directory-input input {
   flex: 1 1 15rem;
   width: auto;
   min-width: 0;
-  padding: 0.35rem 0;
+  padding: var(--space-1) 0;
   border: 0;
   box-shadow: none;
   outline: none;
@@ -2901,16 +2901,16 @@ select:not([multiple])[size="1"] {
 .slack-directory-chip {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-1);
   max-width: 100%;
-  padding: 0.25rem 0.4rem 0.25rem 0.6rem;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
   background: var(--surface-muted);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font-weight: 600;
   overflow-wrap: anywhere;
 }
 .slack-directory-chip button {
-  padding: 0 0.25rem;
+  padding: 0 var(--space-1);
   border: 0;
   background: transparent;
   font-size: 1.15rem;
@@ -2919,24 +2919,24 @@ select:not([multiple])[size="1"] {
 .slack-directory-panel {
   position: absolute;
   z-index: 20;
-  inset: calc(100% + 4px) 0 auto;
+  inset: calc(100% + var(--space-1)) 0 auto;
   background: var(--surface);
   display: grid;
-  gap: 0.6rem;
+  gap: var(--space-2);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 0.75rem;
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
   box-shadow: var(--shadow);
 }
 .slack-directory-pagination {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 .slack-directory-results {
   display: grid;
-  gap: 0.25rem;
+  gap: var(--space-1);
   max-height: 16rem;
   overflow: auto;
 }
@@ -2952,7 +2952,7 @@ select:not([multiple])[size="1"] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 .slack-directory-result code {
   margin-left: auto;
@@ -2964,7 +2964,7 @@ select:not([multiple])[size="1"] {
 .plugin-dialog[open] {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--space-4);
 }
 .plugin-dialog > p {
   margin: 0;
@@ -2975,10 +2975,10 @@ select:not([multiple])[size="1"] {
 }
 .plugin-access-help,
 .plugin-setup-reminder {
-  padding: 12px 16px;
+  padding: var(--space-3) var(--space-4);
   background: var(--color-surface-2);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 .plugin-access-help {
   flex-shrink: 0;
@@ -2988,7 +2988,7 @@ select:not([multiple])[size="1"] {
   font-size: 12px;
 }
 .plugin-access-details {
-  margin-top: 8px;
+  margin-top: var(--space-2);
   font-size: 12px;
 }
 .plugin-access-details > summary {
@@ -2998,7 +2998,7 @@ select:not([multiple])[size="1"] {
 }
 .plugin-access-instructions {
   max-height: min(12rem, 25dvh);
-  margin-top: 10px;
+  margin-top: var(--space-3);
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -3012,7 +3012,7 @@ select:not([multiple])[size="1"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .plugin-dialog-header h2,
 .plugin-detail-header h3 {
@@ -3027,7 +3027,7 @@ select:not([multiple])[size="1"] {
   grid-template-rows: minmax(0, 1fr);
   flex: 1;
   min-height: 0;
-  gap: 24px;
+  gap: var(--space-6);
 }
 .plugin-browser,
 .plugin-detail {
@@ -3039,7 +3039,7 @@ select:not([multiple])[size="1"] {
 .plugin-browser {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--space-3);
   /* Room for the focus ring of the search field and the buttons at the scroller's edge. */
   padding: var(--space-2) var(--space-4) var(--space-2) var(--space-2);
   border-right: 1px solid var(--line);
@@ -3055,12 +3055,12 @@ select:not([multiple])[size="1"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .plugin-loading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .plugin-loading::before {
   content: "";
@@ -3088,16 +3088,16 @@ select:not([multiple])[size="1"] {
 .plugin-tabs,
 .plugin-pagination {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .plugin-tabs button,
 .plugin-pagination button {
   flex: 1;
-  padding: 9px 8px;
+  padding: var(--space-3) var(--space-2);
   font-size: 0.875rem;
 }
 .plugin-pagination {
-  padding-top: 12px;
+  padding-top: var(--space-3);
   border-top: 1px solid var(--line);
 }
 .plugin-tabs [aria-pressed="true"],
@@ -3110,7 +3110,7 @@ select:not([multiple])[size="1"] {
   border-color: var(--line);
   flex-direction: column;
   align-items: stretch;
-  gap: 6px;
+  gap: var(--space-2);
   width: 100%;
   text-align: left;
   overflow-wrap: anywhere;
@@ -3118,7 +3118,7 @@ select:not([multiple])[size="1"] {
 .plugin-identity {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-3);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -3130,7 +3130,7 @@ select:not([multiple])[size="1"] {
   width: 32px;
   height: 32px;
   overflow: hidden;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--color-surface-2);
   color: var(--muted);
   font-size: 1rem;
@@ -3149,10 +3149,11 @@ select:not([multiple])[size="1"] {
 }
 .plugin-list-item .badge {
   align-self: flex-start;
-  margin-left: 42px;
+  /* Under the name: the 32px logo plus the identity gap. */
+  margin-left: calc(32px + var(--space-3));
 }
 .plugin-detail-empty {
-  margin: 4rem 2rem;
+  margin: var(--space-12) var(--space-8);
   text-align: center;
 }
 .plugin-back {
@@ -3164,51 +3165,51 @@ select:not([multiple])[size="1"] {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  gap: 8px;
-  padding: 4px;
+  gap: var(--space-2);
+  padding: var(--space-1);
 }
 .plugin-card {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 1rem;
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
 }
 .plugin-controls {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: 1rem;
-  margin-block: 0.75rem;
+  gap: var(--space-4);
+  margin-block: var(--space-3);
 }
 .plugin-control {
   display: grid;
-  gap: 0.35rem;
+  gap: var(--space-1);
   flex: 1 1 12rem;
 }
 .plugin-toggle {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 .plugin-toggle input {
   width: auto;
 }
 .plugin-tool {
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 12px;
-  margin-block: 0.75rem;
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  margin-block: var(--space-3);
   min-width: 0;
 }
 .plugin-tool-row {
-  margin-block: 10px;
-  padding: 12px;
+  margin-block: var(--space-3);
+  padding: var(--space-3);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 .plugin-tool-row > summary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  column-gap: 16px;
+  column-gap: var(--space-4);
   cursor: pointer;
   overflow-wrap: anywhere;
 }
@@ -3223,7 +3224,7 @@ select:not([multiple])[size="1"] {
   grid-row: 1 / span 2;
   justify-content: flex-end;
   align-items: center;
-  gap: 16px;
+  gap: var(--space-4);
 }
 .plugin-tool-policy-action::after {
   content: " ▾";
@@ -3239,7 +3240,7 @@ select:not([multiple])[size="1"] {
   height: 20px;
   margin: 0;
   border: 1px solid var(--color-border-strong);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   background: var(--color-surface-2);
   cursor: pointer;
 }
@@ -3276,7 +3277,7 @@ select:not([multiple])[size="1"] {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
-  margin-top: 6px;
+  margin-top: var(--space-2);
 }
 .plugin-tool-row .plugin-tool {
   border: 0;
@@ -3288,7 +3289,7 @@ select:not([multiple])[size="1"] {
 .plugin-json > summary {
   cursor: pointer;
   font-weight: 550;
-  padding: 6px 0;
+  padding: var(--space-2) 0;
 }
 .plugin-json textarea {
   display: block;
@@ -3296,28 +3297,28 @@ select:not([multiple])[size="1"] {
   height: 16rem;
   min-height: 8rem;
   max-height: 32rem;
-  margin-top: 12px;
+  margin-top: var(--space-3);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.875rem;
   line-height: 1.5;
   resize: vertical;
 }
 .plugin-json {
-  margin-top: 20px;
-  padding-top: 16px;
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
   border-top: 1px solid var(--line);
 }
-@media (max-width: 900px) {
+@media (max-width: 760px) {
   .plugin-tool-row > summary {
     grid-template-columns: minmax(0, 1fr);
   }
   .plugin-tool-actions {
     grid-column: 1;
     grid-row: auto;
-    margin-top: 10px;
+    margin-top: var(--space-3);
   }
   .plugin-dialog {
-    padding: 16px;
+    padding: var(--space-4);
   }
   .plugin-workspace {
     grid-template-columns: minmax(0, 1fr);
@@ -3332,28 +3333,28 @@ select:not([multiple])[size="1"] {
   }
   .plugin-back {
     display: inline-block;
-    margin-bottom: 16px;
+    margin-bottom: var(--space-4);
   }
 }
 
 /* Progressive disclosure keeps the launch form focused on everyday choices. */
 .launch-intro {
-  margin: 20px 0;
-  padding: 28px;
+  margin: var(--space-5) 0;
+  padding: var(--space-8);
 }
 /* A card heading sits a step under the page title on the type scale (finding 2097). */
 .launch-intro h2 {
   font-size: var(--text-xl);
   line-height: var(--text-xl--line-height);
-  margin-bottom: 10px;
+  margin-bottom: var(--space-3);
 }
 .launch-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--space-3);
 }
 .launch-preset {
-  margin-top: 20px;
+  margin-top: var(--space-5);
 }
 .launch-preset fieldset {
   border: 0;
@@ -3367,15 +3368,15 @@ select:not([multiple])[size="1"] {
 .launch-runtime,
 .repository-customize {
   border-top: 1px solid var(--line);
-  padding-top: 16px;
-  margin-top: 20px;
+  padding-top: var(--space-4);
+  margin-top: var(--space-5);
 }
 .launch-advanced > summary,
 .launch-runtime > summary,
 .repository-customize > summary {
   cursor: pointer;
   font-weight: 550;
-  padding: 6px 0;
+  padding: var(--space-2) 0;
 }
 .repository-profiles {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3386,37 +3387,37 @@ select:not([multiple])[size="1"] {
   overflow-wrap: anywhere;
 }
 .launch-advanced[open] > .form-field:first-of-type {
-  margin-top: 20px;
+  margin-top: var(--space-5);
 }
-@media (max-width: 640px) {
+@media (max-width: 760px) {
   .repository-profiles {
     grid-template-columns: 1fr;
   }
   .repository-selection {
-    padding: 16px;
+    padding: var(--space-4);
   }
   .agent-tabs {
-    gap: 4px;
+    gap: var(--space-1);
   }
 }
 
 .harness-auth-fields {
   border: 0;
   border-top: 1px solid var(--line);
-  padding: 20px 0 0;
-  margin: 28px 0 0;
+  padding: var(--space-5) 0 0;
+  margin: var(--space-8) 0 0;
   min-width: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: 20px;
+  column-gap: var(--space-5);
 }
 .harness-auth-fields > legend {
   font-size: 18px;
   font-weight: 600;
-  padding-right: 12px;
+  padding-right: var(--space-3);
 }
 .harness-auth-fields > .form-field {
-  margin: 0 0 16px;
+  margin: 0 0 var(--space-4);
 }
 .harness-auth-fields > :not(.form-field),
 .harness-auth-fields > .form-field:has(#provider-api-key) {
@@ -3432,9 +3433,9 @@ select:not([multiple])[size="1"] {
   max-width: 960px;
 }
 .repository-customize .repository-option {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
-@media (max-width: 640px) {
+@media (max-width: 760px) {
   .harness-auth-fields {
     grid-template-columns: 1fr;
   }
@@ -3449,11 +3450,11 @@ select:not([multiple])[size="1"] {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .repository-results-heading {
   flex-wrap: wrap;
-  margin: 18px 0 10px;
+  margin: var(--space-5) 0 var(--space-3);
 }
 .repository-results-heading h3 {
   color: var(--text-strong);
@@ -3479,10 +3480,10 @@ select:not([multiple])[size="1"] {
   display: grid;
   grid-template-columns: 18px minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
+  gap: var(--space-3);
   width: 100%;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: var(--space-3) var(--space-3);
   border: 1px solid var(--input-border);
   background: var(--surface);
   cursor: pointer;
@@ -3526,11 +3527,11 @@ select:not([multiple])[size="1"] {
 .repository-result input[type="checkbox"] {
   width: 18px;
   height: 18px;
-  margin: 2px 0 0;
+  margin: var(--space-1) 0 0;
 }
 .repository-identity {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -3545,7 +3546,7 @@ select:not([multiple])[size="1"] {
 .repository-result-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 8px;
+  gap: var(--space-1) var(--space-2);
   min-width: 0;
   color: var(--muted);
   font-size: 12px;
@@ -3562,18 +3563,18 @@ select:not([multiple])[size="1"] {
 }
 .repository-discovery > label {
   display: block;
-  margin-bottom: 8px;
+  margin-bottom: var(--space-2);
   font-weight: 550;
 }
 .repository-discovery input[type="search"] {
   min-height: 44px;
 }
 .repository-selected {
-  margin-top: 24px;
+  margin-top: var(--space-6);
 }
 .repository-selected-heading {
   flex-wrap: wrap;
-  margin-bottom: 10px;
+  margin-bottom: var(--space-3);
 }
 .repository-selected-heading h3 {
   margin: 0;
@@ -3584,21 +3585,21 @@ select:not([multiple])[size="1"] {
   border: 1px solid var(--input-border);
   border-left: 3px solid var(--accent);
   border-radius: var(--radius);
-  margin: 8px 0;
+  margin: var(--space-2) 0;
 }
 .repository-card-heading {
   display: flex;
   align-items: center;
-  padding-right: 4px;
+  padding-right: var(--space-1);
 }
 .repository-card-toggle {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
   flex: 1;
   min-width: 0;
   min-height: 68px;
-  padding: 14px 12px;
+  padding: var(--space-4) var(--space-3);
   border: 0;
   border-radius: var(--radius);
   background: transparent;
@@ -3616,7 +3617,7 @@ select:not([multiple])[size="1"] {
   border: solid currentColor;
   border-width: 0 1.5px 1.5px 0;
   transform: rotate(-45deg);
-  margin: 0 4px 0 2px;
+  margin: 0 var(--space-1) 0 var(--space-1);
 }
 .repository-card-toggle[aria-expanded="true"] > .repository-chevron,
 .repository-customize[open] > summary > .repository-chevron {
@@ -3625,7 +3626,7 @@ select:not([multiple])[size="1"] {
 .repository-customize > summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-height: 44px;
   list-style: none;
 }
@@ -3646,13 +3647,13 @@ select:not([multiple])[size="1"] {
   white-space: normal;
 }
 .repository-card-settings {
-  padding: 14px;
+  padding: var(--space-4);
   background: var(--surface-muted);
   border-top: 1px solid var(--line);
   border-radius: 0 0 var(--radius) var(--radius);
 }
 .repository-card-settings .repository-option {
-  padding: 8px 0;
+  padding: var(--space-2) 0;
   border: 0;
   background: transparent;
 }
@@ -3661,7 +3662,7 @@ select:not([multiple])[size="1"] {
 }
 @media (max-width: 520px) {
   .repository-selection {
-    padding: 14px;
+    padding: var(--space-4);
   }
   .repository-card-settings .repository-profiles {
     grid-template-columns: minmax(0, 1fr);
@@ -3676,14 +3677,14 @@ select:not([multiple])[size="1"] {
 .plugin-external-links {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 16px;
+  gap: var(--space-2) var(--space-4);
   font-size: 0.875rem;
 }
 .plugin-external-links:empty {
   display: none;
 }
 .plugin-access-help > p {
-  margin: 0 0 8px;
+  margin: 0 0 var(--space-2);
 }
 .plugin-access-help {
   flex-shrink: 0;
@@ -3692,7 +3693,7 @@ select:not([multiple])[size="1"] {
   position: relative;
 }
 .plugin-list-item:has(+ .plugin-unavailable-trigger) {
-  padding-right: 48px;
+  padding-right: var(--space-12);
 }
 .plugin-unavailable-trigger {
   position: absolute;
@@ -3726,8 +3727,8 @@ select:not([multiple])[size="1"] {
     flip-inline flip-block;
   width: 20rem;
   max-width: calc(100vw - 32px);
-  margin: 8px;
-  padding: 14px 16px;
+  margin: var(--space-2);
+  padding: var(--space-4) var(--space-4);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   color: var(--text);
@@ -3740,7 +3741,7 @@ select:not([multiple])[size="1"] {
   overflow-wrap: anywhere;
 }
 .plugin-setup-reminder {
-  margin-top: 16px;
+  margin-top: var(--space-4);
 }
 
 /* Keep mobile form text readable without browser focus zoom. */
@@ -3764,34 +3765,34 @@ select:not([multiple])[size="1"] {
 .runtime-strip {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
-  margin: 8px 0 20px;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 var(--space-5);
 }
 .runtime-pod {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
-  padding: 12px 14px;
+  padding: var(--space-3) var(--space-4);
 }
 .runtime-pod h4 {
   margin: 0;
 }
 .runtime-pod .credential-status-list {
   grid-template-columns: 120px minmax(0, 1fr);
-  margin: 8px 0 0;
+  margin: var(--space-2) 0 0;
 }
 .runtime-events {
-  margin: 10px 0 0;
-  padding-left: 18px;
+  margin: var(--space-3) 0 0;
+  padding-left: var(--space-5);
   color: var(--warning);
   font-size: 13px;
 }
 .runtime-events-note {
-  margin: 10px 0 0;
+  margin: var(--space-3) 0 0;
   font-size: 13px;
 }
 .runtime-events-note + .runtime-events {
-  margin-top: 4px;
+  margin-top: var(--space-1);
 }
 .runtime-events-settled {
   color: var(--muted);
@@ -3806,10 +3807,10 @@ select:not([multiple])[size="1"] {
   background: var(--surface);
 }
 .log-viewer-header {
-  padding: 20px 20px 0;
+  padding: var(--space-5) var(--space-5) 0;
 }
 .log-viewer-header h3 {
-  margin: 0 0 6px;
+  margin: 0 0 var(--space-2);
   color: var(--text-strong);
   font-size: 16px;
   font-weight: 600;
@@ -3821,20 +3822,20 @@ select:not([multiple])[size="1"] {
   line-height: 1.6;
 }
 .log-controls {
-  padding: 18px 20px 14px;
+  padding: var(--space-5) var(--space-5) var(--space-4);
 }
 .log-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: 14px 16px;
+  gap: var(--space-4) var(--space-4);
 }
 .log-picker {
   display: flex;
   flex: 1 1 200px;
   flex-direction: column;
   min-width: 0;
-  gap: 6px;
+  gap: var(--space-2);
 }
 .log-picker label,
 .log-search label,
@@ -3848,7 +3849,7 @@ select:not([multiple])[size="1"] {
   width: 100%;
   min-width: 0;
   min-height: 36px;
-  padding: 7px 10px;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--surface);
@@ -3867,13 +3868,13 @@ select:not([multiple])[size="1"] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 10px 16px;
+  gap: var(--space-3) var(--space-4);
   min-height: 36px;
 }
 .log-option {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--space-2);
   font-size: 13px;
   white-space: nowrap;
 }
@@ -3888,7 +3889,7 @@ select:not([multiple])[size="1"] {
 .log-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--space-2);
   margin-left: auto;
 }
 .log-actions button {
@@ -3903,37 +3904,37 @@ select:not([multiple])[size="1"] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 12px 20px;
-  margin-top: 16px;
-  padding-top: 16px;
+  gap: var(--space-3) var(--space-5);
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
   border-top: 1px solid var(--line);
 }
 .log-levels {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
 }
 .log-filter-label {
-  margin-right: 4px;
+  margin-right: var(--space-1);
 }
 .log-search {
   display: flex;
   flex: 1 1 200px;
   align-items: center;
   min-width: 0;
-  gap: 8px;
+  gap: var(--space-2);
 }
 .log-filter-status,
 .log-retention {
-  margin: 10px 0 0;
+  margin: var(--space-3) 0 0;
   color: var(--muted);
   font-size: 12px;
   line-height: 1.6;
 }
 .log-retention {
   margin: 0;
-  padding: 12px 20px;
+  padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--line);
   background: var(--bg);
 }
@@ -3943,11 +3944,11 @@ select:not([multiple])[size="1"] {
 }
 .log-source-hint,
 .log-error {
-  margin: 0 20px 14px;
+  margin: 0 var(--space-5) var(--space-4);
 }
 .log-output-status {
   margin: 0;
-  padding: 10px 20px;
+  padding: var(--space-3) var(--space-5);
   border-top: 1px solid var(--line);
   color: var(--muted);
   background: var(--bg);
@@ -3966,7 +3967,7 @@ select:not([multiple])[size="1"] {
     monospace;
 }
 .log-row {
-  padding: 8px 16px 8px 32px;
+  padding: var(--space-2) var(--space-4) var(--space-2) var(--space-8);
   border-bottom: 1px solid var(--line);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -4016,7 +4017,7 @@ select:not([multiple])[size="1"] {
     var(--log-time-column) var(--log-level-column) minmax(72px, 112px)
     minmax(0, 1fr);
   align-items: baseline;
-  gap: 12px;
+  gap: var(--space-3);
 }
 .log-time {
   /* A size container, so the text below can shrink to a cell narrower than the measured width
@@ -4042,8 +4043,8 @@ select:not([multiple])[size="1"] {
 }
 .log-level {
   width: fit-content;
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
   background: var(--surface-muted);
   font-family: "Instrument Sans", sans-serif;
   font-size: 10px;
@@ -4054,7 +4055,7 @@ select:not([multiple])[size="1"] {
 .log-origin {
   display: flex;
   flex-wrap: wrap;
-  gap: 0 6px;
+  gap: 0 var(--space-2);
   color: var(--muted);
   white-space: normal;
 }
@@ -4065,7 +4066,7 @@ select:not([multiple])[size="1"] {
 .log-provenance,
 .log-join {
   display: block;
-  margin-top: 3px;
+  margin-top: var(--space-1);
   color: var(--muted);
   font-size: 11px;
 }
@@ -4089,8 +4090,8 @@ select:not([multiple])[size="1"] {
 }
 .log-row-gap,
 .log-row-withheld {
-  padding-top: 5px;
-  padding-bottom: 5px;
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
   color: var(--muted);
   background: var(--surface-muted);
   font-family: "Instrument Sans", sans-serif;
@@ -4104,9 +4105,9 @@ select:not([multiple])[size="1"] {
 .log-fields {
   display: grid;
   grid-template-columns: minmax(80px, 160px) minmax(0, 1fr);
-  gap: 5px 12px;
-  margin: 10px 0 4px;
-  padding: 12px;
+  gap: var(--space-2) var(--space-3);
+  margin: var(--space-3) 0 var(--space-1);
+  padding: var(--space-3);
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--bg);
@@ -4118,8 +4119,8 @@ select:not([multiple])[size="1"] {
   margin: 0;
 }
 .log-chip {
-  padding: 3px 10px;
-  border-radius: 999px;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
   font-size: 12px;
 }
 .log-chip[aria-pressed="true"] {
@@ -4144,7 +4145,7 @@ select:not([multiple])[size="1"] {
     grid-template-columns:
       var(--log-time-column) var(--log-level-column) minmax(60px, 88px)
       minmax(0, 1fr);
-    gap: 10px;
+    gap: var(--space-3);
   }
 }
 /* In a card narrower than 662 px a whole timestamp would leave the message column under 200 px
@@ -4155,11 +4156,11 @@ select:not([multiple])[size="1"] {
     grid-template-columns:
       var(--log-time-track) var(--log-level-column)
       minmax(60px, 112px);
-    gap: 4px 10px;
+    gap: var(--space-1) var(--space-3);
   }
   .log-content {
     grid-column: 1 / -1;
-    margin-top: 2px;
+    margin-top: var(--space-1);
   }
 }
 /* A pane whose measured timestamps are wider than en-US's (data-long-time, finding 1861) moves
@@ -4169,11 +4170,11 @@ select:not([multiple])[size="1"] {
     grid-template-columns:
       var(--log-time-track) var(--log-level-column)
       minmax(60px, 112px);
-    gap: 4px 10px;
+    gap: var(--space-1) var(--space-3);
   }
   .log-pane[data-long-time] .log-content {
     grid-column: 1 / -1;
-    margin-top: 2px;
+    margin-top: var(--space-1);
   }
 }
 /* A whole en-US timestamp beside the level needs 40 px phone row padding, 218 px time, 10 px
@@ -4203,11 +4204,11 @@ select:not([multiple])[size="1"] {
     grid-template-columns:
       var(--log-time-track) var(--log-level-column)
       minmax(60px, 112px);
-    gap: 4px 10px;
+    gap: var(--space-1) var(--space-3);
   }
   .log-content {
     grid-column: 1 / -1;
-    margin-top: 2px;
+    margin-top: var(--space-1);
   }
   .log-fields {
     grid-template-columns: minmax(70px, 110px) minmax(0, 1fr);
@@ -4215,10 +4216,10 @@ select:not([multiple])[size="1"] {
 }
 @media (max-width: 520px) {
   .log-viewer-header {
-    padding: 16px 16px 0;
+    padding: var(--space-4) var(--space-4) 0;
   }
   .log-controls {
-    padding: 16px;
+    padding: var(--space-4);
   }
   .log-picker,
   .log-search {
@@ -4229,17 +4230,17 @@ select:not([multiple])[size="1"] {
   }
   .log-source-hint,
   .log-error {
-    margin-right: 16px;
-    margin-left: 16px;
+    margin-right: var(--space-4);
+    margin-left: var(--space-4);
   }
   .log-output-status,
   .log-retention {
-    padding-right: 16px;
-    padding-left: 16px;
+    padding-right: var(--space-4);
+    padding-left: var(--space-4);
   }
   .log-row {
-    padding-right: 12px;
-    padding-left: 28px;
+    padding-right: var(--space-3);
+    padding-left: var(--space-8);
   }
   .log-line {
     /* The reserved level column gives every row's time the same width, so a shrunk timestamp
@@ -4253,36 +4254,36 @@ select:not([multiple])[size="1"] {
 
 .sandbox-policy {
   display: grid;
-  gap: 1rem;
+  gap: var(--space-4);
   min-width: 0;
 }
 .sandbox-policy .agent-card {
-  padding: 1.2rem;
+  padding: var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: 0.8rem;
+  border-radius: var(--radius-lg);
 }
 .sandbox-decision {
-  padding: 1rem;
+  padding: var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: 0.6rem;
-  margin-block: 0.7rem;
+  border-radius: var(--radius-md);
+  margin-block: var(--space-2);
   overflow-wrap: anywhere;
 }
 .sandbox-decision h3 {
   font-size: 1rem;
-  margin: 0 0 0.5rem;
+  margin: 0 0 var(--space-2);
 }
 .sandbox-decision details {
-  margin-block: 0.7rem;
+  margin-block: var(--space-2);
 }
 .sandbox-policy-form {
   display: grid;
-  gap: 0.8rem;
+  gap: var(--space-3);
 }
 .sandbox-policy-rule-heading {
   display: flex;
   align-items: center;
-  gap: 0.8rem;
+  gap: var(--space-3);
 }
 .sandbox-policy-rule-heading h3 {
   margin: 0;
@@ -4300,10 +4301,10 @@ select:not([multiple])[size="1"] {
   justify-self: end;
 }
 .sandbox-policy-save-option {
-  margin-block: 1rem;
+  margin-block: var(--space-4);
 }
 .sandbox-policy-save-option .hint {
-  margin-block: 0.3rem;
+  margin-block: var(--space-1);
 }
 .sandbox-policy-form > button {
   justify-self: start;
@@ -4311,14 +4312,14 @@ select:not([multiple])[size="1"] {
 .sandbox-policy-form fieldset {
   min-width: 0;
   display: grid;
-  gap: 0.65rem;
+  gap: var(--space-2);
   border: 1px solid var(--color-border);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-sm);
 }
 .sandbox-policy-form label {
   margin: 0;
   display: grid;
-  gap: 0.3rem;
+  gap: var(--space-1);
 }
 .sandbox-policy-form input {
   width: 100%;
@@ -4327,19 +4328,19 @@ select:not([multiple])[size="1"] {
 .sandbox-policy .form-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.8rem;
+  gap: var(--space-3);
   align-items: center;
 }
 .sandbox-policy button {
-  margin: 0.3rem 0.5rem 0.3rem 0;
+  margin: var(--space-1) var(--space-2) var(--space-1) 0;
 }
 
 .sandbox-decisions {
   max-height: 36rem;
   overflow: auto;
-  margin-block: 0.75rem;
+  margin-block: var(--space-3);
 }
 .sandbox-policy input[type="search"] {
   width: 100%;
-  margin-block: 0.4rem;
+  margin-block: var(--space-1);
 }
