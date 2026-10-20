@@ -36,7 +36,7 @@ Policy mutations run sequentially. Confirmed steps remain visible after a later
 failure. After an uncertain response, **Refresh sharing** reads current Roles
 and bindings before another change is allowed; writes never retry automatically.
 A matching binding proves present configuration, not the outcome of an earlier
-request. The console omits the sharing panel for people who are not Installation
+request. The console omits the Access tab for people who are not Installation
 administrators, so it never reads (and the API never audits a denial of) sharing
 policy for them; Agent detail, native admission and stop retain their own
 authorization checks. An expired session

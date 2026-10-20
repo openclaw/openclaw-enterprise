@@ -1636,8 +1636,9 @@ select:not([multiple])[size="1"] {
 .disclosure li + li {
   margin-top: var(--space-1);
 }
-/* The bindings sentence speaks for the sharing panel's list, so it shows only with that panel. */
-[aria-live="polite"]:not(:has(> .agent-access:not([hidden]))) .disclosure-access {
+/* The bindings sentence speaks for the sharing panel's list, so it shows only on the Access tab,
+   while that panel shows (finding 2091). */
+[aria-live="polite"]:not(:has(.agent-access:not([hidden]))) .disclosure-access {
   display: none;
 }
 @media (max-width: 520px) {
@@ -2536,6 +2537,21 @@ select:not([multiple])[size="1"] {
 }
 .credential-form {
   margin-top: 12px;
+}
+
+/* The Access tab (spec 3.8): a Share Agent card, then a Direct Agent grants card. */
+.agent-access {
+  display: grid;
+  gap: var(--space-6);
+}
+.agent-access > .card > h3:first-child {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg--line-height);
+  font-weight: var(--weight-semibold);
+}
+.agent-access-share > .status {
+  margin-block: var(--space-3);
 }
 
 .agent-access-form {

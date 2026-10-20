@@ -24,6 +24,7 @@ import {
   GENERIC_CONFLICT,
   link,
   message,
+  NAMESPACE_MISSING,
   NAMESPACE_RECHECK_MS,
   namespaceCreation,
   namespacePath,
@@ -462,14 +463,6 @@ export function renderCreateAgent(context, draft) {
 // A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
 const MEMBER_CREDENTIAL_ACCESS =
   "An Installation administrator then gives the new Agent access to its Secrets.";
-
-// A complete Namespace list the open form read without its Namespace: it was deleted, or the
-// reader lost access. Waiting changes nothing, so the reader chooses another one.
-const NAMESPACE_MISSING = {
-  blocked: true,
-  missing: true,
-  note: "This Namespace is missing or you no longer have access. Choose another Namespace.",
-};
 
 // What Create Agent knows of its Namespace: missing from a list the form read (kept for Start
 // over, which renders from the same context), otherwise its status.

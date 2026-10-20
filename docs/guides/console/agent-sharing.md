@@ -8,7 +8,7 @@ runtime prerequisites, and limits.
 
 ## Share the Agent
 
-1. Open **Agents**, select the Agent, and find the **Share Agent** section.
+1. Open **Agents**, select the Agent, and open its **Access** tab.
 2. Enter the existing person's **Principal ID**.
 3. Review the full native administration warning and select the acknowledgment.
 4. Choose **Share Agent** and read each reported step.
@@ -30,7 +30,7 @@ To withdraw one explicit Agent grant, find it under **Direct Agent grants** and
 select **Remove binding**. Namespace discovery remains, and other grants, groups
 or Installation administration may still provide access. The console does not
 delete the person, Agent or Roles. People without Installation administration
-do not see **Share Agent**, and it is also hidden if a sharing policy read is
+do not see the **Access** tab, and it is also hidden if a sharing policy read is
 denied; their other Agent controls remain governed by their
 own permissions.
 

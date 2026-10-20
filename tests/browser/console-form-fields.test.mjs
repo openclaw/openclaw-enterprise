@@ -315,7 +315,7 @@ test("Share Agent checks its fields without the browser bubble", async (t) => {
   const { page } = await newPage(t, fixture, { browser });
   const invalidEvents = await countInvalidEvents(page);
   const requests = apiRequests(page, fixture.origin);
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   const principal = panel.getByLabel("Existing person’s Principal ID", { exact: true });
   const acknowledge = panel.getByRole("checkbox");

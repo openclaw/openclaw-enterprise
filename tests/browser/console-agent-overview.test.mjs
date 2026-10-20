@@ -11,6 +11,7 @@ import {
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
+  apiRequests,
   detailUrl,
   fileBrowser,
   holdRequests,
@@ -243,7 +244,7 @@ test("the Share Agent form shows disabled while the sharing policy loads", async
     page,
     `${fixture.origin}/namespaces/${namespace.id}/iam/roles`,
   );
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
   await roles.requested;
   const sharing = page.getByRole("region", { name: "Share Agent", exact: true });
   const principal = sharing.getByLabel("Existing person’s Principal ID");
@@ -1302,7 +1303,8 @@ test("A failed deployment's recovery link scrolls without motion under reduced m
 });
 
 // A version whose deploy is running, and a page at `viewport` for it. Once the test routes its
-// record, open() signs in to its Configuration tab under a fake clock and waits for it to settle.
+// record, open() signs in to its Access tab (where Share Agent is) under a fake clock and waits
+// for it to settle.
 async function pendingDeploy(t, viewport, name) {
   const size = `${viewport.width}x${viewport.height}`;
   const { fixture, namespace } = await createReadyConsoleNamespace(t, `${name} deploy ${size}`);
@@ -1314,11 +1316,7 @@ async function pendingDeploy(t, viewport, name) {
   const recordUrl = deploymentUrl(fixture, namespace, agent, pending);
   const open = async () => {
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
-    await login(
-      page,
-      fixture,
-      detailUrl(fixture, namespace.id, agent.id, pending.id, "configuration"),
-    );
+    await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, "access"));
     await page.getByText("Recorded status: running").waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await page.getByRole("heading", { name: "Share Agent" }).waitFor();
@@ -1763,10 +1761,6 @@ for (const viewport of [
     await page.getByRole("heading", { name: "Version v1" }).waitFor();
     const summary = page.getByRole("region", { name: "Agent state at a glance" });
     await summary.getByText("May be offline", { exact: true }).waitFor();
-    await page
-      .getByRole("region", { name: "Share Agent", exact: true })
-      .getByText("Current policy loaded.", { exact: true })
-      .waitFor();
 
     const facts = await summary.evaluate((node) =>
       [...node.children].map((stat) => {
@@ -1847,8 +1841,14 @@ for (const viewport of [
     }
     const toggle = disclosure.getByText("What this page can tell you", { exact: true });
     await toggle.click();
-    for (const sentence of GUARANTEES) {
-      assert.equal(await disclosure.getByText(sentence, { exact: true }).isVisible(), true);
+    // The bindings sentence speaks for the Access tab's list, so the Configuration tab leaves it
+    // out (finding 2091).
+    for (const [index, sentence] of GUARANTEES.entries()) {
+      assert.equal(
+        await disclosure.getByText(sentence, { exact: true }).isVisible(),
+        index < 2,
+        sentence,
+      );
     }
     // The version tab's notice no longer repeats the first one.
     await page
@@ -1859,15 +1859,30 @@ for (const viewport of [
       [1, 1],
       [1, 1],
     ]);
+    // On the Access tab, beside the sharing panel, the open disclosure shows all three.
+    await page.getByRole("tab", { name: "Access", exact: true }).click();
+    await page
+      .getByRole("region", { name: "Share Agent", exact: true })
+      .getByText("Current policy loaded.", { exact: true })
+      .waitFor();
+    for (const sentence of GUARANTEES) {
+      assert.equal(await disclosure.getByText(sentence, { exact: true }).isVisible(), true);
+    }
+    assert.deepEqual(await placement(), [
+      [1, 1],
+      [1, 1],
+      [1, 1],
+    ]);
   });
 }
 
 // The bindings sentence speaks for the sharing panel's list: without that panel (sharing reads
-// refused), the disclosure leaves it out.
+// refused on the Access tab), the disclosure leaves it out.
 test("The page's disclosure names listed bindings only beside the sharing panel", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "Disclosure sharing");
   const agent = await fixture.createAgent(namespace.id, "Disclosure Agent", nativeValues("v1"));
   const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
   await page.route(`**/namespaces/${namespace.id}/iam/access-bindings`, (route) =>
     route.fulfill({
       status: 403,
@@ -1878,11 +1893,126 @@ test("The page's disclosure names listed bindings only beside the sharing panel"
       }),
     }),
   );
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
+  // The refused read hides the tab and opens Configuration in its place.
+  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   const disclosure = page.locator("details.disclosure");
   await disclosure.getByText("What this page can tell you", { exact: true }).click();
   await disclosure.getByText(GUARANTEES[0], { exact: true }).waitFor();
   await disclosure.getByText(GUARANTEES[1], { exact: true }).waitFor();
   assert.equal(await page.getByRole("region", { name: "Share Agent", exact: true }).count(), 0);
   assert.equal(await disclosure.getByText(GUARANTEES[2], { exact: true }).isVisible(), false);
+  // Each policy read was asked once: the denial is not retried on Configuration.
+  assert.deepEqual(
+    requests
+      .filter((request) => request.path.includes("/iam/"))
+      .map((request) => request.path)
+      .sort(),
+    [`/namespaces/${namespace.id}/iam/access-bindings`, `/namespaces/${namespace.id}/iam/roles`],
+  );
+});
+
+// Share Agent moved off the overview into an Access tab, last in the strip (UX spec 3.8, plan
+// D1). The overview no longer reads sharing policy; the tab reads it when it opens, and a link to
+// the tab survives sign-in.
+test("Share Agent is on the Access tab, not the overview", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Access tab");
+  const agent = await fixture.createAgent(namespace.id, "Access Tab Agent", nativeValues("v1"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  const policyReads = () => requests.filter((request) => request.path.includes("/iam/"));
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  await page.getByRole("heading", { name: "Version v1" }).waitFor();
+  await page.getByText("Current version · read-only admitted snapshot.", { exact: true }).waitFor();
+  const tabNames = () => page.getByRole("tab").allTextContents();
+  assert.deepEqual(await tabNames(), [
+    "Configuration",
+    "Plugins",
+    "Channels",
+    "Workspace files",
+    "Policy denials",
+    "Logs",
+    "Access",
+  ]);
+  assert.equal(await page.getByRole("heading", { name: "Share Agent" }).count(), 0);
+  assert.deepEqual(policyReads(), []);
+
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "access");
+  await page.getByRole("tab", { name: "Access", selected: true }).waitFor();
+  const panel = page
+    .getByRole("tabpanel")
+    .getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Agent access" }).waitFor();
+  assert.equal(await panel.getByRole("button", { name: "Share Agent", exact: true }).count(), 1);
+  assert.deepEqual(
+    policyReads()
+      .map((request) => request.path)
+      .sort(),
+    [`/namespaces/${namespace.id}/iam/access-bindings`, `/namespaces/${namespace.id}/iam/roles`],
+  );
+
+  // A draft's strip has the tab too, last; a link to it opens there after sign-in.
+  const second = (await newPage(t, fixture, { browser })).page;
+  await login(second, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
+  await second.getByRole("tab", { name: "Access", selected: true }).waitFor();
+  await second
+    .getByRole("tabpanel")
+    .getByRole("region", { name: "Share Agent", exact: true })
+    .getByText("Current policy loaded.", { exact: true })
+    .waitFor();
+  assert.equal((await second.getByRole("tab").allTextContents()).at(-1), "Access");
+});
+
+// The sharing panel is built once per page with the page's own context, as it was on the
+// overview: a share still running when the reader opens another tab finishes, and its outcome
+// shows when they come back. Each grant is written once.
+test("A share in flight finishes across a tab switch", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Share in flight", {
+    provisionedPeople: ["flight-recipient"],
+  });
+  const agent = await fixture.createAgent(namespace.id, "Flight Agent", nativeValues("v1"));
+  const person = fixture.provisionedAccounts[0];
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  const write = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+    { method: "POST", once: true },
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "access"));
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await write.requested;
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "plugins");
+  assert.equal(await panel.count(), 0);
+  write.release();
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
+  const writes = requests.filter(
+    (request) => request.method === "POST" && request.path.endsWith("/iam/access-bindings"),
+  );
+  assert.deepEqual(
+    writes.map((request) => [request.body.resourceKind, request.body.subjectId]),
+    [
+      ["namespace", person.principal.id],
+      ["agent", person.principal.id],
+    ],
+  );
+  const bindings = (
+    await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
+  ).data.filter((binding) => binding.subjectId === person.principal.id);
+  assert.equal(bindings.length, 2);
 });

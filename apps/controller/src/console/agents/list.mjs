@@ -58,6 +58,14 @@ export function namespaceCreation(namespace) {
   };
 }
 
+// A complete Namespace list read without the selected Namespace: it was deleted, or the reader
+// lost access. Waiting changes nothing, so the reader chooses another one.
+export const NAMESPACE_MISSING = Object.freeze({
+  blocked: true,
+  missing: true,
+  note: "This Namespace is missing or you no longer have access. Choose another Namespace.",
+});
+
 // The API's catch-all answers: a caller's own denial and an untyped conflict. They name nothing
 // the caller can act on, so views keep their own guidance instead of showing them.
 export const GENERIC_DENIAL = "The exact platform operation was not authorized.";
@@ -517,7 +525,7 @@ export function renderAgentList(context) {
                   // (finding 1521).
                   "Agents in this Namespace that are shared with you appear here."
                 : notReady?.blocked
-                  ? context.namespace.status === "provisioning"
+                  ? context.namespace.status === "provisioning" && !notReady.missing
                     ? "You can create Agents here once this Namespace is ready."
                     : "Agents cannot be created in this Namespace."
                   : notReady
@@ -643,9 +651,12 @@ export function renderAgentList(context) {
   if (context.namespace?.status === "provisioning") {
     let timer = null;
     let reading = false;
+    // `null` is a complete list without the Namespace: deleted, or the reader lost access.
     const showNamespace = (namespace) => {
-      context.namespace = namespace;
-      notReady = namespaceCreation(namespace);
+      if (namespace) {
+        context.namespace = namespace;
+      }
+      notReady = namespace ? namespaceCreation(namespace) : NAMESPACE_MISSING;
       describeCreate();
       // A ready Namespace says so where the warning was. The list holds no field being edited,
       // so the note keeps its own height (Create Agent keeps the warning's, finding 2024).
@@ -687,8 +698,10 @@ export function renderAgentList(context) {
         return;
       }
       const namespace = namespaces?.find((item) => item.id === context.namespaceId);
-      // A list without the Namespace ends the wait; the page's own recheck names that.
+      // A list without the Namespace ends the wait: waiting changes nothing, so the note says so
+      // and Create Agent is disabled, as on Create Agent (finding 2081).
       if (namespaces && !namespace) {
+        showNamespace(null);
         return;
       }
       if (namespace && namespace.status !== context.namespace.status) {
@@ -706,7 +719,7 @@ export function renderAgentList(context) {
     waitForNamespace();
     // A retained list comes back with its timer stopped, as Create Agent's does.
     context.onResume?.(() => {
-      if (context.namespace?.status === "provisioning") {
+      if (context.namespace?.status === "provisioning" && !notReady?.missing) {
         waitForNamespace();
       }
     });

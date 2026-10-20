@@ -20,7 +20,7 @@ and uses it server-side; other authentication methods cannot browse the hosted
 catalog. Select **Save plugin selections**, then
 **Deploy new version**. The prior version keeps its
 original selections. On its **Plugins** tab, you can inspect that immutable
-snapshot. See the [Agent detail guide](../console/agent-details.md#plugins-tab)
+snapshot. See the [Plugins tab guide](../console/configuration-plugins-and-files.md#plugins-tab)
 for the controls and [deployment status](../../reference/agents.md#deployment-status)
 for the result. Catalog visibility alone does not prove that the plugin is
 installed or available to the running Agent. Hosted discovery uses the Agent's
