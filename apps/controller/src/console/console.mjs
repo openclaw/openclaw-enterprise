@@ -476,6 +476,8 @@ const stillCheckingDelayMs = 1000;
 let mountedRouteKey = null;
 // The page whose shell is on screen. A held page keeps its own navigation and header.
 let shownFeature = null;
+// The shown header's page: an Agent's ({ agentId }), Create Agent ({ creating: true }) or null.
+let shownPage = null;
 let mountedAgent = null;
 let mountedViewState = null;
 let resumePending = null;
@@ -635,17 +637,23 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
     return null;
   }
   const focused = document.activeElement;
-  const focusHeld =
-    keepFocus &&
-    (view.contains(focused) ||
-      focused === app.querySelector(".content h1") ||
-      app.querySelector(".sidebar")?.contains(focused) === true);
   const title = app.querySelector(".content h1")?.textContent;
   const scope = app.querySelector(".content .scope")?.textContent;
   const diagnostics = app.querySelector(".runtime-debug");
   const scrollY = window.scrollY;
   const recovery = app.querySelector(".content > .namespace-recovery, .content > p.scope") !== null;
-  const shell = renderShell(shownFeature ?? current.feature, true, { recovery });
+  // An Agent page's own header actions (Create new version) stay with it, inert like the page.
+  const pageActions = app.querySelector(".content .page-header .page-view-actions");
+  const focusHeld =
+    keepFocus &&
+    (view.contains(focused) ||
+      pageActions?.contains(focused) === true ||
+      focused === app.querySelector(".content h1") ||
+      app.querySelector(".sidebar")?.contains(focused) === true);
+  const shell = renderShell(shownFeature ?? current.feature, true, {
+    recovery,
+    page: shownFeature ? shownPage : headerPage(current),
+  });
   if (title) {
     app.querySelector(".content h1").textContent = title;
   }
@@ -654,6 +662,10 @@ function holdShownView(current, { busyCue = true, keepFocus = false } = {}) {
   }
   view.inert = true;
   view.setAttribute("aria-busy", "true");
+  if (pageActions) {
+    pageActions.inert = true;
+    shell.actions.append(pageActions);
+  }
   // Navigation dims the held page after a moment (finding 1447); a refocus recheck keeps its
   // look. The class lives on this load's shell, so the next shell drops it.
   app.querySelector(".content").classList.toggle("holding", busyCue);
@@ -718,6 +730,10 @@ function mountRetainedView(current, retained) {
   retained.snapshot.inert = false;
   shell.view.replaceWith(retained.snapshot);
   shell.view = retained.snapshot;
+  if (retained.state?.pageActions) {
+    retained.state.pageActions.inert = false;
+    shell.actions.append(retained.state.pageActions);
+  }
   if (shell.diagnostics && retained.state?.diagnostics) {
     retained.state.diagnostics.inert = false;
     shell.diagnostics.replaceWith(retained.state.diagnostics);
@@ -752,8 +768,25 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
   return lifetime.reset();
 }
 
-function renderShell(feature, namespaceAdmissionPending = false, { recovery = true } = {}) {
+// The header shape for a route: an Agent's page and Create Agent lead with ← Agents and carry a
+// meta row (the ID, the Namespace) under the title; collections do not (UX spec 3.2).
+function headerPage(current) {
+  if (current.feature !== "agents") {
+    return null;
+  }
+  if (current.creating) {
+    return { creating: true };
+  }
+  return current.agentId ? { agentId: current.agentId } : null;
+}
+
+function renderShell(
+  feature,
+  namespaceAdmissionPending = false,
+  { recovery = true, page = headerPage(route()) } = {},
+) {
   shownFeature = feature;
+  shownPage = page;
   const shell = shellUI.renderShell(feature, {
     session,
     namespaces,
@@ -761,6 +794,7 @@ function renderShell(feature, namespaceAdmissionPending = false, { recovery = tr
     observabilityUrl,
     namespaceAdmissionPending,
     recovery,
+    page,
   });
   if (feature === "backends" && backendsDenied && shell.scopeSelector) {
     shell.scopeSelector.hidden = true;
@@ -1794,6 +1828,16 @@ async function loadPage({
           navigateAgentTab = navigateTab;
         }
       },
+      // The page's own header actions (an Agent's Create new version) sit beside Refresh. A
+      // page rendering behind a stand-in gets them when its shell reveals.
+      setPageActions(node) {
+        node.classList.add("page-view-actions");
+        viewState.pageActions = node;
+        if (!shownStandIn && shell.actions?.isConnected) {
+          shell.actions.querySelector(":scope > .page-view-actions")?.remove();
+          shell.actions.append(node);
+        }
+      },
       setLeaveGuard(guard) {
         if (lifetime.isCurrent(viewState.active)) {
           const refuse = (options) => shownStandIn === null && guard(options);
@@ -1906,6 +1950,9 @@ async function loadPage({
           shell.view.replaceWith(detailView);
           shell.view = detailView;
           detailView.hidden = false;
+          if (viewState.pageActions) {
+            shell.actions.append(viewState.pageActions);
+          }
           if (shell.diagnostics) {
             attachDiagnostics(shell.diagnostics);
           }
@@ -2198,14 +2245,22 @@ async function revalidateMountedAgent(current) {
     routeKey(route()) === key &&
     view.isConnected;
   const path = `/namespaces/${encodeURIComponent(selectedNamespace)}/agents/${encodeURIComponent(agent.id)}`;
-  const focused = view.contains(document.activeElement) ? document.activeElement : null;
+  const pageActions = mountedViewState?.pageActions?.isConnected
+    ? mountedViewState.pageActions
+    : null;
+  const activeElement = document.activeElement;
+  const focused =
+    view.contains(activeElement) || pageActions?.contains(activeElement) ? activeElement : null;
   const selection =
     typeof focused?.selectionStart === "number"
       ? [focused.selectionStart, focused.selectionEnd]
       : null;
   let checking = "session";
-  // Block stale controls during admission without losing an editor's caret on return.
+  // Block stale controls during admission without losing focus or an editor's caret on return.
   view.inert = true;
+  if (pageActions) {
+    pageActions.inert = true;
+  }
   let clearStillChecking = null;
   const stillChecking = setTimeout(() => {
     if (isCurrent()) {
@@ -2317,6 +2372,9 @@ async function revalidateMountedAgent(current) {
     // A newer load may hold this same node on screen; only this check's lifetime releases it.
     if (view.isConnected && lifetime.isCurrent(active)) {
       view.inert = false;
+      if (pageActions?.isConnected) {
+        pageActions.inert = false;
+      }
       if (
         isCurrent() &&
         focused?.isConnected &&

@@ -35,7 +35,6 @@ import {
   namespacePath,
   refusedSave,
   AGENT_UPDATE_DENIED,
-  link,
   message,
   rejectionMessage,
   assertReadableConfiguration,
@@ -1252,9 +1251,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   };
   const headerNewVersion =
     selected !== "draft"
-      ? button("Create new version", () => change("draft", "configuration"))
+      ? button("Create new version", () => change("draft", "configuration"), { size: "sm" })
       : null;
+  // Create new version sits in the page header beside Refresh (UX spec 3.2); the shell's
+  // ← Agents and Namespace selector ask refuseLeave before they leave.
   const headerActions = element("div", { className: "agent-toolbar-actions" }, headerNewVersion);
+  context.setPageActions?.(headerActions);
   // The note that holds the tabs also holds ← Agents and the Namespace selector (finding 1902).
   const refuseLeave = ({ pendingOnly = false } = {}) => {
     if (!(pendingOnly ? draftWriteInFlight() : draftEditorBlocksNavigation())) {
@@ -1263,36 +1265,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     showLeaveBlock();
     return true;
   };
-  const agentsLink = link("← Agents", "agents", context);
-  agentsLink.addEventListener(
-    "click",
-    (event) => {
-      if (
-        !event.button &&
-        !event.metaKey &&
-        !event.ctrlKey &&
-        !event.shiftKey &&
-        !event.altKey &&
-        refuseLeave()
-      ) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-      }
-    },
-    { capture: true },
-  );
   context.setLeaveGuard?.(refuseLeave);
-  const header = element(
-    "div",
-    { className: "agent-toolbar agent-overview-toolbar" },
-    element(
-      "div",
-      { className: "agent-overview-identity" },
-      agentsLink,
-      element("span", { className: "resource-id", title: "Agent ID" }, agent.id),
-    ),
-    headerActions,
-  );
   const currentVersionValue = element("strong");
   const currentVersionNote = element("p", { className: "muted" });
   // The summary's loading text follows the 250 ms rule: a read that settles sooner never shows
@@ -1419,7 +1392,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       element("span", { className: "badge", "data-tone": "warning" }, "Deleting"),
     );
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
-    view.replaceChildren(header, deletion);
+    view.replaceChildren(deletion);
     context.revealed?.();
   }
   if (deleting) {
@@ -1688,7 +1661,6 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     deploymentStatus,
   );
   view.replaceChildren(
-    header,
     recovery,
     nativeAdmin.section,
     overviewStatus,

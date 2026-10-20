@@ -1263,10 +1263,8 @@ test("Agent detail does not move shown sections when Deployment activity first s
   // A full load, so no recent input excuses a shift.
   await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
   // The Agent page renders hidden behind the startup status until its overview reveals
-  // (finding 1537).
-  await page
-    .getByRole("link", { name: "← Agents", exact: true, includeHidden: true })
-    .waitFor({ state: "attached" });
+  // (finding 1537). Its header (← Agents among it) comes with the reveal, so wait on the page.
+  await page.locator(".agent-detail-pending").waitFor({ state: "attached" });
   // The version's own reads finish while Deployment activity's first read is still held.
   await page
     .locator(".agent-version-heading", { hasText: "Version v1" })

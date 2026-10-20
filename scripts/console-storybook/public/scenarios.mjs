@@ -3285,6 +3285,22 @@ export const scenarios = {
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
   },
+  agentHeaderActions: {
+    group: "Pages/Agent detail",
+    name: "Header actions",
+    path: revision,
+    deployed: true,
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1500 }],
+    description:
+      "The Agent header keeps its identity and actions visible while access is rechecked. The delay and Agent data are simulated.",
+    steps: [
+      "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
+      "Focus Create new version, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
+      "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
+      "Choose Create new version to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
+    ],
+    nextStory: "authSaveHoldsNavigation",
+  },
   longVersionHistory: {
     group: "Pages/Agent detail",
     name: "Long version history",
@@ -4134,6 +4150,46 @@ export const scenarios = {
     ],
     gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
   },
+  agentHeader: {
+    group: "Pages/Agent detail",
+    name: "Page header with a long name",
+    path: currentVersion,
+    deployed: true,
+    agentName: "Quarterly release review and signoff bot",
+    description:
+      "The Agent page header: ← Agents, the name with Refresh and Create new version at its right, then the Agent ID, Copy Agent ID and the compact Namespace control in the row under it.",
+    steps: [
+      "At 1440 and 1024 the 40-character name wraps on the left; Refresh and Create new version stay on its first line and nothing overlaps.",
+      "Select Copy Agent ID. The ID is on the clipboard and Copied shows beside the button for two seconds.",
+      "Choose Research in the Namespace control; the console opens Research's Agents list, as the header selector always has. Go Back.",
+      "Select Create new version; the draft opens and its header shows Refresh only.",
+      "On the draft, select Edit Configuration and change a value, then select ← Agents. The page stays and says why, as the sidebar does.",
+    ],
+  },
+  agentHeaderMobile: {
+    group: "Pages/Agent detail",
+    name: "Page header at 390px",
+    path: currentVersion,
+    deployed: true,
+    mobile: true,
+    description:
+      "At 390px the header is four rows: ← Agents with Refresh and Create new version, the name, the Agent ID with Copy Agent ID, then the Namespace control at full width. It ends by 240px.",
+    steps: [
+      "Check that the ID row has no trailing separator and the Namespace control spans the row.",
+      "Leave the window and come back while the access recheck runs: Create new version is held with the page, and focus returns to it afterwards.",
+    ],
+  },
+  agentHeaderNoClipboard: {
+    group: "Pages/Agent detail",
+    name: "Copy Agent ID without clipboard access",
+    path: currentVersion,
+    deployed: true,
+    clipboard: "unavailable",
+    actions: [{ selector: ".page-meta-copy", click: true }],
+    description:
+      "Where the browser offers no clipboard (an http origin, say), Copy Agent ID selects the ID instead, so it can be copied by hand.",
+    steps: ["Check that the Agent ID is selected and no Copied status appears."],
+  },
   deploymentFailedLogsFromDraft: {
     group: "Pages/Agent detail",
     name: "Failed deployment logs from draft",
@@ -4966,7 +5022,8 @@ export const scenarios = {
   namespaceMenu: {
     group: "Components/Navigation",
     name: "Namespace switcher",
-    description: "The header selector shows the current Namespace and readable alternatives.",
+    description:
+      "The header's compact Namespace control (its label is the muted prefix inside the box) shows the current Namespace and readable alternatives.",
     steps: [
       "Choose Research in the Namespace selector; the URL changes and its empty Agents collection appears.",
       "Choose Engineering to return to its Agents, then use browser Back to restore Research.",
@@ -4981,7 +5038,7 @@ export const scenarios = {
     description:
       "Choose a Namespace directly from the header at 390px, without opening navigation.",
     steps: [
-      "Check that the long Namespace name truncates before the inset chevron.",
+      "Check that the compact control stays 32px tall and the long Namespace name truncates before the inset chevron.",
       "Choose Research, then return to the long Namespace and check the selection.",
     ],
   },
@@ -5857,7 +5914,7 @@ export const scenarios = {
     description:
       "The story selects Save authentication source, then Agents in the sidebar. The page stays, and a note in the authentication form says why until the simulated save answers 3.6 s later.",
     steps: [
-      "While the note “This page stays open until the authentication save finishes.” shows, select ← Agents or Agents again: the page stays. Select Reset story to replay the hold.",
+      "While the note “This page stays open until the authentication save finishes.” shows, select ← Agents or choose another Namespace. The page and selected Namespace stay the same. Reset the story to try again.",
       "When the save answers, the note goes; Agents in the sidebar now leaves.",
     ],
   },
@@ -6757,6 +6814,13 @@ for (const [id, state, name] of [
       "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
     gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+    ...(state === "unsupported"
+      ? {
+          steps: [
+            "The tab says once that the Sandbox Driver does not support per-Agent network policy. It reads no Sandbox logs or suggestions and offers no editor.",
+          ],
+        }
+      : {}),
     ...(state === "ceilingDenied"
       ? {
           steps: [

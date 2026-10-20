@@ -403,7 +403,6 @@ export function renderCreateAgent(context, draft) {
         : null;
   if (unavailable) {
     context.view.replaceChildren(
-      link("← Agents", "agents", context),
       element(
         "section",
         { className: "state-panel" },
@@ -429,7 +428,6 @@ export function renderCreateAgent(context, draft) {
   };
   const presets = createPresetFields(context, startForm);
   context.view.replaceChildren(
-    link("← Agents", "agents", context),
     // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
     // replaceChildren would print a null child as the text "null".
     ...(notReady ? [namespaceNote(notReady)] : []),
@@ -2823,7 +2821,6 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
   });
   view.replaceChildren(
-    link("← Agents", "agents", context),
     ...(notReadyNote ? [notReadyNote] : []),
     element(
       "p",

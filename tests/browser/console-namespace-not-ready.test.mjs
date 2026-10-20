@@ -267,7 +267,10 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   // Both views are kept for a return while the Namespace is provisioning.
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
-  await view.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page
+    .locator(".content .page-header")
+    .getByRole("link", { name: "← Agents", exact: true })
+    .click();
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   assert.equal(await view.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
 
