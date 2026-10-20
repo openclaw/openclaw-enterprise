@@ -198,7 +198,7 @@ the saved native Configuration explicitly enables the pilot shape:
 
 - Trusted-proxy authentication accepts `x-occ-identity: occ-workspace-files`
   with `operator.admin` identity scopes.
-- Trusted-proxy device auto-approval is enabled with `operator.admin` scope.
+- Device auto-approval is enabled; identity grants supply admin authority.
 - `controlUi.enabled` is true and `controlUi.allowedOrigins` is nonempty.
 - Dangerous device-auth disabling and host-header origin fallback are disabled.
 
