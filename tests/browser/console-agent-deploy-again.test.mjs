@@ -678,6 +678,68 @@ test("A completed record with no failed Agent reread leaves the newest version H
   assert.equal(await page.getByText(/^Deployed version/).count(), 0);
 });
 
+// v3 is current but this reader cannot read it, so completed v2 is the newest version listed and
+// already known to be older than the current one. A failed Agent reread on Refresh deployment
+// changes nothing about that: v2 stays Historical, not Deployed (internal review of finding 2085).
+test("A failed reread leaves the newest readable version Historical under a hidden current one", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Hidden current");
+  const agent = await fixture.createAgent(namespace.id, "Hidden current Agent", nativeValues("v1"));
+  const { revision: first } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const next = await fixture.deployAgent(namespace.id, agent.id);
+  const hidden = await fixture.deployAgent(namespace.id, agent.id);
+  await fixture.activateRevision(namespace.id, agent.id, hidden.id, first.id);
+  fixture.policy.restrictions.push({
+    id: `deny-read-${hidden.id}`,
+    namespaceId: namespace.id,
+    resourceKind: "agent_revision",
+    resourceId: hidden.id,
+    action: "read",
+    effect: "deny",
+  });
+  const { page } = await newPage(t, fixture, { browser });
+  let agentFail = false;
+  await page.route(
+    (url) => url.pathname === `/namespaces/${namespace.id}/agents/${agent.id}`,
+    (route) =>
+      agentFail && route.request().method() === "GET"
+        ? route.fulfill(UNAVAILABLE)
+        : route.fallback(),
+  );
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${next.id}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: next.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status: "succeeded",
+            error: null,
+            warnings: [],
+            progress: null,
+          },
+          meta: { requestId: "req_test_hidden_current" },
+        }),
+      }),
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"));
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  await summary.getByText("Newer version hidden", { exact: true }).waitFor();
+  await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
+  agentFail = true;
+  await page.getByRole("button", { name: "Refresh deployment" }).click();
+  await page
+    .getByText(
+      "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
+    )
+    .waitFor();
+  await page.getByText(/^Historical version · read-only admitted snapshot/).waitFor();
+  assert.equal(await page.getByText(/^Deployed version/).count(), 0);
+});
+
 // A refused record read ends the wait: polling stops, and the version is no longer labelled
 // Deploying from a record the page can no longer follow (internal review of finding 2085).
 test("A refused status read ends the wait and the Deploying label", async (t) => {

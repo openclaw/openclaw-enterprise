@@ -1973,14 +1973,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // The newest version once its deployment completed, while the Agent reread that would make it
   // current failed. It is not Deploying beside "Completed" (finding 2085), nor Historical: the
   // page cannot yet tell. Only that failed reread says so; a stopped Agent's last version, say,
-  // also has a completed record and no current version, and stays Historical.
+  // also has a completed record and no current version, and stays Historical, as does one under
+  // a known newer current version the viewer cannot read.
   function deployedRevision() {
     const latest = visibleRevisions[0];
     return latest &&
       latest.id !== currentRevisionId &&
       activityRevisionId === latest.id &&
       latestRecordedStatus === "succeeded" &&
-      agentRereadFailed
+      agentRereadFailed &&
+      !revisionHidden(currentRevisionId)
       ? latest
       : null;
   }
