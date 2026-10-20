@@ -123,7 +123,7 @@ test("spacing and radius use the design-language scale (UX plan B3, spec P12)", 
   );
 });
 
-test("the console has no 640px or 900px breakpoint (design-language 2.4)", () => {
+test("the console breakpoints are the documented 520, 760 and 1100 px (design-language 2.4)", () => {
   const widths = [...(consoleCss + channelsCss).matchAll(/@media[^{]*?width:\s*(\d+)px/g)].map(
     ([, px]) => Number(px),
   );

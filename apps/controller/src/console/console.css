@@ -195,7 +195,7 @@ button,
   background: var(--color-surface);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   font-weight: var(--weight-medium);
 }
 /* Low specificity, so a tone's own colour wins. */
@@ -2621,7 +2621,7 @@ select:not([multiple])[size="1"] {
 }
 @media (max-width: 760px) {
   .agent-card {
-    padding: var(--space-5);
+    padding: var(--space-4);
   }
   .deployment-progress {
     grid-template-columns: 1fr;
@@ -3177,7 +3177,7 @@ select:not([multiple])[size="1"] {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: var(--space-4);
+  gap: var(--space-3);
   margin-block: var(--space-3);
 }
 .plugin-control {
@@ -3308,7 +3308,7 @@ select:not([multiple])[size="1"] {
   padding-top: var(--space-4);
   border-top: 1px solid var(--line);
 }
-@media (max-width: 760px) {
+@media (max-width: 1100px) {
   .plugin-tool-row > summary {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -3340,7 +3340,7 @@ select:not([multiple])[size="1"] {
 /* Progressive disclosure keeps the launch form focused on everyday choices. */
 .launch-intro {
   margin: var(--space-5) 0;
-  padding: var(--space-8);
+  padding: var(--space-6);
 }
 /* A card heading sits a step under the page title on the type scale (finding 2097). */
 .launch-intro h2 {
@@ -4119,7 +4119,7 @@ select:not([multiple])[size="1"] {
   margin: 0;
 }
 .log-chip {
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-pill);
   font-size: 12px;
 }
