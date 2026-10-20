@@ -1190,6 +1190,23 @@ export const scenarios = {
       "At a phone width, Sign out spans the Session card.",
     ],
   },
+  settingsNameIsEmail: {
+    group: "Pages/Settings",
+    name: "Account without a display name",
+    path: "/console/settings",
+    // Sign-in providers that have no display name record the email as the name.
+    sessionUser: {
+      id: "storybook-operator",
+      name: "operator@example.com",
+      email: "operator@example.com",
+    },
+    description:
+      "An account whose recorded name is its email address. The account card names it once, by email.",
+    steps: [
+      "Check that the account card shows the initial O and operator@example.com under Email, with no Name row repeating the address.",
+      "Compare Account: a distinct display name still shows under Name.",
+    ],
+  },
   settingsSignOutFailure: {
     group: "Pages/Settings",
     name: "Sign-out unconfirmed",

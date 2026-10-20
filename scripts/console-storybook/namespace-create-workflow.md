@@ -19,8 +19,9 @@ in-memory storage for those API boundaries.
 3. Open **Create Required**: the inline error describes the focused field.
    In **Create Invalid Name**, the pasted tab is refused at the field; replace
    it with a space and the error clears. More than 200 characters is refused too.
-   In **Create Conflict**, change the retained name and resubmit. In
-   **Create Denied**, inspect the access guidance and disabled submit. In
+   In **Create Conflict**, the error names the clash with no request ID; change
+   the retained name and resubmit. In **Create Denied**, inspect the access
+   guidance, its request ID for support, and the disabled submit. In
    **Create refused, then closed**, the closed form leaves **Create Namespace** disabled
    with its reason focused.
 4. Open **Create Pending**. Escape cannot dismiss a pending write. After the
