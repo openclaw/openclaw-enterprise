@@ -69,6 +69,7 @@ import {
   credentialWithdrawalCompanionRevisions,
   isCredentialWithdrawalWork,
   isRepositoryCleanupWork,
+  isRepositoryExpiryCleanupWork,
   repositoryCleanupRevisionId,
   revisionAdmittedBeforeWork,
   isRepositoryRuntimeRetirementWork,
@@ -1899,11 +1900,18 @@ export class ControllerWorker {
     return { observation, context: prepared };
   }
 
-  private async processRepositoryCleanup(claim: ClaimedWork): Promise<void> {
+  private async processRepositoryCleanup(
+    claim: ClaimedWork,
+    // Regular maintenance resumes here after expiry, without preparing or activating Git again.
+    withdrawnRevision?: Readonly<AgentRevision>,
+  ): Promise<void> {
     let complete = false;
+    let completionCode: string | undefined;
+    let expiryRevision: Readonly<AgentRevision> | undefined;
+    let withdrawal: "withdrawn" | "pending" | "retire-runtime" | undefined;
     let cause: string | undefined;
     let stoppedRevision: Readonly<AgentRevision> | undefined;
-    const cleanupRevisionId = repositoryCleanupRevisionId(claim);
+    const cleanupRevisionId = withdrawnRevision?.id ?? repositoryCleanupRevisionId(claim);
     if (cleanupRevisionId === undefined) {
       await this.finalize(claim, undefined, { outcome: "permanent", code: "INVALID_TARGET" });
       return;
@@ -1916,11 +1924,15 @@ export class ControllerWorker {
         return view.revisions.findRevision(claim.namespaceId, claim.agentId, cleanupRevisionId);
       });
       if (revision !== undefined) {
-        const retireRuntime = isRepositoryRuntimeRetirementWork(claim);
+        if (withdrawnRevision !== undefined || isRepositoryExpiryCleanupWork(claim)) {
+          expiryRevision = revision;
+        }
+        const closeLiveSessions =
+          expiryRevision !== undefined || isRepositoryRuntimeRetirementWork(claim);
         ({ settled: complete, cause } = await this.repositoryCredentials.cleanup(claim, revision, {
-          retireRuntime,
+          closeLiveSessions,
         }));
-        if (retireRuntime) {
+        if (closeLiveSessions) {
           if (
             revision.compute.id !== this.compute.id ||
             revision.compute.implementation !== this.compute.implementation
@@ -1944,8 +1956,16 @@ export class ControllerWorker {
             });
           }
           // Session service outages cannot delay exact workload/material retirement.
-          await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
-          stoppedRevision = revision;
+          if (expiryRevision !== undefined) {
+            withdrawal = await this.withdrawExpiredRepositoryAccess(claim, revision, resources);
+            if (withdrawal === "pending") {
+              complete = false;
+              cause ??= "REPOSITORY_WITHDRAWAL_UNCONFIRMED";
+            }
+          } else {
+            await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+            stoppedRevision = revision;
+          }
         }
       } else {
         const attempts = await this.state.read(async (view) =>
@@ -1981,6 +2001,32 @@ export class ControllerWorker {
           );
         }
       }
+      if (expiryRevision !== undefined && withdrawal !== undefined) {
+        // Recheck the exact active owner under admission's locks after the supplier call. A
+        // concurrent stop, replacement or terminal retirement wins, including over pending.
+        const agent = await this.lockClaimAgent(unit, claim);
+        const owner = {
+          namespaceId: claim.namespaceId,
+          agentId: claim.agentId!,
+          revisionId: expiryRevision.id,
+        };
+        if (
+          withdrawal === "retire-runtime" ||
+          agent?.status !== "active" ||
+          agent.activeRevisionId !== expiryRevision.id ||
+          agent.desiredRuntimeState !== "running" ||
+          agent.servicePrincipalId !== expiryRevision.servicePrincipalId ||
+          (await unit.namespaces.findNamespace(claim.namespaceId))?.status !== "ready" ||
+          (await queue.repositoryExpiryState(owner)) === "retiring"
+        ) {
+          // Transfer every outstanding session and the runtime to irrevocable retirement.
+          await queue.enqueueRepositoryCleanup(claim, owner, "terminal-runtime");
+          completionCode = "REPOSITORY_RUNTIME_RETIREMENT_QUEUED";
+          await queue.complete(claim, { code: completionCode });
+          complete = true;
+          return;
+        }
+      }
       const attempts =
         claim.agentId === undefined
           ? (await unit.repositorySessions.listNamespaceAttempts(claim.namespaceId)).filter(
@@ -1992,9 +2038,10 @@ export class ControllerWorker {
               revisionId: cleanupRevisionId,
             });
       if (complete) {
-        complete = !attempts.some(
-          (attempt) => attempt.phase === "closing" || attempt.phase === "invalidated",
-        );
+        complete =
+          expiryRevision === undefined
+            ? !attempts.some(({ phase }) => phase === "closing" || phase === "invalidated")
+            : attempts.every(({ phase }) => phase === "disposed");
       }
       if (
         !complete &&
@@ -2003,8 +2050,27 @@ export class ControllerWorker {
       ) {
         cause = "REPOSITORY_ATTEMPT_INVALIDATED";
       }
+      if (
+        complete &&
+        expiryRevision !== undefined &&
+        withdrawal === "withdrawn" &&
+        this.revisionMaintenanceInterval(expiryRevision) !== undefined
+      ) {
+        // Publish withdrawal and resume normal runtime maintenance in this same transaction.
+        // A recovered expiry claim may be far older than the interrupted maintenance bucket.
+        const previous =
+          withdrawnRevision === undefined
+            ? await queue.latestRevisionMaintenanceKey({
+                namespaceId: claim.namespaceId,
+                agentId: claim.agentId!,
+                revisionId: expiryRevision.id,
+              })
+            : claim.idempotencyKey;
+        await this.enqueueMaintenance(queue, claim, expiryRevision, previous);
+        completionCode = "REPOSITORY_ACCESS_WITHDRAWN";
+      }
       if (complete) {
-        await queue.complete(claim);
+        await queue.complete(claim, completionCode === undefined ? {} : { code: completionCode });
       } else {
         // A session still closing keeps the configured cadence whatever else is stuck: its
         // disposal must not wait on an unrelated invalidated attempt. Otherwise a stuck
@@ -2030,7 +2096,60 @@ export class ControllerWorker {
       agentId: claim.agentId,
       revisionId: cleanupRevisionId,
       outcome: complete ? "success" : "pending",
-      code: complete ? "REPOSITORY_CLEANUP_COMPLETE" : "REPOSITORY_CLEANUP_PENDING",
+      code: complete
+        ? (completionCode ?? "REPOSITORY_CLEANUP_COMPLETE")
+        : "REPOSITORY_CLEANUP_PENDING",
+    });
+  }
+
+  private async withdrawExpiredRepositoryAccess(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+    {
+      namespace,
+      agent,
+    }: { namespace: Readonly<Namespace> | undefined; agent: Readonly<Agent> | undefined },
+  ): Promise<"withdrawn" | "pending" | "retire-runtime"> {
+    const compute = this.compute;
+    if (
+      !compute.retireExpiredRepositoryAccess ||
+      namespace?.status !== "ready" ||
+      agent?.status !== "active" ||
+      agent.desiredRuntimeState !== "running" ||
+      agent.activeRevisionId !== revision.id ||
+      agent.servicePrincipalId !== revision.servicePrincipalId
+    ) {
+      return "retire-runtime";
+    }
+
+    const { namespaceId, agentId, id: revisionId } = revision;
+    return this.withClaimHeartbeat(claim, async (signal) => {
+      // Recovery may be our first observation of expiry. Reapply the serving revision's
+      // independent authority checks, including an actual model credential withdrawal. Never
+      // run repository admission, prepareRevision or activation to observe this reduced runtime.
+      const expiry = await this.queue.repositoryExpiryState({ namespaceId, agentId, revisionId });
+      if (
+        expiry === undefined ||
+        expiry === "retiring" ||
+        (await this.authorizeRevision(claim, agent, revision)) !== undefined ||
+        (await this.resolveRevisionBackend(revision)) !== undefined ||
+        "result" in (await this.resolveRevisionSecretContext(revision))
+      ) {
+        return "retire-runtime";
+      }
+      await this.recoverPendingCredentialWithdrawals(claim, revision);
+      signal.throwIfAborted();
+      try {
+        const result = await compute.retireExpiredRepositoryAccess!(revision, signal);
+        return result === "withdrawn" || result === "retire-runtime" ? result : "pending";
+      } catch (error) {
+        if (signal.aborted || error instanceof WorkClaimLostError) {
+          throw error;
+        }
+        // PostgreSQL already fenced this expired grant. A lost supplier reply proves neither
+        // successful withdrawal nor that the separately authorized runtime should be stopped.
+        return "pending";
+      }
     });
   }
 
@@ -4010,6 +4129,18 @@ export class ControllerWorker {
         return;
       }
       if (revision.repositoryCredentials !== undefined) {
+        const { namespaceId, agentId, id: revisionId } = revision;
+        if (
+          agent.activeRevisionId === revisionId &&
+          claim.idempotencyKey.startsWith(`agent_revision:${revisionId}:maintenance:`) &&
+          (await this.queue.repositoryExpiryState({ namespaceId, agentId, revisionId })) !==
+            undefined
+        ) {
+          // An expiry or retirement is durable even across a clock rollback. A maintenance
+          // observation must never reopen repository admission or re-prepare this revision.
+          await this.processRepositoryCleanup(claim, revision);
+          return;
+        }
         await this.assertRepositoryAuthority(claim, revision);
         this.repositoryCredentials.validate(revision);
       }
@@ -5889,13 +6020,14 @@ export class ControllerWorker {
     queue: Pick<PostgresWorkQueue, keyof PostgresWorkQueue>,
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
+    previousMaintenanceKey = claim.idempotencyKey,
   ): Promise<void> {
     const interval = this.revisionMaintenanceInterval(revision)!;
     const candidateAvailableAt = new Date(Date.now() + interval);
     let maintenanceBucket = Math.floor(candidateAvailableAt.getTime() / interval);
     const maintenancePrefix = `agent_revision:${revision.id}:maintenance:`;
-    const currentBucket = claim.idempotencyKey.startsWith(maintenancePrefix)
-      ? Number(claim.idempotencyKey.slice(maintenancePrefix.length))
+    const currentBucket = previousMaintenanceKey.startsWith(maintenancePrefix)
+      ? Number(previousMaintenanceKey.slice(maintenancePrefix.length))
       : undefined;
     // Clock skew must not deduplicate the successor against its completed claim.
     const availableAt =

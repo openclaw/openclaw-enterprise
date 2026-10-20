@@ -26,6 +26,7 @@ import {
   KubernetesObjectApi,
   type KubernetesObject,
   type V1Deployment,
+  type V1Pod,
   type V1NetworkPolicySpec,
   PatchStrategy,
 } from "@kubernetes/client-node";
@@ -70,6 +71,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   isOpenShellProviderName,
+  openShellProviderName,
   openShellWorkspaceName,
   type OpenShellGateway,
 } from "../../backends/openshell.ts";
@@ -2405,7 +2407,8 @@ function canonicalSandboxSpec(spec: Readonly<Record<string, unknown>> | undefine
   if (spec === undefined || template === undefined) {
     return spec;
   }
-  const { restart_policy: restartPolicy, ...rest } = spec;
+  // The Gateway assigns this epoch. Git continuity verifies it against the supervisor receipt.
+  const { provider_attachment_epoch: _epoch, restart_policy: restartPolicy, ...rest } = spec;
   return {
     ...withoutSyntheticOneofs(rest),
     ...(spec.policy === undefined ? {} : { policy: canonicalProtobufValues(spec.policy) }),
@@ -2960,8 +2963,18 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       const readOnly = create.spec.policy.filesystem.read_only;
       readOnly.push(...git.readOnlyPaths.filter((path) => !readOnly.includes(path)));
       create.spec.restart_policy = "SANDBOX_RESTART_POLICY_NEVER";
-      await this.openShellGit!.bind(context.revision.id, (observed) =>
-        verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
+      const continuity = this.gitContinuity(context);
+      // Only the independent model attachment selected by this revision can survive Git expiry.
+      const auth = context.revision.harnessAuth;
+      const originalModel =
+        auth?.method === "credential_source" &&
+        context.requirements.credentialAttachments.some(
+          (a) => a.sourceId === auth.sourceId && a.ref === continuity?.model,
+        );
+      await this.openShellGit!.bind(
+        context.revision.id,
+        (observed) => verifyExistingSandbox(observed, { ...create, requestId: requestIds[0]! }),
+        originalModel ? continuity : undefined,
       );
     }
     const prepared = context.requirements.proxyWiring;
@@ -3095,6 +3108,102 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
     await this.initializeWorkspace(context, sandbox, client);
     return result;
+  }
+
+  /** Stock 0.1.4 labels the supervisor and workload Pods as one boundary pair. Keep both
+   * exact Pod UIDs, container IDs and restart counts, not just the aggregate Ready status. */
+  private gitContinuity(context: SandboxNamespaceContext & { revision: Readonly<AgentRevision> }) {
+    const { revision } = context;
+    const auth = revision.harnessAuth;
+    if (
+      auth?.method !== "credential_source" ||
+      revision.namespaceId !== context.namespace.id ||
+      revision.sandboxDriverId !== this.id ||
+      revision.egressPlan !== undefined
+    ) {
+      return;
+    }
+    const namespace = namespaceName(context.namespace);
+    return {
+      model: openShellProviderName(auth.sourceId),
+      workload: async (sandboxId: string, signal: AbortSignal) => {
+        if (!sandboxId || !KUBERNETES_LABEL_VALUE.test(sandboxId)) {
+          return;
+        }
+        const key = "openshell.ai/boundary-pair";
+        const pair = sandboxId.toLowerCase();
+        const { items, metadata } = await kubernetes(context).list<V1Pod>(
+          "v1",
+          "Pod",
+          namespace,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          labelSelector({ [key]: pair }),
+        );
+        signal.throwIfAborted();
+        if (items.length !== 2 || metadata?._continue || metadata?.remainingItemCount) {
+          return;
+        }
+        const identities = [];
+        for (const role of ["supervisor", "workload"]) {
+          const pod = items.find(
+            (p) => p.metadata?.labels?.[OPENSHELL_BOUNDARY_ROLE_LABEL] === role,
+          );
+          const m = pod?.metadata;
+          const labels = m?.labels;
+          const cs = pod?.status?.containerStatuses;
+          if (
+            !pod ||
+            !m?.uid ||
+            !m.name ||
+            m.namespace !== namespace ||
+            m.deletionTimestamp ||
+            labels?.[key] !== pair ||
+            pod.status?.phase !== "Running" ||
+            !pod.status.conditions?.some((c) => c.type === "Ready" && c.status === "True") ||
+            !(role === "supervisor"
+              ? labels[OPENSHELL_SANDBOX_ID_LABEL] === sandboxId
+              : labels["openclaw.dev/revision"] === revision.id &&
+                labels["openclaw.dev/agent"] === revision.agentId) ||
+            !cs?.length ||
+            cs.some(
+              (c) =>
+                !c.name || !c.ready || c.restartCount !== 0 || !c.state?.running || !c.containerID,
+            )
+          ) {
+            return;
+          }
+          identities.push([
+            role,
+            m.name,
+            m.uid,
+            cs.map((c) => [c.name, c.containerID, c.restartCount]),
+          ]);
+        }
+        return JSON.stringify([namespace, revision.id, identities]);
+      },
+    };
+  }
+
+  async retireExpiredRepositoryAccess(
+    context: SandboxNamespaceContext & { revision: Readonly<AgentRevision> },
+  ) {
+    this.requireOperatorWorkspaceMode("withdraw expired repository access");
+    const owner = this.gitContinuity(context);
+    if (!this.openShellGit || !owner) {
+      return "retire-runtime" as const;
+    }
+    const sandbox = this.sandboxRef(context);
+    return this.openShellGit.retireExpiredRepositoryAccess(
+      context.revision,
+      this.gatewayClientForNamespace(sandbox.namespaceName),
+      workspaceName(context.namespace),
+      sandbox.resourceName,
+      owner,
+      context.signal,
+    );
   }
 
   async enrollHarness(

@@ -1808,6 +1808,7 @@ test(
       [66, "prePreparedRepositoryDraftPulls"],
       [67, "preLegacyRevisionExecutionAdmission"],
       [68, "preOpenShellGitRoutes"],
+      [69, "preOpenShellExpiredGit"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2220,6 +2221,7 @@ test(
       [66, "prePreparedRepositoryDraftPulls"],
       [67, "preLegacyRevisionExecutionAdmission"],
       [68, "preOpenShellGitRoutes"],
+      [69, "preOpenShellExpiredGit"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2317,6 +2319,7 @@ test(
       [66, "prePreparedRepositoryDraftPulls"],
       [67, "preLegacyRevisionExecutionAdmission"],
       [68, "preOpenShellGitRoutes"],
+      [69, "preOpenShellExpiredGit"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2339,6 +2342,7 @@ test(
         // immutability trigger must roll back with it. Abort 0069 at its final GRANT: the
         // route table and its index roll back with it.
         const rollbackTag = [
+          [69, "GRANT"],
           [68, "GRANT"],
           [67, "ALTER TABLE"],
           [66, "GRANT"],

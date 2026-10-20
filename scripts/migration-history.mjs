@@ -273,6 +273,9 @@ function classifyReceipts(receipts, manifest) {
   if (receipts.length === 68) {
     return "preOpenShellGitRoutes";
   }
+  if (receipts.length === 69) {
+    return "preOpenShellExpiredGit";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

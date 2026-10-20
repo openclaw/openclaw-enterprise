@@ -2123,6 +2123,17 @@ export interface ComputeDriver extends Driver {
     /** Catalog entry for a `credential_source` binding; absent for every other method. */
     credentialSourceType?: CredentialSourceType,
   ): void;
+  /**
+   * Withdraw expired Git access, or observe that withdrawal again after a restart. Never grant
+   * access, replace the runtime, or repeat an uncertain detach. Return `withdrawn` only after
+   * verifying Git is revoked and the same independently authorized inference runtime is ready.
+   * `pending` means Git is fenced but confirmation is outstanding; it asserts no model health.
+   * Return `retire-runtime` if the fence, identity or independent authority cannot be preserved.
+   */
+  retireExpiredRepositoryAccess?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<"withdrawn" | "pending" | "retire-runtime">;
   /** Discovery availability; deployment must still validate its exact Harness. */
   validateRepositoryCredentialSupport?(sandboxDriverId?: string): void;
   validateRepositoryCredentials?(

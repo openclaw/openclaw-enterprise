@@ -267,6 +267,8 @@ export interface OpenShellSandboxProviderStatus {
   readonly state: string;
   readonly reason?: string;
   readonly receipt?: {
+    readonly receiptId?: string;
+    readonly kind?: string;
     readonly provider: string;
     readonly workspace: string;
     readonly desired?: OpenShellProviderDesiredIdentity;
@@ -279,6 +281,7 @@ export interface OpenShellSandboxProviderStatus {
 
 /** Readiness for a detach, including a replay of one, is read through its receipt. */
 export interface OpenShellProviderDetachResult {
+  readonly detached?: boolean;
   readonly receiptId?: string;
 }
 
@@ -452,8 +455,9 @@ export interface OpenShellGatewayClient
     bearer: string,
     signal: AbortSignal,
   ): Promise<boolean>;
+  /** Read a profile in its Workspace, or pass null to request the platform profile. */
   getProviderProfile(
-    workspace: string,
+    workspace: string | null,
     id: string,
     signal: AbortSignal,
   ): Promise<OpenShellStoredProviderProfile | undefined>;
@@ -518,6 +522,7 @@ export interface OpenShellGatewayClient
     sandbox: string,
     provider: string,
     signal: AbortSignal,
+    conditional?: { readonly expectedResourceVersion: string; readonly requestId: string },
   ): Promise<OpenShellProviderDetachResult | undefined>;
   getSandboxProviderStatus(
     workspace: string,
@@ -1863,7 +1868,7 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
   }
 
   async getProviderProfile(
-    workspace: string,
+    workspace: string | null,
     id: string,
     signal: AbortSignal,
   ): Promise<OpenShellStoredProviderProfile | undefined> {
@@ -1871,7 +1876,13 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     try {
       response = await this.unary(
         "GetProviderProfile",
-        { id: nonempty(id, "OpenShell provider profile ID"), workspace_scope: { workspace } },
+        {
+          id: nonempty(id, "OpenShell provider profile ID"),
+          // Stock selects the platform profile only when workspace_scope is absent.
+          ...(workspace !== null && {
+            workspace_scope: { workspace: nonempty(workspace, "OpenShell Workspace name") },
+          }),
+        },
         signal,
       );
     } catch (error) {
@@ -2197,7 +2208,16 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     sandbox: string,
     provider: string,
     signal: AbortSignal,
+    conditional?: { readonly expectedResourceVersion: string; readonly requestId: string },
   ): Promise<OpenShellProviderDetachResult | undefined> {
+    if (
+      conditional &&
+      (!/^[1-9]\d*$/.test(conditional.expectedResourceVersion) || !conditional.requestId)
+    ) {
+      throw new OpenShellGatewayFailure(
+        "A conditional detach requires a resource version and request ID.",
+      );
+    }
     let response: RecordValue;
     try {
       response = await this.unary(
@@ -2206,7 +2226,8 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
           sandbox: nonempty(sandbox, "OpenShell Sandbox name"),
           provider: nonempty(provider, "OpenShell provider name"),
           workspace_scope: { workspace },
-          request_id: randomUUID(),
+          ...(conditional && { expected_resource_version: conditional.expectedResourceVersion }),
+          request_id: conditional?.requestId ?? randomUUID(),
         },
         signal,
       );
@@ -2217,7 +2238,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       throw error;
     }
     const receiptId = asRecord(response.receipt)?.receipt_id;
-    return Object.freeze(isNonEmptyString(receiptId) ? { receiptId } : {});
+    return Object.freeze({
+      ...(isNonEmptyString(receiptId) && { receiptId }),
+      ...(conditional && { detached: response.detached === true }),
+    });
   }
 
   async getSandboxProviderStatus(
@@ -2251,6 +2275,10 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       ...(receipt
         ? {
             receipt: Object.freeze({
+              ...(typeof receipt.receipt_id === "string" && {
+                receiptId: text(receipt.receipt_id),
+              }),
+              ...(typeof receipt.kind === "string" && { kind: text(receipt.kind) }),
               provider: text(receipt.provider),
               workspace: text(receipt.workspace),
               ...(desired

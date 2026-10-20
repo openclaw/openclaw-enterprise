@@ -103,6 +103,7 @@ message GetServiceRequest {
 message SandboxSpec {
   SandboxPolicy policy = 7;
   repeated string providers = 8;
+  string provider_attachment_epoch = 14;
   SandboxRestartPolicy restart_policy = 15;
 }
 
@@ -606,6 +607,7 @@ enum ProviderMutationKind {
   PROVIDER_MUTATION_KIND_ATTACH = 1;
   PROVIDER_MUTATION_KIND_DETACH = 2;
   PROVIDER_MUTATION_KIND_UPDATE = 3;
+  PROVIDER_MUTATION_KIND_OBSERVE = 4;
 }
 
 message ProviderMutationReceipt {

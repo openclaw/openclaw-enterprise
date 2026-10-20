@@ -2000,6 +2000,10 @@ export const openShellGitRoutes = occSchema.table(
     observed: jsonb("observed"),
     writePending: text("write_pending"),
     blocked: text("blocked"),
+    retainedLaunchHash: text("retained_launch_hash"),
+    detachRequestId: uuid("detach_request_id"),
+    detachResourceVersion: text("detach_resource_version"),
+    detachedEpoch: text("detached_epoch"),
   },
   (t) => [
     index("openshell_git_routes_namespace").on(t.namespaceId),
@@ -2031,6 +2035,22 @@ export const openShellGitRoutes = occSchema.table(
     check(
       "openshell_git_routes_check2",
       sql`(${t.materialVersion} IS NULL) = (${t.preparationAttemptId} IS NULL)`,
+    ),
+    check(
+      "openshell_git_routes_retained_launch_hash_check",
+      sql`${t.retainedLaunchHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "openshell_git_routes_detach_resource_version_check",
+      sql`${t.detachResourceVersion} ~ '^[1-9][0-9]*$'`,
+    ),
+    check(
+      "openshell_git_routes_detach_check",
+      sql`
+      (${t.detachRequestId} IS NULL) = (${t.detachResourceVersion} IS NULL)
+      AND (${t.detachedEpoch} IS NULL OR (${t.detachRequestId} IS NOT NULL AND ${t.detachedEpoch} <> ''))
+      AND (${t.detachRequestId} IS NULL OR
+        (${t.retainedLaunchHash} IS NOT NULL AND ${t.blocked} IS NOT NULL AND ${t.blocked} IN ('repository_expired', 'withdrawn')))`,
     ),
     check(
       "openshell_git_routes_observed_check",

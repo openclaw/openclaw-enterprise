@@ -553,6 +553,14 @@
       "tag": "0069_openshell_git_routes",
       "breakpoints": true,
       "sha256": "03c19cdc8e4c41b41b47886ad30b54f67ae78c99a86aaffc1d6f954187c8e3e2"
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787000000070,
+      "tag": "0070_openshell_expired_git",
+      "breakpoints": true,
+      "sha256": "b85b69c0712769be71e28ebc58e0bc5564595bec12f3c90c96467d4628b356dc"
     }
   ],
   "initialSchemaStates": {
@@ -580,7 +588,8 @@
     "main": "bd490d16dd23ec1ea722bb370155e9454fb52187bd2b16cd8a0fe277e3e41bde",
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
-    "completed": "c3d7198df23e214c890f1556b933d00d1306e9dc87014275d3fb256366038219",
+    "preOpenShellExpiredGit": "c3d7198df23e214c890f1556b933d00d1306e9dc87014275d3fb256366038219",
+    "completed": "82b56b8960b2c20ff16d724e8fd3bf0dcbac42b76d4c7a65b548cfe38cd526fe",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
     "agentProvisioning": "baac9e369ace8610f96948c1a930e6387431b1d0a33cefa3893765e52f8f7a52",
     "backendCompleted": "a2ba6fc82fbf0047cea491efad4a9e58eacaed7c29ce8528accff331569c51dd",

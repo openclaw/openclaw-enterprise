@@ -79,6 +79,10 @@ test(
         "observed",
         "write_pending",
         "blocked",
+        "retained_launch_hash",
+        "detach_request_id",
+        "detach_resource_version",
+        "detached_epoch",
       ],
     );
     assert.ok(
@@ -241,5 +245,80 @@ test(
       writePending: undefined,
       blocked: "withdrawn",
     });
+  },
+);
+
+test(
+  "Git expiry permanently fences earlier route holders and grants only one conditional send",
+  {
+    ...requiresPostgres,
+    timeout: 60_000,
+  },
+  async (t) => {
+    const pool = new pg.Pool({ connectionString: databaseUrl });
+    t.after(() => pool.end());
+    const state = new PostgresPlatformState(pool);
+    const { repositoryCredentials } =
+      await import("../fixtures/repository-credentials/session-state.mjs");
+    // The worker and supplier tests exercise crossing the deadline. This is the store's
+    // completed-deadline input; the binding remains attached to its live, desired-running Agent.
+    const { revision } = await seedSessionRevision(
+      state,
+      repositoryCredentials({ deadlineWallMs: Date.now() - 1 }),
+    );
+    const { id, namespaceId, agentId } = revision;
+    await state.transact((unit) =>
+      unit.agents.compareAndSetActiveRevision(namespaceId, agentId, undefined, id),
+    );
+    const store = new PostgresOpenShellGitRouteStore(pool);
+    const { workspace, sandbox } = observed;
+    await store.open(
+      { revisionId: id, namespaceId, agentId, workspace, sandbox, bindingId: "x".repeat(32) },
+      randomUUID(),
+    );
+    const launch = "a".repeat(64);
+    const expire = (r = revision) => store.expire(r, workspace, sandbox);
+    assert.equal(await expire(), undefined, "an unwitnessed bootstrap cannot produce retention");
+    const snapshot = {
+      retainedLaunchHash: launch,
+      observed: { ...observed, executionId: id },
+      generation: {
+        credentialState: "active",
+        expiresAt: new Date().toISOString(),
+        providerId: observed.providerId,
+        profileVersion: observed.profileVersion,
+        resourceVersion: observed.providerResourceVersion,
+      },
+      material: { materialVersion: randomUUID(), preparationAttemptId: randomUUID() },
+    };
+    assert.equal(await store.record(id, 1, snapshot), true);
+    assert.equal(
+      await expire({
+        ...revision,
+        repositoryCredentials: {
+          ...revision.repositoryCredentials,
+          deadlineWallMs: Date.now() + 60_000,
+        },
+      }),
+      undefined,
+      "a worker cannot substitute another deadline",
+    );
+    assert.equal(await store.owns(id, 1), true);
+    const frozen = await expire();
+    assert.equal(frozen?.retainedLaunchHash, launch);
+    assert.equal(await store.owns(id, 1), false);
+    assert.equal(await store.record(id, 1, snapshot), false);
+    assert.equal(await store.writing(id, 1, "rotate"), false);
+    assert.equal((await store.adopt(id, randomUUID())).blocked, "repository_expired");
+    const request = randomUUID();
+    assert.equal(await store.beginDetach(id, launch, request, "13"), true);
+    assert.equal(await store.beginDetach(id, launch, randomUUID(), "13"), false);
+    assert.deepEqual((await expire()).detach, { requestId: request });
+    assert.equal(await store.confirmDetached(id, launch, request, "epoch-two"), true);
+    assert.equal(await store.confirmDetached(id, launch, request, "epoch-replaced"), false);
+    assert.equal((await expire()).detach.epoch, "epoch-two");
+    await store.withdraw({ revisionId: id });
+    assert.equal(await expire(), undefined, "explicit stop supersedes a witnessed withdrawal");
+    assert.equal(await store.confirmDetached(id, launch, request, "epoch-two"), false);
   },
 );

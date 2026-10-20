@@ -16,6 +16,12 @@ import {
   resolveGitHubRepositoryBinding,
   type GitHubRepositoryRegistry,
 } from "../repo/github/credentials/registry.ts";
+import {
+  witnessOpenShellGitLaunch,
+  subtractExpiredOpenShellGit,
+  type OpenShellGitContinuity,
+  type OpenShellGitExpiryResult,
+} from "./openshell-expired-git.ts";
 import type { OpenShellRepositoryMaterial } from "../repo/github/credentials/prepared-repository-git.ts";
 import type {
   OpenShellGatewayClient,
@@ -59,6 +65,7 @@ type MaterialIdentity = Omit<OpenShellRepositoryMaterial, "value">;
  * is stale, finding 2128). Never a failed read (see OpenShellGitObservationFailure).
  */
 export type OpenShellGitRouteBlockReason =
+  | "repository_expired"
   | "withdrawn"
   | "bootstrap_failed"
   | "execution_replaced"
@@ -131,6 +138,8 @@ interface Entry {
   binding: OpenShellPreparedGitBinding;
   verify?: (sandbox: OpenShellSandboxResponse) => void;
   sandboxId?: string;
+  continuity?: OpenShellGitContinuity;
+  retainedLaunchHash?: string;
   /** The last observation that verified; the next one must read as the same installation. */
   supervisor?: OpenShellPreparedGitInstalled;
   /** A new supervisor session was adopted for the same process; reported once installed. */
@@ -291,7 +300,9 @@ function lookupReasonCode(reason: string, entry: Entry): OpenShellOnlineGitReaso
     case "execution_mismatch":
       return undefined;
     case "route_blocked":
-      return entry.blocked === "withdrawn" ? "access_withdrawn" : "route_blocked";
+      return entry.blocked === "withdrawn" || entry.blocked === "repository_expired"
+        ? "access_withdrawn"
+        : "route_blocked";
     case "material_unavailable":
       // The route had material and lost it: the session ended, or the owner retired the
       // material and cannot prepare more (for example a rejected App key).
@@ -427,7 +438,6 @@ export class OpenShellGitRuntime {
       revision.harness.id !== "codex" ||
       revision.harness.mode !== "dedicated" ||
       revision.egressPlan ||
-      state.deadlineWallMs <= Date.now() ||
       binding.profile !== "git-write"
     ) {
       throw new Error(
@@ -462,6 +472,12 @@ export class OpenShellGitRuntime {
     otherProviders: readonly string[] = [],
     otherHosts: readonly string[] = [],
   ) {
+    if (
+      !revision.repositoryCredentials ||
+      revision.repositoryCredentials.deadlineWallMs <= Date.now()
+    ) {
+      throw new Error("OpenShell prepared Git requires a live git-write binding.");
+    }
     const scope = this.scope(revision);
     if (otherHosts.some((host) => isIpAddressHost(host) || this.overlapsGit(host))) {
       throw new Error("OpenShell Git cannot share overlapping network policy.");
@@ -809,6 +825,7 @@ export class OpenShellGitRuntime {
               preparationAttemptId: entry.material.preparationAttemptId,
             },
       observed: entry.supervisor,
+      ...(entry.retainedLaunchHash && { retainedLaunchHash: entry.retainedLaunchHash }),
     };
     if (isDeepStrictEqual(snapshot, entry.persisted)) {
       return;
@@ -847,12 +864,70 @@ export class OpenShellGitRuntime {
   async bind(
     revisionId: string,
     verify: (sandbox: OpenShellSandboxResponse) => void,
+    continuity?: OpenShellGitContinuity,
   ): Promise<void> {
     const entry = await this.entries.get(revisionId);
     if (!entry || entry.blocked) {
       throw new Error("OpenShell Git has no admitted bootstrap.");
     }
     entry.verify = verify;
+    if (continuity) {
+      entry.continuity = continuity;
+    }
+  }
+
+  async retireExpiredRepositoryAccess(
+    revision: Readonly<AgentRevision>,
+    client: OpenShellGatewayClient,
+    workspace: string,
+    sandbox: string,
+    owner: OpenShellGitContinuity,
+    signal: AbortSignal,
+  ): Promise<OpenShellGitExpiryResult> {
+    const credentials = revision.repositoryCredentials;
+    if (!this.routes || !this.owner || !credentials || credentials.deadlineWallMs > Date.now()) {
+      return "retire-runtime";
+    }
+    try {
+      // A real grant substitution remains a refusal even if first seen after the deadline.
+      this.scope(revision);
+    } catch {
+      return "retire-runtime";
+    }
+    const saved = await this.routes.expire(revision, workspace, sandbox);
+    if (!saved) {
+      return "retire-runtime";
+    }
+    const entry = this.states.get(revision.id)?.entry;
+    if (entry) {
+      entry.blocked = "repository_expired";
+      entry.installed = undefined;
+    }
+    return subtractExpiredOpenShellGit(
+      this.routes,
+      saved,
+      client,
+      owner,
+      signal,
+      async (providers) => {
+        try {
+          await this.checkOtherProviders(client, workspace, providers, signal);
+          return true;
+        } catch (error) {
+          if (error instanceof OpenShellGitRouteError) {
+            return false;
+          }
+          throw error; // a failed read is not a finding about the retained authority
+        }
+      },
+      (outcome, check) =>
+        this.emit?.({
+          event: "worker.openshell-git-expiry",
+          ...revisionIdentity(revision),
+          outcome,
+          check,
+        }),
+    );
   }
 
   withdraw(revisionId: string): void {
@@ -1008,11 +1083,16 @@ export class OpenShellGitRuntime {
           "OpenShell inference provider is unavailable.",
         );
       }
-      const profile = await client.getProviderProfile(
-        provider.profileWorkspace || workspace,
-        provider.type,
-        signal,
-      );
+      // Stock permits a profile in this Workspace, or an empty profile_workspace selecting
+      // the platform profile. A same-named Workspace profile cannot stand in for that read.
+      const profileWorkspace = provider.profileWorkspace || null;
+      if (profileWorkspace !== null && profileWorkspace !== workspace) {
+        throw new OpenShellGitRouteError(
+          "provider_overlap",
+          "OpenShell Git cannot verify a credential provider bound to another Workspace's profile.",
+        );
+      }
+      const profile = await client.getProviderProfile(profileWorkspace, provider.type, signal);
       const definition = profile?.definition;
       const endpoints = definition?.endpoints;
       const credentials = definition?.credentials;
@@ -1189,6 +1269,23 @@ export class OpenShellGitRuntime {
     if (adopt) {
       entry.supervisor = observed;
       entry.unverified = undefined;
+      if (
+        entry.continuity &&
+        entry.retainedLaunchHash === undefined &&
+        observed.credentialState === "active"
+      ) {
+        const hash = await witnessOpenShellGitLaunch(
+          entry.client,
+          entry.continuity,
+          sandbox,
+          observed,
+          signal,
+        );
+        if (!hash) {
+          return;
+        }
+        entry.retainedLaunchHash = hash;
+      }
     }
     return observed;
   }
@@ -1393,6 +1490,12 @@ export class OpenShellGitRuntime {
           "OpenShell Git material does not match admission.",
         );
       }
+      // The admission deadline may pass while we read the supervisor and its material. The
+      // original registry binding still has to match; time alone is not a changed grant.
+      if (entry.revision.repositoryCredentials!.deadlineWallMs <= Date.now()) {
+        this.pending(entry, "material_unavailable");
+        return;
+      }
       if (
         !entry.material ||
         entry.material.materialVersion !== material.materialVersion ||
@@ -1550,7 +1653,12 @@ export class OpenShellGitRuntime {
           reason = "installation_changed";
           break;
         }
-        if (Date.parse(material.expiresAt) <= Date.now()) {
+        if (
+          Math.min(
+            Date.parse(material.expiresAt),
+            entry.revision.repositoryCredentials!.deadlineWallMs,
+          ) <= Date.now()
+        ) {
           reason = "material_expired";
           break;
         }

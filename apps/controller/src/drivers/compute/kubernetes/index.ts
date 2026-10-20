@@ -1,3 +1,4 @@
+import type { OpenShellSandboxDriver } from "../../sandbox/openshell.ts";
 import {
   OpenShellGitRouteBlockedError,
   openShellGitRouteReadiness,
@@ -7809,6 +7810,35 @@ export class KubernetesComputeDriver implements ComputeDriver {
       signal: AbortSignal.any([context.signal, signal]),
       revision,
       workspaceNodeEnrolled: true,
+    });
+  }
+
+  async retireExpiredRepositoryAccess(revision: Readonly<AgentRevision>, signal: AbortSignal) {
+    const driver = this.sandboxDriverForRevision(revision) as
+      Partial<OpenShellSandboxDriver> | undefined;
+    if (
+      !this.openShellGit ||
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation ||
+      driver?.implementation !== "openshell" ||
+      !driver.retireExpiredRepositoryAccess
+    ) {
+      return "retire-runtime" as const;
+    }
+    const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
+    const existing = await this.getNamespace(namespace);
+    if (!existing) {
+      return "retire-runtime" as const;
+    }
+    this.verifyNamespaceOwnership(existing, { namespaceId: revision.namespaceId }, external);
+    const context = await this.sandboxNamespaceContext(
+      this.sandboxNamespaceForRevision(revision, namespace),
+      namespace,
+    );
+    return driver.retireExpiredRepositoryAccess({
+      ...context,
+      revision,
+      signal: AbortSignal.any([signal, context.signal, AbortSignal.timeout(30_000)]),
     });
   }
 

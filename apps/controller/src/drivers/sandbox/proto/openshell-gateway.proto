@@ -155,6 +155,7 @@ message SandboxSpec {
   ResourceRequirements resource_requirements = 9;
   repeated string command = 12;
   bool tty = 13;
+  string provider_attachment_epoch = 14;
   SandboxRestartPolicy restart_policy = 15;
 }
 
@@ -695,7 +696,16 @@ message ProviderMutationReceipt {
   string mutation_id = 2;
   string provider = 3;
   string workspace = 4;
+  ProviderMutationKind kind = 5;
   ProviderDesiredIdentity desired = 6;
+}
+
+enum ProviderMutationKind {
+  PROVIDER_MUTATION_KIND_UNSPECIFIED = 0;
+  PROVIDER_MUTATION_KIND_ATTACH = 1;
+  PROVIDER_MUTATION_KIND_DETACH = 2;
+  PROVIDER_MUTATION_KIND_UPDATE = 3;
+  PROVIDER_MUTATION_KIND_OBSERVE = 4;
 }
 
 message ProviderDesiredIdentity {

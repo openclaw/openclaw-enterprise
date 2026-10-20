@@ -371,9 +371,9 @@ export class RepositoryCredentialLifecycle {
   async cleanup(
     claim: ClaimedWork,
     revision: Revision,
-    options: { readonly retireRuntime?: boolean } = {},
+    options: { readonly closeLiveSessions?: boolean } = {},
   ): Promise<RepositoryCleanupOutcome> {
-    if (options.retireRuntime) {
+    if (options.closeLiveSessions) {
       await this.dependencies.state.transactWithQueue(async (unit, queue) => {
         await this.heartbeat(queue, claim);
         await unit.namespaces.lockNamespace(revision.namespaceId, { includeDeleted: true });

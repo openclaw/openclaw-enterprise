@@ -216,9 +216,28 @@ again. A route the worker has closed for good (the Sandbox or its supervisor pro
 was replaced, a provider write's outcome is unknown, or access was withdrawn) fails
 the deployment with `REPOSITORY_GIT_ROUTE_BLOCKED`; an active version in that
 state keeps serving chat, but every Git request answers 403 until a new version
-deploys.
+deploys, unless maintenance must retire the runtime.
 
-Installing the material resets the Sandbox's connections. OpenShell 0.1.4
+At the admitted Git deadline, request authorization closes immediately. Maintenance
+retires the issued credentials, fences the Git route, and conditionally removes only
+its provider from the running Sandbox. This requires a separately attached model
+credential and a launch witnessed by this release. The worker verifies that the
+original supervisor and workload Pods, session and process report Git revoked and
+that model provider ready in the same reduced configuration. A subsequent model
+reply in the same conversation is the end-to-end check. If the detach reply is lost,
+the worker verifies the current attachments without sending it again. If only the
+Sandbox resource version changes before the request, the worker waits for a fresh
+observation before sending. An unresolved observation stays pending.
+
+Maintenance also checks that the remaining providers do not grant GitHub access. It
+reads each profile in the scope its provider selects. In OpenShell, an empty profile
+workspace selects the platform profile, even if the Workspace has a profile with the
+same name. If the gateway denies that read or the profile overlaps GitHub, maintenance
+keeps Git closed and retires the runtime. An unsafe identity change, loss of model
+access or an explicit stop also retires the runtime.
+A new grant requires a new revision.
+
+Installing or removing the material resets the Sandbox's connections. OpenShell 0.1.4
 (`5a7728c3`) folds every attached provider's record version into the Sandbox's
 provider environment revision and answers a change with a policy runtime reload
 that closes each connection out of the Sandbox: the workspace node's WebSocket to

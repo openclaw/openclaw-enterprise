@@ -937,6 +937,18 @@ test("the Git route tombstone stays for a replaced execution, an unknown write a
   await f.reconcile();
   await expectBlocked(f, "sandbox_mismatch");
 
+  // A genuine substitution before the deadline stays a grant conflict, not ordinary expiry.
+  f = fixture();
+  await f.reconcile();
+  const [original] = f.revision.repositoryCredentials.bindings;
+  f.revision.repositoryCredentials.bindings[0] = {
+    ...original,
+    grant: { ...original.grant, grantId: "substituted" },
+  };
+  await f.reconcile();
+  f.revision.repositoryCredentials.bindings[0] = original;
+  await expectBlocked(f, "grant_changed");
+
   // The provider write's outcome is unknown: no retry, replacement, or token replay.
   f = fixture();
   f.faults.rotate = new OpenShellPreparedGitProviderError("unknown");
@@ -1545,4 +1557,283 @@ test("an adoption the gateway refuses tombstones the route instead of retrying i
   g.faults.gateway = undefined;
   await assert.rejects(g.prepare(), { reason: "gateway_unauthorized" });
   assert.equal(f.store.rows.get(f.revision.id).fence, fence, "a tombstone is not re-fenced");
+});
+
+test("the periodic Git reader crossing the admitted deadline does not report grant replacement", async () => {
+  const f = fixture({ store: routeStore() });
+  await f.reconcile();
+  assert.ok(await f.lookup(), "Git was usable before expiry");
+  f.faults.duringObserve = () => {
+    f.revision.repositoryCredentials.deadlineWallMs = Date.now() - 1;
+  };
+  await f.reconcile();
+  assert.equal(await f.lookup(), undefined, "Git closes at its admitted deadline");
+  assert.equal(f.entry.blocked, undefined, "the expiry owner still has its original installation");
+  assert.equal(f.calls.rotate, 1, "no credential installation after expiry");
+  await assert.rejects(f.prepare(), /live git-write/, "ordinary prepare cannot restore Git");
+});
+
+test("Git expiry observes the original model in the reduced stock installation, including response loss", async (t) => {
+  async function exercise(fault) {
+    const store = routeStore();
+    const f = fixture({ store });
+    const { revision: r, sandbox: box, entry, client, supervisor: sv } = f;
+    const git = "oce-git";
+    const model = "original-model";
+    box.spec.providers = [model, "runtime", git];
+    box.spec.provider_attachment_epoch = sv.attachmentEpoch;
+    box.annotations = { "openclaw.dev/revision-id": r.id };
+    box.resourceVersion = "13";
+    let detach;
+    let sends = 0;
+    let expiry = false;
+    let state = "";
+    let trace = [];
+    const owner = { model, workload: async () => "original-pod-and-container" };
+    await f.runtime.bind(r.id, entry.verify, owner);
+    const original = f.provider.observe;
+    f.provider.observe = async (...args) => ({
+      ...(await original(...args)),
+      workspace: box.workspace,
+      sandbox: box.name,
+      executionId: r.id,
+      provider: git,
+      providerId: "git-id",
+      profileVersion: "7",
+      providerEnvRevision: "6",
+      configRevision: "2",
+      policyHash: "old-policy",
+    });
+    const identify = client.getProvider;
+    client.getProvider = async (w, n, s) => ({
+      ...(await identify(w, n, s)),
+      workspace: w,
+      name: n,
+      profileWorkspace:
+        expiry && n === git && fault === "Git profile scope changed"
+          ? ""
+          : expiry && n === model && fault === "model profile belongs to another workspace"
+            ? "other-workspace"
+            : w,
+      id: n === model ? "model-id" : "git-id",
+      resourceVersion: "12",
+    });
+    let reducedEnvRevision = "8";
+    const getProfile = client.getProviderProfile;
+    client.getProviderProfile = async (...args) => {
+      if (box.spec.provider_attachment_epoch === "reduced-epoch") {
+        if (fault === "profile unavailable" && !state) {
+          state = "read failed";
+          throw Object.assign(Error("profile unavailable"), { code: 14 });
+        }
+        if (fault === "model rotates during profile check") {
+          reducedEnvRevision = "9";
+        }
+        if (fault === "overlap after confirmation" && detach.epoch) {
+          return { definition: { endpoints: [], credentials: [{ env_vars: ["GITHUB_TOKEN"] }] } };
+        }
+      }
+      return getProfile(...args);
+    };
+    client.getSandboxProviderStatus = async (workspace, sandbox, provider, _signal, receiptId) => {
+      const removed = !box.spec.providers.includes(git);
+      const isGit = provider === git;
+      const absent = removed && isGit;
+      const oldExpired = !removed && isGit && expiry;
+      const status = absent ? "REVOKED" : "READY";
+      const epoch = box.spec.provider_attachment_epoch;
+      const snapshot = {
+        attachmentEpoch: epoch,
+        configRevision: "2",
+        providerEnvRevision: removed ? reducedEnvRevision : "6",
+        policyHash: removed ? "new-policy" : "old-policy",
+      };
+      if (oldExpired && fault === "version churn" && !state) {
+        state = "churned";
+        box.resourceVersion = "14";
+      }
+      const result = {
+        state: "PROVIDER_READINESS_STATE_" + (oldExpired ? "FAILED" : status),
+        reason: oldExpired ? "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED" : undefined,
+        receipt: {
+          workspace,
+          provider,
+          receiptId: receiptId ?? "observe-" + provider,
+          kind: "PROVIDER_MUTATION_KIND_" + (receiptId === "detach-receipt" ? "DETACH" : "OBSERVE"),
+          desired: {
+            sandboxId: box.id,
+            sandbox,
+            ...snapshot,
+            providerId: absent ? "" : isGit ? "git-id" : "model-id",
+            providerResourceVersion: absent ? "0" : "12",
+          },
+        },
+        observed: {
+          ...snapshot,
+          sequence: "81",
+          sessionId: sv.supervisorSessionId,
+          processInstanceId: sv.processInstanceId,
+          credentialsInstalled: !oldExpired,
+          launchEnvironmentInstalled: !oldExpired,
+          policyActive: true,
+          reason: "",
+        },
+        networkInstanceId: sv.networkInstanceId,
+        observedTime: new Date().toISOString(),
+        evaluatedTime: new Date().toISOString(),
+      };
+      if (absent) {
+        trace.push(receiptId ?? "OBSERVE");
+        if (fault === "different generation") {
+          result.receipt.desired.policyHash = "substitute";
+        }
+        if (fault === "pending" && !state) {
+          state = "polled";
+          result.state = "PROVIDER_READINESS_STATE_PENDING";
+        }
+      }
+      if (removed && !isGit) {
+        if (fault === "failed model") {
+          result.state = "PROVIDER_READINESS_STATE_FAILED";
+        }
+        if (fault === "other process") {
+          result.observed.processInstanceId = "replacement";
+        }
+        if (fault === "unsupported stock") {
+          result.receipt.kind = undefined;
+        }
+      }
+      return result;
+    };
+    store.expire = async () => {
+      const row = store.rows.get(r.id);
+      assert.equal(row.observed.credentialState, "active");
+      assert.match(row.retainedLaunchHash, /^[a-f0-9]{64}$/);
+      row.blocked = "repository_expired";
+      return { ...row, detach };
+    };
+    store.beginDetach = async (_r, _h, requestId, version) => {
+      assert.equal(version, box.resourceVersion);
+      assert.equal(detach, undefined, "one send opportunity");
+      detach = { requestId };
+      return true;
+    };
+    store.confirmDetached = async (_r, _h, id, epoch) => {
+      assert.equal(id, detach.requestId);
+      assert.deepEqual(box.spec.providers, [model, "runtime"]);
+      detach.epoch = epoch;
+      return true;
+    };
+    client.detachSandboxProvider = async (workspace, sandbox, name, _signal, conditional) => {
+      assert.equal(name, git);
+      assert.equal(workspace, box.workspace);
+      assert.equal(sandbox, box.name);
+      assert.equal(
+        await store.owns(r.id, 1),
+        false,
+        "even the previous holder is durably fenced before the conditional detach",
+      );
+      assert.equal(conditional.requestId, detach.requestId);
+      assert.equal(conditional.expectedResourceVersion, box.resourceVersion);
+      sends++;
+      if (fault === "unimplemented detach") {
+        throw Object.assign(Error("unsupported withdrawal"), { grpcStatus: 12 });
+      }
+      if (fault === "intent without effect") {
+        throw Error("response lost, still attached");
+      }
+      box.spec.providers.pop();
+      box.spec.provider_attachment_epoch = "reduced-epoch";
+      box.resourceVersion = "15";
+      if (fault === "lost reply") {
+        throw Error("lost response after committed mutation");
+      }
+      return { receiptId: "detach-receipt", detached: fault !== "no-op" };
+    };
+    await f.reconcile();
+    assert.ok(await f.lookup(), "Git works on witnessed installation");
+    expiry = true;
+    f.revision.repositoryCredentials.deadlineWallMs = Date.now() - 1;
+    await f.reconcile();
+    assert.equal(await f.lookup(), undefined, "Git denied at its own deadline before withdrawal");
+    const cleanup = (runtime, observer = owner) =>
+      runtime.retireExpiredRepositoryAccess(
+        r,
+        client,
+        box.workspace,
+        box.name,
+        observer,
+        AbortSignal.timeout(5_000),
+      );
+    const first = await cleanup(
+      f.runtime,
+      fault === "replacement Pod" ? { ...owner, workload: async () => "other-pod" } : owner,
+    );
+    if (["replacement Pod", "Git profile scope changed"].includes(fault)) {
+      assert.equal(first, "retire-runtime");
+      assert.equal(sends, 0);
+      return;
+    }
+    const pending = [
+      "version churn",
+      "intent without effect",
+      "lost reply",
+      "profile unavailable",
+      "model rotates during profile check",
+    ].includes(fault);
+    const unsafe = [
+      "no-op",
+      "unimplemented detach",
+      "unsupported stock",
+      "other process",
+      "failed model",
+      "different generation",
+      "model profile belongs to another workspace",
+    ].includes(fault);
+    assert.equal(first, unsafe ? "retire-runtime" : pending ? "pending" : "withdrawn", fault);
+    if (unsafe) {
+      return;
+    }
+    assert.equal(sends, fault === "version churn" ? 0 : 1);
+    if (fault === "pending") {
+      assert.deepEqual(trace, ["detach-receipt", "detach-receipt"]);
+    }
+    const cold = new OpenShellGitRuntime(f.runtime.configuration, registry);
+    cold.routes = store;
+    cold.owner = f.owner;
+    const expected =
+      fault === "intent without effect"
+        ? "pending"
+        : fault === "overlap after confirmation"
+          ? "retire-runtime"
+          : "withdrawn";
+    assert.equal(await cleanup(cold), expected);
+    if (fault === "lost reply") {
+      assert.deepEqual(trace, ["OBSERVE"], "prove current absence without replay");
+    }
+    assert.equal(await cleanup(cold), expected);
+    assert.equal(sends, 1, "repeated cold maintenance never resends detach");
+    assert.equal(f.calls.rotate, 1, "no provider reattachment or renewal");
+  }
+  for (const fault of [
+    "success",
+    "version churn",
+    "lost reply",
+    "pending",
+    "intent without effect",
+    "replacement Pod",
+    "Git profile scope changed",
+    "model profile belongs to another workspace",
+    "no-op",
+    "unimplemented detach",
+    "different generation",
+    "profile unavailable",
+    "model rotates during profile check",
+    "overlap after confirmation",
+    "unsupported stock",
+    "other process",
+    "failed model",
+  ]) {
+    await t.test(fault, () => exercise(fault));
+  }
 });
