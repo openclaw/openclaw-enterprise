@@ -3470,6 +3470,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         values,
         executionMode,
         readOnly: !draft,
+        // Every deployment needs a model authentication source, so the drawer asks for one only
+        // while the Agent has none; a deployed Agent with its key bound was told to set
+        // credentials "before first deploy" (finding 2063).
+        copy: {
+          drawerNotice: agent.harnessAuth
+            ? "New version. Changes affect future deployments using this Configuration."
+            : "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before deploying.",
+        },
         drawerContext: {
           drafts: context.drafts,
           baseline: JSON.stringify([snapshot.id, snapshot.generation]),
