@@ -117,6 +117,10 @@
                     "label": "Console Walkthrough"
                   },
                   {
+                    "page": "guides/console/configuration-plugins-and-files",
+                    "label": "Configuration, Plugins, and Files"
+                  },
+                  {
                     "page": "guides/console/channels-and-credentials",
                     "label": "Channels and Credentials"
                   },
@@ -849,6 +853,10 @@
                   {
                     "page": "contributing/console-storybook",
                     "label": "Console Storybook"
+                  },
+                  {
+                    "page": "contributing/console-storybook-agent-workflows",
+                    "label": "Storybook Agent Workflows"
                   },
                   {
                     "page": "flows/docker-compose-development",
