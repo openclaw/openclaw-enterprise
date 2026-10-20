@@ -901,6 +901,19 @@ export const scenarios = {
     description:
       "A first run's Namespace is still provisioning: the page names its status and what waits for it, and Create Agent stays available for drafts.",
   },
+  agentsNamespaceBecomesReady: {
+    group: "Pages/Agents",
+    name: "Namespace becomes ready",
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["provisioning", "ready"],
+    actions: [{ selector: 'input[type="search"]', value: "Research", focus: true }],
+    description:
+      "The Agents list rechecks a provisioning Namespace every 10 s while the reader stays on it, without a Refresh. When it reads ready, a success note replaces the warning in place, Create Agent loses its not-ready description, and the search text and focus stay.",
+    steps: [
+      'Keep the caret in Search Agents. After the first recheck (about 10 s) the note still begins "Namespace status: Provisioning."; within about 20 s it becomes "Namespace status: Ready. Agents created here can be deployed now."',
+      "Confirm Search Agents keeps its text and focus, Research assistant is still listed, and Create Agent is enabled with no description pointing at the note. No further Namespace reads happen.",
+    ],
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
