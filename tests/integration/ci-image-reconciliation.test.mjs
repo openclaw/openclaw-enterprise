@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../", import.meta.url)));
 const prepare = join(root, "scripts/ci/prepare.mjs");
@@ -17,7 +18,7 @@ function run(script, args, env) {
     cwd: root,
     encoding: "utf8",
     timeout: 10_000,
-    env: { PATH: "/usr/bin:/bin", ...env },
+    env: { ...compileCacheEnvironment, PATH: "/usr/bin:/bin", ...env },
   });
 }
 

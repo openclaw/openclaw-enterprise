@@ -12,8 +12,14 @@ import { join } from "node:path";
 // it back on. Callers passing their own GIT_CONFIG_* replace it and must set every
 // index. Git drops it for the receiving side of a local push, so a repository that
 // receives one sets maintenance.auto=false itself (git.mjs, the router test's target).
+//
+// It keeps the lane's NODE_COMPILE_CACHE, as tests/helpers/compile-cache.mjs does (inlined: the
+// isolation tests mount only this directory into containers), so Node children reuse compiled code.
 export function cleanEnvironment(extra = {}) {
   return {
+    ...(process.env.NODE_COMPILE_CACHE
+      ? { NODE_COMPILE_CACHE: process.env.NODE_COMPILE_CACHE }
+      : {}),
     PATH: "/usr/local/bin:/usr/bin:/bin",
     LANG: "C.UTF-8",
     GIT_CONFIG_NOSYSTEM: "1",

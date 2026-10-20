@@ -24,6 +24,7 @@ import {
 } from "../../apps/controller/src/backends/openshell.ts";
 import { TransientDependencyError } from "../../packages/occ/src/index.ts";
 import { DependencyUnavailableError } from "../../packages/occ/src/errors.ts";
+import { compileCacheEnvironment } from "../helpers/compile-cache.mjs";
 
 const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
 const grpc = require("@grpc/grpc-js");
@@ -369,7 +370,11 @@ test("OpenShell HTTP origins keep port 80 in native gRPC connections", async (t)
         JSON.stringify({ ...configuration, requestTimeoutMs: 1000 }),
       ],
       {
-        env: { PATH: process.env.PATH, grpc_proxy: `http://127.0.0.1:${proxy.address().port}` },
+        env: {
+          ...compileCacheEnvironment,
+          PATH: process.env.PATH,
+          grpc_proxy: `http://127.0.0.1:${proxy.address().port}`,
+        },
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
