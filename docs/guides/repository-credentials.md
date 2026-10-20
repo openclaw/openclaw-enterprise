@@ -43,14 +43,14 @@ import it, select its digest and configure model authentication.
 In **Agents** > **Create Agent**, add up to 16 repositories. They inherit
 the Agent default; expand a selected repository’s card to customize its access.
 Use **Dedicated** for Slack on the same Agent; follow the
-[same-Agent Console sequence](../reference/console/create-and-deploy.md#use-repositories-and-slack-on-the-same-agent)
+[same-Agent Console sequence](../reference/console/repository-access.md#use-repositories-and-slack-on-the-same-agent)
 for channels, credentials and deployment. Repository profiles and model
 authentication are separate. If repository discovery fails, **Create Agent**
 stays blocked until discovery succeeds. The exception is
 `503 REPOSITORY_OPTIONS_UNAVAILABLE` with no repositories selected: you can save
 an ordinary draft, but cannot start guided provisioning. Other errors still
 block creation. Creation and deployment recheck Namespace repository policy;
-see [repository discovery](../reference/console/create-and-deploy.md#create-an-agent).
+see [repository discovery](../reference/console/repository-access.md#discover-and-select-repositories).
 
 The API sequence below shows the Embedded variant.
 

@@ -1,6 +1,6 @@
 ---
 created: 2026-09-01
-updated: 2026-10-19
+updated: 2026-10-20
 last_updated_session: authoring-run/e988d724-dd95-4e63-a711-5fd44393f211
 ---
 
@@ -182,8 +182,8 @@ Agents use the selected Namespace's route. OCC authorizes Namespace reads and
 filters Agents by exact read permission; Namespace listing filters its
 Installation-wide collection. No readable selection means no Agent request.
 `GET /backends` ignores selection and requires Installation `administer` before
-returning safe startup summaries (empty without configuration) or wiring and
-dependency errors.
+returning safe startup summaries. Empty configuration returns an empty list;
+missing wiring or failed dependencies return errors.
 
 `apps/controller/src/console/namespaces.mjs:renderNamespaces` sends Name-rule-valid names
 through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
@@ -198,73 +198,15 @@ Refused `GET /installation` saves only drafts. `agents/list.mjs` polls provision
 omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.
 OCC authorizes writes ([Agent creation](../reference/console/create-and-deploy.md)).
 
-`agents/plugin-fields.mjs:createPluginFields` edits Agent `plugins` separately
-from Configuration. Invalid JSON and untouched fields survive; clearing overrides
-restores inheritance. Submission, uncertain outcomes, or invalid JSON lock editing.
-`capabilities.pluginPolicies` gates policy edits; unsupported reviewers remain clearable.
-A credential/access reminder sits beside the expandable
-**Access and credential setup** disclosure. Instructions, list, and details
-scroll within the dialog; search and pagination remain reachable.
-While mounted, Available and Configured retain separate selected plugins, queries,
-tool filters, and expanded rows without fetching pages or changing drafts.
-Removed selections clear their details; discovery resets clear both tabs.
-
-`create.mjs:loadPluginCatalog` and `loadPluginTools` implement
-[PAT discovery](agent-plugins.md#credential-scoped-discovery): the selected or
-Preset Secret takes precedence over an entered token. OCC reads the
-Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
-Credential, provider, and Harness changes clear results and invalidate pending reads.
-
-`create.mjs:MODEL_CHOICES` supplies unauthenticated static lists and manual entry.
-`renderAgentForm` toggles `manualModel`, invoking `updateModelConfiguration` and
-`updateControls`. Manual mode preserves `model.value` and clears the dropdown.
-`resetModelChoices` restores the current provider's list, including Configuration
-JSON changes, retaining only listed models; otherwise both inputs clear.
-Provider/authentication changes retain no model. Submission matches the primary
-Configuration model to `model.value`. `updateControls` sets the button label,
-visibility, and required input; the toggle moves focus. Returning preserves credentials and unrelated
-Configuration; saved-Configuration and pending-request locks govern both directions.
-
-`configurationTemplate` enables Control UI with loopback origins on port 18789.
-Compute supplies gateway authentication; Presets replace the starter unchanged.
-[Native admin access](agent-native-admin.md) owns HTTPS isolation.
-
-`createRepositoryFields` loads `GET /namespaces/:namespaceId/agents/repository-options`,
-then requests optional descriptions for visible refs. [Repository admission](agent-repository-credentials.md) resolves the
-submitted `repositoryAccess`. Retained drafts keep selections through failed
-discovery; retries recheck current policy. Only `503 REPOSITORY_OPTIONS_UNAVAILABLE`
-permits creation without bindings, and only without retained selections; other
-failures block submission.
-
-Supported Dedicated runtimes submit inline Configuration, optional repository
-access, and Secret references to [provisioning](agent-provisioning.md), even after
-that outage. The worker reauthorizes, creates resources and exact Secret grants,
-and deploys; Console polls and opens the saved version.
-
-Ordinary drafts first check values and plugins with
-`POST /namespaces/:namespaceId/agents/validate`, then post
-`{kind: "agent", values, secretBindings}` to `.../configurations` and submit its ID,
-plugins, `initialWorkspaceFiles`, and `workspaceDefaultsId` to `.../agents`.
-Success opens `revision=draft`.
-OCC stages all four workspace textareas, including unchanged/empty values, outside
-Agent/Configuration for [workspace setup](workspace-files.md).
-
-`create.mjs:grantConfigurationSecretAccess` grants exact Secret `operate` for final
-same-Namespace `env` bindings. Failure retains the Agent; **Retry credential access**
-rereads grants without duplication. Failed Agent writes retain Configuration ID
-and lock JSON/Harness for explicit reuse. Writes never retry automatically; drafts
-save no version and start no runtime.
-
-`agents/harness-auth.mjs` edits bindings and shows
-[Secret identities](platform-console/agent-editing.md#4-render-draft-revision-or-channels),
-never values. Authentication source uses the shared form-field presentation;
-issued-account lookup feedback stays inside its conditionally visible account field.
-Switching methods hides that feedback without changing the lookup or saved choice.
+The [creation flow](platform-console/agent-creation.md) traces the form: plugin
+fields and discovery, model choices, the starter template, repository options,
+provisioning, ordinary drafts, Secret grants, and harness authentication.
 
 ### 4–6. Edit the Agent and access runtime files
 
 [Agent editing](platform-console/agent-editing.md) traces version rendering,
-channels, credentials, workspace files, stopping, and deletion;
+channels, credentials, and workspace files;
+[stop and deletion](platform-console/agent-stop-and-deletion.md) have their own trace;
 [Agent sharing](platform-console/agent-sharing.md) traces policy writes.
 Responses follow the ordering checks below.
 
@@ -330,7 +272,7 @@ a fresh load. Failure views show local reasons and `req_<UUID>` request IDs, nev
 backend error text. Backend authorization denial clears every retained preview,
 including other Namespace selections, because the permission is Installation-wide.
 
-The [detail action flow](platform-console/agent-editing.md#stop-agent) traces
+The [detail action flow](platform-console/agent-stop-and-deletion.md#stop-agent) traces
 confirmed Stop and Delete requests and permissions. Acceptance
 is not completed shutdown or deletion. Uncertain outcomes block replay until
 readback; only confirmed absence returns to Agents. Deployment resumes
@@ -376,6 +318,7 @@ refresh and inspection.
 ## Related docs
 
 - [Console reference](../reference/console.md)
+- [Console Agent creation](platform-console/agent-creation.md)
 - [Authentication](../reference/authentication.md)
 - [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 - [Configuration and Agent revision](configuration-driver.md)
@@ -388,6 +331,7 @@ refresh and inspection.
 
 ## Changelog
 
+- 2026-10-20 05:00: Move the Create Agent form trace to [Agent creation](platform-console/agent-creation.md). (docs-split-1020)
 - 2026-10-19 15:16: Namespace creation and recovery. (authoring-run/e988d724-dd95-4e63-a711-5fd44393f211 - 141515257737cccdb75137fabbeec707915856af)
 
 [Platform console request documentation history](platform-console/history.md) preserves the older dated entries.

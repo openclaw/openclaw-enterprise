@@ -42,16 +42,17 @@ block direct Secret-backed model and environment projection.
    Use [OpenAI API keys](https://platform.openai.com/api-keys), or
    [OpenAI admin](https://admin.openai.com/) → your workspace → **Service accounts**
    to create a token with Codex scope.
+   Choose a model Secret or **Create new Secret...**.
    Choose a model from the starter list or select **Enter model ID manually**.
    **Choose a model from the list** returns. Switching modes retains that provider's listed models; returning with an unlisted custom ID
-   requires another selection.
+   requires another selection. Other settings remain.
    No model is preselected.
 4. Confirm Installation, credential, and runtime support for the model. Primary
    and fallback models must share a supported provider and Harness. For custom settings,
    open **Advanced settings**. Selection changes preserve unrelated JSON edits;
    **Reset template** replaces them.
 5. Under **Repository access**, optionally select up to 16 approved repositories
-   and set their access levels. Kubernetes supports Codex (Dedicated) and Embedded
+   and set their [access levels](repository-access.md). Kubernetes supports Codex (Dedicated) and Embedded
    OpenClaw without a Sandbox Driver, not Dedicated OpenClaw. Use Codex for repositories
    with Slack.
 
@@ -170,72 +171,18 @@ A failed or stopped first deployment, or a Stop before it
 (`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
 retry. Open that Agent and deploy. If it failed for another reason, correct that cause first.
 
-Repository discovery is independent of model authentication. Small catalogs offer
-**Add**; larger ones support search and paging.
-Suggestions favor repositories you recently saved in this browser and Namespace,
-then sort alphabetically.
-
-**Default repository access** starts at **Contributor** for code pushes, PRs,
-and issue management. Choose **Read-only**, or customize Contributor to turn off
-issue management. Added repositories inherit the default; expand a repository card
-to choose a custom level or **Use Agent default** to restore inheritance. Custom choices stay
-fixed when the default changes, even if they matched it. Invalid combinations stay
-visible and must be repaired or removed before saving. Overrides never widen silently.
-
-The server resolves selections against current Namespace policy on save and
-deployment. Push and PR permissions remain bundled; see
-[access levels](../repository-credentials/access-levels.md) for token permissions,
-merges, and the API contract. Edit saved drafts in **Create new version** >
-**Repositories**; saved versions stay unchanged. Save or cancel edits before
-navigating away; returning to the tab can refresh the session and discard them.
-An interrupted save may complete; inspect the saved draft before retrying.
-
-Failed rediscovery keeps unsaved repository choices for retry and
-navigation in explicitly selected Preset forms.
-**Create Agent** stays blocked until discovery succeeds and filters choices against
-current policy.
-
-Only `503 REPOSITORY_OPTIONS_UNAVAILABLE` with no selected repositories permits
-saving a draft; provisioning requires successful discovery.
-Other failures, including generic `503`, throttling and connection errors, block
-both writes and offer retry. Denial and Namespace lifecycle conflict remain
-distinct. Each subsequent write rechecks authorization.
-
-If Agent creation is rejected after Configuration saves, correct the ordinary
-zero-binding Agent's editable fields and retry. The retry reuses Configuration
-and needs no repository choices or Repo Driver.
-
-After a known repository-scoped Agent rejection, **Reload repository choices** clears
-selections/search, resets pagination, reveals results, and refreshes Namespace
-policy while retaining the Configuration. Retry requires an approved repository;
-an empty catalog cannot convert the attempt to an ordinary Agent. Failed reloads
-disable creation and show the Configuration ID. Expiry returns to sign-in.
-**Start a new draft** preserves the saved Configuration.
-
 An unknown Agent response may mean a successful save; the form hides rejection
 actions. Check the **Agents** list and any displayed Configuration ID's
 [exact Configuration](../configuration.md#create-read-update-and-delete) before
 starting again.
 
+Repository discovery, default and custom access levels, policy checks, and save
+recovery are in [Choose repository access in the console](repository-access.md).
+
 ## Use repositories and Slack on the same Agent
 
-Select **Codex**, **Dedicated**, the approved repositories and an explicit access level.
-Configure Slack and select its saved token Secrets in the creation form, then
-choose a compatible model-authentication source. With supported provisioning and successful repository discovery, **Create Agent**
-follows setup and deployment. The worker creates Configuration and Agent, grants
-final Secret access, and provisions transport credentials.
-Check that the returned Agent revision belongs to this Agent and retains its repository
-selections. An ordinary draft requires model and channel credential setup and **Deploy new version**
-from its detail page.
-
-Operators must prepare the
-[repository installation](../../guides/repository-credentials/installation.md),
-Namespace approvals, runtime images, networking, model credential and exact-Agent
-grant, plus a Slack app with Socket Mode and channel membership. Slack requires a
-[channel proxy](../drivers/kubernetes-compute/networking-and-isolation.md).
-Verify this Agent and version: admission proves neither channel connectivity nor
-repository operations. Repository permissions do not change Harness filesystem or
-approval policy; review both before demonstrating edits.
+Combine approved repositories and Slack on one Codex Dedicated Agent with
+[the same-Agent sequence](repository-access.md#use-repositories-and-slack-on-the-same-agent).
 
 ## Initial runtime credentials
 
