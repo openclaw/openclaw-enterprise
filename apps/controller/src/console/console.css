@@ -4145,11 +4145,11 @@ select:not([multiple])[size="1"] {
     grid-template-columns:
       var(--log-time-column) var(--log-level-column) minmax(60px, 88px)
       minmax(0, 1fr);
-    gap: var(--space-3);
+    gap: var(--space-2);
   }
 }
 /* In a card narrower than 662 px a whole timestamp would leave the message column under 200 px
-   (48 px row padding, en-US's 218 px time, 78 px level, 88 px origin and 30 px of gaps), so the
+   (48 px row padding, en-US's 218 px time, 78 px level, 88 px origin and 24 px of gaps), so the
    message moves below the time, level and origin, as it does on phones (findings 1681, 1713). */
 @container log-viewer (width < 662px) {
   .log-line {
