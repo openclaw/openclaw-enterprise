@@ -5071,6 +5071,20 @@ export const scenarios = {
       "Click the gray backdrop. Reopen Edit Slack and confirm the unsaved channel changes were discarded, just as with Cancel.",
     ],
   },
+  slackDrawerNoAuthentication: {
+    group: "Components/Channels",
+    name: "Slack editor, no model authentication",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    auth: null,
+    actions: [click("Edit Slack")],
+    description:
+      "An Agent with no model authentication source: the drawer's notice adds that model credentials are configured in the Credentials tab before deploying. With a source bound (Slack editor), the notice stops after the first sentence.",
+    steps: [
+      'The notice at the top of the drawer reads "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before deploying."',
+      'Open the Slack editor story: its notice reads only "New version. Changes affect future deployments using this Configuration."',
+    ],
+  },
   slackDirectoryChannels: {
     group: "Components/Channels",
     name: "Find Slack channels by name",
