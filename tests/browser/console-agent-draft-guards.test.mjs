@@ -149,6 +149,87 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   assert.deepEqual(unchanged.data.policy.additions, []);
 });
 
+// Without a Sandbox Driver that supports per-Agent network policy there is no Sandbox log source
+// and no suggestions. The tab read both, showed their refusals and a full editor (finding 2060).
+test("Policy denials says once that the Sandbox Driver lacks per-Agent network policy", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No policy driver", { ready: true });
+  const created = await fixture.createAgent(
+    namespace.id,
+    "No policy driver",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated" },
+  );
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, created.id);
+  const base = `/namespaces/${namespace.id}/agents/${created.id}/sandbox-policy/networking`;
+  // The real API answers the policy read with no capability.
+  assert.equal((await fixture.request("GET", base)).data.capability, null);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, created.id, revision.id, "policy"));
+  const tab = page.locator(".sandbox-policy");
+  await tab
+    .getByRole("status")
+    .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
+    .waitFor();
+  assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
+  for (const name of [
+    "Enable policy editing",
+    "Refresh denials",
+    "Refresh suggestions",
+    "Refresh policy",
+    "Add proposed rule",
+  ]) {
+    assert.equal(await tab.getByRole("button", { name }).count(), 0, name);
+  }
+  assert.equal(await tab.getByRole("alert").count(), 0);
+  // Neither unavailable read is made.
+  assert.deepEqual(
+    requests
+      .map(({ path }) => path)
+      .filter((path) => path.includes("/runtime/logs") || path.endsWith("/recommendations")),
+    [],
+  );
+});
+
+// A member whose grants do not include the Agent's SandboxPolicy gets a refusal; Retry would only
+// ask again for the same answer (finding 2060).
+test("A refused policy read offers no Retry", async (t) => {
+  const { fixture, namespace, agent } = await createPolicyConsole(t);
+  const member = await fixture.createAccountWithPolicy("policy-member", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-policy-member",
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-policy-member",
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-policy-member",
+    });
+  });
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"),
+    member.credentials,
+  );
+  const tab = page.locator(".sandbox-policy");
+  await tab
+    .getByRole("alert")
+    .filter({ hasText: "You do not have permission to read this Agent’s policy." })
+    .waitFor();
+  await tab.getByText("You do not have permission to read policy suggestions.").waitFor();
+  assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
+  assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);
+});
+
 const delegatedPolicyGrant = {
   id: "python-demo",
   binary: "/usr/bin/python3.11",

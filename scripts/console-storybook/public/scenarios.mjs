@@ -6740,6 +6740,13 @@ for (const [id, state, name] of [
       "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
     gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+    ...(state === "unsupported"
+      ? {
+          steps: [
+            "The tab says once that the Sandbox Driver does not support per-Agent network policy. It reads no Sandbox logs or suggestions and offers no editor.",
+          ],
+        }
+      : {}),
     ...(state === "ceilingDenied"
       ? {
           steps: [
