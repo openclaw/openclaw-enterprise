@@ -14,6 +14,7 @@ import {
   login,
   newPage,
   settledFetches,
+  settlePageRequests,
   trackSettledFetches,
   waitForIdleFetches,
   waitForSettledFetches,
@@ -2519,11 +2520,11 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
   const agent = await fixture.createAgent(namespace.id, "Expired page Agent");
   const { page } = await newPage(t, fixture);
   await trackSettledFetches(page);
-  const requests = apiRequests(page, fixture.origin);
   const target = `/console/agents/${agent.id}?namespace=${namespace.id}&tab=configuration`;
   await login(page, fixture, target);
   await page.getByRole("heading", { name: "Expired page Agent", exact: true }).waitFor();
   await waitForSettledView(page);
+  const requests = apiRequests(page, fixture.origin);
 
   // A foreground recheck discovers real expiry without navigating away from this Agent.
   for (const session of fixture.memoryDatabase.session) {
@@ -2540,12 +2541,20 @@ test("expiry on an active Agent page returns safely and rechecks denied access",
     action: "read",
     effect: "deny",
   });
-  const writes = requests.filter((request) => request.method !== "GET").length;
+
   await page.getByLabel("Username").fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
+  const deniedAgent = page.waitForResponse(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`,
+  );
   await page.getByRole("button", { name: "Login" }).click();
+  assert.equal((await deniedAgent).status(), 403);
   await page.getByRole("heading", { name: "Access denied", exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname + new URL(page.url()).search, target);
-  assert.equal(requests.filter((request) => request.method !== "GET").length, writes + 1);
+  await settlePageRequests(page);
+  assert.deepEqual(
+    requests.filter(({ method }) => method !== "GET").map(({ method, path }) => ({ method, path })),
+    [{ method: "POST", path: "/api/auth/sign-in/email" }],
+  );
   assert.equal(await page.getByLabel("Password").count(), 0, "403 must not restart login");
 });
