@@ -1744,11 +1744,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       );
     });
   }
-  // The staged channel Secrets the saved Configuration delivers, each once.
-  function configurationSecretsToGrant(secrets) {
+  async function grantConfigurationSecretAccess(agent, secrets) {
     const bindings = Object.values(savedConfiguration.secretBindings ?? {});
     const seen = new Set();
-    return secrets.filter((secret) => {
+    for (const secret of secrets) {
       if (
         secret.namespaceId !== namespaceId ||
         seen.has(secret.id) ||
@@ -1760,14 +1759,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
             binding.delivery?.type === "env",
         )
       ) {
-        return false;
+        continue;
       }
       seen.add(secret.id);
-      return true;
-    });
-  }
-  async function grantConfigurationSecretAccess(agent, secrets) {
-    for (const secret of secrets) {
       if (!context.isCurrent()) {
         throw new Error("This view has changed. Reopen Agent creation before binding Secrets.");
       }
@@ -1801,6 +1795,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         drafts: context.drafts,
         baseline: JSON.stringify([values, configurationSecretBindings]),
         operatorId: context.operatorId,
+        installationAdmin: context.installationAdmin,
         namespaceId,
         request,
         agentName: () => name.value,
@@ -2253,6 +2248,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       outcomeUnknown ||
       !capabilitiesSettled() ||
       permissionsReading ||
+      credentialGrantRefused ||
       selectedModeUnavailable() ||
       credentialSourceRefused() ||
       (!savedAgent && (provisioningWaitsForNamespace() || namespaceRefusesAgents())) ||
@@ -2419,6 +2415,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     updateControls();
     try {
       namespacePermissions = await request(`${namespacePath(namespaceId)}/permissions`);
+      // Start over renders from this context: it keeps the answer instead of asking again.
+      context.permissions = namespacePermissions;
     } catch (error) {
       if (context.isCurrent() && error.status === 401) {
         context.onExpired();
@@ -2432,6 +2430,17 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
     settleRefusedCapabilities();
     updateControls();
+    // The retry hides once answered: its outcome takes focus rather than the page.
+    const active = document.activeElement;
+    if (
+      retryCapabilityDiscovery.hidden &&
+      (!active || active === document.body || active === retryCapabilityDiscovery)
+    ) {
+      const outcome = accessStatus.hidden ? capabilityStatus : accessStatus;
+      outcome.tabIndex = -1;
+      outcome.focus({ preventScroll: true });
+      outcome.scrollIntoView({ block: "nearest" });
+    }
   }
   void loadInstallationCapabilities();
   async function submitProvisioningAttempt(attempt) {
@@ -2587,6 +2596,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       pending ||
       outcomeUnknown ||
       provisioningAttempt ||
+      credentialGrantRefused ||
       (!savedAgent && repositoryRetryLocked()) ||
       !capabilitiesSettled() ||
       selectedModeUnavailable() ||
@@ -2852,26 +2862,33 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         modelCredentialSecret ??
         presetExistingSecret ??
         (hasBoundModelCredential && binding.source.kind === "secret" ? binding.source : undefined);
-      const modelCredential =
-        body.harnessAuth?.method === "credential_source"
-          ? { kind: "credential_source", namespaceId, id: body.harnessAuth.sourceId }
-          : modelSecret?.kind === "secret" || modelSecret?.ref?.kind === "secret"
-            ? modelSecret
-            : undefined;
-      const channelSecrets = configurationSecretsToGrant(stagedChannelSecrets);
       // The grants are Installation administration (the IAM routes), which this session's
       // /observability read already found refused to this account. Reading IAM now is certain to
       // be refused and audited as a denial, so name who finishes the step instead (finding 2109).
-      if ((modelCredential || channelSecrets.length) && context.installationAdmin === false) {
+      if (
+        context.installationAdmin === false &&
+        (body.harnessAuth?.method === "credential_source" ||
+          modelSecret?.kind === "secret" ||
+          modelSecret?.ref?.kind === "secret" ||
+          Object.values(savedConfiguration.secretBindings ?? {}).some(
+            (binding) => binding?.source?.kind === "secret",
+          ))
+      ) {
         credentialGrantRefused = true;
         feedback.textContent = MEMBER_GRANT_REFUSED;
         focusFeedbackLine(feedback);
         return;
       }
-      if (modelCredential) {
-        await ensureCredentialOperateBinding(context, savedAgent, modelCredential);
+      if (body.harnessAuth?.method === "credential_source") {
+        await ensureCredentialOperateBinding(context, savedAgent, {
+          kind: "credential_source",
+          namespaceId,
+          id: body.harnessAuth.sourceId,
+        });
+      } else if (modelSecret?.kind === "secret" || modelSecret?.ref?.kind === "secret") {
+        await ensureCredentialOperateBinding(context, savedAgent, modelSecret);
       }
-      await grantConfigurationSecretAccess(savedAgent, channelSecrets);
+      await grantConfigurationSecretAccess(savedAgent, stagedChannelSecrets);
       if (context.isCurrent()) {
         context.navigate(`agents/${savedAgent.id}?revision=draft`);
       }

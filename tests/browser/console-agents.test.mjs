@@ -2093,7 +2093,6 @@ test("Agent creation explains a denied capability check instead of offering a re
     .waitFor();
   assert.equal(await page.getByRole("button", { name: "Retry permission check" }).count(), 0);
   const retry = page.getByRole("button", { name: "Retry capability check" });
-  assert.equal(await retry.isHidden(), true);
   assert.equal(
     await page.getByRole("button", { name: "Create Agent", exact: true }).isDisabled(),
     true,

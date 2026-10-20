@@ -231,6 +231,10 @@ const PERMISSIONS_UNREAD =
 const CREDENTIAL_ACCESS_UNCONFIRMED =
   "The Agent was created, but credential access is not confirmed.";
 
+async function waitForEnabled(locator) {
+  await locator.page().waitForFunction((node) => !node.disabled, await locator.elementHandle());
+}
+
 function unavailable(route) {
   return route.fulfill({
     status: 503,
@@ -260,6 +264,23 @@ test("a member whose permission check failed is told so and retries only that ch
   assert.equal(await submit.isDisabled(), true);
   const retry = page.getByRole("button", { name: "Retry permission check", exact: true });
   assert.equal(await retry.isEnabled(), true);
+  const permissionReads = () =>
+    answers.filter((answer) => answer.startsWith(`GET /namespaces/${namespace.id}/permissions `));
+  const failedReads = permissionReads().length;
+
+  // A retry that fails again says so again and stays available.
+  const failing = await holdRequests(t, page, permissionsPath, {
+    once: true,
+    fulfill: { status: 503, json: { error: { code: "DEPENDENCY_UNAVAILABLE", message: "x" } } },
+  });
+  await retry.click();
+  await failing.requested;
+  assert.equal(await status.textContent(), "Checking your permissions in this Namespace…");
+  assert.equal(await retry.isDisabled(), true);
+  failing.release();
+  await page.getByText(PERMISSIONS_UNREAD, { exact: true }).waitFor();
+  await waitForEnabled(retry);
+  assert.equal(await submit.isDisabled(), true);
 
   // The retry rereads the permission answer only: the Installation read stays refused.
   const reread = await holdRequests(t, page, permissionsPath, { once: true });
@@ -270,6 +291,11 @@ test("a member whose permission check failed is told so and retries only that ch
   reread.release();
   const access = page.locator("#create-agent-access");
   await access.waitFor();
+  // The hidden retry hands focus to the answer, not the page.
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement?.id),
+    "create-agent-access",
+  );
   assert.deepEqual(await access.locator(".status-body").allTextContents(), [
     `${ACCESS_WITHOUT_PRESET} ${MEMBER_CREDENTIAL_ACCESS}`,
   ]);
@@ -282,7 +308,17 @@ test("a member whose permission check failed is told so and retries only that ch
     answers.filter((answer) => answer.startsWith("GET /installation ")),
     ["GET /installation 403"],
   );
-  assert.equal(answers.at(-1), `GET /namespaces/${namespace.id}/permissions 200`);
+  assert.deepEqual(permissionReads().slice(failedReads), [
+    `GET /namespaces/${namespace.id}/permissions 503`,
+    `GET /namespaces/${namespace.id}/permissions 200`,
+  ]);
+
+  // Start over keeps the answer: the new form goes straight to the member path.
+  await page.getByRole("button", { name: "Start over", exact: true }).click();
+  await page.getByRole("button", { name: "Start without Preset", exact: true }).click();
+  await page.locator("#create-agent-access").waitFor();
+  assert.equal(await page.getByText(PERMISSIONS_UNREAD).count(), 0);
+  assert.equal(permissionReads().length, failedReads + 2);
 });
 
 test("a temporary Installation read failure keeps an administrator off the member path", async (t) => {
