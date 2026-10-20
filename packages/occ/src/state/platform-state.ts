@@ -1291,8 +1291,9 @@ function assertCredentialSource(source: CredentialSource): void {
 }
 
 // A write stores an `immutableCopy` and returns that same value: it is a deep-frozen clone of
-// plain data (the contract types hold no Date, Map, Set or buffer), so the caller cannot change
-// the stored state through it. Copying it again only doubled the cost of every write.
+// plain data, so the caller cannot change the stored state through it. That holds while the
+// stored contract types carry no Date, Map, Set or typed array (see `immutableSnapshot` in
+// @openclaw-enterprise/utils). Copying it again only doubled the cost of every write.
 function repositories(
   snapshot: PlatformSnapshot,
   iamSubjects: IAMSubjectSource,
