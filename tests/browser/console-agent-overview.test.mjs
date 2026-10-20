@@ -1881,13 +1881,15 @@ test("Versions list marks the latest version's outcome and is one Tab stop", asy
     route.fulfill(record),
   );
   await page.setViewportSize({ width: 1200, height: 800 });
+  await trackSettledFetches(page);
   await login(
     page,
     fixture,
     detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
   );
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
-  const rail = page.locator(".version-list");
+  const rail = page.getByRole("toolbar", { name: "Versions" });
+  assert.equal(await rail.getAttribute("aria-orientation"), "vertical");
   const state = () =>
     rail.evaluate((list) => {
       const items = [...list.querySelectorAll(".version-item:not(.version-older)")];
@@ -1928,6 +1930,8 @@ test("Versions list marks the latest version's outcome and is one Tab stop", asy
     .click();
   await rail.getByRole("button", { name: "View version v3, deployment failed" }).waitFor();
   assert.deepEqual((await state()).outcomes, ["Failed/danger", null, null]);
+  // A poll that read the failure first rereads the Agent and rebuilds the list; let it settle.
+  await waitForIdleFetches(page);
 
   // One Tab stop on the viewed version; the arrows move focus without opening a version.
   await rail.getByRole("button", { name: "View version v1, current version" }).focus();

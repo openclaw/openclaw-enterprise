@@ -2117,8 +2117,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       },
     );
     trackRevisionControl(newVersion);
-    const list = element("div", { className: "version-list" });
-    // The versions, the viewed one included, are one Tab stop (finding 2101); see below.
+    // The versions, the viewed one included, are one Tab stop (finding 2101), so the list is a
+    // vertical toolbar: screen readers announce it as one control that the arrows move through.
+    const list = element("div", {
+      className: "version-list",
+      role: "toolbar",
+      "aria-orientation": "vertical",
+      "aria-label": "Versions",
+    });
     const items = [];
     for (const revision of revisions) {
       const label = `View version v${revision.revision}${revision.id === currentRevisionId ? ", current version" : ""}`;
