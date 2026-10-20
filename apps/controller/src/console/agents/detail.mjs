@@ -1648,11 +1648,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
   detailPane.append(detailHeading, versionEvidence, tabs, content);
   const nativeAdmin = renderNativeAdminAccess(context, path);
+  const recoveryTitle = element("h2");
   // A danger status block (spec 3.4): the failed version in the label, the code at the end of
   // the message's first sentence, and one primary action. Each part is its own node, so a poll
   // that reads back the same failure writes nothing.
   const recoveryLabel = element("p", { className: "status-label" });
-  const recoveryTitle = element("h2");
   const recoveryLead = document.createTextNode("");
   const recoveryCode = element("code", { hidden: true });
   const recoveryRest = document.createTextNode("");
