@@ -3245,8 +3245,9 @@ export const scenarios = {
       "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
       "Focus Create new version, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
       "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
-      "Choose Create new version, open Edit Configuration, and make an unsaved edit. Use the Agents back link or Namespace selector: navigation stays on the Agent until the edit is resolved.",
+      "Choose Create new version to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
     ],
+    nextStory: "authSaveHoldsNavigation",
   },
   longVersionHistory: {
     group: "Pages/Agent detail",
@@ -5803,7 +5804,7 @@ export const scenarios = {
     description:
       "The story selects Save authentication source, then Agents in the sidebar. The page stays, and a note in the authentication form says why until the simulated save answers 3.6 s later.",
     steps: [
-      "While the note “This page stays open until the authentication save finishes.” shows, select ← Agents or Agents again: the page stays. Select Reset story to replay the hold.",
+      "While the note “This page stays open until the authentication save finishes.” shows, select ← Agents or choose another Namespace. The page and selected Namespace stay the same. Reset the story to try again.",
       "When the save answers, the note goes; Agents in the sidebar now leaves.",
     ],
   },
