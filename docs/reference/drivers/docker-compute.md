@@ -99,7 +99,7 @@ network or another Namespace network.
 
 ## AgentRevision lifecycle
 
-`prepareRevision(revision)` validates the immutable Namespace, Agent, revision,
+`prepareRevision(revision)` validates the immutable Namespace, Agent, and `AgentRevision`,
 Harness identity, execution mode, and selected Compute implementation before it
 starts containers. The code implements the topologies below, but it rejects
 the model-authentication bindings required for a newly deployed Agent:
@@ -108,8 +108,8 @@ the model-authentication bindings required for a newly deployed Agent:
   That container also runs the embedded Harness and receives only that Agent's
   model credential.
 - `codex` with `dedicated` starts one Agent-owned OpenClaw gateway container
-  and one exact-revision Codex app-server container. The gateway connects to
-  Codex through authenticated `APP_SERVER_URL` and `APP_SERVER_TOKEN`
+  and one Codex app-server container for that Agent revision. The gateway
+  connects to Codex through authenticated `APP_SERVER_URL` and `APP_SERVER_TOKEN`
   transport. Only the Codex container receives the model credential.
 
 When recovery reuses a healthy Codex container, the driver reads its existing
@@ -128,16 +128,16 @@ development Driver accepts tags as well as digests; production Kubernetes
 digest requirements do not imply that the local engine enforces immutable
 images.
 
-`retireRevision(revision)` removes only the exact revision's owned runtime. It
-preserves another Agent's containers and preserves a gateway still required by
-a replacement revision for the same Agent.
+`retireRevision(revision)` removes only the runtime with the same Agent revision
+ID. It preserves another Agent's containers and preserves a gateway still required by
+a replacement version for the same Agent.
 
 `stopRevision(revision)` removes the exact dedicated Agent container and a
-gateway only when it still serves that revision. Embedded execution removes the
+gateway only when it still serves that version. Embedded execution removes the
 combined gateway container. Repeating stop is safe; Docker stop does not retire
 the persisted AgentRevision or remove credentials outside the containers. The
 Driver retains the Agent-owned state and workspace volumes used for initial
-workspace setup across stop and revision replacement. Without initial workspace
+workspace setup across stop and version replacement. Without initial workspace
 inputs, writable container tmpfs remains ephemeral.
 
 State on that volume outlives runtime image upgrades. Before OpenClaw starts,
@@ -222,9 +222,9 @@ personal OpenClaw/Codex homes, SSH-agent sockets, cloud credentials, or
 controller credentials into workload containers.
 
 The driver detects Podman's Docker-compatible API during preflight. Docker
-keeps UID/GID-owned `0700` tmpfs mount options. Podman receives the same bounded
-`1Gi` home and `64Mi` temporary filesystems using its supported mount options;
-the non-root runtime creates its `.openclaw` and workspace directories as
+keeps UID/GID-owned `0700` tmpfs mount options. Podman receives the same size
+limits: `1Gi` for the home and `64Mi` for temporary filesystems. It uses its
+supported mount options. The non-root runtime creates its `.openclaw` and workspace directories as
 `0700` before writing configuration or state. For Agents with initial inputs,
 the setup container prepares ownership and permissions on the named volumes.
 

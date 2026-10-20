@@ -7951,6 +7951,14 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   // The in-memory fixture deliberately has no durable work queue. Reaching its
   // error proves credentials passed without substituting for the durable worker test.
   assert.equal((await provision()).body.error.code, "DEPENDENCY_UNAVAILABLE");
+  const enterprise = {
+    ok: true,
+    bot_id: "B123",
+    is_enterprise_install: true,
+    enterprise_id: "E123",
+  };
+  response = { ...enterprise, team_id: enterprise.enterprise_id };
+  assert.equal((await provision()).body.error.code, "DEPENDENCY_UNAVAILABLE");
   const config = await controller.request("POST", `${base}/configurations`, {
     body: configuration,
   });
@@ -7975,9 +7983,12 @@ test("Slack validation rejects swapped credentials and preserves authorization",
   const deploy = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assert.equal(deploy.status, 400, JSON.stringify(deploy.body));
   assert.equal(deploy.body.error.details[0].path, "/channels/slack/botToken");
-  response = { ok: true, bot_id: "B123", team_id: "T123" };
+  response = enterprise;
   const good = await controller.request("POST", `${base}/agents/${agent.data.id}/deploy`);
   assert.equal(good.status, 202, JSON.stringify(good.body));
+  response = { ...enterprise, enterprise_id: "invalid", team_id: "T123" };
+  assert.equal((await provision()).body.error.code, "CHANNEL_CREDENTIAL_UNAVAILABLE");
+  response = enterprise;
   // Named accounts do not hide the top-level tokens: OpenClaw starts them as the
   // implicit default account, so they need Secret-backed refs too.
   const namedAccounts = structuredClone(configuration);

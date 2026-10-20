@@ -251,14 +251,14 @@ provider is not owned by this source."
    - Grant the Agent's service principal `operate` on the replacement.
    - Update the Agent so that `credentialSources` lists the replacement instead
      of the old source, and `harnessAuth.sourceId` names the replacement.
-   - Deploy it, and wait until the new revision is active.
+   - Deploy it, and wait until OCC selects the new version.
 
-   OCC refuses to delete a source with `409` while an Agent, its active
-   revision, or a pending deployment still references it.
+   OCC refuses to delete a source with `409` while an Agent, its selected
+   version, or a pending deployment still references it.
 
 3. In the Namespace's OpenShell Workspace, delete each old source's provider:
    the one labeled `openclaw.dev/credential-source-id` with the source's ID.
-   OpenShell refuses while a Sandbox still lists it, so the old revision's
+   OpenShell refuses while a Sandbox still lists it, so the old version's
    Sandbox must be gone. Then delete the old source through OCC. A `404` while
    `GET` shows `deleting` means the provider remains; a
    `409 CREDENTIAL_WITHDRAWAL_IN_PROGRESS` means retry after withdrawal work

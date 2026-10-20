@@ -16,7 +16,7 @@ find or copy a SHA manually.
 From a Bash shell in the repository root, select and pull both images
 anonymously. Run the
 whole block; it clears earlier selections and exports them only after both pulls
-and revision checks succeed:
+and source commit checks succeed:
 
 ```bash
 unset CONTROLLER_IMAGE RUNTIME_IMAGE OCE_IMAGE_REVISION
@@ -48,20 +48,20 @@ Stop if selection fails. If an anonymous pull fails with `unauthorized` or
 instead, or [start the local stack](../quickstart.md#start-the-local-stack)
 without image selections, which builds this checkout. The two aliases are not
 updated atomically; retry both pulls after publication completes if they refer
-to different source revisions.
+to different source commits.
 `latest` identifies the last publication to that alias, not necessarily the
 newest source commit: custom-tag publications leave it unchanged.
 
 ## Check publication and source
 
 Open the [Enterprise Containers runs](https://github.com/openclaw/openclaw-enterprise/actions/workflows/container-publish.yml)
-and find the successful publication for the printed source revision. Compare
+and find the successful publication for the printed source commit. Compare
 both resolved image references with its publication summary or receipt. Matching
 labels establish consistency; the publication record establishes which bytes
 passed the image checks. If the record is missing or either reference differs,
 stop and ask the publisher to identify the approved pair.
 
-Compare the source revision with your checkout:
+Compare the source commit with your checkout:
 
 ```bash
 git rev-parse HEAD
@@ -80,7 +80,7 @@ git fetch origin "$OCE_IMAGE_REVISION" &&
 
 Continue in this shell so the image selections remain exported. Use the chart,
 CLI, configuration renderer, and installation instructions from this matching
-checkout. If you need a feature introduced after the published revision,
+checkout. If you need a feature introduced after the published commit,
 [build images from that newer checkout](production-installation.md#build-and-publish-production-images)
 instead of combining its configuration with older `latest` images.
 

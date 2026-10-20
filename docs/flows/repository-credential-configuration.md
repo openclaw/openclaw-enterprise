@@ -98,8 +98,9 @@ for a root-owned sticky ancestor above the immediate parent. The immediate
 parent remains unwritable by those users.
 
 The loader opens the final basename without following symlinks. It checks the
-file owner, mode, link count, type, and size, performs a bounded read, and compares
-the open file with the named inode and its original metadata. Invalid or replaced
+file owner, mode, link count, type, and size. It reads at most one byte beyond
+the checked file size. It then compares the open file with the named inode and
+its original metadata. Invalid or replaced
 files fail before their contents become configuration. The reader retains ownership
 of its candidate buffer until descriptor closure and transfer succeed. It clears
 scratch bytes and any candidate that cannot be transferred, including on a close
@@ -118,7 +119,7 @@ or the canonical registry, together with its App identity and key path.
 Public projected registry reads retain their own generation/symlink rules;
 they do not weaken protected-secret descriptor validation. That
 validated selection determines the factory after protected reads load the App
-key, certificate and TLS key. Registry policy remains bounded to its installation,
+key, certificate and TLS key. Registry policy limits access to its installation,
 repository and Namespace/profile grants. The GitHub key owner accepts the
 configured RSA signing key; TLS context creation validates
 the certificate and private-key pair. A `github-token` backend instead requires

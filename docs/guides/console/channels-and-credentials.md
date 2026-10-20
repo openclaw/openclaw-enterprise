@@ -48,7 +48,7 @@ the bound Secret.
 discards token selections but does not delete that Namespace Secret. The modal
 never reads an existing value. If the name already exists in this Namespace,
 correct the Name and retry; both fields remain filled and the existing Secret is unchanged.
-See the [Console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
+See the [Console reference](../../reference/console/versions-and-channel-drafts.md)
 for binding permissions and save behavior. Apply the saved draft with
 **Deploy new version** before expecting the running Agent to use it.
 

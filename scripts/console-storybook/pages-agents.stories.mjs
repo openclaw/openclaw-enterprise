@@ -11,6 +11,7 @@ export const LongNameDashes = story("agentsLongNameDashes");
 export const LongNameJoiners = story("agentsLongNameJoiners");
 export const LongNameMixed = story("agentsLongNameMixed");
 export const LongNamePhone = story("agentsLongNamePhone");
+export const IdLigaturesPhone = story("agentsIdLigaturesPhone");
 export const AgentsEmpty = { ...story("agentsEmpty"), name: "Empty" };
 export const AgentsSearch = { ...story("agentsSearch"), name: "No search matches" };
 export const NoNamespaces = { ...story("noNamespaces"), name: "No readable Namespaces" };
@@ -24,6 +25,14 @@ export const NamespaceProvisioning = {
   ...story("agentsNamespaceProvisioning"),
   name: "Empty, Namespace still provisioning",
 };
+export const NamespaceBecomesReady = {
+  ...story("agentsNamespaceBecomesReady"),
+  name: "Namespace becomes ready",
+};
+export const NamespaceLeavesList = {
+  ...story("agentsNamespaceMissing"),
+  name: "Namespace leaves the list while provisioning",
+};
 export const AgentsDenied = { ...story("agentsDenied"), name: "Access denied" };
 export const AgentsError = { ...story("agentsError"), name: "Read failure" };
 export const AgentsInterruptedResponse = {
@@ -35,6 +44,8 @@ export const AgentsLoading = { ...story("agentsLoading"), name: "Loading" };
 export const LatestDeploymentFailed = story("agentsDeploymentFailed");
 export const LatestDeploymentDenied = story("agentsDeploymentDenied");
 export const LatestDeploymentLoading = story("agentsDeploymentLoading");
+export const CurrentVersionOlder = story("agentsCurrentVersionOlder");
+export const CurrentVersionDenied = story("agentsCurrentVersionDenied");
 export const ReturnWhileDeploymentsLoad = {
   ...story("agentsReturnWhileDeploymentsLoad"),
   name: "Return while deployments load",

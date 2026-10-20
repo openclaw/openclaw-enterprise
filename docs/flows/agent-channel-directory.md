@@ -39,7 +39,7 @@ graph TD
   D -->|current| M{"Managed Helm proxy?"}
   M -->|yes| H["Tunnel through proxy Service DNS"]
   M -->|no| I["Tunnel through external proxy IP"]
-  H --> E["Slack Driver reads workspace and bounded directory pages"]
+  H --> E["Slack Driver reads workspace and directory pages"]
   I --> E
   E -->|provider error| X
   E --> F["Console shows names and exact IDs"]
@@ -77,7 +77,7 @@ OCC rechecks grants and Secret backend identity after the read. It passes the
 token only in process to the ChannelDriver. The bundled Slack implementation
 requires a bot identity from `auth.test` and pages through `users.list` or
 `conversations.list`. Exact-ID searches and saved IDs use `users.info` or `conversations.info`.
-The response contains bounded candidates and pagination state, never the token.
+The response contains at most 100 candidates and pagination state, never the token.
 An incomplete page cannot establish that a name is absent or unique.
 
 `apps/controller/src/drivers/channel/slack.ts:SlackChannelDriver.call`

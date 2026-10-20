@@ -50,8 +50,8 @@ the GitHub CLI:
 Ensure `$HOME/.local/bin` is on `PATH`. The example uses `shasum` if available
 and otherwise uses `sha256sum`. The printed CLI version should match the
 selected release. Use the release your controller runs, and upgrade `occ`
-with it: an older `occ` can misread newer API responses, such as paged revision
-lists.
+with it: an older `occ` can misread newer API responses, such as paged Agent
+revision lists.
 
 To build from a trusted source checkout instead, run this from its root to
 install `occ` on your Go binary path:

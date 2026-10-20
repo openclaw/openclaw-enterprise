@@ -63,7 +63,7 @@ hosted bootstrap or subsequent release has succeeded.
 
 `scripts/ci/container-bootstrap.mjs:main` reuses
 `scripts/ci/container-release.mjs:verifyMainSource`, `verifyCi`, and
-`verifyEnvironment`. Source equals the trusted main workflow revision and
+`verifyEnvironment`. Source equals the trusted main workflow source commit and
 checkout. The repository is public, exact-source main-push CI succeeds, and the
 environment disables admin bypass and permits only branch `main`. Invalid context fails before a registry write.
 
@@ -79,7 +79,7 @@ only the non-sensitive marker attempt. Authorization and other API errors fail.
 ### 2. Build and transfer only marker bytes
 
 `scripts/ci/container-bootstrap.mjs:main` creates a temporary context with a
-scratch Dockerfile and fixed text marker. Repository source and revision labels
+scratch Dockerfile and fixed text marker. Repository source and source commit labels
 link the image to Enterprise. Docker exports `linux/amd64` OCI bytes without
 copying the checkout, fetching a base image, or receiving registry credentials.
 Skopeo authenticates using the workflow token over stdin and a temporary auth file.
@@ -130,7 +130,7 @@ matching existing source tag is inspected remotely and left untouched, even if
 package metadata has not caught up. Only the registry's explicit manifest-unknown
 response permits copying an unlisted tag; authorization and transport failures
 stop recovery. A conflicting tag or remote digest fails.
-Metadata GET transport failures are bounded and report the endpoint. No archive
+Metadata GET requests use a 30-second timeout per attempt and report the endpoint if transport retries fail. No archive
 is rebuilt and no original seal is rewritten.
 
 Only after both remote digests match does `resume` write the recovery receipt,

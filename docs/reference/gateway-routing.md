@@ -20,7 +20,7 @@ For caller permissions and file operations, see the
 | Helm chart                | Shared Gateway, ClusterIP EnvoyProxy, SecurityPolicy, certificates and optional CA issuers, API/worker credential mounts, and controller/Envoy NetworkPolicies. |
 | Kubernetes Compute Driver | Tenant attachment labels, Agent HTTPRoutes and node-route SecurityPolicies, gateway Services, and tenant NetworkPolicies through worker reconciliation.         |
 | OCC API                   | Caller authorization, endpoint derivation through Compute, and native file RPCs using the mounted service key.                                                  |
-| OCC worker                | Native node enrollment through Compute, using the mounted service key and revision-owned enrollment Secrets.                                                    |
+| OCC worker                | Compute enrolls native nodes with the mounted service key and that Agent revision's enrollment Secrets.                                                         |
 
 The proxy Pods inherit `controlPlane.nodeSelector` from Helm values, keeping
 credential verification on the trusted OCC pool. Install the separately managed
@@ -57,22 +57,22 @@ use a certificate-covered DNS name.
 
 `getGatewayEndpoint(revision)` computes the URL without a Kubernetes lookup;
 it does not check whether the gateway is ready. When preparing and activating a
-revision, Compute creates or updates an HTTPRoute attached to the shared
+version, Compute creates or updates an HTTPRoute attached to the shared
 Gateway's `https` listener. The route matches the exact hostname and forwards
 to the Agent Service in the same namespace. The exact Agent path rewrites to
-`/`; a bounded prefix rule preserves suffixes for native UI traffic. See the
+`/`; a prefix rule for that Agent path preserves native UI suffixes. See the
 [Kubernetes route rules](drivers/kubernetes-compute/networking-and-isolation.md#private-agent-gateway-routes).
 TLS ends at Envoy. From there, plaintext HTTP and WebSocket traffic to the
 gateway is restricted by NetworkPolicy.
 
-The route and Service stay stable when a revision is activated or a gateway Pod
-is replaced. Retiring an older revision preserves the newer gateway's route;
+The route and Service stay stable when a version is activated or a gateway Pod
+is replaced. Retiring an older version preserves the newer gateway's route;
 final gateway cleanup removes it. Compute repairs the route while reconciling
-a revision. There is no separate periodic repair.
+a version. There is no separate periodic repair.
 
 ### Native node endpoint
 
-Runtime-enabled dedicated revisions also receive an exact `/node` route and an
+Runtime-enabled dedicated versions also receive an exact `/node` route and an
 exact `/node/__openclaw__/worker` route under the same Agent URL, hostname and
 `https` listener, plus `/node/__openclaw__/worker-bundle/v1/` and
 `/node/__openclaw__/worker-transfer/v1/` prefix routes. All use the same backend
@@ -105,7 +105,7 @@ The Gateway delivers each hook capability through its authenticated Codex
 app-server connection. The Harness stores it under `.oce-native-hooks` in its
 HOME (a SandboxDriver's `harnessHome`, else `/home/node`), outside the workspace
 and file-transfer roots. This directory is Harness runtime state (on OpenShell, the
-revision's runtime PVC subpath). Each Codex start replaces it with an empty private
+version's runtime PVC subpath). Each Codex start replaces it with an empty private
 directory. It is not an isolation boundary against compromised Harness code running as
 the same user. Gateway checks bind each
 capability to this Agent's live provider/relay and exact generation; it grants
@@ -113,10 +113,10 @@ neither another Agent's callbacks nor node or operator access. Native hooks use 
 (the node's CA) with normal HTTPS certificate verification.
 
 Preparation creates or repairs these resources under the serving Gateway's
-revision. Preparing a replacement preserves that ownership until activation
+version. Preparing a replacement preserves that ownership until activation
 replaces the Deployment.
-Stop and retirement remove the exact revision's node route before
-its policy, checking ownership and deletion UIDs; newer revisions remain.
+Stop and retirement remove that Agent revision's node route before
+its policy, checking ownership and deletion UIDs; newer versions remain.
 The Compute enrollment path also admits Harness egress to this installation's
 Envoy Pods on the configured HTTPS target port. File, Memory and Skills access
 use the enrolled node. Dedicated Gateway does not mount the Harness workspace
@@ -286,7 +286,7 @@ OCC converts that endpoint to `https:` for native UI HTTP traffic while keeping
 the same private authority and exact Agent base path. Workspace-file traffic
 continues to use the original WSS endpoint. Native-host requests are
 intercepted before the normal API not-found path, resolved to the exact Agent
-represented by the host, and checked against the current active revision before
+represented by the host, and checked against the selected version before
 the API proxies HTTP or WebSocket traffic through the private route.
 
 ## Public preview routing
@@ -308,9 +308,9 @@ public shell and renderer assets without granting the OCC administrative identit
 The runtime owns shell CSP, resource allowlisting and iframe isolation; private
 HTML content still arrives through the authenticated native UI.
 
-Sandbox routes and policies follow serving revision ownership. Replacing a Pod
-keeps the origin stable; stopping or deleting its serving revision removes the
-route before its policy. Retiring an older revision preserves newer resources.
+The serving Agent revision owns Sandbox routes and policies. Replacing a Pod
+keeps the origin stable; stopping or deleting its serving version removes the
+route before its policy. Retiring an older version preserves newer resources.
 An Agent-owned ingress policy and the Envoy egress policy admit the additional
 backend port only when configured. Agent deployment reconciles preview ingress
 even when the tenant namespace already exists. Helm requires explicit ingress peers on the separate listener,

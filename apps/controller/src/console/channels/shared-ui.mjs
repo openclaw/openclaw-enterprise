@@ -554,7 +554,7 @@ function openDrawer(section, state, provider, retained) {
       "info",
       null,
       state.copy.drawerNotice ??
-        "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before first deploy.",
+        "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before deploying.",
     ),
     ...(carriedNote ? [carriedNote] : []),
     enabled,

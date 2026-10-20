@@ -1204,7 +1204,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await page.getByRole("heading", { name: "Native admin follow Agent" }).waitFor();
   const activity = page.locator(".deployment-status");
   const card = page.locator(".native-admin-access");
-  await activity.getByText("Recorded status: running").waitFor();
+  await activity.getByText("Recorded status: In progress").waitFor();
   await card
     .getByText(
       "Native admin UI is unavailable because no version of this Agent is serving: a deployment is in progress or has failed. Check Deployment activity, then refresh access.",
@@ -1216,7 +1216,7 @@ test("Agent detail rereads native admin access once when a pending deployment ac
   await fixture.activateRevision(namespace.id, agent.id, pending.id);
   deploymentStatus = "succeeded";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await activity.getByText("Recorded status: succeeded").waitFor();
+  await activity.getByText("Recorded status: Completed").waitFor();
   await card
     .getByText(
       "Native admin UI is not enabled in this Agent’s current version. Someone who can edit its Configuration can enable it (see the native admin UI guide) and deploy a new version.",
@@ -1520,7 +1520,7 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
 
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
-  await page.getByRole("button", { name: "Login", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
   await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/);
 });
 
@@ -1539,7 +1539,7 @@ for (const variant of ["credentials", "workspace", "sharing"]) {
     if (variant === "workspace") {
       revision = (await fixture.seedActiveAgentRevision(namespace.id, agent.id)).revision.id;
     }
-    const tab = variant === "sharing" ? "configuration" : variant;
+    const tab = variant === "sharing" ? "access" : variant;
     const { page } = await newPage(t, fixture);
     const url = detailUrl(fixture, namespace.id, agent.id, revision, tab);
     await login(page, fixture, url);
@@ -1698,7 +1698,10 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Agent workspace", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Versions", exact: true }).waitFor();
-  await page.getByText("No readable deployment records.").waitFor();
+  // The empty Deployment activity card is read but hidden: the facts already say it (UX spec 3.7).
+  const noRecords = page.getByText("No readable deployment records.");
+  await noRecords.waitFor({ state: "attached" });
+  assert.equal(await noRecords.isHidden(), true);
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   assert.equal(
     requests.some((request) => request.path === configurationPath),
@@ -1768,6 +1771,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
     "Credentials",
     "Workspace files",
     "Policy denials",
+    "Access",
   ];
   assert.deepEqual(await list.getByRole("tab").allTextContents(), names);
   // Which tab is selected, which one is the Tab stop, which has focus, and the URL's tab=.
@@ -1806,9 +1810,9 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   for (const [key, focused] of [
     ["ArrowLeft", "Plugins"],
     ["ArrowLeft", "Configuration"],
-    ["ArrowLeft", "Policy denials"],
+    ["ArrowLeft", "Access"],
     ["ArrowRight", "Configuration"],
-    ["End", "Policy denials"],
+    ["End", "Access"],
     ["Home", "Configuration"],
   ]) {
     await page.keyboard.press(key);
@@ -1889,7 +1893,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await list.getByRole("tab", { name: "Configuration", exact: true }).focus();
   await page.keyboard.press("End");
   await page.keyboard.press("Enter");
-  await page.waitForURL("**tab=policy**");
+  await page.waitForURL("**tab=access**");
   await page.goBack();
   await page.waitForURL("**tab=configuration**");
   await page.waitForFunction(
@@ -1903,7 +1907,7 @@ test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selec
   await page.keyboard.press("End");
   await page.setViewportSize({ width: 360, height: 844 });
   await frames();
-  assert.deepEqual(await focusedInView(), { name: "Policy denials", inView: true }, "after resize");
+  assert.deepEqual(await focusedInView(), { name: "Access", inView: true }, "after resize");
   await page.setViewportSize({ width: 390, height: 844 });
   await strip.evaluate((node) => {
     node.scrollLeft = node.scrollWidth;
@@ -1984,7 +1988,7 @@ test("Agent sharing grants existing people exact discovery and native access, th
     args: [...fixture.browserArgs, `--host-resolver-rules=MAP ${consoleHost} 127.0.0.1`],
   };
   const { page, artifacts } = await newPage(t, fixture, browserOptions);
-  const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration");
+  const detail = detailUrl(fixture, namespace.id, agent.id, active.revision.id, "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
@@ -2051,11 +2055,14 @@ test("Agent sharing grants existing people exact discovery and native access, th
     0,
   );
   await recipient.getByRole("link", { name: "Open admin console" }).waitFor();
-  // A non-administrator never reads sharing policy: each denial would be audited.
+  // A non-administrator never reads sharing policy: each denial would be audited. The link to
+  // the Access tab opens Configuration, and the strip has no Access tab.
   assert.equal(
     await recipient.getByRole("region", { name: "Share Agent", exact: true }).count(),
     0,
   );
+  assert.equal(await recipient.getByRole("tab", { name: "Access" }).count(), 0);
+  await recipient.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
   assert.deepEqual(
     recipientRequests.filter((request) => request.path.includes("/iam/")),
     [],
@@ -2157,7 +2164,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   const person = fixture.provisionedAccounts[0];
   const { page, artifacts } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
@@ -2197,7 +2204,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   }
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
   await page.getByText("Your session has expired").waitFor();
-  await page.getByRole("button", { name: "Login", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
   assert.equal(await panel.count(), 0);
 });
 
@@ -2326,7 +2333,7 @@ test("Agent sharing rejects emails locally and names an unknown Principal ID", a
   const agent = await fixture.createAgent(namespace.id, "Subject Agent", nativeValues("subject"));
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   const principal = panel.getByLabel("Existing person’s Principal ID");
@@ -2375,7 +2382,7 @@ test("Agent sharing creates exact Roles instead of reusing strict superset Roles
     supersets.push(role.data.id);
   }
   const { page } = await newPage(t, fixture);
-  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  const detail = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
   await login(page, fixture, detail);
   const panel = page.getByRole("region", { name: "Share Agent", exact: true });
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
@@ -2823,7 +2830,7 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   const userReread = await holdRequests(t, page, `${fixture.origin}${userPath}`, { once: true });
   await page
     .locator(".deployment-status")
-    .getByText("Recorded status: running")
+    .getByText("Recorded status: In progress")
     .waitFor({ state: "attached" });
 
   // The reader is typing in AGENTS.md with a selection in the middle of the text.
@@ -2850,7 +2857,7 @@ test("a deployment finishing on the poll keeps a typing reader's Workspace edito
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await page
     .locator(".deployment-status")
-    .getByText("Recorded status: succeeded")
+    .getByText("Recorded status: Completed")
     .waitFor({ state: "attached" });
   await waitForInputValue(soul, `# SOUL.md served by ${second.id}\n`);
   await userReread.requested;

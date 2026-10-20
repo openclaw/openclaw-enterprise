@@ -47,7 +47,7 @@ entries must resolve to one primary model and Harness.
 For a custom endpoint, private Gateway configuration compiles
 `codex/vendor/organization/model` to `codex/openai-compatible/vendor/organization/model`.
 OpenClaw selects `openai-compatible` and ID `vendor/organization/model`, preserving
-fallback order, metadata and policies. Stored Configuration, revision and probe
+fallback order, metadata and policies. Stored Configuration, version and probe
 model remain unchanged.
 
 The resolver selects OpenClaw without a model candidate, or for an unambiguous
@@ -74,14 +74,14 @@ reference or the ID after its first slash, and IDs may contain slashes.
 Configuration save and Kubernetes deployment refuse a nonempty `agents.list` and
 the other rosters OpenClaw rejects ([Configuration](configuration.md#create-read-update-and-delete));
 dedicated execution's `main` Agent rules apply only at deployment. Admission
-preserves fallback order in the immutable revision but does not implement fallback
+preserves fallback order in the immutable version but does not implement fallback
 execution or allow changing topology.
 
 ## Admission and immutable execution
 
 Deployment authorizes the exact Agent, Configuration, and selected managed
 harness credential source. A SandboxDriver may transform native configuration
-before validation and admission without changing its stored source. The revision
+before validation and admission without changing its stored source. The version
 freezes the admitted document, source identity and generation, approved Harness
 identity/version, execution mode, Compute identity, and sandbox or account binding.
 
@@ -123,13 +123,13 @@ OpenAI `api_key` authentication. Dedicated Codex also accepts the
 [external ChatGPT authentication contract](drivers/credential-gateway.md#external-chatgpt-authentication)
 through the bundled experimental `codex-oauth` source, with paired Refresh
 and operator-TLS setup described in the [OpenShell reference](drivers/openshell-credential-gateway.md#experimental-codex-oauth-poc). Compute projects no model Secret and
-passes the gateway's attachments to the Sandbox. The revision activates only
+passes the gateway's attachments to the Sandbox. The version activates only
 after every attachment is `ready`.
 While a Credential Gateway is selected, deployment rejects the Secret-backed and
 account methods with `409`. Other Compute
 implementations reject unsupported bindings. SSH embedded OpenClaw accepts
 only `{ "method": "runtime" }`: systemd loads operator-provided host credentials,
-outside revision immutability, and OCC checks gateway readiness without
+outside version immutability, and OCC checks gateway readiness without
 validating model authentication; see [SSH Compute](drivers/ssh-compute.md).
 Kubernetes deployment rejects `runtime` with `409`.
 
@@ -201,14 +201,14 @@ its Harness, which the Agent Service selects from the start but lists only once
 ready. The gateway waits for the Harness plugin status without its own deadline, staying unready
 and logging `Waiting for Harness plugin runtime status` at most every 30
 seconds. The deployment's convergence deadline governs a Harness that never
-reports. A redeploy keeps the Service on the serving revision until activation.
+reports. A redeploy keeps the Service on the serving version until activation.
 
 Startup checks may incur model charges and verify neither other configured models nor validity after upstream revocation.
 Embedded probe transport configuration must use literal metadata rather than
 additional environment or Secret references; the selected provider's
 `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` alias remains supported.
 
-The revision freezes the admitted source reference, not historical Secret bytes.
+The version freezes the admitted source reference, not historical Secret bytes.
 A managed account snapshot also retains its exact credential and verified private
 Backend/workspace ownership. Later reconciliation cannot substitute a newly
 issued account credential. Source updates take effect only through a new deployment
@@ -225,7 +225,7 @@ A trusted ComputeDriver can instead declare
 for new or adopted runtimes; admission then preserves its native configuration without requiring the Driver to collect logs.
 The following rendering policy applies only to the default platform-owned path.
 
-Compute renders logging from the admitted revision. Kubernetes mounts the
+Compute renders logging from the saved version. Kubernetes mounts the
 admitted native Configuration read-only under `/etc/openclaw`, with
 `OPENCLAW_CONFIG_PATH` pointing at that document. Gateway containers receive
 native JSON console logging at the admitted level and keep their own OTLP log
@@ -237,7 +237,7 @@ export reads Codex stderr only; stdout remains protocol output.
 Worker log attributes such as `work.id`, `work.operation`, `work.attempt`, and
 `work.outcome` describe controller reconciliation, not runtime resource
 identity. The Collector derives `service.name`, version, container, Namespace,
-Agent, and revision identity from protected container labels or Pod metadata,
+Agent, and Agent revision IDs from protected container labels or Pod metadata,
 not payload fields.
 
 ## Isolation and activation
@@ -259,11 +259,11 @@ exceptions and enforcement limitations, and Docker has narrower boundaries.
 
 Embedded preparation runs while its predecessor serves; activation can
 interrupt service (see [Harness authentication](#harness-authentication)).
-Dedicated replacement stops every earlier revision, even a healthy gateway,
+Dedicated replacement stops every earlier version, even a healthy gateway,
 before preparation, leaving the Agent unavailable until the replacement is
 ready. Guarded activation publishes the replacement before retiring the prior
-revision; an older retry never overwrites a newer active revision, and OCC
-routes to one active revision. Kubernetes cannot guarantee a process singleton
+version; an older retry never overwrites a newer selected version, and OCC
+routes to one selected version. Kubernetes cannot guarantee a process singleton
 during node partitions or manual replacement; see [execution
 modes](drivers/kubernetes-compute.md#execution-modes). The worker records one
 activation audit when durable completion succeeds; recovery repeats safe effects
