@@ -124,10 +124,9 @@ verification-only because of upstream provisioning blockers.
 | Native worker recovery data                            | Gateway checkpoints or managed worktrees, as required by the session's workspace source |
 | Uploads and retrieved reply attachments                | Gateway media store; execution receives staged input files                              |
 
-Dedicated Gateways receive no model credentials. Model authentication follows
-the selected [Harness authentication binding](../../reference/harness-execution.md#harness-authentication),
-including any external Credential Gateway. Gateway transport and channel
-credentials remain separate.
+The selected [Harness authentication binding](../../reference/harness-execution.md#harness-authentication)
+keeps its inference credential off the dedicated Gateway. Gateway features,
+such as Memory embeddings, can use separately configured credentials.
 
 The [storage reference](../../reference/drivers/kubernetes-compute/storage-and-credentials.md)
 defines Kubernetes claim sizes, mounts, and persistence. A Sandbox provider may
@@ -154,8 +153,9 @@ The retained index does not guarantee fresh results during disconnection.
 
 ### Skills
 
-Gateway-provided Skills stay on Gateway; workspace Skills stay on Harness.
-Gateway discovers remote Skill sources and applies installation policy.
+Gateway-provided Skill sources remain on Gateway; workspace Skill sources
+remain on Harness. Native worker turns can receive temporary copies of selected
+Skill files. Gateway discovers remote Skill sources and applies installation policy.
 Approved dependency installation runs on the workspace host. Each host supplies
 its own bundled assets, without a shared Skill-tree mount. Remote channel menu
 discovery remains deferred; see the [workspace flow](../../flows/workspace-files.md#6-compute-resolves-a-route-and-occ-loads-the-current-key).
