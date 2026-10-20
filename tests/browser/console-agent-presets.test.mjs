@@ -3050,3 +3050,41 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
   );
   assert.equal(secretPostRequests(requests, namespace.id).length, 0);
 });
+
+// The chooser's Start with default Preset named no Preset, and after a Preset was chosen Use
+// Preset stayed secondary while the shortcut kept the filled style (finding 2066).
+test("the Preset chooser names its default and fills Use Preset once a Preset is chosen", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Preset emphasis", { ready: true });
+  const other = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Team Preset",
+      template: {
+        variables: { agentName: { type: "string" } },
+        agent: { name: "{{ vars.agentName }}", executionMode: "embedded" },
+      },
+    },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const shortcut = page.getByRole("button", { name: "Start with default Preset" });
+  const use = page.getByRole("button", { name: "Use Preset" });
+  const filled = (locator) =>
+    locator.evaluate((node) => node.classList.contains("button--primary"));
+  await page.getByText("The default Preset is default-codex.", { exact: true }).waitFor();
+  assert.equal(await shortcut.getAttribute("aria-describedby"), "default-preset-hint");
+  assert.equal(await shortcut.isEnabled(), true);
+  assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
+
+  await page.getByLabel("Preset template").selectOption(other.data.id);
+  await page.getByLabel("Agent Name", { exact: true }).waitFor();
+  assert.deepEqual([await filled(shortcut), await filled(use)], [false, true]);
+
+  // Clearing the choice gives the filled style back to the shortcut.
+  await page.getByLabel("Preset template").selectOption("");
+  await page.getByLabel("Agent Name", { exact: true }).waitFor({ state: "detached" });
+  assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
+});
