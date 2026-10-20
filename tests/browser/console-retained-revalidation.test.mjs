@@ -1494,14 +1494,14 @@ test("Logout during a first visit's hold leaves nothing private, even after Back
   await agentRead.requested;
   await page.locator(".account-toggle").click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
-  await page.getByRole("button", { name: "Login" }).waitFor();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
   agentRead.release();
   await page.clock.runFor(400);
   assert.equal(await page.locator(".content, nav").count(), 0);
   // Back reloads the list's URL: the session is gone, so sign-in shows again.
   await page.goBack();
   await page.clock.runFor(400);
-  await page.getByRole("button", { name: "Login" }).waitFor();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
   assert.equal(await page.locator(".content, nav").count(), 0);
   assert.ok(!(await showedAgent(page)), "the held Agent page showed after logout");
 });
@@ -1813,7 +1813,7 @@ test("the console shell paints a neutral status before any script runs and keeps
     await page.waitForFunction(firstContentfulPaint, null, { timeout: 5_000 });
     await status.getByText("Loading OpenClaw Enterprise…", { exact: true }).waitFor();
     assert.equal(await page.locator("nav, .content, #namespace-selector").count(), 0, path);
-    assert.equal(await page.getByLabel("Username").count(), 0, path);
+    assert.equal(await page.getByLabel("Email", { exact: true }).count(), 0, path);
     const box = await status.boundingBox();
     await status.evaluate((node) => {
       node.dataset.staticShell = "kept";
@@ -1827,9 +1827,9 @@ test("the console shell paints a neutral status before any script runs and keeps
     assert.equal(await status.getAttribute("data-static-shell"), "kept", path);
     assert.deepEqual(await status.boundingBox(), box, path);
     assert.equal(await page.locator("nav, .content, #namespace-selector").count(), 0, path);
-    assert.equal(await page.getByLabel("Username").count(), 0, path);
+    assert.equal(await page.getByLabel("Email", { exact: true }).count(), 0, path);
     session.release();
-    await page.getByLabel("Username").waitFor();
+    await page.getByLabel("Email", { exact: true }).waitFor();
     await page.unrouteAll({ behavior: "ignoreErrors" });
   }
 });
@@ -1867,7 +1867,7 @@ test("the boot status stays hidden through a fast load and the scrollbar keeps i
     "stable",
   );
   script.release();
-  await page.getByLabel("Username").waitFor();
+  await page.getByLabel("Email", { exact: true }).waitFor();
 });
 
 // The web font is fetched alongside the stylesheet, so it is ready before the console's first
@@ -1899,6 +1899,6 @@ test("the console web font is ready before the entry script runs, fetched once",
     { timeout: 5_000 },
   );
   script.release();
-  await page.getByLabel("Username").waitFor();
+  await page.getByLabel("Email", { exact: true }).waitFor();
   assert.deepEqual(fonts, [`${fixture.origin}/console/fonts/instrument-sans-latin.woff2`]);
 });

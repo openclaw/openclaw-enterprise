@@ -391,13 +391,35 @@ p {
     opacity: 0;
   }
 }
+/* Sign-in (UX spec 3.12): one card, a 16 px gutter on a phone, and the build in a muted footer. */
 .auth {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
+  width: calc(100% - 2 * var(--space-4));
   max-width: 410px;
-  margin: 14vh auto;
-  padding: 28px;
+  margin: 14vh auto var(--space-4);
+  padding: var(--space-8);
+}
+.auth h1 {
+  font-size: var(--text-2xl);
+  margin-bottom: var(--space-2);
+}
+.auth .auth-intro {
+  margin-bottom: 0;
+}
+.auth-footer {
+  margin: 0 auto var(--space-10);
+  padding: 0 var(--space-4);
+  text-align: center;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  color: var(--color-text-muted);
+}
+@media (max-width: 520px) {
+  .auth {
+    padding: var(--space-6);
+  }
 }
 /* The wordmark: mascot and "OpenClaw Enterprise" in ink, normal case. */
 .brand {
@@ -927,6 +949,92 @@ p {
    browser. */
 .resource-linked .resource-name a:focus-visible {
   outline: none;
+}
+/* Namespaces as a table (UX spec 3.12): one card, a surface-2 head row, and hairline-divided
+   rows of Namespace (ID beneath), Status and Created. The rows are list items; the head is visual
+   only, and each cell names itself for a screen reader. */
+.namespace-table {
+  --namespace-columns: minmax(0, 1fr) 10rem 14rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.namespace-table-head,
+.namespace-row {
+  display: grid;
+  grid-template-columns: var(--namespace-columns);
+  gap: var(--space-4);
+  align-items: center;
+  padding: 0 var(--space-6);
+}
+.namespace-table-head {
+  min-height: var(--control-h);
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+.namespace-rows {
+  gap: 0;
+}
+.namespace-row {
+  min-height: 56px;
+  padding-block: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.namespace-row:last-child {
+  border-bottom: 0;
+}
+.namespace-row .resource-name {
+  margin-bottom: var(--space-1);
+}
+.namespace-cell-name {
+  min-width: 0;
+}
+.namespace-cell-created {
+  color: var(--color-text);
+}
+.namespace-cell-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* The table clips its corners, so the focused row draws its ring inside. */
+.namespace-rows .namespace-row:has(.resource-name a:focus-visible) {
+  outline-offset: var(--focus-offset-inset);
+}
+/* Phone: the badge sits beside the name and Created goes underneath, labelled. */
+@media (max-width: 760px) {
+  .namespace-table-head {
+    display: none;
+  }
+  .namespace-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-4);
+  }
+  .namespace-cell-status {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: start;
+  }
+  .namespace-cell-created {
+    grid-column: 1 / -1;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+  }
+  .namespace-cell-label {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+  }
 }
 .state-panel {
   padding: 36px;

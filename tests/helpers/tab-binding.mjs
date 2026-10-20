@@ -160,7 +160,7 @@ export async function proveTabBinding(t, databaseUrl, provider) {
   const tabA = await context.newPage();
   const tabB = await context.newPage();
   await tabB.goto(`${origin}/console/login`);
-  await tabB.getByLabel("Username").waitFor();
+  await tabB.getByLabel("Email", { exact: true }).waitFor();
   await tabA.goto(`${origin}/console/`);
 
   await t.test(
@@ -203,9 +203,9 @@ export async function proveTabBinding(t, databaseUrl, provider) {
   });
 
   await t.test("tab B signs in as another user by password", async () => {
-    await tabB.getByLabel("Username").fill(bob.email);
+    await tabB.getByLabel("Email", { exact: true }).fill(bob.email);
     await tabB.getByLabel("Password").fill(bob.password);
-    await tabB.getByRole("button", { name: "Login" }).click();
+    await tabB.getByRole("button", { name: "Sign in" }).click();
     await tabB.waitForURL(/\/console\/agents/);
     const session = await tabB.evaluate(
       async () => (await (await fetch("/api/auth/session")).json()).data,
@@ -219,7 +219,7 @@ export async function proveTabBinding(t, databaseUrl, provider) {
     const response = await refused;
     assert.equal(response.request().headers()["x-occ-session-key"], exchange.sessionKey);
     await tabA.getByText("Your session has expired").waitFor();
-    await tabA.getByLabel("Username").waitFor();
+    await tabA.getByLabel("Email", { exact: true }).waitFor();
     // Tab B keeps working as its own user.
     const readB = tabB.waitForResponse(
       (candidate) => new URL(candidate.url()).pathname === "/namespaces",

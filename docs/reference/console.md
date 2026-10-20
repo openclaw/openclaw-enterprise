@@ -11,8 +11,8 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
-Enter your provisioned account email as
-**Username**, then its password, and select **Login**. Public
+Enter your provisioned account email in
+**Email**, then its password, and select **Sign in**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
 your administrator for an account or a password reset. To set up your own
 Installation, see the
@@ -29,13 +29,14 @@ See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-de
 With `debug=true`, the sidebar wordmark is followed by the first eight
 characters of the running OCC image's source commit, or **dev** for builds
 without metadata; hover for the full commit. Published images bake the checked
-release commit into the console HTML.
+release commit into the console HTML. The sign-in page footer shows the same
+eight characters when the build has a commit.
 
 ## Browse and select a Namespace
 
 The sidebar opens **Agents** or **Namespaces**; **Refresh** repeats the read.
 Configure models during creation. [Experimental Backends](backends.md) stay
-hidden. Namespace cards open that Namespace's Agents.
+hidden. Namespace rows open that Namespace's Agents.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |

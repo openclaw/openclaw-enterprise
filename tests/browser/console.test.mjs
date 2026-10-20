@@ -364,7 +364,7 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await openShellMenu(page);
   await page.getByRole("menuitem", { name: "Sign out" }).click();
   await page.waitForURL(/\/console\/login$/);
-  await page.getByRole("button", { name: "Login" }).waitFor();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
   await expectNoText(page, /Alpha|Beta|openai-primary/);
   assert.deepEqual(
     await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } })),
@@ -1181,9 +1181,9 @@ test("a session replaced by another tab signs this tab out instead of being adop
   assert.equal(await page.locator(".content [inert]").count(), 0);
 
   // A fresh sign-in does not inherit the old session's route or draft.
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/agents");
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
@@ -1198,12 +1198,12 @@ test("an abandoned GitHub attempt does not turn password sign-in into a GitHub f
   const requests = [];
   page.on("request", (request) => requests.push(new URL(request.url()).pathname));
   await page.goto(`${fixture.origin}/console/login`);
-  await page.getByLabel("Username").waitFor();
+  await page.getByLabel("Email", { exact: true }).waitFor();
   // Models returning from github.com without completing the callback.
   await page.evaluate(() => sessionStorage.setItem("occ.console.githubAttempt", "a".repeat(43)));
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\/agents/);
   assert.equal(requests.includes("/api/auth/providers/github/result"), false);
   await expectNoText(page, /Could not sign in with GitHub/);
@@ -1316,7 +1316,7 @@ test("OIDC sign-in uses the discovered label and accepts only the discovered end
     oidcSignIn: { label: "Acme SSO", authorizationUrl: "http://sso.example.test/auth" },
   };
   await page.goto(`${fixture.origin}/console/login`);
-  await page.getByLabel("Username").waitFor();
+  await page.getByLabel("Email", { exact: true }).waitFor();
   await expectNoText(page, /Continue with Acme SSO/);
 });
 
@@ -1366,7 +1366,7 @@ test("GitHub allowlist refusals tell the person why, and other reasons stay gene
   // The reason applies only to GitHub's own error.
   password = true;
   await page.goto(`${fixture.origin}/console/?authError=google&authReason=membership`);
-  await page.getByRole("button", { name: "Login" }).waitFor();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
   await expectNoText(page, /organization/);
 });
 
@@ -1408,7 +1408,7 @@ test("a disabled account's provider sign-in says the account is disabled", async
   // Without a provider error the reason means nothing.
   password = true;
   await page.goto(`${fixture.origin}/console/?authReason=account-disabled`);
-  await page.getByRole("button", { name: "Login" }).waitFor();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
   await expectNoText(page, /disabled/);
 });
 
@@ -1473,7 +1473,7 @@ test("a provider outage says sign-in is unavailable, not to get attached", async
   // Without a provider error the reason means nothing.
   password = true;
   await page.goto(`${fixture.origin}/console/?authReason=provider-unavailable`);
-  await page.getByRole("button", { name: "Login" }).waitFor();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
   await expectNoText(page, /unavailable/);
 });
 
@@ -1511,16 +1511,16 @@ test("recovery-only password sign-in keeps the form behind Recovery sign-in", as
   await recovery.click();
   assert.equal(await recovery.isVisible(), false);
   await page.getByText("Use the recovery account's email").waitFor();
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill("not-the-recovery-password");
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page
     .getByText(
       "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in.",
     )
     .waitFor();
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\/agents/);
 });
 
@@ -1749,7 +1749,10 @@ test("mobile header switches Namespace without opening the navigation drawer", a
 
   await page.getByText("Beta mobile agent").waitFor();
   assert.match(page.url(), new RegExp(`/console/agents\\?namespace=${beta.id}$`));
-  await expectNoText(page, /Welcome back|Your session has expired|Could not confirm logout/);
+  await expectNoText(
+    page,
+    /Use your account email|Your session has expired|Could not confirm logout/,
+  );
 });
 
 test("header Namespace selection leaves Agent detail and creation for the selected collection", async (t) => {
@@ -1843,9 +1846,9 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       // Another tab's login expires this tab; only explicit sign-in may adopt a new session.
       await page.getByText("Your session has expired").waitFor();
       assert.equal(await page.locator("#namespace-selector").count(), 0);
-      await page.getByLabel("Username").fill(fixture.credentials.email);
+      await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
       await page.getByLabel("Password").fill(fixture.credentials.password);
-      await page.getByRole("button", { name: "Login" }).click();
+      await page.getByRole("button", { name: "Sign in" }).click();
     }
     await namespaceHold.waitForRelease();
     // Refresh preserves the requested Namespace. A replacement session starts on Agents
@@ -1949,9 +1952,9 @@ for (const trigger of ["Refresh", "Back with a replacement session"]) {
       // Another tab's login expires this tab; only explicit sign-in may adopt a new session.
       await page.getByText("Your session has expired").waitFor();
       assert.equal(await page.locator("#namespace-selector").count(), 0);
-      await page.getByLabel("Username").fill(fixture.credentials.email);
+      await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
       await page.getByLabel("Password").fill(fixture.credentials.password);
-      await page.getByRole("button", { name: "Login" }).click();
+      await page.getByRole("button", { name: "Sign in" }).click();
     }
     await namespaceHold.waitForRelease();
     await assertPendingHeader();
@@ -2105,7 +2108,7 @@ test("console clears private content after session expiry, access revocation, an
   }
   await page.reload();
   await page.getByText("Your session has expired").waitFor();
-  await page.getByRole("button", { name: "Login" }).waitFor();
+  await page.getByRole("button", { name: "Sign in" }).waitFor();
   await expectNoText(page, /Revoked agent/);
 
   await page.screenshot({ path: join(artifacts, "session-isolation.png"), fullPage: true });
@@ -2291,7 +2294,7 @@ test("a cold console visit shows neither navigation nor sign-in until its sessio
   const { page } = await newPage(t, fixture);
   const pattern = "**/api/auth/session";
   const navigation = page.getByRole("navigation", { name: "Main navigation" });
-  const username = page.getByLabel("Username");
+  const username = page.getByLabel("Email", { exact: true });
 
   async function visitWithSessionPending() {
     const held = await holdRoute(t, page, pattern, (route, response) =>
@@ -2346,12 +2349,12 @@ test("login ignores untrusted returns and resolves an opaque Agent key only afte
     });
   });
   await page.goto(`${fixture.origin}/console/#native-agent=${key}`);
-  await page.getByLabel("Username").waitFor();
+  await page.getByLabel("Email", { exact: true }).waitFor();
   assert.equal(lookups, 0);
   assert.equal(new URL(page.url()).hash, "");
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(`**/console/agents/${agent.id}?namespace=${namespace.id}`);
   assert.equal(lookups, 1);
   await page.goto(`${fixture.origin}/console/`);
@@ -2416,9 +2419,9 @@ test("a refused provider exchange discards its pending login destination", async
   await page.getByRole("button", { name: "Continue with GitHub" }).click();
   await page.getByText("Could not sign in with GitHub. Try again or use your password.").waitFor();
   assert.equal(await page.evaluate(() => sessionStorage.getItem("occ.console.loginIntent")), null);
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\/agents(?:\?|$)/);
   assert.equal(new URL(page.url()).pathname, "/console/agents");
 });
@@ -2486,10 +2489,10 @@ test("a naturally expired session does not carry its route into another sign-in"
     { times: 1 },
   );
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
-  await page.getByLabel("Username").waitFor();
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Email", { exact: true }).waitFor();
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/agents");
 });
@@ -2524,9 +2527,9 @@ test("session expiry after a failed check does not restore the previous route", 
     { times: 1 },
   );
   await page.getByRole("button", { name: "Retry" }).click();
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).waitFor();
   assert.equal(new URL(page.url()).pathname, "/console/agents");
 });

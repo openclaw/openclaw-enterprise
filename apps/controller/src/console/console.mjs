@@ -794,6 +794,21 @@ function clearDrafts() {
   draftUserId = null;
 }
 
+// The sign-in page footer names the build it serves, from the meta tag the image bakes in; a
+// development build has none, so the footer is left out.
+function signInFooter() {
+  const revision = document.querySelector('meta[name="occ-build-revision"]')?.content ?? "";
+  return /^[a-f0-9]{40}$/.test(revision)
+    ? [
+        element(
+          "footer",
+          { className: "auth-footer" },
+          `OpenClaw Enterprise · build ${revision.slice(0, 8)}`,
+        ),
+      ]
+    : [];
+}
+
 function showLogin(message = "", destination = null) {
   // A message may depend on whether ordinary accounts can use a password.
   const describe = typeof message === "function" ? message : () => message;
@@ -823,24 +838,24 @@ function showLogin(message = "", destination = null) {
     required: "",
   });
   const feedback = statusBlock("danger", null, describe(true));
+  // The page's one line under the title also describes the email field (UX spec 3.12).
   const usernameHint = element(
-    "span",
-    { id: "username-hint", className: "hint" },
-    "Use your account email",
+    "p",
+    { id: "username-hint", className: "muted auth-intro" },
+    "Use your account email.",
   );
   // Recovery-only password sign-in hides the form until the recovery path is chosen.
   let recoveryOnly = false;
   const submit = element(
     "button",
     { type: "submit", className: "button button--primary" },
-    "Login",
+    "Sign in",
   );
   const form = element(
     "form",
     {},
-    element("label", { for: "username" }, "Username"),
+    element("label", { for: "username" }, "Email"),
     username,
-    usernameHint,
     element("label", { for: "password" }, "Password"),
     password,
     feedback,
@@ -905,6 +920,7 @@ function showLogin(message = "", destination = null) {
       feedback.textContent = "";
       form.insertBefore(feedback, submit);
       form.hidden = false;
+      usernameHint.hidden = false;
       username.focus();
     },
     { tone: "link", className: "auth-recovery", hidden: true },
@@ -971,12 +987,13 @@ function showLogin(message = "", destination = null) {
         element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
         "OpenClaw Enterprise",
       ),
-      element("h1", {}, "Welcome back"),
-      element("p", { className: "muted" }, "Sign in to your Installation."),
+      element("h1", {}, "Sign in"),
+      usernameHint,
       form,
       providers,
       recovery,
     ),
+    ...signInFooter(),
   );
   void request("/api/auth/providers")
     .then((available) => {
@@ -1002,10 +1019,11 @@ function showLogin(message = "", destination = null) {
           if (feedback.textContent === describe(true)) {
             feedback.textContent = describe(false);
           }
-          usernameHint.textContent = "Use the recovery account's email";
+          usernameHint.textContent = "Use the recovery account's email.";
           // Never pull the form away from someone already using it.
           if (!pending && username.value === "" && password.value === "") {
             form.hidden = true;
+            usernameHint.hidden = true;
             providers.after(feedback);
             recovery.hidden = false;
           }

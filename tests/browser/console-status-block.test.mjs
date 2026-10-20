@@ -356,9 +356,9 @@ test("Notices and the sign-in alert", async (t) => {
       await page.goto(new URL("/console/login", fixture.origin).href);
       // The sign-in request is held until the empty alert has been read.
       const signIn = await holdRequests(t, page, "**/api/auth/sign-in/email");
-      await page.getByLabel("Username").fill(fixture.credentials.email);
+      await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
       await page.getByLabel("Password").fill("not-the-password");
-      await page.getByRole("button", { name: "Login" }).click();
+      await page.getByRole("button", { name: "Sign in" }).click();
       await signIn.requested;
       const pending = await signInAlert();
       assert.equal(await page.locator("form p.status[role=alert]").textContent(), "");
