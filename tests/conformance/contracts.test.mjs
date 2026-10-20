@@ -42,6 +42,7 @@ import {
   isSandboxFacet,
   normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
+  ConfigurationValidationError,
   sandboxNetworkGrantsWithinCeiling,
   validateSandboxNetworkGrants,
 } from "../../packages/contracts/src/index.ts";
@@ -83,16 +84,35 @@ test("network delegation covers every requested host label and port without broa
     false,
   );
   assert.equal(sandboxNetworkGrantsWithinCeiling([grant], []), false);
-  for (const invalid of [
-    [{ ...grant, binary: "/usr/bin/../python3.11" }],
-    [{ ...grant, host: "api..example.org" }],
-    [{ ...grant, ports: [{ from: 445, to: 443 }] }],
-    [grant, grant],
+  for (const [invalid, path, code, message] of [
+    [
+      [{ ...grant, binary: "/usr/bin/../python3.11" }],
+      "/additions/0/binary",
+      "INVALID_VALUE",
+      "Use a normalized absolute executable path.",
+    ],
+    [
+      [{ ...grant, host: "api..example.org" }],
+      "/additions/0/host",
+      "INVALID_VALUE",
+      "Use a valid DNS host or single-label wildcard.",
+    ],
+    [
+      [{ ...grant, ports: [{ from: 445, to: 443 }] }],
+      "/additions/0/ports/0/to",
+      "INVALID_RANGE",
+      "The end port must be at least the start port.",
+    ],
+    [[grant, grant], "/additions/1/id", "INVALID_VALUE", "Grant IDs must be unique."],
   ]) {
-    assert.throws(() => validateSandboxNetworkGrants(invalid), {
-      message:
-        "Network grants require unique IDs, normalized paths, DNS hosts, and ordered port ranges.",
-    });
+    assert.throws(
+      () => validateSandboxNetworkGrants(invalid),
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.deepEqual(error.error.details, [{ path, code, message }]);
+        return true;
+      },
+    );
   }
 });
 

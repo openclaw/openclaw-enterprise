@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -286,12 +287,22 @@ function fieldParity(
 
 // Compute must admit or refuse the same value at Driver creation.
 const configured = conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] });
-function assertCompute(overrides, accepted, refusal, label) {
+function assertCompute(overrides, accepted, refusal, label, path) {
   const create = () => createKubernetesComputeDriver({ ...configured, ...overrides });
   if (accepted) {
     assert.doesNotThrow(create, label);
   } else {
-    assert.throws(create, refusal, label);
+    assert.throws(
+      create,
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.equal(error.error.details[0].path, path);
+        assert.equal(error.error.details[0].code, "INVALID_FORMAT");
+        assert.match(error.error.details[0].message, refusal);
+        return true;
+      },
+      label,
+    );
   }
 }
 
@@ -477,6 +488,7 @@ test(
         accepted,
         /Gateway routing Envoy namespace must be a Kubernetes namespace name/,
         `${label}: Compute`,
+        "/gatewayRouting/envoyNamespace",
       );
     });
   },
@@ -541,6 +553,7 @@ test(
         accepted,
         /DNS peer namespace must be a Kubernetes namespace name/,
         `dns ${label}: Compute`,
+        "/network/dns/namespace",
       );
     });
   },
@@ -664,6 +677,7 @@ test("peer Pod selectors get Compute's verdict in preflight, and the chart rende
       accepted,
       /DNS peer label (?:keys|values) must be Kubernetes/,
       label,
+      "/network/dns/podLabels",
     );
   return each(peerSelectorCases, async ([podLabels, accepted]) => {
     const label = JSON.stringify(podLabels);
@@ -803,6 +817,7 @@ test(
               false,
               /Gateway image repository path must be lowercase/,
               name,
+              "/images/gateway",
             );
             return;
           }
@@ -946,6 +961,7 @@ test("image references get Kubernetes' verdict in preflight and Compute", () =>
         ? /Gateway image repository path must be lowercase/
         : /Gateway image must be a container image reference Kubernetes can pull/,
       label,
+      "/images/gateway",
     );
     const accepted = immutableImageAccepted(image, problem);
     // One profile carries the reference in all three image fields; preflight refuses each.

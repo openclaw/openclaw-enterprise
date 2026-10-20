@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -277,6 +278,11 @@ function executionOptions(network = {}) {
 
 // Execution CIDR lists use the trusted proxy rule: no entry may cover every address.
 test("two-cluster CIDR lists refuse ranges that cover every address", () => {
+  const diagnostic = (path, code, message) => (error) => {
+    assert.ok(error instanceof ConfigurationValidationError);
+    assert.deepEqual(error.error.details, [{ path, code, message }]);
+    return true;
+  };
   for (const [key, description] of [
     ["harnessEndpointCidrs", "Harness endpoint CIDR"],
     ["gatewayEndpointCidrs", "Gateway endpoint CIDR"],
@@ -285,19 +291,29 @@ test("two-cluster CIDR lists refuse ranges that cover every address", () => {
     for (const cidr of ["0.0.0.0/0", "::/0", "::ffff:0:0/96"]) {
       assert.throws(
         () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/32", cidr] })),
-        (error) =>
-          error.constructor.name === "ConfigurationFailure" &&
-          error.message === `${description}s cannot cover every address.`,
+        diagnostic(
+          `/executionCluster/network/${key}/1`,
+          "INVALID_FORMAT",
+          `${description}s cannot cover every address.`,
+        ),
         `${key} ${cidr}`,
       );
     }
     assert.throws(
       () => createKubernetesComputeDriver(executionOptions({ [key]: [] })),
-      new RegExp(`${description}s must be explicit and nonempty\\.$`),
+      diagnostic(
+        `/executionCluster/network/${key}`,
+        "INVALID_VALUE",
+        "Configuration does not satisfy minItems.",
+      ),
     );
     assert.throws(
       () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/33"] })),
-      new RegExp(`${description} 0 must be a valid IPv4 or IPv6 CIDR\\.$`),
+      diagnostic(
+        `/executionCluster/network/${key}/0`,
+        "INVALID_FORMAT",
+        `${description} 0 must be a valid IPv4 or IPv6 CIDR.`,
+      ),
     );
     assert.doesNotThrow(() =>
       createKubernetesComputeDriver(executionOptions({ [key]: ["10.42.0.0/16", "::/96"] })),

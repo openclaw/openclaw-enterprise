@@ -1623,7 +1623,13 @@ function resourceQuantity(value: unknown, description: string, path: string): st
   return required(value, description);
 }
 
-function validatePeer(value: KubernetesWorkloadPeer, description: string): void {
+function configurationConstraintFailure(message: string, path?: string): Error {
+  return path === undefined
+    ? new ConfigurationFailure(message)
+    : new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]);
+}
+
+function validatePeer(value: KubernetesWorkloadPeer, description: string, path?: string): void {
   if (asRecord(value) === undefined) {
     throw new ConfigurationFailure(`${description} is required.`);
   }
@@ -1632,6 +1638,7 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
   validateKubernetesNamespaceName(
     required(value.namespace, `${description} namespace`),
     `${description} namespace`,
+    path === undefined ? undefined : `${path}/namespace`,
   );
   const labels = asRecord(value.podLabels);
   if (labels === undefined || Object.keys(labels).length === 0) {
@@ -1652,11 +1659,15 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
       !POD_LABEL_VALUE.test(name) ||
       (prefix !== undefined && !isKubernetesResourceName(prefix))
     ) {
-      throw new ConfigurationFailure(`${description} label keys must be Kubernetes label keys.`);
+      throw configurationConstraintFailure(
+        `${description} label keys must be Kubernetes label keys.`,
+        path === undefined ? undefined : `${path}/podLabels`,
+      );
     }
     if (label.length > 63 || !POD_LABEL_VALUE.test(label)) {
-      throw new ConfigurationFailure(
+      throw configurationConstraintFailure(
         `${description} label values must be Kubernetes label values.`,
+        path === undefined ? undefined : `${path}/podLabels`,
       );
     }
   }
@@ -1669,9 +1680,9 @@ interface ParsedCidr {
   readonly prefix: number;
 }
 
-function parseCidr(value: unknown, description: string): ParsedCidr {
+function parseCidr(value: unknown, description: string, path?: string): ParsedCidr {
   if (typeof value !== "string") {
-    throw new ConfigurationFailure(`${description} must be a CIDR string.`);
+    throw configurationConstraintFailure(`${description} must be a CIDR string.`, path);
   }
   const [address = "", prefix, extra] = value.split("/");
   const family = isIP(address);
@@ -1684,7 +1695,7 @@ function parseCidr(value: unknown, description: string): ParsedCidr {
     prefixValue < 0 ||
     prefixValue > (family === 4 ? 32 : 128)
   ) {
-    throw new ConfigurationFailure(`${description} must be a valid IPv4 or IPv6 CIDR.`);
+    throw configurationConstraintFailure(`${description} must be a valid IPv4 or IPv6 CIDR.`, path);
   }
   return { value, address, family: family === 4 ? 4 : 6, prefix: prefixValue };
 }
@@ -1764,10 +1775,10 @@ function cidrCoversEveryAddress(cidr: ParsedCidr): boolean {
 // The one rule for every operator CIDR that grants reach (trusted proxies, status proxy
 // sources, execution endpoints): a range covering every IPv4 or IPv6 address is refused.
 // The profile renderer names the same rule with the same words.
-function scopedCidr(value: unknown, description: string, index: number): ParsedCidr {
-  const parsed = parseCidr(value, `${description} ${index}`);
+function scopedCidr(value: unknown, description: string, index: number, path?: string): ParsedCidr {
+  const parsed = parseCidr(value, `${description} ${index}`, path);
   if (cidrCoversEveryAddress(parsed)) {
-    throw new ConfigurationFailure(`${description}s cannot cover every address.`);
+    throw configurationConstraintFailure(`${description}s cannot cover every address.`, path);
   }
   return parsed;
 }
@@ -1852,10 +1863,11 @@ function validateKubernetesResourceName(value: string, description: string): voi
   }
 }
 
-function validateKubernetesNamespaceName(value: string, description: string): void {
+function validateKubernetesNamespaceName(value: string, description: string, path?: string): void {
   if (!isKubernetesNamespaceName(value)) {
-    throw new ConfigurationFailure(
+    throw configurationConstraintFailure(
       `${description} must be a Kubernetes namespace name: a DNS label of at most 63 characters.`,
+      path,
     );
   }
 }
@@ -1888,10 +1900,16 @@ function validateGatewayRoutingTarget(
   validateKubernetesNamespaceName(
     required(routing.gatewayNamespace, `${setting} Gateway namespace`),
     `${setting} Gateway namespace`,
+    setting === "Gateway routing"
+      ? "/gatewayRouting/gatewayNamespace"
+      : "/executionCluster/harnessRouting/gatewayNamespace",
   );
   validateKubernetesNamespaceName(
     required(routing.envoyNamespace, `${setting} Envoy namespace`),
     `${setting} Envoy namespace`,
+    setting === "Gateway routing"
+      ? "/gatewayRouting/envoyNamespace"
+      : "/executionCluster/harnessRouting/envoyNamespace",
   );
   validatePort(
     routing.envoyHttpsTargetPort ?? 10443,
@@ -3222,10 +3240,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
           ["Gateway", options.images.gateway],
           ["Agent", options.images.agent],
         ] as const) {
+          const path = description === "Gateway" ? "/images/gateway" : "/images/agent";
           required(image, `${description} image`);
           if (options.images.requireImmutableDigest && !/@sha256:[a-f0-9]{64}$/.test(image)) {
-            throw new ConfigurationFailure(
+            throw configurationConstraintFailure(
               `${description} image must use an immutable SHA-256 digest.`,
+              path,
             );
           }
           // Kubernetes refuses to pull a reference its parser refuses (InvalidImageName), such as
@@ -3233,13 +3253,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
           // same rule. Only the registry host and the tag may use uppercase.
           const problem = imageReferenceProblem(image);
           if (problem === "uppercase-repository") {
-            throw new ConfigurationFailure(
+            throw configurationConstraintFailure(
               `${description} image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.`,
+              path,
             );
           }
           if (problem !== undefined) {
-            throw new ConfigurationFailure(
+            throw configurationConstraintFailure(
               `${description} image must be a container image reference Kubernetes can pull.`,
+              path,
             );
           }
         }
@@ -3267,7 +3289,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         if (asRecord(options.network) === undefined) {
           throw new ConfigurationFailure("Network policy is required.");
         }
-        validatePeer(options.network.dns, "DNS peer");
+        validatePeer(options.network.dns, "DNS peer", "/network/dns");
         validatePort(options.network.gatewayPort, "Gateway port");
         // Plugin status also serves on 18791 without a native runtime (OpenClaw Gateways
         // with enabled plugins), so the reservation does not depend on options.runtime.
@@ -3465,15 +3487,29 @@ export class KubernetesComputeDriver implements ComputeDriver {
             gatewayRouting: execution.harnessRouting,
             network: { ...network, dns: execution.network?.dns },
           });
-          for (const [description, cidrs] of [
-            ["Harness endpoint CIDR", execution.network?.harnessEndpointCidrs],
-            ["Gateway endpoint CIDR", execution.network?.gatewayEndpointCidrs],
-            ["Execution status proxy CIDR", execution.network?.pluginStatusProxySourceCidrs],
+          for (const [key, description, cidrs] of [
+            [
+              "harnessEndpointCidrs",
+              "Harness endpoint CIDR",
+              execution.network?.harnessEndpointCidrs,
+            ],
+            [
+              "gatewayEndpointCidrs",
+              "Gateway endpoint CIDR",
+              execution.network?.gatewayEndpointCidrs,
+            ],
+            [
+              "pluginStatusProxySourceCidrs",
+              "Execution status proxy CIDR",
+              execution.network?.pluginStatusProxySourceCidrs,
+            ],
           ] as const) {
             if (!Array.isArray(cidrs) || cidrs.length === 0) {
               throw new ConfigurationFailure(`${description}s must be explicit and nonempty.`);
             }
-            cidrs.forEach((cidr, index) => scopedCidr(cidr, description, index));
+            cidrs.forEach((cidr, index) =>
+              scopedCidr(cidr, description, index, `/executionCluster/network/${key}/${index}`),
+            );
           }
           if (execution.caBundle !== undefined) {
             const begin = "-----BEGIN CERTIFICATE-----";
