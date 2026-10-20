@@ -9,8 +9,8 @@ Enter to open. Use the keyboard, not the mouse.
 2. Shift+Tab back to **Configuration**. Press Right, Right, Left, End and Home.
    Focus moves between tabs and wraps at either end, but no tab opens and the
    address keeps its `tab=`.
-3. Press End, then Enter. **Access** opens, the address shows `tab=access`,
-   and the strip marks it selected.
+3. Press End, then Enter. **Workspace files** opens, the address shows
+   `tab=workspace`, and the strip marks it selected.
 4. Go Back. **Configuration** is selected again and focus moves to it.
 5. Press End, then Tab and Shift+Tab. Focus returns to the selected tab, not
    the one the arrows last reached.
