@@ -2986,7 +2986,8 @@ export const scenarios = {
       "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
     steps: [
       "Read the alert: giving the Agent access to its Secrets needs Installation administration access.",
-      "The request log shows no /iam/ request, and only Cancel and Start over remain beside the saved-resources line.",
+      "The saved-resources line identifies the Configuration and Agent, offers Open saved Agent, and does not promise a retry.",
+      "The request log shows no /iam/ request. Only Cancel and Start over remain beside the saved-resources line.",
     ],
   },
   createRestricted: {
