@@ -9,7 +9,7 @@
 :root {
   color-scheme: light;
   font-family: var(--font-sans);
-  font-size: 14px;
+  font-size: var(--text-base);
   line-height: 1.5;
   font-synthesis: none;
   color: var(--text);
@@ -320,15 +320,15 @@ p {
 }
 h1 {
   color: var(--text-strong);
-  font-size: 24px;
-  font-weight: 600;
-  letter-spacing: -0.5px;
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
   margin-bottom: var(--space-3);
 }
 h2 {
   color: var(--text-strong);
-  font-size: 18px;
-  font-weight: 550;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-medium);
 }
 p {
   line-height: 1.6;
@@ -440,7 +440,7 @@ p {
 }
 .auth label {
   display: block;
-  font-weight: 550;
+  font-weight: var(--weight-medium);
   margin: var(--space-6) 0 var(--space-2);
 }
 .auth input {
@@ -456,7 +456,7 @@ p {
 .hint {
   display: block;
   margin-top: var(--space-2);
-  font-size: 13px;
+  font-size: var(--text-md);
   color: var(--muted);
 }
 .auth .primary,
@@ -629,22 +629,22 @@ p {
 }
 .occ-version {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   text-transform: none;
   letter-spacing: normal;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
 }
 .runtime-debug {
   margin: var(--space-6) var(--space-2) var(--space-3);
   min-height: 0;
   overflow-y: auto;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .runtime-debug h2 {
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .runtime-debug code {
-  font-size: 11px;
+  font-size: var(--text-xs);
   overflow-wrap: anywhere;
 }
 .runtime-debug details {
@@ -694,7 +694,7 @@ p {
   }
 }
 .nav-icon {
-  font-size: 16px;
+  font-size: var(--text-lg);
   width: 16px;
   text-align: center;
 }
@@ -783,17 +783,17 @@ p {
   text-align: left;
   border: 0;
   padding: var(--space-3);
-  font-size: 14px;
+  font-size: var(--text-base);
   overflow-wrap: anywhere;
 }
 .menu [aria-checked="true"] {
   background: var(--accent-subtle);
   color: var(--accent);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 .menu .muted {
   margin: var(--space-3);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .content {
   padding: var(--space-8);
@@ -930,10 +930,10 @@ p {
   display: grid;
   gap: var(--space-2);
   max-width: 100%;
-  font-size: 14px;
+  font-size: var(--text-base);
 }
 .namespace-selector label {
-  font-weight: 550;
+  font-weight: var(--weight-medium);
 }
 .namespace-selector select {
   width: 240px;
@@ -999,7 +999,7 @@ p {
 }
 .scope {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--text-base);
   overflow-wrap: anywhere;
 }
 .collection {
@@ -1049,15 +1049,15 @@ p {
 }
 .resource-name {
   margin-bottom: var(--space-2);
-  font-size: 16px;
-  font-weight: 550;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-medium);
   overflow-wrap: anywhere;
 }
 /* An ID reads character by character: no ligatures, which some monospace fonts (Nimbus Mono PS,
    a common Linux default) apply to "ff", drawing two characters as one glyph (finding 2114). */
 .resource-id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   font-variant-ligatures: none;
   color: var(--muted);
   user-select: text;
@@ -1233,8 +1233,8 @@ p {
   margin-bottom: var(--space-5);
 }
 .state-panel .request-id {
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
 /* Settings (UX spec 3.10): an account card and a session card in one 720 px column. */
@@ -1387,7 +1387,7 @@ p {
     padding: var(--space-6);
   }
   h1 {
-    font-size: 24px;
+    font-size: var(--text-2xl);
   }
 }
 
@@ -1664,7 +1664,7 @@ select:not([multiple])[size="1"] {
 .native-admin-access p {
   margin: var(--space-1) 0 0;
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-md);
   line-height: 1.45;
 }
 .native-admin-access p:empty {
@@ -1683,7 +1683,7 @@ select:not([multiple])[size="1"] {
   padding: var(--space-3) 0;
   cursor: pointer;
   color: var(--text-strong);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 .deployment-evidence > button {
   position: absolute;
@@ -1695,7 +1695,7 @@ select:not([multiple])[size="1"] {
   background: transparent;
   border-color: transparent;
   padding: var(--space-1);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .deployment-evidence-content {
   padding-bottom: var(--space-3);
@@ -1711,7 +1711,7 @@ select:not([multiple])[size="1"] {
 .native-admin-heading h2 {
   margin: 0;
   color: var(--text-strong);
-  letter-spacing: -0.025em;
+  letter-spacing: var(--tracking-tight);
 }
 .native-admin-access .overview-text-button {
   margin-top: var(--space-1);
@@ -1785,9 +1785,9 @@ select:not([multiple])[size="1"] {
 }
 .eyebrow {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 650;
-  letter-spacing: 0.08em;
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
 .deployment-heading,
@@ -1832,7 +1832,7 @@ select:not([multiple])[size="1"] {
 .deployment-step span:not(.deployment-step-marker) {
   margin-top: var(--space-1);
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .deployment-step-marker {
   display: block;
@@ -1867,7 +1867,7 @@ select:not([multiple])[size="1"] {
   background: var(--muted);
 }
 .deployment-outcome {
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 /* A pending deploy's attempt rows keep their space as results arrive (finding 1598). At phone
    width a reason code or date takes two lines, so each row holds two from the start. */
@@ -1976,7 +1976,7 @@ select:not([multiple])[size="1"] {
 }
 .version-item small {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .version-older {
   color: var(--muted);
@@ -2188,7 +2188,7 @@ select:not([multiple])[size="1"] {
   background: var(--accent-subtle);
 }
 .secret-typeahead-create {
-  font-weight: 550;
+  font-weight: var(--weight-medium);
 }
 .secret-typeahead-empty {
   color: var(--muted);
@@ -2267,7 +2267,7 @@ select:not([multiple])[size="1"] {
   border: 0;
 }
 .repository-profile-group legend {
-  font-weight: 550;
+  font-weight: var(--weight-medium);
 }
 .repository-access-details {
   margin-top: var(--space-5);
@@ -2276,8 +2276,8 @@ select:not([multiple])[size="1"] {
 }
 .repository-access-details summary {
   cursor: pointer;
-  font-size: 13px;
-  font-weight: 550;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
 }
 .table-scroll {
   overflow-x: auto;
@@ -2297,8 +2297,8 @@ select:not([multiple])[size="1"] {
 }
 .agent-table th {
   background: var(--surface-muted);
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
   color: var(--muted);
 }
 .agent-table tbody tr:hover {
@@ -2370,7 +2370,7 @@ select:not([multiple])[size="1"] {
 .agent-tabs [aria-selected="true"] {
   border-bottom: 2px solid var(--accent);
   color: var(--accent);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 /* An edge with more tabs past it fades (detail.mjs sets the attributes as the strip scrolls).
    A mask reads only alpha, so the opaque stop may be any opaque colour. */
@@ -2722,7 +2722,7 @@ select:not([multiple])[size="1"] {
 }
 .revision-selector > p {
   margin-bottom: var(--space-2);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .revision-selector h2 {
   margin-bottom: var(--space-3);
@@ -2731,17 +2731,13 @@ select:not([multiple])[size="1"] {
   margin: var(--space-3) 0;
 }
 .revision-selector label {
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 
 .configuration-editor {
   min-height: 340px;
   resize: vertical;
-  font:
-    13px/1.6 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
+  font: var(--text-md)/1.6 var(--font-mono);
   tab-size: 2;
 }
 
@@ -2853,7 +2849,7 @@ select:not([multiple])[size="1"] {
 .slack-directory-field > label {
   display: grid;
   gap: var(--space-1);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
 }
 .slack-approver-field select {
   width: 100%;
@@ -2906,14 +2902,14 @@ select:not([multiple])[size="1"] {
   padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
   background: var(--surface-muted);
   border-radius: var(--radius-sm);
-  font-weight: 600;
+  font-weight: var(--weight-semibold);
   overflow-wrap: anywhere;
 }
 .slack-directory-chip button {
   padding: 0 var(--space-1);
   border: 0;
   background: transparent;
-  font-size: 1.15rem;
+  font-size: var(--text-lg);
   line-height: 1.2;
 }
 .slack-directory-panel {
@@ -2956,7 +2952,7 @@ select:not([multiple])[size="1"] {
 }
 .slack-directory-result code {
   margin-left: auto;
-  font-size: 0.8em;
+  font-size: var(--text-xs);
 }
 .plugin-dialog {
   overflow: hidden;
@@ -2985,11 +2981,11 @@ select:not([multiple])[size="1"] {
 }
 .plugin-access-help > .hint {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .plugin-access-details {
   margin-top: var(--space-2);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .plugin-access-details > summary {
   width: fit-content;
@@ -3094,7 +3090,7 @@ select:not([multiple])[size="1"] {
 .plugin-pagination button {
   flex: 1;
   padding: var(--space-2);
-  font-size: 0.875rem;
+  font-size: var(--text-md);
 }
 .plugin-pagination {
   padding-top: var(--space-3);
@@ -3133,7 +3129,7 @@ select:not([multiple])[size="1"] {
   border-radius: var(--radius-sm);
   background: var(--color-surface-2);
   color: var(--muted);
-  font-size: 1rem;
+  font-size: var(--text-base);
 }
 .plugin-logo img {
   position: absolute;
@@ -3288,7 +3284,7 @@ select:not([multiple])[size="1"] {
 }
 .plugin-json > summary {
   cursor: pointer;
-  font-weight: 550;
+  font-weight: var(--weight-medium);
   padding: var(--space-2) 0;
 }
 .plugin-json textarea {
@@ -3298,8 +3294,8 @@ select:not([multiple])[size="1"] {
   min-height: 8rem;
   max-height: 32rem;
   margin-top: var(--space-3);
-  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font-size: 0.875rem;
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
   line-height: 1.5;
   resize: vertical;
 }
@@ -3375,7 +3371,7 @@ select:not([multiple])[size="1"] {
 .launch-runtime > summary,
 .repository-customize > summary {
   cursor: pointer;
-  font-weight: 550;
+  font-weight: var(--weight-medium);
   padding: var(--space-2) 0;
 }
 .repository-profiles {
@@ -3412,8 +3408,8 @@ select:not([multiple])[size="1"] {
   column-gap: var(--space-5);
 }
 .harness-auth-fields > legend {
-  font-size: 18px;
-  font-weight: 600;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
   padding-right: var(--space-3);
 }
 .harness-auth-fields > .form-field {
@@ -3458,7 +3454,7 @@ select:not([multiple])[size="1"] {
 }
 .repository-results-heading h3 {
   color: var(--text-strong);
-  font-size: 15px;
+  font-size: var(--text-lg);
   margin: 0;
 }
 .repository-results-heading p {
@@ -3540,8 +3536,8 @@ select:not([multiple])[size="1"] {
 }
 .repository-approval {
   color: var(--warning);
-  font-size: 12px;
-  font-weight: 600;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
 }
 .repository-result-meta {
   display: flex;
@@ -3549,22 +3545,22 @@ select:not([multiple])[size="1"] {
   gap: var(--space-1) var(--space-2);
   min-width: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
 .repository-description {
   color: var(--muted);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .repository-identity .hint,
 .repository-identity .error {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .repository-discovery > label {
   display: block;
   margin-bottom: var(--space-2);
-  font-weight: 550;
+  font-weight: var(--weight-medium);
 }
 .repository-discovery input[type="search"] {
   min-height: 44px;
@@ -3578,7 +3574,7 @@ select:not([multiple])[size="1"] {
 }
 .repository-selected-heading h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-lg);
 }
 .repository-card {
   background: var(--surface);
@@ -3675,7 +3671,7 @@ select:not([multiple])[size="1"] {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2) var(--space-4);
-  font-size: 0.875rem;
+  font-size: var(--text-md);
 }
 .plugin-external-links:empty {
   display: none;
@@ -3710,8 +3706,8 @@ select:not([multiple])[size="1"] {
   height: 16px;
   border: 1.5px solid currentColor;
   border-radius: 50%;
-  font-size: 12px;
-  font-weight: 700;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
   line-height: 13px;
 }
 .plugin-unavailable-popover {
@@ -3734,7 +3730,7 @@ select:not([multiple])[size="1"] {
 }
 .plugin-unavailable-popover .plugin-unavailable {
   margin: 0;
-  font-size: 0.875rem;
+  font-size: var(--text-md);
   overflow-wrap: anywhere;
 }
 .plugin-setup-reminder {
@@ -3782,11 +3778,11 @@ select:not([multiple])[size="1"] {
   margin: var(--space-3) 0 0;
   padding-left: var(--space-5);
   color: var(--warning);
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .runtime-events-note {
   margin: var(--space-3) 0 0;
-  font-size: 13px;
+  font-size: var(--text-md);
 }
 .runtime-events-note + .runtime-events {
   margin-top: var(--space-1);
@@ -3809,13 +3805,13 @@ select:not([multiple])[size="1"] {
 .log-viewer-header h3 {
   margin: 0 0 var(--space-2);
   color: var(--text-strong);
-  font-size: 16px;
-  font-weight: 600;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-semibold);
 }
 .log-safety {
   margin: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 .log-controls {
@@ -3838,8 +3834,8 @@ select:not([multiple])[size="1"] {
 .log-search label,
 .log-filter-label {
   color: var(--muted);
-  font-size: 12px;
-  font-weight: 500;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
 }
 .log-picker select,
 .log-search input {
@@ -3872,7 +3868,7 @@ select:not([multiple])[size="1"] {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
-  font-size: 13px;
+  font-size: var(--text-md);
   white-space: nowrap;
 }
 .log-option input {
@@ -3926,7 +3922,7 @@ select:not([multiple])[size="1"] {
 .log-retention {
   margin: var(--space-3) 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--text-sm);
   line-height: 1.6;
 }
 .log-retention {
@@ -3949,7 +3945,7 @@ select:not([multiple])[size="1"] {
   border-top: 1px solid var(--line);
   color: var(--muted);
   background: var(--bg);
-  font-size: 12px;
+  font-size: var(--text-sm);
   overflow-wrap: anywhere;
 }
 .log-pane {
@@ -3957,11 +3953,7 @@ select:not([multiple])[size="1"] {
   overflow: auto;
   border-top: 1px solid var(--line);
   background: var(--surface);
-  font:
-    12px/1.6 ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
+  font: var(--text-sm)/1.6 var(--font-mono);
 }
 .log-row {
   padding: var(--space-2) var(--space-4) var(--space-2) var(--space-8);
@@ -4022,16 +4014,16 @@ select:not([multiple])[size="1"] {
      GMT+10:30") instead of wrapping. Each row's cell is the same width, so columns stay aligned. */
   container-type: inline-size;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .log-time-text {
-  font-size: min(11px, (100cqi - 4px) / var(--log-time-ems, 19.4));
+  font-size: min(var(--text-xs), (100cqi - 4px) / var(--log-time-ems, 19.4));
   white-space: nowrap;
 }
 .log-time-probe {
   position: absolute;
   visibility: hidden;
-  font-size: 11px;
+  font-size: var(--text-xs);
   white-space: nowrap;
   pointer-events: none;
 }
@@ -4043,10 +4035,10 @@ select:not([multiple])[size="1"] {
   padding: 1px var(--space-2);
   border-radius: var(--radius-sm);
   background: var(--surface-muted);
-  font-family: "Instrument Sans", sans-serif;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
 }
 .log-origin {
@@ -4065,7 +4057,7 @@ select:not([multiple])[size="1"] {
   display: block;
   margin-top: var(--space-1);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-xs);
 }
 .log-code {
   color: inherit;
@@ -4091,8 +4083,8 @@ select:not([multiple])[size="1"] {
   padding-bottom: var(--space-2);
   color: var(--muted);
   background: var(--surface-muted);
-  font-family: "Instrument Sans", sans-serif;
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
   white-space: normal;
 }
 .log-row-gap {
@@ -4118,7 +4110,7 @@ select:not([multiple])[size="1"] {
 .log-chip {
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-pill);
-  font-size: 12px;
+  font-size: var(--text-sm);
 }
 .log-chip[aria-pressed="true"] {
   border-color: var(--input-border);
@@ -4265,7 +4257,7 @@ select:not([multiple])[size="1"] {
   overflow-wrap: anywhere;
 }
 .sandbox-decision h3 {
-  font-size: 1rem;
+  font-size: var(--text-base);
   margin: 0 0 var(--space-2);
 }
 .sandbox-decision details {
@@ -4288,7 +4280,7 @@ select:not([multiple])[size="1"] {
   height: 2.25rem;
   padding: 0;
   margin: 0;
-  font-size: 1.4rem;
+  font-size: var(--text-xl);
   line-height: 1;
   flex-shrink: 0;
 }
