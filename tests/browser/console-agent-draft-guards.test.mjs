@@ -234,6 +234,7 @@ test("A refused policy read offers no Retry", async (t) => {
   });
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
   await login(
     page,
     fixture,
@@ -248,6 +249,11 @@ test("A refused policy read offers no Retry", async (t) => {
   await tab.getByText("You do not have permission to read policy suggestions.").waitFor();
   assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
   assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);
+  // No policy descriptor is visible, but the independent log read must not wait forever.
+  await waitForCondition(
+    () => requests.some(({ path }) => path.includes("/runtime/logs")),
+    "Independent log reads must continue without a policy descriptor.",
+  );
   // Only the refusals stand in for the omitted controls.
   assert.equal(await tab.getByText("null", { exact: true }).count(), 0);
 });

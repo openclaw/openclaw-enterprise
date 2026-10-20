@@ -27,7 +27,9 @@ components with simulated API state; they do not prove persistence or enforcemen
   until the JSON is corrected. Expand **Schema** to inspect the field's constraints.
 - **Configuration discovery loading/denied:** inspect the loading message and
   retry control. **Policy hidden while independent logs remain visible** keeps
-  denial logs available without showing policy editing controls.
+  denial logs available while policy and suggestion reads show permission refusals
+  without retry controls. **Sandbox policy capability unavailable** shows one
+  unsupported message without fetching logs or recommendations.
 - Inspect the existing empty, unsupported, loading, missing-credential, denied,
   and apply-rejected policy stories. After a saved change whose apply fails, the
   alert must identify the saved version.

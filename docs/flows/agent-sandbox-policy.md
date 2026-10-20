@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
 updated: "2026-10-20"
-last_updated_session: "authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28"
+last_updated_session: "authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6"
 ---
 
 # Agent sandbox policy flow
@@ -61,7 +61,8 @@ resource errors. Every later mutation repeats these checks. Ceiling refusal keep
 its Installation-delegation cause; unsupported wildcard/range refusal names the
 Driver capability limit. Both retain field details.
 `internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
-records as escaped JSON, so CLI callers retain the same field and cause.
+records as escaped JSON and omits records with Unicode control characters, so
+CLI callers retain the same field and cause without terminal controls.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -146,6 +147,11 @@ preserves the attempted additions for correction without changing saved state.
 `console/navigation.mjs:createNavigation` admits the `policy` tab in login
 destinations, preserving an Agent's Policy denials link after sign-in.
 
+The console reads the policy owner even when discovery returns no descriptor. This
+read establishes an unsupported capability or a permission refusal before log and
+suggestion reads continue under their own permissions. It cannot leave those reads
+waiting for a policy request that never starts.
+
 ## Debugging and Verification
 
 - Inspect the desired policy and application with `occ agent policy get`.
@@ -166,6 +172,8 @@ destinations, preserving an Agent's Policy denials link after sign-in.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-20 03:48: Complete policy capability reads without discovery metadata and omit terminal controls from CLI diagnostics. (authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6 - df244b6bd678acad513a02b5eb5d69e13f2d68dc)
 
 - 2026-10-20 01:48: Trace rejection causes, CLI details, and refresh sequencing. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
 

@@ -1190,7 +1190,7 @@ func TestPolicyUpdatePrintsConfigurationDetails(t *testing.T) {
 		}
 		writer.Header().Set("Content-Type", "application/json")
 		writer.WriteHeader(http.StatusConflict)
-		fmt.Fprint(writer, `{"error":{"code":"RESOURCE_CONFLICT","message":"The requested network policy exceeds the Installation delegation ceiling.","details":[{"path":"/additions/0","code":"OUTSIDE_CEILING","message":"The grant exceeds the Installation delegation ceiling."},{"path":"/additions/1","code":"INVALID_VALUE","message":"invalid \u001b[31mvalue","providerPayload":"must-not-print"}]},"meta":{}}`)
+		fmt.Fprint(writer, `{"error":{"code":"RESOURCE_CONFLICT","message":"The requested network policy exceeds the Installation delegation ceiling.","details":[{"path":"/additions/0","code":"OUTSIDE_CEILING","message":"The grant exceeds the Installation delegation ceiling."},{"path":"/additions/1","code":"INVALID_VALUE","message":"invalid \u001b[31mvalue","providerPayload":"must-not-print"},{"path":"/additions/2","code":"INVALID_VALUE","message":"invalid \u007fvalue"},{"path":"/additions/3","code":"INVALID_VALUE","message":"invalid \u009bvalue"}]},"meta":{}}`)
 	}))
 	defer server.Close()
 	key := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
@@ -1204,12 +1204,12 @@ func TestPolicyUpdatePrintsConfigurationDetails(t *testing.T) {
 	if err == nil {
 		t.Fatal("policy rejection was not returned")
 	}
-	for _, want := range []string{"The requested network policy exceeds the Installation delegation ceiling.", `"path":"/additions/0"`, `"code":"OUTSIDE_CEILING"`, `"message":"The grant exceeds the Installation delegation ceiling."`, `\u001b`} {
+	for _, want := range []string{"The requested network policy exceeds the Installation delegation ceiling.", `"path":"/additions/0"`, `"code":"OUTSIDE_CEILING"`, `"message":"The grant exceeds the Installation delegation ceiling."`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("missing diagnostic %q in %s", want, err)
 		}
 	}
-	if strings.Contains(err.Error(), "\x1b") || strings.Contains(err.Error(), "providerPayload") || strings.Contains(err.Error(), "must-not-print") {
+	if strings.ContainsAny(err.Error(), "\x1b\x7f\u009b") || strings.Contains(err.Error(), "/additions/1") || strings.Contains(err.Error(), "/additions/2") || strings.Contains(err.Error(), "/additions/3") || strings.Contains(err.Error(), "providerPayload") || strings.Contains(err.Error(), "must-not-print") {
 		t.Fatalf("unsafe error fields were printed: %q", err.Error())
 	}
 }

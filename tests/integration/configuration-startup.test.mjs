@@ -242,6 +242,21 @@ test("API, worker, and Helm hook report safe field diagnostics before persistenc
   for (const [mutate, details] of [
     [
       (configuration) => {
+        configuration.drivers.compute.configuration.authentication = {
+          mode: "kubeconfig",
+          kubeconfigPath: "/etc/kube/config",
+        };
+      },
+      [
+        {
+          path: "/authentication/context",
+          code: "REQUIRED",
+          message: "Explicit Kubernetes context must be explicitly configured.",
+        },
+      ],
+    ],
+    [
+      (configuration) => {
         configuration.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
       },
       [

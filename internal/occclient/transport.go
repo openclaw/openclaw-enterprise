@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -100,11 +101,14 @@ func (err *APIError) Error() string {
 		// OCC's rate-limit messages say to wait for Retry-After; name the delay.
 		message = fmt.Sprintf("%s. Retry after %ds.", strings.TrimSuffix(message, "."), int(math.Ceil(err.RetryAfter.Seconds())))
 	}
-	// Render only the public diagnostic fields, with JSON escaping for terminal control
-	// characters. Bound a remote response even when it did not come from a valid OCC schema.
+	// Render only bounded public diagnostic fields. Reject all Unicode control characters,
+	// including DEL and C1 controls that JSON encoding does not escape.
 	for index, detail := range err.Details {
 		if index == 32 {
 			break
+		}
+		if strings.ContainsFunc(detail.Path, unicode.IsControl) || strings.ContainsFunc(detail.Message, unicode.IsControl) || strings.ContainsFunc(detail.Code, unicode.IsControl) {
+			continue
 		}
 		if utf8.RuneCountInString(detail.Path) > 512 || utf8.RuneCountInString(detail.Message) > 512 || len(detail.Code) > 64 {
 			continue

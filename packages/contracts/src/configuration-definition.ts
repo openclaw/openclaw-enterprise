@@ -298,7 +298,28 @@ export function validateConfiguration<T>(
     };
   }
   const details: ErrorDetail[] = [];
-  for (const error of Errors(schema, input)) {
+  const errors = Errors(schema, input);
+  const extraFieldFailures = new Set(
+    errors
+      .filter((error) => error.keyword === "additionalProperties")
+      .map((error) =>
+        JSON.stringify([`${error.schemaPath}/additionalProperties`, error.instancePath]),
+      ),
+  );
+  for (const error of errors) {
+    // TypeBox also reports each rejected extra field against the false subschema.
+    // Its owning additionalProperties error already reports that refusal safely.
+    if (
+      error.keyword === "boolean" &&
+      extraFieldFailures.has(
+        JSON.stringify([
+          error.schemaPath,
+          error.instancePath.slice(0, error.instancePath.lastIndexOf("/")),
+        ]),
+      )
+    ) {
+      continue;
+    }
     const missing = error.keyword === "required" ? error.params.requiredProperties : undefined;
     if (Array.isArray(missing)) {
       for (const key of missing) {

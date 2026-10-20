@@ -7315,6 +7315,14 @@ for (const [id, state, name] of [
           ],
         }
       : {}),
+    ...(state === "ownerDenied"
+      ? {
+          steps: [
+            "Refresh denials and confirm the independent log window loads even though discovery has no policy descriptor.",
+            "Scroll to the policy and suggestion permission refusals. Confirm neither offers a retry or editing control.",
+          ],
+        }
+      : {}),
     ...(state === "unsupported"
       ? {
           steps: [

@@ -1414,6 +1414,9 @@ export function installFixture(scenario, evidence) {
           return response({ success: true, data: { additions: body.additions } });
         }
         if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "GET") {
+          if (scenario.policyState === "ownerDenied") {
+            return error(403, "FORBIDDEN");
+          }
           const read = ++policyReads;
           if (scenario.policyState === "refreshRace" && !sandboxPolicy.application && read <= 3) {
             // Simulate another operator saving between reads; HTTP workflow coverage uses real saves.
@@ -1513,6 +1516,9 @@ export function installFixture(scenario, evidence) {
           return response(sandboxPolicy, 202);
         }
         if (scenario.policyState && suffix.endsWith("/sandbox-policy/networking/recommendations")) {
+          if (scenario.policyState === "ownerDenied") {
+            return error(403, "FORBIDDEN");
+          }
           if (scenario.policyState === "suggestionsUnavailable") {
             return error(503, "DEPENDENCY_UNAVAILABLE");
           }

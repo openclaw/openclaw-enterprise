@@ -277,7 +277,29 @@ function executionOptions(network = {}) {
 }
 
 test("execution-cluster diagnostics name the operator's original fields", () => {
-  for (const [change, path, message] of [
+  for (const [change, path, message, code = "INVALID_FORMAT"] of [
+    [
+      (c) => {
+        delete c.executionCluster.authentication.context;
+      },
+      "/executionCluster/authentication/context",
+      "Explicit Kubernetes context must be explicitly configured.",
+      "REQUIRED",
+    ],
+    [
+      (c) => {
+        c.gatewayRouting.gatewayName = "Bad_Name";
+      },
+      "/gatewayRouting/gatewayName",
+      "Gateway routing Gateway name must be a DNS-safe Kubernetes resource name.",
+    ],
+    [
+      (c) => {
+        c.network.gatewayTrustedProxyCidrs = ["0.0.0.0/0"];
+      },
+      "/network/gatewayTrustedProxyCidrs/0",
+      "Trusted proxy CIDRs cannot cover every address.",
+    ],
     [
       (c) => {
         c.authentication.kubeconfigPath = "relative";
@@ -313,7 +335,7 @@ test("execution-cluster diagnostics name the operator's original fields", () => 
       () => createKubernetesComputeDriver(options),
       (error) => {
         assert.ok(error instanceof ConfigurationValidationError);
-        assert.deepEqual(error.error.details, [{ path, code: "INVALID_FORMAT", message }]);
+        assert.deepEqual(error.error.details, [{ path, code, message }]);
         assert.doesNotMatch(JSON.stringify(error.error.details), /relative|Bad_NS|Bad_Host/);
         return true;
       },

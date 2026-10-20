@@ -26,6 +26,7 @@ import {
 import { deploymentDiagnostics } from "../../packages/occ/src/deployment-diagnostics.ts";
 import { validateFailureData } from "../../packages/occ/src/state/controller-work.ts";
 import {
+  validateConfiguration,
   CONFIGURATION_KINDS,
   DRIVER_CAPABILITIES,
   LOGGING_LEVELS,
@@ -850,4 +851,33 @@ test("runtime diagnostics outside that vocabulary are returned as UNRECOGNIZED",
       known,
     ],
   );
+});
+
+// A duplicate false-subschema error must not hide useful field diagnostics, and
+// removing that duplicate must not admit independently forbidden values.
+test("configuration diagnostics collapse extra-field noise without accepting false schemas", () => {
+  assert.deepEqual(
+    validateConfiguration({ type: "object", additionalProperties: false }, { extra: 1 }),
+    {
+      success: false,
+      error: {
+        details: [
+          {
+            path: "",
+            code: "UNKNOWN_FIELD",
+            message: "Configuration does not satisfy additionalProperties.",
+          },
+        ],
+      },
+    },
+  );
+  for (const [schema, input] of [
+    [false, 1],
+    [{ type: "array", items: false }, [1]],
+    [{ type: "object", properties: { additionalProperties: false } }, { additionalProperties: 1 }],
+  ]) {
+    const result = validateConfiguration(schema, input);
+    assert.equal(result.success, false);
+    assert.equal(result.error.details[0].message, "Configuration does not satisfy boolean.");
+  }
 });

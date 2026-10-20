@@ -75,7 +75,11 @@ function decisionRow(record, review) {
 /** Logs, recommendations, and policy editing keep independent permissions and availability. */
 export function renderAgentSandboxPolicy(context, { agent, revisionId, descriptor }) {
   const path = `${namespacePath(agent.namespaceId)}/agents/${encodeURIComponent(agent.id)}`;
-  const policyPath = descriptor ? configurationAction(descriptor, "read").href : undefined;
+  // Discovery can omit an unreadable or unsupported owner. This read still establishes
+  // capability or its permission refusal; logs and suggestions keep their own authority.
+  const policyPath = descriptor
+    ? configurationAction(descriptor, "read").href
+    : `${path}/sandbox-policy/networking`;
   const section = element("section", { className: "sandbox-policy" });
   const policyPanel = element("section", { className: "agent-card" });
   const suggestions = element("section", { className: "agent-card" });
@@ -293,9 +297,6 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId, descripto
   }
 
   async function loadSuggestions() {
-    if (!descriptor) {
-      return;
-    }
     if (!current() || suggestionsReading) {
       return;
     }
@@ -779,19 +780,16 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId, descripto
     logStatus,
     element("label", { className: "form-field" }, "Filter the loaded window", filter),
     logRows,
-    ...(descriptor ? [suggestions, policyPanel] : []),
+    suggestions,
+    policyPanel,
   );
-  if (descriptor) {
-    renderPolicy();
-  }
+  renderPolicy();
   if (revisionId === "draft") {
     logStatus.textContent = "Deploy an Agent to load Sandbox policy decisions.";
   } else {
     void readLogs(true);
   }
-  if (descriptor) {
-    void loadPolicy();
-    void loadSuggestions();
-  }
+  void loadPolicy();
+  void loadSuggestions();
   return section;
 }
