@@ -1234,18 +1234,56 @@ p {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
-.settings {
+/* Settings (UX spec 3.10): an account card and a session card in one 720 px column. */
+.settings-page {
   display: grid;
-  grid-template-columns: 90px 1fr;
-  gap: 16px;
-  margin: 25px 0;
+  gap: var(--space-6);
+  max-width: 720px;
+}
+.settings-page h2 {
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+}
+.settings-account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+.account-avatar--lg {
+  width: 64px;
+  height: 64px;
+  font-size: var(--text-xl);
+}
+.settings {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: var(--space-3) var(--space-6);
+  margin: 0;
   overflow-wrap: anywhere;
 }
 .settings dt {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 .settings dd {
   margin: 0;
+  color: var(--color-text-strong);
+}
+.settings-page .hint {
+  margin: var(--space-3) 0 0;
+}
+@media (max-width: 520px) {
+  .settings-account {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-5);
+  }
+  .settings-sign-out {
+    width: 100%;
+    min-height: var(--touch-min);
+  }
 }
 .topbar,
 .mobile-toggle,
