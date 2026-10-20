@@ -145,7 +145,8 @@ func TestSandboxPolicyCeilingStaysSeparateFromDefaultGrants(t *testing.T) {
 		path  string
 		code  string
 	}{
-		{strings.Replace(input, "example.org", "**.example.org", 1), "/grants/0/host", "INVALID_FORMAT"},
+		// Quote the invalid wildcard so YAML does not treat it as an alias before Driver validation.
+		{strings.Replace(input, "example.org", `"**.example.org"`, 1), "/grants/0/host", "INVALID_FORMAT"},
 		{strings.Replace(input, "to: 443", "to: 442", 1), "/grants/0/ports/0/to", "INVALID_RANGE"},
 		{input + "unknown: true\n", "", ""},
 	} {
