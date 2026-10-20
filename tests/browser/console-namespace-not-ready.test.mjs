@@ -267,7 +267,10 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   // Both views are kept for a return while the Namespace is provisioning.
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
-  await view.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page
+    .locator(".content .page-header")
+    .getByRole("link", { name: "← Agents", exact: true })
+    .click();
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   assert.equal(await view.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
 
@@ -286,6 +289,78 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
     .getByText("Dedicated Agents are provisioned and deployed when created.", { exact: true })
     .waitFor();
   assert.equal(await view.getByText(NOT_READY).count(), 0);
+});
+
+// A reader who stays on the Agents list, with no refocus, return or Refresh, kept seeing the
+// provisioning note after the Namespace turned ready (finding 2058). The list rereads the
+// Namespace at Create Agent's cadence while the note waits, updates it in place so the search
+// text and focus stay, reads nothing while the tab is hidden, and stops once it is ready.
+test("the Agents list sees its Namespace become ready without a Refresh", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
+  const { page } = await newPage(t, fixture, { browser });
+  await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
+  const patches = new Map([[namespace.id, { status: "provisioning" }]]);
+  await reportNamespaces(page, patches);
+  await routeInstallationProvisioning(page, fixture);
+  const view = page.locator(settledView);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
+  await view.getByText(DRAFT_INVITATION).waitFor();
+  const reads = [];
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/namespaces") {
+      reads.push(response);
+    }
+  });
+  // One check: its read must arrive, so its answer, not the absence of one, keeps the note.
+  const poll = async () => {
+    const read = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/namespaces",
+    );
+    await page.clock.runFor(10_000);
+    await read;
+  };
+  await poll();
+  await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
+  // A hidden tab reads nothing. Only the property changes, so the page's own visibility
+  // recheck stays out of this.
+  const hidden = (value) =>
+    page.evaluate((shown) => {
+      Object.defineProperty(globalThis.document, "hidden", {
+        configurable: true,
+        get: () => shown,
+      });
+    }, value);
+  await hidden(true);
+  const beforeHidden = reads.length;
+  await page.clock.runFor(30_000);
+  assert.equal(reads.length, beforeHidden);
+  await hidden(false);
+  // The reader is typing a search when the Namespace turns ready.
+  const search = view.getByRole("searchbox", { name: "Search Agents" });
+  await search.fill("Probe");
+  release();
+  await poll();
+  await view
+    .getByRole("status")
+    .filter({ hasText: "Namespace status: Ready. Agents created here can be deployed now." })
+    .waitFor();
+  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  const create = view.getByRole("button", { name: "Create Agent" });
+  assert.equal(await create.isEnabled(), true);
+  assert.equal(await create.getAttribute("aria-describedby"), null);
+  assert.equal(await search.inputValue(), "Probe");
+  assert.equal(await search.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  await search.fill("");
+  await view.getByText(INVITATION).waitFor();
+  // A ready Namespace needs no more checks.
+  const settled = reads.length;
+  await page.clock.runFor(30_000);
+  assert.equal(reads.length, settled);
+
+  function release() {
+    patches.delete(namespace.id);
+  }
 });
 
 // Create Agent open on a provisioning Namespace with a Dedicated plan waits for the Namespace.

@@ -6,6 +6,7 @@ export default { title: "Pages/Agent detail" };
 
 export const Draft = story("draft");
 export const NewVersion = story("newVersion");
+export const HeaderActions = story("agentHeaderActions");
 export const LongVersionHistory = story("longVersionHistory");
 export const FirstDeployment = story("draftAutomaticCredentials");
 export const ConfigurationEditor = { ...story("configurationEditor"), name: "Edit Configuration" };
@@ -48,6 +49,9 @@ export const DeploymentRunning = story("deploymentRunning");
 export const DeploymentActivityLoading = story("deploymentActivityLoading");
 export const CurrentVersionDuringDeployment = story("currentVersionDuringDeployment");
 export const DeploymentFailed = story("deploymentFailed");
+export const AgentHeader = story("agentHeader");
+export const AgentHeaderMobile = story("agentHeaderMobile");
+export const AgentHeaderNoClipboard = story("agentHeaderNoClipboard");
 export const DeploymentFailedLogsFromDraft = story("deploymentFailedLogsFromDraft");
 export const DeploymentModelProbeFailed = story("deploymentModelProbeFailed");
 export const DeploymentFailsWhileWatching = story("deploymentFailsWhileWatching");

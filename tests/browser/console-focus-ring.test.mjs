@@ -278,7 +278,7 @@ test("every keyboard stop on Agents, Agent detail, its logs and Create Agent sho
       await login(page, fixture, path);
       await page.getByRole(role, { name: landmark, exact: true }).waitFor();
       await page.locator(settledView).waitFor();
-      await page.locator(settledView).locator(tag).first().waitFor();
+      await page.locator(settledView).locator(`${tag}:visible`).first().waitFor();
       const stops = await tabStops(page);
       assert.ok(
         stops.some(({ name }) => name === landmark),

@@ -287,7 +287,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     }
   }
 
-  function namespaceSelector(label = "Namespace") {
+  // The page header's selector is compact (UX spec 3.2): one 32 px control whose label sits
+  // inside it as a muted prefix. The Namespace recovery panel keeps the full-size field.
+  function namespaceSelector(label = "Namespace", { compact = false } = {}) {
     namespaceSelect = element("select", { id: "namespace-selector" });
     updateNamespaceSelector();
     namespaceSelect.addEventListener("change", (event) => {
@@ -307,10 +309,95 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     });
     return element(
       "div",
-      { className: "namespace-selector" },
+      {
+        className: compact
+          ? "namespace-selector namespace-selector--compact"
+          : "namespace-selector",
+      },
       element("label", { for: "namespace-selector" }, label),
       namespaceSelect,
     );
+  }
+
+  function copyIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "copy-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    const back = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    for (const [name, value] of Object.entries({ x: 9, y: 9, width: 12, height: 12, rx: 2 })) {
+      back.setAttribute(name, String(value));
+    }
+    const front = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    front.setAttribute("d", "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1");
+    svg.append(back, front);
+    return svg;
+  }
+
+  // The Agent's ID under its name, with a copy button. Copying falls back to selecting the ID
+  // where the clipboard is unavailable (an http origin, say), so it can be copied by hand.
+  function agentIdentity(agentId) {
+    const id = element("span", { className: "resource-id", title: "Agent ID" }, agentId);
+    const copied = element("span", { className: "page-meta-copied", role: "status" });
+    let clearCopied = null;
+    const copy = button(
+      "",
+      () => {
+        const done = () => {
+          copied.textContent = "Copied";
+          clearTimeout(clearCopied);
+          clearCopied = setTimeout(() => {
+            copied.textContent = "";
+          }, 2000);
+        };
+        const select = () => {
+          const range = document.createRange();
+          range.selectNodeContents(id);
+          document.getSelection()?.removeAllRanges();
+          document.getSelection()?.addRange(range);
+        };
+        if (navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(agentId).then(done, select);
+        } else {
+          select();
+        }
+      },
+      {
+        tone: "ghost",
+        size: "sm",
+        className: "page-meta-copy",
+        "aria-label": "Copy Agent ID",
+        title: "Copy Agent ID",
+      },
+    );
+    copy.append(copyIcon());
+    return element("span", { className: "page-meta-id" }, id, copy, copied);
+  }
+
+  // ← Agents on an Agent's page and on Create Agent. A page that cannot be left yet (an open
+  // draft editor, a write in flight) keeps the reader and says why (findings 1902, 1937).
+  function backToAgents() {
+    const back = element(
+      "a",
+      { href: pageUrl("agents"), className: "button button--ghost button--sm page-back" },
+      "← Agents",
+    );
+    back.addEventListener("click", (event) => {
+      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      event.preventDefault();
+      if (refuseLeave()) {
+        return;
+      }
+      navigate("agents");
+    });
+    return back;
   }
 
   function updateNamespaces(readable, { preservePageScope = false } = {}) {
@@ -346,6 +433,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       observabilityUrl,
       namespaceAdmissionPending = true,
     } = state);
+    // An Agent's page ({ agentId }) or Create Agent ({ creating: true }): ← Agents above the
+    // title, and the ID and Namespace in a meta row under it (UX spec 3.2).
+    const subpage = feature === "agents" && state.page ? state.page : null;
     // A page held during a navigation shows Namespace recovery only if it already did.
     const recovery = state.recovery ?? true;
     namespaceSelect = null;
@@ -473,28 +563,50 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           : feature === "backends"
             ? "Installation-wide · Experimental"
             : "Installation-wide";
-    const scopeSelector = feature === "namespaces" ? null : namespaceSelector();
+    // Settings is about the account, and Namespaces lists them: neither has a Namespace scope.
+    const scopeSelector =
+      feature === "namespaces" || feature === "settings"
+        ? null
+        : namespaceSelector("Namespace", { compact: true });
     const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }), {
       tone: "ghost",
       size: "sm",
     });
     refresh.disabled = true;
-    const header = element(
-      "header",
-      { className: "page-header" },
-      element(
-        "div",
-        {},
-        element("h1", { tabindex: "-1" }, pages[feature]),
-        element("p", { className: "scope" }, scope),
-      ),
-      element(
-        "div",
-        { className: "page-actions" },
-        scopeSelector,
-        feature === "settings" ? null : refresh,
-      ),
+    const heading = element("h1", { tabindex: "-1" }, pages[feature]);
+    const actions = element(
+      "div",
+      { className: "page-actions" },
+      subpage ? null : scopeSelector,
+      feature === "settings" ? null : refresh,
     );
+    const header = subpage
+      ? element(
+          "header",
+          {
+            className: `page-header page-header--subpage ${subpage.agentId ? "page-header--agent" : "page-header--create"}`,
+          },
+          backToAgents(),
+          heading,
+          actions,
+          element(
+            "div",
+            { className: "page-meta" },
+            subpage.agentId ? agentIdentity(subpage.agentId) : null,
+            scopeSelector,
+          ),
+        )
+      : element(
+          "header",
+          { className: "page-header" },
+          element(
+            "div",
+            { className: "page-title" },
+            heading,
+            element("p", { className: "scope" }, scope),
+          ),
+          actions,
+        );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
     if (recovery && session && feature !== "agents" && namespaceId !== null && !selected) {
@@ -507,7 +619,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
             namespaceSelector("Choose a valid Namespace"),
           ),
         );
-      } else if (feature !== "namespaces") {
+      } else if (scopeSelector) {
+        // Switch Namespace focuses the header's selector: Settings has none, so it offers none.
         main.append(
           element(
             "p",
@@ -592,7 +705,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         menuControls?.close();
       }
     }
-    return { view, refresh, diagnostics, scopeSelector };
+    return { view, refresh, diagnostics, scopeSelector, actions };
   }
 
   function sameControl(node, root) {

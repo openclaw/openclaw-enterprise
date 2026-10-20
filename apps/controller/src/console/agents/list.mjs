@@ -30,6 +30,10 @@ const NOT_READY_REASONS = {
     "This Namespace is being deleted, so it cannot hold new Agents. Choose another Namespace.",
 };
 
+// How often an open Create Agent form, or the Agents list, rereads a provisioning Namespace while
+// its note is shown: the runtime status poll's cadence (findings 2012, 2058).
+export const NAMESPACE_RECHECK_MS = 10_000;
+
 // What the selected Namespace's status means where Agent creation starts (finding 1895): null
 // when it is ready or its status is unknown, otherwise the status and its consequence, and
 // whether the API refuses every new Agent there (`blocked`). A provisioning Namespace still
@@ -343,7 +347,7 @@ export function renderAgentList(context) {
   const createDenied = context.permissions?.agents?.create === false;
   // A Namespace that is not ready names its status here, so the first sign is never a refused
   // Secret or submit, and one that takes no new Agent never invites creating one (finding 1895).
-  const notReady = namespaceCreation(context.namespace);
+  let notReady = namespaceCreation(context.namespace);
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     tone: "primary",
   });
@@ -353,23 +357,22 @@ export function renderAgentList(context) {
   if (notReady) {
     create.setAttribute("aria-describedby", "namespace-not-ready");
   }
+  // The Namespace status block (dom.mjs statusBlock's markup), a polite status on load.
+  const namespaceNote = (tone, text) =>
+    element(
+      "p",
+      {
+        className: "status",
+        "data-tone": tone,
+        role: "status",
+        ...(tone === "warning" ? { id: "namespace-not-ready" } : {}),
+      },
+      text,
+    );
+  let notReadyNote = notReady ? namespaceNote("warning", notReady.note) : null;
   view.replaceChildren(
     element("div", { className: "agent-toolbar" }, search, create),
-    ...(notReady
-      ? [
-          // A warning status block (dom.mjs statusBlock's markup), a polite status on load.
-          element(
-            "p",
-            {
-              className: "status",
-              "data-tone": "warning",
-              role: "status",
-              id: "namespace-not-ready",
-            },
-            notReady.note,
-          ),
-        ]
-      : []),
+    ...(notReadyNote ? [notReadyNote] : []),
     ...(createDenied
       ? [
           element(
@@ -623,4 +626,85 @@ export function renderAgentList(context) {
   });
   search.addEventListener("input", render);
   render();
+  // A provisioning Namespace becomes ready on its own. A refocus, return or Refresh rebuilds the
+  // list, but a reader who stayed on it kept seeing "Provisioning" (finding 2058). While the note
+  // waits on provisioning, reread the Namespace at Create Agent's cadence and, as Create Agent
+  // does, update the note and the gate in place, so search text and focus stay (findings 2012,
+  // 2024). A hidden tab reads nothing; the next check after it shows again does.
+  if (context.namespace?.status === "provisioning") {
+    let timer = null;
+    let reading = false;
+    const showNamespace = (namespace) => {
+      context.namespace = namespace;
+      notReady = namespaceCreation(namespace);
+      create.disabled = createDenied || notReady?.blocked === true;
+      if (notReady) {
+        create.setAttribute("aria-describedby", "namespace-not-ready");
+      } else {
+        create.removeAttribute("aria-describedby");
+      }
+      // A ready Namespace says so where the warning was. The list holds no field being edited,
+      // so the note keeps its own height (Create Agent keeps the warning's, finding 2024).
+      const replacement = notReady
+        ? namespaceNote("warning", notReady.note)
+        : namespaceNote(
+            "success",
+            "Namespace status: Ready. Agents created here can be deployed now.",
+          );
+      notReadyNote.replaceWith(replacement);
+      notReadyNote = replacement;
+      // Only the empty state's sentence depends on the Namespace; rows keep their focus.
+      if (!rows.querySelector("table")) {
+        render();
+      }
+    };
+    const recheckNamespace = async () => {
+      timer = null;
+      if (!context.isCurrent() || reading) {
+        return;
+      }
+      if (document.hidden) {
+        waitForNamespace();
+        return;
+      }
+      reading = true;
+      let namespaces = null;
+      try {
+        namespaces = await context.request("/namespaces", {
+          revalidate: false,
+          rereadOnResume: true,
+        });
+      } catch {
+        // A failed read changes nothing on screen; the next check comes at the usual cadence.
+      } finally {
+        reading = false;
+      }
+      if (!context.isCurrent()) {
+        return;
+      }
+      const namespace = namespaces?.find((item) => item.id === context.namespaceId);
+      // A list without the Namespace ends the wait; the page's own recheck names that.
+      if (namespaces && !namespace) {
+        return;
+      }
+      if (namespace && namespace.status !== context.namespace.status) {
+        showNamespace(namespace);
+      }
+      if (context.namespace.status === "provisioning") {
+        waitForNamespace();
+      }
+    };
+    const waitForNamespace = () => {
+      if (timer === null) {
+        timer = setTimeout(() => void recheckNamespace(), NAMESPACE_RECHECK_MS);
+      }
+    };
+    waitForNamespace();
+    // A retained list comes back with its timer stopped, as Create Agent's does.
+    context.onResume?.(() => {
+      if (context.namespace?.status === "provisioning") {
+        waitForNamespace();
+      }
+    });
+  }
 }

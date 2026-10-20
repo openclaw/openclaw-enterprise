@@ -24,6 +24,7 @@ import {
   GENERIC_CONFLICT,
   link,
   message,
+  NAMESPACE_RECHECK_MS,
   namespaceCreation,
   namespacePath,
   preAdmissionRefusal,
@@ -36,10 +37,6 @@ const AGENT_NAME_CONFLICT =
   "An Agent with this name already exists in this Namespace. Choose a different name.";
 // The API's Agent name limit, in characters (code points).
 const AGENT_NAME_MAX_CHARACTERS = 200;
-// How often an open form rereads a provisioning Namespace while Create Agent waits for it: the
-// runtime status poll's cadence (finding 2012).
-const NAMESPACE_RECHECK_MS = 10_000;
-
 // The open Create Agent form rechecks its Namespace when the window regains focus. The page's own
 // recheck skips any open form, because a reload would discard it (finding 2012).
 let recheckOpenForm = null;
@@ -403,7 +400,6 @@ export function renderCreateAgent(context, draft) {
         : null;
   if (unavailable) {
     context.view.replaceChildren(
-      link("← Agents", "agents", context),
       element(
         "section",
         { className: "state-panel" },
@@ -429,7 +425,6 @@ export function renderCreateAgent(context, draft) {
   };
   const presets = createPresetFields(context, startForm);
   context.view.replaceChildren(
-    link("← Agents", "agents", context),
     // A provisioning Namespace accepts drafts; its status shows before any start (finding 1895).
     // replaceChildren would print a null child as the text "null".
     ...(notReady ? [namespaceNote(notReady)] : []),
@@ -2823,7 +2818,6 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     }
   });
   view.replaceChildren(
-    link("← Agents", "agents", context),
     ...(notReadyNote ? [notReadyNote] : []),
     element(
       "p",
