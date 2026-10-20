@@ -14,6 +14,7 @@ import {
   pathRequests,
   repositoryCheckbox,
   selectSecret,
+  settlePageRequests,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -557,6 +558,105 @@ for (const pending of [
     await reason.waitFor({ state: "detached" });
   });
 }
+
+test("Back during a Configuration save preserves the previous Agent tab", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Save and Back", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Draft history", nativeValues("before"));
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.getByRole("tab", { name: "Channels" }).click();
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  const channelsUrl = page.url();
+  await page.getByRole("tab", { name: "Configuration" }).click();
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  const configurationUrl = page.url();
+
+  const editor = page.getByLabel("Configuration JSON", { exact: true });
+  const values = nativeValues("after");
+  await editor.fill(JSON.stringify(values, null, 2));
+  const path = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const requests = apiRequests(page, fixture.origin);
+  // The controller applies the edit once. Back arrives while this editor still awaits its answer.
+  const held = await holdRequests(t, page, `**${path}`, { method: "PATCH", afterServer: true });
+  await page.getByRole("button", { name: "Save Configuration" }).click();
+  await held.requested;
+  try {
+    await page.goBack();
+    await page
+      .getByText("Wait for Configuration save to finish before leaving the editor.", {
+        exact: true,
+      })
+      .waitFor();
+    await page.waitForURL(configurationUrl);
+    assert.equal(await editor.evaluate((node) => node.readOnly), true);
+  } finally {
+    held.release();
+  }
+  await page.getByText("Configuration saved.", { exact: true }).waitFor();
+  const saved = await fixture.request("GET", path);
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.data.values, values);
+  await page.goBack();
+  assert.equal(page.url(), channelsUrl, "one Back after the save should reach Channels");
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  await page.goForward();
+  await page.getByRole("tab", { name: "Configuration", selected: true }).waitFor();
+  assert.equal(page.url(), configurationUrl);
+  await settlePageRequests(page);
+  assert.equal(pathRequests(requests, "PATCH", path).length, 1);
+});
+
+test("Back refused by unsaved repository changes preserves the previous Agent tab", async (t) => {
+  const repository = "example/application";
+  const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
+    {
+      repositoryRef: "application",
+      repositoryId: "1965",
+      repository,
+      namespaces: [{ namespaceId, profiles: ["git-read"] }],
+    },
+  ]);
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Repository history",
+    nativeValues("draft"),
+  );
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  const requests = apiRequests(page, fixture.origin);
+  await page.getByRole("tab", { name: "Channels" }).click();
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  const channelsUrl = page.url();
+  await page.getByRole("tab", { name: "Repositories" }).click();
+  const choice = repositoryCheckbox(page, repository);
+  await choice.check();
+  await page.locator("#repository-default-git-read").check();
+  const repositoriesUrl = page.url();
+
+  await page.goBack();
+  await page.getByText("Save or cancel repository changes before leaving this tab.").waitFor();
+  await page.waitForURL(repositoriesUrl);
+  assert.equal(await choice.isChecked(), true, "Back kept the unsaved selection");
+
+  // Cancel rereads the saved access in place. Wait for its unselected repository before Back.
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await choice.and(page.locator("input:not(:checked):enabled")).waitFor();
+  assert.equal(await choice.isChecked(), false);
+  await page.goBack();
+  assert.equal(page.url(), channelsUrl, "one Back after Cancel should reach Channels");
+  await page.getByRole("tab", { name: "Channels", selected: true }).waitFor();
+  await page.goForward();
+  await page.getByRole("tab", { name: "Repositories", selected: true }).waitFor();
+  assert.equal(page.url(), repositoriesUrl);
+  await settlePageRequests(page);
+  assert.deepEqual(
+    requests.filter(({ method }) => method !== "GET"),
+    [],
+    "no repository write",
+  );
+});
 
 test("an uncertain Configuration save holds ← Agents, but the sidebar may leave the kept draft", async (t) => {
   const fixture = await createConsoleAppFixture(t);

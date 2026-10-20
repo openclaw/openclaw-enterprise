@@ -1115,9 +1115,15 @@ async function loadPage({
   if (nativeIntent !== null) {
     pendingIntent = nativeIntent;
   }
-  if (fromNavigation && navigateAgentTab?.(current.url)) {
-    // The tab handler can reject navigation and restore the previous URL.
-    markMountedRoute(route());
+  const tabNavigation = fromNavigation && navigateAgentTab?.(current.url);
+  if (tabNavigation === "blocked") {
+    // Back or Forward already moved to an existing entry. Return to the tab we kept open,
+    // leaving that entry intact; only a newly requested navigation needs its URL replaced.
+    (restoreHistory ?? replaceUrl)(mountedRouteKey);
+    return;
+  }
+  if (tabNavigation) {
+    markMountedRoute(current);
     return;
   }
   // Same-version tab changes stay in the mounted page. Leaving it during a pending write

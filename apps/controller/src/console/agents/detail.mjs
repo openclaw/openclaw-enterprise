@@ -5093,17 +5093,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       return true;
     }
     if (draftEditorBlocksNavigation()) {
-      history.replaceState(
-        history.state,
-        "",
-        context.pageUrl(target(selected, selectedTab), namespaceId),
-      );
       showLeaveBlock();
       // A recovery link refused here would look dead again: its refusal shows with the editor.
       if (takeLinkedVersionView(linkedKey(nextRevision, nextTab))) {
         openVersionDetail({ animate: true });
       }
-      return true;
+      return "blocked";
     }
     if (nextRevision !== selected) {
       return false;
