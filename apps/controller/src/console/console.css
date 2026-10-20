@@ -2311,6 +2311,19 @@ select:not([multiple])[size="1"] {
   display: block;
   width: 14rem;
 }
+/* With the Actions column the table has no spare width at common desktop sizes, so the version
+   cell keeps one width whether it reads or shows a number: "Reading version…" wraps inside the
+   set width instead of sizing the column, which would hand width to the Agent column when the
+   number lands and change its rows' height. */
+.agent-table .agent-current-version::before {
+  content: "";
+  display: block;
+  width: 5.5rem;
+}
+.agent-table .agent-current-version > .delayed-status {
+  display: block;
+  contain: inline-size;
+}
 .agent-table .agent-deployment-note {
   contain: inline-size;
   overflow: hidden;
@@ -2331,9 +2344,9 @@ select:not([multiple])[size="1"] {
   max-width: 310px;
   overflow-wrap: anywhere;
 }
-/* A name with a run too long to wrap (list.mjs marks it; a name may be 200 unbroken characters)
-   breaks anywhere within the width its ID takes, so it does not widen the table (finding 1955).
-   Other names wrap as before. */
+/* A name with a run too long to wrap (collection.mjs marks it; a name may be 200 unbroken
+   characters) breaks anywhere within the width its ID takes, so it does not widen the table
+   (finding 1955). Other names wrap as before. */
 .agent-table .agent-name-unbroken {
   display: inline-block;
   max-width: 310px;
@@ -2349,6 +2362,61 @@ select:not([multiple])[size="1"] {
 .agent-table td:first-child > a:hover,
 .agent-table td:first-child > a:focus-visible {
   text-decoration-color: currentColor;
+}
+.agent-table .badge {
+  display: inline-block;
+  margin: var(--space-2) var(--space-2) 0 0;
+}
+.agent-row-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+.agent-row-actions .icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--muted);
+}
+.agent-row-actions .icon-button:not(:disabled):hover {
+  border-color: var(--danger);
+  background: var(--danger-subtle);
+  color: var(--danger);
+}
+.agent-row-actions .icon-button:disabled {
+  cursor: not-allowed;
+}
+.action-icon {
+  width: 16px;
+  height: 16px;
+}
+.icon-button-spacer {
+  width: 34px;
+  height: 34px;
+}
+/* Like the deployment cell: a set width and one reserved note line, so permission advice that
+   lands after the first paint neither grows its row nor re-flows the columns. */
+.agent-table .agent-row-actions-cell::before {
+  content: "";
+  display: block;
+  width: 10.5rem;
+}
+.row-action-note {
+  display: block;
+  height: 16px;
+  margin-top: var(--space-2);
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 16px;
+  contain: inline-size;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.agent-list-feedback > .status {
+  margin: 0 0 var(--space-5);
 }
 .agent-tabs {
   display: flex;
@@ -2689,6 +2757,13 @@ select:not([multiple])[size="1"] {
   .agent-table .agent-deployment::before {
     grid-row: span 2;
   }
+  /* The row actions and their reserved note line sit beside one label, like the deployment. */
+  .agent-table .agent-row-actions-cell::before {
+    grid-row: span 2;
+  }
+  .agent-table .row-action-note {
+    margin-top: 0;
+  }
   .agent-table .resource-id {
     margin-top: var(--space-2);
     max-width: none;
@@ -2709,7 +2784,8 @@ select:not([multiple])[size="1"] {
   .agent-table .agent-deployment {
     grid-template-rows: auto auto calc(var(--text-sm) * var(--text-sm--line-height));
   }
-  .agent-table .agent-deployment::before {
+  .agent-table .agent-deployment::before,
+  .agent-table .agent-row-actions-cell::before {
     grid-row: auto;
   }
 }

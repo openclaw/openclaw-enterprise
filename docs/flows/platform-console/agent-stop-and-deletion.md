@@ -1,22 +1,23 @@
 ---
 created: 2026-10-20
 updated: 2026-10-20
-last_updated_session: authoring-run/28365356-ae7e-47dc-9790-888c3592251f
+last_updated_session: 8b95a6fb-7095-4556-9028-0723f32cc534
 ---
 
 # Console Agent stop and deletion
 
 ## Overview
 
-Trace **Stop Agent** and **Delete Agent** on Agent detail, from confirmation to
-readback. See the [parent flow](../platform-console.md) and
+Trace **Stop Agent** and **Delete Agent** on Agent detail and Agents list rows,
+from confirmation to readback. See the [parent flow](../platform-console.md) and
 [Agent editing](agent-editing.md); steps 7 and 8 continue that trace's numbering.
 
 ## Entry Points
 
 - `apps/controller/src/console/agents/stop.mjs:createAgentStop` sends the stop request.
 - `apps/controller/src/console/agents/deletion.mjs:createAgentDeletion` sends the deletion request.
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts both as rows of one **Danger zone** card.
+- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts both as rows of one **Danger zone** card;
+  [Agents list rows](#stop-or-delete-from-an-agents-list-row) also offer them.
 - A signed-in caller needs Agent `operate` to stop and Agent `delete` to delete.
 
 ## Flow
@@ -26,6 +27,8 @@ graph TD
   subgraph Browser["Browser"]
     E["Confirm Agent deletion"]
     S["Confirm Agent stop"]
+    L["Agents list row icon"] --> E
+    L --> S
   end
   subgraph API["Controller API"]
     E --> G["DELETE exact Agent"]
@@ -98,6 +101,17 @@ successful writes retain status refresh. The browser never retries DELETE automa
 [Agent deletion reference](../../reference/agents.md#deletion) covers
 worker cleanup and the Namespace-owned resources it preserves.
 
+### Stop or delete from an Agents list row
+
+`apps/controller/src/console/agents/collection.mjs:renderAgentList` rows use the
+same Stop and Delete confirmations. Each row reads
+[permission advice](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions)
+like its deployment, and reads it again when a retained list resumes.
+Refusal disables the action and explains why; in an open confirmation, it also
+disables confirmation and focuses Cancel. A stopped Agent without a selected
+version has no Stop action. Acceptance updates the row without polling.
+After `404`, `409`, or an uncertain outcome, the actions stay disabled until **Refresh**.
+
 ## Debugging and Verification
 
 - On repeat `403`, follow the API’s retry-ownership explanation. For ordinary
@@ -118,5 +132,6 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
+- 2026-10-20 08:02: Trace Stop and Delete from Agents list rows, moved from the Agent editing flow, in the accompanying merge. (8b95a6fb-7095-4556-9028-0723f32cc534 - a8fb50b1babb68f3eb759841f92b042da039248e)
 - 2026-10-20 07:57: Describe deletion discovered by a stop-status read in the accompanying change. (authoring-run/28365356-ae7e-47dc-9790-888c3592251f - 6aedac546aad8308b4e9954648268f14545e39b2)
 - 2026-10-20 05:00: Split from the Agent editing flow's steps 7 and 8. (docs-split-1020)

@@ -70,6 +70,7 @@ test(
       );
       const [check, migration] = hook.initContainers;
       const server = api.containers.find(({ name }) => name === "api");
+      assert.deepEqual(migration.args, ["scripts/migrate-production.mjs"]);
       assert.equal(check.image, server.image);
       assert.deepEqual(check.command, ["node"]);
       assert.deepEqual(check.args, ["--input-type=module", "-e", checkScript]);

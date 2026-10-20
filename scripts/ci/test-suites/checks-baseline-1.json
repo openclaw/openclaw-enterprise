@@ -52,6 +52,7 @@
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/conformance/test-files.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
+    "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
@@ -256,6 +257,9 @@
     },
     {
       "path": "tests/conformance/socket-directory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/temporary-directory.test.mjs"
     },
     {
       "path": "tests/conformance/utils.test.mjs"

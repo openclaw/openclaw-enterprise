@@ -515,11 +515,15 @@ test("a failed Codex login or model check keeps its closed-list failure class, n
       cause: { kind: "PROCESS_EXIT", detail: "exit-1" },
       failureClass,
     });
+  const loginAttempt = (failureClass) =>
+    JSON.stringify({ event: "codex.login", attempt: 1, elapsedMs: 640, exitCode: 1, failureClass });
   const { records, withheld } = sanitize(
     agentPodStream,
     [
       login("network"),
       probe("codex.model_probe", "http_5xx"),
+      loginAttempt("network"),
+      loginAttempt("Error: error sending request for url (https://auth.example.invalid/?a=b)"),
       // Off-list values, token-shaped text and non-strings are dropped, never the line.
       login("sk-proj-0123456789abcdefghijklmnop"),
       probe(
@@ -560,9 +564,17 @@ test("a failed Codex login or model check keeps its closed-list failure class, n
       ...extra,
     },
   });
+  const loginAttemptFields = (extra = {}) => ({
+    kind: "wrapper",
+    level: "warn",
+    message: "codex.login",
+    fields: { attempt: 1, elapsedMs: 640, exitCode: 1, ...extra },
+  });
   assert.deepEqual(pick(records, wrapperKeys), [
     loginFields({ failureClass: "network" }),
     probeFields("codex.model_probe", { failureClass: "http_5xx" }),
+    loginAttemptFields({ failureClass: "network" }),
+    loginAttemptFields(),
     loginFields(),
     probeFields("codex.model_probe"),
     probeFields("codex.model_probe"),
