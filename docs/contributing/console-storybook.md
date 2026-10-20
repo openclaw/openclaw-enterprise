@@ -110,6 +110,46 @@ and a [switching walkthrough](../assets/console-namespace-selector/namespace-swi
 Agent creation, editing, deployment, Stop, and Delete stories are in
 [Console Storybook Agent workflows](console-storybook-agent-workflows.md).
 
+### Create and deploy
+
+Moved to [Agent workflows](console-storybook-agent-workflows.md#create-and-deploy).
+
+### Return to loaded pages
+
+Moved to [Agent workflows](console-storybook-agent-workflows.md#return-to-loaded-pages).
+
+### Keep edits while navigating
+
+Moved to [Agent workflows](console-storybook-agent-workflows.md#keep-edits-while-navigating).
+
+<a id="choose-and-switch-revision-secrets" class="anchor-alias"></a>
+
+### Choose and switch version Secrets
+
+Moved to [Agent workflows](console-storybook-agent-workflows.md#choose-and-switch-version-secrets).
+
+<a id="inspect-bound-secrets-in-revisions" class="anchor-alias"></a>
+
+### Inspect bound Secrets in versions
+
+Moved to [Agent workflows](console-storybook-agent-workflows.md#inspect-bound-secrets-in-versions).
+
+### Discover and configure plugins
+
+Moved to [Agent workflows](console-storybook-agent-workflows.md#discover-and-configure-plugins).
+
+### Update
+
+Moved to [Agent workflows](console-storybook-agent-workflows.md#update).
+
+### Stop
+
+Moved to [Agent workflows](console-storybook-agent-workflows.md#stop).
+
+### Delete
+
+Moved to [Agent workflows](console-storybook-agent-workflows.md#delete).
+
 ## Maintain coverage
 
 `scripts/console-storybook/` installs from its own manifest and lockfile under the
