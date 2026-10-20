@@ -442,6 +442,58 @@ test("Agent policy conflict reload retains the draft and revalidates the new ver
   ]);
 });
 
+test("overlapping policy refreshes retain the newest read and continue pending polling", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  await page.getByText("Matches saved policy v1.", { exact: false }).waitFor();
+  const url = `${fixture.origin}${base}`;
+  const first = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await first.requested;
+  // Another operator saves between the two reads. The older successful response arrives
+  // first and must not invalidate the later read or overwrite its version.
+  assert.equal(
+    (
+      await fixture.request("PUT", base, {
+        body: { expectedVersion: 1, additions: [delegatedPolicyGrant] },
+      })
+    ).status,
+    200,
+  );
+  const second = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await second.requested;
+  const firstResponse = page.waitForResponse((response) => response.url() === url);
+  first.release();
+  await (await firstResponse).finished();
+  await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
+  const secondResponse = page.waitForResponse((response) => response.url() === url);
+  second.release();
+  await secondResponse;
+  await page.getByText("Matches saved policy v2.", { exact: false }).waitFor();
+  assert.equal(
+    await page.getByRole("textbox", { name: "Rule ID", exact: true }).inputValue(),
+    delegatedPolicyGrant.id,
+  );
+
+  await page
+    .getByRole("button", { name: "Apply saved policy to current revision", exact: true })
+    .click();
+  await page.getByText(/Application to the current revision is pending/).waitFor();
+  const reads = pathRequests(requests, "GET", base).length;
+  // This fixture has no worker: real admission stays pending, so observing multiple polls
+  // proves refresh continues rather than claiming provider enforcement or confirmation.
+  await waitForCondition(
+    () => pathRequests(requests, "GET", base).length >= reads + 2,
+    "pending policy stopped polling",
+    10_000,
+  );
+  assert.equal((await fixture.request("GET", base)).data.policy.application.state, "pending");
+});
+
 test("Agent deployment requires a reload after repository access changes", async (t) => {
   const { fixture, namespace } = await createRepositoryLaunchFixture(t, (namespaceId) => [
     {

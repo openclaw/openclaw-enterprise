@@ -812,7 +812,7 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     additionalProperties: false,
     properties: {
       binaries: { type: "array", items: { type: "string" }, minItems: 1 },
-      toolBinaries: { type: "array", items: { type: "string" }, minItems: 1 },
+      toolBinaries: { type: "array", items: { type: "string", pattern: "^/" }, minItems: 1 },
     },
   });
 

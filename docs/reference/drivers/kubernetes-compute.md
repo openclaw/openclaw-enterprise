@@ -6,9 +6,9 @@ Pods, identities and volumes; embedded OpenClaw combines them in one Pod.
 The experimental `executionCluster` configuration selects a second Kubernetes
 API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/kubernetes.md#two-cluster-validation)
 before using it; cloud deployment and complete runtime acceptance remain pending.
-Optional `executionCluster.caBundle` accepts up to 65,536 characters of X.509 PEM
-certificates and whitespace; startup reports invalid bundles at
-`/executionCluster/caBundle`.
+Optional `executionCluster.caBundle` accepts at most 65,536 characters of X.509 PEM
+certificates and whitespace. Diagnostics identify `/executionCluster/...`
+fields, including `/executionCluster/caBundle`.
 
 New managed namespaces use `oce-` plus the first 15 hexadecimal
 characters of the Namespace ID's SHA-256 digest: stable, DNS-safe, and short

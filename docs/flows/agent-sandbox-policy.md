@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-10-19
-last_updated_session: authoring-run/9b1f7ddf-52fe-46c8-9fa9-fa7a1acfa64a
+updated: "2026-10-20"
+last_updated_session: "authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28"
 ---
 
 # Agent sandbox policy flow
@@ -57,7 +57,11 @@ current editing flag, expected version, and pending application, then runs share
 schema/semantic validation and current ceiling/provider admission. It returns a
 configuration result without entering a mutation transaction. Schema and semantic
 refusals carry safe `error.details`; stale or unauthorized requests retain their
-resource errors. Every later mutation repeats these checks.
+resource errors. Every later mutation repeats these checks. Ceiling refusal keeps
+its Installation-delegation cause; unsupported wildcard/range refusal names the
+Driver capability limit. Both retain field details.
+`internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
+records as escaped JSON, so CLI callers retain the same field and cause.
 
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
@@ -126,7 +130,10 @@ sections and selects resource-owner controls. `console/configuration-fields.mjs`
 renders schema fields and JSON fallback, with safe field/root diagnostics.
 `console/agents/sandbox-policy.mjs:renderPolicy` keeps proposed rules local until
 preview, review, and save. Superseded preview/read responses cannot overwrite a
-newer draft. Failed previews retain the draft and do not mark it saved. The combined save-and-apply action waits for a successful save,
+newer draft. Policy reads use a separate request sequence: an earlier response
+cannot invalidate a newer request. A pending application re-arms polling after
+the latest read, including a response discarded after a draft edit.
+Failed previews retain the draft and do not mark it saved. The combined save-and-apply action waits for a successful save,
 then sends that returned policy version and the exact selected running revision
 to the apply route. Save alone leaves running enforcement unchanged. Applying a
 previously saved policy is disabled while local edits are unsaved. If application
@@ -159,6 +166,8 @@ destinations, preserving an Agent's Policy denials link after sign-in.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-20 01:48: Trace rejection causes, CLI details, and refresh sequencing. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
 
 - 2026-10-19 20:34: Trace shared definitions, contextual discovery, and preview admission in the accompanying implementation. (authoring-run/9b1f7ddf-52fe-46c8-9fa9-fa7a1acfa64a - 7fa0a561df615296a612126d430a4bbfa1124d9c)
 

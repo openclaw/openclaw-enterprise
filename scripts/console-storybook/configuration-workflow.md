@@ -17,6 +17,11 @@ components with simulated API state; they do not prove persistence or enforcemen
   a destination from the schema's enum. The owner controls remain the same.
 - **A superseded preview preserves the newer draft:** start a preview, edit the
   rule before it returns, and confirm the old response does not open Save.
+- **Overlapping policy refreshes retain the newest read:** click **Refresh policy**
+  twice within 300 ms. The first response is older; wait for saved policy v3.
+  Apply the saved policy and confirm polling reaches the simulated provider
+  confirmation. The fixture simulates another operator's saves between reads;
+  the browser integration performs actual HTTP saves.
 - **Complex fields retain invalid JSON for correction:** review a suggestion,
   enter incomplete JSON for its destination, and confirm preview stays unavailable
   until the JSON is corrected. Expand **Schema** to inspect the field's constraints.

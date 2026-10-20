@@ -98,6 +98,7 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId, descripto
   let validationDetails = [];
   let draftGeneration = 0;
   let previewSequence = 0;
+  let policyReadSequence = 0;
   let records = [];
   let cursor;
   let reading = false;
@@ -693,11 +694,13 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId, descripto
 
   async function loadPolicy() {
     clearTimeout(policyTimer);
+    const sequence = ++policyReadSequence;
     const generation = draftGeneration;
     const keepDraft = view !== undefined && hasProposedChanges();
+    let readFailed = false;
     try {
       const loaded = await context.request(policyPath);
-      if (!current() || generation !== draftGeneration) {
+      if (!current() || sequence !== policyReadSequence || generation !== draftGeneration) {
         return;
       }
       const wasPending = view?.policy.application?.state === "pending";
@@ -721,30 +724,36 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId, descripto
       } else {
         additions = structuredClone(view.policy.additions);
       }
-      draftGeneration += 1;
       validationDetails = [];
       unknownOutcome = false;
       editDenied = false;
       renderPolicy();
       renderSuggestions();
       renderLogs();
-      if (view.policy.application?.state === "pending") {
-        policyTimer = setTimeout(() => {
-          if (current() && !mutation) {
-            void loadPolicy();
-          }
-        }, 3000);
-      }
+      draftGeneration += 1;
     } catch (error) {
-      if (!current()) {
+      if (!current() || sequence !== policyReadSequence || generation !== draftGeneration) {
         return;
       }
+      readFailed = true;
       policyPanel.replaceChildren(
         element("h2", {}, "Agent network policy"),
         element("p", { role: "alert" }, errorText(error, "read this Agent’s policy")),
         ...(error.status === 403 ? [] : [button("Retry policy read", () => void loadPolicy())]),
       );
     } finally {
+      if (
+        current() &&
+        sequence === policyReadSequence &&
+        !readFailed &&
+        view?.policy.application?.state === "pending"
+      ) {
+        policyTimer = setTimeout(() => {
+          if (current() && !mutation) {
+            void loadPolicy();
+          }
+        }, 3000);
+      }
       policyAnswered();
     }
   }

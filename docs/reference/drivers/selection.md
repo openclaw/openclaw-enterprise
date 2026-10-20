@@ -97,6 +97,8 @@ installed packages is deferred.
 Each selected implementation supplies `ConfigurationDefinition<T>`: a serializable
 `configurationSchema` and synchronous `validateConfiguration(input)` returning
 `{ success: true, data: T }` or `{ success: false, error: { details } }`.
+A validator must return one of these results; returning `undefined` or throwing
+is not successful validation. Use JSON Schema 2020-12, or omit `$schema`.
 The installed TypeBox evaluator and its JSON Schema 2020-12 meta-schema check
 registration. Unknown formats and unresolved references are refused. TypeBox
 collects structural errors before Driver semantic checks. Validation does

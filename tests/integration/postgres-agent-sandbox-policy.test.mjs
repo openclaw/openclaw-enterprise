@@ -401,7 +401,7 @@ test(
 );
 
 test(
-  "restarted controller rechecks a reduced ceiling after successful preview before saving or applying",
+  "restarted controller rechecks a reduced ceiling before saving, applying, or deploying",
   requiresPostgres,
   async (t) => {
     const fixture = await createPolicyApp(t);
@@ -449,14 +449,32 @@ test(
       restarted.selectDriver(capability, driver.id);
     }
     const app = fixture.createApp(restarted);
+    const revisions = await state.read((view) =>
+      view.revisions.listRevisions(namespace.id, agent.id),
+    );
     for (const [method, url, body] of [
       ["PUT", path, { expectedVersion: 2, additions: [grant] }],
       ["POST", `${path}/apply`, { expectedVersion: 2, revisionId: revision.id }],
+      ["POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`, undefined],
     ]) {
       const refused = await inject(method, url, body, app);
       assert.equal(refused.statusCode, 409, refused.body);
-      assert.ok(refused.json().error.details.some(({ code }) => code === "OUTSIDE_CEILING"));
+      assert.equal(
+        refused.json().error.message,
+        "The requested network policy exceeds the Installation delegation ceiling.",
+      );
+      assert.deepEqual(refused.json().error.details, [
+        {
+          path: "/additions/0",
+          code: "OUTSIDE_CEILING",
+          message: "The grant exceeds the Installation delegation ceiling.",
+        },
+      ]);
     }
+    assert.deepEqual(
+      await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
+      revisions,
+    );
     assert.deepEqual((await inject("GET", path)).json().data.policy, previous);
     assert.deepEqual(
       (

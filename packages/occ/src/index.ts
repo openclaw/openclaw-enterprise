@@ -7055,6 +7055,7 @@ export class OpenClawController {
       "agent",
       "sandbox-network-policy",
     );
+    let admissionMessage = "The Sandbox Driver refused the requested policy.";
     try {
       const admitted = requireConfiguration(contribution, { additions: input }) as {
         additions: readonly SandboxNetworkGrant[];
@@ -7081,15 +7082,15 @@ export class OpenClawController {
         }
       });
       if (details.length > 0) {
+        admissionMessage = details.some((detail) => detail.code === "OUTSIDE_CEILING")
+          ? "The requested network policy exceeds the Installation delegation ceiling."
+          : "The selected Sandbox Driver does not support the requested wildcard or port range.";
         throw new ConfigurationValidationError(details as [ErrorDetail, ...ErrorDetail[]]);
       }
       return driver.admitNetworkPolicy(additions, version, defaults);
     } catch (error) {
       if (error instanceof ConfigurationValidationError) {
-        throw new ResourceStateConflictError(
-          "The Sandbox Driver refused the requested policy.",
-          error.error.details,
-        );
+        throw new ResourceStateConflictError(admissionMessage, error.error.details);
       }
       throw new ResourceStateConflictError(
         "The Sandbox Driver cannot enforce the complete requested policy.",

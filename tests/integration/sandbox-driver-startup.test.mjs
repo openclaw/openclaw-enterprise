@@ -320,17 +320,21 @@ function codexPlugin(appServer) {
   };
 }
 
+const structuralRefusal = (path, keyword, code = "INVALID_VALUE") => [
+  { path, code, message: `Configuration does not satisfy ${keyword}.` },
+];
+
 /** Startup refuses the installation `change` makes to a fresh `base()` with `expected`. */
 async function rejectsAtStartup(t, change, expected, base = sandboxInstallation) {
   const configuration = base();
   change(configuration);
+  if (expected instanceof RegExp) {
+    await assert.rejects(loadInstallationFile(t, configuration), expected);
+    return;
+  }
   await assert.rejects(loadInstallationFile(t, configuration), (error) => {
-    if (error instanceof SharedConfigurationValidationError) {
-      assert.ok(error.error.details.length > 0);
-      assert.ok(error.error.details.every((detail) => typeof detail.message === "string"));
-    } else {
-      assert.match(error.message, expected);
-    }
+    assert.ok(error instanceof SharedConfigurationValidationError);
+    assert.deepEqual(error.error.details, expected);
     return true;
   });
 }
@@ -632,11 +636,23 @@ test("startup pairs the Credential Refresh Driver with its gateway on one OpenSh
       (c) => delete c.drivers.credential_gateway,
       /drivers\.credential_refresh requires drivers\.credential_gateway/,
     ],
-    [(c) => (c.drivers.credential_refresh.configuration = { interval: 60 }), /configuration/],
+    [
+      (c) => (c.drivers.credential_refresh.configuration = { interval: 60 }),
+      structuralRefusal("", "additionalProperties", "UNKNOWN_FIELD"),
+    ],
   ]) {
     await rejectsAtStartup(t, change, expected, refreshing);
   }
 });
+
+test("startup identifies the rejected Credential Gateway executable", (t) =>
+  rejectsAtStartup(
+    t,
+    (c) => {
+      c.drivers.credential_gateway.configuration.toolBinaries = ["bin/curl"];
+    },
+    structuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
+  ));
 
 test("startup rejects an OpenShell Backend whose members are not both selected", async (t) => {
   await rejectsAtStartup(
@@ -653,7 +669,7 @@ test("startup rejects an OpenShell Backend whose members are not both selected",
   await rejectsAtStartup(
     t,
     (c) => (c.drivers.sandbox.configuration.gateway.endpoint = "http://127.0.0.1:1"),
-    /OpenShell gateway option endpoint belongs to the openshell Backend/,
+    structuralRefusal("/gateway", "additionalProperties", "UNKNOWN_FIELD"),
   );
 });
 
@@ -3360,10 +3376,14 @@ test("startup rejects invalid bundled OpenShell configuration before invoking an
     },
   };
 
-  await assert.rejects(
-    loadInstallationFile(t, configuration, options),
-    SharedConfigurationValidationError,
-  );
+  await assert.rejects(loadInstallationFile(t, configuration, options), (error) => {
+    assert.ok(error instanceof SharedConfigurationValidationError);
+    assert.deepEqual(
+      error.error.details,
+      structuralRefusal("", "additionalProperties", "UNKNOWN_FIELD"),
+    );
+    return true;
+  });
   assert.equal(invokedFactory, false);
   // Control: the same factory is reached once the configuration is valid.
   await assert.rejects(loadInstallationFile(t, sandboxInstallation(), options), /injected factory/);
@@ -3371,9 +3391,9 @@ test("startup rejects invalid bundled OpenShell configuration before invoking an
 });
 
 // Each test below changes settings of a valid installation, and startup refuses each change.
-const TLS_MODE = /OpenShell network policy model-egress TLS mode must be one of: skip, terminate/;
-const LANDLOCK = /OpenShell policy\.landlockCompatibility must be hard_requirement or omitted/;
-const READINESS = /OpenShell gateway readiness timeout must be a positive safe integer/;
+const TLS_MODE = structuralRefusal("/policy/networkPolicies/0/endpoints/0/tls", "enum");
+const LANDLOCK = structuralRefusal("/policy/landlockCompatibility", "const");
+
 const sandboxOf = (c) => c.drivers.sandbox.configuration;
 const policiesOf = (c) => sandboxOf(c).policy.networkPolicies;
 const endpointOf = (c) => policiesOf(c)[0].endpoints[0];
@@ -3395,15 +3415,30 @@ test("startup rejects OpenShell network policies without binary identities", (t)
   rejectsAtStartup(
     t,
     (c) => (policiesOf(c)[0].binaries = []),
-    /OpenShell network policy model-egress requires at least one binary path/,
+    structuralRefusal("/policy/networkPolicies/0/binaries", "minItems"),
   ));
 
 test("startup rejects duplicate OpenShell network policy names", async (t) => {
   for (const [name, expected] of [
-    ["model-egress", /OpenShell network policy name model-egress must be unique/],
+    [
+      "model-egress",
+      [
+        {
+          path: "/policy/networkPolicies/1/name",
+          code: "INVALID_VALUE",
+          message: "Network policy names must be unique.",
+        },
+      ],
+    ],
     [
       "workspace-node-enrollment",
-      /OpenShell network policy name workspace-node-enrollment is reserved/,
+      [
+        {
+          path: "/policy/networkPolicies/1/name",
+          code: "INVALID_VALUE",
+          message: "This policy name is reserved for platform networking.",
+        },
+      ],
     ],
   ]) {
     await rejectsAtStartup(t, (c) => policiesOf(c).push({ ...policiesOf(c)[0], name }), expected);
@@ -3411,12 +3446,16 @@ test("startup rejects duplicate OpenShell network policy names", async (t) => {
 });
 
 test("startup rejects inherited OpenShell network enum property names", async (t) => {
-  for (const [field, value, expected] of [
-    ["tls", "toString", /TLS mode must be one of: skip, terminate/],
-    ["enforcement", "constructor", /enforcement mode must be one of: enforce, audit/],
-    ["access", "__proto__", /access preset must be one of: read_only, read_write, full/],
+  for (const [field, value] of [
+    ["tls", "toString"],
+    ["enforcement", "constructor"],
+    ["access", "__proto__"],
   ]) {
-    await rejectsAtStartup(t, (c) => (endpointOf(c)[field] = value), expected);
+    await rejectsAtStartup(
+      t,
+      (c) => (endpointOf(c)[field] = value),
+      structuralRefusal(`/policy/networkPolicies/0/endpoints/0/${field}`, "enum"),
+    );
   }
 });
 
@@ -3427,12 +3466,27 @@ test("startup rejects the removed per-Sandbox OpenShell ServiceAccount mode", (t
   rejectsAtStartup(
     t,
     (c) => (sandboxOf(c).kubernetes.serviceAccount.mode = "driverConfig"),
-    /OpenShell serviceAccount mode must be gatewayConfigured/,
+    structuralRefusal("/kubernetes/serviceAccount/mode", "const"),
   ));
 
 test("startup rejects an invalid OpenShell gateway readiness wait", async (t) => {
-  for (const readiness of [{ ...readinessWait, timeoutMs: 0 }, { ...readinessWait }]) {
-    await rejectsAtStartup(t, (c) => (sandboxOf(c).gateway.readiness = readiness), READINESS);
+  for (const [readiness, expected] of [
+    [
+      { ...readinessWait, timeoutMs: 0 },
+      structuralRefusal("/gateway/readiness/timeoutMs", "minimum"),
+    ],
+    [
+      { ...readinessWait },
+      [
+        {
+          path: "/gateway/readiness/timeoutMs",
+          code: "REQUIRED",
+          message: "This configuration field is required.",
+        },
+      ],
+    ],
+  ]) {
+    await rejectsAtStartup(t, (c) => (sandboxOf(c).gateway.readiness = readiness), expected);
   }
 });
 
@@ -3479,7 +3533,13 @@ test("shipped startup names a rejected OpenShell policy without logging its name
   ]);
   const duplicateEvent = diagnostic(duplicate);
   assert.equal(duplicateEvent.code, "DRIVER_CONFIGURATION_INVALID");
-  assert.ok(duplicateEvent.details.length > 0);
+  assert.deepEqual(duplicateEvent.details, [
+    {
+      path: "/policy/networkPolicies/1/name",
+      code: "INVALID_VALUE",
+      message: "Network policy names must be unique.",
+    },
+  ]);
   assert.equal(duplicateEvent.reason, undefined);
   assert.equal(`${duplicate.stdout}${duplicate.stderr}`.includes(planted), false);
 
@@ -3489,7 +3549,13 @@ test("shipped startup names a rejected OpenShell policy without logging its name
   ]);
   const reservedEvent = diagnostic(reserved);
   assert.equal(reservedEvent.code, "DRIVER_CONFIGURATION_INVALID");
-  assert.ok(reservedEvent.details.length > 0);
+  assert.deepEqual(reservedEvent.details, [
+    {
+      path: "/policy/networkPolicies/1/name",
+      code: "INVALID_VALUE",
+      message: "This policy name is reserved for platform networking.",
+    },
+  ]);
   assert.equal(reservedEvent.reason, undefined);
   assert.equal(`${reserved.stdout}${reserved.stderr}`.includes("workspace-node-enrollment"), false);
 });
@@ -3945,7 +4011,14 @@ test("the OpenShell bearer-token type exists only with toolBinaries and validate
           },
         },
       ),
-    SharedConfigurationValidationError,
+    (error) => {
+      assert.ok(error instanceof SharedConfigurationValidationError);
+      assert.deepEqual(
+        error.error.details,
+        structuralRefusal("/toolBinaries/0", "pattern", "INVALID_FORMAT"),
+      );
+      return true;
+    },
   );
 
   const { calls, context, deletedProfiles, driver, input, profiles, providers } =

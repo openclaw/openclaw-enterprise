@@ -288,6 +288,19 @@ function safeAttempt(
   return Object.keys(result).length === 0 ? undefined : Object.freeze(result);
 }
 
+/** Filter startup diagnostics for logs and operator checks. */
+export function configurationLogDetails(value: readonly unknown[]) {
+  return value
+    .slice(0, 32)
+    .filter(
+      (detail): detail is ErrorDetail =>
+        Check(ErrorDetail, detail) &&
+        !resemblesCredential(`${detail.path} ${detail.message ?? ""}`) &&
+        !/\p{Cc}/u.test(`${detail.path}${detail.message ?? ""}`),
+    )
+    .map((detail) => ({ path: detail.path, code: detail.code, message: detail.message }));
+}
+
 function sanitizedEvent(
   event: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
@@ -305,15 +318,7 @@ function sanitizedEvent(
         event.code === "DRIVER_CONFIGURATION_INVALID" &&
         Array.isArray(value)
       ) {
-        result.details = value
-          .slice(0, 32)
-          .filter(
-            (detail) =>
-              Check(ErrorDetail, detail) &&
-              !resemblesCredential(`${detail.path} ${detail.message ?? ""}`) &&
-              !/\p{Cc}/u.test(`${detail.path}${detail.message ?? ""}`),
-          )
-          .map((detail) => ({ path: detail.path, code: detail.code, message: detail.message }));
+        result.details = configurationLogDetails(value);
       }
       continue;
     }

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Config contains connection, authentication, and TLS settings for an OCC client.
@@ -99,6 +100,21 @@ func (err *APIError) Error() string {
 		// OCC's rate-limit messages say to wait for Retry-After; name the delay.
 		message = fmt.Sprintf("%s. Retry after %ds.", strings.TrimSuffix(message, "."), int(math.Ceil(err.RetryAfter.Seconds())))
 	}
+	// Render only the public diagnostic fields, with JSON escaping for terminal control
+	// characters. Bound a remote response even when it did not come from a valid OCC schema.
+	for index, detail := range err.Details {
+		if index == 32 {
+			break
+		}
+		if utf8.RuneCountInString(detail.Path) > 512 || utf8.RuneCountInString(detail.Message) > 512 || len(detail.Code) > 64 {
+			continue
+		}
+		encoded, encodeErr := json.Marshal(detail)
+		if encodeErr == nil {
+			message += "\n  " + string(encoded)
+		}
+	}
+
 	return message
 }
 

@@ -1,6 +1,7 @@
 import {
   validateConfiguration as validateDriverConfiguration,
   requireConfiguration,
+  ConfigurationValidationError,
 } from "@openclaw-enterprise/contracts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
@@ -264,6 +265,17 @@ function validateCodexConfiguration(configuration: unknown): {
     value.requestTimeoutMs === undefined
   ) {
     return { catalogSource, reader: undefined };
+  }
+  for (const field of ["codexExecutable", "codexHome"] as const) {
+    if (value[field] === undefined) {
+      throw new ConfigurationValidationError([
+        {
+          path: `/${field}`,
+          code: "REQUIRED",
+          message: "This field is required for a configured native catalog reader.",
+        },
+      ]);
+    }
   }
   const codexExecutable = requiredString(value.codexExecutable, "codexExecutable");
   const codexHome = requiredString(value.codexHome, "codexHome");

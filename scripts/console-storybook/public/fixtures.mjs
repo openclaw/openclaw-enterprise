@@ -633,6 +633,7 @@ export function installFixture(scenario, evidence) {
   };
   let policyEditing = scenario.policyState !== "disabled";
   let policyPolls = 0;
+  let policyReads = 0;
   let sandboxPolicy = {
     id: "sbp_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -1413,6 +1414,11 @@ export function installFixture(scenario, evidence) {
           return response({ success: true, data: { additions: body.additions } });
         }
         if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "GET") {
+          const read = ++policyReads;
+          if (scenario.policyState === "refreshRace" && !sandboxPolicy.application && read <= 3) {
+            // Simulate another operator saving between reads; HTTP workflow coverage uses real saves.
+            sandboxPolicy.version = read;
+          }
           if (sandboxPolicy.application?.state === "pending" && ++policyPolls > 1) {
             sandboxPolicy.application.state = "applied";
             sandboxPolicy.application.providerVersion = "5";
@@ -1423,7 +1429,7 @@ export function installFixture(scenario, evidence) {
               appliedAt: createdAt,
             };
           }
-          return response({
+          const result = response({
             policy: sandboxPolicy,
             configuration: policyDescriptor,
             editingEnabled: policyEditing,
@@ -1448,6 +1454,10 @@ export function installFixture(scenario, evidence) {
                 ? null
                 : { live: true, wildcards: true, portRanges: true },
           });
+          if (scenario.policyState === "refreshRace" && (read === 2 || read === 3)) {
+            await new Promise((resolve) => setTimeout(resolve, read === 2 ? 300 : 1500));
+          }
+          return result;
         }
         if (
           scenario.policyState &&

@@ -49,6 +49,7 @@ import type {
   V1VolumeMount,
 } from "@kubernetes/client-node";
 import type {
+  ErrorDetail,
   AgentDeploymentDiagnostics,
   AgentRevision,
   AgentRuntimeContainerStatus,
@@ -3220,7 +3221,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
         } else if (authentication.mode === "kubeconfig") {
           const path = required(authentication.kubeconfigPath, "Dedicated kubeconfig path");
           if (!isAbsolute(path)) {
-            throw new ConfigurationFailure("Dedicated kubeconfig path must be absolute.");
+            throw new ConfigurationValidationError([
+              {
+                path: "/authentication/kubeconfigPath",
+                code: "INVALID_FORMAT",
+                message: "Dedicated kubeconfig path must be absolute.",
+              },
+            ]);
           }
           required(authentication.context, "Explicit Kubernetes context");
         } else {
@@ -3481,16 +3488,41 @@ export class KubernetesComputeDriver implements ComputeDriver {
           validateDnsHostname(
             required(harnessHostname, "Harness routing hostname"),
             "Harness routing hostname",
+            "/executionCluster/harnessRouting/hostname",
           );
           validateGatewayRoutingTarget(execution.harnessRouting, "Harness routing");
           const { executionCluster: _executionCluster, ...control } = options;
           const { gatewayClients: _gatewayClients, ...network } = options.network;
-          requireConfiguration(KubernetesComputeDriver, {
-            ...control,
-            authentication: execution.authentication,
-            gatewayRouting: execution.harnessRouting,
-            network: { ...network, dns: execution.network?.dns },
-          });
+          try {
+            requireConfiguration(KubernetesComputeDriver, {
+              ...control,
+              authentication: execution.authentication,
+              gatewayRouting: execution.harnessRouting,
+              network: { ...network, dns: execution.network?.dns },
+            });
+          } catch (error) {
+            if (!(error instanceof ConfigurationValidationError)) {
+              throw error;
+            }
+            // Only these inputs were replaced when constructing the execution-plane options.
+            // Inherited control-plane fields retain their original paths.
+            const fields = [
+              ["/authentication", "/executionCluster/authentication"],
+              ["/gatewayRouting", "/executionCluster/harnessRouting"],
+              ["/network/dns", "/executionCluster/network/dns"],
+            ] as const;
+            throw new ConfigurationValidationError(
+              error.error.details.map((detail) => {
+                const field = fields.find(
+                  ([source]) => detail.path === source || detail.path.startsWith(`${source}/`),
+                );
+                return {
+                  ...detail,
+                  path: field ? field[1] + detail.path.slice(field[0].length) : detail.path,
+                };
+              }) as [ErrorDetail, ...ErrorDetail[]],
+            );
+          }
           for (const [key, description, cidrs] of [
             [
               "harnessEndpointCidrs",

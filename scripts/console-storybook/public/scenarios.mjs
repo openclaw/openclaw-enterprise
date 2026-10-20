@@ -7247,6 +7247,11 @@ for (const [id, state, name] of [
   ["policyConfigurationLoading", "discoveryLoading", "Configuration discovery loading"],
   ["policyConfigurationDenied", "discoveryDenied", "Configuration discovery denied"],
   ["policyConfigurationStale", "stalePreview", "A superseded preview preserves the newer draft"],
+  [
+    "policyConfigurationRefresh",
+    "refreshRace",
+    "Overlapping policy refreshes retain the newest read",
+  ],
   ["policyConfigurationJson", "json", "Complex fields retain invalid JSON for correction"],
   [
     "policyConfigurationHidden",
@@ -7300,6 +7305,16 @@ for (const [id, state, name] of [
       "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
     gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+    ...(state === "refreshRace"
+      ? {
+          description:
+            "Another operator's simulated saves advance the policy between two overlapping reads.",
+          steps: [
+            "Double-click Refresh policy. The older read returns first; wait for saved policy v3.",
+            "Apply the saved policy to the current revision. Observe pending status, then simulated provider confirmation from continued polling.",
+          ],
+        }
+      : {}),
     ...(state === "unsupported"
       ? {
           steps: [

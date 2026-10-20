@@ -1,3 +1,4 @@
+import { configurationLogDetails } from "./logging.ts";
 import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { PostgresCertificateRejectedError } from "@openclaw-enterprise/occ";
 import { KubernetesApiUnavailableError } from "./drivers/kubernetes/client.ts";
@@ -28,4 +29,12 @@ export function startupConfigurationFailure(error: unknown) {
   return error instanceof ConfigurationValidationError
     ? { code: "DRIVER_CONFIGURATION_INVALID", details: error.error.details }
     : undefined;
+}
+
+/** One-line operator diagnostics, with the same safe fields as API and worker logs. */
+export function formatStartupConfigurationFailure(error: unknown): string | undefined {
+  const failure = startupConfigurationFailure(error);
+  return failure === undefined
+    ? undefined
+    : `${failure.code}: ${JSON.stringify(configurationLogDetails(failure.details))}`;
 }

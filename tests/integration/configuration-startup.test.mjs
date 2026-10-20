@@ -16,7 +16,10 @@ import {
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  ConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
@@ -235,7 +238,7 @@ test("Installation startup validates the optional external observability URL", a
   );
 });
 
-test("API and worker log safe field diagnostics before persistence", async (t) => {
+test("API, worker, and Helm hook report safe field diagnostics before persistence", async (t) => {
   for (const [mutate, details] of [
     [
       (configuration) => {
@@ -296,16 +299,28 @@ test("API and worker log safe field diagnostics before persistence", async (t) =
       OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
       OCC_AUTH_BASE_URL: "https://console.example.test",
     };
-    // Both process entrypoints reject before persistence. Ceiling errors must name
+    // All three entrypoints reject before persistence. Ceiling errors must name
     // the Installation input, including its array index, rather than the Agent wrapper.
     await settled(
       [
         ["apps/controller/src/server.mjs", "startup-error"],
         ["apps/controller/src/worker.mjs", "worker.startup-error"],
+        ["deploy/helm/openclaw-enterprise/files/check-installation.mjs", null],
       ].map(async ([script, event]) => {
         const result = await boot(script, environment, 15_000);
         assert.equal(result.status, 1);
-        const diagnostic = startupDiagnostic(result.stderr, event);
+        if (event === null) {
+          assert.match(result.stderr, /^installation-check:.*DRIVER_CONFIGURATION_INVALID: /);
+        }
+        const diagnostic =
+          event === null
+            ? {
+                code: "DRIVER_CONFIGURATION_INVALID",
+                details: JSON.parse(
+                  result.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1],
+                ),
+              }
+            : startupDiagnostic(result.stderr, event);
         assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID");
         assert.deepEqual(diagnostic.details, details);
         assert.ok(!result.stderr.includes(path));
@@ -1376,6 +1391,9 @@ test("startup rejects caller-selected Installation IDs and obsolete Driver selec
 });
 
 test("startup rejects plaintext secrets, caller-authored identities, and unsupported schema options", async (t) => {
+  const refusal = (path, code, message) => [{ path, code, message }];
+  const structural = (path, keyword, code = "INVALID_VALUE") =>
+    refusal(path, code, `Configuration does not satisfy ${keyword}.`);
   for (const [mutate, expected] of [
     [(value) => (value.drivers.compute.configuration.apiKey = "plaintext"), /plaintext credential/],
     [
@@ -1385,12 +1403,24 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
     [
       (value) =>
         (value.drivers.configuration.configuration.authentication = { mode: "kubeconfig" }),
-      /schema|authentication/,
+      [
+        ...structural("/authentication/mode", "const"),
+        ...refusal(
+          "/authentication/kubeconfigPath",
+          "REQUIRED",
+          "This configuration field is required.",
+        ),
+        ...refusal("/authentication/context", "REQUIRED", "This configuration field is required."),
+        ...structural("/authentication", "oneOf"),
+      ],
     ],
-    [(value) => (value.drivers.iam.configuration.unexpected = true), /schema|unsupported option/],
+    [
+      (value) => (value.drivers.iam.configuration.unexpected = true),
+      structural("", "additionalProperties", "UNKNOWN_FIELD"),
+    ],
     [
       (value) => (value.drivers.compute.configuration.resources.gateway.unexpected = true),
-      /schema|unsupported option/,
+      structural("/resources/gateway", "additionalProperties", "UNKNOWN_FIELD"),
     ],
     [
       (value) => (value.drivers.compute.configuration.images.requireImmutableDigest = false),
@@ -1399,17 +1429,25 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
     [
       (value) =>
         (value.drivers.compute.configuration.network.gatewayPort = Number.MAX_SAFE_INTEGER + 1),
-      /schema|integer|port/,
+      /network\.gatewayPort must be a safe integer\.$/,
     ],
     [
       (value) =>
         (value.drivers.compute.configuration.images.gateway = "registry.example/gateway:latest"),
-      /immutable SHA-256 digest/,
+      refusal(
+        "/images/gateway",
+        "INVALID_FORMAT",
+        "Gateway image must use an immutable SHA-256 digest.",
+      ),
     ],
     [
       (value) =>
         (value.drivers.compute.configuration.images.agent = "registry.example/agent:latest"),
-      /immutable SHA-256 digest/,
+      refusal(
+        "/images/agent",
+        "INVALID_FORMAT",
+        "Agent image must use an immutable SHA-256 digest.",
+      ),
     ],
     [
       (value) => delete value.drivers.compute.configuration.runtime,
@@ -1419,7 +1457,7 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
       (value) =>
         (value.drivers.compute.configuration.runtime.modelSecretPrefix =
           value.drivers.compute.configuration.runtime.transportSecretPrefix),
-      /schema|unsupported option/,
+      structural("/runtime", "additionalProperties", "UNKNOWN_FIELD"),
     ],
     // The reader refuses these anywhere in the file, before any Driver schema runs.
     [
@@ -1443,11 +1481,11 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
         environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
       }),
       (error) => {
-        if (error.name === "ConfigurationValidationError") {
-          assert.ok(error.error.details.length > 0);
-          assert.ok(error.error.details.every((detail) => typeof detail.message === "string"));
-        } else {
+        if (expected instanceof RegExp) {
           assert.match(error.message, expected);
+        } else {
+          assert.ok(error instanceof ConfigurationValidationError);
+          assert.deepEqual(error.error.details, expected);
         }
         return true;
       },

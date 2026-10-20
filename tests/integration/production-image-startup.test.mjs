@@ -380,6 +380,27 @@ test(
 
     const path = join(fixture, "installation.json");
     const installation = JSON.parse(await readFile(path, "utf8"));
+    const invalidDriver = structuredClone(installation);
+    invalidDriver.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+    await writeFile(path, JSON.stringify(invalidDriver), { mode: 0o644 });
+    await assert.rejects(
+      runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /installation-check:.*DRIVER_CONFIGURATION_INVALID/);
+        const details = JSON.parse(error.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1]);
+        assert.deepEqual(details, [
+          {
+            path: "/runtime/gatewayStorageClassName",
+            code: "INVALID_FORMAT",
+            message:
+              "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+          },
+        ]);
+        assert.doesNotMatch(error.stderr, /Bad_Class/);
+        return true;
+      },
+    );
     installation.presets = { files: ["presets/missing.json"] };
     await writeFile(path, `${JSON.stringify(installation, undefined, 2)}\n`, {
       encoding: "utf8",

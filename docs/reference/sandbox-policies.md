@@ -28,6 +28,9 @@ Invalid additions return HTTP 200 with `data.success: false` and `error.details`
 a malformed envelope returns HTTP 400. Authorization and concurrency refusals
 keep their resource errors. Each detail has a JSON Pointer, code, and safe message.
 Preview success neither saves nor grants authority to a later save or apply.
+Ceiling refusals identify the Installation delegation limit and retain
+`OUTSIDE_CEILING` details at the rejected addition. The CLI prints these field
+details with the error; it does not reduce them to a generic Driver refusal.
 
 ## Authority and admission
 

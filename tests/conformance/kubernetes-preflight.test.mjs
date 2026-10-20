@@ -276,6 +276,51 @@ function executionOptions(network = {}) {
   return configured;
 }
 
+test("execution-cluster diagnostics name the operator's original fields", () => {
+  for (const [change, path, message] of [
+    [
+      (c) => {
+        c.authentication.kubeconfigPath = "relative";
+      },
+      "/authentication/kubeconfigPath",
+      "Dedicated kubeconfig path must be absolute.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.authentication.kubeconfigPath = "relative";
+      },
+      "/executionCluster/authentication/kubeconfigPath",
+      "Dedicated kubeconfig path must be absolute.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.network.dns = { ...c.executionCluster.network.dns, namespace: "Bad_NS" };
+      },
+      "/executionCluster/network/dns/namespace",
+      "DNS peer namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.harnessRouting.hostname = "Bad_Host";
+      },
+      "/executionCluster/harnessRouting/hostname",
+      "Harness routing hostname must be a DNS hostname without a port or path.",
+    ],
+  ]) {
+    const options = executionOptions();
+    change(options);
+    assert.throws(
+      () => createKubernetesComputeDriver(options),
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.deepEqual(error.error.details, [{ path, code: "INVALID_FORMAT", message }]);
+        assert.doesNotMatch(JSON.stringify(error.error.details), /relative|Bad_NS|Bad_Host/);
+        return true;
+      },
+    );
+  }
+});
+
 // Execution CIDR lists use the trusted proxy rule: no entry may cover every address.
 test("two-cluster CIDR lists refuse ranges that cover every address", () => {
   const diagnostic = (path, code, message) => (error) => {
