@@ -169,6 +169,10 @@ export const CreateCapabilitiesDenied = {
   ...story("createCapabilitiesDenied"),
   name: "Agent creation needs an administrator",
 };
+export const CreateMember = {
+  ...story("createMember"),
+  name: "Member with Agent create",
+};
 export const CreateRestricted = {
   ...story("createRestricted"),
   name: "Create Agent unavailable for this caller",

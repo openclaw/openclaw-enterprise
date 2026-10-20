@@ -2053,6 +2053,11 @@ test("Agent creation explains a denied capability check instead of offering a re
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Capability denial", { ready: true });
   const { page } = await newPage(t, fixture);
+  // Without a permission answer that grants Agent create, a denied Installation read keeps the
+  // refusal; a member the Namespace lets create goes on (console-create-agent-member.test.mjs).
+  await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
+    route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
+  );
   let status = 403;
   await page.route(`${fixture.origin}/installation`, async (route) => {
     await route.fulfill({

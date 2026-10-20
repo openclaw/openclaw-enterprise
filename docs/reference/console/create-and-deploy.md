@@ -5,7 +5,7 @@ Create Agents and supported Dedicated runtimes with the
 [ready Namespace and Secret storage](../../guides/deploy/production-agents.md#prepare-each-namespace)
 to deploy; while it provisions, drafts needing no new Secret or sign-in still save, unless it
 [adopts](../namespaces.md#lifecycle) an existing namespace. Creating tokens requires Secret creation permission. Provisioning grants accepted
-Secret access; drafts also require permission to grant Agent key access. After deployment, [verify the same
+Secret access; drafts also need Installation `administer` to grant Agent key access; members without it save drafts an administrator finishes. After deployment, [verify the same
 Agent and version](../../guides/deploy/production-agents.md#verify-production-workloads).
 The [local walkthrough](../../guides/first-agent.md) creates a separate Agent.
 
@@ -42,10 +42,9 @@ block direct Secret-backed model and environment projection.
    Use [OpenAI API keys](https://platform.openai.com/api-keys), or
    [OpenAI admin](https://admin.openai.com/) → your workspace → **Service accounts**
    to create a token with Codex scope.
-   Choose a model Secret or **Create new Secret...**.
    Choose a model from the starter list or select **Enter model ID manually**.
    **Choose a model from the list** returns. Switching modes retains that provider's listed models; returning with an unlisted custom ID
-   requires another selection. Other settings remain.
+   requires another selection.
    No model is preselected.
 4. Confirm Installation, credential, and runtime support for the model. Primary
    and fallback models must share a supported provider and Harness. For custom settings,
