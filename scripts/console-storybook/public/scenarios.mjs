@@ -2710,7 +2710,11 @@ export const scenarios = {
     path: create,
     actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
     description:
-      "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft.",
+      "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft. With a Preset chosen, Use Preset is the filled button and Start with default Preset is secondary.",
+    steps: [
+      'Under Start with default Preset, the hint reads "The default Preset is default-codex."',
+      "Use Preset is filled and Start with default Preset is secondary. Choose Choose a Preset in Preset template: the filled style returns to Start with default Preset.",
+    ],
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
   },
   createPresetExistingSecret: {
@@ -3323,6 +3327,21 @@ export const scenarios = {
       "Inspect the admitted version and its deployment activity.",
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
+  },
+  editCurrentConfiguration: {
+    group: "Pages/Agent detail",
+    name: "Edit current Configuration",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    actions: [click("Edit current Configuration")],
+    // The page brings the editor into view itself.
+    scrollToTabs: false,
+    description:
+      "Edit current Configuration on a version's Configuration tab opens the draft with its Configuration editor already open, brought into view and focused. It used to open the draft at the top of the page and still need an Edit Configuration click far below.",
+    steps: [
+      "The page shows the draft. Configuration JSON is in view with the caret in it; no Edit Configuration button is left to press.",
+      "Choose Cancel: the editor closes and Edit Configuration takes focus.",
+    ],
   },
   agentHeaderActions: {
     group: "Pages/Agent detail",
@@ -3946,6 +3965,9 @@ export const scenarios = {
     candidateDeploymentStatus: "queued",
     description:
       "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified. Deployment details keep Last recorded result, Reason and Since rows (not recorded yet), so the first result fills them in place.",
+    steps: [
+      'Selected version reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+    ],
   },
   deploymentRunning: {
     group: "Pages/Agent detail",
@@ -3955,6 +3977,23 @@ export const scenarios = {
     candidateDeploymentStatus: "running",
     description:
       "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
+    steps: [
+      'Selected version reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+    ],
+  },
+  deploymentRunningActivates: {
+    group: "Pages/Agent detail",
+    name: "New version in progress, then current",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    description:
+      "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      'Within about 5 s the notice begins "Current version" and Selected version reads v7.',
+    ],
   },
   deploymentDeferred: {
     group: "Pages/Agent detail",
@@ -4283,6 +4322,9 @@ export const scenarios = {
     ],
     description:
       "Watch v7 change from running to failed. Recovery appears below Deployment activity instead of pushing the overview down. The status and details update in place. The deployment and failure are simulated.",
+    steps: [
+      'On arrival v7\'s Configuration tab notice begins "Deploying version". Once v7 reads Failed, it begins "Historical version" and Selected version still reads v6.',
+    ],
   },
   deploymentModelProbeRetried: {
     group: "Pages/Agent detail",

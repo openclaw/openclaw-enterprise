@@ -1012,8 +1012,9 @@ test("Agent detail preserves admitted revision history while draft edits change 
   await expectNoText(page, /"marker": "draft-edited"|"marker": "stale-server"/);
   await page.getByRole("button", { name: "Edit current Configuration" }).click();
   await page.waitForURL((url) => url.searchParams.get("revision") === "draft");
-  await revealNativeConfiguration(page, "View native Configuration");
-  await page.getByText('"marker": "draft-edited"').waitFor();
+  // Edit current Configuration opens the draft's editor on the saved document (finding 2061).
+  await waitForLiveControls(page, ["configuration-json"]);
+  assert.deepEqual(JSON.parse(await editor.inputValue()), editedValues);
 
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByLabel("Authentication source").selectOption("");
@@ -1046,7 +1047,7 @@ test("Agent detail preserves admitted revision history while draft edits change 
     .waitFor();
   // Cancel discards the retained baseline too: reopening uses the freshly read saved document.
   await page.getByRole("button", { name: "Edit current Configuration" }).click();
-  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await waitForLiveControls(page, ["configuration-json"]);
   await editor.fill(JSON.stringify(nativeValues("discard-this-edit")));
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
   await page.getByRole("heading", { name: "Namespaces", exact: true }).waitFor();

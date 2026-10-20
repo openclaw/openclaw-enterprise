@@ -1792,3 +1792,72 @@ for (const c of configurationSaveCases) {
     await page.getByRole("status").filter({ hasText: "Draft reloaded." }).waitFor();
   });
 }
+
+// Edit current Configuration, low on a version's page, switched to the draft at the top of the
+// page and focused its heading; the editor still needed an Edit Configuration click about
+// 1,500 px below (finding 2061). It now opens the draft with the editor open, in view and focused.
+test("Edit current Configuration opens the draft's Configuration editor in view and focused", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Edit current");
+  const agent = await fixture.createAgent(namespace.id, "Edit Current", nativeValues("current"));
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    browser,
+    context: { viewport: { width: 390, height: 844 } },
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration"),
+  );
+  const start = page.getByRole("button", { name: "Edit current Configuration" });
+  await start.scrollIntoViewIfNeeded();
+  await start.click();
+  await page.waitForURL(/revision=draft/);
+  const editor = page.getByLabel("Configuration JSON");
+  await editor.waitFor();
+  await page.waitForFunction(() => globalThis.document.activeElement?.id === "configuration-json");
+  const box = await editor.boundingBox();
+  // Brought to the top of the window, not merely somewhere on screen.
+  assert.ok(box && box.y >= 0 && box.y < 120, `the editor is at ${box?.y} px`);
+  assert.equal(await page.getByRole("button", { name: "Edit Configuration" }).count(), 0);
+
+  // The draft page can show before its Configuration read lands: the editor opens once it does.
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, revision.id, "configuration").href);
+  await start.waitFor();
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  const draftRead = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    { method: "GET", once: true },
+  );
+  await start.scrollIntoViewIfNeeded();
+  await start.click();
+  await page.waitForURL(/revision=draft/);
+  await draftRead.requested;
+  await page.waitForFunction(
+    () => globalThis.document.activeElement?.closest(".agent-tabs") !== null,
+  );
+  draftRead.release();
+  await page.waitForFunction(() => {
+    const active = globalThis.document.activeElement;
+    const box = active?.getBoundingClientRect();
+    return active?.id === "configuration-json" && box.top >= 0 && box.top < 120;
+  });
+
+  // Unsaved edits keep the draft in its editor: going to v1 and back through Edit current
+  // Configuration brings that editor, with the edits, into view and focus.
+  await editor.fill(`${await editor.inputValue()}\n`);
+  await page.locator('.revision-selector [aria-label$=", current version"]').click();
+  await page.waitForURL((next) => next.searchParams.get("revision") === revision.id);
+  await start.scrollIntoViewIfNeeded();
+  await start.click();
+  await page.waitForURL(/revision=draft/);
+  await page.waitForFunction(() => {
+    const active = globalThis.document.activeElement;
+    const box = active?.getBoundingClientRect();
+    return active?.id === "configuration-json" && box.top >= 0 && box.top < 120;
+  });
+  assert.match(await editor.inputValue(), /\n$/);
+});

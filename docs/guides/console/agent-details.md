@@ -68,6 +68,7 @@ work never started.
 
 **Selected version** is OCC's selection, not live health. Deployment may still
 be in progress; a successful historical record does not confirm a response.
+A newer version still deploying is labelled **Deploying version**.
 Verify the runtime and a real response with
 [Agent troubleshooting](../topics/agent-troubleshoot.md).
 
@@ -156,7 +157,7 @@ reference; authentication mode and proxy settings stay unchanged. The Compute
 Driver owns the password; the Console shows only its reference.
 
 **Edit Configuration** edits native JSON. **Save Configuration** requires an object;
-**Cancel** discards edits. **Edit current Configuration** opens the current draft,
+**Cancel** discards edits. **Edit current Configuration** opens the current draft's editor,
 not a historical copy. Saving preserves Secret bindings and saved versions;
 **Deploy new version** applies saved values, including for Agents sharing this
 Configuration on their next deployment.

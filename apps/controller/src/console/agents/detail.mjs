@@ -1737,7 +1737,47 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const smooth = animate && !globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     node.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "instant" });
   }
-  function openVersionDetail({ deploy = false, ...options } = {}) {
+  function openVersionDetail({ deploy = false, edit = false, ...options } = {}) {
+    // Edit current Configuration opens the draft with its Configuration editor open, in view and
+    // focused. It switched to the draft at the top of the page, and the editor still needed an
+    // Edit Configuration click far below (finding 2061).
+    // A draft restored with unsaved edits is already in the editor; otherwise its Edit
+    // Configuration button opens it.
+    const editorTarget = () =>
+      detailPane.querySelector("#configuration-json") ??
+      detailPane.querySelector('button[data-opens="configuration-editor"]');
+    const editStart = edit ? editorTarget() : null;
+    if (edit && !editStart && !detailLoadFinished) {
+      const tab = selectedTab;
+      void Promise.resolve(details).then(
+        () => {
+          const focused = document.activeElement;
+          if (
+            context.isCurrent() &&
+            !deleting &&
+            selectedTab === tab &&
+            (!focused || focused === document.body || focused === tabControls.get(tab)) &&
+            editorTarget()
+          ) {
+            openVersionDetail({ ...options, edit });
+          }
+        },
+        () => {},
+      );
+    }
+    if (editStart && !editStart.disabled) {
+      // Entering the editor focuses it without scrolling; the editor is then brought into view.
+      if (editStart.id === "configuration-json") {
+        editStart.focus({ preventScroll: true });
+      } else {
+        editStart.click();
+      }
+      const field = detailPane.querySelector("#configuration-json")?.closest(".form-field");
+      if (field) {
+        scrollToVersionDetail(options, field);
+        return;
+      }
+    }
     // Deploy again opens the draft at its deploy step, whose card can end below a phone's
     // fold when the version detail is at the top: the card is brought to the top, with its
     // Deploy new version focused when the reader can press it (finding 1898).
@@ -1777,7 +1817,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     scrollOnReveal = () => {
       scrollOnReveal = null;
       if (context.isCurrent() && !deleting) {
-        openVersionDetail({ deploy: linkedOnLoad.deploy });
+        openVersionDetail({ deploy: linkedOnLoad.deploy, edit: linkedOnLoad.edit });
       }
     };
   }
@@ -1785,7 +1825,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   context.onResume?.(() => {
     const linked = takeLinkedVersionView(linkedKey());
     if (linked && !deleting) {
-      openVersionDetail({ deploy: linked.deploy });
+      openVersionDetail({ deploy: linked.deploy, edit: linked.edit });
     }
   });
   function showDetail() {
@@ -1888,7 +1928,29 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
       : selected === currentRevisionId
         ? "Current version · read-only admitted snapshot."
-        : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
+        : deployingRevision()?.id === selected
+          ? "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."
+          : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
+  }
+
+  // The newest version while its deployment is queued or running and it is not yet current. Right
+  // after Deploy new version it was called "Historical" beside "Selected version v1" (finding 2065).
+  function deployingRevision() {
+    const latest = visibleRevisions[0];
+    return latest &&
+      latest.id !== currentRevisionId &&
+      activityRevisionId === latest.id &&
+      PENDING_DEPLOYMENT_STATUSES.has(latestDeploymentStatus)
+      ? latest
+      : null;
+  }
+
+  function renderVersionNotice() {
+    const notice = content.querySelector(".version-selection-notice");
+    if (notice) {
+      // Deployment polls call this too; an unchanged notice is left untouched.
+      setText(notice, versionNotice());
+    }
   }
 
   function renderDetailHeading() {
@@ -2131,10 +2193,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       renderCurrentVersion();
     }
     renderDetailHeading();
-    const notice = content.querySelector(".version-selection-notice");
-    if (notice) {
-      notice.textContent = versionNotice();
-    }
+    renderVersionNotice();
   }
 
   function renderLatestDeployment() {
@@ -2570,6 +2629,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                 }
               }
               renderLatestDeployment();
+              // A success is shown once the Agent reread makes the version current; until then
+              // the notice keeps "Deploying" rather than flash "Historical".
+              if (status !== "succeeded") {
+                renderVersionNotice();
+              }
               refreshDeployControls();
             },
           )
@@ -3330,6 +3394,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       mountedTab = retained;
       showDraftEditorNavigationBlock = retained.showBlock;
       content.replaceChildren(...retained.nodes);
+      // The deployment may have settled while this tab was parked.
+      renderVersionNotice();
       retained.resumeDrafts();
       return;
     }
@@ -3954,7 +4020,16 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                 element(
                   "div",
                   { className: "form-actions" },
-                  button("Edit current Configuration", () => change("draft", "configuration")),
+                  button("Edit current Configuration", () => {
+                    // The draft this navigation opens takes it with its editor open. Saving
+                    // patches the Configuration, which the API authorizes on its own.
+                    linkedVersionView = {
+                      key: linkedKey("draft", "configuration"),
+                      load: consoleLoads + 1,
+                      edit: true,
+                    };
+                    context.navigate(target("draft", "configuration"));
+                  }),
                 ),
                 nativeDocument(values, "View admitted native configuration"),
               ),
@@ -4237,7 +4312,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       render();
       editor.focus({ preventScroll: true });
     }
-    const edit = button("Edit Configuration", startEditing);
+    const edit = button("Edit Configuration", startEditing, {
+      "data-opens": "configuration-editor",
+    });
     const password = values.gateway?.auth?.password;
     const usesGeneratedGatewayPassword =
       password?.source === "env" &&
@@ -4595,7 +4672,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     void renderTab({ activated: true });
     // Logs scrolls to its output once that has loaded.
     if (linked && nextTab !== "logs") {
-      openVersionDetail({ animate: true, deploy: linked.deploy });
+      openVersionDetail({ animate: true, deploy: linked.deploy, edit: linked.edit });
     }
     return true;
   });

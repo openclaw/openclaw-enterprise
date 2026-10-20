@@ -443,6 +443,7 @@ export function renderCreateAgent(context, draft) {
         presets.startDefault,
         button("Start without Preset", () => startForm({}, {})),
       ),
+      presets.defaultHint,
     ),
     element(
       "section",
