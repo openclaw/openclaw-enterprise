@@ -490,6 +490,13 @@ for (const viewport of consoleViewports) {
     const apiKey = page.getByLabel("API key Secret", { exact: true });
     await apiKey.focus();
     assert.equal(await apiKey.getAttribute("aria-expanded"), "true");
+    assert.equal(
+      await apiKey.evaluate(
+        (node) => globalThis.document.getElementById(node.getAttribute("aria-controls")).hidden,
+      ),
+      false,
+      "its list shows",
+    );
     await apiKey.press("Escape");
     assert.equal(await apiKey.getAttribute("aria-expanded"), "false");
     const create = page.getByRole("button", { name: "Create Agent", exact: true });
@@ -608,9 +615,12 @@ for (const viewport of consoleViewports) {
     assert.equal(focused.role, "alert", "503: on the message");
     assert.ok(focused.text.startsWith(unknown), `503: ${focused.text}`);
     assert.equal(focused.inView, true, "503: in view");
-    assert.equal(
-      await dialog.getByRole("button", { name: "Create Secret", exact: true }).isDisabled(),
-      true,
-    );
+    for (const control of [
+      dialog.getByRole("button", { name: "Create Secret", exact: true }),
+      dialog.getByLabel("Name", { exact: true }),
+      dialog.getByLabel("Value", { exact: true }),
+    ]) {
+      assert.equal(await control.isDisabled(), true, "503: no other try until a refresh");
+    }
   });
 }
