@@ -219,7 +219,7 @@ OCC_TEST_QA_MATRIX=1 node --env-file="$TEST_ENV_FILE" \
 
 | Scenario          | In advisory | Presets         | Checks                                                                                                      |
 | ----------------- | ----------- | --------------- | ----------------------------------------------------------------------------------------------------------- |
-| `model-ui`        | Yes (Codex) | OpenClaw, Codex | Real model turn and native browser response.                                                                |
+| `model-ui`        | Yes (Codex) | OpenClaw, Codex | Real model turn, native browser response and Gateway people read.                                           |
 | `console-secrets` | Yes (Codex) | OpenClaw, Codex | Console create/replace/delete with an Agent draft Configuration reference and server-side deletion refusal. |
 | `git-write`       | No          | OpenClaw, Codex | Clone, edit, commit, push to the run's granted branch, dispose credentials.                                 |
 | `git-push-denied` | No          | Codex           | Reject a push to any other branch and dispose credentials.                                                  |

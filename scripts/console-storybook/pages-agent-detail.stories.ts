@@ -230,3 +230,16 @@ export const PolicyApplied = story("policyApplied");
 export const PolicyRetryApplication = story("policyRetryApplication");
 export const PolicyEditingAdminDenied = story("policyEditingAdminDenied");
 export const PolicyNoNetworkLimits = story("policyNoNetworkLimits");
+export const GatewayPeople = story("gatewayPeople");
+export const GatewayPeopleEmpty = story("gatewayPeopleEmpty");
+export const GatewayPeopleNotConfigured = story("gatewayPeopleNotConfigured");
+export const GatewayPeopleLoading = story("gatewayPeopleLoading");
+export const GatewayPeopleError = story("gatewayPeopleError");
+export const GatewayPeopleDenied = story("gatewayPeopleDenied");
+export const GatewayPeopleAccessGranted = story("gatewayPeopleAccessGranted");
+export const GatewayPeopleStopped = story("gatewayPeopleStopped");
+export const GatewayPeopleAvatar = story("gatewayPeopleAvatar");
+
+export const GatewayPeopleLarge = story("gatewayPeopleLarge");
+export const GatewayPeopleSearch = story("gatewayPeopleSearch");
+export const GatewayPeopleNoMatches = story("gatewayPeopleNoMatches");

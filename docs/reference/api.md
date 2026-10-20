@@ -68,7 +68,7 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 5 operations |
 | [Namespaces](#namespaces) | 6 operations |
-| [Agents](#agents) | 48 operations |
+| [Agents](#agents) | 50 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -1898,6 +1898,8 @@ Report the readable Secrets that the caller may not bind to a new Agent, not aut
 | [`DELETE /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}`](#delete-namespacesnamespaceidagentsagentiddeviceauthorizationssecretid) | Experimental: Discard a local device login without upstream revocation |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/device-authorizations/{secretId}/poll`](#post-namespacesnamespaceidagentsagentiddeviceauthorizationssecretidpoll) | Experimental: Complete device login without returning credential material |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/driver-configurations`](#get-namespacesnamespaceidagentsagentiddriverconfigurations) | Discover authorized Agent Driver configuration contributions |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/gateway/people`](#get-namespacesnamespaceidagentsagentidgatewaypeople) | List human profiles known to one active Agent Gateway |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/gateway/people/{profileId}/avatar`](#get-namespacesnamespaceidagentsagentidgatewaypeopleprofileidavatar) | Read a profile avatar from one active Agent Gateway |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`](#get-namespacesnamespaceidagentsagentidharnessstatus) | Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/native-admin`](#get-namespacesnamespaceidagentsagentidnativeadmin) | Resolve native admin UI launch availability for one Agent |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/permissions`](#get-namespacesnamespaceidagentsagentidpermissions) | Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation |
@@ -3443,6 +3445,101 @@ Discover authorized Agent Driver configuration contributions
 | `data.configurations[].scope` | `"installation" or "agent"` | Yes | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/gateway/people`
+
+<span id="get-namespacesnamespaceidagentsagentidgatewaypeople"></span>
+
+List human profiles known to one active Agent Gateway
+
+**Operation ID:** `getAgentGatewayPeople`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.people` | `array<object> or null` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/gateway/people/{profileId}/avatar`
+
+<span id="get-namespacesnamespaceidagentsagentidgatewaypeopleprofileidavatar"></span>
+
+Read a profile avatar from one active Agent Gateway
+
+**Operation ID:** `getAgentGatewayPersonAvatar`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `profileId` | path | `string` | Yes | min length: 1; max length: 200; pattern: `^[A-Za-z0-9-]+$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | Profile avatar |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `500` | Internal Server Error |
+| `501` | Not Implemented |
+| `503` | Service Unavailable |
+
+**`200` response body:** `image/gif`
+
+Schema: `string (binary)`.
+
+**`200` response body:** `image/jpeg`
+
+Schema: `string (binary)`.
+
+**`200` response body:** `image/png`
+
+Schema: `string (binary)`.
+
+**`200` response body:** `image/webp`
+
+Schema: `string (binary)`.
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/harness-status`
 

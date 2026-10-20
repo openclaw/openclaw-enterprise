@@ -68,6 +68,21 @@ await writeFile(
     displayName: "Example Agents for the shared research and engineering workspace",
   }),
 );
+// Image elements bypass the fetch fixture. Serve Alice's synthetic PNG at the
+// real avatar URL; Bob deliberately has no file so the fallback remains visible.
+const avatarDirectory = new URL(
+  "./dist/assets/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001/gateway/people/",
+  import.meta.url,
+);
+await rm(avatarDirectory, { recursive: true, force: true });
+await mkdir(new URL("profile-alice/", avatarDirectory), { recursive: true });
+await writeFile(
+  new URL("profile-alice/avatar", avatarDirectory),
+  Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMc0AAAAASUVORK5CYII=",
+    "base64",
+  ),
+);
 const files = (await readdir(new URL("./dist/assets/", import.meta.url), { recursive: true }))
   .filter((path) => /\.(mjs|html|css)$/.test(path))
   .sort();

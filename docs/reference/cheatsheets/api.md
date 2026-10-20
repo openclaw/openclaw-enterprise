@@ -71,6 +71,8 @@
 - [`getAgent`](../api.md#get-namespacesnamespaceidagentsagentid): Get an exact Namespace-owned Agent.
 - [`getAgentCallerPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissions): Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation.
 - [`getAgentCredentialWithdrawal`](../api.md#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal): Get the withdrawal state of a credential source for an Agent.
+- [`getAgentGatewayPeople`](../api.md#get-namespacesnamespaceidagentsagentidgatewaypeople): List human profiles known to one active Agent Gateway.
+- [`getAgentGatewayPersonAvatar`](../api.md#get-namespacesnamespaceidagentsagentidgatewaypeopleprofileidavatar): Read a profile avatar from one active Agent Gateway.
 - [`getAgentHarnessStatus`](../api.md#get-namespacesnamespaceidagentsagentidharnessstatus): Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox.
 - [`getAgentProvisioning`](../api.md#get-namespacesnamespaceidagentsprovisionworkid): Get first-time provisioning status for one exact work item.
 - [`getAgentRuntimeImages`](../api.md#get-namespacesnamespaceidagentsagentidruntimeimages): Read observed images and source commits for an Agent's active runtime.

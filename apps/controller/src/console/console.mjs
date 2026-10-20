@@ -2204,10 +2204,17 @@ async function loadPage({
             ? request(permissionsPath).catch(() => null)
             : Promise.resolve(null)
       ).then((permissions) => permissions?.secrets?.create));
+    const deniedReads = deniedReadsFor(owner);
+    if (fromRefresh && current.agentId) {
+      // Retry roster authorization after a grant without repeating audited denials on visits.
+      deniedReads.forget(
+        `/namespaces/${encodeURIComponent(namespaceId)}/agents/${encodeURIComponent(current.agentId)}/gateway/people`,
+      );
+    }
     const agentContext = {
       operatorId: session.user.id,
       installationAdmin,
-      deniedReads: deniedReadsFor(owner),
+      deniedReads,
       drafts: drafts.scope(namespaceId, current.agentId ?? "create"),
       suspendDrafts: () => drafts.suspend(),
       view: shell.view,

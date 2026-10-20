@@ -60,6 +60,7 @@ import {
 } from "./console-agents-test-support.mjs";
 import { temporaryDirectory } from "../helpers/temporary-directory.mjs";
 import {
+  AGENT_UPDATE_DENIED,
   callerDenied,
   DEPENDENCY_UNAVAILABLE,
   GENERIC_DENIAL,
@@ -4964,3 +4965,259 @@ async function holdNextStatusResponse(page, url) {
   );
   return { status: held.promise, release: release.resolve };
 }
+
+test("Gateway people show native roles and recover from a failed refresh", async (t) => {
+  let fail = false;
+  let releaseFirstRead;
+  const firstRead = new Promise((resolve) => {
+    releaseFirstRead = resolve;
+  });
+  t.after(() => releaseFirstRead());
+  let people = [
+    { id: "profile-alice", displayName: "Alice Team", role: "member", hasAvatar: true },
+    { id: "profile-bob", displayName: "Bob Team", role: "maintainer", hasAvatar: true },
+  ];
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: {
+      async list() {
+        await firstRead;
+        if (fail) {
+          throw new Error("Gateway unavailable");
+        }
+        return people;
+      },
+      async avatar({ profileId }) {
+        return profileId === "profile-alice"
+          ? {
+              mime: "image/png",
+              bytes: Buffer.from(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aMc0AAAAASUVORK5CYII=",
+                "base64",
+              ),
+            }
+          : undefined;
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("People roster", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Team Claw", nativeValues("people"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  // An optional WS-backed read must settle before its card becomes visible;
+  // unavailable/denied installations must never flash an empty loading card.
+  const pendingCard = page.locator(".gateway-people");
+  await pendingCard.waitFor({ state: "attached" });
+  assert.equal(await pendingCard.isVisible(), false);
+  assert.equal(await pendingCard.getAttribute("hidden"), "");
+  releaseFirstRead();
+  const card = page.getByRole("region", { name: "People" });
+  await card.getByText("Alice Team", { exact: true }).waitFor();
+  assert.equal(await card.getByText("member", { exact: true }).count(), 1);
+  assert.equal(await card.getByText("maintainer", { exact: true }).count(), 1);
+  await page.waitForFunction(
+    () => globalThis.document.querySelector(".gateway-people img")?.naturalWidth > 0,
+  );
+  await card.getByText("BT", { exact: true }).waitFor();
+  // A failed read removes stale results and leaves a working, explicit retry.
+  fail = true;
+  await card.getByRole("button", { name: "Refresh people" }).click();
+  await card
+    .getByRole("alert")
+    .getByText("Couldn’t load people from the Gateway. Try refreshing.")
+    .waitFor();
+  assert.equal(await card.getByText("Alice Team", { exact: true }).count(), 0);
+  fail = false;
+  people = [];
+  await card.getByRole("button", { name: "Refresh people" }).click();
+  await card
+    .getByText("No people yet. Profiles appear after someone connects to the Gateway.")
+    .waitFor();
+});
+
+test("Gateway people preview opens a searchable, alphabetized full roster", async (t) => {
+  let fail = false;
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: {
+      async list() {
+        if (fail) {
+          throw new Error("Gateway unavailable");
+        }
+        // Reverse the response order so the UI must sort the full roster before previewing it.
+        return Array.from({ length: 50 }, (_, index) => ({
+          id: `profile-${index}`,
+          displayName: `Teammate ${String(50 - index).padStart(2, "0")}`,
+          role: index === 0 ? "maintainer" : "member",
+          hasAvatar: false,
+        }));
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Large team", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Team Claw", nativeValues("people"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, {
+    args: ["--disable-features=OverlayScrollbar"],
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const card = page.getByRole("region", { name: "People" });
+  const preview = card.getByRole("list", { name: "Gateway people", exact: true });
+  const viewAll = card.getByRole("button", { name: "View all 50 people", exact: true });
+  await viewAll.waitFor();
+  assert.deepEqual(
+    await preview.locator(".gateway-person-name").allTextContents(),
+    Array.from({ length: 6 }, (_, index) => `Teammate 0${index + 1}`),
+  );
+  await viewAll.click();
+  const panel = page.getByRole("dialog", { name: "People", exact: true });
+  // Desktop reserves a scrollbar gutter; the current phone layout deliberately does not.
+  // Exercise that regression before checking the shared bottom-sheet treatment on a phone.
+  await panel.evaluate((node) => Promise.all(node.getAnimations().map((item) => item.finished)));
+  const desktopBounds = await panel.boundingBox();
+  const desktopWidth = await page.evaluate(
+    () => globalThis.document.documentElement.getBoundingClientRect().width,
+  );
+  assert.ok(desktopWidth < page.viewportSize().width, "exercise a reserved scrollbar gutter");
+  assert.ok(desktopBounds.x >= 0, "the desktop drawer's left edge remains visible");
+  assert.ok(
+    desktopBounds.x + desktopBounds.width <= desktopWidth,
+    "drawer fits its containing width",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  const bounds = await panel.boundingBox();
+  const availableWidth = await page.evaluate(
+    () => globalThis.document.documentElement.getBoundingClientRect().width,
+  );
+  assert.ok(bounds.x >= 0, "the phone sheet's left edge remains visible");
+  assert.ok(bounds.x + bounds.width <= availableWidth, "sheet fits its containing width");
+  assert.ok(Math.abs(bounds.y + bounds.height - 844) <= 1, "the phone sheet meets the bottom edge");
+  const search = panel.getByRole("searchbox", { name: "Search people" });
+  assert.equal(await search.evaluate((node) => node === globalThis.document.activeElement), true);
+  const fullList = panel.getByRole("list", { name: "All Gateway people", exact: true });
+  assert.equal(await fullList.getByRole("listitem").count(), 50);
+  assert.equal(await fullList.locator(".gateway-person-name").last().textContent(), "Teammate 50");
+  await search.fill("TEAMMATE 50");
+  await panel.getByRole("status").getByText("1 of 50 people", { exact: true }).waitFor();
+  assert.equal(await fullList.getByRole("listitem").count(), 1);
+  await fullList.getByText("maintainer", { exact: true }).waitFor();
+  await search.fill("no such person");
+  await panel.getByText("No people match your search.", { exact: true }).waitFor();
+  assert.equal(await fullList.getByRole("listitem").count(), 0);
+  await search.press("Escape");
+  // Search inputs can consume Escape to clear text; the dialog must still be dismissible.
+  if (await panel.isVisible()) {
+    await search.press("Escape");
+  }
+  await panel.waitFor({ state: "hidden" });
+  assert.equal(await viewAll.evaluate((node) => node === globalThis.document.activeElement), true);
+  await viewAll.click();
+  assert.equal(await search.inputValue(), "");
+  assert.equal(await fullList.getByRole("listitem").count(), 50);
+  await panel.getByRole("button", { name: "Close people" }).click();
+  assert.equal(await viewAll.evaluate((node) => node === globalThis.document.activeElement), true);
+  // A failed refresh clears the overview and makes previously loaded profiles inaccessible.
+  fail = true;
+  await card.getByRole("button", { name: "Refresh people" }).click();
+  await card.getByRole("alert").waitFor();
+  assert.equal(await preview.getByRole("listitem").count(), 0);
+  assert.equal(await viewAll.isVisible(), false);
+});
+
+test("Gateway roster administrators can search without Agent update and recover access after denial", async (t) => {
+  let reads = 0;
+  const fixture = await createConsoleAppFixture(t, {
+    gatewayPeopleAccess: {
+      async list() {
+        reads++;
+        return Array.from({ length: 7 }, (_, index) => ({
+          id: `profile-${index}`,
+          displayName: `Teammate ${index}`,
+          role: "member",
+          hasAvatar: false,
+        }));
+      },
+    },
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Roster read access", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Team Claw", nativeValues("people"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const reader = await fixture.createAccountWithPolicy("roster-reader", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-roster-reader",
+      namespaceId: namespace.id,
+      permissions: [
+        ...["namespace", "agent", "agent_revision", "configuration"].map((resourceKind) => ({
+          action: "read",
+          resourceKind,
+        })),
+        { action: "administer", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-roster-reader",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-roster-reader",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  const writes = [];
+  page.on("request", (request) => {
+    if (["PATCH", "PUT", "DELETE"].includes(request.method())) {
+      writes.push(request.url());
+    }
+  });
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"),
+    reader.credentials,
+  );
+  const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
+  await page.getByText(AGENT_UPDATE_DENIED, { exact: true }).waitFor();
+  assert.equal(await save.count(), 0, "read-only plugin selections offer no Save");
+  const card = page.getByRole("region", { name: "People" });
+  await card.getByRole("button", { name: "View all 7 people", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "People", exact: true });
+  await panel.getByRole("searchbox", { name: "Search people" }).fill("Teammate 6");
+  await panel.getByText("1 of 7 people", { exact: true }).waitFor();
+  assert.equal(await panel.getByRole("listitem").count(), 1);
+  assert.deepEqual(writes, [], "roster search never writes Agent settings");
+  const readsBeforeDenial = reads;
+  // Withdraw only roster administration. The real HTTP denial must clear
+  // previously readable data without contacting the Gateway adapter again.
+  fixture.policy.restrictions.push({
+    id: "deny-roster-read",
+    namespaceId: namespace.id,
+    effect: "deny",
+    action: "administer",
+    resourceKind: "agent",
+    resourceId: agent.id,
+  });
+  await panel.getByRole("button", { name: "Close people" }).click();
+  await card.getByRole("button", { name: "Refresh people" }).click();
+  await card.waitFor({ state: "hidden" });
+  assert.equal(await page.locator(".gateway-people li").count(), 0);
+  assert.equal(await panel.isVisible(), false);
+  assert.equal(reads, readsBeforeDenial);
+  // A grant must be recoverable in this tab. Reload retains the remembered
+  // denial; an explicit page Refresh asks the real API to authorize again.
+  fixture.policy.restrictions.splice(
+    fixture.policy.restrictions.findIndex((restriction) => restriction.id === "deny-roster-read"),
+    1,
+  );
+  await page.reload();
+  await page.getByRole("heading", { name: "Team Claw", exact: true }).waitFor();
+  assert.equal(await card.isVisible(), false);
+  assert.equal(reads, readsBeforeDenial);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await card
+    .getByRole("button", { name: "View all 7 people", exact: true })
+    .waitFor({ timeout: 5000 });
+  assert.equal(reads, readsBeforeDenial + 1);
+  assert.deepEqual(writes, [], "retrying roster access never writes Agent settings");
+});

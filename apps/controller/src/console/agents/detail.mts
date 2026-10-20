@@ -38,6 +38,7 @@ import {
   renderHarnessAuthSummary,
 } from "./harness-auth.mjs";
 import { renderAgentAccess } from "./access.mjs";
+import { renderGatewayPeople } from "./people.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
@@ -1505,6 +1506,7 @@ export async function renderAgentDetail(
   const nativeAdmin = renderNativeAdminAccess(context, path, () =>
     latestPermissionsRead.then((permissions) => permissions?.administer),
   );
+  const gatewayPeople = renderGatewayPeople(context, path);
   const recovery = createDeploymentRecovery(context, {
     path,
     selected,
@@ -1519,7 +1521,13 @@ export async function renderAgentDetail(
     statusLine,
     deploymentStatus,
   );
-  view.replaceChildren(recovery.section, nativeAdmin.section, overviewStatus, versionLayout);
+  view.replaceChildren(
+    recovery.section,
+    nativeAdmin.section,
+    gatewayPeople.section,
+    overviewStatus,
+    versionLayout,
+  );
   // Recovery or native administration can appear above the facts. Keep the Agent heading and
   // controls in place, then reveal the overview once its first deployment reads settle.
   // The bounded wait still exposes loading, refresh and the version controls on a slow read.
@@ -2268,6 +2276,7 @@ export async function renderAgentDetail(
       }
       // Native admin access depends on the serving version, so a finished deployment rereads it.
       nativeAdmin.refresh();
+      gatewayPeople.refresh();
     }
     if (revisionResult) {
       renderOverview(revisionResult, snapshot);
@@ -2595,9 +2604,11 @@ export async function renderAgentDetail(
           activityPanel.replaceWith(panel);
           activityPanel = panel;
         }
-        void Promise.all([nativeAdmin.ready, failed ? callerPermissionsRead : null]).then(
-          revealDetail,
-        );
+        void Promise.all([
+          nativeAdmin.ready,
+          gatewayPeople.ready,
+          failed ? callerPermissionsRead : null,
+        ]).then(revealDetail);
       };
       const nextPanel: HTMLElement = mostRecent
         ? createDeploymentStatusPanel(

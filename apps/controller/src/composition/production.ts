@@ -1,5 +1,6 @@
 import { installEgressAuthority } from "./egress-authority.ts";
 import { installationControllerOptions } from "./installation-config.ts";
+import { createGatewayPeopleAccess } from "./gateway-people.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
@@ -36,7 +37,10 @@ import {
 } from "./installation-config.ts";
 import { emitOccLogEvent, skippedUserLogFields, type OccLogger } from "../logging.ts";
 import { resolveApprovedProductionHarness } from "./production-harness.ts";
-import type { ControllerWorkspaceFilesAccess } from "../gateway/contracts.ts";
+import type {
+  ControllerGatewayPeopleAccess,
+  ControllerWorkspaceFilesAccess,
+} from "../gateway/contracts.ts";
 import type { NativeAdminAccessConfig } from "../gateway/native-admin.ts";
 import {
   createWorkspaceFilesAccess,
@@ -65,6 +69,7 @@ export interface ProductionConfig {
   readonly logger?: OccLogger;
   readonly serviceAccountDriverFactory?: ServiceAccountDriverFactory;
   readonly workspaceFilesAccess?: ControllerWorkspaceFilesAccess;
+  readonly gatewayPeopleAccess?: ControllerGatewayPeopleAccess;
   readonly gatewayApiKeyPath?: string;
   readonly channelDirectoryProxyUrl?: string;
   readonly channelDirectoryManagedProxyHost?: string;
@@ -353,6 +358,11 @@ export async function composeProduction(
         : (warning) => emitOccLogEvent(config.logger!, warning),
     );
 
+    const gatewayPeopleAccess =
+      config.gatewayPeopleAccess ??
+      (config.gatewayApiKeyPath === undefined
+        ? undefined
+        : createGatewayPeopleAccess(computeDriver, config.gatewayApiKeyPath));
     let workspaceFilesAccess = config.workspaceFilesAccess;
     if (workspaceFilesAccess === undefined && config.gatewayApiKeyPath !== undefined) {
       const gatewayApiKeyPath = config.gatewayApiKeyPath;
@@ -397,6 +407,7 @@ export async function composeProduction(
       },
       ...(config.clientAddress === undefined ? {} : { trustedProxies: config.clientAddress }),
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
+      ...(gatewayPeopleAccess === undefined ? {} : { gatewayPeopleAccess }),
     });
     await preparedGitHub?.connect(pool);
     const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
