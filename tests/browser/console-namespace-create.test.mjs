@@ -356,17 +356,36 @@ test("a member is not invited to create, and a real IAM denial disables Create N
     await emptyText.textContent(),
     "Ask an administrator to create a Namespace or grant access to an existing one.",
   );
-  // Refresh rerenders the list and keeps the refusal; a browser reload asks the API again.
+  // Refresh rerenders the list (a second list read) and keeps the refusal.
+  const listReads = () =>
+    requests.filter(({ method, path }) => method === "GET" && path === "/namespaces").length;
+  const readsBefore = listReads();
+  await page.locator("#namespace-create-refused").evaluate((node) => {
+    node.dataset.old = "";
+  });
   await page.getByRole("button", { name: "Refresh", exact: true }).click();
-  await page.locator(settledView).getByRole("status").filter({ hasText: refused }).waitFor();
+  await page.locator(settledView).locator("#namespace-create-refused:not([data-old])").waitFor();
+  assert.ok(listReads() > readsBefore);
   assert.equal(await opener.isDisabled(), true);
+  // A browser reload asks the API again; Escape after that refusal also leaves focus on it.
   await page.reload();
   await page
     .locator(settledView)
     .getByRole("heading", { name: "No accessible namespaces", exact: true })
     .waitFor();
   assert.equal(await opener.isEnabled(), true);
-  assert.equal(creates(requests).length, 1);
+  await opener.click();
+  await dialog.getByLabel("Namespace name").fill("Forbidden team");
+  await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  await dialog
+    .getByRole("alert")
+    .filter({ hasText: /do not have permission/ })
+    .waitFor();
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(await opener.isDisabled(), true);
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), refused);
+  assert.equal(creates(requests).length, 2);
   assert.equal(
     (await fixture.request("GET", "/namespaces")).data.some(
       (item) => item.name === "Forbidden team",

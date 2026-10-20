@@ -45,7 +45,7 @@ export function renderNamespaces(context, items, renderRows) {
   });
   const refusal = element(
     "p",
-    { className: "muted", role: "status", id: "namespace-create-refused" },
+    { className: "muted", id: "namespace-create-refused" },
     "Your access does not include creating Namespaces in this Installation.",
   );
   const emptyText = element("p");
@@ -153,6 +153,8 @@ export function renderNamespaces(context, items, renderRows) {
       }
       dialog.close();
       if (forbidden) {
+        // Announced once, as the answer to this attempt; a later render shows it as page text.
+        refusal.setAttribute("role", "status");
         showRefused();
         // The opener the dialog returned focus to is disabled now; focus the reason instead.
         refusal.tabIndex = -1;
