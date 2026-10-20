@@ -5,7 +5,7 @@
 `ChannelDriver` validates configured credentials and looks up provider identities for an authorized Namespace edit.
 OpenClaw Control Plane (OCC) owns caller authorization, Secret access, and the
 saved Agent or Configuration. The Driver owns the provider request and returns
-bounded display candidates with stable provider IDs. It does not send messages
+display candidates with stable provider IDs. It does not send messages
 or grant channel access. The current controller selects the bundled Slack
 implementation for directory lookup; see [Driver selection](selection.md).
 

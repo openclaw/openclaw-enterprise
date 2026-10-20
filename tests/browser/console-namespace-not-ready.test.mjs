@@ -51,16 +51,17 @@ async function firstRun(t, names = [], fixtureOptions = {}) {
   return { fixture, namespaces };
 }
 
-// Answers GET /namespaces from the real API with the listed Namespaces' fields replaced.
+// Answers GET /namespaces from the real API with the listed Namespaces' fields replaced; a null
+// patch leaves the Namespace out, as a list read after it was deleted or access was removed.
 async function reportNamespaces(page, patches) {
   await page.route(
     (url) => url.pathname === "/namespaces",
     async (route) => {
       const response = await route.fetch();
       const body = await response.json();
-      body.data = body.data.map((item) =>
-        patches.has(item.id) ? { ...item, ...patches.get(item.id) } : item,
-      );
+      body.data = body.data
+        .filter((item) => patches.get(item.id) !== null)
+        .map((item) => (patches.has(item.id) ? { ...item, ...patches.get(item.id) } : item));
       await route.fulfill({ response, json: body });
     },
   );
@@ -235,26 +236,46 @@ test("a deleting Namespace is never the default pick while another remains", asy
   assert.equal(new URL(page.url()).searchParams.get("namespace"), namespaces.default.id);
 });
 
-test("with only a deleting Namespace, the pick names it and offers no wait", async (t) => {
-  const { fixture, namespaces } = await firstRun(t);
-  const { page } = await newPage(t, fixture, { browser });
-  await reportNamespaces(page, new Map([[namespaces.default.id, { status: "deleting" }]]));
-  await login(page, fixture, "/console/");
-  const view = page.locator(settledView);
-  await view.getByRole("heading", { name: "No Agents yet" }).waitFor();
-  assert.equal(
-    await view.getByRole("status").filter({ hasText: "Namespace status: Deleting." }).textContent(),
+// Deleting and failed Namespaces take no new Agent and neither becomes ready by waiting; each
+// names its own reason (finding 1932 for failed).
+const UNAVAILABLE = [
+  [
+    "deleting",
     "Namespace status: Deleting. This Namespace is being deleted, so it cannot hold new Agents. Choose another Namespace.",
-  );
-  await view.getByText("Agents cannot be created in this Namespace.").waitFor();
-  assert.deepEqual(
-    await statusTone(view.getByRole("status").filter({ hasText: "Namespace status: Deleting." })),
-    WARNING,
-  );
-  const create = view.getByRole("button", { name: "Create Agent" });
-  assert.equal(await create.isDisabled(), true);
-  assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
-});
+  ],
+  [
+    "failed",
+    "Namespace status: Failed. Provisioning this Namespace failed, so it cannot hold new Agents. Ask an operator to check it on the Namespaces page, or choose another Namespace.",
+  ],
+];
+
+for (const [status, reason] of UNAVAILABLE) {
+  test(`with only a ${status} Namespace, the pick names it and offers no wait`, async (t) => {
+    const { fixture, namespaces } = await firstRun(t);
+    const { page } = await newPage(t, fixture, { browser });
+    await reportNamespaces(page, new Map([[namespaces.default.id, { status }]]));
+    await login(page, fixture, "/console/");
+    const view = page.locator(settledView);
+    await view.getByRole("heading", { name: "No Agents yet" }).waitFor();
+    const note = view.getByRole("status").filter({ hasText: reason.split(".")[0] });
+    assert.equal(await note.textContent(), reason);
+    await view.getByText("Agents cannot be created in this Namespace.").waitFor();
+    assert.equal(await view.getByText(INVITATION).count(), 0);
+    assert.equal(await view.getByText(DRAFT_INVITATION).count(), 0);
+    assert.deepEqual(await statusTone(note), WARNING);
+    const create = view.getByRole("button", { name: "Create Agent" });
+    assert.equal(await create.isDisabled(), true);
+    assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
+
+    // Create Agent itself refuses to start, with the same reason.
+    await page.goto(
+      new URL(`/console/agents/new?namespace=${namespaces.default.id}`, fixture.origin).href,
+    );
+    await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
+    assert.equal(await view.getByRole("status").filter({ hasText: reason }).count(), 1);
+    assert.equal(await view.getByRole("button", { name: "Start without Preset" }).count(), 0);
+  });
+}
 
 test("a return to the Agents list and Create Agent shows a Namespace that became ready", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
@@ -267,7 +288,10 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   // Both views are kept for a return while the Namespace is provisioning.
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
-  await view.getByRole("link", { name: "← Agents", exact: true }).click();
+  await page
+    .locator(".content .page-header")
+    .getByRole("link", { name: "← Agents", exact: true })
+    .click();
   await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
   assert.equal(await view.getByRole("button", { name: "Create Agent" }).isDisabled(), true);
 
@@ -286,6 +310,216 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
     .getByText("Dedicated Agents are provisioned and deployed when created.", { exact: true })
     .waitFor();
   assert.equal(await view.getByText(NOT_READY).count(), 0);
+});
+
+// A reader who stays on the Agents list, with no refocus, return or Refresh, kept seeing the
+// provisioning note after the Namespace turned ready (finding 2058). The list rereads the
+// Namespace at Create Agent's cadence while the note waits, updates it in place so the search
+// text and focus stay, reads nothing while the tab is hidden, and stops once it is ready.
+test("the Agents list sees its Namespace become ready without a Refresh", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
+  const { page } = await newPage(t, fixture, { browser });
+  await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
+  const patches = new Map([[namespace.id, { status: "provisioning" }]]);
+  await reportNamespaces(page, patches);
+  await routeInstallationProvisioning(page, fixture);
+  const view = page.locator(settledView);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
+  await view.getByText(DRAFT_INVITATION).waitFor();
+  const reads = [];
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/namespaces") {
+      reads.push(response);
+    }
+  });
+  // One check: its read must arrive, so its answer, not the absence of one, keeps the note.
+  const poll = async () => {
+    const read = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/namespaces",
+    );
+    await page.clock.runFor(10_000);
+    await read;
+  };
+  await poll();
+  await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
+  // A hidden tab reads nothing. Only the property changes, so the page's own visibility
+  // recheck stays out of this.
+  const hidden = (value) =>
+    page.evaluate((shown) => {
+      Object.defineProperty(globalThis.document, "hidden", {
+        configurable: true,
+        get: () => shown,
+      });
+    }, value);
+  await hidden(true);
+  const beforeHidden = reads.length;
+  await page.clock.runFor(30_000);
+  assert.equal(reads.length, beforeHidden);
+  await hidden(false);
+  // The reader is typing a search when the Namespace turns ready.
+  const search = view.getByRole("searchbox", { name: "Search Agents" });
+  await search.fill("Probe");
+  release();
+  await poll();
+  const readyNote = view
+    .getByRole("status")
+    .filter({ hasText: "Namespace status: Ready. Agents created here can be deployed now." });
+  await readyNote.waitFor();
+  assert.deepEqual(await statusTone(readyNote), { ...WARNING, tone: "success" });
+  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  const create = view.getByRole("button", { name: "Create Agent" });
+  assert.equal(await create.isEnabled(), true);
+  assert.equal(await create.getAttribute("aria-describedby"), null);
+  assert.equal(await search.inputValue(), "Probe");
+  assert.equal(await search.evaluate((node) => node === node.ownerDocument.activeElement), true);
+  await search.fill("");
+  await view.getByText(INVITATION).waitFor();
+  // A ready Namespace needs no more checks.
+  const settled = reads.length;
+  await page.clock.runFor(30_000);
+  assert.equal(reads.length, settled);
+
+  function release() {
+    patches.delete(namespace.id);
+  }
+});
+
+// The Agents list waiting on a provisioning Namespace, with the page clock held: `poll()` runs one
+// check and waits for its read to arrive, so its answer, not the absence of one, is what shows.
+async function waitingList(t) {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
+  const { page } = await newPage(t, fixture, { browser });
+  await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
+  const patches = new Map([[namespace.id, { status: "provisioning" }]]);
+  await reportNamespaces(page, patches);
+  await routeInstallationProvisioning(page, fixture);
+  const view = page.locator(settledView);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
+  await view.getByText(DRAFT_INVITATION).waitFor();
+  const reads = [];
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/namespaces") {
+      reads.push(response.status());
+    }
+  });
+  // Requests, not answers: a check started but not yet answered still counts.
+  let requested = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/namespaces") {
+      requested += 1;
+    }
+  });
+  const poll = async () => {
+    const read = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/namespaces",
+    );
+    await page.clock.runFor(10_000);
+    await read;
+  };
+  // No check comes over three more cadences.
+  const assertStopped = async () => {
+    const settled = requested;
+    await page.clock.runFor(30_000);
+    assert.equal(requested, settled);
+  };
+  const create = view.getByRole("button", { name: "Create Agent" });
+  const set = (patch) => patches.set(namespace.id, patch);
+  return { fixture, namespace, page, view, reads, poll, assertStopped, create, set };
+}
+
+// Only the provisioning-to-ready turn was pinned (finding 2082). A Namespace that fails or starts
+// deleting while the list waits takes no new Agent: the gate, its note and the empty state follow,
+// and the wait ends.
+for (const [status, reason] of [
+  ["failed", "Namespace status: Failed. Provisioning this Namespace failed"],
+  ["deleting", "Namespace status: Deleting. This Namespace is being deleted"],
+]) {
+  test(`the Agents list turns its gate off when its Namespace turns ${status}`, async (t) => {
+    const { view, poll, assertStopped, create, set } = await waitingList(t);
+    assert.equal(await create.isEnabled(), true);
+    set({ status });
+    await poll();
+    const note = view.getByRole("status").filter({ hasText: reason });
+    await note.waitFor();
+    assert.deepEqual(await statusTone(note), WARNING);
+    assert.equal(await create.isDisabled(), true);
+    assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
+    assert.equal(await note.getAttribute("id"), "namespace-not-ready");
+    await view.getByText("Agents cannot be created in this Namespace.", { exact: true }).waitFor();
+    assert.equal(await view.getByText(DRAFT_INVITATION).count(), 0);
+    await assertStopped();
+  });
+}
+
+// A list read without the selected Namespace (deleted, or access removed) ended the wait and left
+// "Provisioning" with Create Agent enabled for as long as the reader stayed (finding 2081). It
+// now says the Namespace is missing, as Create Agent does, and disables Create Agent.
+test("the Agents list names a Namespace that left the list while it waited", async (t) => {
+  const { view, poll, assertStopped, create, set } = await waitingList(t);
+  set(null);
+  await poll();
+  const note = view.getByRole("status").filter({
+    hasText: "This Namespace is missing or you no longer have access. Choose another Namespace.",
+  });
+  await note.waitFor();
+  assert.deepEqual(await statusTone(note), WARNING);
+  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  assert.equal(await create.isDisabled(), true);
+  assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
+  await view.getByText("Agents cannot be created in this Namespace.", { exact: true }).waitFor();
+  await assertStopped();
+});
+
+// An unchanged or failed read changes nothing on screen, and the next check still comes
+// (finding 2082).
+test("the Agents list keeps checking its Namespace after a failed read", async (t) => {
+  const { page, view, reads, poll, create, set } = await waitingList(t);
+  // An unchanged answer leaves the note as it is: the same node, not announced again.
+  const note = view.getByRole("status").filter({ hasText: NOT_READY });
+  await note.evaluate((node) => {
+    node.dataset.kept = "";
+  });
+  await poll();
+  assert.equal(await view.locator("#namespace-not-ready[data-kept]").count(), 1);
+  await page.route(
+    (url) => url.pathname === "/namespaces",
+    (route) =>
+      route.fulfill({
+        status: 503,
+        json: { error: { code: "UNAVAILABLE", message: "Try again." } },
+      }),
+    { times: 1 },
+  );
+  await poll();
+  assert.deepEqual(reads, [200, 503]);
+  await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
+  set({ status: "ready" });
+  await poll();
+  await view
+    .getByRole("status")
+    .filter({ hasText: "Namespace status: Ready. Agents created here can be deployed now." })
+    .waitFor();
+  assert.equal(await create.isEnabled(), true);
+});
+
+// A list kept for a return comes back with its check stopped; it starts again on the return
+// (finding 2082). The check that came due while the reader was away found the page gone.
+test("a return to a kept Agents list mid-wait keeps checking its Namespace", async (t) => {
+  const { page, view, poll, create, set } = await waitingList(t);
+  await page.getByRole("link", { name: "Namespaces", exact: true }).click();
+  await page.getByRole("list", { name: "Namespaces" }).waitFor();
+  await page.clock.runFor(10_000);
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
+  set({ status: "ready" });
+  await poll();
+  await view
+    .getByRole("status")
+    .filter({ hasText: "Namespace status: Ready. Agents created here can be deployed now." })
+    .waitFor();
+  assert.equal(await create.isEnabled(), true);
 });
 
 // Create Agent open on a provisioning Namespace with a Dedicated plan waits for the Namespace.

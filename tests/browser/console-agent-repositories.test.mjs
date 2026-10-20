@@ -849,7 +849,7 @@ for (const count of [1, 5, 25, 140]) {
       );
       await page.getByRole("button", { name: "Create Agent", exact: true }).click();
       assert.equal((await saved).status(), 201);
-      await page.getByRole("heading", { name: "Create new version" }).waitFor();
+      await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
       await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
       await page.getByRole("button", { name: "Start without Preset" }).click();
       await page.getByText(/Recently used/).waitFor();

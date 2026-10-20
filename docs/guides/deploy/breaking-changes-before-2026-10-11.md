@@ -42,14 +42,14 @@ key or a TLS key. Copy your
 Codex Agents whose shell commands fail with
 `bwrap: No permissions to create a new namespace`.
 Since #2079, the OpenShell Sandbox Driver adds `"approvalsReviewer": "user"` to
-the Codex app server settings it freezes when it admits a revision, which keeps
-each turn at `danger-full-access`. A revision admitted earlier keeps its frozen
+the Codex app server settings it saves during deployment, which keeps
+each turn at `danger-full-access`. A version saved earlier keeps its saved
 settings, so the Gateway still turns Codex's own sandbox on, and that sandbox
 cannot start inside OpenShell.
 
 **Who is affected.** Dedicated Codex Agents on the
 [OpenShell Sandbox Driver](../../reference/drivers/openshell-sandbox.md) whose
-active revision was admitted before #2079 (`66ea9bed5`, 2026-10-10). Other
+selected version was saved before #2079 (`66ea9bed5`, 2026-10-10). Other
 Harnesses are not affected by the `bwrap` failure.
 
 **How to tell.** Every shell command in the Agent's chats fails with that
@@ -58,7 +58,7 @@ Harnesses are not affected by the `bwrap` failure.
 **Steps.** Upgrade the controller to `66ea9bed5` or later, then deploy the Agent
 again (`occ agent deploy <id>`). A
 [runtime upgrade](production-upgrade.md#upgrade-agent-runtimes) does this for
-every running Agent. The new revision uses the Agent's current Configuration
+every running Agent. The new version uses the Agent's current Configuration
 draft. If commands still fail, check `tools.exec`
 ([OpenShell credential sources](openshell-credential-sources.md)). _untested_
 
@@ -85,7 +85,7 @@ also redeploy Agents whose bind is omitted or `auto`.
 ## 2026-10-10: controller-only releases can restart Agent Pods once
 
 **What breaks.** After a controller-only release, the first time the new worker
-prepares an existing Kubernetes revision again, it applies the Gateway and
+prepares an existing Kubernetes version again, it applies the Gateway and
 Harness Pod templates the new controller renders. When they changed (since #1758,
 for example, readiness uses an HTTP probe), both Deployments roll once on the
 same runtime image, and chat is unavailable until the new Pods are ready (about
@@ -97,7 +97,7 @@ Agents only if their deployment was still finishing when the new worker took
 over.
 
 **How to tell.** The Agent's Gateway and Harness Pods restart after the
-controller rollout under a new ReplicaSet of the same revision.
+controller rollout under a new ReplicaSet of the same version.
 
 **Steps.** Before a controller-only release, confirm the new controller supports
 the deployed runtime ([checklist](upgrade-checklist.md)): affected Pods restart

@@ -15,6 +15,7 @@
   "fileConcurrency": 3,
   "parallelFiles": [
     "tests/integration/runtime-image-startup.test.mjs",
+    "tests/integration/runtime-image-gateway-workspace.test.mjs",
     "tests/integration/runtime-image-public-github-read.test.mjs",
     "tests/integration/runtime-image-managed-files.test.mjs",
     "tests/integration/workspace-files-native.test.mjs"
@@ -35,8 +36,13 @@
         "runtime image discovers the bundled Codex plugin from a fresh gateway home",
         "runtime image keeps Codex auth writable with a nested generated images mount",
         "runtime image publishes dedicated assets with the Kubernetes gateway entrypoint",
+        "runtime image validates the configuration dedicated native OpenClaw renders"
+      ]
+    },
+    {
+      "path": "tests/integration/runtime-image-gateway-workspace.test.mjs",
+      "expectedTests": [
         "runtime image Gateway hot-loads its workspace node binding without restarting OpenClaw",
-        "runtime image validates the configuration dedicated native OpenClaw renders",
         "runtime image spawns custom-provider subagents with intact native model IDs in the remote workspace"
       ]
     },

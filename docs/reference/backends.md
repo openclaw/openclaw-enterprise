@@ -235,7 +235,7 @@ PATCH still requires `configurationId`. Malformed/empty IDs return
 No Backend is inferred from model configuration or an account, and saving an
 Agent makes no upstream call. Deployment copies `backendId` into an immutable
 AgentRevision; later draft edits cannot change that snapshot. PostgreSQL stores
-the snapshot in the immutable revision row's `backend_id` column.
+the snapshot in the immutable Agent revision row's `backend_id` column.
 
 A GitHub Backend ID is invalid in this field; the general `/backends` inventory
 includes both types. Configure this association through the Agent API or a Preset.

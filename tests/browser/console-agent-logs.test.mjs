@@ -1812,11 +1812,11 @@ test("a status denial for one operator does not carry over to the next sign-in o
   await page.getByText(/Runtime status requires Agent operate/).waitFor();
 
   // Sign out and in as the administrator without reloading the page.
-  await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Logout" }).click();
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.locator(".account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.waitForURL(/\/console\/agents/);
   const statusReads = () =>
     requests.filter(({ path }) => path.endsWith(`/deployments/${revisionId}/runtime`)).length;
@@ -2343,7 +2343,7 @@ for (const delayed of ["follow", "download"]) {
     logs.computeDriver.state.lines.push(line(2, "authorized before revocation"));
 
     const follow = page.getByRole("button", { name: "Follow", exact: true });
-    const download = page.getByRole("button", { name: "Download" });
+    const download = page.getByRole("button", { name: "Download", exact: true });
     const startFollow = async () => {
       await follow.click();
       await page.clock.runFor(2_000);
@@ -2727,11 +2727,11 @@ test("a restored operate grant shows status on Back, and a new sign-in asks for 
 
   // Sign out and in again as the same member, without reloading the tab.
   changeGrant(role, "read_logs", true);
-  await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Logout" }).click();
-  await page.getByLabel("Username").fill(account.credentials.email);
+  await page.locator(".account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.getByLabel("Email", { exact: true }).fill(account.credentials.email);
   await page.getByLabel("Password").fill(account.credentials.password);
-  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.waitForURL(/\/console\/agents/);
   const url = detailUrl(logs.fixture, logs.namespace.id, logs.agent.id, logs.revisionId, "logs");
   await page.evaluate((target) => {
@@ -2839,11 +2839,11 @@ test("a status refusal taken while operate is allowed is asked again after a new
   assert.equal(permissionReads(), permissionsBefore + 1);
 
   await page.unroute(`${logs.fixture.origin}${statusPath}`);
-  await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Logout" }).click();
-  await page.getByLabel("Username").fill(account.credentials.email);
+  await page.locator(".account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.getByLabel("Email", { exact: true }).fill(account.credentials.email);
   await page.getByLabel("Password").fill(account.credentials.password);
-  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.waitForURL(/\/console\/agents/);
   const url = detailUrl(logs.fixture, logs.namespace.id, logs.agent.id, logs.revisionId, "logs");
   await page.evaluate((target) => {

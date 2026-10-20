@@ -537,8 +537,8 @@ test(
     // Console sign-out deletes exactly this OCE session; Keycloak's session is untouched
     // (RP-initiated logout is a non-goal).
     const signOut = nextResponse(page, "/api/auth/sign-out");
-    await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
-    await page.getByRole("menuitem", { name: "Logout" }).click();
+    await page.locator(".account-toggle").click();
+    await page.getByRole("menuitem", { name: "Sign out" }).click();
     assert.equal((await signOut).status(), 200);
     const again = page.getByRole("button", { name: "Continue with Keycloak" });
     await again.waitFor();

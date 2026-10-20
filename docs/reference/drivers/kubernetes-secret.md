@@ -226,7 +226,7 @@ for verification and safe upstream revocation.
 There is no value history, automatic rotation, automatic workload restart, or
 value rollback. Updating or deleting an OCC Secret does not remove credentials
 already delivered to a running process environment, and deletion is blocked while
-current Configurations, credential sources, Agent drafts, active revisions, or pending
+current Configurations, credential sources, Agent drafts, selected versions, or pending
 deployments still depend on the Secret. For a compromised credential, stop the affected workloads and revoke
 the credential at the upstream provider; then update the OCC Secret with a
 replacement value and redeploy the intended consumers. Delete the Secret only
@@ -237,8 +237,8 @@ after its reference dependencies are cleared; see [Delete](#delete).
 The exact Secret read, `GET /namespaces/:namespaceId/secrets/:secretId` or
 `occ secret get "$SECRET_ID"`, returns `consumers`: the IDs of the Agents,
 Configurations, credential sources, and pending Agent provisioning requests
-that currently reference the Secret. An Agent is listed when its draft, active
-revision, or a pending deployment references the Secret. These are the same
+that currently reference the Secret. An Agent is listed when its draft, selected
+version, or a pending deployment references the Secret. These are the same
 references that block deletion.
 
 ```bash
@@ -268,7 +268,7 @@ curl --fail-with-body -sS \
 ```
 
 Successful deletion returns HTTP `204`. OCC denies deletion while the Secret is
-referenced by any current Configuration, credential source, Agent draft, active revision, pending deployment, or queued or running Agent provisioning request.
+referenced by any current Configuration, credential source, Agent draft, selected version, pending deployment, or queued or running Agent provisioning request.
 The `409` names the references you may read, as many as fit the message, for
 example `The Secret is still referenced by Agent agt_…; 1 resource you cannot
 read. Remove those references first.` [Find its consumers](#find-a-secrets-consumers)

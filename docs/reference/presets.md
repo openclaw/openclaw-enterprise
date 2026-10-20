@@ -3,7 +3,7 @@
 A Preset stores reusable Agent launch settings and variables in a Namespace.
 Select it during Agent creation, fill its variables, and edit copied settings before
 saving. Later Preset edits or deletion cannot change the Agent, Configuration, or
-deployed revisions.
+deployed versions.
 See [Create an Agent from a Preset](../guides/topics/agent-presets.md).
 
 The checked-in [standard Codex Preset](../guides/topics/standard-codex-preset.md)

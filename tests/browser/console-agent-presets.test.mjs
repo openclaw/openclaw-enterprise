@@ -1907,13 +1907,6 @@ test("Embedded Preset grants all bound Secrets and retries denied access without
     body: artifact,
   });
   assert.equal(preset.status, 201, JSON.stringify(preset.body));
-  fixture.policy.restrictions.push({
-    id: "deny-bound-secret-delegation",
-    resourceKind: "installation",
-    resourceId: installation.id,
-    action: "administer",
-    effect: "deny",
-  });
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
@@ -1921,6 +1914,14 @@ test("Embedded Preset grants all bound Secrets and retries denied access without
   await page.getByLabel("Name", { exact: true }).fill("Bound Secret Agent");
   await page.getByLabel("Model", { exact: true }).fill("gpt-4.1");
   await page.getByRole("button", { name: "Use Preset" }).click();
+  // Revoke delegation after the page admits the administrator. A known member has no grant retry.
+  fixture.policy.restrictions.push({
+    id: "deny-bound-secret-delegation",
+    resourceKind: "installation",
+    resourceId: installation.id,
+    action: "administer",
+    effect: "deny",
+  });
   const createdResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -2837,11 +2838,11 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   // Signing back in without reloading must not recover the previous session's in-memory draft.
   await page.getByRole("button", { name: "Start with default Preset" }).click();
   await page.getByLabel("Agent name", { exact: true }).fill("Private session draft");
-  await page.getByRole("button", { name: "OpenClaw Enterprise", exact: true }).click();
-  await page.getByRole("menuitem", { name: "Logout" }).click();
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.locator(".account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByLabel("Preset template").waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);
@@ -3128,4 +3129,59 @@ test("Preset with a managed PAT account creates a draft without a Secret grant",
     false,
   );
   assert.equal(secretPostRequests(requests, namespace.id).length, 0);
+});
+
+// The chooser's Start with default Preset named no Preset, and after a Preset was chosen Use
+// Preset stayed secondary while the shortcut kept the filled style (finding 2066).
+test("the Preset chooser names its default and fills Use Preset once a Preset is chosen", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Preset emphasis", { ready: true });
+  const other = await fixture.request("POST", `/namespaces/${namespace.id}/presets`, {
+    body: {
+      name: "Team Preset",
+      template: {
+        variables: { agentName: { type: "string" } },
+        agent: { name: "{{ vars.agentName }}", executionMode: "embedded" },
+      },
+    },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  const { page } = await newPage(t, fixture);
+  await routeInstallationWithoutProvisioning(page, fixture);
+  await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+  const shortcut = page.getByRole("button", { name: "Start with default Preset" });
+  const use = page.getByRole("button", { name: "Use Preset" });
+  const filled = (locator) =>
+    locator.evaluate((node) => node.classList.contains("button--primary"));
+  await page.getByText("The default Preset is default-codex.", { exact: true }).waitFor();
+  assert.equal(await shortcut.getAttribute("aria-describedby"), "agent-preset-default-hint");
+  assert.equal(await shortcut.isEnabled(), true);
+  assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
+
+  await page.getByLabel("Preset template").selectOption(other.data.id);
+  await page.getByLabel("Agent Name", { exact: true }).waitFor();
+  assert.deepEqual([await filled(shortcut), await filled(use)], [false, true]);
+
+  // Clearing the choice gives the filled style back to the shortcut.
+  await page.getByLabel("Preset template").selectOption("");
+  await page.getByLabel("Agent Name", { exact: true }).waitFor({ state: "detached" });
+  assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
+
+  // A failed Preset read leaves Use Preset disabled, so the shortcut keeps the filled style.
+  await page.route(`**/namespaces/${namespace.id}/presets/${other.data.id}`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Preset storage is unavailable." },
+      }),
+    }),
+  );
+  await page.getByLabel("Preset template").selectOption(other.data.id);
+  await page
+    .getByText("Service unavailable. The read could not be completed. Try again.")
+    .waitFor();
+  assert.equal(await use.isDisabled(), true);
+  assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
 });

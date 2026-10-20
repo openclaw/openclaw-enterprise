@@ -82,6 +82,8 @@ test("draft Agent offers deployment without a generated-credential step", async 
   const { page, artifacts } = await newPage(t, fixture);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();
+  // The deploy explanation is in the page's disclosure, beside the draft's next step.
+  await page.getByText("What this page can tell you", { exact: true }).click();
   await page.getByText(/Connection credentials are generated automatically/).waitFor();
   await page.getByRole("tab", { name: "Credentials", exact: true }).click();
   await page.getByRole("button", { name: "Save authentication source" }).waitFor();

@@ -48,7 +48,7 @@ export OCC_DEVELOPMENT_SANDBOX_DRIVER=none
 
 The launcher builds the broker service from this checkout and imports its
 immutable digest. Alternatively, set `OCC_DEVELOPMENT_REPOSITORY_IMAGE` to a
-locally available, provenance-verified digest whose revision label matches this
+locally available, provenance-verified digest whose source commit label matches this
 checkout. For a selected controller/runtime pair, apply the same
 [image selection requirements](../quickstart.md#optional-use-matching-published-images).
 

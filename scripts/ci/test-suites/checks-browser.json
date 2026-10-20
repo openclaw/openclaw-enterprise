@@ -7,6 +7,9 @@
     "tests/browser/console.test.mjs",
     "tests/browser/console-retained-revalidation.test.mjs",
     "tests/browser/console-namespace-recheck.test.mjs",
+    "tests/browser/console-namespace-create.test.mjs",
+    "tests/browser/console-create-agent-member.test.mjs",
+    "tests/browser/console-shell.test.mjs",
     "tests/browser/console-json-error-feedback.test.mjs",
     "tests/browser/console-agent-detail-2.test.mjs",
     "tests/browser/console-agent-detail.test.mjs",
@@ -54,6 +57,15 @@
     },
     {
       "path": "tests/browser/console-namespace-recheck.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-namespace-create.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-create-agent-member.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-shell.test.mjs"
     },
     {
       "path": "tests/browser/console-namespace-not-ready.test.mjs"

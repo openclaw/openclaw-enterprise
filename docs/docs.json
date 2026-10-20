@@ -109,8 +109,16 @@
                     "label": "Console"
                   },
                   {
+                    "page": "guides/console/create-namespace",
+                    "label": "Create a Namespace"
+                  },
+                  {
                     "page": "guides/console/agent-details",
                     "label": "Console Walkthrough"
+                  },
+                  {
+                    "page": "guides/console/configuration-plugins-and-files",
+                    "label": "Configuration, Plugins, and Files"
                   },
                   {
                     "page": "guides/console/channels-and-credentials",
@@ -235,6 +243,8 @@
             "hidden": [
               "reference/console/debug-fields",
               "reference/console/agent-sharing",
+              "reference/console/versions-and-channel-drafts",
+              "reference/console/repository-access",
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
@@ -847,6 +857,10 @@
                     "label": "Console Storybook"
                   },
                   {
+                    "page": "contributing/console-storybook-agent-workflows",
+                    "label": "Storybook Agent Workflows"
+                  },
+                  {
                     "page": "flows/docker-compose-development",
                     "label": "Docker and Podman"
                   },
@@ -956,7 +970,9 @@
               "flows/agent-deployment-diagnostics",
               "flows/agent-runtime-logs",
               "flows/platform-console",
+              "flows/platform-console/agent-creation",
               "flows/platform-console/agent-editing",
+              "flows/platform-console/agent-stop-and-deletion",
               "flows/platform-console/agent-sharing",
               "flows/platform-console/sign-in-return",
               "flows/platform-console/observability-link",

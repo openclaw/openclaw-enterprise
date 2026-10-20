@@ -7,7 +7,7 @@ applies them to the Agent's outbound requests. OpenClaw Control Plane (OCC) owns
 the [credential source](../credential-sources.md) record, its Secret references,
 authorization, and Agent bindings. The Driver owns the stored copy of the value,
 the source-type catalog, and how a credential reaches a request. The paired
-[SandboxDriver](sandbox.md) consumes the Driver's per-revision attachments when
+[SandboxDriver](sandbox.md) consumes the Driver's attachments for each Agent revision when
 it creates the Harness, and [Compute](compute.md) waits for those attachments
 before activation.
 
@@ -28,17 +28,17 @@ there is no fallback to environment delivery.
 The [shared interface](../../../packages/contracts/src/index.ts) requires every
 method below. Startup rejects a Driver that omits one.
 
-| Operation              | Inputs and preconditions                                                                       | Result or side effects                                                                                                                                   | Failure or absence                                                                |
-| ---------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `listSourceTypes`      | Cancellation signal.                                                                           | The implementation's catalog of `CredentialSourceType` entries.                                                                                          | OCC treats a failure as dependency unavailable.                                   |
-| `validateSourceConfig` | Catalog-checked type and nonsecret configuration.                                              | Synchronous validation without I/O, Secret reads, or persistence.                                                                                        | Invalid values throw `CredentialSourceConfigError` (`400`).                       |
-| `registerSource`       | Ready Namespace, the new source record, and resolved Secret values; none for a `refresh` type. | Stores the value in the gateway and returns `ready`, `pending`, `failed`, or `absent`.                                                                   | `failed` or `absent` fails registration; OCC then calls `removeSource`.           |
-| `updateSource`         | Existing source and new resolved values.                                                       | Replaces the stored values for processes started afterwards and returns the source state.                                                                | `failed` or `absent` fails the update; OCC keeps the Secret references unchanged. |
-| `sourceStatus`         | Existing source.                                                                               | Live source state and an optional safe reason.                                                                                                           | OCC reports `failed` with a fixed reason when the call throws.                    |
-| `removeSource`         | Source record.                                                                                 | Deletes the stored copy. An already-absent source counts as removed.                                                                                     | A failure leaves the OCC record `deleting` for retry.                             |
-| `attachForRevision`    | Namespace, immutable revision, and the bound source records.                                   | Exactly one `{ sourceId, ref }` attachment per bound source. `ref` is opaque to OCC.                                                                     | Throws when a source is unavailable or foreign; the revision does not provision.  |
-| `attachmentStatus`     | The same context plus the provisioned `SandboxResourceRef`.                                    | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                      | Compute blocks activation on any state other than `ready` or `pending`.           |
-| `withdraw`             | Placement, revision, its required `SandboxResourceRef`, and one source ID; no source list.     | Revokes that revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.  |
+| Operation              | Inputs and preconditions                                                                         | Result or side effects                                                                                                                                         | Failure or absence                                                                     |
+| ---------------------- | ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `listSourceTypes`      | Cancellation signal.                                                                             | The implementation's catalog of `CredentialSourceType` entries.                                                                                                | OCC treats a failure as dependency unavailable.                                        |
+| `validateSourceConfig` | Catalog-checked type and nonsecret configuration.                                                | Synchronous validation without I/O, Secret reads, or persistence.                                                                                              | Invalid values throw `CredentialSourceConfigError` (`400`).                            |
+| `registerSource`       | Ready Namespace, the new source record, and resolved Secret values; none for a `refresh` type.   | Stores the value in the gateway and returns `ready`, `pending`, `failed`, or `absent`.                                                                         | `failed` or `absent` fails registration; OCC then calls `removeSource`.                |
+| `updateSource`         | Existing source and new resolved values.                                                         | Replaces the stored values for processes started afterwards and returns the source state.                                                                      | `failed` or `absent` fails the update; OCC keeps the Secret references unchanged.      |
+| `sourceStatus`         | Existing source.                                                                                 | Live source state and an optional safe reason.                                                                                                                 | OCC reports `failed` with a fixed reason when the call throws.                         |
+| `removeSource`         | Source record.                                                                                   | Deletes the stored copy. An already-absent source counts as removed.                                                                                           | A failure leaves the OCC record `deleting` for retry.                                  |
+| `attachForRevision`    | Namespace, immutable Agent revision, and the bound source records.                               | Exactly one `{ sourceId, ref }` attachment per bound source. `ref` is opaque to OCC.                                                                           | Throws when a source is unavailable or foreign; the Agent revision does not provision. |
+| `attachmentStatus`     | The same context plus the provisioned `SandboxResourceRef`.                                      | Per-source state: `ready`, `pending`, `withheld`, `failed`, `revoked`, or `absent`.                                                                            | Compute blocks activation on any state other than `ready` or `pending`.                |
+| `withdraw`             | Placement, Agent revision, its required `SandboxResourceRef`, and one source ID; no source list. | Revokes that Agent revision's access, including running processes. `revoked` only on gateway evidence, `absent` when the Sandbox is gone, otherwise `pending`. | Anything but `revoked` or `absent` keeps the OCC withdrawal `pending` for retry.       |
 
 `validateSourceConfig({ type, config })` checks nonsecret values synchronously,
 without network calls or other effects. OCC calls it after catalog field checks,
@@ -102,7 +102,7 @@ the existing native model probe must still succeed before app-server starts.
 The external credential service owns refresh and the gateway owns injection
 for inference, hosted app/MCP, and authenticated account/configuration requests.
 Metadata is projected at provisioning; account metadata changes require a new
-revision. A fresh device login creates a new source for explicit replacement. Native user-identity checks that depend on
+Agent revision. A fresh device login creates a new source for explicit replacement. Native user-identity checks that depend on
 access-token claims are not established with an opaque placeholder.
 
 This replaces the legacy runtime-owned OAuth binding. No persistent credential
@@ -131,7 +131,7 @@ that service's responsibility.
 
 `SecretDriver.withValue` supplies static registration inputs. Withdrawal also
 uses Compute's `withdrawCredentialSource` and the Sandbox's `harnessResource`,
-which returns the exact Sandbox a revision runs in without side effects.
+which returns the Sandbox for the Agent revision ID without side effects.
 Compute throws `CredentialWithdrawalRefusedError` when its configuration cannot
 reach that Sandbox or it finds an object it does not own; the worker then fails
 the withdrawal without retrying.
@@ -152,7 +152,7 @@ called:
 
 The Driver receives only authorized, exact-Namespace sources. It must never log,
 return, or persist a secret value outside its own credential store. OCC never
-stores the value, and revisions and audit records carry only the source ID.
+stores the value, and Agent revisions and audit records carry only the source ID.
 Gateway credentials, such as the OpenShell Backend's bearer token, are separate
 from OCC authority; see [Permissions](../cheatsheets/permissions.md).
 
@@ -179,7 +179,7 @@ configuration. The interface has no initializer or destructor.
    the caller retries DELETE to remove any gateway copy. See
    [credential sources](../credential-sources.md#register-a-source).
 2. **Admission.** `deployAgent` freezes `{ method, sourceId,
-credentialGatewayId, sourceType, loginMode }` in the revision. The source must
+credentialGatewayId, sourceType, loginMode }` in the Agent revision. The source must
    be `ready`, and its type must declare `harnessAuth`. A Sandbox must be
    selected, and Compute validates the combination; see
    [Harness authentication](../harness-execution.md#harness-authentication).
@@ -187,11 +187,11 @@ credentialGatewayId, sourceType, loginMode }` in the revision. The source must
    `{ sourceId, credentialGatewayId, sourceType }` in `credentialSources`.
 3. **Dispatch.** The worker rechecks both `operate` grants, requires the
    selected gateway to match the snapshot, and loads the current source record.
-   A missing, `deleting`, or mismatched source stops the revision. Compute
+   A missing, `deleting`, or mismatched source stops the Agent revision. Compute
    revalidates the binding against the gateway's current catalog entry. The
    worker passes the other listed sources it loaded in
    `ComputeRevisionContext.credentialSources`, omitting the Harness source and any
-   withdrawn from the revision.
+   withdrawn from the Agent revision.
 4. **Provisioning.** Compute calls `attachForRevision` with the Harness source
    first and the other sources after it, and passes the result in
    `HarnessWorkloadRequirements.credentialAttachments` to `provisionHarness`.
@@ -200,23 +200,23 @@ credentialGatewayId, sourceType, loginMode }` in the revision. The source must
 5. **Activation.** After the Harness is ready, Compute calls
    `attachmentStatus`. `pending` or a missing status retries reconciliation;
    `failed`, `withheld`, `revoked`, or `absent` fails it. Only `ready` for every
-   attachment lets the revision activate.
+   attachment lets the Agent revision activate.
 6. **Update.** The API locks the source, reads its current or replacement Secret
    values, and calls `updateSource`. Running Harness processes keep the previous
    value until they restart.
-7. **Withdrawal.** The API records a `pending` withdrawal for the Agent's active
-   revision and queues worker work. The worker rechecks `agent:operate`, and
-   Compute derives the revision's Sandbox and calls `withdraw` for each pending
-   withdrawal of the revision. Only `revoked` or `absent` marks one `revoked`;
-   otherwise the work retries. The revision never re-attaches a withdrawn
+7. **Withdrawal.** The API records a `pending` withdrawal for the currently selected
+   Agent revision and queues worker work. The worker rechecks `agent:operate`, and
+   Compute derives the Sandbox from the Agent revision ID and calls `withdraw` for each pending
+   withdrawal of the Agent revision. Only `revoked` or `absent` marks one `revoked`;
+   otherwise the work retries. The Agent revision never re-attaches a withdrawn
    source. Because a Sandbox create accepted before a withdrawal can land after
-   it, each preparation, and each maintenance pass of a revision whose Harness
+   it, each preparation, and each maintenance pass of an Agent revision whose Harness
    source is withdrawn, first calls `withdraw` with `recheck` for every
-   `revoked` source of the revision: the gateway then detaches only a source
+   `revoked` source of the Agent revision: the gateway then detaches only a source
    the Sandbox still lists.
-8. **Deletion.** The API refuses deletion while an Agent draft, active revision,
+8. **Deletion.** The API refuses deletion while an Agent draft, currently selected Agent revision,
    or pending deployment references the source. Otherwise it marks the record
-   `deleting`, calls `removeSource`, then deletes the record. Revision stop
+   `deleting`, calls `removeSource`, then deletes the record. Agent revision stop
    and retirement remove attachments with the Sandbox. A failed Sandbox
    cleanup leaves the stop or retirement pending for retry.
 
@@ -247,7 +247,7 @@ adopt or delete the same stored copy.
 | Deployment returns `409` with a gateway selected                   | Change `harnessAuth` to `credential_source`. Secret-backed and account methods are rejected while a gateway is selected.          |
 | Registration or deletion returns `503`, or a read reports `failed` | Check gateway connectivity and credentials. Retry deletion; the record stays `deleting` until the stored copy is removed.         |
 | `503` naming the driver that registered the source                 | Another driver is selected; see [After a Credential Gateway change](../credential-sources.md#after-a-credential-gateway-change).  |
-| A revision never activates                                         | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source. |
+| An Agent revision never activates                                  | Check the worker's reason code and the source's live `status`. A `failed` attachment state requires repairing the gateway source. |
 
 ## Implementations
 
