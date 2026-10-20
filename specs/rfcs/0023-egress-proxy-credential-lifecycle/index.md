@@ -19,6 +19,8 @@ Replace `CredentialGatewayDriver` with the `credential_proxy` Installation capab
 [Diagram source](assets/overview.mmd)
 
 [GitHub installation-wide access](github-installation-access.md) describes an opt-in authority for ordinary Git and GitHub API work through the same online sender.
+A team can separately [approve Git access until it removes that approval](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval).
+OCE renews short-lived installation tokens so the team can keep working in the same Agent and conversation.
 
 ## Two deployment modes
 
