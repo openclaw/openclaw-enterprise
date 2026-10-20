@@ -2150,11 +2150,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // no record read here and stay plain. The rail may show before that record is read, so the
   // badge is set in place.
   function markVersionOutcomes() {
-    const outcome = {
-      queued: ["Queued", "info"],
-      running: ["In progress", "info"],
-      failed: ["Failed", "danger"],
-    }[latestDeploymentStatus];
+    // The badge uses the page's outcome words (finding 2093).
+    const tone = { queued: "info", running: "info", failed: "danger" }[latestDeploymentStatus];
+    const outcome = tone && [outcomeLabel(latestDeploymentStatus), tone];
     for (const [id, { control, line, label }] of versionControls) {
       const [text, tone] = (id === activityRevisionId && outcome) || [];
       const shown = line.querySelector(".version-outcome");
