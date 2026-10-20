@@ -72,6 +72,14 @@ const namespaceStatuses = {
 };
 const backendTypes = { chatgpt: "ChatGPT", github: "GitHub", openshell: "OpenShell" };
 
+// Initials for the account avatar: the first letters of the first and last words of the
+// name, or of the email when the account has no name.
+export function initials(user) {
+  const words = (user?.name ?? "").trim().split(/\s+/).filter(Boolean);
+  const letters = (words.length > 1 ? [words[0], words.at(-1)] : words).map((word) => [...word][0]);
+  return (letters.join("") || [...(user?.email ?? "")][0] || "?").toUpperCase();
+}
+
 export function createShell({ app, pages, route, pageUrl, navigate, loadPage, logout }) {
   let session = null;
   let namespaces = [];
@@ -146,16 +154,6 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         action ? button(actionLabel, action) : null,
       ),
     );
-  }
-
-  // Initials for the account avatar: the first letters of the first and last words of the
-  // name, or of the email when the account has no name.
-  function initials(user) {
-    const words = (user?.name ?? "").trim().split(/\s+/).filter(Boolean);
-    const letters = (words.length > 1 ? [words[0], words.at(-1)] : words).map(
-      (word) => [...word][0],
-    );
-    return (letters.join("") || [...(user?.email ?? "")][0] || "?").toUpperCase();
   }
 
   function accountControl({ id, rootClass, toggle, menuFirst }) {
