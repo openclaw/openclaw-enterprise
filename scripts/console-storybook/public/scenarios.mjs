@@ -901,6 +901,19 @@ export const scenarios = {
     description:
       "A first run's Namespace is still provisioning: the page names its status and what waits for it, and Create Agent stays available for drafts.",
   },
+  agentsNamespaceBecomesReady: {
+    group: "Pages/Agents",
+    name: "Namespace becomes ready",
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["provisioning", "ready"],
+    actions: [{ selector: 'input[type="search"]', value: "Research", focus: true }],
+    description:
+      "The Agents list rechecks a provisioning Namespace every 10 s while the reader stays on it, without a Refresh. When it reads ready, a success note replaces the warning in place, Create Agent loses its not-ready description, and the search text and focus stay.",
+    steps: [
+      'Keep the caret in Search Agents. After the first recheck (about 10 s) the note still begins "Namespace status: Provisioning."; within about 20 s it becomes "Namespace status: Ready. Agents created here can be deployed now."',
+      "Confirm Search Agents keeps its text and focus, Research assistant is still listed, and Create Agent is enabled with no description pointing at the note. No further Namespace reads happen.",
+    ],
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
@@ -5147,6 +5160,20 @@ export const scenarios = {
     steps: [
       "Change the channel IDs, then click inside the panel and drag from its heading onto the gray backdrop. The editor stays open.",
       "Click the gray backdrop. Reopen Edit Slack and confirm the unsaved channel changes were discarded, just as with Cancel.",
+    ],
+  },
+  slackDrawerNoAuthentication: {
+    group: "Components/Channels",
+    name: "Slack editor, no model authentication",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    auth: null,
+    actions: [click("Edit Slack")],
+    description:
+      "An Agent with no model authentication source: the drawer's notice adds that model credentials are configured in the Credentials tab before deploying. With a source bound (Slack editor), the notice stops after the first sentence.",
+    steps: [
+      'The notice at the top of the drawer reads "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before deploying."',
+      'Open the Slack editor story: its notice reads only "New version. Changes affect future deployments using this Configuration."',
     ],
   },
   slackDirectoryChannels: {

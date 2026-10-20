@@ -24,6 +24,10 @@ export const NamespaceProvisioning = {
   ...story("agentsNamespaceProvisioning"),
   name: "Empty, Namespace still provisioning",
 };
+export const NamespaceBecomesReady = {
+  ...story("agentsNamespaceBecomesReady"),
+  name: "Namespace becomes ready",
+};
 export const AgentsDenied = { ...story("agentsDenied"), name: "Access denied" };
 export const AgentsError = { ...story("agentsError"), name: "Read failure" };
 export const AgentsInterruptedResponse = {
