@@ -130,32 +130,25 @@ When enabled, native admin passes the configured shared cookie domain to Better 
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
-The `onRequest` hook calls `interceptNativeAdminHttp` before normal OCC route
-handling. For hosts beneath the configured native admin domain, that early
-intercept prevents the Agent origin from exposing console or controller API
-routes. For Agent hosts, OCC authenticates the shared session cookie, resolves
-the selected IAM identity, resolves the requested host to the exact Agent,
-revalidates exact Agent `administer`, resolves the selected version, and
-validates native configuration support before proxying. Attributable IAM denials
-during proxy admission preserve an IAM denial audit for the human session and
-exact Agent instead of becoming unaudited dependency failures.
+The `onRequest` hook intercepts the native admin domain before routing, so an
+Agent origin cannot expose console or controller routes. OCC authenticates the
+shared session, resolves the IAM identity and exact Agent, requires `administer`,
+then checks the selected version and native configuration. An attributable IAM
+denial records the human and Agent in the denial audit.
 
-Without a valid session, activated HTML GET navigation to `/`, `/chat/main`, or
-its 32-hex session path gets a `302` to the configured console. Only the opaque
-host key travels, in a fragment. The console resolves it after authentication
-and exact Agent authorization. Queries and session suffixes are discarded;
-API requests, writes, WebSockets, and authorization denials never redirect.
-Active native tabs require reload after expiry.
+Without a valid session, a user-activated, top-level HTML GET to `/`,
+`/chat/main`, or `/chat/main/<32 hex digits>` gets a `302` to the configured
+console. Its fragment carries only the opaque host key, which the console resolves
+after sign-in and exact-Agent authorization. OCC drops queries and session suffixes.
+API requests, writes, WebSockets and permission denials never redirect. Reload an
+open native tab after expiry.
 
-Admission reads Better Auth once and returns the verified session metadata with
-the caller identity. The status and proxy paths reuse that result to check
-expiry and attribute access, without a second session lookup. Each WebSocket
-lease runs admission again against current session state. The shared resolver also
-rechecks both Compute owner fields. A mismatch retains the existing `403` refusal
-for Agent-host HTTP. WebSocket admission destroys the client socket without an
+Status and proxy checks reuse one Better Auth lookup for identity, expiry and
+attribution. Each WebSocket lease checks the current session again. After handling
+stopped, replacing or unsupported Agents, admission rechecks both Compute owner
+fields. A mismatch returns HTTP `403` or closes an upgrading socket without an
 HTTP response, before gateway-key lookup or connection. A failed lease closes
-existing sockets. Stopped, replacing and unsupported-configuration branches still precede
-the ownership comparison.
+both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
