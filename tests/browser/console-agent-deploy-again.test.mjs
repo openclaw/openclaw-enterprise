@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import test from "node:test";
 
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { DEPLOYMENT_POLL_MS } from "../../apps/controller/src/console/agents/detail.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
@@ -454,4 +455,67 @@ test("Open version draft waits for the Configuration read to succeed", async (t)
 
   read.release();
   await openDraft.waitFor();
+});
+
+// While v2 deploys, v1 is still the current version. Right after Deploy new version the page
+// selected v2 and called it "Historical" beside "Selected version v1" until the deployment
+// finished (finding 2065). Its notice says it is deploying until it becomes current.
+test("A version that is deploying is labelled Deploying, not Historical, until it becomes current", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Deploying label");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Deploying label Agent",
+    nativeValues("v1"),
+  );
+  const { revision: current } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const next = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture, { browser });
+  let status = "running";
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${next.id}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data: {
+            deploymentId: next.id,
+            namespaceId: namespace.id,
+            agentId: agent.id,
+            status,
+            error: null,
+            warnings: [],
+            progress: null,
+          },
+          meta: { requestId: "req_test_deploying_label" },
+        }),
+      }),
+  );
+  await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, next.id, "configuration"));
+  const summary = page.getByRole("region", { name: "Agent state at a glance" });
+  await summary.getByText("v2 · In progress", { exact: true }).waitFor();
+  // v1 is still the version selected for service.
+  assert.equal(await summary.getByText("v1", { exact: true }).count(), 1);
+  await page
+    .getByText(
+      "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes.",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(await page.getByText(/^Historical version/).count(), 0);
+
+  // v1 itself is still the current version.
+  await page.goto(detailUrl(fixture, namespace.id, agent.id, current.id, "configuration").href);
+  await page.getByText(/^Current version · read-only admitted snapshot/).waitFor();
+  await page.goBack();
+  await page.getByText(/^Deploying version · read-only admitted snapshot/).waitFor();
+
+  // Completion makes v2 current, and the deploying labels go.
+  await fixture.activateRevision(namespace.id, agent.id, next.id, current.id);
+  status = "succeeded";
+  await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await page.getByText(/^Current version · read-only admitted snapshot/).waitFor();
+  await summary.getByText("v2", { exact: true }).waitFor();
+  assert.equal(await page.getByText(/^Deploying version/).count(), 0);
 });
