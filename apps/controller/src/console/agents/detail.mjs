@@ -1726,7 +1726,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       }
       const field = detailPane.querySelector("#configuration-json")?.closest(".form-field");
       if (field) {
-        scrollToVersionDetail(options, field);
+        // The draft's "New version" notice comes to the top with the editor below it, so the
+        // screen says this is now the draft (finding 2086). When the notice is too far above for
+        // the editor's label and first lines (about 160 px) to show too, the editor comes to the
+        // top instead.
+        const notice = detailPane.querySelector(".version-selection-notice");
+        const below = notice
+          ? field.getBoundingClientRect().top - notice.getBoundingClientRect().top
+          : -1;
+        scrollToVersionDetail(
+          options,
+          below >= 0 && below + 160 <= window.innerHeight ? notice : field,
+        );
         return;
       }
     }
