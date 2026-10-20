@@ -3995,6 +3995,45 @@ export const scenarios = {
       'Within about 5 s the notice begins "Current version" and Selected version reads v7.',
     ],
   },
+  deploymentCompletesRereadFails: {
+    group: "Pages/Agent detail",
+    name: "New version completes, Agent reread fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The page's own Agent read answers; the reread after the deployment completes fails.
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 503 }],
+    description:
+      "v7's deployment completes, but the Agent reread that would make it current fails. The notice says the deployment completed and that the current version could not be refreshed, rather than Deploying beside Completed. The deployment and the failure are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      'Within about 5 s Latest visible deployment reads "v7 · Completed", the page says the current version and version history could not be refreshed, and the notice reads "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."',
+    ],
+  },
+  deploymentStatusReadRecovers: {
+    group: "Pages/Agent detail",
+    name: "New version in progress, one status read fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The first poll after arrival fails once; the next one records success.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        status: 503,
+      },
+    ],
+    description:
+      "One deployment status read fails while v7 is deploying. The notice keeps Deploying version rather than turning Historical, polling continues, and the next read records success and makes v7 current. The deployment, failure and activation are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment reads "v7 · Unavailable" and the notice still begins "Deploying version".',
+      'Within about 10 s the notice begins "Current version" and Selected version reads v7, with no "Historical version" in between.',
+    ],
+  },
   deploymentDeferred: {
     group: "Pages/Agent detail",
     name: "Deployment waiting for runtime",

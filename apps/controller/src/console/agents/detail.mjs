@@ -643,6 +643,7 @@ function createDeploymentStatusPanel(context, path, revision, onAgentChange, onS
           state.status?.error?.code ?? null,
           state.status,
           state.overviewError,
+          state.error !== null && transientReadError(state.error),
         );
         if (
           state.refreshQueued ||
@@ -1927,6 +1928,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // The newest version's status from its last record read; a failed read keeps it, so one
   // failure does not relabel a deploying version Historical (finding 2085).
   let latestRecordedStatus = null;
+  // Set when the Agent reread after a completed deployment failed, until an Agent read lands.
+  let agentRereadFailed = false;
   let versionRecord = null;
   const revisionsPromise = readRevisionPage(request, path);
   // Every revision summary listed so far, from the newest page and from older pages the viewer
@@ -1967,16 +1970,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       : null;
   }
 
-  // The newest version once its deployment completed, while the Agent read that would make it
-  // current failed. It is not Deploying beside "Completed" (finding 2085), nor Historical: a
-  // completed deployment makes its version current unless a hidden current version is newer.
+  // The newest version once its deployment completed, while the Agent reread that would make it
+  // current failed. It is not Deploying beside "Completed" (finding 2085), nor Historical: the
+  // page cannot yet tell. Only that failed reread says so; a stopped Agent's last version, say,
+  // also has a completed record and no current version, and stays Historical.
   function deployedRevision() {
     const latest = visibleRevisions[0];
     return latest &&
       latest.id !== currentRevisionId &&
       activityRevisionId === latest.id &&
       latestRecordedStatus === "succeeded" &&
-      !revisionHidden(currentRevisionId)
+      agentRereadFailed
       ? latest
       : null;
   }
@@ -2197,6 +2201,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       showDeleting();
       return;
     }
+    agentRereadFailed = false;
     const revisionChanged = freshAgent.activeRevisionId !== currentRevisionId;
     const workspaceAvailabilityChanged =
       Boolean(freshAgent.activeRevisionId) !== Boolean(currentRevisionId);
@@ -2611,6 +2616,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       versionRecord?.release();
       latestDeploymentStatus = null;
       latestRecordedStatus = null;
+      agentRereadFailed = false;
       latestDeploymentRecord = null;
       latestDeploymentError = false;
       latestDeploymentErrorCode = null;
@@ -2642,14 +2648,18 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                 { status: "fulfilled", value: freshRevisions },
                 snapshot,
               ),
-            (status, unavailable, errorCode, record, overviewUnavailable) => {
+            (status, unavailable, errorCode, record, overviewUnavailable, transientFailure) => {
               if (activityRevisionId !== mostRecent.id) {
                 return;
               }
               showPanel(nextPanel, status === "failed");
               latestDeploymentStatus = status;
-              if (record) {
+              // A refused or missing record ends the wait, so it no longer labels the version.
+              if (record || !transientFailure) {
                 latestRecordedStatus = status;
+              }
+              if (overviewUnavailable) {
+                agentRereadFailed = true;
               }
               latestDeploymentError = unavailable;
               latestDeploymentErrorCode = errorCode;
