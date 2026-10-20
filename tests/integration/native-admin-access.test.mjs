@@ -612,6 +612,12 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   assert.equal(page.headers["referrer-policy"], "no-referrer");
   assert.ok(page.headers["x-request-id"]);
   assert.equal(page.headers["set-cookie"], undefined);
+  // The console opens the native root, not only copied chat links.
+  const rootPage = await injectJson(context.fixture, "GET", "/?return=https://attacker.example", {
+    headers: navigation,
+  });
+  assert.equal(rootPage.statusCode, 302);
+  assert.equal(rootPage.headers.location, destination);
   const sessionSuffix = "a".repeat(32);
   const sessionPage = await injectJson(
     context.fixture,
@@ -642,6 +648,11 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
     ["GET", "/chat/main", { ...navigation, accept: "text/html;q=0,application/json" }],
     ["GET", "/chat/main/not-a-session", navigation],
     ["GET", "/settings", navigation],
+    ["GET", "/", { ...navigation, "sec-fetch-mode": "cors" }],
+    ["GET", "/", { ...navigation, "sec-fetch-dest": "iframe" }],
+    ["GET", "/api/status", navigation],
+    ["GET", "/auth/callback", navigation],
+    ["GET", "//attacker.example/", navigation],
     ["POST", "/chat/main", navigation],
   ]) {
     const denied = await injectJson(context.fixture, method, path, { headers });
@@ -651,12 +662,14 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
     assert.equal(denied.json().error.code, "FORBIDDEN");
   }
   const limited = await createReadOperateSession(context);
-  const unauthorized = await injectJson(context.fixture, "GET", "/chat/main", {
-    headers: { ...navigation, cookie: limited.cookie },
-  });
-  assert.equal(unauthorized.statusCode, 403);
-  assert.equal(unauthorized.headers.location, undefined);
-  assert.match(unauthorized.headers["content-type"], /^application\/json/);
+  for (const path of ["/", "/chat/main"]) {
+    const unauthorized = await injectJson(context.fixture, "GET", path, {
+      headers: { ...navigation, cookie: limited.cookie },
+    });
+    assert.equal(unauthorized.statusCode, 403);
+    assert.equal(unauthorized.headers.location, undefined);
+    assert.match(unauthorized.headers["content-type"], /^application\/json/);
+  }
   const endpoint = `/native-admin/return/${key}`;
   const found = await injectJson(context.fixture, "GET", endpoint, {
     headers: { host: new URL(publicOrigin).host, cookie: context.session.cookie },
@@ -751,6 +764,28 @@ test("a copied Agent chat link redirects an activated browser navigation to the 
   });
   assert.equal(independent.statusCode, 200, independent.body);
   assert.equal(context.upstream.requests.length, 0);
+
+  // Expiry of a previously issued cookie takes the same safe route as a missing cookie.
+  for (const session of context.fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
+  const expired = await injectJson(context.fixture, "GET", "/", {
+    headers: { ...navigation, cookie: context.session.cookie },
+  });
+  assert.equal(expired.statusCode, 302);
+  assert.equal(expired.headers.location, destination);
+  const expiredApi = await injectJson(context.fixture, "POST", "/", {
+    headers: { ...navigation, cookie: context.session.cookie },
+  });
+  assert.equal(expiredApi.statusCode, 403);
+  assert.equal(expiredApi.headers.location, undefined);
+
+  const renewed = await context.fixture.signIn();
+  const resumed = await injectJson(context.fixture, "GET", endpoint, {
+    headers: { host: new URL(publicOrigin).host, cookie: renewed.cookie },
+  });
+  assert.equal(resumed.statusCode, 200, resumed.body);
+  assert.deepEqual(resumed.json().data, found.json().data);
 });
 
 test("native admin proxy strips browser credentials and preserves the Agent gateway base path", async (t) => {

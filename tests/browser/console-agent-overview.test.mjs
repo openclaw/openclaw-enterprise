@@ -12,6 +12,7 @@ import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
+  deploymentStatusResponse,
   detailUrl,
   fileBrowser,
   holdRequests,
@@ -20,6 +21,7 @@ import {
   newPage,
   persistedDeploymentError,
   recordLayoutShifts,
+  routeFailedDeployment,
   settledFetches,
   takeLayoutShifts,
   trackSettledFetches,
@@ -68,26 +70,6 @@ function runtimeLogs() {
 const deploymentUrl = (fixture, namespace, agent, revision) =>
   `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`;
 
-// A deployment record response, as the API returns it for this version.
-function deploymentRecord(namespace, agent, revision, status, error = null) {
-  return {
-    status: 200,
-    contentType: "application/json",
-    body: JSON.stringify({
-      data: {
-        deploymentId: revision.id,
-        namespaceId: namespace.id,
-        agentId: agent.id,
-        status,
-        error,
-        warnings: [],
-        progress: null,
-      },
-      meta: { requestId: "req_test_agent_overview" },
-    }),
-  };
-}
-
 // The API's message for the model probe failure the recovery tests below record.
 const PROBE_FAILED_MESSAGE = persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED").message;
 
@@ -99,16 +81,12 @@ function routeFailedRecord(
   revision,
   code = "RUNTIME_MODEL_PROBE_FAILED",
 ) {
-  const failed = deploymentRecord(
-    namespace,
-    agent,
-    revision,
-    "failed",
-    persistedDeploymentError(code),
-  );
-  return page.route(deploymentUrl(fixture, namespace, agent, revision), (route) =>
-    route.fulfill(failed),
-  );
+  return routeFailedDeployment(page, fixture, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    deploymentId: revision.id,
+    code,
+  });
 }
 
 // The Agent summary showed "vN · Loading…" for a frame or more on every load while the newest
@@ -118,7 +96,7 @@ test("the Agent summary's loading text follows the 250 ms rule", async (t) => {
   const { fixture, namespace, agent, page } = await agentPage(t, "Quiet summary", "Quiet Summary");
   const revision = await fixture.deployAgent(namespace.id, agent.id);
   const record = await holdRequests(t, page, deploymentUrl(fixture, namespace, agent, revision), {
-    fulfill: deploymentRecord(namespace, agent, revision, "succeeded"),
+    fulfill: deploymentStatusResponse(revision, { status: "succeeded" }),
   });
   await page.clock.install();
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -481,7 +459,7 @@ test("A succeeded version says when the current version is on no loaded page", a
   const third = await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
   denyRevisionRead(fixture, namespace, third.revision);
   await page.route(deploymentUrl(fixture, namespace, agent, second.revision), (route) =>
-    route.fulfill(deploymentRecord(namespace, agent, second.revision, "succeeded")),
+    route.fulfill(deploymentStatusResponse(second.revision, { status: "succeeded" })),
   );
   await routeOneVersionPerPage(page, fixture, namespace, agent);
 
@@ -1432,7 +1410,7 @@ async function pendingDeploy(t, viewport, name) {
     await page.getByRole("heading", { name: "Share Agent" }).waitFor();
     await waitForIdleFetches(page);
   };
-  return { page, recordUrl, namespace, agent, pending, open };
+  return { page, recordUrl, agent, pending, open };
 }
 
 // A deploy in progress rewrote the deployment record and diagnostics on every 5 s poll, about half
@@ -1445,32 +1423,14 @@ for (const viewport of [
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`deployment polls touch only what changed and keep Share Agent in place at ${size}`, async (t) => {
-    const { page, recordUrl, namespace, agent, pending, open } = await pendingDeploy(
-      t,
-      viewport,
-      "Quiet",
-    );
+    const { page, recordUrl, pending, open } = await pendingDeploy(t, viewport, "Quiet");
     // The fixture has no deployment worker: serve the record a deploy reports as it runs.
-    let record = { status: "running", progress: { lastAttempt: null, nextAttemptAt: null } };
+    let record = { status: "running" };
     // Set to hold the record's reads until the test releases them.
     let recordGate = null;
     await page.route(recordUrl, async (route) => {
       await recordGate;
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data: {
-            deploymentId: pending.id,
-            namespaceId: namespace.id,
-            agentId: agent.id,
-            error: null,
-            warnings: [],
-            ...record,
-          },
-          meta: { requestId: "req_test_quiet_deploy" },
-        }),
-      });
+      await route.fulfill(deploymentStatusResponse(pending, record));
     });
     await open();
     // Polls run only when the test advances the clock.
@@ -1516,14 +1476,7 @@ for (const viewport of [
     // The first attempt is recorded.
     record = {
       status: "running",
-      progress: {
-        lastAttempt: {
-          at: "2026-10-16T12:00:20.000Z",
-          code: "REVISION_INCOMPLETE",
-          message: "Waiting for the runtime to become ready.",
-        },
-        nextAttemptAt: null,
-      },
+      attempt: { at: new Date("2026-10-16T12:00:20.000Z"), code: "REVISION_INCOMPLETE" },
     };
     await poll();
     await page.getByText("Waiting for the runtime to become ready.").waitFor();
@@ -1560,7 +1513,7 @@ for (const viewport of [
     assert.equal(await refresh.getAttribute("aria-disabled"), "false");
 
     // The deploy settles.
-    record = { status: "succeeded", progress: null };
+    record = { status: "succeeded" };
     await poll();
     await page.getByText("Recorded status: Completed").waitFor();
     await waitForIdleFetches(page);
@@ -1582,12 +1535,8 @@ for (const viewport of [
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
   test(`a watched deploy that fails shows its recovery as a reload does at ${size}`, async (t) => {
-    const { page, recordUrl, namespace, agent, pending, open } = await pendingDeploy(
-      t,
-      viewport,
-      "Failing",
-    );
-    let record = deploymentRecord(namespace, agent, pending, "running");
+    const { page, recordUrl, agent, pending, open } = await pendingDeploy(t, viewport, "Failing");
+    let record = deploymentStatusResponse(pending, { status: "running" });
     await page.route(recordUrl, (route) => route.fulfill(record));
     // Native administration is open, so its link is the primary action until the card shows.
     await page.route(`**/agents/${agent.id}/native-admin`, (route) =>
@@ -1614,13 +1563,10 @@ for (const viewport of [
     const adminBefore = await background(admin);
 
     // The deploy fails its startup model check; the next poll reads it.
-    record = deploymentRecord(
-      namespace,
-      agent,
-      pending,
-      "failed",
-      persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
-    );
+    record = deploymentStatusResponse(pending, {
+      status: "failed",
+      error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+    });
     const read = page.waitForResponse(recordUrl);
     await page.clock.runFor(DEPLOYMENT_POLL_MS);
     await read;
@@ -2384,7 +2330,7 @@ test("Versions list marks the latest version's outcome and is one Tab stop", asy
   await fixture.deployAgent(namespace.id, agent.id);
   const latest = await fixture.deployAgent(namespace.id, agent.id);
   const recordUrl = deploymentUrl(fixture, namespace, agent, latest);
-  let record = deploymentRecord(namespace, agent, latest, "queued");
+  let record = deploymentStatusResponse(latest, { status: "queued" });
   await page.route(recordUrl, (route) => route.fulfill(record));
   await page.setViewportSize({ width: 1200, height: 800 });
   await trackSettledFetches(page);
@@ -2444,17 +2390,14 @@ test("Versions list marks the latest version's outcome and is one Tab stop", asy
   const shownV2 = await rail.getByRole("button", { name: "View version v2" }).elementHandle();
   const scrolled = await rail.evaluate((list) => list.scrollTop);
   assert.ok(scrolled > 0, `the list scrolled to v2: ${scrolled}`);
-  record = deploymentRecord(namespace, agent, latest, "running");
+  record = deploymentStatusResponse(latest, { status: "running" });
   await poll();
   await rail.getByRole("button", { name: "View version v3, deployment in progress" }).waitFor();
   assert.deepEqual((await state()).outcomes, ["In progress/info", null, null]);
-  record = deploymentRecord(
-    namespace,
-    agent,
-    latest,
-    "failed",
-    persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
-  );
+  record = deploymentStatusResponse(latest, {
+    status: "failed",
+    error: persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+  });
   await poll();
   await rail.getByRole("button", { name: "View version v3, deployment failed" }).waitFor();
   const failed = await state();

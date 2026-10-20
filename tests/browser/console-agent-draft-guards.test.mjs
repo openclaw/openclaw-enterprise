@@ -17,7 +17,6 @@ import {
   nativeValues,
   newPage,
   pathRequests,
-  persistedDeploymentError,
   repositoryCheckbox,
   routeFailedDeployment,
   secretOptionLabel,
@@ -1792,25 +1791,11 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   );
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
-  const failure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");
-  // The in-memory fixture has no worker records; supply the persisted failure shape.
-  await page.route(`${fixture.origin}${path}/deployments/${revision.id}`, async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        data: {
-          deploymentId: revision.id,
-          namespaceId: namespace.id,
-          agentId: agent.id,
-          status: "failed",
-          error: failure,
-          warnings: [],
-          progress: null,
-        },
-        meta: { requestId: "req_test_rejected_credential" },
-      }),
-    });
+  const failure = await routeFailedDeployment(page, fixture, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    deploymentId: revision.id,
+    code: "RUNTIME_AUTHENTICATION_FAILED",
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "credentials");
   await login(page, fixture, url);

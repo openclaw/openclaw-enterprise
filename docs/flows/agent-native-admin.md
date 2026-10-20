@@ -107,7 +107,7 @@ admission remains in `apps/controller/src/index.ts`.
 `apps/controller/src/http/native-admin.ts:resolveNativeAdminAvailability`
 `packages/occ/src/index.ts:getAdministerableActiveAgentRevision`
 
-`getNativeAdminStatus` validates the human session and delegates to the shared resolver. Exact-Agent authorization and existence precede even `disabled`. Enabled access requires a public origin/domain and `getAdministerableActiveAgentRevision`.
+After the authorization and existence checks above, enabled access requires a public origin/domain and `getAdministerableActiveAgentRevision`.
 
 `ResourceConflictError` for an authorized stopped Agent without a selected version becomes only `status: "stopped"`, including new Agents and completed stops. `NoActiveAgentRevisionError` for a running Agent awaiting activation returns `unavailable`. Other dependencies, including IAM/State outages, remain `503` before gateway routing. The console offers deployment checks and refresh for the selected version, independently of the viewed snapshot. Denials remain `403` with the human IAM audit.
 
@@ -120,11 +120,9 @@ Then the selected Compute Driver's `id` and `implementation` must match `revisio
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
 `apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
-`deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque
-hostname. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/`.
-The first-Agent script imports this Node-only helper without workspace dependencies.
+`deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/`.
 
-Native-host admission resolves the irreversible hash by checking existing Installation, Namespace, and Agent state without a persistent host registry. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
+Native-host admission resolves the hash from Installation, Namespace, and Agent state. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
 
 `nativeAdminGatewayHttpBase` requires a `wss:` endpoint without userinfo, query, or hash, then converts it to `https:` preserving authority and the Agent base path. Workspace-file WSS behavior stays unchanged.
 
@@ -138,27 +136,25 @@ When enabled, native admin passes the configured shared cookie domain to Better 
 
 `apps/controller/src/http/native-admin.ts:interceptNativeAdminHttp`
 
-The `onRequest` hook calls `interceptNativeAdminHttp` before normal OCC route
-handling. For hosts beneath the configured native admin domain, that early
-intercept prevents the Agent origin from exposing console or controller API
-routes. For Agent hosts, OCC authenticates the shared session cookie, resolves
-the selected IAM identity, resolves the requested host to the exact Agent,
-revalidates exact Agent `administer`, resolves the selected version, and
-validates native configuration support before proxying. Attributable IAM denials
-during proxy admission preserve an IAM denial audit for the human session and
-exact Agent instead of becoming unaudited dependency failures.
+The `onRequest` hook intercepts the native admin domain before routing, so an
+Agent origin cannot expose console or controller routes. OCC authenticates the
+shared session, resolves the IAM identity and exact Agent, requires `administer`,
+then checks the selected version and native configuration. An attributable IAM
+denial records the human and Agent in the denial audit.
 
-An activated browser navigation to `/chat/main` or its 32-hex session path without a valid session gets a `302` to the configured console. Only the opaque host key travels, in a fragment. The console resolves it after authentication and exact Agent authorization; unknown and unauthorized keys get `404`.
+Without a valid session, a user-activated, top-level HTML GET to `/`,
+`/chat/main`, or `/chat/main/<32 hex digits>` gets a `302` to the configured
+console. Its fragment carries only the opaque host key, which the console resolves
+after sign-in and exact-Agent authorization. OCC drops queries and session suffixes.
+API requests, writes, WebSockets and permission denials never redirect. Reload an
+open native tab after expiry.
 
-Admission reads Better Auth once and returns the verified session metadata with
-the caller identity. The status and proxy paths reuse that result to check
-expiry and attribute access, without a second session lookup. Each WebSocket
-lease runs admission again against current session state. The shared resolver also
-rechecks both Compute owner fields. A mismatch retains the existing `403` refusal
-for Agent-host HTTP. WebSocket admission destroys the client socket without an
+Status and proxy checks reuse one Better Auth lookup for identity, expiry and
+attribution. Each WebSocket lease checks the current session again. After handling
+stopped, replacing or unsupported Agents, admission rechecks both Compute owner
+fields. A mismatch returns HTTP `403` or closes an upgrading socket without an
 HTTP response, before gateway-key lookup or connection. A failed lease closes
-existing sockets. Stopped, replacing and unsupported-configuration branches still precede
-the ownership comparison.
+both sockets.
 
 `apps/controller/src/gateway/native-admin-proxy.ts:proxyNativeAdminHttp`
 
@@ -235,6 +231,8 @@ admin Configuration remains Pod-local.
 - 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)
 
 - 2026-10-19 23:14: Retain Gateway client state and reuse the exact generated native worker profile on restart. (authoring-run/45df354e-6d46-4430-83a5-3885d8a9fb76 - c584934287f78a4f3cf7c84cfb02febd9f3437ab)
+
+- 2026-10-19 22:11: Document return to the requested page after session expiry. (authoring-run/e63eaa44-e02d-49aa-b1c6-4711bd49d919 - 332455338271720ef29c63e5e7fb209fa3da6ec2)
 
 - 2026-10-15 21:30: Present the authorized launch and its access boundaries in the Agent overview. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
 - 2026-10-15 20:27: Redirect copied chat navigation to the canonical console. (authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3 - b899534fae0070fab31489d54a8763bb81e4842e)
