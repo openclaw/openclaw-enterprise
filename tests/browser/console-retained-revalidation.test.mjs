@@ -243,6 +243,32 @@ test("Refocusing a loaded page keeps it steady while access is rechecked", async
   await page.waitForURL("**/console/agents/new**");
 });
 
+for (const moveToSidebar of [false, true]) {
+  test(`Agent revalidation ${moveToSidebar ? "preserves newer sidebar focus" : "restores header action focus"}`, async (t) => {
+    const { page } = await openList(t, "Header focus", "Header Agent", {
+      deploy: true,
+      running: true,
+    });
+    await openAgent(page, "Header Agent");
+    const action = page.locator(".page-header").getByRole("button", { name: "Create new version" });
+    const sidebar = page.getByRole("link", NAMESPACES);
+    await action.focus();
+    assert.equal(await isFocused(action), true);
+
+    const session = await holdOnce(t, page);
+    await refocus(page);
+    await session.requested;
+    await page.locator(heldView).waitFor();
+    assert.equal(await action.evaluate((node) => node.closest("[inert]") !== null), true);
+    if (moveToSidebar) {
+      await sidebar.focus();
+    }
+    session.release();
+    await page.locator(settledView).waitFor();
+    assert.equal(await isFocused(moveToSidebar ? sidebar : action), true);
+  });
+}
+
 test("Back after switching Namespace keeps the shown page until the return is admitted", async (t) => {
   const { fixture, page } = await signedOutPage(t);
   const first = await fixture.createNamespace("First scope", { ready: true });

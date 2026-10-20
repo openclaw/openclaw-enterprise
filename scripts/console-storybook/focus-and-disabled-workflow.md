@@ -41,6 +41,10 @@ follows `:focus-visible`. No part of any ring may be cut off.
 11. On **Pages / Agent detail / Draft** and **New version failed, deploy
     again**, only one button is filled with the accent. Secondary buttons have
     a dark edge, and Refresh buttons have none.
+12. Open **Pages / Agent detail / Header actions**. Focus **Create new
+    version**, switch to another window, and return. The action stays visible
+    but inactive during the access check, then regains focus. Repeat while
+    moving focus to the sidebar during the check; focus stays where you moved it.
 
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).
