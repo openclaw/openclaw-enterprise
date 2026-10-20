@@ -16,6 +16,16 @@ import {
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 
+// A failure's card leads the Agent page and folds Deployment details (finding 2094); a reader
+// opens them for the record's evidence.
+async function openFoldedDetails(page) {
+  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  const details = page.locator(".deployment-status > details");
+  if (!(await details.evaluate((node) => node.open))) {
+    await details.locator("summary").click();
+  }
+}
+
 function deploymentBody(
   namespaceId,
   agentId,
@@ -71,12 +81,18 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
   const record = page.locator(".version-deployment-record");
   await activity.getByText("Recorded status: running").waitFor();
   await record.getByText("Recorded outcome: running").waitFor();
-  // A new failure must become visible even if the reader folded the pending progress.
+  // A new failure must become visible even if the reader folded the pending progress: its card
+  // leads the page, and the details stay folded under it.
   await activity.getByText("Deployment details", { exact: true }).press("Enter");
   await activity.getByText("Recorded status: running").waitFor({ state: "hidden" });
 
   status = "failed";
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
+  await page
+    .getByRole("region", { name: "Deployment needs attention" })
+    .getByText("v1 did not deploy successfully (RUNTIME_AUTHENTICATION_FAILED).", { exact: false })
+    .waitFor();
+  await openFoldedDetails(page);
   await activity.getByText("Recorded status: failed").waitFor();
   await record.getByText("Recorded outcome: failed").waitFor();
   await record
@@ -123,6 +139,7 @@ test("Deployment activity follows pending work until it records a result", async
   // Pending work is reread on its own; the reader does not have to press Refresh deployment.
   status = "failed";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
+  await openFoldedDetails(page);
   await activity.getByText("Recorded status: failed").waitFor();
   await record.getByText("Recorded outcome: failed").waitFor();
   await page.getByText("v1 · Failed", { exact: true }).waitFor();
@@ -162,6 +179,7 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const activity = page.locator(".deployment-status");
+  await openFoldedDetails(page);
   await activity.getByText("Recorded status: failed").waitFor();
 
   // The same retire cleanup also covers repository credential resources, so the
@@ -897,6 +915,7 @@ test("Deployment activity guides a failed model check or an unauthorized gateway
     }
     const activity = page.locator(".deployment-status");
     assert.match(error.message, nextStep);
+    await openFoldedDetails(page);
     await activity.getByText(`${error.code}: ${error.message}`, { exact: true }).waitFor();
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
     assert.equal(
@@ -1116,6 +1135,9 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     errors.set(c.agent, c.failure);
     await activity.getByRole("button", { name: "Refresh deployment" }).click();
     await summary.getByText("v1 · Failed", { exact: true }).waitFor();
+    if (!c.newerHidden) {
+      await openFoldedDetails(page);
+    }
     await activity.getByText("Recorded status: failed", { exact: true }).waitFor();
     await activity.getByText(`${c.failure.code}: ${c.failure.message}`).waitFor();
     assert.equal(await activity.locator(".deployment-step-failed").count(), 1);

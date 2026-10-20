@@ -49,6 +49,16 @@ import {
   waitForCreateFormReads,
 } from "./console-agents-test-support.mjs";
 
+// A failure's card leads the Agent page and folds Deployment details (finding 2094); a reader
+// opens them for the record's evidence.
+async function openFoldedDetails(page) {
+  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  const details = page.locator(".deployment-status > details");
+  if (!(await details.evaluate((node) => node.open))) {
+    await details.locator("summary").click();
+  }
+}
+
 const defaultCodexPreset = JSON.parse(
   await readFile(new URL("../../deploy/presets/default-codex.json", import.meta.url), "utf8"),
 );
@@ -1513,6 +1523,7 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   assert.equal(await page.getByRole("heading", { name: "Create Agent", exact: true }).count(), 0);
   deploymentStatus = "failed";
   await deploymentPanel.getByRole("button", { name: "Refresh deployment", exact: true }).click();
+  await openFoldedDetails(page);
   await deploymentPanel.getByText("Recorded status: failed", { exact: true }).waitFor();
   await deploymentPanel
     .getByText("DEPENDENCY_UNAVAILABLE: Deployment reconciliation failed.", { exact: true })

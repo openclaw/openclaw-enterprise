@@ -1463,17 +1463,17 @@ for (const viewport of [
   });
 }
 
-// Watching a deploy that failed, the "Deployment needs attention" card (about 200 px) appeared
-// above the overview when the failure landed, with no input, and pushed Selected version,
-// Deployment details and Share Agent down: CLS 0.13-0.15 at 1440 and 390 wide (finding 1655).
-// The page-load fix (finding 1489) waits for the outcome, which a watch cannot. A card that
-// appears once the page shows now lands below the deployment activity the reader is watching.
+// Watching a deploy that failed, the "Deployment needs attention" card appeared above the
+// overview and pushed it down (finding 1655), so it moved below the deployment activity. There it
+// sat under the open Deployment details, below the fold at 1440, and the failure's error showed
+// once more than after a reload, which put the card first (finding 2094). A watched failure now
+// renders as a reload of the same page does: the card leads the page and the details fold.
 for (const viewport of [
   { width: 1440, height: 900 },
   { width: 390, height: 844 },
 ]) {
   const size = `${viewport.width}x${viewport.height}`;
-  test(`a watched deploy that fails shows its recovery without moving the overview at ${size}`, async (t) => {
+  test(`a watched deploy that fails shows its recovery as a reload does at ${size}`, async (t) => {
     const { page, recordUrl, namespace, agent, pending, open } = await pendingDeploy(
       t,
       viewport,
@@ -1498,19 +1498,8 @@ for (const viewport of [
     await page.clock.pauseAt(new Date(now + 1000));
     const recovery = page.getByRole("region", { name: "Deployment needs attention" });
     assert.equal(await recovery.isVisible(), false);
-    const tops = () =>
-      page.evaluate(() =>
-        Object.fromEntries(
-          [".agent-current-summary", ".deployment-status"].map((selector) => [
-            selector,
-            Math.round(
-              globalThis.document.querySelector(selector).getBoundingClientRect().top +
-                globalThis.scrollY,
-            ),
-          ]),
-        ),
-      );
-    const before = await tops();
+    const details = page.locator(".deployment-status > details");
+    assert.equal(await details.evaluate((node) => node.open), true, "a running deploy shows");
     const background = (locator) =>
       locator.evaluate((node) => globalThis.getComputedStyle(node).backgroundColor);
     const admin = page.getByRole("link", { name: "Open admin console" });
@@ -1527,26 +1516,58 @@ for (const viewport of [
     const read = page.waitForResponse(recordUrl);
     await page.clock.runFor(DEPLOYMENT_POLL_MS);
     await read;
-    await recovery
-      .getByText("v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).", {
-        exact: false,
-      })
-      .waitFor();
+    const failure = "v2 failed its startup model check (RUNTIME_MODEL_PROBE_FAILED).";
+    await recovery.getByText(failure, { exact: false }).waitFor();
     await waitForIdleFetches(page);
-    assert.deepEqual(await tops(), before, "the overview stays in place");
-    // The card follows the deployment's activity, and its first action is the page's one primary:
-    // native administration's link steps back, as it does beside a card above the overview.
-    assert.equal(
-      await recovery.evaluate(
-        (card) => card.previousElementSibling?.classList.contains("agent-overview-status") === true,
-      ),
-      true,
-    );
+    // Where the card sits, whether the details are open, and how often the error shows.
+    const layout = () =>
+      page.evaluate((message) => {
+        const document = globalThis.document;
+        const card = document.querySelector(".deployment-recovery");
+        const shown = [...document.querySelectorAll("p, li, dd")].filter(
+          (node) => node.checkVisibility() && node.textContent.includes(message),
+        );
+        return {
+          leadsOverview: Boolean(
+            card.compareDocumentPosition(document.querySelector(".agent-overview-status")) &
+            globalThis.Node.DOCUMENT_POSITION_FOLLOWING,
+          ),
+          top: Math.round(card.getBoundingClientRect().top + globalThis.scrollY),
+          detailsOpen: document.querySelector(".deployment-status > details").open,
+          errorShown: shown.length,
+        };
+      }, PROBE_FAILED_MESSAGE);
+    const watched = await layout();
+    t.diagnostic(`${size} watched: ${JSON.stringify(watched)}`);
+    // The card's first action is the page's one primary: native administration's link steps back.
     const logs = recovery.getByRole("link", { name: "Open v2 Logs" });
     assert.equal(await admin.isVisible(), true);
     assert.notEqual(await background(admin), await background(logs));
-    // Until the card showed, native administration's link was the primary action.
     assert.notEqual(adminBefore, await background(admin), "the admin link stepped back");
+
+    // A failed record is not polled, so the clock may run again for the reload.
+    await page.clock.resume();
+    await page.reload();
+    await recovery.getByText(failure, { exact: false }).waitFor();
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+    await waitForIdleFetches(page);
+    await page.evaluate(() => globalThis.document.fonts.ready);
+    await nextFrames(page);
+    const loaded = await layout();
+    t.diagnostic(`${size} reloaded: ${JSON.stringify(loaded)}`);
+    assert.deepEqual(watched, loaded, "the watched failure renders as a reload of the page does");
+    // The card leads the page with its action in the first screen, and the folded details leave
+    // the card and the selected version's own record as the only places the error shows.
+    assert.equal(watched.leadsOverview, true);
+    assert.equal(watched.detailsOpen, false);
+    assert.equal(watched.errorShown, 2);
+    assert.ok(
+      (await logs.boundingBox()).y + 40 < viewport.height,
+      "the card's action is above the fold",
+    );
+    // Folded once, the details stay open when the reader opens them.
+    await details.locator("summary").click();
+    assert.equal(await details.evaluate((node) => node.open), true);
   });
 }
 

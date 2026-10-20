@@ -1777,15 +1777,20 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
 
   const activity = page.locator(".deployment-status");
   // The API's message carries the next step, so occ and HTTP clients get it too (finding
-  // 1393); the console shows it once and adds only the link to Credentials.
+  // 1393); the console shows it once, in the failure's card, and adds only the link to
+  // Credentials. The card folds Deployment details, which repeat it (finding 2094).
   assert.match(
     failure.message,
     /^The model provider rejected this version's credential \(HTTP 401 or 403\)\. .*update or replace the Agent's model credential, then deploy a new version\.$/,
   );
-  await activity
-    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })
-    .waitFor();
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery.getByText(failure.message, { exact: false }).waitFor();
+  assert.equal(
+    await activity
+      .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })
+      .isVisible(),
+    false,
+  );
   assert.match(
     await recovery.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
     /tab=credentials/,
