@@ -1,4 +1,4 @@
-import { sharedRsaKeyPair } from "../../helpers/tls-key.mjs";
+import { sharedRsaKeyPair } from "./shared-keys.mjs";
 import { appModule } from "./runtime.mjs";
 import { createControlledClock } from "./clock.mjs";
 import { createResourceScope } from "./resources.mjs";

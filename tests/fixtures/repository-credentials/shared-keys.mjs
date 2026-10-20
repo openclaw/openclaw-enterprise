@@ -7,7 +7,8 @@ const keyPairs = new Map();
 // Fixtures that need a key but not a unique one share this per-process key pair for each
 // `name`; every certificate made from it is still minted per call. Two certificates with
 // the same subject and key verify each other, so a test that proves a peer with an
-// untrusted certificate is refused must give the two sides different names.
+// untrusted certificate is refused must give the two sides different names. It lives here, and
+// imports only node:, because the isolation tests mount just this directory into containers.
 export function sharedRsaKeyPair(name = "default") {
   let keyPair = keyPairs.get(name);
   if (keyPair === undefined) {

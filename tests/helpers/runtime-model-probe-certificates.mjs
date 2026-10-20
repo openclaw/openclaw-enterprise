@@ -1,10 +1,10 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { sharedRsaPrivateKeyPem } from "./tls-key.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 
 // Callers own subprocess policy and cleanup: image tests remove the CA key,
 // while the first-Agent smoke retains it. The CA and leaf keys are the process's
-// shared fixture keys (tls-key.mjs); both certificates are minted per call.
+// shared fixture keys (shared-keys.mjs); both certificates are minted per call.
 export async function createModelProbeCertificates({ directory, caName, run }) {
   const file = (name) => join(directory, name);
   await writeFile(file("ca-key.pem"), sharedRsaPrivateKeyPem("model-probe-ca"), { mode: 0o600 });

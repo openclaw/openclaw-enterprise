@@ -2,7 +2,7 @@ import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureAppId, fixtureInstallationId } from "../github.mjs";
 import { temporaryDirectory } from "../process.mjs";
-import { sharedRsaKeyPair } from "../../../helpers/tls-key.mjs";
+import { sharedRsaKeyPair } from "../shared-keys.mjs";
 
 export async function createRegistryMaterial(
   resources,

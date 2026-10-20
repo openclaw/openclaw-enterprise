@@ -1,4 +1,4 @@
-import { sharedRsaKeyPair } from "../../../helpers/tls-key.mjs";
+import { sharedRsaKeyPair } from "../shared-keys.mjs";
 import { fixtureInstallationId, fixtureRepository, fixtureRepositoryId } from "./metadata.mjs";
 import { createTokenAuthority } from "./token-authority.mjs";
 import { createRepositoryResources } from "./repository-resources.mjs";
