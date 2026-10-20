@@ -1053,9 +1053,12 @@ p {
   font-weight: 550;
   overflow-wrap: anywhere;
 }
+/* An ID reads character by character: no ligatures, which some monospace fonts (Nimbus Mono PS,
+   a common Linux default) apply to "ff", drawing two characters as one glyph (finding 2114). */
 .resource-id {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
+  font-variant-ligatures: none;
   color: var(--muted);
   user-select: text;
   overflow-wrap: anywhere;

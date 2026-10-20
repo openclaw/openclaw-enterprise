@@ -825,9 +825,27 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       unbroken.forEach((row) => row.style.setProperty("display", "none"));
       const ordinaryWidth = scroll.scrollWidth;
       unbroken.forEach((row) => row.style.removeProperty("display"));
+      // An ID drawn on one line in a row's ID style: "ff" must take two characters' width. A
+      // monospace font with ligatures (Nimbus Mono PS) drew it as one glyph, so an ID with two
+      // "ff" pairs was 14.4 px narrower and fit one line at 360 px (finding 2114).
+      const idWidth = (text) => {
+        const probe = document.createElement("span");
+        probe.className = "resource-id";
+        probe.style.setProperty("display", "inline");
+        probe.style.setProperty("white-space", "nowrap");
+        probe.textContent = text;
+        node.tBodies[0].rows[0].cells[0].append(probe);
+        const box = probe.getBoundingClientRect();
+        probe.remove();
+        return box.width;
+      };
       return {
         width,
         ordinaryWidth,
+        idWidths: [
+          idWidth("agt_ffffffff-ffff-4fff-bfff-ffffffffffff"),
+          idWidth("agt_00000000-0000-4000-8000-000000000000"),
+        ],
         pageFits: view.scrollWidth <= view.clientWidth,
         tableFits: scroll.scrollWidth <= scroll.clientWidth,
         headerShown: node.tHead.getBoundingClientRect().height > 1,
@@ -844,6 +862,10 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     assert.ok(
       layout.width <= layout.ordinaryWidth + 2,
       `${width}: the unbroken name widens the table from ${layout.ordinaryWidth} to ${layout.width} px`,
+    );
+    assert.ok(
+      Math.abs(layout.idWidths[0] - layout.idWidths[1]) < 0.5,
+      `${width}: an ID with "ff" is ${layout.idWidths[0]} px, one without ${layout.idWidths[1]} px`,
     );
     assert.equal(layout.rows.length, AGENTS);
     assert.equal(layout.rows.filter((row) => row.unbroken).length, 2, `${width}: unbroken rows`);
