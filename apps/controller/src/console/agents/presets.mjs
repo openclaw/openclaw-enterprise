@@ -266,7 +266,8 @@ export function createPresetFields(context, apply) {
         };
       }
       const applied = renderPresetTemplate(renderTemplate, values);
-      apply(applied, { modelSecret: secretSelection }, { touched });
+      // The form names the Preset it started from (UX plan A2, flows.md C8).
+      apply(applied, { modelSecret: secretSelection, presetName: selected.name }, { touched });
       for (const field of fields) {
         if (field.definition.type === "password") {
           field.input.value = "";
