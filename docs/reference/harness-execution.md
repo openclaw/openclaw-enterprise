@@ -41,9 +41,11 @@ history.
 Native models use `provider/model`: the first slash separates the provider,
 and the remaining ID may contain slashes, as in `openai/vendor/model`.
 Catalog IDs accept the complete ID with or without its provider prefix.
-Supported `agentRuntime.id` values are `openclaw` and `codex`. OCC checks model,
+Supported `agentRuntime.id` values are `openclaw`, `codex`, and `claude-cli`
+(the [Claude Code agent runtime](claude-code-runtime.md) of embedded
+OpenClaw, accepted only on `anthropic/*` models). OCC checks model,
 Agent-entry, and provider policies, rejecting explicit conflicts. All Agent
-entries must resolve to one primary model and Harness.
+entries must resolve to one primary model, agent runtime, and Harness.
 
 For a custom endpoint, private Gateway configuration compiles
 `codex/vendor/organization/model` to `codex/openai-compatible/vendor/organization/model`.

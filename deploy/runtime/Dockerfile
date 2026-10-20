@@ -282,6 +282,32 @@ RUN --mount=type=secret,id=build-ca,required=false \
     XDG_STATE_HOME="$gh_state" /usr/local/bin/gh --version | grep '^gh version 2.100.0 '; \
     rm -rf "$gh_state"
 
+# Claude Code is the agent runtime of embedded OpenClaw Agents whose Configuration
+# selects the claude-cli model policy (OpenClaw's bundled Anthropic plugin spawns
+# it). The npm package only wraps a per-platform native binary behind a
+# postinstall, so the platform package is fetched directly, checked against its
+# pinned SHA-256, and only its binary is installed. The version check uses a
+# throwaway configuration directory, as the gh check does.
+ENV OCE_CLAUDE_CODE_VERSION=2.1.304
+RUN --mount=type=secret,id=build-ca,required=false \
+    set -eu; \
+    if [ -f /run/secrets/build-ca ]; then export CURL_CA_BUNDLE=/run/secrets/build-ca; fi; \
+    architecture="${TARGETARCH:-amd64}"; \
+    case "$architecture" in \
+      amd64) platform=x64; checksum=1eda4ee54631c2e313df7bd9c2b7d3ca22815e09c6145774309214f06a8acd15 ;; \
+      arm64) platform=arm64; checksum=8982cb48232af63394a36332304db8767aeb83e7ae16ecd122a686b58fa5811e ;; \
+      *) exit 1 ;; \
+    esac; \
+    cd /tmp; \
+    curl --fail --location --no-progress-meter --retry 6 -o claude-code.tgz "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-${platform}/-/claude-code-linux-${platform}-${OCE_CLAUDE_CODE_VERSION}.tgz"; \
+    echo "${checksum}  claude-code.tgz" | sha256sum --check --strict; \
+    tar -xzf claude-code.tgz package/claude; \
+    install -m 0755 package/claude /usr/local/bin/claude; \
+    rm -rf claude-code.tgz package; \
+    claude_config="$(mktemp -d)"; \
+    test "$(CLAUDE_CONFIG_DIR="$claude_config" DISABLE_AUTOUPDATER=1 /usr/local/bin/claude --version)" = "${OCE_CLAUDE_CODE_VERSION} (Claude Code)"; \
+    rm -rf "$claude_config"
+
 COPY --from=openclaw-runtime-assets /out/ /opt/oce/runtime/
 COPY --from=openclaw-runtime-assets /source/ /app/node_modules/openclaw/
 # Both gateway plugins and the Dedicated Harness resolve the same pinned Codex.

@@ -2207,6 +2207,67 @@ function runOpenClawAuthenticationProbe(fs, capMs) {
 }
 `;
 
+// Claude Code is the embedded Gateway's agent runtime when the admitted Configuration
+// selects the claude-cli model policy. OpenClaw's backend scrubs ANTHROPIC_* and
+// CLAUDE_CODE_* auth from the child's environment and lets the binary read its own
+// configuration directory, so the admitted endpoint and the bound credential go into a
+// Pod-local settings file under HOME (the runtime-state emptyDir): 0700 directory, 0600
+// file, written only after the HTTP model probe accepted the credential. A setup token
+// (sk-ant-oat...) is a bearer, as OpenClaw's own client sends it; anything else is an API
+// key. The binary must be the image's pinned version: a missing or different one holds
+// the Gateway unready with UNAVAILABLE, before any turn could reach it.
+export const CLAUDE_CODE_RUNTIME_HELPERS = String.raw`
+const CLAUDE_CODE_AGENT_RUNTIME = "claude-cli";
+const CLAUDE_CODE_DEFAULT_BASE_URL = "https://api.anthropic.com";
+const CLAUDE_CODE_SETTINGS_HARDENING = Object.freeze({
+  DISABLE_AUTOUPDATER: "1",
+  DISABLE_TELEMETRY: "1",
+  DISABLE_ERROR_REPORTING: "1",
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+});
+function claudeCodeRuntimeSelected() {
+  return process.env.OPENCLAW_HARNESS_AGENT_RUNTIME === CLAUDE_CODE_AGENT_RUNTIME;
+}
+// Returns undefined once the directory is ready and CLAUDE_CONFIG_DIR points at it, else a
+// code from the runtime failure vocabulary. Never the credential, a path, or native output.
+function prepareClaudeCodeRuntime(fs, spawnSync) {
+  const expectedVersion = process.env.OCE_CLAUDE_CODE_VERSION;
+  const credentialEnvironment = process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV;
+  const credential = credentialEnvironment === undefined ? undefined : process.env[credentialEnvironment]?.trim();
+  // The probe configuration is the admitted provider fragment; an unreadable one proves nothing.
+  let probeConfiguration;
+  try { probeConfiguration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG); } catch { return "NOT_CONFIGURED"; }
+  const provider = probeConfiguration?.models?.providers?.[process.env.OPENCLAW_HARNESS_PROVIDER];
+  if (!expectedVersion || !credential || process.env.OPENCLAW_HARNESS_PROVIDER !== "anthropic" ||
+    typeof probeConfiguration !== "object" || probeConfiguration === null ||
+    (provider?.baseUrl !== undefined && typeof provider.baseUrl !== "string")) return "NOT_CONFIGURED";
+  const home = process.env.HOME || "/home/node";
+  if (!home.startsWith("/")) return "NOT_CONFIGURED";
+  const directory = home + "/.claude";
+  try {
+    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    fs.chmodSync(directory, 0o700);
+  } catch { return "UNAVAILABLE"; }
+  const version = spawnSync("claude", ["--version"], {
+    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: directory, ...CLAUDE_CODE_SETTINGS_HARDENING },
+    encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 30000, killSignal: "SIGKILL", maxBuffer: 4096,
+  });
+  if (version.error || version.status !== 0 || version.stdout.trim() !== expectedVersion + " (Claude Code)") return "UNAVAILABLE";
+  const baseUrl = (provider?.baseUrl ?? "").replace(/\/+$/, "");
+  const env = {
+    ...CLAUDE_CODE_SETTINGS_HARDENING,
+    ...(baseUrl !== "" && baseUrl !== CLAUDE_CODE_DEFAULT_BASE_URL ? { ANTHROPIC_BASE_URL: baseUrl } : {}),
+    [credential.startsWith("sk-ant-oat") ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY"]: credential,
+  };
+  try {
+    fs.writeFileSync(directory + "/settings.json", JSON.stringify({ env }) + "\n", { mode: 0o600 });
+    fs.chmodSync(directory + "/settings.json", 0o600);
+  } catch { return "UNAVAILABLE"; }
+  process.env.CLAUDE_CONFIG_DIR = directory;
+  return undefined;
+}
+`;
+
 const WORKSPACE_ASSET_HELPERS = String.raw`
 const { cpSync, existsSync, lstatSync, readdirSync, symlinkSync } = require("node:fs");
 const runtimeHomeDirectory = process.env.HOME || "/home/node";
@@ -2268,6 +2329,7 @@ process.env.OPENCLAW_NO_AUTO_UPDATE = "1";
 ${PLUGIN_RUNTIME_HELPERS}
 ${WORKSPACE_ASSET_HELPERS}
 ${OPENCLAW_AUTH_PROBE_HELPERS}
+${CLAUDE_CODE_RUNTIME_HELPERS}
 ${startupPhaseHelper("gateway")}
 ${gatewayStateMigrationHelper("restart the Pod")}
 
@@ -2660,8 +2722,18 @@ const openClawAuthenticationFailure =
 if (process.env.OPENCLAW_HARNESS_PROBE_CONFIG !== undefined) {
   logStartupPhase("model-probe", startupPhaseOrigin, openClawAuthenticationFailure === undefined ? "ok" : "failed");
 }
+// Claude Code's configuration directory is prepared only once the probe accepted the
+// credential, so a rejected key never reaches a file; the phase names its failure code.
+let claudeCodeRuntimeFailure;
+if (openClawAuthenticationFailure === undefined && claudeCodeRuntimeSelected()) {
+  const claudeCodeStartedAt = Date.now();
+  claudeCodeRuntimeFailure = prepareClaudeCodeRuntime(require("node:fs"), require("node:child_process").spawnSync);
+  logStartupPhase("claude-code-runtime", claudeCodeStartedAt, claudeCodeRuntimeFailure === undefined ? "ok" : "failed", claudeCodeRuntimeFailure);
+}
 if (openClawAuthenticationFailure !== undefined) {
   holdFailedAuthentication("model-probe", openClawAuthenticationFailure.code, openClawAuthenticationFailure.cause);
+} else if (claudeCodeRuntimeFailure !== undefined) {
+  holdFailedAuthentication("model-probe", claudeCodeRuntimeFailure);
 } else {
 mkdirSync("/home/node/.openclaw", { recursive: true });
 mkdirSync("/home/node/workspace", { recursive: true });

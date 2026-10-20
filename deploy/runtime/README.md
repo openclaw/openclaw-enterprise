@@ -82,6 +82,7 @@ enrollment, containment, workspace access, or model execution.
 | OpenClaw source commit                       | `f8386bc7df0a6c9eda7a28ae81943c5c06a414ff`                                                                   |
 | Source archive SHA-256                       | `ec38a23888430a6aae72fdacda05efbd36f0ddad86562c00017ba3a51df0a61d`                                           |
 | Dedicated Codex CLI (`OPENAI_CODEX_VERSION`) | `0.163.0-alpha.2`                                                                                            |
+| Claude Code CLI (`OCE_CLAUDE_CODE_VERSION`)  | `2.1.304`, native `linux-x64` / `linux-arm64` platform packages, SHA-256 per architecture                    |
 | Matrix crypto native library                 | `@matrix-org/matrix-sdk-crypto-nodejs` `v0.6.6`, SHA-256 per architecture                                    |
 
 The source's package version is `2026.9.9`; it does not identify this custom

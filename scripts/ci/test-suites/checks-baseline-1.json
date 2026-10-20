@@ -114,6 +114,9 @@
       "path": "tests/conformance/configuration-occ.test.mjs"
     },
     {
+      "path": "tests/conformance/claude-code-runtime.test.mjs"
+    },
+    {
       "path": "tests/conformance/filesystem-configuration.test.mjs"
     },
     {

@@ -1788,6 +1788,18 @@ const bundledCommand = plugin.resolve("@openai/codex/bin/codex.js");
 assert.equal(realpathSync("/app/node_modules/.bin/codex"), realpathSync(bundledCommand));
 assert.equal(execFileSync("codex", ["--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
 assert.equal(execFileSync(process.execPath, [bundledCommand, "--version"], {encoding: "utf8"}).trim(), "codex-cli 0.163.0-alpha.2");
+// Claude Code, the embedded Gateway's agent runtime for the claude-cli model policy, is the
+// image's pinned native binary; the Gateway entrypoint refuses any other version at startup.
+assert.equal(process.env.OCE_CLAUDE_CODE_VERSION, "2.1.304");
+assert.equal(realpathSync(execFileSync("sh", ["-c", "command -v claude"], {encoding: "utf8"}).trim()), "/usr/local/bin/claude");
+{
+  const claudeConfig = require("node:fs").mkdtempSync(require("node:path").join(require("node:os").tmpdir(), "oce-claude-"));
+  assert.equal(
+    execFileSync("claude", ["--version"], {encoding: "utf8", env: {...process.env, CLAUDE_CONFIG_DIR: claudeConfig, DISABLE_AUTOUPDATER: "1"}}).trim(),
+    "2.1.304 (Claude Code)",
+  );
+  require("node:fs").rmSync(claudeConfig, {recursive: true, force: true});
+}
 const provenance = JSON.parse(readFileSync("/opt/oce/runtime/provenance.json", "utf8"));
 assert.equal(provenance.source, "https://github.com/openclaw/openclaw");
 assert.equal(provenance.commit, "f8386bc7df0a6c9eda7a28ae81943c5c06a414ff");

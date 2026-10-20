@@ -19,6 +19,9 @@ import {
   PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS,
   ResourceStateConflictError,
   ScopeViolationError,
+  harnessIdForAgentRuntime,
+  resolveConfiguredAgentRuntimeId,
+  selectsClaudeCodeRuntime,
   resolveConfiguredHarnessId,
 } from "../../packages/occ/src/index.ts";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
@@ -1129,6 +1132,187 @@ test("an unambiguous built-in model defaults to embedded OpenClaw", () => {
     resolveConfiguredHarnessId({ agents: { defaults: { model: "anthropic/claude" } } }),
     "openclaw",
   );
+});
+
+test("the Claude Code agent runtime resolves to the OpenClaw Harness on anthropic models only", () => {
+  const claudeCode = (model, policyHost = "defaults") => ({
+    agents: {
+      defaults:
+        policyHost === "defaults"
+          ? { model, models: { [model]: { agentRuntime: { id: "claude-cli" } } } }
+          : { model },
+    },
+    ...(policyHost === "provider"
+      ? { models: { providers: { anthropic: { agentRuntime: { id: "claude-cli" } } } } }
+      : {}),
+  });
+  for (const values of [
+    claudeCode("anthropic/claude-sonnet-4-5"),
+    claudeCode("anthropic/claude-sonnet-4-5", "provider"),
+    {
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-a", fallbacks: ["anthropic/claude-b"] },
+          models: {
+            "anthropic/claude-a": { agentRuntime: { id: "claude-cli" } },
+            "anthropic/claude-b": { agentRuntime: { id: "claude-cli" } },
+          },
+        },
+      },
+    },
+  ]) {
+    assert.equal(resolveConfiguredAgentRuntimeId(values), "claude-cli");
+    assert.equal(resolveConfiguredHarnessId(values), "openclaw");
+  }
+  assert.equal(
+    resolveConfiguredAgentRuntimeId({ agents: { defaults: { model: "anthropic/claude" } } }),
+    "openclaw",
+  );
+  assert.equal(harnessIdForAgentRuntime("claude-cli"), "openclaw");
+  assert.equal(harnessIdForAgentRuntime("codex"), "codex");
+  // Only the Anthropic plugin has a Claude Code backend; another provider's policy would
+  // select a runtime that cannot execute the model.
+  for (const model of ["openai/gpt-5", "codex/gpt-5", "custom/model"]) {
+    assert.throws(
+      () => resolveConfiguredHarnessId(claudeCode(model)),
+      new ConfigurationHarnessError(
+        "The Claude Code agent runtime requires the native anthropic model provider.",
+      ),
+    );
+  }
+  // A fallback that keeps the provider but drops the policy is still a conflicting selection.
+  assert.throws(
+    () =>
+      resolveConfiguredHarnessId({
+        agents: {
+          defaults: {
+            model: { primary: "anthropic/claude-a", fallbacks: ["anthropic/claude-b"] },
+            models: { "anthropic/claude-a": { agentRuntime: { id: "claude-cli" } } },
+          },
+        },
+      }),
+    ScopeViolationError,
+  );
+});
+
+test("a Claude Code Configuration refuses tool policy its native tools would ignore", () => {
+  // Finding 2142: the pinned runtime gates Claude Code's native Read/Grep/Write/Edit/WebFetch/
+  // WebSearch by exec security and hooks only, so a policy restricting their capabilities
+  // would be silently ignored. Policy on OpenClaw-only tools (exec is host-owned) still holds.
+  const model = "anthropic/claude-sonnet-4-5";
+  const claudeCode = (extra = {}, entries = undefined) => ({
+    agents: {
+      defaults: { model, models: { [model]: { agentRuntime: { id: "claude-cli" } } } },
+      ...(entries === undefined ? {} : { entries }),
+    },
+    ...extra,
+  });
+  const refusal = (path) =>
+    new ConfigurationHarnessError(
+      `Configuration setting ${path} restricts Claude Code's native file or web tools, which the Claude Code agent runtime ignores: remove the restriction or use the default agent runtime.`,
+    );
+  const natives = ["group:fs", "group:web"];
+  for (const [tools, path] of [
+    [{ deny: ["write"] }, "tools.deny"],
+    [{ deny: ["exec", "Edit"] }, "tools.deny"],
+    [{ deny: ["web_*"] }, "tools.deny"],
+    [{ deny: ["*"] }, "tools.deny"],
+    [{ deny: ["group:fs"] }, "tools.deny"],
+    [{ deny: ["group:web"] }, "tools.deny"],
+    [{ deny: ["group:openclaw"] }, "tools.deny"],
+    [{ allow: ["exec", "read"] }, "tools.allow"],
+    // group:openclaw holds web_fetch and web_search only, not the file tools.
+    [{ allow: ["group:openclaw"] }, "tools.allow"],
+    [{ profile: "minimal" }, "tools.profile"],
+    [{ profile: "messaging", alsoAllow: ["group:fs"] }, "tools.profile"],
+    [{ byProvider: { anthropic: { deny: ["read"] } } }, "tools.byProvider.anthropic.deny"],
+    [{ byProvider: { Anthropic: { profile: "minimal" } } }, "tools.byProvider.Anthropic.profile"],
+    [
+      { byProvider: { "anthropic/claude-sonnet-4-5": { allow: ["read"] } } },
+      'tools.byProvider["anthropic/claude-sonnet-4-5"].allow',
+    ],
+  ]) {
+    assert.throws(() => resolveConfiguredAgentRuntimeId(claudeCode({ tools })), refusal(path));
+  }
+  for (const [tools, entries, path] of [
+    [{}, { ops: { tools: { deny: ["write"] } } }, "agents.entries.ops.tools.deny"],
+    // The entry's profile and alsoAllow each fall back to the top-level one.
+    [{}, { ops: { tools: { profile: "minimal" } } }, "agents.entries.ops.tools.profile"],
+    [
+      { profile: "minimal", alsoAllow: natives },
+      { ops: { tools: { alsoAllow: ["exec"] } } },
+      "tools.profile",
+    ],
+    [
+      { byProvider: { anthropic: { profile: "minimal" } } },
+      { ops: {} },
+      "tools.byProvider.anthropic.profile",
+    ],
+  ]) {
+    assert.throws(
+      () => resolveConfiguredAgentRuntimeId(claudeCode({ tools }, entries)),
+      refusal(path),
+    );
+  }
+  for (const [tools, entries] of [
+    [{ deny: ["exec", "process"] }, undefined],
+    [{ deny: ["bash", "sessions_*", "group:runtime"] }, undefined],
+    [{ allow: ["*"] }, undefined],
+    [{ allow: [] }, undefined],
+    [{ allow: ["group:fs", "group:web", "exec"] }, undefined],
+    [{ profile: "full" }, undefined],
+    [{ profile: "coding" }, undefined],
+    [{ profile: "minimal", alsoAllow: [...natives, "exec"] }, undefined],
+    [{ alsoAllow: ["exec"] }, undefined],
+    [{ byProvider: { openai: { deny: ["write"] } } }, undefined],
+    [{ profile: "minimal" }, { ops: { tools: { profile: "full" } } }],
+    [{ profile: "minimal" }, { ops: { tools: { alsoAllow: natives } } }],
+  ]) {
+    assert.equal(resolveConfiguredAgentRuntimeId(claudeCode({ tools }, entries)), "claude-cli");
+  }
+  // A long byProvider key is cut so the refusal stays within the error contract's cap.
+  const key = `anthropic/${"m".repeat(300)}`;
+  assert.throws(
+    () =>
+      resolveConfiguredAgentRuntimeId(
+        claudeCode({ tools: { byProvider: { [key]: { deny: ["read"] } } } }),
+      ),
+    (error) =>
+      error instanceof ConfigurationHarnessError && Array.from(error.message).length <= 256,
+  );
+  // The default runtime enforces the same policy itself.
+  assert.equal(
+    resolveConfiguredAgentRuntimeId({
+      agents: { defaults: { model } },
+      tools: { deny: ["write"] },
+    }),
+    "openclaw",
+  );
+});
+
+test("Compute recognises a Claude Code selection without resolving the model policy", () => {
+  // The lenient scan runs before validation, so partial or conflicting documents still answer.
+  for (const values of [
+    { agents: { defaults: { models: { "anthropic/x": { agentRuntime: { id: "claude-cli" } } } } } },
+    {
+      agents: {
+        entries: { ops: { models: { "anthropic/x": { agentRuntime: { id: "claude-cli" } } } } },
+      },
+    },
+    { models: { providers: { anthropic: { agentRuntime: { id: "claude-cli" } } } } },
+    { models: { providers: { anthropic: { models: [{ agentRuntime: { id: "claude-cli" } }] } } } },
+  ]) {
+    assert.equal(selectsClaudeCodeRuntime(values), true);
+  }
+  for (const values of [
+    {},
+    { agents: { defaults: { model: "anthropic/claude" } } },
+    { agents: { defaults: { models: { "anthropic/x": { agentRuntime: { id: "codex" } } } } } },
+    { agents: { defaults: { models: { "anthropic/x": { agentRuntime: "claude-cli" } } } } },
+    { models: { providers: { anthropic: { models: { agentRuntime: { id: "claude-cli" } } } } } },
+  ]) {
+    assert.equal(selectsClaudeCodeRuntime(values), false);
+  }
 });
 
 test("ambiguous and plugin-routed models require supported explicit native policy", () => {
