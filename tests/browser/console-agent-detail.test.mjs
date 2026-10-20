@@ -42,16 +42,6 @@ import {
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 
-// A failure's card leads the Agent page and folds Deployment details (finding 2094); a reader
-// opens them for the record's evidence.
-async function openFoldedDetails(page) {
-  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
-  const details = page.locator(".deployment-status > details");
-  if (!(await details.evaluate((node) => node.open))) {
-    await details.locator("summary").click();
-  }
-}
-
 test("Agent detail separates the current version, viewed version, and latest deployment", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
@@ -355,7 +345,9 @@ test("Agent detail separates the current version, viewed version, and latest dep
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
   await overview.nth(0).getByText("v3", { exact: true }).waitFor();
   await overview.nth(1).getByText("v3 · Failed").waitFor();
-  await openFoldedDetails(page);
+  // The failure's card leads the page and folds Deployment details (finding 2094); open them.
+  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  await activity.getByText("Deployment details", { exact: true }).click();
   await activity.getByText("Recorded status: failed").waitFor();
   await activity
     .getByText("REVISION_FINALIZATION_INCOMPLETE: Deployment reconciliation failed.")
