@@ -243,6 +243,8 @@
             "hidden": [
               "reference/console/debug-fields",
               "reference/console/agent-sharing",
+              "reference/console/versions-and-channel-drafts",
+              "reference/console/repository-access",
               "reference/configuration/secrets",
               "reference/security/runtime-isolation",
               "reference/agents",
@@ -968,7 +970,9 @@
               "flows/agent-deployment-diagnostics",
               "flows/agent-runtime-logs",
               "flows/platform-console",
+              "flows/platform-console/agent-creation",
               "flows/platform-console/agent-editing",
+              "flows/platform-console/agent-stop-and-deletion",
               "flows/platform-console/agent-sharing",
               "flows/platform-console/sign-in-return",
               "flows/platform-console/observability-link",
