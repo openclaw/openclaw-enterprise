@@ -2541,7 +2541,7 @@ test("Agent stop and Refresh stop status update the page in place and keep focus
 // An Agent created through the API starts with desiredRuntimeState stopped and no version,
 // so no stop was ever requested and nothing runs to stop (finding 1394). The page shows no
 // Stop card and reports no stop request until a deploy creates a version (finding 1899).
-test("Agent detail has no Stop card for an Agent that was never deployed", async (t) => {
+test("Agent detail has no Stop row for an Agent that was never deployed", async (t) => {
   const { fixture, namespace } = await createRuntimeAuthFixture(t, "Never deployed");
   const agent = await fixture.createAgent(namespace.id, "Never Deployed", nativeValues("never"), {
     harnessAuth: { method: "runtime" },
@@ -2559,6 +2559,15 @@ test("Agent detail has no Stop card for an Agent that was never deployed", async
   assert.equal(await page.getByText("Requested runtime state").isVisible(), false);
   const summary = page.getByRole("region", { name: "Agent state at a glance" });
   assert.equal(await summary.getByText("Stop requested").isVisible(), false);
+  // The danger zone keeps its Delete row (UX spec 3.9).
+  await waitForDangerZoneRows(page, { stop: false, delete: true });
+  assert.deepEqual(
+    await page
+      .getByRole("region", { name: "Danger zone", exact: true })
+      .getByRole("heading", { level: 3 })
+      .allTextContents(),
+    ["Delete Agent"],
+  );
 
   // The first deploy creates a version and requests the Agent running, so Stop returns.
   const revision = await fixture.deployAgent(namespace.id, agent.id);
@@ -2846,7 +2855,7 @@ test("Agent stop denial keeps the Agent running with permission feedback", async
   assert.equal(current.data.activeRevisionId, active.revision.id);
 });
 
-test("a read-only principal sees Agent mutation controls disabled before any denial", async (t) => {
+test("a read-only principal sees Agent mutation controls disabled or absent before any denial", async (t) => {
   const auditSink = new InMemoryAuditSink();
   const fixture = await createConsoleAppFixture(t, { auditSink });
   await fixture.bootstrap();
@@ -2887,14 +2896,16 @@ test("a read-only principal sees Agent mutation controls disabled before any den
     .getByRole("button", { name: "Open version draft" });
   await openDraft.waitFor();
   assert.equal(await openDraft.isEnabled(), true);
-  await page.getByText("Your access does not include stopping this Agent.").waitFor();
-  assert.deepEqual(
-    await statusTone(page.getByText("Your access does not include stopping this Agent.")),
-    { className: "status", tone: "info", role: "status" },
-  );
-  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).isDisabled(), true);
-  await page.getByText("Your access does not include deleting this Agent.").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
+  // The answer denies operate and delete, so the page has no danger zone at all (UX spec 3.9):
+  // a reader is not offered Stop or Delete, disabled or not.
+  await waitForDangerZoneRows(page, { stop: false, delete: false });
+  assert.equal(await page.getByRole("region", { name: "Danger zone" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).count(), 0);
+  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).count(), 0);
+  for (const reason of ["stopping", "deleting"]) {
+    const text = page.getByText(`Your access does not include ${reason} this Agent.`);
+    assert.equal(await text.isVisible(), false, reason);
+  }
 
   const draft = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
   await page.goto(draft.href);
@@ -2917,6 +2928,179 @@ test("a read-only principal sees Agent mutation controls disabled before any den
   ]) {
     assert.equal(deniedActions.includes(action), false, action);
   }
+});
+
+// Waits until the page has applied the caller's permission answer to the danger zone, then
+// checks which rows show. The zone is attached at the end of the page build, so a missing zone
+// is not taken as hidden.
+async function waitForDangerZoneRows(page, rows) {
+  await page.waitForFunction(
+    ({ stop, delete: remove }) => {
+      const zone = globalThis.document.querySelector("section.danger-zone");
+      const stopRow = zone?.querySelector("section.stop-note");
+      const deleteRow = zone?.querySelector("section.deletion-note");
+      if (!stopRow || !deleteRow) {
+        return false;
+      }
+      const shown = (node) => node.getClientRects().length > 0;
+      return shown(stopRow) === stop && shown(deleteRow) === remove && shown(zone) === (stop || remove);
+    },
+    rows,
+  );
+}
+
+// Stop and Delete were two full cards, each a heading, a paragraph and one button (finding
+// 1910). They are now the two rows of one danger zone card; the paragraphs moved into the
+// confirmations, and only a confirmation's own button is filled (UX spec 3.9, plan D2).
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  test(`Stop and Delete share one danger zone card at ${viewport.width}px`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Danger zone", { ready: true });
+    const agent = await fixture.createAgent(namespace.id, "Danger Zone Agent", nativeValues("dz"));
+    const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, { context: { viewport } });
+    const requests = apiRequests(page, fixture.origin);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+    );
+    await page.getByRole("heading", { name: "Danger Zone Agent" }).first().waitFor();
+    const zone = page.getByRole("region", { name: "Danger zone", exact: true });
+    await zone.waitFor();
+    await waitForDangerZoneRows(page, { stop: true, delete: true });
+    assert.equal(await page.locator(".card--danger").count(), 1);
+    assert.equal(await zone.locator(".card--danger").count(), 1);
+    assert.deepEqual(await zone.getByRole("heading", { level: 3 }).allTextContents(), [
+      "Stop Agent",
+      "Delete Agent",
+    ]);
+    // The zone closes the page: nothing renders below it.
+    assert.equal(
+      await zone.evaluate((node) => node.nextElementSibling === null),
+      true,
+    );
+
+    const rows = [
+      {
+        name: "Stop Agent",
+        sentence: "Stops the running version. The Agent stays and can be deployed again.",
+        dialog: "Stop this Agent?",
+        confirm: "Stop Agent",
+        prose: /Configuration, versions, Credentials, and workspace data are retained\./,
+      },
+      {
+        name: "Delete Agent",
+        sentence:
+          "Permanently deletes this Agent, its versions and its workspace data. Cannot be undone.",
+        dialog: "Delete Danger Zone Agent?",
+        confirm: "Permanently delete Agent",
+        prose: /This permanently deletes the Agent, its version history, and its workspace data\. This cannot be undone\./,
+      },
+    ];
+    const danger = "rgb(185, 28, 28)";
+    for (const row of rows) {
+      const region = zone.getByRole("region", { name: row.name, exact: true });
+      // One sentence under the title, and the confirmation's prose is not on the page.
+      assert.deepEqual(await region.locator(".danger-zone-text p").allTextContents(), [
+        row.sentence,
+      ]);
+      assert.equal(await page.getByText(row.prose).count(), 0);
+      const action = region.getByRole("button", { name: row.name, exact: true });
+      const [title, button] = await Promise.all([
+        region.getByRole("heading", { name: row.name, exact: true }).boundingBox(),
+        action.boundingBox(),
+      ]);
+      if (viewport.width >= 1440) {
+        // Title and sentence at the left, the button at the right of the same row.
+        assert.ok(button.x > title.x + title.width, `${row.name} button beside its text`);
+        assert.ok(button.y < title.y + 60, `${row.name} button on the title's row`);
+      } else {
+        assert.ok(button.y > title.y + title.height, `${row.name} button under its text`);
+      }
+      // The row's button is outlined; only the confirmation's is filled.
+      const paint = (locator) =>
+        locator.evaluate((node) => {
+          const style = getComputedStyle(node);
+          return { color: style.color, border: style.borderTopColor, fill: style.backgroundColor };
+        });
+      const outlined = await paint(action);
+      assert.equal(outlined.color, danger);
+      assert.equal(outlined.border, danger);
+      assert.notEqual(outlined.fill, danger);
+
+      await action.click();
+      const dialog = page.getByRole("dialog", { name: row.dialog });
+      await dialog.getByText(row.prose).waitFor();
+      const confirm = dialog.getByRole("button", { name: row.confirm, exact: true });
+      assert.deepEqual(await paint(confirm), {
+        color: "rgb(255, 255, 255)",
+        border: danger,
+        fill: danger,
+      });
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await page.locator("dialog[open]").waitFor({ state: "detached" });
+    }
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+  });
+}
+
+// A viewer the answer allows to delete but not to operate gets the Delete row only.
+test("the danger zone offers only the rows the caller's permission answer allows", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Delete only", { ready: true });
+  const agent = await fixture.createAgent(namespace.id, "Delete Only Agent", nativeValues("do"));
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const deleter = await fixture.createAccountWithPolicy("danger-zone-deleter", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-danger-zone-deleter",
+      namespaceId: namespace.id,
+      permissions: [
+        ...["namespace", "agent", "agent_revision", "configuration"].map((resourceKind) => ({
+          action: "read",
+          resourceKind,
+        })),
+        { action: "delete", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-danger-zone-deleter",
+      namespaceId: namespace.id,
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-danger-zone-deleter",
+    });
+  });
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+    deleter.credentials,
+  );
+  await page.getByRole("heading", { name: "Delete Only Agent" }).first().waitFor();
+  await waitForDangerZoneRows(page, { stop: false, delete: true });
+  const zone = page.getByRole("region", { name: "Danger zone", exact: true });
+  assert.deepEqual(await zone.getByRole("heading", { level: 3 }).allTextContents(), [
+    "Delete Agent",
+  ]);
+  assert.equal(await page.getByRole("button", { name: "Stop Agent" }).count(), 0);
+  assert.equal(
+    await zone.getByRole("button", { name: "Delete Agent", exact: true }).isEnabled(),
+    true,
+  );
+  // The lone row has no divider above it.
+  assert.equal(
+    await zone
+      .locator("section.deletion-note")
+      .evaluate((node) => getComputedStyle(node).borderTopStyle),
+    "none",
+  );
 });
 
 // A member's full load of Agents painted Create Agent enabled, then disabled it and put the note
@@ -3202,6 +3386,13 @@ test("a negative permission answer reaching an open Stop or Delete dialog preven
     assert.deepEqual(nonAuthWriteRequests(requests), []);
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await page.locator("dialog[open]").waitFor({ state: "detached" });
+    // The row this viewer used stays, with the reason, instead of vanishing under them.
+    const row = page.getByRole("region", { name: action + " Agent", exact: true });
+    await row.getByRole("status").getByText(/Your access does not include/).waitFor();
+    assert.equal(
+      await row.getByRole("button", { name: action + " Agent", exact: true }).isDisabled(),
+      true,
+    );
     await page.unroute(permissionPath);
   }
 });
