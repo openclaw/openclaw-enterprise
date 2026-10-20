@@ -4033,10 +4033,11 @@ select:not([multiple])[size="1"] {
   border-radius: var(--radius-sm);
   background: var(--surface-muted);
   font-family: var(--font-sans);
-  font-size: var(--text-xs);
+  /* UNKNOWN has to fit the 6.5em (78px) level column the log grid reserves; at --text-xs with
+     --tracking-caps it is 83px and pushes that row's origin and message out of line. */
+  font-size: 10px;
   font-weight: var(--weight-semibold);
-  line-height: var(--text-xs--line-height);
-  letter-spacing: var(--tracking-caps);
+  letter-spacing: 0.03em;
   text-transform: uppercase;
 }
 .log-origin {

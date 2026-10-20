@@ -100,7 +100,7 @@ test("spacing and radius use the design-language scale (UX plan B3, spec P12)", 
     [".plugin-list-item .badge margin-left", "calc(32px + var(--space-3))"],
     // Overlaps the 1px row border.
     [".repository-result-row + .repository-result-row margin-top", "-1px"],
-    // 1px block padding keeps the 11px caps chip inside the log line.
+    // 1px block padding keeps the 10px caps chip one line high.
     [".log-level padding", "1px var(--space-2)"],
   ]);
   const spacing = /^(padding|margin|gap|row-gap|column-gap)(-[a-z-]+)?$/;
@@ -144,6 +144,9 @@ test("type uses the design-language scale (UX plan B3, spec P12)", () => {
     [".channel-field input, .channel-field select font-size", phoneInputMinimum],
     // The nav glyphs are fixed at 16px to match their 16px box (spec 6.1), not a type step.
     [".nav-icon font-size", "16px"],
+    // UNKNOWN fits the 78px level column the log grid reserves (6.5em); on the scale it is 83px.
+    [".log-level font-size", "10px"],
+    [".log-level letter-spacing", "0.03em"],
     // Fits the timestamp to its cell: 4px is the cell's slack, not a size.
     [".log-time-text font-size", "min(var(--text-xs), (100cqi - 4px) / var(--log-time-ems, 19.4))"],
   ]);
