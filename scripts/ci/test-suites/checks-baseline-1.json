@@ -26,6 +26,7 @@
     "tests/integration/runtime-credentials-api.test.mjs",
     "tests/integration/secret-api.test.mjs",
     "tests/integration/console-api.test.mjs",
+    "tests/integration/console-theme.test.mjs",
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
     "tests/integration/configuration-controller.test.mjs",
@@ -312,6 +313,9 @@
     },
     {
       "path": "tests/integration/console-api.test.mjs"
+    },
+    {
+      "path": "tests/integration/console-theme.test.mjs"
     },
     {
       "path": "tests/integration/console-build-metadata.test.mjs"

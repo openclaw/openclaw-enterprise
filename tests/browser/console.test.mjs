@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
 
 import {
   describePendingBrowserRequests,
@@ -25,6 +28,50 @@ const defaultCodexPreset = JSON.parse(
 );
 const createConsoleAppFixture = (t, options = {}) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset], ...options });
+
+test("mounted theme brands sign-in, Agent navigation and mobile without losing session behavior", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-browser-theme-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await cp(new URL("../../deploy/examples/console-theme/", import.meta.url), directory, {
+    recursive: true,
+  });
+  const fixture = await createConsoleAppFixture(t, {
+    consoleTheme: await loadConsoleTheme(directory),
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Theme workflow", { ready: true });
+  await fixture.createAgent(namespace.id, "Theme assistant");
+  const { page, artifacts } = await newPage(t, fixture);
+  await page.goto(`${fixture.origin}/console/login`);
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.title(), "Example Agents");
+  assert.equal(await page.locator(".brand-name").textContent(), "Example Agents");
+  assert.equal(await page.locator(".brand img").getAttribute("src"), "/console/theme/logo.png");
+  assert.equal(
+    await page.evaluate(() =>
+      globalThis
+        .getComputedStyle(globalThis.document.documentElement)
+        .getPropertyValue("--color-accent")
+        .trim(),
+    ),
+    "#2457C5",
+  );
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByText("Theme assistant", { exact: true }).click();
+  await page.getByRole("heading", { name: "Theme assistant", exact: true }).waitFor();
+  await page.screenshot({ path: join(artifacts, "theme-agent-detail.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator(".topbar .brand-name").textContent(), "Example Agents");
+  await page.getByRole("button", { name: "Open navigation", exact: true }).click();
+  await page.locator(".sidebar nav").waitFor({ state: "visible" });
+  await page.screenshot({ path: join(artifacts, "theme-mobile-navigation.png") });
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator(".sidebar .account-toggle").click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).first().click();
+  await page.getByRole("heading", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.locator(".brand-name").textContent(), "Example Agents");
+});
 
 const routeHoldTimeoutMs = 30_000;
 const mobile = {

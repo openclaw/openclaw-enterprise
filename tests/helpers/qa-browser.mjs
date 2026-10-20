@@ -93,6 +93,7 @@ export async function createQaBrowser(f) {
   f.resources.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(f.consoleUrl + "/console/");
+  assert.equal(await page.title(), f.consoleThemeName);
   await page.getByLabel("Email", { exact: true }).fill(f.credentials.email);
   await page.getByLabel("Password").fill(f.credentials.password);
   const signedIn = page.waitForResponse(
@@ -113,6 +114,11 @@ export async function createQaBrowser(f) {
   return {
     nativeOrigin: f.controlPlane === "compose" ? nativeOrigin : undefined,
     async verify(agent) {
+      assert.equal(await page.locator(".sidebar .brand-name").textContent(), f.consoleThemeName);
+      assert.equal(
+        await page.locator(".sidebar .brand img").getAttribute("src"),
+        "/console/theme/logo.png",
+      );
       const gateway = await f.gatewayUrl(agent);
       let origin = nativeOrigin;
       if (f.controlPlane === "compose") {

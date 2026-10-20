@@ -3,7 +3,7 @@ import { scenarios } from "./public/scenarios.mjs";
 // Injected by the Storybook build from the prepared static assets.
 /* global __CONSOLE_STORY_BUILD__ */
 const fixtureUrl = (id) =>
-  `/storybook-fixtures/frame.html?story=${encodeURIComponent(id)}&v=${__CONSOLE_STORY_BUILD__}`;
+  `/storybook-fixtures/${scenarios[id].theme === "long-name" ? "frame-long-name" : scenarios[id].theme ? "frame-themed" : "frame"}.html?story=${encodeURIComponent(id)}&v=${__CONSOLE_STORY_BUILD__}`;
 
 export function story(id) {
   const scenario = scenarios[id];

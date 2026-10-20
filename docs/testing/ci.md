@@ -177,6 +177,10 @@ Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It doe
 not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
+Both installations mount the neutral console theme from `deploy/examples/console-theme/`.
+The `model-ui` browser checks its product name and logo during the regular Agent
+workflow; this does not replace visual contrast and mobile review.
+
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
 complete OpenShell lane. Each push has its own concurrency group so a later
 merge cannot cancel the result. The author of the change that first breaks a lane owns triage;

@@ -27,6 +27,7 @@ import {
 import { createDockerDevelopmentComputeDriverFromEnv } from "../drivers/compute/docker/index.ts";
 import { createFilesystemDevelopmentConfigurationDriverFromEnv } from "../drivers/configuration/filesystem/index.ts";
 import { createFastifyApp } from "../index.ts";
+import type { ConsoleTheme } from "../console-theme.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import type {
   InstallationRuntimeDrivers,
@@ -52,6 +53,7 @@ import {
 } from "./workspace-files.ts";
 
 export interface PostgresDevelopmentConfig {
+  readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("../metrics/index.ts").OccMetrics;
   readonly mode: "development";
   readonly host: "127.0.0.1" | "::1" | "0.0.0.0";
@@ -310,6 +312,7 @@ export async function composePostgresDevelopment(
 
     const observabilityUrl = config.observabilityUrl ?? drivers?.installation.observability?.url;
     const app = createFastifyApp({
+      ...(config.consoleTheme === undefined ? {} : { consoleTheme: config.consoleTheme }),
       ...(config.metrics === undefined ? {} : { metrics: config.metrics }),
       controller,
       iamDriver,

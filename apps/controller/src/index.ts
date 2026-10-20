@@ -94,6 +94,9 @@ import {
   type PreparedAuthAccount,
 } from "./auth/index.ts";
 import { CONSOLE_CONTENT_SECURITY_POLICY, readConsoleAsset } from "./console-assets.ts";
+import type { ConsoleTheme } from "./console-theme.ts";
+
+export type { ConsoleTheme } from "./console-theme.ts";
 import {
   ControllerWorkspaceFileUnknownOutcomeError,
   isAllowedWorkspaceFileName,
@@ -154,6 +157,7 @@ export interface DevelopmentAdmission {
 }
 
 export interface ControllerAppOptions {
+  readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("./metrics/index.ts").OccMetrics;
   readonly controller?: OpenClawController;
   readonly createController?: (installation: Installation) => OpenClawController;
@@ -4175,7 +4179,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
 
   async function serveConsole(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const pathname = request.url.split("?", 1)[0] ?? "";
-    const asset = await readConsoleAsset(pathname, request.headers["accept-encoding"]);
+    const asset = await readConsoleAsset(
+      pathname,
+      request.headers["accept-encoding"],
+      options.consoleTheme,
+    );
+    reply.header("cache-control", "no-store");
     reply.header("content-security-policy", CONSOLE_CONTENT_SECURITY_POLICY);
     reply.header("content-type", asset.contentType);
     reply.header("content-length", asset.body.length);

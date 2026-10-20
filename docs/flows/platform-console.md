@@ -1,7 +1,7 @@
 ---
 created: 2026-09-01
 updated: 2026-10-20
-last_updated_session: authoring-run/e988d724-dd95-4e63-a711-5fd44393f211
+last_updated_session: authoring-run/485ab8a9-4293-44df-a85f-f8f051b74bf8
 ---
 
 # Platform console request flow
@@ -26,6 +26,9 @@ The [console reference](../reference/console.md) owns user-visible behavior.
 
 ```mermaid
 graph TD
+  THEME["API startup loads optional theme bundle"] -->|valid snapshot| ASSET["Serve branded HTML, CSS and images"]
+  THEME -->|invalid| FAIL["Refuse API startup"]
+  ASSET --> A
   subgraph Browser["Browser"]
     A["Open console or change page"] --> B["Restore scoped preview or show first-load state"]
     B --> B1["Recheck session and Namespace access"]
@@ -92,6 +95,22 @@ graph TD
 ## Execution Trace
 
 ### 1. Compose discovery metadata and serve public assets
+
+`apps/controller/src/server.mjs:start` calls
+`apps/controller/src/composition/console-theme.ts:loadConsoleTheme` before
+composition. A configured invalid bundle stops startup; otherwise its bounded
+manifest and referenced images become one process-local snapshot passed to
+`createFastifyApp`. Workers never load it. ConfigMap projection links must resolve
+inside the bundle root.
+
+`apps/controller/src/console-theme.ts:renderConsoleThemeShell` escapes public
+branding metadata, title, and startup text and links generated external CSS.
+`console/branding.mjs:brandContents` uses that metadata with DOM text APIs for
+sign-in, public errors, desktop navigation, and the mobile bar. The stylesheet
+overrides semantic colors after bundled styles. `/console/theme/` serves only
+snapshot assets; misses return plain 404s. Shell/theme responses are uncached;
+file replacement takes effect after an API restart. Compression caches separate
+app snapshots. The [theme reference](../reference/console/theming.md) owns limits.
 
 `apps/controller/src/composition/production.ts:composeProduction`
 
@@ -333,6 +352,8 @@ refresh and inspection.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-20 14:55: Add startup-loaded console themes and public asset confinement with accompanying source changes. (authoring-run/485ab8a9-4293-44df-a85f-f8f051b74bf8 - e8185dac805b737363c7178d3068b310a53a7c24)
 
 - 2026-10-20 05:00: Move the Create Agent form trace to [Agent creation](platform-console/agent-creation.md). (docs-split-1020)
 - 2026-10-19 15:16: Namespace creation and recovery. (authoring-run/e988d724-dd95-4e63-a711-5fd44393f211 - 141515257737cccdb75137fabbeec707915856af)

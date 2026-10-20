@@ -438,6 +438,15 @@ p {
   flex: none;
   object-fit: contain;
 }
+.brand-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.brand--bar .brand-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .auth label {
   display: block;
   font-weight: var(--weight-medium);

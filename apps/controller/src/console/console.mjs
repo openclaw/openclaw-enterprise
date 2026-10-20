@@ -1,3 +1,4 @@
+import { brandContents } from "./branding.mjs";
 import { element, button, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
   clearResolvedSecretNames,
@@ -1007,12 +1008,7 @@ function showLogin(message = "", destination = null) {
     element(
       "main",
       { className: "auth" },
-      element(
-        "p",
-        { className: "brand" },
-        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
-        "OpenClaw Enterprise",
-      ),
+      element("p", { className: "brand" }, ...brandContents(40)),
       element("h1", {}, "Sign in"),
       usernameHint,
       form,

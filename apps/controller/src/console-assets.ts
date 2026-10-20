@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 
+import { renderConsoleThemeShell, type ConsoleTheme } from "./console-theme.ts";
+
 export interface ConsoleAsset {
   readonly body: Buffer;
   readonly contentType: string;
@@ -22,6 +24,7 @@ const brotliAsync = promisify(brotliCompress);
 const gzipAsync = promisify(gzip);
 // Compressed once per asset content: the files are static per build.
 const encodedAssets = new Map<string, Promise<EncodedAsset>>();
+const encodedThemes = new WeakMap<ConsoleTheme, Map<string, Promise<EncodedAsset>>>();
 
 const CONSOLE_ROOT = new URL("./console/", import.meta.url);
 const CONSOLE_SHELL = new URL("index.html", CONSOLE_ROOT);
@@ -34,6 +37,7 @@ const CONSOLE_ASSETS = new Map([
       "view-lifetime.mjs",
       "navigation.mjs",
       "shell.mjs",
+      "branding.mjs",
       "namespaces.mjs",
       "runtime-images.mjs",
       "agents/list.mjs",
@@ -125,7 +129,27 @@ export const CONSOLE_CONTENT_SECURITY_POLICY = [
 export async function readConsoleAsset(
   pathname: string,
   acceptEncoding?: string,
+  theme?: ConsoleTheme,
 ): Promise<ConsoleAsset> {
+  if (pathname.startsWith("/console/theme/")) {
+    const asset = theme?.assets.get(pathname);
+    if (asset === undefined) {
+      return {
+        body: Buffer.from("Theme asset not found.\n"),
+        contentType: "text/plain; charset=utf-8",
+        statusCode: 404,
+      };
+    }
+    if (!asset.contentType.startsWith("text/")) {
+      return { ...asset, statusCode: 200 };
+    }
+    let cache = encodedThemes.get(theme!);
+    if (cache === undefined) {
+      cache = new Map();
+      encodedThemes.set(theme!, cache);
+    }
+    return encodedAsset(pathname, asset.body, asset.contentType, acceptEncoding, cache);
+  }
   if (pathname === "/console/default-codex-preset.mjs") {
     const preset = JSON.parse(
       await readFile(
@@ -148,8 +172,12 @@ export async function readConsoleAsset(
     }
     return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
+  const shell = await readFile(CONSOLE_SHELL);
   return {
-    body: await readFile(CONSOLE_SHELL),
+    body:
+      theme === undefined
+        ? shell
+        : Buffer.from(renderConsoleThemeShell(shell.toString("utf8"), theme)),
     contentType: "text/html; charset=utf-8",
     statusCode:
       CONSOLE_SHELL_ROUTES.has(pathname) ||
@@ -164,6 +192,7 @@ async function encodedAsset(
   body: Buffer,
   contentType: string,
   acceptEncoding: string | undefined,
+  cache = encodedAssets,
 ): Promise<ConsoleAsset> {
   const identity = { body, contentType, statusCode: 200, variesByEncoding: true } as const;
   const encoding = preferredEncoding(acceptEncoding);
@@ -171,7 +200,7 @@ async function encodedAsset(
     return identity;
   }
   // Look the entry up without awaiting first, so concurrent first requests share one compression.
-  const existing = encodedAssets.get(pathname);
+  const existing = cache.get(pathname);
   let encoded = existing === undefined ? undefined : await existing.catch(() => undefined);
   if (encoded === undefined || !encoded.identity.equals(body)) {
     const pending = Promise.all([
@@ -185,11 +214,11 @@ async function encodedAsset(
       }),
       gzipAsync(body, { level: zlib.Z_BEST_COMPRESSION }),
     ]).then(([br, gzipped]) => ({ identity: body, br, gzip: gzipped }));
-    encodedAssets.set(pathname, pending);
+    cache.set(pathname, pending);
     // Never cache a failure: the next request compresses again.
     pending.catch(() => {
-      if (encodedAssets.get(pathname) === pending) {
-        encodedAssets.delete(pathname);
+      if (cache.get(pathname) === pending) {
+        cache.delete(pathname);
       }
     });
     encoded = await pending;

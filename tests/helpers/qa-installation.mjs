@@ -296,6 +296,7 @@ export async function createQaInstallation(
         cluster,
         "-f",
         join(stateDirectory, "compose.yaml"),
+        ...(f.consoleThemeComposeFile === undefined ? [] : ["-f", f.consoleThemeComposeFile]),
         ...args,
       ]);
     },
@@ -679,6 +680,7 @@ export async function createQaInstallation(
     };
   }
   registerQaSecret(f.credentials.password);
+  await prepareConsoleTheme(f);
   await f.record("startup", {
     installationId: f.installation.id,
     defaultNamespaceId: f.defaultNamespace.id,
@@ -687,6 +689,79 @@ export async function createQaInstallation(
     sandboxDriver: "none",
   });
   return f;
+}
+
+async function prepareConsoleTheme(f) {
+  const themeDirectory = join(f.directory, "console-theme");
+  await mkdir(themeDirectory);
+  for (const name of ["theme.json", "logo.png"]) {
+    await copyFile(
+      join(repository, "deploy/examples/console-theme", name),
+      join(themeDirectory, name),
+    );
+  }
+  f.consoleThemeName = "Example Agents";
+  if (f.controlPlane === "compose") {
+    f.consoleThemeComposeFile = await f.write("console-theme.compose.json", {
+      services: {
+        controller: {
+          environment: { OCC_CONSOLE_THEME_DIR: "/etc/openclaw/console-theme" },
+          volumes: [
+            {
+              type: "bind",
+              source: themeDirectory,
+              target: "/etc/openclaw/console-theme",
+              read_only: true,
+            },
+          ],
+        },
+      },
+    });
+    await f.compose("up", "-d", "--no-deps", "--force-recreate", "controller");
+  } else {
+    const namespace = f.state.platformNamespace;
+    await f.apply({
+      apiVersion: "v1",
+      kind: "ConfigMap",
+      metadata: { name: "qa-console-theme", namespace },
+      data: { "theme.json": await readFile(join(themeDirectory, "theme.json"), "utf8") },
+      binaryData: {
+        "logo.png": (await readFile(join(themeDirectory, "logo.png"))).toString("base64"),
+      },
+    });
+    await f.run("helm", [
+      "upgrade",
+      "openclaw-enterprise",
+      join(repository, "deploy/helm/openclaw-enterprise"),
+      "--kubeconfig",
+      join(f.stateDirectory, "kubeconfig"),
+      "--kube-context",
+      `k3d-${f.cluster}`,
+      "--namespace",
+      namespace,
+      "--reuse-values",
+      "--set",
+      "api.consoleTheme.configMapName=qa-console-theme",
+      "--set-string",
+      "api.consoleTheme.checksum=qa-first",
+    ]);
+    await f.kubectl(
+      "-n",
+      namespace,
+      "rollout",
+      "status",
+      "deployment/openclaw-enterprise-api",
+      "--timeout=300s",
+    );
+  }
+  await waitFor("mounted console theme after API restart", async () => {
+    try {
+      const response = await fetch(f.apiUrl + "/console/login");
+      return response.ok && (await response.text()).includes("<title>Example Agents</title>");
+    } catch {
+      return false;
+    }
+  });
 }
 
 export async function prepareQaPreset(f, presetName) {

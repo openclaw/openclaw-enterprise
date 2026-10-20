@@ -53,9 +53,7 @@
                 ]
               }
             ],
-            "hidden": [
-              "guides/README"
-            ]
+            "hidden": ["guides/README"]
           },
           {
             "tab": "Topics",
@@ -242,6 +240,7 @@
             ],
             "hidden": [
               "reference/console/debug-fields",
+              "reference/console/theming",
               "reference/console/agent-sharing",
               "reference/console/versions-and-channel-drafts",
               "reference/console/repository-access",
@@ -457,6 +456,10 @@
                   {
                     "page": "guides/deploy/production-installation",
                     "label": "Control Plane Setup"
+                  },
+                  {
+                    "page": "guides/deploy/console-theme",
+                    "label": "Console Theme"
                   },
                   {
                     "page": "guides/deploy/private-registry-images",
@@ -723,9 +726,7 @@
                 ]
               }
             ],
-            "hidden": [
-              "reference/postgres-auth-binding"
-            ]
+            "hidden": ["reference/postgres-auth-binding"]
           },
           {
             "tab": "Contribute",

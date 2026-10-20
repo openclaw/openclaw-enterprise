@@ -19,11 +19,15 @@ import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
 import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
+import { ConsoleThemeError, loadConsoleTheme } from "./composition/console-theme.ts";
 
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
 const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
 
 function startupFailureCode(error) {
+  if (error instanceof ConsoleThemeError) {
+    return "CONSOLE_THEME_INVALID";
+  }
   if (error instanceof PresetFileError) {
     return "PRESET_FILE_INVALID";
   }
@@ -310,6 +314,7 @@ async function start() {
     phaseStartedAt = now;
   };
   const settings = configuration();
+  const consoleTheme = await loadConsoleTheme(process.env.OCC_CONSOLE_THEME_DIR);
   const metricsSettings = metricsConfiguration(process.env, settings.mode, settings.port);
   const metrics = metricsSettings === undefined ? undefined : createOccMetrics("api");
   const startupConfiguration = await loadStartupConfigurationSnapshot({ mode: settings.mode });
@@ -320,6 +325,7 @@ async function start() {
   }
   const compositionSettings = {
     ...settings,
+    ...(consoleTheme === undefined ? {} : { consoleTheme }),
     logger,
     logging,
     metrics,

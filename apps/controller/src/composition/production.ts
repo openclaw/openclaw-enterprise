@@ -21,6 +21,7 @@ import {
   type PreparedAuthAccount,
 } from "../auth/index.ts";
 import { createFastifyApp } from "../index.ts";
+import type { ConsoleTheme } from "../console-theme.ts";
 import { SlackChannelDriver } from "../drivers/channel/slack.ts";
 import type {
   InstallationRuntimeDrivers,
@@ -41,6 +42,7 @@ import {
 } from "./workspace-files.ts";
 
 export interface ProductionConfig {
+  readonly consoleTheme?: ConsoleTheme;
   readonly metrics?: import("../metrics/index.ts").OccMetrics;
   readonly mode: "production";
   readonly host: string;
@@ -333,6 +335,7 @@ export async function composeProduction(config: ProductionConfig) {
 
     phaseCompleted("controller");
     const app = createFastifyApp({
+      ...(config.consoleTheme === undefined ? {} : { consoleTheme: config.consoleTheme }),
       ...(config.metrics === undefined ? {} : { metrics: config.metrics }),
       controller,
       iamDriver,

@@ -23,6 +23,12 @@ accepts service keys. Expiry clears private content and drafts. Sign in again to
 return to the validated page after access checks.
 See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-destinations).
 
+## Customize deployment branding
+
+Operators can replace the displayed product name, logo, browser icons, and semantic
+colors with a mounted [theme bundle](console/theming.md). See
+[Apply a console theme](../guides/deploy/console-theme.md) for deployment steps.
+
 ## Identify the control-plane build
 
 With `debug=true`, the sidebar wordmark shows the first eight characters of the

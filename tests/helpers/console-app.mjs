@@ -347,6 +347,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     ...(options.observabilityUrl === undefined
       ? {}
       : { observabilityUrl: options.observabilityUrl }),
+    ...(options.consoleTheme === undefined ? {} : { consoleTheme: options.consoleTheme }),
     ...(options.nativeAdmin === undefined ? {} : { nativeAdmin: options.nativeAdmin }),
     ...(options.agentRuntimeLogs === undefined
       ? {}

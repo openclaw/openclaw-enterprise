@@ -236,6 +236,11 @@ database:
   port: 5432
 
 api:
+  # Public branding files: theme.json and referenced images. Only the API mounts them.
+  consoleTheme:
+    configMapName: ""
+    # Change this when updating an existing ConfigMap to restart the API.
+    checksum: ""
   port: 8080
   clients: []
   # Optional exact HTTP(S) proxy endpoint for API-side Slack directory lookup.

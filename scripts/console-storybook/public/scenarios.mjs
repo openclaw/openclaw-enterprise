@@ -7309,3 +7309,24 @@ for (const [id, state, name] of [
       : {}),
   };
 }
+
+// The shell and assets are produced by the API's actual theme loader/renderer.
+for (const [id, source, name, theme] of [
+  ["themeSignIn", "login", "Custom sign-in", "custom"],
+  ["themeNavigation", "agents", "Custom desktop navigation", "custom"],
+  ["themeMobile", "mobile", "Custom mobile navigation", "custom"],
+  ["themeLongName", "agents", "Long product name", "long-name"],
+  ["themeEmpty", "agentsEmpty", "Custom empty state", "custom"],
+  ["themeDenied", "agentsDenied", "Custom denied state", "custom"],
+  ["themeLoading", "agentsLoading", "Custom loading state", "custom"],
+  ["themeCredentials", "revisionCredentialsMissing", "Custom missing credentials", "custom"],
+  ["themePublicError", "sessionUnavailable", "Custom public error", "custom"],
+]) {
+  scenarios[id] = {
+    ...scenarios[source],
+    name,
+    theme,
+    description:
+      "Deployment branding from the production theme loader. Resource, session, and runtime states are simulated.",
+  };
+}
