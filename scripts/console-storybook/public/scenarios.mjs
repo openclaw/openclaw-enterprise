@@ -3285,6 +3285,21 @@ export const scenarios = {
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
   },
+  editCurrentConfiguration: {
+    group: "Pages/Agent detail",
+    name: "Edit current Configuration",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    actions: [click("Edit current Configuration")],
+    // The page brings the editor into view itself.
+    scrollToTabs: false,
+    description:
+      "Edit current Configuration on a version's Configuration tab opens the draft with its Configuration editor already open, brought into view and focused. It used to open the draft at the top of the page and still need an Edit Configuration click far below.",
+    steps: [
+      "The page shows the draft. Configuration JSON is in view with the caret in it; no Edit Configuration button is left to press.",
+      "Choose Cancel: the editor closes and Edit Configuration takes focus.",
+    ],
+  },
   agentHeaderActions: {
     group: "Pages/Agent detail",
     name: "Header actions",

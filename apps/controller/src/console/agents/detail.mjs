@@ -1669,7 +1669,40 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const smooth = animate && !globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     node.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "instant" });
   }
-  function openVersionDetail({ deploy = false, ...options } = {}) {
+  function openVersionDetail({ deploy = false, edit = false, ...options } = {}) {
+    // Edit current Configuration opens the draft with its Configuration editor open, in view and
+    // focused. It switched to the draft at the top of the page, and the editor still needed an
+    // Edit Configuration click far below (finding 2061).
+    const editStart = edit
+      ? detailPane.querySelector('button[data-opens="configuration-editor"]')
+      : null;
+    if (edit && !editStart && !detailLoadFinished) {
+      const tab = selectedTab;
+      void Promise.resolve(details).then(
+        () => {
+          const focused = document.activeElement;
+          if (
+            context.isCurrent() &&
+            !deleting &&
+            selectedTab === tab &&
+            (!focused || focused === document.body || focused === tabControls.get(tab)) &&
+            detailPane.querySelector('button[data-opens="configuration-editor"]')
+          ) {
+            openVersionDetail({ ...options, edit });
+          }
+        },
+        () => {},
+      );
+    }
+    if (editStart && !editStart.disabled) {
+      // Entering the editor focuses it without scrolling; the editor is then brought into view.
+      editStart.click();
+      const field = detailPane.querySelector("#configuration-json")?.closest(".form-field");
+      if (field) {
+        scrollToVersionDetail(options, field);
+        return;
+      }
+    }
     // Deploy again opens the draft at its deploy step, whose card can end below a phone's
     // fold when the version detail is at the top: the card is brought to the top, with its
     // Deploy new version focused when the reader can press it (finding 1898).
@@ -1709,7 +1742,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     scrollOnReveal = () => {
       scrollOnReveal = null;
       if (context.isCurrent() && !deleting) {
-        openVersionDetail({ deploy: linkedOnLoad.deploy });
+        openVersionDetail({ deploy: linkedOnLoad.deploy, edit: linkedOnLoad.edit });
       }
     };
   }
@@ -1717,7 +1750,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   context.onResume?.(() => {
     const linked = takeLinkedVersionView(linkedKey());
     if (linked && !deleting) {
-      openVersionDetail({ deploy: linked.deploy });
+      openVersionDetail({ deploy: linked.deploy, edit: linked.edit });
     }
   });
   function showDetail() {
@@ -3872,7 +3905,19 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                 element(
                   "div",
                   { className: "form-actions" },
-                  button("Edit current Configuration", () => change("draft", "configuration")),
+                  button("Edit current Configuration", () => {
+                    if (draftEditorBlocksNavigation()) {
+                      showLeaveBlock();
+                      return;
+                    }
+                    // The draft this navigation opens takes it with its editor open.
+                    linkedVersionView = {
+                      key: linkedKey("draft", "configuration"),
+                      load: consoleLoads + 1,
+                      edit: true,
+                    };
+                    context.navigate(target("draft", "configuration"));
+                  }),
                 ),
                 nativeDocument(values, "View admitted native configuration"),
               ),
@@ -4155,7 +4200,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       render();
       editor.focus({ preventScroll: true });
     }
-    const edit = button("Edit Configuration", startEditing);
+    const edit = button("Edit Configuration", startEditing, {
+      "data-opens": "configuration-editor",
+    });
     const password = values.gateway?.auth?.password;
     const usesGeneratedGatewayPassword =
       password?.source === "env" &&
@@ -4513,7 +4560,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     void renderTab({ activated: true });
     // Logs scrolls to its output once that has loaded.
     if (linked && nextTab !== "logs") {
-      openVersionDetail({ animate: true, deploy: linked.deploy });
+      openVersionDetail({ animate: true, deploy: linked.deploy, edit: linked.edit });
     }
     return true;
   });
