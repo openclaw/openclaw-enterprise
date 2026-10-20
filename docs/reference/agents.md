@@ -53,6 +53,8 @@ affected `field`. Authorization and strict mutation/runtime validation are uncha
 query failures still fail requests. See the
 [Console warning](../guides/console/agent-details.md#unreadable-saved-settings).
 
+[Gateway people](agents/gateway-people.md).
+
 ## Deployment status
 
 The `deploymentId` is the saved AgentRevision ID from
@@ -115,17 +117,13 @@ state and proves no model response. On OpenShell the `agent` check is always
 
 ## Backend association
 
-An Agent can reference one Installation-configured [experimental Backend](backends.md)
-through `backendId`, a nullable reference returned on Agent and AgentRevision
-responses. Create/PATCH omission, `null`, and ID validation follow the
-[association rules](backends.md#agent-association-and-immutable-deployment);
-no default is inferred.
-
-The reference is independent of native model names and Harness selection.
-OpenAI or Anthropic API keys and directly supplied service account tokens need
-no Backend. An OCE-issued ChatGPT account token requires the matching Backend and
-account at deployment request and again before startup.
-Creating an Agent does not create a provider account or issue credentials.
+Nullable `backendId` selects one Installation-configured [experimental Backend](backends.md)
+and appears in Agent/AgentRevision responses. No default is inferred;
+[association rules](backends.md#agent-association-and-immutable-deployment) define
+create/PATCH omission, `null` and ID validation independently of model/Harness selection.
+API keys and supplied service account tokens need no Backend. OCE-issued ChatGPT
+tokens require the matching Backend/account at deployment and startup.
+Agent creation neither creates provider accounts nor issues credentials.
 
 ## Harness authentication
 
@@ -312,18 +310,15 @@ and redeploy does not erase all gateway-local state
 
 ## Namespace ownership
 
-An Agent belongs to the Namespace in its creation URL; request bodies cannot
-select a different Namespace or Installation. Names are unique within each
-Namespace, and cross-Namespace access requires separate scoped permissions.
-A failed or deleting Namespace rejects new Agents.
+The creation URL owns the Agent's Namespace; bodies cannot select another
+Namespace/Installation. Names are Namespace-unique; cross-Namespace access needs
+separate scoped permissions. Failed/deleting Namespaces reject creation.
 
 ## Identity and deployment
 
-Each Agent has one stable service principal and runs embedded OpenClaw or
-dedicated Codex. A deployment request takes no body: it snapshots the saved
-draft, and a worker starts it asynchronously. See
-[Agent identity and deployment](agents/deployment.md) for permissions,
-snapshot fields, and activation guarantees.
+Each Agent has one stable service principal. Bodyless deployment snapshots its
+saved draft; a worker starts it asynchronously. See [deployment](agents/deployment.md)
+for topologies, permissions, snapshot fields and activation guarantees.
 
 An authorized bodyless `POST /namespaces/:namespaceId/agents/:agentId/stop`
 sets desired state to `stopped`. The worker removes execution and routing, then

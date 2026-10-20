@@ -1,5 +1,9 @@
 import { WORKSPACE_FILE_NAMES } from "@openclaw-enterprise/contracts";
-import type { AgentRevision, WorkspaceFileName } from "@openclaw-enterprise/contracts";
+import type {
+  AgentGatewayPerson,
+  AgentRevision,
+  WorkspaceFileName,
+} from "@openclaw-enterprise/contracts";
 
 const ALLOWED_WORKSPACE_FILES = new Set<string>(WORKSPACE_FILE_NAMES);
 
@@ -69,4 +73,17 @@ export class ControllerWorkspaceFileUnknownOutcomeError extends Error {
 
 export function isAllowedWorkspaceFileName(name: string): name is WorkspaceFileName {
   return ALLOWED_WORKSPACE_FILES.has(name);
+}
+
+export interface ControllerGatewayPeopleRequest {
+  readonly revision: Readonly<AgentRevision>;
+  readonly signal: AbortSignal;
+  readonly deadline: Date;
+}
+
+export interface ControllerGatewayPeopleAccess {
+  list(request: ControllerGatewayPeopleRequest): Promise<readonly AgentGatewayPerson[]>;
+  avatar(
+    request: ControllerGatewayPeopleRequest & { readonly profileId: string },
+  ): Promise<{ readonly mime: string; readonly bytes: Uint8Array } | undefined>;
 }

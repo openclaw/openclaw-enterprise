@@ -208,6 +208,26 @@ test(
                           await browser.verify(agent);
                         },
                       );
+                      await step(
+                        "authorized Gateway people read through installed OCC",
+                        async () => {
+                          // Exercise the normal Console API's private Gateway RPC adapter.
+                          const { people } = await f.api(
+                            "GET",
+                            `/namespaces/${agent.namespaceId}/agents/${agent.id}/gateway/people`,
+                          );
+                          assert.ok(Array.isArray(people));
+                          for (const person of people) {
+                            assert.notEqual(person.id, "gateway-owner");
+                            assert.deepEqual(Object.keys(person).sort(), [
+                              "displayName",
+                              "hasAvatar",
+                              "id",
+                              "role",
+                            ]);
+                          }
+                        },
+                      );
                     },
                   ],
                   [

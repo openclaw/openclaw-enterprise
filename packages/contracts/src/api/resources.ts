@@ -1705,6 +1705,29 @@ export const AgentRuntimeLogsResponse = Type.Object(
   { $id: "AgentRuntimeLogsResponse", additionalProperties: false },
 );
 
+export const AgentGatewayPersonSchema = Type.Object(
+  {
+    id: Type.String({ minLength: 1, maxLength: 200 }),
+    displayName: Type.String({ maxLength: 256 }),
+    role: Type.Union([Type.String({ maxLength: 128 }), Type.Null()]),
+    hasAvatar: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+
+export const AgentGatewayPeopleResponse = Type.Object(
+  {
+    data: Type.Object(
+      { people: Type.Union([Type.Array(AgentGatewayPersonSchema), Type.Null()]) },
+      { additionalProperties: false },
+    ),
+    meta: Meta,
+  },
+  { additionalProperties: false },
+);
+
+export type AgentGatewayPerson = Type.Static<typeof AgentGatewayPersonSchema>;
+
 export const WorkspaceFileResponse = Type.Object(
   {
     data: Type.Object(

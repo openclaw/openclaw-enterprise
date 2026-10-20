@@ -14,6 +14,12 @@ const soulVersion = (version) =>
     (_, index) => `Line ${index + 1}: keep answers short and cite the files you used.\n`,
   ).join("");
 const create = "/console/agents/new?namespace=ns_00000000-0000-4000-8000-000000000001";
+const largeGatewayTeam = Array.from({ length: 50 }, (_, index) => ({
+  id: `profile-${index}`,
+  displayName: `${["Alex", "Casey", "Jordan", "Morgan", "Riley"][index % 5]} ${String(50 - index).padStart(2, "0")}`,
+  role: index % 13 === 0 ? "maintainer" : "member",
+  hasAvatar: false,
+}));
 const click = (text) => ({ click: text });
 const runtimeLogsPage = {
   group: "Pages/Agent detail",
@@ -6408,6 +6414,156 @@ export const scenarios = {
       "Switch Authentication source to API key, Service Accounts, and Operator-managed credentials. The issued-account error disappears; each source shows its own fields with consistent styling.",
       "Return to Issued ChatGPT service account. The unavailable-account feedback and saved account return; the failed lookup does not change its selection.",
     ],
+  },
+  gatewayPeople: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "People",
+    gatewayPeople: [
+      { id: "profile-alice", displayName: "Alice Chen", role: "member", hasAvatar: false },
+      { id: "profile-bob", displayName: "Bob Rivera", role: "maintainer", hasAvatar: false },
+    ],
+    description:
+      "Names and native roles for profiles already known to this Gateway, without OCC accounts.",
+    steps: [
+      "Check member and maintainer labels, then refresh people.",
+      "Resize to phone width; names and roles remain readable.",
+    ],
+    gap: "Simulated UI proof; installed Gateway profile reads are verified separately.",
+  },
+  gatewayPeopleLarge: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "50 people",
+    gatewayPeople: largeGatewayTeam,
+    description:
+      "Six profiles keep the overview compact; the full roster opens in a searchable panel.",
+    steps: [
+      "Open View all 50 people. Search for Riley and then a name that is absent.",
+      "Clear the search, scroll the full list, and close with Escape or Close. Focus returns to View all people.",
+      "Repeat at 390px with a reserved scrollbar gutter; both panel edges stay visible and its list scrolls.",
+    ],
+  },
+  gatewayPeopleSearch: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "Search people",
+    gatewayPeople: largeGatewayTeam,
+    actions: [click("View all 50 people"), { selector: "#gateway-people-search", value: "Riley" }],
+    description: "Search the full roster by display name, regardless of case.",
+  },
+  gatewayPeopleNoMatches: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "No matching people",
+    gatewayPeople: largeGatewayTeam,
+    actions: [
+      click("View all 50 people"),
+      { selector: "#gateway-people-search", value: "no such person" },
+    ],
+    description: "An empty search result leaves the search and close controls available.",
+  },
+  gatewayPeopleEmpty: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "Empty",
+    gatewayPeople: [],
+    description: "Review the Gateway people empty state.",
+    steps: ["Inspect the people card and its refresh control."],
+  },
+  gatewayPeopleNotConfigured: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "Not configured and hidden",
+    gatewayPeople: null,
+    description: "An installation without a Gateway people adapter hides the card.",
+    steps: ["Check that the Agent overview remains usable without a People card."],
+  },
+  gatewayPeopleLoading: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "Loading and hidden",
+    gatewayPeople: [
+      { id: "profile-alice", displayName: "Alice Chen", role: "member", hasAvatar: false },
+      { id: "profile-bob", displayName: "Bob Rivera", role: "maintainer", hasAvatar: false },
+    ],
+    rules: [{ method: "GET", suffix: "/gateway/people", hold: true }],
+    description: "The optional roster stays hidden while its first Gateway read is pending.",
+    steps: ["Inspect the people card and its refresh control."],
+  },
+  gatewayPeopleError: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "Unavailable and retry",
+    gatewayPeople: [
+      { id: "profile-alice", displayName: "Alice Chen", role: "member", hasAvatar: false },
+      { id: "profile-bob", displayName: "Bob Rivera", role: "maintainer", hasAvatar: false },
+    ],
+    rules: [{ method: "GET", suffix: "/gateway/people", status: 503, once: true }],
+    description: "Review the Gateway people unavailable and retry state.",
+    steps: ["Inspect the people card and its refresh control."],
+  },
+  gatewayPeopleDenied: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "Denied and hidden",
+    gatewayPeople: [
+      { id: "profile-alice", displayName: "Alice Chen", role: "member", hasAvatar: false },
+      { id: "profile-bob", displayName: "Bob Rivera", role: "maintainer", hasAvatar: false },
+    ],
+    rules: [{ method: "GET", suffix: "/gateway/people", status: 403 }],
+    description: "Review the Gateway people denied and hidden state.",
+    steps: ["Inspect the people card and its refresh control."],
+  },
+  gatewayPeopleAccessGranted: {
+    group: "Components/Gateway people",
+    name: "Access granted after denial",
+    path: revision,
+    deployed: true,
+    gatewayPeople: [
+      { id: "profile-alice", displayName: "Alice Chen", role: "member", hasAvatar: false },
+      { id: "profile-bob", displayName: "Bob Rivera", role: "maintainer", hasAvatar: false },
+    ],
+    rules: [{ method: "GET", suffix: "/gateway/people", status: 403, once: true }],
+    description: "A denied roster stays hidden until the reader explicitly retries after a grant.",
+    steps: [
+      "The People card starts hidden. Select the page Refresh button to retry authorization and reveal the roster.",
+    ],
+    gap: "The fixture simulates a grant by refusing only the first read; real IAM recovery has browser integration coverage.",
+  },
+  gatewayPeopleStopped: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "No serving Gateway",
+    gatewayPeople: [
+      { id: "profile-alice", displayName: "Alice Chen", role: "member", hasAvatar: false },
+      { id: "profile-bob", displayName: "Bob Rivera", role: "maintainer", hasAvatar: false },
+    ],
+    rules: [{ method: "GET", suffix: "/gateway/people", status: 409 }],
+    description: "Review the Gateway people no serving gateway state.",
+    steps: ["Inspect the people card and its refresh control."],
+  },
+  gatewayPeopleAvatar: {
+    group: "Components/Gateway people",
+    path: revision,
+    deployed: true,
+    name: "Avatar fallback",
+    gatewayPeople: [
+      { id: "profile-alice", displayName: "Alice Chen", role: "member", hasAvatar: true },
+      { id: "profile-bob", displayName: "Bob Rivera", role: "maintainer", hasAvatar: true },
+    ],
+    description: "Alice loads a synthetic image; Bob’s missing image falls back to initials.",
+    steps: ["Inspect the people card and its refresh control."],
   },
   nativeAdmin: {
     group: "Components/Native admin",
