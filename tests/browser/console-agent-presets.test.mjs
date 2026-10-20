@@ -3075,7 +3075,7 @@ test("the Preset chooser names its default and fills Use Preset once a Preset is
   const filled = (locator) =>
     locator.evaluate((node) => node.classList.contains("button--primary"));
   await page.getByText("The default Preset is default-codex.", { exact: true }).waitFor();
-  assert.equal(await shortcut.getAttribute("aria-describedby"), "default-preset-hint");
+  assert.equal(await shortcut.getAttribute("aria-describedby"), "agent-preset-default-hint");
   assert.equal(await shortcut.isEnabled(), true);
   assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
 
@@ -3086,5 +3086,22 @@ test("the Preset chooser names its default and fills Use Preset once a Preset is
   // Clearing the choice gives the filled style back to the shortcut.
   await page.getByLabel("Preset template").selectOption("");
   await page.getByLabel("Agent Name", { exact: true }).waitFor({ state: "detached" });
+  assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
+
+  // A failed Preset read leaves Use Preset disabled, so the shortcut keeps the filled style.
+  await page.route(`**/namespaces/${namespace.id}/presets/${other.data.id}`, (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "DEPENDENCY_UNAVAILABLE", message: "Preset storage is unavailable." },
+      }),
+    }),
+  );
+  await page.getByLabel("Preset template").selectOption(other.data.id);
+  await page
+    .getByText("Service unavailable. The read could not be completed. Try again.")
+    .waitFor();
+  assert.equal(await use.isDisabled(), true);
   assert.deepEqual([await filled(shortcut), await filled(use)], [true, false]);
 });

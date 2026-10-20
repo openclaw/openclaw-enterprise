@@ -87,7 +87,11 @@ export function createPresetFields(context, apply) {
     { tone: "primary", disabled: true },
   );
   // The chooser named no Preset beside its default shortcut (finding 2066).
-  const defaultHint = element("p", { className: "hint", id: "default-preset-hint", hidden: true });
+  const defaultHint = element("p", {
+    className: "hint",
+    id: `${selector.id}-default-hint`,
+    hidden: true,
+  });
   // Once a Preset is chosen, Use Preset is the next step, so it takes the filled style from the
   // default shortcut; clearing the choice gives it back (finding 2066).
   function emphasize(chosen) {
@@ -457,6 +461,8 @@ export function createPresetFields(context, apply) {
         context.onExpired();
       } else {
         feedback.textContent = message(error);
+        // Use Preset stays disabled, so the filled style goes back to the shortcut.
+        emphasize(false);
       }
     } finally {
       if (version === loadVersion) {
