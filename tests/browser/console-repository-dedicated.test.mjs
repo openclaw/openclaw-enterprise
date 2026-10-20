@@ -202,7 +202,7 @@ for (const issuesEnabled of [true, false]) {
     assert.equal(deployment.data.status, "queued");
     await page
       .locator(".deployment-outcome")
-      .filter({ hasText: "Recorded status: queued" })
+      .filter({ hasText: "Recorded status: Queued" })
       .waitFor();
     await page.getByRole("tab", { name: "Configuration", exact: true }).click();
     await page

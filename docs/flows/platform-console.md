@@ -147,10 +147,12 @@ a newly readable Namespace, or Refresh rebuilds the view. Pending or failed
 reads, password input, and mutations prevent reuse; read-only catalog and diagnostic POSTs do not.
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
-list, not each row’s deployment read. On reuse, `agents/list.mjs:renderAgentList`
-sets visible deployment cells to **Reading deployment…**, hidden for 250 ms and, once shown, kept at least 150 ms, before paint, then shows
+list, not row reads. Each row's newest readable revisions page feeds its deployment
+and `agents/list.mjs:currentRevision`, which reads an off-page current version alone;
+`deniedReadsFor` keeps a `403`. On reuse, `renderAgentList` sets visible deployment
+cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, before paint, then shows
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
-not a link to the old version. Unfinished or failed row reads never prevent reuse; resuming rereads them.
+not the old version's link. Unfinished or failed row reads never prevent reuse; resuming rereads them.
 
 A changed user or session key clears retained views and drafts before further
 private reads. Missing sessions open login; failed reads offer Retry.

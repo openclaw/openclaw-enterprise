@@ -1319,7 +1319,7 @@ async function pendingDeploy(t, viewport, name) {
   const open = async () => {
     await page.clock.install({ time: new Date("2026-10-16T12:00:00Z") });
     await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, pending.id, "access"));
-    await page.getByText("Recorded status: running").waitFor();
+    await page.getByText("Recorded status: In progress").waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
     await page.getByRole("heading", { name: "Share Agent" }).waitFor();
     await waitForIdleFetches(page);
@@ -1454,7 +1454,7 @@ for (const viewport of [
     // The deploy settles.
     record = { status: "succeeded", progress: null };
     await poll();
-    await page.getByText("Recorded status: succeeded").waitFor();
+    await page.getByText("Recorded status: Completed").waitFor();
     await waitForIdleFetches(page);
     const settledTop = await shareTop();
     t.diagnostic(`${size} Share Agent at ${firstTop}, ${attemptTop}, ${settledTop}`);

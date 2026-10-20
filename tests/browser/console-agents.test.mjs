@@ -1519,12 +1519,12 @@ test("Dedicated Agent creation opens deployment details after provisioning with 
   });
   // Creation must hand off to the detail page while deployment is still queued.
   const deploymentPanel = page.locator(".deployment-status");
-  await deploymentPanel.getByText("Recorded status: queued", { exact: true }).waitFor();
+  await deploymentPanel.getByText("Recorded status: Queued", { exact: true }).waitFor();
   assert.equal(await page.getByRole("heading", { name: "Create Agent", exact: true }).count(), 0);
   deploymentStatus = "failed";
   await deploymentPanel.getByRole("button", { name: "Refresh deployment", exact: true }).click();
   await openFoldedDetails(page);
-  await deploymentPanel.getByText("Recorded status: failed", { exact: true }).waitFor();
+  await deploymentPanel.getByText("Recorded status: Failed", { exact: true }).waitFor();
   await deploymentPanel
     .getByText("DEPENDENCY_UNAVAILABLE: Deployment reconciliation failed.", { exact: true })
     .waitFor();

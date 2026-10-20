@@ -79,12 +79,12 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const activity = page.locator(".deployment-status");
   const record = page.locator(".version-deployment-record");
-  await activity.getByText("Recorded status: running").waitFor();
-  await record.getByText("Recorded outcome: running").waitFor();
+  await activity.getByText("Recorded status: In progress").waitFor();
+  await record.getByText("Recorded outcome: In progress").waitFor();
   // A new failure must become visible even if the reader folded the pending progress: its card
   // leads the page, and the details stay folded under it.
   await activity.getByText("Deployment details", { exact: true }).press("Enter");
-  await activity.getByText("Recorded status: running").waitFor({ state: "hidden" });
+  await activity.getByText("Recorded status: In progress").waitFor({ state: "hidden" });
 
   status = "failed";
   await activity.getByRole("button", { name: "Refresh deployment" }).click();
@@ -93,8 +93,8 @@ test("Refresh deployment also refreshes the viewed version's deployment record",
     .getByText("v1 did not deploy successfully (RUNTIME_AUTHENTICATION_FAILED).", { exact: false })
     .waitFor();
   await openFoldedDetails(page);
-  await activity.getByText("Recorded status: failed").waitFor();
-  await record.getByText("Recorded outcome: failed").waitFor();
+  await activity.getByText("Recorded status: Failed").waitFor();
+  await record.getByText("Recorded outcome: Failed").waitFor();
   await record
     .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${authenticationFailure.message}`)
     .waitFor();
@@ -133,15 +133,15 @@ test("Deployment activity follows pending work until it records a result", async
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const activity = page.locator(".deployment-status");
   const record = page.locator(".version-deployment-record");
-  await activity.getByText("Recorded status: running").waitFor();
-  await record.getByText("Recorded outcome: running").waitFor();
+  await activity.getByText("Recorded status: In progress").waitFor();
+  await record.getByText("Recorded outcome: In progress").waitFor();
 
   // Pending work is reread on its own; the reader does not have to press Refresh deployment.
   status = "failed";
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await openFoldedDetails(page);
-  await activity.getByText("Recorded status: failed").waitFor();
-  await record.getByText("Recorded outcome: failed").waitFor();
+  await activity.getByText("Recorded status: Failed").waitFor();
+  await record.getByText("Recorded outcome: Failed").waitFor();
   await page.getByText("v1 · Failed", { exact: true }).waitFor();
 
   // A recorded result ends the follow-up reads.
@@ -183,7 +183,7 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   // show it without the reader opening them.
   await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
   assert.equal(await activity.locator(":scope > details").evaluate((node) => node.open), true);
-  await activity.getByText("Recorded status: failed").waitFor();
+  await activity.getByText("Recorded status: Failed").waitFor();
 
   // The same retire cleanup also covers repository credential resources, so the
   // status names the version's cleanup rather than bootstrap resources.
@@ -197,7 +197,7 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   cleanup = { status: "succeeded", nextAttemptAt: null };
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
   await status.getByText("Revision cleanup completed for this version.").waitFor();
-  await activity.getByText("Recorded status: failed").waitFor();
+  await activity.getByText("Recorded status: Failed").waitFor();
 });
 
 // A pending deployment is reread every few seconds and its summary usually stays the same.
@@ -297,7 +297,7 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   await login(page, fixture, url.pathname + url.search);
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const activity = page.locator(".deployment-status");
-  await activity.getByText("Recorded status: running").waitFor();
+  await activity.getByText("Recorded status: In progress").waitFor();
   const panel = await activity.elementHandle();
   // The Console caches the Agent view for Back only if its reads finished before it was left.
   await waitForIdleFetches(page);
@@ -313,13 +313,13 @@ test("Deployment activity keeps following after Back restores the cached Agent v
     true,
     "Back reuses the cached Agent view",
   );
-  await activity.getByText("Recorded status: running").waitFor();
+  await activity.getByText("Recorded status: In progress").waitFor();
 
   // The restored view resumes following without a manual Refresh deployment.
   status = "succeeded";
   const readsBeforeResult = statusReads;
   await page.clock.runFor(DEPLOYMENT_POLL_MS);
-  await activity.getByText("Recorded status: succeeded").waitFor();
+  await activity.getByText("Recorded status: Completed").waitFor();
   assert.ok(statusReads > readsBeforeResult);
 });
 
@@ -696,7 +696,7 @@ test("Agent detail says when the current or requested version cannot be read", a
   await summary.getByText(`v${first.revision.revision} · Completed`).waitFor();
   await summary.getByText("Not verified", { exact: true }).waitFor();
   const activity = page.getByRole("region", { name: "Deployment activity" });
-  const completion = activity.getByText("Recorded status: succeeded");
+  const completion = activity.getByText("Recorded status: Completed");
   assert.equal(await completion.isVisible(), false);
   await activity.getByText("Deployment details", { exact: true }).press("Enter");
   await completion.waitFor();
@@ -1097,7 +1097,9 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
   await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
   for (const c of neutralDeployments) {
     const row = page.getByRole("row").filter({ hasText: c.agent });
-    await row.getByRole("link", { name: `v1 · ${c.outcome}` }).waitFor();
+    await row
+      .getByRole("link", { name: `v1 · ${c.outcome[0].toUpperCase()}${c.outcome.slice(1)}` })
+      .waitFor();
     await row.getByText(c.note, { exact: true }).waitFor();
     assert.equal(await row.getByText(/failed|Deployment (was|ended)/).count(), 0);
   }
@@ -1117,7 +1119,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     await summary.getByText(`v1 · ${label}`, { exact: true }).waitFor();
     await summary.getByText(c.summaryNote, { exact: true }).waitFor();
     await summary.getByText("Not verified", { exact: true }).waitFor();
-    await activity.getByText(`Recorded status: ${c.outcome}`, { exact: true }).waitFor();
+    await activity.getByText(`Recorded status: ${label}`, { exact: true }).waitFor();
     await activity.getByText(c.explanation(code)).waitFor();
     for (const stage of c.stages) {
       await activity.getByText(stage, { exact: true }).waitFor();
@@ -1125,7 +1127,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     assert.equal(await activity.locator(`.deployment-step-${c.outcome}`).count(), 2);
     assert.equal(await activity.locator(".deployment-step-failed").count(), 0);
     assert.equal(await activity.getByRole("alert").count(), 0);
-    await record.getByText(`Recorded outcome: ${c.outcome}`, { exact: true }).waitFor();
+    await record.getByText(`Recorded outcome: ${label}`, { exact: true }).waitFor();
     await record.getByText(c.explanation(code), { exact: true }).waitFor();
     // No failure banner, no suspected outage, and nothing names the newer version, which this
     // reader cannot read.
@@ -1158,7 +1160,7 @@ test("Agent detail and list show superseded and stopped deployments as neutral, 
     if (!c.newerHidden) {
       await openFoldedDetails(page);
     }
-    await activity.getByText("Recorded status: failed", { exact: true }).waitFor();
+    await activity.getByText("Recorded status: Failed", { exact: true }).waitFor();
     await activity.getByText(`${c.failure.code}: ${c.failure.message}`).waitFor();
     assert.equal(await activity.locator(".deployment-step-failed").count(), 1);
     assert.equal(await activity.locator(`.deployment-step-${c.outcome}`).count(), 0);
@@ -1223,7 +1225,7 @@ test("Deployment activity appears once with its recorded status, not as an empty
   assert.equal(await activity.getByRole("button", { name: /Refresh/ }).count(), 0);
 
   status.release();
-  await activity.getByText("Recorded status: running").waitFor();
+  await activity.getByText("Recorded status: In progress").waitFor();
   await activity.getByRole("button", { name: "Refresh deployment" }).waitFor();
   await summary.getByText("v1 · In progress").waitFor();
   assert.equal(await page.locator(".deployment-status").count(), 1);
@@ -1262,7 +1264,7 @@ test("Agent detail reads the selected version's deployment record once on load",
   const activity = page.locator(".deployment-status");
   const record = page.locator(".version-deployment-record");
   await page.getByText("v1 · Completed", { exact: true }).waitFor();
-  await record.getByText("Recorded outcome: succeeded").waitFor();
+  await record.getByText("Recorded outcome: Completed").waitFor();
   await waitForIdleFetches(page);
   // Deployment activity and the version's record panel show the same record.
   assert.equal(recordReads, 1);
@@ -1272,7 +1274,7 @@ test("Agent detail reads the selected version's deployment record once on load",
   failFirst = true;
   await page.reload();
   await activity.getByRole("alert").waitFor();
-  await record.getByText("Recorded outcome: succeeded").waitFor();
+  await record.getByText("Recorded outcome: Completed").waitFor();
   await waitForIdleFetches(page);
   assert.equal(recordReads, 2);
 });

@@ -2330,7 +2330,7 @@ test("the Agents list does not move when failed deployments land", async (t) => 
     for (const { name, error } of records) {
       const row = page.getByRole("row").filter({ hasText: name });
       await row
-        .getByRole("link", { name: error ? "v1 · failed" : "v1 · succeeded", exact: true })
+        .getByRole("link", { name: error ? "v1 · Failed" : "v1 · Completed", exact: true })
         .waitFor();
     }
     await page.evaluate(() => globalThis.document.fonts.ready);

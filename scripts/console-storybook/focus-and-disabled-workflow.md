@@ -53,8 +53,8 @@ follows `:focus-visible`. No part of any ring may be cut off.
 12. Links are ink, not accent; the accent marks actions, the current nav item,
     selection and the selected tab. On **Pages / Agents / Latest Deployment
     Failed**, each Agent name is dark text with no underline until you hover or
-    Tab to it. The revision ID and the **v7 · failed** deployment link stay
-    underlined. On **Pages / Namespaces / Ready and provisioning**, hovering
+    Tab to it. The **v6** current version link and the **v7 · Failed**
+    deployment link stay underlined. On **Pages / Namespaces / Ready and provisioning**, hovering
     anywhere on a row underlines its name.
 13. On **Pages / Agent detail / Deployment Failed**, the credential link in the
     Configuration snapshot is dark text with a grey underline that darkens on
