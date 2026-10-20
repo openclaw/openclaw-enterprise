@@ -11,6 +11,7 @@ export const LongNameDashes = story("agentsLongNameDashes");
 export const LongNameJoiners = story("agentsLongNameJoiners");
 export const LongNameMixed = story("agentsLongNameMixed");
 export const LongNamePhone = story("agentsLongNamePhone");
+export const IdLigaturesPhone = story("agentsIdLigaturesPhone");
 export const AgentsEmpty = { ...story("agentsEmpty"), name: "Empty" };
 export const AgentsSearch = { ...story("agentsSearch"), name: "No search matches" };
 export const NoNamespaces = { ...story("noNamespaces"), name: "No readable Namespaces" };
