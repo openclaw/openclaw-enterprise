@@ -235,26 +235,46 @@ test("a deleting Namespace is never the default pick while another remains", asy
   assert.equal(new URL(page.url()).searchParams.get("namespace"), namespaces.default.id);
 });
 
-test("with only a deleting Namespace, the pick names it and offers no wait", async (t) => {
-  const { fixture, namespaces } = await firstRun(t);
-  const { page } = await newPage(t, fixture, { browser });
-  await reportNamespaces(page, new Map([[namespaces.default.id, { status: "deleting" }]]));
-  await login(page, fixture, "/console/");
-  const view = page.locator(settledView);
-  await view.getByRole("heading", { name: "No Agents yet" }).waitFor();
-  assert.equal(
-    await view.getByRole("status").filter({ hasText: "Namespace status: Deleting." }).textContent(),
+// Deleting and failed Namespaces take no new Agent and neither becomes ready by waiting; each
+// names its own reason (finding 1932 for failed).
+const UNAVAILABLE = [
+  [
+    "deleting",
     "Namespace status: Deleting. This Namespace is being deleted, so it cannot hold new Agents. Choose another Namespace.",
-  );
-  await view.getByText("Agents cannot be created in this Namespace.").waitFor();
-  assert.deepEqual(
-    await statusTone(view.getByRole("status").filter({ hasText: "Namespace status: Deleting." })),
-    WARNING,
-  );
-  const create = view.getByRole("button", { name: "Create Agent" });
-  assert.equal(await create.isDisabled(), true);
-  assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
-});
+  ],
+  [
+    "failed",
+    "Namespace status: Failed. Provisioning this Namespace failed, so it cannot hold new Agents. Ask an operator to check it on the Namespaces page, or choose another Namespace.",
+  ],
+];
+
+for (const [status, reason] of UNAVAILABLE) {
+  test(`with only a ${status} Namespace, the pick names it and offers no wait`, async (t) => {
+    const { fixture, namespaces } = await firstRun(t);
+    const { page } = await newPage(t, fixture, { browser });
+    await reportNamespaces(page, new Map([[namespaces.default.id, { status }]]));
+    await login(page, fixture, "/console/");
+    const view = page.locator(settledView);
+    await view.getByRole("heading", { name: "No Agents yet" }).waitFor();
+    const note = view.getByRole("status").filter({ hasText: reason.split(".")[0] });
+    assert.equal(await note.textContent(), reason);
+    await view.getByText("Agents cannot be created in this Namespace.").waitFor();
+    assert.equal(await view.getByText(INVITATION).count(), 0);
+    assert.equal(await view.getByText(DRAFT_INVITATION).count(), 0);
+    assert.deepEqual(await statusTone(note), WARNING);
+    const create = view.getByRole("button", { name: "Create Agent" });
+    assert.equal(await create.isDisabled(), true);
+    assert.equal(await create.getAttribute("aria-describedby"), "namespace-not-ready");
+
+    // Create Agent itself refuses to start, with the same reason.
+    await page.goto(
+      new URL(`/console/agents/new?namespace=${namespaces.default.id}`, fixture.origin).href,
+    );
+    await view.getByRole("heading", { name: "Creating Agents is not available" }).waitFor();
+    assert.equal(await view.getByRole("status").filter({ hasText: reason }).count(), 1);
+    assert.equal(await view.getByRole("button", { name: "Start without Preset" }).count(), 0);
+  });
+}
 
 test("a return to the Agents list and Create Agent shows a Namespace that became ready", async (t) => {
   const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");

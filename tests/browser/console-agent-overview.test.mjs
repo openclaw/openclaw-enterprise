@@ -1707,3 +1707,161 @@ test("A recovery link to a draft retained from an earlier visit brings it into v
     "draft",
   );
 });
+
+// The Agent's facts are a stat row inside one card (UX spec 3.5): three columns at desktop
+// width, one column at phone width with each label and value on one line. A recorded outcome
+// and Live serving are badges. What the page cannot confirm is said once, in one closed
+// disclosure under the facts (spec 3.6, plan D5), not under each fact or card.
+const GUARANTEES = [
+  "Selection does not confirm that this version is serving.",
+  "Deployment records don’t verify live serving or model access.",
+  "Listed bindings describe present configuration; they do not confirm a previous request’s outcome.",
+];
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  const size = `${viewport.width}x${viewport.height}`;
+  test(`The Agent's facts are a stat row with one disclosure at ${size}`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Stat row ${size}`);
+    const agent = await fixture.createAgent(
+      namespace.id,
+      "Stat Row Agent",
+      nativeValues("v1", { harnessId: "codex" }),
+      { executionMode: "dedicated" },
+    );
+    const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const replacement = await fixture.deployAgent(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    await routeFailedRecord(page, fixture, namespace, agent, replacement);
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+    );
+    await page.getByRole("heading", { name: "Version v1" }).waitFor();
+    const summary = page.getByRole("region", { name: "Agent state at a glance" });
+    await summary.getByText("May be offline", { exact: true }).waitFor();
+    await page
+      .getByRole("region", { name: "Share Agent", exact: true })
+      .getByText("Current policy loaded.", { exact: true })
+      .waitFor();
+
+    const facts = await summary.evaluate((node) =>
+      [...node.children].map((stat) => {
+        const [label, value] = stat.children;
+        const box = (element) => {
+          const rect = element.getBoundingClientRect();
+          return { top: Math.round(rect.top), left: Math.round(rect.left), bottom: rect.bottom };
+        };
+        const badge = value.querySelector(".badge");
+        return {
+          className: stat.className,
+          label: label.textContent,
+          value: value.textContent,
+          valueSize: globalThis.getComputedStyle(value).fontSize,
+          badge: badge ? [badge.textContent, badge.dataset.tone ?? null] : null,
+          labelBox: box(label),
+          valueBox: box(value),
+          card: node.parentElement.classList.contains("card"),
+        };
+      }),
+    );
+    assert.deepEqual(
+      facts.map((fact) => [fact.className, fact.label, fact.value, fact.valueSize, fact.badge]),
+      [
+        ["stat", "Selected version", "v1", "18px", null],
+        ["stat", "Latest visible deployment", "v2 · Failed", "18px", ["Failed", "danger"]],
+        ["stat", "Live serving", "May be offline", "18px", ["May be offline", "warning"]],
+      ],
+    );
+    assert.ok(
+      facts.every((fact) => fact.card),
+      "the facts sit inside a card",
+    );
+    if (viewport.width > 760) {
+      // Three columns side by side.
+      assert.equal(new Set(facts.map((fact) => fact.labelBox.top)).size, 1, JSON.stringify(facts));
+      assert.ok(
+        facts[0].labelBox.left < facts[1].labelBox.left &&
+          facts[1].labelBox.left < facts[2].labelBox.left,
+        JSON.stringify(facts),
+      );
+    } else {
+      // One column; each label and its value share a line.
+      for (const fact of facts) {
+        assert.ok(
+          fact.labelBox.bottom > fact.valueBox.top && fact.valueBox.bottom > fact.labelBox.top,
+          JSON.stringify(fact),
+        );
+        assert.ok(fact.valueBox.left > fact.labelBox.left, JSON.stringify(fact));
+      }
+      assert.ok(
+        facts[0].labelBox.top < facts[1].labelBox.top &&
+          facts[1].labelBox.top < facts[2].labelBox.top,
+        JSON.stringify(facts),
+      );
+    }
+
+    // Each guarantee appears once on the page, inside the one closed disclosure.
+    const disclosure = page.locator("details.disclosure");
+    assert.equal(await disclosure.count(), 1);
+    assert.equal(await disclosure.evaluate((node) => node.open), false);
+    const placement = () =>
+      page.evaluate((sentences) => {
+        const text = globalThis.document.body.textContent;
+        const details = globalThis.document.querySelector("details.disclosure");
+        return sentences.map((sentence) => [
+          text.split(sentence).length - 1,
+          details.textContent.split(sentence).length - 1,
+        ]);
+      }, GUARANTEES);
+    assert.deepEqual(await placement(), [
+      [1, 1],
+      [1, 1],
+      [1, 1],
+    ]);
+    for (const sentence of GUARANTEES) {
+      assert.equal(await page.getByText(sentence, { exact: true }).isVisible(), false);
+    }
+    const toggle = disclosure.getByText("What this page can tell you", { exact: true });
+    await toggle.click();
+    for (const sentence of GUARANTEES) {
+      assert.equal(await disclosure.getByText(sentence, { exact: true }).isVisible(), true);
+    }
+    // The version tab's notice no longer repeats the first one.
+    await page
+      .getByText("Current version · read-only admitted snapshot.", { exact: true })
+      .waitFor();
+    assert.deepEqual(await placement(), [
+      [1, 1],
+      [1, 1],
+      [1, 1],
+    ]);
+  });
+}
+
+// The bindings sentence speaks for the sharing panel's list: without that panel (sharing reads
+// refused), the disclosure leaves it out.
+test("The page's disclosure names listed bindings only beside the sharing panel", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Disclosure sharing");
+  const agent = await fixture.createAgent(namespace.id, "Disclosure Agent", nativeValues("v1"));
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(`**/namespaces/${namespace.id}/iam/access-bindings`, (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        error: { code: "FORBIDDEN", message: "Forbidden." },
+        meta: { requestId: "req_test_disclosure_sharing" },
+      }),
+    }),
+  );
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
+  const disclosure = page.locator("details.disclosure");
+  await disclosure.getByText("What this page can tell you", { exact: true }).click();
+  await disclosure.getByText(GUARANTEES[0], { exact: true }).waitFor();
+  await disclosure.getByText(GUARANTEES[1], { exact: true }).waitFor();
+  assert.equal(await page.getByRole("region", { name: "Share Agent", exact: true }).count(), 0);
+  assert.equal(await disclosure.getByText(GUARANTEES[2], { exact: true }).isVisible(), false);
+});

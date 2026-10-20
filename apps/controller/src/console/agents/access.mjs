@@ -258,9 +258,8 @@ export function renderAgentAccess(context, agent) {
       await readPolicy();
       section.hidden = false;
       state.needsRefresh = false;
-      state.progress = [
-        "Current policy loaded. Listed bindings describe present configuration; they do not confirm a previous request’s outcome.",
-      ];
+      // What the listed bindings cannot confirm is said once, in the page's disclosure.
+      state.progress = ["Current policy loaded."];
     } catch (error) {
       if (context.isCurrent()) {
         state.loaded = false;
