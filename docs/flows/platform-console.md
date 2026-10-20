@@ -192,10 +192,10 @@ relisted. Closing refocuses the opener; a 403 disables it per account, across
 navigation, until Refresh (`fromRefresh`). Pending writes block dismissal; 400s
 mark names; conflicts keep input; unconfirmed responses need inspection.
 
-Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
-is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;
-OCC still authorizes every write. See
-[Agent creation](../reference/console/create-and-deploy.md) for inputs and recovery.
+Agents and Create Agent read Namespace permissions. False `agents.create` or a
+[Namespace status](../reference/namespaces.md#lifecycle) refusing Agents explains why and rechecks on return. A failed read keeps creation available;
+with `agents.create` but `GET /installation` refused, only drafts save.
+OCC authorizes every write. See [Agent creation](../reference/console/create-and-deploy.md).
 
 `agents/plugin-fields.mjs:createPluginFields` edits Agent `plugins` separately
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides

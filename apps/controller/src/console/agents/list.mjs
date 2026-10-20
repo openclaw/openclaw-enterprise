@@ -351,12 +351,21 @@ export function renderAgentList(context) {
   const create = button("Create Agent", () => context.navigate("agents/new"), {
     tone: "primary",
   });
-  create.disabled = createDenied || notReady?.blocked === true;
-  // A provisioning Namespace still takes drafts, so Create Agent stays enabled, and says why
-  // nothing deploys yet (finding 1990).
-  if (notReady) {
-    create.setAttribute("aria-describedby", "namespace-not-ready");
-  }
+  // A disabled Create Agent names its reason (UX plan A2), and a provisioning Namespace still
+  // takes drafts, so Create Agent stays enabled and says why nothing deploys yet (finding 1990).
+  const describeCreate = () => {
+    create.disabled = createDenied || notReady?.blocked === true;
+    const reasons = [
+      ...(createDenied ? ["agents-create-denied"] : []),
+      ...(notReady ? ["namespace-not-ready"] : []),
+    ];
+    if (reasons.length) {
+      create.setAttribute("aria-describedby", reasons.join(" "));
+    } else {
+      create.removeAttribute("aria-describedby");
+    }
+  };
+  describeCreate();
   // The Namespace status block (dom.mjs statusBlock's markup), a polite status on load.
   const namespaceNote = (tone, text) =>
     element(
@@ -377,7 +386,7 @@ export function renderAgentList(context) {
       ? [
           element(
             "p",
-            { className: "muted", role: "status" },
+            { className: "muted", role: "status", id: "agents-create-denied" },
             "Your access does not include creating Agents in this Namespace.",
           ),
         ]
@@ -637,12 +646,7 @@ export function renderAgentList(context) {
     const showNamespace = (namespace) => {
       context.namespace = namespace;
       notReady = namespaceCreation(namespace);
-      create.disabled = createDenied || notReady?.blocked === true;
-      if (notReady) {
-        create.setAttribute("aria-describedby", "namespace-not-ready");
-      } else {
-        create.removeAttribute("aria-describedby");
-      }
+      describeCreate();
       // A ready Namespace says so where the warning was. The list holds no field being edited,
       // so the note keeps its own height (Create Agent keeps the warning's, finding 2024).
       const replacement = notReady
