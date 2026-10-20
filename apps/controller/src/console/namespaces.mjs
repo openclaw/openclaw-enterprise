@@ -304,9 +304,12 @@ export function renderNamespaces(context, items, renderRows) {
             (error.status === 400 && error.serverMessage) ||
             "Namespace creation was refused. Check the name and try again.";
         }
-        const requestId = error.requestId
-          ? [element("p", { className: "request-id" }, `Request ID: ${error.requestId}`)]
-          : [];
+        // A request ID helps support trace an unexpected failure. A refusal the reader can fix
+        // here, a taken name above all, does not need one (finding 2102).
+        const requestId =
+          unknown && error.requestId
+            ? [element("p", { className: "request-id" }, `Request ID: ${error.requestId}`)]
+            : [];
         if (error.status === 400) {
           // The name is the only field: mark it invalid with the refusal linked to it, until
           // it is edited (finding 2046).

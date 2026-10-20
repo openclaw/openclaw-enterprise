@@ -133,6 +133,8 @@ test("a Namespace name conflict keeps the form editable for correction", async (
     .getByRole("alert")
     .filter({ hasText: /Choose a different name/ })
     .waitFor();
+  // A taken name is the reader's to fix: no request ID beside it (finding 2102).
+  assert.equal(await dialog.getByText(/Request ID/).count(), 0);
   assert.equal(await name.inputValue(), "Existing team");
   assert.equal(await name.isEnabled(), true);
   assert.equal(await name.evaluate((node) => node === node.ownerDocument.activeElement), true);
@@ -199,6 +201,7 @@ test("the Namespace name is checked at the field with the API's own rule", async
       globalThis.document.getElementById("namespace-name")?.getAttribute("aria-invalid") === "true",
   );
   assert.match(await describedError(), /operation contract.*\/name/);
+  assert.equal(await dialog.getByText(/Request ID/).count(), 0);
   assert.equal(await name.isEnabled(), true);
   assert.equal(await name.evaluate((node) => node === node.ownerDocument.activeElement), true);
   await name.fill("Wire team 2");
@@ -400,6 +403,35 @@ test("a member is not invited to create, and a real IAM denial disables Create N
           event.kind === "authorization_denial" && event.action === "openclaw.namespaces.create",
       ),
   );
+});
+
+// An unexpected failure keeps its request ID for support, unlike a refusal the reader can fix.
+test("an unexpected Namespace creation failure shows its request ID", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser });
+  await page.route(`${fixture.origin}/namespaces`, (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          json: {
+            error: { code: "UNAVAILABLE", message: "Try again later." },
+            meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
+          },
+        })
+      : route.continue(),
+  );
+  await login(page, fixture, "/console/namespaces");
+  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
+  await dialog.getByLabel("Namespace name").fill("Busy team");
+  await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  await dialog
+    .getByRole("alert")
+    .filter({ hasText: /Outcome unknown/ })
+    .waitFor();
+  await dialog.getByText("Request ID: req_00000000-0000-4000-8000-000000000503", { exact: true }).waitFor();
 });
 
 test("a lost Namespace creation response requires inspection before another attempt", async (t) => {
