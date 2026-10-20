@@ -3294,9 +3294,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // Plugin status also serves on 18791 without a native runtime (OpenClaw Gateways
         // with enabled plugins), so the reservation does not depend on options.runtime.
         if (options.network.gatewayPort === PLUGIN_RUNTIME_STATUS_PORT) {
-          throw new ConfigurationFailure(
-            `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
-          );
+          throw new ConfigurationValidationError([
+            {
+              path: "/network/gatewayPort",
+              code: "INVALID_VALUE",
+              message: `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+            },
+          ]);
         }
         trustedProxyCidrSet(options.network.gatewayTrustedProxyCidrs, "Trusted proxy CIDR");
         if (options.network.pluginStatusProxySourceCidrs !== undefined) {
@@ -3580,9 +3584,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
               throw new ConfigurationFailure("Sandbox routing requires a native Gateway runtime.");
             }
             if (options.network.gatewayPort + 1 === PLUGIN_RUNTIME_STATUS_PORT) {
-              throw new ConfigurationFailure(
-                `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
-              );
+              throw new ConfigurationValidationError([
+                {
+                  path: "/network/gatewayPort",
+                  code: "INVALID_VALUE",
+                  message: `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+                },
+              ]);
             }
           }
         }

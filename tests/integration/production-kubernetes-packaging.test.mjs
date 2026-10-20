@@ -494,10 +494,25 @@ test(
     };
     // tenantGatewayPort must equal Compute's network.gatewayPort, so Helm refuses exactly
     // what controller startup refuses instead of installing a controller that cannot start.
-    for (const [gatewayPort, sandbox, refused] of [
-      [PLUGIN_RUNTIME_STATUS_PORT, false, true],
-      [PLUGIN_RUNTIME_STATUS_PORT, true, true],
-      [PLUGIN_RUNTIME_STATUS_PORT - 1, true, true],
+    for (const [gatewayPort, sandbox, refused, message] of [
+      [
+        PLUGIN_RUNTIME_STATUS_PORT,
+        false,
+        true,
+        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      ],
+      [
+        PLUGIN_RUNTIME_STATUS_PORT,
+        true,
+        true,
+        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      ],
+      [
+        PLUGIN_RUNTIME_STATUS_PORT - 1,
+        true,
+        true,
+        `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      ],
       [PLUGIN_RUNTIME_STATUS_PORT - 1, false, false],
       [PLUGIN_RUNTIME_STATUS_PORT + 1, true, false],
       [8080, true, false],
@@ -508,7 +523,17 @@ test(
         "gatewayRouting.tenantGatewayPort": String(gatewayPort),
       };
       if (refused) {
-        assert.throws(() => compute(gatewayPort, sandbox), /reserved runtime status port/, row);
+        assert.throws(
+          () => compute(gatewayPort, sandbox),
+          (error) => {
+            assert.ok(error instanceof ConfigurationValidationError);
+            assert.deepEqual(error.error.details, [
+              { path: "/network/gatewayPort", code: "INVALID_VALUE", message },
+            ]);
+            return true;
+          },
+          row,
+        );
         await assert.rejects(
           render(chartValues),
           ({ code, stderr }) =>
