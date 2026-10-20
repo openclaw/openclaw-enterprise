@@ -673,7 +673,8 @@ test("The current version, Slack token bindings and Namespace rows use the badge
     );
   }
 
-  // Namespace rows are cards: the shared card surface, edge and radius.
+  // Namespace rows sit in one table card (UX spec 3.12): the card's surface, edge and radius
+  // belong to the table, and each row is divided from the next by a hairline.
   await page.goto(new URL(`/console/namespaces?namespace=${namespace.id}`, fixture.origin).href);
   const row = page
     .getByRole("list", { name: "Namespaces", exact: true })
@@ -682,15 +683,15 @@ test("The current version, Slack token bindings and Namespace rows use the badge
   await row.waitFor();
   assert.deepEqual(
     await row.evaluate((node) => {
-      const style = globalThis.getComputedStyle(node);
+      const table = globalThis.getComputedStyle(node.closest(".namespace-table"));
       return {
         card: node.classList.contains("card"),
-        radius: style.borderTopLeftRadius,
-        padding: style.paddingTop,
-        edge: style.borderTopWidth,
+        surface: table.backgroundColor,
+        radius: table.borderTopLeftRadius,
+        edge: table.borderTopWidth,
       };
     }),
-    { card: true, radius: "14px", padding: "24px", edge: "1px" },
+    { card: false, surface: "rgb(255, 255, 255)", radius: "14px", edge: "1px" },
   );
   const { badge, text, tone, painted } = await badgeState(row.locator(".badge"));
   assert.deepEqual(

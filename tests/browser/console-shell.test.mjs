@@ -94,7 +94,7 @@ test("the desktop shell shows the sidebar surface, the current-page bar and the 
     ["Settings", "Sign out"],
   );
   await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
-  await page.getByRole("button", { name: "Login", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
 });
 
 // The focus ring is navy, not accent, so it does not read as a validation error (spec 6.1).
@@ -201,4 +201,179 @@ test("changing between desktop and phone layouts closes the account menu left be
   );
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.locator("#account-menu-top").isVisible(), false);
+});
+
+// Sign-in (UX spec 3.12): "Sign in" with the email hint as its one muted line, Email and
+// Password, a full-width primary, the ink wordmark, and the build in a muted footer.
+test("the sign-in page says Sign in, labels the email field and names the build", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const revision = "0123456789abcdef0123456789abcdef01234567";
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  // Published images bake their commit into this meta tag; the fixture serves it empty.
+  await page.route("**/console/login", async (route) => {
+    const response = await route.fetch();
+    const html = await response.text();
+    assert.match(html, /<meta name="occ-build-revision" content="" \/>/);
+    await route.fulfill({
+      response,
+      body: html.replace(
+        '<meta name="occ-build-revision" content="" />',
+        `<meta name="occ-build-revision" content="${revision}" />`,
+      ),
+    });
+  });
+  await page.goto(new URL("/console/login", fixture.origin).href);
+  const title = page.getByRole("heading", { level: 1 });
+  await title.waitFor();
+  assert.equal(await title.textContent(), "Sign in");
+  assert.equal((await style(title, "fontSize")).fontSize, "24px");
+  assert.equal(await page.getByText("Welcome back").count(), 0);
+
+  const email = page.getByLabel("Email", { exact: true });
+  assert.equal(await email.getAttribute("type"), "email");
+  assert.equal(await email.getAttribute("autocomplete"), "username");
+  // The muted line under the title is the field's description, not a second hint.
+  assert.equal(
+    await email.evaluate(
+      (node) =>
+        globalThis.document.getElementById(node.getAttribute("aria-describedby"))?.textContent,
+    ),
+    "Use your account email.",
+  );
+  assert.equal(await page.locator(".auth .hint").count(), 0);
+  await page.getByLabel("Password", { exact: true }).waitFor();
+  const submit = page.getByRole("button", { name: "Sign in", exact: true });
+  assert.equal(await submit.evaluate((node) => node.classList.contains("button--primary")), true);
+  assert.equal((await submit.boundingBox()).width, (await email.boundingBox()).width);
+
+  const brand = page.locator(".auth .brand");
+  assert.equal(await brand.textContent(), "OpenClaw Enterprise");
+  assert.deepEqual(await style(brand, "color", "textTransform"), {
+    color: await tokenColor(page, "--color-text-strong"),
+    textTransform: "none",
+  });
+
+  const footer = page.locator(".auth-footer");
+  assert.equal(await footer.textContent(), "OpenClaw Enterprise · build 01234567");
+  assert.deepEqual(await style(footer, "fontSize", "color"), {
+    fontSize: "12px",
+    color: await tokenColor(page, "--color-text-muted"),
+  });
+
+  // A phone keeps a 16 px gutter on each side of the card.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const card = await page.locator(".auth").boundingBox();
+  assert.ok(card.x >= 16 && card.x + card.width <= 390 - 16, JSON.stringify(card));
+
+  await email.fill(fixture.credentials.email);
+  await page.getByLabel("Password", { exact: true }).fill(fixture.credentials.password);
+  await submit.click();
+  await page.waitForURL(/\/console\/agents/);
+});
+
+// A development build has no commit to name, so the sign-in page has no footer.
+test("the sign-in page leaves the footer out without a build commit", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  await page.goto(new URL("/console/login", fixture.origin).href);
+  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.locator(".auth-footer").count(), 0);
+  assert.equal(await page.locator("#app").evaluate((node) => node.lastChild.nodeType), 1);
+});
+
+// Namespaces (UX spec 3.12): one table card with Namespace, Status and Created columns. Rows stay
+// list items that open the Namespace's Agents, from the pointer or the keyboard.
+test("Namespaces read as a table whose rows open each Namespace's Agents", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const ready = await fixture.createNamespace("Table ready", { ready: true });
+  const provisioning = await fixture.createNamespace("Table provisioning");
+  const { page } = await newPage(t, fixture, { browser, context: desktop });
+  await login(page, fixture, `/console/namespaces?namespace=${ready.id}`);
+  const list = page.getByRole("list", { name: "Namespaces", exact: true });
+  await list.waitFor();
+
+  const table = page.locator(".namespace-table");
+  assert.deepEqual(await style(table, "borderTopWidth", "borderTopLeftRadius"), {
+    borderTopWidth: "1px",
+    borderTopLeftRadius: "14px",
+  });
+  const head = table.locator(".namespace-table-head");
+  assert.equal(await head.getAttribute("aria-hidden"), "true");
+  assert.deepEqual(await head.locator("span").allTextContents(), [
+    "Namespace",
+    "Status",
+    "Created",
+  ]);
+  assert.equal(
+    (await style(head, "backgroundColor")).backgroundColor,
+    await tokenColor(page, "--color-surface-2"),
+  );
+  const columns = await head
+    .locator("span")
+    .evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().left)));
+
+  for (const [namespace, label, tone] of [
+    [ready, "Ready", "success"],
+    [provisioning, "Provisioning", "warning"],
+  ]) {
+    const row = list.getByRole("listitem").filter({ hasText: namespace.id });
+    assert.equal(await row.evaluate((node) => node.classList.contains("card")), false);
+    assert.ok((await row.boundingBox()).height >= 56);
+    const link = row.getByRole("link", { name: namespace.name, exact: true });
+    assert.equal(
+      await link.getAttribute("href"),
+      `/console/agents?namespace=${encodeURIComponent(namespace.id)}`,
+    );
+    const badge = row.locator(".badge");
+    assert.equal(await badge.textContent(), label);
+    assert.equal(await badge.getAttribute("data-tone"), tone);
+    const created = row.locator(".namespace-cell-created");
+    // The column name is read with the value but shown only by the head row.
+    assert.match(await created.textContent(), /^Created \S/);
+    assert.ok((await created.locator(".namespace-cell-label").boundingBox()).width <= 1);
+    // Each cell starts under its column's name.
+    const lefts = await Promise.all(
+      [link, badge, created].map(async (node) => Math.round((await node.boundingBox()).x)),
+    );
+    assert.deepEqual(lefts, columns);
+  }
+
+  // The keyboard reaches each row's link; the ring is drawn inside the table's clipped corners.
+  const link = list.getByRole("link", { name: provisioning.name, exact: true });
+  await page.locator("[data-create-namespace]").focus();
+  for (let step = 0; step < 6; step += 1) {
+    if (await link.evaluate((node) => node === globalThis.document.activeElement)) {
+      break;
+    }
+    await page.keyboard.press("Tab");
+  }
+  assert.equal(await link.evaluate((node) => node === globalThis.document.activeElement), true);
+  const row = list.getByRole("listitem").filter({ hasText: provisioning.id });
+  assert.deepEqual(await style(row, "outlineStyle", "outlineOffset"), {
+    outlineStyle: "solid",
+    outlineOffset: "-3px",
+  });
+  await page.keyboard.press("Enter");
+  await page.waitForURL(`**/console/agents?namespace=${provisioning.id}`);
+
+  // A phone stacks each row: the badge beside the name and the labelled date beneath.
+  await page.goBack();
+  await list.waitFor();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await head.isVisible(), false);
+  const phoneRow = list.getByRole("listitem").filter({ hasText: ready.id });
+  const label = phoneRow.locator(".namespace-cell-label");
+  assert.ok((await label.boundingBox()).width > 1, "the date is labelled on a phone");
+  const name = await phoneRow.locator(".resource-name").boundingBox();
+  const status = await phoneRow.locator(".badge").boundingBox();
+  const date = await phoneRow.locator(".namespace-cell-created").boundingBox();
+  assert.ok(status.x > name.x && Math.abs(status.y - name.y) < 16, "badge beside the name");
+  assert.ok(date.y > name.y + name.height, "date beneath the name");
+  assert.ok(
+    (await page.evaluate(() => globalThis.document.documentElement.scrollWidth)) <= 390,
+    "nothing scrolls sideways",
+  );
 });

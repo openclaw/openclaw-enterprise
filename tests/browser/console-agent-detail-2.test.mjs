@@ -1520,7 +1520,7 @@ test("Agent detail refocus clears a revision after session expiry", async (t) =>
 
   await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
   await page.getByText("Your session has expired").waitFor();
-  await page.getByRole("button", { name: "Login", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
   await expectNoText(page, /Configuration draft|Create new version|Expired revision Agent/);
 });
 
@@ -2197,7 +2197,7 @@ test("Agent sharing reconciles a truncated committed response without replaying 
   }
   await panel.getByRole("button", { name: "Refresh sharing" }).click();
   await page.getByText("Your session has expired").waitFor();
-  await page.getByRole("button", { name: "Login", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
   assert.equal(await panel.count(), 0);
 });
 

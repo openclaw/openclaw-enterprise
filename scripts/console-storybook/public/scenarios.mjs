@@ -466,8 +466,9 @@ export const scenarios = {
     name: "Signed out",
     path: "/console/login",
     signedOut: true,
+    buildRevision: "1234567890abcdef1234567890abcdef12345678",
     description:
-      "The email and password form. Any nonempty demo email/password signs into this fixture.",
+      "The email and password form, and a footer naming the build. Any nonempty demo email/password signs into this fixture.",
   },
   githubLogin: {
     group: "Pages/Sign in",
@@ -524,7 +525,7 @@ export const scenarios = {
       click("Recovery sign-in"),
       { selector: "#username", value: "member@example.com" },
       { selector: "#password", value: "demo-only" },
-      click("Login"),
+      click("Sign in"),
     ],
     description:
       "Recovery sign-in reveals the password form. A refused password explains that only the recovery account can use one.",
@@ -647,7 +648,7 @@ export const scenarios = {
     actions: [
       { selector: "#username", value: "operator@example.com" },
       { selector: "#password", value: "demo-only" },
-      click("Login"),
+      click("Sign in"),
     ],
     description: "A rejected sign-in leaves the form available for retry.",
   },

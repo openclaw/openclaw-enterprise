@@ -2760,9 +2760,9 @@ test("unsaved Preset drafts retain unfinished edits across navigation until expl
   await page.getByLabel("Agent name", { exact: true }).fill("Private session draft");
   await page.locator(".account-toggle").click();
   await page.getByRole("menuitem", { name: "Sign out" }).click();
-  await page.getByLabel("Username").fill(fixture.credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(fixture.credentials.email);
   await page.getByLabel("Password").fill(fixture.credentials.password);
-  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   await page.getByLabel("Preset template").waitFor();
   assert.equal(await page.getByLabel("Agent name", { exact: true }).count(), 0);

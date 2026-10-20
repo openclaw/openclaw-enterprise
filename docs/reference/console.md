@@ -11,10 +11,9 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
-Enter your provisioned account email as
-**Username**, then its password, and select **Login**. Public
+Enter your provisioned account email and password, then select **Sign in**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
-your administrator for an account or a password reset. To set up your own
+your administrator for an account or password reset. For your own
 Installation, see the
 [quickstart](../guides/quickstart.md#open-the-platform-console) or
 [deployment guide](../guides/deploy.md#open-the-platform-console).
@@ -26,16 +25,15 @@ See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-de
 
 ## Identify the control-plane build
 
-With `debug=true`, the sidebar wordmark is followed by the first eight
-characters of the running OCC image's source commit, or **dev** for builds
-without metadata; hover for the full commit. Published images bake the checked
-release commit into the console HTML.
+With `debug=true`, the sidebar wordmark shows the first eight characters of the
+OCC image's source commit, or **dev** without metadata; hover for the full
+commit. Published images bake in the release commit.
 
 ## Browse and select a Namespace
 
 The sidebar opens **Agents** or **Namespaces**; **Refresh** repeats the read.
 Configure models during creation. [Experimental Backends](backends.md) stay
-hidden. Namespace cards open that Namespace's Agents.
+hidden. Namespace rows open their Agents.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
