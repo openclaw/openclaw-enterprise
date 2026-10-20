@@ -1182,8 +1182,7 @@ export const scenarios = {
     group: "Pages/Settings",
     name: "Account",
     path: "/console/settings",
-    description:
-      "Signed-in name and email beside initials, and a Session card whose Sign out ends this session.",
+    description: "Signed-in name and email. There are no editable settings in this release.",
   },
   notFound: {
     group: "Pages/Navigation",
