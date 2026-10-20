@@ -1436,7 +1436,7 @@ select:not([multiple])[size="1"] {
   padding: var(--space-5) var(--space-6);
 }
 .deployment-recovery h2 {
-  margin: 0 0 var(--space-1);
+  margin: 0 0 var(--space-2);
   color: var(--color-text-strong);
   font-size: var(--text-lg);
   line-height: var(--text-lg--line-height);
