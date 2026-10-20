@@ -192,10 +192,11 @@ reread list; closing refocuses the opener, or the refusal after a 403 disables i
 Pending writes block dismissal; 400s mark names; conflicts retain input. Unconfirmed
 responses need list inspection.
 
-Agents and Create Agent read Namespace permissions. False `agents.create` or a
-[Namespace status](../reference/namespaces.md#lifecycle) refusing Agents explains why and rechecks on return. A failed read keeps creation available;
-with `agents.create` but `GET /installation` refused, only drafts save.
-OCC authorizes every write. See [Agent creation](../reference/console/create-and-deploy.md).
+Agents and Create Agent read permissions. False `agents.create` or an Agent-refusing
+[Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
+Refused `GET /installation` saves only drafts. `agents/list.mjs` polls provisioning Namespaces;
+omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.
+OCC authorizes writes ([Agent creation](../reference/console/create-and-deploy.md)).
 
 `agents/plugin-fields.mjs:createPluginFields` edits Agent `plugins` separately
 from Configuration. Invalid JSON and untouched fields survive; clearing overrides
