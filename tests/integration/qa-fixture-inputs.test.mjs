@@ -609,8 +609,8 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
           {
             type: "Warning",
             container: null,
-            reason: "FailedMount",
-            message: "MountVolume.SetUp failed for volume " + "x".repeat(300),
+            reason: "Unhealthy",
+            message: "Readiness probe failed: token=fixture-event-private-value " + "x".repeat(300),
             count: 4,
             lastObservedAt: "2026-10-19T19:45:00Z",
           },
@@ -654,6 +654,8 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
   await assert.rejects(
     deployQaAgentAndWait(timedOut.f, timedOut.agent, timedOut.options),
     (error) => {
+      // Event messages can carry probe output; none reaches the error.
+      assert.doesNotMatch(error.message, /fixture-event-private-value|Readiness probe failed/);
       const [observation, pods] = error.message
         .replace(/^Timed out: Agent deployment; last observation: /, "")
         .split("; runtime: ");
@@ -678,15 +680,11 @@ test("a QA Agent deployment timeout names its last status, attempt and Pods", as
             containers: [
               { name: "gateway", state: "waiting", reason: "ContainerCreating", restartCount: 0 },
             ],
-            // The three newest Warnings, each message cut to 200 characters.
+            // The three newest Warnings, by reason and count only.
             warnings: [
-              {
-                reason: "FailedMount",
-                message: ("MountVolume.SetUp failed for volume " + "x".repeat(300)).slice(0, 200),
-                count: 4,
-              },
-              { reason: "BackOff", message: "Back-off pulling image", count: 2 },
-              { reason: "FailedScheduling", message: "0/1 nodes are available", count: 3 },
+              { reason: "Unhealthy", count: 4 },
+              { reason: "BackOff", count: 2 },
+              { reason: "FailedScheduling", count: 3 },
             ],
           },
         ],

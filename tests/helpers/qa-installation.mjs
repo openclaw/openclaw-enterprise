@@ -302,11 +302,13 @@ export function describeDeploymentRuntime(runtime) {
       reason,
       restartCount,
     })),
-    // The API lists events newest first.
+    // The API lists events newest first. Event messages are raw Kubernetes text (a failed
+    // probe's output, for one) and are left out: QA redaction matches whole registered values,
+    // so a cut message could keep part of a secret.
     warnings: (pod.events ?? [])
       .filter(({ type }) => type === "Warning")
       .slice(0, 3)
-      .map(({ reason, message, count }) => ({ reason, message: message.slice(0, 200), count })),
+      .map(({ reason, count }) => ({ reason, count })),
   }));
   return JSON.stringify({
     pods,
