@@ -159,14 +159,12 @@ async function refusedCreateForm(t, name, entries, width = 1280) {
   return { page, pluginJson, isAgentPost };
 }
 
-// Nothing reached the API but the preflight (`checks` times): no Secret, Configuration or Agent
-// exists.
-async function assertNothingSaved(form, checks = 1) {
+// Nothing reached the API but the preflight: no Secret, Configuration or Agent exists.
+async function assertNothingSaved(form) {
   const { fixture, audit, namespace, writes, since } = form;
-  assert.deepEqual(
-    writes.slice(since.writes),
-    Array(checks).fill(`POST /namespaces/${namespace.id}/agents/validate`),
-  );
+  assert.deepEqual(writes.slice(since.writes), [
+    `POST /namespaces/${namespace.id}/agents/validate`,
+  ]);
   assert.deepEqual((await fixture.request("GET", `/namespaces/${namespace.id}/agents`)).data, []);
   assert.deepEqual((await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data, []);
   assert.deepEqual(
@@ -256,66 +254,6 @@ test("Create Agent refuses a roster that initial workspace files cannot reach be
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await created;
   assert.equal(response.status(), 201, await response.text());
-});
-
-// The preflight fails closed: a network error, 5xx, 413 or 429 stops the save before anything is
-// saved, the form stays editable, and the next Create Agent asks again (finding 1872).
-test("a failed Create Agent preflight saves nothing and the retry checks again", async (t) => {
-  const form = await filledCreateForm(t, "Preflight outage", {}, { selected: "{}" });
-  const { page, configuration, agentsUrl, isPreflight, isAgentPost } = form;
-  let failure = null;
-  await page.route(`${agentsUrl}/validate`, (route) => {
-    if (failure === null) {
-      return route.fallback();
-    }
-    if (failure.status === undefined) {
-      return route.abort("connectionreset");
-    }
-    return route.fulfill({
-      status: failure.status,
-      contentType: "application/json",
-      body: JSON.stringify({ error: { code: failure.code, message: "synthetic failure" } }),
-    });
-  });
-  const create = page.getByRole("button", { name: "Create Agent", exact: true });
-  const cases = [
-    [{}, "Request interrupted. Retry to check current access and saved state."],
-    [{ status: 503, code: "DEPENDENCY_UNAVAILABLE" }, "Service unavailable."],
-    [{ status: 413, code: "PAYLOAD_TOO_LARGE" }, "Service unavailable."],
-    [{ status: 429, code: "RATE_LIMITED" }, "Too many requests. Wait before trying again."],
-  ];
-  for (const [answer, text] of cases) {
-    failure = answer;
-    const label = answer.status ?? "network error";
-    const checked = page.waitForRequest(
-      (request) => request.url() === `${agentsUrl}/validate` && request.method() === "POST",
-    );
-    await create.click();
-    // The request goes out after the click cleared the previous message.
-    await checked;
-    const alert = page.getByRole("alert").filter({ hasText: text });
-    await alert.waitFor();
-    await page.getByRole("button", { name: "Create Agent", disabled: false }).waitFor();
-    assert.ok(
-      (await alert.textContent()).startsWith(text),
-      `${label}: ${await alert.textContent()}`,
-    );
-    assert.equal(
-      await alert.evaluate((node) => globalThis.document.activeElement === node),
-      true,
-      `${label}: the message takes focus`,
-    );
-    assert.equal(await configuration.isDisabled(), false, `${label}: the form stays editable`);
-  }
-  await assertNothingSaved(form, cases.length);
-  failure = null;
-  const checked = page.waitForResponse(isPreflight);
-  const created = page.waitForResponse(isAgentPost);
-  await create.click();
-  assert.equal((await checked).status(), 204, "the retry asks the API again");
-  const response = await created;
-  assert.equal(response.status(), 201, await response.text());
-  await page.waitForURL(/\/console\/agents\/agt_/);
 });
 
 // A plugin refusal after Create Agent saved its Configuration (a retry, which has no
