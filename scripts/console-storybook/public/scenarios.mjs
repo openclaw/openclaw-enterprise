@@ -406,7 +406,7 @@ const devdayAdminCheckpoint = [
 ];
 
 const shareExistingPerson = [
-  { selector: "#share-principal-id", value: "person-demo" },
+  { selector: "#share-principal-id", value: "prn_person-demo" },
   { selector: ".agent-access-consent input", click: true },
   click("Share Agent"),
 ];
@@ -466,8 +466,9 @@ export const scenarios = {
     name: "Signed out",
     path: "/console/login",
     signedOut: true,
+    buildRevision: "1234567890abcdef1234567890abcdef12345678",
     description:
-      "The email and password form. Any nonempty demo email/password signs into this fixture.",
+      "The email and password form, and a footer naming the build. Any nonempty demo email/password signs into this fixture.",
   },
   githubLogin: {
     group: "Pages/Sign in",
@@ -524,7 +525,7 @@ export const scenarios = {
       click("Recovery sign-in"),
       { selector: "#username", value: "member@example.com" },
       { selector: "#password", value: "demo-only" },
-      click("Login"),
+      click("Sign in"),
     ],
     description:
       "Recovery sign-in reveals the password form. A refused password explains that only the recovery account can use one.",
@@ -647,7 +648,7 @@ export const scenarios = {
     actions: [
       { selector: "#username", value: "operator@example.com" },
       { selector: "#password", value: "demo-only" },
-      click("Login"),
+      click("Sign in"),
     ],
     description: "A rejected sign-in leaves the form available for retry.",
   },
@@ -678,11 +679,11 @@ export const scenarios = {
   },
   logoutFailure: {
     group: "Pages/Sign in",
-    name: "Logout unconfirmed",
+    name: "Sign-out unconfirmed",
     rules: [{ path: "/api/auth/sign-out", method: "POST", status: 503 }],
-    actions: [...account, click("Logout")],
+    actions: [...account, click("Sign out")],
     description:
-      "Failed logout with a still-active session hides private content until revocation can be confirmed.",
+      "Failed sign-out with a still-active session hides private content until revocation can be confirmed.",
   },
   agents: {
     group: "Pages/Agents",
@@ -868,7 +869,7 @@ export const scenarios = {
     name: "No readable Namespaces",
     emptyNamespaces: true,
     description: "Agent pages need an accessible Namespace.",
-    gap: "Provisioning a Namespace and granting access happen outside the console.",
+    gap: "Create a Namespace from Namespaces; granting access still requires an administrator.",
   },
   namespaceMissing: {
     group: "Pages/Agents",
@@ -900,6 +901,34 @@ export const scenarios = {
     namespaceStatus: "provisioning",
     description:
       "A first run's Namespace is still provisioning: the page names its status and what waits for it, and Create Agent stays available for drafts.",
+  },
+  agentsNamespaceBecomesReady: {
+    group: "Pages/Agents",
+    name: "Namespace becomes ready",
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["provisioning", "ready"],
+    actions: [{ selector: 'input[type="search"]', value: "Research", focus: true }],
+    description:
+      "The Agents list rechecks a provisioning Namespace every 10 s while the reader stays on it, without a Refresh. When it reads ready, a success note replaces the warning in place, Create Agent loses its not-ready description, and the search text and focus stay.",
+    steps: [
+      'Keep the caret in Search Agents. After the first recheck (about 10 s) the note still begins "Namespace status: Provisioning."; within about 20 s it becomes "Namespace status: Ready. Agents created here can be deployed now."',
+      "Confirm Search Agents keeps its text and focus, Research assistant is still listed, and Create Agent is enabled with no description pointing at the note. No further Namespace reads happen.",
+    ],
+  },
+  agentsNamespaceMissing: {
+    group: "Pages/Agents",
+    name: "Namespace leaves the list while provisioning",
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    // Rechecks start once the page shows its search box, so the first load still lists it.
+    actions: [{ selector: 'input[type="search"]', focus: true }],
+    description:
+      "The Namespace list the Agents page rereads while its Namespace provisions no longer holds it: it was deleted, or the reader lost access. The wait ends, the note asks for another Namespace, as Create Agent's does, and Create Agent is disabled.",
+    steps: [
+      'Within about 10 s the note "Namespace status: Provisioning." becomes "This Namespace is missing or you no longer have access. Choose another Namespace."',
+      'Confirm Create Agent is disabled and described by that note, the empty state reads "Agents cannot be created in this Namespace.", and no further Namespace reads happen.',
+    ],
   },
   agentsDenied: {
     group: "Pages/Agents",
@@ -972,7 +1001,11 @@ export const scenarios = {
     name: "Ready and provisioning",
     path: "/console/namespaces",
     description:
-      "Installation-wide Namespace identity and status cards, without a Namespace selector. Each card opens that Namespace's Agents; status badges read Ready or Provisioning with a tone.",
+      "Installation-wide Namespace cards and Create Namespace, without a Namespace selector. Each card opens that Namespace's Agents; status badges read Ready or Provisioning.",
+    steps: [
+      "Select Create Namespace, enter a unique name, and submit. The success dialog explains provisioning; Open Agents selects the created Namespace.",
+      "Reset, then cancel a new form with Escape. No Namespace is created and focus returns to Create Namespace.",
+    ],
   },
   namespacesUnavailable: {
     group: "Pages/Namespaces",
@@ -1003,7 +1036,155 @@ export const scenarios = {
     name: "Empty",
     path: "/console/namespaces",
     emptyNamespaces: true,
-    description: "No accessible Namespaces. Provisioning and IAM are external prerequisites.",
+    description:
+      "No accessible Namespaces. Create Namespace remains available; the API decides whether creation is permitted.",
+  },
+  namespacesEmptyMember: {
+    group: "Pages/Namespaces",
+    name: "Empty for a member",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    observabilityDenied: true,
+    description:
+      "A person who does not administer the Installation gets Create Namespace as a secondary action and is told to ask an administrator. A Namespace create grant still works from it.",
+  },
+  namespaceCreateRefused: {
+    group: "Pages/Namespaces",
+    name: "Create refused, then closed",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    observabilityDenied: true,
+    rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+      { click: "Cancel" },
+    ],
+    description:
+      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. Refresh or a browser reload offers creation again.",
+  },
+  namespaceCreate: {
+    group: "Pages/Namespaces",
+    name: "Create Namespace",
+    path: "/console/namespaces",
+    actions: [{ click: "Create Namespace" }],
+    description:
+      "A name-only dialog uses the shared field and modal patterns. No credentials or infrastructure configuration are required in this form.",
+    steps: [
+      "Enter a unique name and create. Inspect the provisioning explanation, then select Done to see the new Namespace or Open Agents to use it.",
+    ],
+  },
+  namespaceCreateMobile: {
+    group: "Pages/Namespaces",
+    name: "Create Namespace on mobile",
+    path: "/console/namespaces",
+    mobile: true,
+    emptyNamespaces: true,
+    actions: [{ click: "Create Namespace" }],
+    description:
+      "The empty list offers creation. On a phone the form becomes a bottom sheet with reachable actions.",
+  },
+  namespaceCreateRequired: {
+    group: "Pages/Namespaces",
+    name: "Create name required",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "Submitting an empty name shows a persistent inline error and focuses the field without sending a request.",
+  },
+  namespaceCreateInvalidName: {
+    group: "Pages/Namespaces",
+    name: "Create invalid name",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support\tteam" },
+    ],
+    description:
+      "A pasted tab is refused at the field as it arrives, by the API's own Name rule, before any request. More than 200 characters is refused the same way instead of being cut.",
+  },
+  namespaceCreateConflict: {
+    group: "Pages/Namespaces",
+    name: "Create name conflict",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Engineering" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "An existing name is refused. The entered name remains editable; choose another name and submit again.",
+  },
+  namespaceCreateDenied: {
+    group: "Pages/Namespaces",
+    name: "Create permission denied",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "A creation denial explains the missing Installation permission and disables resubmission. Cancel returns to the empty list.",
+  },
+  namespaceCreatePending: {
+    group: "Pages/Namespaces",
+    name: "Create pending",
+    path: "/console/namespaces",
+    rules: [{ path: "/namespaces", method: "POST", hold: true }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "While creation waits, the field and actions are disabled and Escape cannot dismiss the form. After the client timeout, inspect the unknown-outcome recovery.",
+  },
+  namespaceCreateUnknown: {
+    group: "Pages/Namespaces",
+    name: "Create outcome unknown",
+    path: "/console/namespaces",
+    rules: [{ path: "/namespaces", method: "POST", status: 503, code: "DEPENDENCY_UNAVAILABLE" }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "An unconfirmed write blocks resubmission. Check Namespaces rereads the list before a deliberate new attempt; this fixture does not establish whether the write committed.",
+  },
+  namespaceCreateSuccess: {
+    group: "Pages/Namespaces",
+    name: "Namespace created",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "Creation succeeded in the simulated fixture. The dialog distinguishes provisioning from readiness and offers the new Namespace's Agents.",
+  },
+  namespaceCreateUnreadable: {
+    group: "Pages/Namespaces",
+    name: "Created without read access",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    // A create-only role: the authorized list never includes the new Namespace.
+    rules: [{ path: "/namespaces", data: [] }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "The caller may create Namespaces but not read them. The dialog says the Namespace was created and that their access does not include viewing it, and offers only Done.",
   },
   namespacesDenied: {
     group: "Pages/Namespaces",
@@ -1016,7 +1197,43 @@ export const scenarios = {
     group: "Pages/Settings",
     name: "Account",
     path: "/console/settings",
-    description: "Signed-in name and email. There are no editable settings in this release.",
+    description:
+      "An account card with initials, name and email, and a Session card with Sign out. There are no editable settings in this release.",
+    steps: [
+      "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
+      "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
+      "At a phone width, Sign out spans the Session card.",
+    ],
+  },
+  settingsNameIsEmail: {
+    group: "Pages/Settings",
+    name: "Account without a display name",
+    path: "/console/settings",
+    // Sign-in providers that have no display name record the email as the name.
+    sessionUser: {
+      id: "storybook-operator",
+      name: "operator@example.com",
+      email: "operator@example.com",
+    },
+    description:
+      "An account whose recorded name is its email address. The account card names it once, by email.",
+    steps: [
+      "Check that the account card shows the initial O and operator@example.com under Email, with no Name row repeating the address.",
+      "Compare Account: a distinct display name still shows under Name.",
+    ],
+  },
+  settingsSignOutFailure: {
+    group: "Pages/Settings",
+    name: "Sign-out unconfirmed",
+    path: "/console/settings",
+    rules: [{ path: "/api/auth/sign-out", method: "POST", status: 503 }],
+    // The account menu's hidden Sign out comes first in the page, so name the card's button.
+    actions: [{ selector: ".settings-sign-out", click: true }],
+    description:
+      "Sign out from the Session card fails with the session still active: private content stays hidden until revocation can be confirmed.",
+    steps: [
+      "Choose Retry: it repeats the sign-out and keeps private content hidden until it succeeds.",
+    ],
   },
   notFound: {
     group: "Pages/Navigation",
@@ -1903,6 +2120,32 @@ export const scenarios = {
     description:
       "Create Secret with no value: the Value field shows its error under the control and takes focus, with no browser bubble.",
   },
+  createSecretRefused: {
+    group: "Pages/Create Agent",
+    name: "Create Secret refused",
+    path: create,
+    rules: [{ suffix: "/secrets", method: "POST", status: 409, code: "NAMESPACE_NOT_READY" }],
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      ...createModelSecret("storybook-model-api-key"),
+    ],
+    description:
+      "Create Secret on a Namespace that is not ready: the refusal shows in the dialog and takes focus there, not on the page behind it.",
+  },
+  createModelSecretRequired: {
+    group: "Pages/Create Agent",
+    name: "Model credential Secret required",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      click("Create Agent"),
+    ],
+    description:
+      "Create Agent with Service Accounts and no Secret: the error names the Service account token Secret field and the field takes focus with its list closed, so the error stays in sight.",
+  },
   createSlackSecretStaged: {
     group: "Pages/Create Agent",
     name: "Slack Secret bindings staged",
@@ -2518,7 +2761,11 @@ export const scenarios = {
     path: create,
     actions: [{ selector: "#agent-preset", value: "pre_00000000-0000-4000-8000-000000000001" }],
     description:
-      "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft.",
+      "A reusable template with required and defaulted variables. Use Preset copies values into an editable draft. With a Preset chosen, Use Preset is the filled button and Start with default Preset is secondary.",
+    steps: [
+      'Under Start with default Preset, the hint reads "The default Preset is default-codex."',
+      "Use Preset is filled and Start with default Preset is secondary. Choose Choose a Preset in Preset template: the filled style returns to Start with default Preset.",
+    ],
     gap: "Preset CRUD has no console page; the fixture supplies a pre-existing Preset.",
   },
   createPresetExistingSecret: {
@@ -2699,13 +2946,48 @@ export const scenarios = {
   },
   createCapabilitiesDenied: {
     group: "Pages/Create Agent",
-    name: "Agent creation needs an administrator",
+    name: "Permission check failed",
+    path: create,
+    actions: form,
+    rules: [
+      { path: "/installation", status: 403, code: "FORBIDDEN" },
+      { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
+    ],
+    description:
+      "The Installation read is refused and the Namespace permission read failed, so whether this caller may create Agents is unknown. Create Agent stays disabled, the page says the permission check failed, and Retry permission check rereads only the permission answer: a grant continues as Member with Agent create, a denial keeps the refusal.",
+    steps: [
+      'Under the form fields, read "Your permissions in this Namespace could not be checked".',
+      "Retry permission check is offered; the fixture keeps failing the read, so the text stays.",
+    ],
+    gap: "The live retry that succeeds is in tests/browser/console-create-agent-member.test.mjs.",
+  },
+  createMember: {
+    group: "Pages/Create Agent",
+    name: "Member with Agent create",
     path: create,
     actions: form,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A member without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
-    gap: "Namespace IAM cannot grant create; the live check is a member account on a real Installation.",
+      "A member whose Namespace grants Agent create cannot read the Installation. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
+    steps: [
+      'Above the form, "Your access" says you can create Agents in Engineering and that an Installation administrator then gives the new Agent access to its Secrets.',
+      'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
+    ],
+    gap: "The live check is a member account on a real Installation (tests/browser/console-create-agent-member.test.mjs).",
+  },
+  createMemberGrantRefused: {
+    group: "Pages/Create Agent",
+    name: "Member Agent created, grant needs an administrator",
+    path: create,
+    observabilityDenied: true,
+    actions: [...readyForm, click("Create Agent")],
+    rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
+    description:
+      "The session already knows this member does not administer the Installation, so after the Agent saves the form sends no IAM read for its credential grant. It names the administrator step at once and offers Open saved Agent, with no Retry credential access.",
+    steps: [
+      "Read the alert: giving the Agent access to its Secrets needs Installation administration access.",
+      "The request log shows no /iam/ request, and only Cancel and Start over remain beside the saved-resources line.",
+    ],
   },
   createRestricted: {
     group: "Pages/Create Agent",
@@ -3112,7 +3394,7 @@ export const scenarios = {
     name: "First version",
     path: draft,
     steps: [
-      "Resize through desktop, tablet, and phone widths. Prepare this version keeps each numbered step on its own row, with continuation lines aligned under the step text.",
+      "Resize through desktop, tablet, and phone widths. Prepare this version sits beside Versions on a desktop and above it below 1,100 px. Each step shows a check when done or an open ring, with its detail line under the step text; Deploy new version stays on the first screen at 1440x900.",
       "Focus the selected tab and press Left, Right, Home and End: focus moves between tabs without opening one. Enter opens the focused tab. Tab leaves the strip and Shift+Tab returns to the selected tab. At phone width the edge with more tabs past it fades.",
     ],
     description:
@@ -3127,7 +3409,7 @@ export const scenarios = {
       "Review required Slack destinations.",
       "Use Home and End in the tab strip, then resize: overflow fades disappear when the tabs fit within one pixel.",
       "Choose selected hosts and enter backend.composio.dev.",
-      "Save network access, reload, and verify the saved draft.",
+      "Edit hosts: the preparation checklist shows Unsaved changes, then Saving… during save and Saved after success. Reload and verify the saved draft.",
       "Deploy and inspect its immutable network selection.",
     ],
     gap: "Simulated UI proof. API persistence, proxy deployment, and native networking require integration tests.",
@@ -3196,6 +3478,38 @@ export const scenarios = {
     ],
     gap: "The fixture simulates admission and worker completion; it does not verify a live Agent.",
   },
+  editCurrentConfiguration: {
+    group: "Pages/Agent detail",
+    name: "Edit current Configuration",
+    path: `${revision}&tab=configuration`,
+    deployed: true,
+    actions: [click("Edit current Configuration")],
+    // The page brings the editor into view itself.
+    scrollToTabs: false,
+    description:
+      "Edit current Configuration on a version's Configuration tab opens the draft with its Configuration editor already open, brought into view and focused. It used to open the draft at the top of the page and still need an Edit Configuration click far below. The draft's \"New version\" notice comes to the top with the editor below it, so the screen says this is the draft; a window too short for both brings the editor to the top instead.",
+    steps: [
+      'The page shows the draft. The notice "New version. Changes affect future deployments using this Configuration." sits at the top of the window, and Configuration JSON is in view below it with the caret in it; no Edit Configuration button is left to press. Check this at desktop and phone widths.',
+      "In a window about 420 px tall, open the story again: Configuration JSON comes to the top with the caret in it, and the notice is above the window.",
+      "Choose Cancel: the editor closes and Edit Configuration takes focus.",
+    ],
+  },
+  agentHeaderActions: {
+    group: "Pages/Agent detail",
+    name: "Header actions",
+    path: revision,
+    deployed: true,
+    rules: [{ path: "/api/auth/session", skip: 1, delayMs: 1500 }],
+    description:
+      "The Agent header keeps its identity and actions visible while access is rechecked. The delay and Agent data are simulated.",
+    steps: [
+      "Choose Copy Agent ID. If clipboard access is available, Copied appears briefly; otherwise, the ID is selected for manual copying.",
+      "Focus Create new version, switch to another window, then return. During the 1.5-second access check, the action stays visible but cannot be used; focus returns to it after the check.",
+      "Repeat the window switch and focus Namespaces while the check is pending. Focus stays in the sidebar when the check finishes.",
+      "Choose Create new version to open the draft Configuration without deploying. In the next story, try the Agents back link and Namespace selector while a save is in progress.",
+    ],
+    nextStory: "authSaveHoldsNavigation",
+  },
   longVersionHistory: {
     group: "Pages/Agent detail",
     name: "Long version history",
@@ -3203,11 +3517,16 @@ export const scenarios = {
     deployed: true,
     revisionHistory: 8,
     revisionPageSize: 3,
+    // Each older page takes 1.5 s, so its loading state can be seen.
+    rules: [{ suffix: "/revisions", queryParam: "cursor", delayMs: 1500 }],
     description:
       "Versions list one page at a time, newest first. Older versions load on request, and nothing is pruned.",
     steps: [
-      "Check that v8, v7, and v6 are listed with Show older versions below them.",
-      "Select Show older versions until v1 is listed and the button is gone.",
+      "Check that v8, v7, and v6 are listed with Show older versions below the list.",
+      "With the keyboard, Tab into the list (focus lands on v8), then Tab once more to Show older versions and press Enter. For about 1.5 s it reads Loading older versions…, looks disabled and keeps focus; pressing Enter again loads nothing more. When v5, v4, and v3 appear, focus is still on Show older versions.",
+      "Press Enter again. When v2 and v1 load, the button is gone and focus moves to v2, the first version that loaded, scrolled into view in the list.",
+      "Tab out of the list and Shift+Tab back: focus lands on v8. Down and Up move between versions and wrap at either end; Home and End jump to v8 and v1. Tab leaves the list in one press, and Shift+Tab returns to v8, not the version the arrows last reached.",
+      "Press Down twice, to v6, then Enter. v6 opens, and the next Tab into the list lands on v6, the viewed version.",
     ],
     gap: "The fixture uses three versions per page; the API default is 50.",
   },
@@ -3252,11 +3571,11 @@ export const scenarios = {
   agentSharing: {
     group: "Pages/Agent detail",
     name: "Share an Agent",
-    path: draft,
+    path: `${draft}&tab=access`,
     description:
       "Grant an existing person access to this Agent's full native Gateway. Other Agents and OCE administration remain separate.",
     steps: [
-      "Enter person-demo as the existing Principal ID.",
+      "Enter prn_person-demo as the existing Principal ID.",
       "Review the native-access disclosure, acknowledge it, and share.",
       "Remove the direct binding with the red-edged destructive Remove binding button (it acts at once, with no confirmation); Namespace discovery remains available.",
     ],
@@ -3264,15 +3583,37 @@ export const scenarios = {
   agentSharingGranted: {
     group: "Pages/Agent detail",
     name: "Agent shared",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: shareExistingPerson,
     description:
       "Namespace discovery and the selected Agent grant are present. Removing the direct grant does not remove other effective access.",
   },
+  agentSharingHoldsNavigation: {
+    group: "Pages/Agent detail",
+    name: "Sharing holds navigation",
+    path: `${draft}&tab=access`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/iam/access-bindings",
+        method: "POST",
+        delayMs: 4000,
+        once: true,
+      },
+    ],
+    actions: [...shareExistingPerson, { selector: 'a[data-nav="agents"]', click: true }],
+    description:
+      "The story shares the Agent, then selects Agents in the sidebar while the first grant is pending. The page stays, and a note at the top of the tab panel says why until both grants are written, about 4 s later.",
+    steps: [
+      "While the note “This page stays open until sharing finishes.” shows, check that the versions in the Versions rail are disabled, and that ← Agents and Refresh keep the page. Select Reset story to replay the hold.",
+      "Switch to Plugins and back to Access while the note shows: tabs still switch, and the share keeps running.",
+      "When the grants are written, the note goes, Direct Agent grants lists the new binding, and the versions and Agents in the sidebar work again.",
+    ],
+  },
   agentSharingRemoved: {
     group: "Pages/Agent detail",
     name: "Direct Agent grant removed",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: [...shareExistingPerson, click("Remove binding")],
     description:
       "The selected direct Agent binding was removed. Namespace discovery and unrelated grants are preserved.",
@@ -3280,7 +3621,7 @@ export const scenarios = {
   agentSharingDenied: {
     group: "Pages/Agent detail",
     name: "Sharing administration denied",
-    path: draft,
+    path: `${draft}&tab=access`,
     rules: [{ suffix: "/iam/roles", status: 403 }],
     description:
       "An Agent's other controls retain their own permissions when sharing administration is unavailable.",
@@ -3288,7 +3629,7 @@ export const scenarios = {
   agentSharingUnknown: {
     group: "Pages/Agent detail",
     name: "Sharing outcome uncertain",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: shareExistingPerson,
     rules: [{ suffix: "/iam/access-bindings", method: "POST", status: 503, once: true }],
     description:
@@ -3297,7 +3638,7 @@ export const scenarios = {
   agentSharingRequiredFields: {
     group: "Pages/Agent detail",
     name: "Share Agent required fields",
-    path: draft,
+    path: `${draft}&tab=access`,
     actions: [click("Share Agent")],
     description:
       "Share Agent with no Principal ID and no acknowledgement: both fields show their errors and focus moves to the Principal ID, with no browser bubble.",
@@ -3802,6 +4143,9 @@ export const scenarios = {
     candidateDeploymentStatus: "queued",
     description:
       "v7 is admitted and queued without a live worker claim. v6 remains selected; serving is unverified. Deployment details keep Last recorded result, Reason and Since rows (not recorded yet), so the first result fills them in place.",
+    steps: [
+      'Selected version reads v6. v7\'s Configuration tab notice begins "Deploying version", not "Historical version".',
+    ],
   },
   deploymentRunning: {
     group: "Pages/Agent detail",
@@ -3811,6 +4155,63 @@ export const scenarios = {
     candidateDeploymentStatus: "running",
     description:
       "A worker holds the v7 deployment claim while v6 remains selected. The API does not expose finer runtime stages.",
+    steps: [
+      'Selected version reads v6. v7\'s Configuration tab notice reads "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."',
+    ],
+  },
+  deploymentRunningActivates: {
+    group: "Pages/Agent detail",
+    name: "New version in progress, then current",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    description:
+      "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      "Before the status poll lands, Tab into the Versions list (focus lands on v7, the viewed version) and press Down to v6.",
+      'Within about 5 s the notice begins "Current version" and Selected version reads v7. The Versions list is rebuilt with v7 marked Current, and focus stays on v6; Tab out and back lands on v6.',
+    ],
+  },
+  deploymentCompletesRereadFails: {
+    group: "Pages/Agent detail",
+    name: "New version completes, Agent reread fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The page's own Agent read answers; the reread after the deployment completes fails.
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 503 }],
+    description:
+      "v7's deployment completes, but the Agent reread that would make it current fails. The notice says the deployment completed and that the current version could not be refreshed, rather than Deploying beside Completed. The deployment and the failure are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      'Within about 5 s Latest visible deployment reads "v7 · Completed", the page says the current version and version history could not be refreshed, and the notice reads "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."',
+    ],
+  },
+  deploymentStatusReadRecovers: {
+    group: "Pages/Agent detail",
+    name: "New version in progress, one status read fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The first poll after arrival fails once; the next one records success.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        status: 503,
+      },
+    ],
+    description:
+      "One deployment status read fails while v7 is deploying. The notice keeps Deploying version rather than turning Historical, polling continues, and the next read records success and makes v7 current. The deployment, failure and activation are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment reads "v7 · Unavailable" and the notice still begins "Deploying version".',
+      'Within about 10 s the notice begins "Current version" and Selected version reads v7, with no "Historical version" in between.',
+    ],
   },
   deploymentDeferred: {
     group: "Pages/Agent detail",
@@ -3938,6 +4339,15 @@ export const scenarios = {
     description:
       "The same 200-character name at 390 px wraps inside its stacked row, and the page does not scroll sideways.",
   },
+  agentsIdLigaturesPhone: {
+    group: "Pages/Agents",
+    name: "Agent ID with ff (phone)",
+    deployed: true,
+    mobile: true,
+    agentId: "agt_ffffffff-ffff-4fff-bfff-ffffffffffff",
+    description:
+      'Each character of an ID is its own glyph: "ff" never draws as a ligature, so this ID is as wide as one with no "f". To compare, view it where the monospace font has ligatures (Nimbus Mono PS, a common Linux default): before finding 2114 each "ff" there drew as one glyph, and this ID was a third shorter.',
+  },
   agentsDeploymentFailed: {
     group: "Pages/Agents",
     name: "Latest deployment failed",
@@ -3948,6 +4358,7 @@ export const scenarios = {
     description:
       "The list shows the newest visible failure beside the current version, without asserting serving health. The failure keeps to one line, so the row keeps its height when the read lands; its title and the Agent page give the whole text.",
     steps: [
+      'Current version reads "v6", not an ID, and the latest deployment reads "v7 · Failed": the words the Agent page uses.',
       "Hover the one-line failure to read its whole text.",
       "Open the failed v7 deployment link and inspect retained credential preparation evidence.",
     ],
@@ -3976,6 +4387,9 @@ export const scenarios = {
     latestDeploymentReadStatus: 403,
     description:
       "Agent identity and current pointer remain visible while deployment access is denied.",
+    steps: [
+      "Current version cannot be named by number without the versions read, so it shows the selected version's short ID as a link, in code type.",
+    ],
   },
   agentsDeploymentLoading: {
     group: "Pages/Agents",
@@ -3985,6 +4399,50 @@ export const scenarios = {
     latestDeploymentReadDelay: 6000,
     description:
       "Deployment reads show loading beside the current pointer, then show the visible result.",
+    steps: [
+      'Current version reads "Reading version…" and Latest deployment "Reading deployment…" until the versions read lands; then they read "v1" and "v1 · Completed".',
+    ],
+  },
+  agentsCurrentVersionOlder: {
+    group: "Pages/Agents",
+    name: "Current version older than the first page",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    revisionPageSize: 1,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000006",
+        delayMs: 4000,
+        once: true,
+      },
+    ],
+    description:
+      "The newest page of versions lists only v7, so the current v6 is read on its own while the latest deployment fills from that page.",
+    steps: [
+      'Latest deployment reads "v7 · Failed" while Current version still reads "Reading version…". About 4 s later it reads "v6".',
+    ],
+    gap: "The fixture lists one version per page so the current version falls off the first page; the API default is 50.",
+  },
+  agentsCurrentVersionDenied: {
+    group: "Pages/Agents",
+    name: "Current version unreadable",
+    path: "/console/agents?namespace=ns_00000000-0000-4000-8000-000000000001",
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    revisionPageSize: 1,
+    rules: [
+      {
+        suffix: "/revisions/rev_00000000-0000-4000-8000-000000000006",
+        status: 403,
+        code: "FORBIDDEN",
+      },
+    ],
+    description:
+      "The current v6 is off the first page and its own read is refused, so Current version keeps its short ID. The console remembers the refusal for the session, as the Agent page does, and does not ask again.",
+    steps: [
+      'Current version shows the short ID as a link, in code type, and Latest deployment reads "v7 · Failed".',
+    ],
   },
   agentsReturnWhileDeploymentsLoad: {
     group: "Pages/Agents",
@@ -4040,10 +4498,68 @@ export const scenarios = {
     description:
       "While viewing current v6, deployment activity reports failed v7 with bounded startup failure evidence. Open v7 Logs selects that failed version and brings its output into view.",
     steps: [
+      "Above the facts, the failure is one danger status block: a red stripe on a light red wash, the label DEPLOYMENT FAILED · V7, the title This Agent may be offline, and CONVERGENCE_DEADLINE_EXCEEDED in code at the end of the first sentence. Open v7 Logs is the page's one filled button; at 390 wide it spans the block.",
+      "In Deployment details, the three step tiles are white cards with a light edge; only the failed Deployment work tile has a red wash, and each marker carries its step's colour.",
+      'In the Versions list, v7 reads "v7", a space, then a red "Failed" badge; v6 keeps its blue "Current" badge and no other version has an outcome badge. A screen reader announces "View version v7, deployment failed".',
       "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
       "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
     ],
     gap: "Runtime status and output are simulated UI evidence; this story does not verify a live deployment or log read.",
+  },
+  agentHeader: {
+    group: "Pages/Agent detail",
+    name: "Page header with a long name",
+    path: currentVersion,
+    deployed: true,
+    agentName: "Quarterly release review and signoff bot",
+    description:
+      "The Agent page header: ← Agents, the name with Refresh and Create new version at its right, then the Agent ID, Copy Agent ID and the compact Namespace control in the row under it.",
+    steps: [
+      "At 1440 and 1024 the 40-character name wraps on the left; Refresh and Create new version stay on its first line and nothing overlaps.",
+      "Select Copy Agent ID. The ID is on the clipboard and Copied shows beside the button for two seconds.",
+      "Choose Research in the Namespace control; the console opens Research's Agents list, as the header selector always has. Go Back.",
+      "Select Create new version; the draft opens and its header shows Refresh only.",
+      "On the draft, select Edit Configuration and change a value, then select ← Agents. The page stays and says why, as the sidebar does.",
+    ],
+  },
+  agentHeaderMobile: {
+    group: "Pages/Agent detail",
+    name: "Page header at 390px",
+    path: currentVersion,
+    deployed: true,
+    mobile: true,
+    description:
+      "At 390px the header is four rows: ← Agents with Refresh and Create new version, the name, the Agent ID with Copy Agent ID, then the Namespace control at full width. It ends by 240px.",
+    steps: [
+      "Check that the ID row has no trailing separator and the Namespace control spans the row.",
+      "Leave the window and come back while the access recheck runs: Create new version is held with the page, and focus returns to it afterwards.",
+    ],
+  },
+  agentHeaderNoClipboard: {
+    group: "Pages/Agent detail",
+    name: "Copy Agent ID without clipboard access",
+    path: currentVersion,
+    deployed: true,
+    clipboard: "unavailable",
+    actions: [{ selector: ".page-meta-copy", click: true }],
+    description:
+      "Where the browser offers no clipboard (an http origin, say), Copy Agent ID selects the ID instead, so it can be copied by hand.",
+    steps: ["Check that the Agent ID is selected and no Copied status appears."],
+  },
+  draftCredentialRejected: {
+    group: "Pages/Agent detail",
+    name: "Next step after a rejected credential",
+    path: draft,
+    deployed: true,
+    candidateDeploymentStatus: "failed",
+    candidateCredentialRejected: true,
+    description:
+      "The provider rejected v7's model credential and the draft still uses it. Prepare this version keeps Check authentication and credentials open and never says Ready to deploy: deploying again does not fix the credential.",
+    steps: [
+      "In Prepare this version, the first step has a check and the second an open ring with the detail The last deployment's model credential was rejected.",
+      "Beside Deploy new version the status asks to update or replace the credential in Credentials first. Deploy stays enabled because a Secret value can be updated in place.",
+    ],
+    gap: "The rejected credential is simulated deployment evidence; this story does not call a model provider.",
   },
   deploymentFailedLogsFromDraft: {
     group: "Pages/Agent detail",
@@ -4096,7 +4612,11 @@ export const scenarios = {
       },
     ],
     description:
-      "Watch v7 change from running to failed. Recovery appears below Deployment activity instead of pushing the overview down. The status and details update in place. The deployment and failure are simulated.",
+      "Watch v7 change from running to failed. The recovery card then leads the page, as it does on a reload, and Deployment details fold under it. The deployment and failure are simulated.",
+    steps: [
+      'On arrival v7\'s Configuration tab notice begins "Deploying version". Once v7 reads Failed, it begins "Historical version" and Selected version still reads v6.',
+      'Once v7 fails, "Deployment failed · v7" is the first card and Deployment details are folded. Open them: they show the failure\'s record and stay open.',
+    ],
   },
   deploymentModelProbeRetried: {
     group: "Pages/Agent detail",
@@ -4124,6 +4644,7 @@ export const scenarios = {
       "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
     steps: [
       "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft.",
+      "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
   },
@@ -4153,6 +4674,7 @@ export const scenarios = {
       "v7 failed because a controller dependency stayed unavailable. The recovery leads with the failure's own next step and offers Deploy again first, because that message says to deploy again.",
     steps: [
       "At 1440 and 390 wide, read the message and see Deploy again without scrolling.",
+      "Deploy again is the one filled button and Open v7 Logs an edged secondary button. At 390 wide they stack, each the block's full width. The message's first sentence ends with DEPENDENCY_UNAVAILABLE in code.",
       "Select Deploy again: the draft opens with its Deploy new version in view and focused, without deploying.",
     ],
     gap: "The failure is simulated; this story does not verify a live deployment.",
@@ -4319,7 +4841,7 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
     description:
-      "Diagnostics need Agent operate. For a viewer whose permission answer denies it, Run diagnostics is disabled and says why, as Stop Agent does.",
+      "Diagnostics need Agent operate. For a viewer whose permission answer denies it, Run diagnostics is disabled and says why, and the danger zone has no Stop row.",
     gap: "The permission answer is simulated; the API still authorizes every request.",
   },
   diagnosticsRefused: {
@@ -4844,26 +5366,41 @@ export const scenarios = {
     path: "/console/agents?debug=true",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     description:
-      "Approved OpenClaw mech mascot beside OCE and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
+      "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark and an eight-character OCC commit. Check the mascot at desktop and mobile widths, then hover the version for the full hash. This revision is simulated.",
   },
   developmentBuild: {
     group: "Components/Navigation",
     name: "OCC development build",
     path: "/console/agents?debug=true",
     description:
-      "Approved OpenClaw mech mascot beside OCE with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
+      "Approved OpenClaw mech mascot beside the OpenClaw Enterprise wordmark with an adjacent dev label when OCC build metadata is unavailable. No checkout or gateway revision is inferred.",
   },
   menu: {
     group: "Components/Navigation",
     name: "Account menu",
     actions: account,
     description:
-      "Account Settings and Logout. Namespace selection is available directly in the page header.",
+      "The account row (initials, name and email) opens Settings and Sign out. Namespace selection is available directly in the page header.",
+  },
+  menuMobile: {
+    group: "Components/Navigation",
+    name: "Mobile account menu",
+    mobile: true,
+    actions: [
+      { selector: '.content [aria-busy="false"]' },
+      { selector: ".topbar-avatar", click: true },
+    ],
+    description:
+      "390px top bar: navigation toggle, wordmark and the account avatar, which opens Settings and Sign out without the drawer.",
+    steps: [
+      "Press Escape; focus returns to the avatar. Open navigation, then check the menu closed.",
+    ],
   },
   namespaceMenu: {
     group: "Components/Navigation",
     name: "Namespace switcher",
-    description: "The header selector shows the current Namespace and readable alternatives.",
+    description:
+      "The header's compact Namespace control (its label is the muted prefix inside the box) shows the current Namespace and readable alternatives.",
     steps: [
       "Choose Research in the Namespace selector; the URL changes and its empty Agents collection appears.",
       "Choose Engineering to return to its Agents, then use browser Back to restore Research.",
@@ -4878,7 +5415,7 @@ export const scenarios = {
     description:
       "Choose a Namespace directly from the header at 390px, without opening navigation.",
     steps: [
-      "Check that the long Namespace name truncates before the inset chevron.",
+      "Check that the compact control stays 32px tall and the long Namespace name truncates before the inset chevron.",
       "Choose Research, then return to the long Namespace and check the selection.",
     ],
   },
@@ -4887,9 +5424,12 @@ export const scenarios = {
     name: "Mobile drawer",
     buildRevision: "abcdef1234567890abcdef1234567890abcdef12",
     mobile: true,
-    actions: [{ selector: '.content [aria-busy="false"]' }, click("Open navigation")],
+    actions: [
+      { selector: '.content [aria-busy="false"]' },
+      { selector: ".mobile-toggle", click: true },
+    ],
     description:
-      "390px viewport with the simulated OCC revision beside OCE in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
+      "390px viewport with the simulated OCC revision beside the wordmark in the open drawer. Escape or the overlay closes it; widening to desktop releases the page.",
     steps: [
       "With the drawer open, widen past 760px. Search Agents without pressing Escape; content is active and navigation is no longer trapped.",
       "Return to 390px. The drawer starts closed; reopen it and press Escape to return focus to Open navigation.",
@@ -4980,6 +5520,20 @@ export const scenarios = {
     steps: [
       "Change the channel IDs, then click inside the panel and drag from its heading onto the gray backdrop. The editor stays open.",
       "Click the gray backdrop. Reopen Edit Slack and confirm the unsaved channel changes were discarded, just as with Cancel.",
+    ],
+  },
+  slackDrawerNoAuthentication: {
+    group: "Components/Channels",
+    name: "Slack editor, no model authentication",
+    path: `${draft}&tab=channels`,
+    slack: true,
+    auth: null,
+    actions: [click("Edit Slack")],
+    description:
+      "An Agent with no model authentication source: the drawer's notice adds that model credentials are configured in the Credentials tab before deploying. With a source bound (Slack editor), the notice stops after the first sentence.",
+    steps: [
+      'The notice at the top of the drawer reads "New version. Changes affect future deployments using this Configuration. Configure model credentials in the Credentials tab before deploying."',
+      'Open the Slack editor story: its notice reads only "New version. Changes affect future deployments using this Configuration."',
     ],
   },
   slackDirectoryChannels: {
@@ -5751,7 +6305,7 @@ export const scenarios = {
     description:
       "The story selects Save authentication source, then Agents in the sidebar. The page stays, and a note in the authentication form says why until the simulated save answers 3.6 s later.",
     steps: [
-      "While the note “This page stays open until the authentication save finishes.” shows, select ← Agents or Agents again: the page stays. Select Reset story to replay the hold.",
+      "While the note “This page stays open until the authentication save finishes.” shows, select ← Agents or choose another Namespace. The page and selected Namespace stay the same. Reset the story to try again.",
       "When the save answers, the note goes; Agents in the sidebar now leaves.",
     ],
   },
@@ -6474,6 +7028,16 @@ export const scenarios = {
       "Cancel or press Escape. The page should explain why Stop is unavailable, without sending a stop request.",
     ],
   },
+  dangerZoneReader: {
+    group: "Pages/Agent detail",
+    name: "Danger zone, viewer cannot stop or delete",
+    path: revision,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent operate and delete, so the page has no Danger zone: neither Stop Agent nor Delete Agent is offered.",
+    gap: "The permission answer is simulated; the API still authorizes every request.",
+  },
   stopConfirm: {
     group: "Components/Stop Agent",
     name: "Confirmation",
@@ -6510,7 +7074,19 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the card offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+  },
+  stopReadDiscoversDeletion: {
+    group: "Components/Stop Agent",
+    name: "Deletion discovered",
+    path: revision,
+    deployed: true,
+    stopped: true,
+    deletingOnRefresh: true,
+    description: "Another actor starts deletion after the page loads.",
+    steps: [
+      "Choose Refresh stop status. The page shows deletion recovery and focuses Refresh deletion status without sending a write.",
+    ],
   },
   stopRepeatConfirm: {
     group: "Components/Stop Agent",
@@ -6537,7 +7113,7 @@ export const scenarios = {
     name: "Never deployed",
     path: draft,
     description:
-      "An Agent created without a deploy is stopped with no version, so the page has no Stop card and the overview reports no stop request.",
+      "An Agent created without a deploy is stopped with no version, so the danger zone has no Stop row and the overview reports no stop request.",
   },
   stopRepeatUnknown: {
     group: "Components/Stop Agent",
@@ -6651,6 +7227,13 @@ for (const [id, state, name] of [
       "Disable policy editing and confirm approved grants remain visible. Check the empty, denied, unsupported, missing metadata, and unconfirmed stories.",
     ],
     gap: "Simulated UI proof only. These fixtures do not prove authorization, persistence, enforcement, or provider policy activation.",
+    ...(state === "unsupported"
+      ? {
+          steps: [
+            "The tab says once that the Sandbox Driver does not support per-Agent network policy. It reads no Sandbox logs or suggestions and offers no editor.",
+          ],
+        }
+      : {}),
     ...(state === "ceilingDenied"
       ? {
           steps: [

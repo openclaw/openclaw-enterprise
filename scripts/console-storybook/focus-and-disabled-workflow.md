@@ -14,8 +14,17 @@ follows `:focus-visible`. No part of any ring may be cut off.
    the others, then Tab to Edit Configuration and the **View native
    Configuration** disclosure. Each tab shows the inset ring on all four sides;
    the other stops show the outer ring.
-3. Open **Pages / Agent detail / Long version history**. Tab to a version in
-   the version list. It shows the inset ring on all four sides.
+3. Open **Pages / Agent detail / Long version history**. Tab to the version
+   list. Focus lands on v8 with the inset ring on all four sides. The list is
+   one Tab stop: Down and Up move between versions and wrap, Home and End
+   jump to either end, and Tab leaves for **Show older versions**, below the
+   list. Press Enter: while the page loads (1.5 s) it reads **Loading older
+   versions…**, looks disabled and keeps focus. Press Enter until the button
+   is gone: focus moves to v2, the first version that loaded, in view.
+   Shift+Tab out and Tab back returns to v8. Press Down, then Enter: v7 opens,
+   and the next Tab into the list lands on v7. On **New version in progress,
+   then current**, arrow to v6 before the poll makes v7 current: focus stays
+   on v6.
 4. Open **Pages / Agent detail / Runtime logs**. Tab to the log pane. Its ring
    sits inside the pane edge (inset). Tab to a log row summary. Its ring sits
    outside, like a button, and the pane scrolls far enough to show its bottom
@@ -41,6 +50,22 @@ follows `:focus-visible`. No part of any ring may be cut off.
 11. On **Pages / Agent detail / Draft** and **New version failed, deploy
     again**, only one button is filled with the accent. Secondary buttons have
     a dark edge, and Refresh buttons have none.
+12. Open **Pages / Agent detail / Header actions**. Focus **Create new
+    version**, switch to another window, and return. The action stays visible
+    but inactive during the access check, then regains focus. Repeat while
+    moving focus to the sidebar during the check; focus stays where you moved it.
+
+12. Links are ink, not accent; the accent marks actions, the current nav item,
+    selection and the selected tab. On **Pages / Agents / Latest Deployment
+    Failed**, each Agent name is dark text with no underline until you hover or
+    Tab to it. The **v6** current version link and the **v7 · Failed**
+    deployment link stay underlined. On **Pages / Namespaces / Ready and provisioning**, hovering
+    anywhere on a row underlines its name.
+13. On **Pages / Agent detail / Deployment Failed**, the credential link in the
+    Configuration snapshot is dark text with a grey underline that darkens on
+    hover. **View admitted native configuration** is dark and underlined, not
+    accent, and still opens the JSON. In **Components / Dialogs / Plugins
+    (wide)**, **Access and credential setup** looks the same.
 
 Check steps 1 to 5 again at a narrow viewport (390 px; use **Plugins (phone)**
 for step 5).

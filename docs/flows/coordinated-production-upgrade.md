@@ -1,7 +1,7 @@
 ---
 created: 2026-09-23
 updated: "2026-10-19"
-last_updated_session: "authoring-run/40820368-0ee7-4901-9224-041654014ae4"
+last_updated_session: "authoring-run/d59b973b-1f0b-46bb-b16f-d67bd24ed6d3"
 ---
 
 # Production image upgrade flow
@@ -11,7 +11,7 @@ last_updated_session: "authoring-run/40820368-0ee7-4901-9224-041654014ae4"
 `scripts/upgrade-production-images` updates the OpenClaw Control Plane (OCC),
 Agent runtimes, or both. The controller-only command ends after the OCC API and
 worker recover; it does not request Agent deployments. A runtime release deploys
-a new revision for every Agent that was running when the command began and ends
+a new version for every Agent that was running when the command began and ends
 after the selected Pods are ready and each replacement gateway passes read-only
 Doctor lint. Model and external integration checks remain operator tasks.
 
@@ -49,7 +49,7 @@ graph TD
     L --> M{"Dispatch response known?"}
     M -->|No| N["Read Agent and stop for reconciliation"]
     N --> L
-    M -->|Yes| O["Check revisions, Pods, and Doctor"]
+    M -->|Yes| O["Check versions, Pods, and Doctor"]
     O --> K
 ```
 
@@ -68,8 +68,9 @@ settings remain protected, including new fields. The guard compares broker
 resource references, not the contents of referenced ConfigMaps or Secrets.
 Image flags select images after this comparison.
 A runtime release also reads complete authorized inventory and records every running Agent's baseline
-revision. Nonterminal deployment work, a missing active revision, or an unready
+version. Nonterminal deployment work, a missing selected version, or an unready
 Namespace stops preparation. Stopped and deleting Agents are excluded.
+Pending repository cleanup does not block preparation.
 
 For repository-enabled releases, the helper requires explicit immutable
 controller and broker images. It inventories every node matching the control
@@ -138,7 +139,7 @@ eligible-node set. Candidate files must still match the saved reviewed inputs; t
 helper applies the saved candidate. Unexpected drift or an in-progress Helm
 release stops the command.
 
-If a previously started Helm release is deployed at a newer revision with the
+If a previously started Helm release is deployed at a newer version with the
 candidate values, the script continues without repeating Helm. Otherwise it
 requires the operator's migration-history check and refuses a retry while an
 initialization Job or Pod remains active. A failed or disconnected migration may have
@@ -152,7 +153,7 @@ rollback. The guide describes the required attestation and recovery.
 Before changing the Secret or invoking Helm, the script scales the selected API
 and worker Deployments to zero, waits until their Pods disappear, and confirms
 both desired replica counts remain zero. Kubernetes requests in this phase share
-a bounded quiescence deadline. This covers the selected Helm release;
+the configured shutdown deadline. This covers the selected Helm release;
 it does not detect independent database writers, autoscalers, or partitioned
 nodes. The operator must stop those writers and keep nodes reachable.
 
@@ -181,7 +182,7 @@ broker-enabled worker it also accepts a restartable init container, provided
 no worker exists in the ordinary container list. It rejects a non-restartable
 init worker or ambiguous placement. It retries authenticated OCC access and verifies the same Installation ID. A
 controller-only release then ends without requesting Agent deployments.
-An existing revision keeps the Pod specification of the controller that
+An existing version keeps the Pod specification of the controller that
 deployed it only until the worker prepares it again. Agents with repository
 credentials get a maintenance pass every 30 seconds (the repository Driver's
 `maintenanceIntervalMs`) until their repository session deadline. Other Agents
@@ -211,11 +212,11 @@ Before sending each ordinary exact-Agent deployment request, the script records
 an intent. Successful responses are saved atomically. On resume, existing
 responses are reused; an intent without a response triggers an Agent readback
 and stops for operator reconciliation. The helper does not infer rejection from
-an unchanged active revision or replay an unknown request. An operator can
+an unchanged selected version or replay an unknown request. An operator can
 record a verified accepted response and resume.
 
 The script polls each returned deployment through its authorized status
-operation, confirms active revision selection, and waits for all revision Pods
+operation, confirms the selected version, and waits for all version Pods
 to be `Running` and `Ready` on the candidate runtime digest. Before OpenClaw
 starts, `GATEWAY_RUNTIME_ENTRYPOINT` runs `openclaw doctor --fix
 --non-interactive` once when an agent database uses an older schema, such as a
@@ -254,13 +255,13 @@ checks the exported inventory before following the recovery procedure. Empty
   and `preflight-<api|worker>.log` and `-status.json` for a rejected candidate.
 - For OCC rollout failures, inspect `helm-upgrade.txt`, initialization Job logs,
   and API and worker rollout status.
-- For runtime failures, inspect `dispatch/*.error`, revision history, and
+- For runtime failures, inspect `dispatch/*.error`, version history, and
   `status/*.json` before retrying anything. Doctor failures are recorded in
   `status/*.doctor.json` and `status/*.doctor.error`.
 - Compare `before-workloads.json` and `after-workloads.json` for unexpected
   workload changes. The controller-only helper requests no Agent deployments;
   one same-image Pod template rollout per affected Agent is expected. Separately
-  check repository-bound revisions affected by broker restart.
+  check repository-bound versions affected by broker restart.
   Runtime proof should show the intended replacements.
 - Use the credentialed production Kubernetes integration with distinct baseline
   and candidate images for end-to-end proof. Mocked commands prove only script
@@ -282,6 +283,7 @@ checks the exported inventory before following the recovery procedure. Empty
 
 ## Changelog
 
+- 2026-10-19 22:34: Document that pending repository cleanup does not block upgrade preparation. (authoring-run/d59b973b-1f0b-46bb-b16f-d67bd24ed6d3 - 57acafe81482a890b02ae530793246f2c2e7be79)
 - 2026-10-19 13:31: Retain proxy ownership alongside upstream upgrade preflight. (authoring-run/40820368-0ee7-4901-9224-041654014ae4 - b10157ca9)
 
 - 2026-10-18: The initialization hook checks the Installation before migration.

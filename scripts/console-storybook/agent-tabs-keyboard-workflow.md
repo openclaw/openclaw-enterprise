@@ -9,8 +9,8 @@ Enter to open. Use the keyboard, not the mouse.
 2. Shift+Tab back to **Configuration**. Press Right, Right, Left, End and Home.
    Focus moves between tabs and wraps at either end, but no tab opens and the
    address keeps its `tab=`.
-3. Press End, then Enter. **Policy denials** opens, the address shows
-   `tab=policy`, and the strip marks it selected.
+3. Press End, then Enter. **Access** opens, the address shows
+   `tab=access`, and the strip marks it selected.
 4. Go Back. **Configuration** is selected again and focus moves to it.
 5. Press End, then Tab and Shift+Tab. Focus returns to the selected tab, not
    the one the arrows last reached.
@@ -18,9 +18,9 @@ Enter to open. Use the keyboard, not the mouse.
    fades while more tabs are past it, and after scrolling to the end only the
    left edge fades. Press End: the focused tab scrolls into view clear of the
    fade, and stays in view if you resize again.
-7. Widen the frame until every tab fits. Neither edge fades, including when
-   browser rounding leaves one scrollable pixel after End. Wider overflow still
-   fades at the edge with hidden tabs.
+7. Widen the frame. Nine tabs can still overflow the content column on desktop;
+   the fades follow the actual overflow. Where every tab fits, neither edge
+   fades, including when browser rounding leaves one scrollable pixel after End.
 
 ## Gateway network access
 
@@ -32,6 +32,8 @@ edits. Enter opens the selected tab.
   enter `api.example.com`, save, and reload. The saved draft retains that host.
 - While hosts are unsaved, **Deploy** stays disabled and leaving the tab explains
   how to save or cancel. **Cancel changes** restores the saved selection.
+- The preparation checklist shows **Unsaved changes** while editing, **Saving…**
+  during the request, and **Saved** after a successful save.
 - Check **Restricted Gateway access**, **No required destinations**, **Gateway
   network reader**, **Gateway outbound disabled**, **Embedded Gateway networking**,
   **Loading network capabilities**, and **Network capabilities unavailable** for

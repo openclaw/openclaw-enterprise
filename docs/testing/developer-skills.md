@@ -38,7 +38,7 @@ installation; the other skills are checked into `.agents/skills`.
   and spec references, inspected 2026-09-16. It leaves repository policy in
   `AGENTS.md`. Update its skill and specification reference together.
 - `design-review` and `mermaid-diagrams` are maintained here. Check their linked
-  guidance and validate changed workflows against a bounded example.
+  guidance and validate changed workflows with an example of one supported task.
 
 The three adapted skills below use `openclaw/openclaw` commit
 `4490500902033a1673aed8f42299c232d4b5696f`; the source files match audit

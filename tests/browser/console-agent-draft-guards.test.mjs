@@ -149,6 +149,97 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   assert.deepEqual(unchanged.data.policy.additions, []);
 });
 
+// Without a Sandbox Driver that supports per-Agent network policy there is no Sandbox log source
+// and no suggestions. The tab read both, showed their refusals and a full editor (finding 2060).
+test("Policy denials says once that the Sandbox Driver lacks per-Agent network policy", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("No policy driver", { ready: true });
+  const created = await fixture.createAgent(
+    namespace.id,
+    "No policy driver",
+    createHarnessConfiguration("codex", "gpt-5.1"),
+    { executionMode: "dedicated" },
+  );
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, created.id);
+  const base = `/namespaces/${namespace.id}/agents/${created.id}/sandbox-policy/networking`;
+  // The real API answers the policy read with no capability.
+  assert.equal((await fixture.request("GET", base)).data.capability, null);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, created.id, revision.id, "policy"));
+  const tab = page.locator(".sandbox-policy");
+  await tab
+    .getByRole("status")
+    .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
+    .waitFor();
+  assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
+  for (const name of [
+    "Enable policy editing",
+    "Refresh denials",
+    "Refresh suggestions",
+    "Refresh policy",
+    "Add proposed rule",
+  ]) {
+    assert.equal(await tab.getByRole("button", { name }).count(), 0, name);
+  }
+  assert.equal(await tab.getByRole("alert").count(), 0);
+  // Neither unavailable read is made.
+  assert.deepEqual(
+    requests
+      .map(({ path }) => path)
+      .filter((path) => path.includes("/runtime/logs") || path.endsWith("/recommendations")),
+    [],
+  );
+  // The draft tab reads neither, but says the same instead of offering the editor.
+  await page.goto(detailUrl(fixture, namespace.id, created.id, "draft", "policy").href);
+  await tab
+    .getByRole("status")
+    .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
+    .waitFor();
+  assert.equal(await tab.getByRole("button", { name: "Enable policy editing" }).count(), 0);
+  assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
+});
+
+// A member whose grants do not include the Agent's SandboxPolicy gets a refusal; Retry would only
+// ask again for the same answer (finding 2060).
+test("A refused policy read offers no Retry", async (t) => {
+  const { fixture, namespace, agent } = await createPolicyConsole(t);
+  const member = await fixture.createAccountWithPolicy("policy-member", (principal) => {
+    fixture.policy.roles.push({
+      id: "role-policy-member",
+      permissions: [
+        { action: "read", resourceKind: "namespace" },
+        { action: "read", resourceKind: "agent" },
+      ],
+    });
+    fixture.policy.bindings.push({
+      id: "binding-policy-member",
+      subjectKind: "identity",
+      subjectId: principal.id,
+      roleId: "role-policy-member",
+    });
+  });
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"),
+    member.credentials,
+  );
+  const tab = page.locator(".sandbox-policy");
+  await tab
+    .getByRole("alert")
+    .filter({ hasText: "You do not have permission to read this Agent’s policy." })
+    .waitFor();
+  await tab.getByText("You do not have permission to read policy suggestions.").waitFor();
+  assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
+  assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);
+  // Only the refusals stand in for the omitted controls.
+  assert.equal(await tab.getByText("null", { exact: true }).count(), 0);
+});
+
 const delegatedPolicyGrant = {
   id: "python-demo",
   binary: "/usr/bin/python3.11",
@@ -1686,15 +1777,20 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
 
   const activity = page.locator(".deployment-status");
   // The API's message carries the next step, so occ and HTTP clients get it too (finding
-  // 1393); the console shows it once and adds only the link to Credentials.
+  // 1393); the console shows it once, in the failure's card, and adds only the link to
+  // Credentials. The card folds Deployment details, which repeat it (finding 2094).
   assert.match(
     failure.message,
     /^The model provider rejected this version's credential \(HTTP 401 or 403\)\. .*update or replace the Agent's model credential, then deploy a new version\.$/,
   );
-  await activity
-    .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })
-    .waitFor();
   const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery.getByText(failure.message, { exact: false }).waitFor();
+  assert.equal(
+    await activity
+      .getByText(`RUNTIME_AUTHENTICATION_FAILED: ${failure.message}`, { exact: true })
+      .isVisible(),
+    false,
+  );
   assert.match(
     await recovery.getByRole("link", { name: "Open Credentials" }).getAttribute("href"),
     /tab=credentials/,
@@ -1707,14 +1803,26 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
     new RegExp(`revision=${revision.id}&tab=logs`),
   );
   // Secret values can be updated in place, so the rejected binding warns instead of blocking.
+  // It never reads "Ready to deploy.", and the next step keeps the credentials step open:
+  // deploying again does not fix a rejected credential (UX spec 3.7).
   await page
     .getByText(
-      "Ready to deploy. The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.",
+      "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.",
       { exact: true },
     )
     .waitFor();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   assert.equal(await deploy.isEnabled(), true);
+  const nextStep = page.locator(".agent-draft-actions");
+  assert.equal(await nextStep.getByText("Ready to deploy.").count(), 0);
+  const credentialStep = nextStep.getByRole("listitem").filter({
+    hasText: "Check authentication and credentials",
+  });
+  assert.equal(await credentialStep.getAttribute("data-state"), "pending");
+  assert.equal(
+    await credentialStep.locator(".checklist-detail").textContent(),
+    "The last deployment's model credential was rejected",
+  );
 
   // Creating a Secret from the picker stages it without reopening the listbox over Save.
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
@@ -1743,6 +1851,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   // The saved binding differs from the rejected version's, so the warning clears.
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();
   assert.equal(await deploy.isEnabled(), true);
+  assert.equal(await credentialStep.getAttribute("data-state"), "done");
 });
 
 test("a reload asks first while an Agent editor holds unsaved work", async (t) => {

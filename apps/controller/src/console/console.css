@@ -39,6 +39,8 @@
   --color-info: #1e3a5f;
   --color-info-subtle: rgba(30, 58, 95, 0.07);
   --color-overlay: rgba(15, 23, 42, 0.4);
+  /* Focus is navy, not accent: an accent ring on an empty required field read as an error. */
+  --color-focus: var(--color-info);
   /* Type: size and its line height. */
   --font-sans: "Instrument Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -83,7 +85,7 @@
   --duration-fast: 120ms;
   --duration-base: 200ms;
   --ease: cubic-bezier(0.2, 0, 0, 1);
-  --focus-ring: 3px solid var(--color-accent);
+  --focus-ring: 2px solid var(--color-focus);
   --focus-offset: 2px;
   --focus-offset-inset: -3px;
   --control-h: 40px;
@@ -167,6 +169,18 @@ button,
 a {
   touch-action: manipulation;
 }
+/* Links are ink with a quiet underline that goes full ink on hover; the accent is for actions,
+   the current nav item, selection and focus (UX plan C8, spec 3.3). :where() keeps this at zero
+   specificity, so any class (a.button, .nav a, table names) sets its own colour and decoration. */
+:where(a) {
+  color: var(--color-link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--color-border-strong);
+}
+:where(a:hover) {
+  text-decoration-color: currentColor;
+}
 /* Button hierarchy (UX plan C2). A plain button is the secondary tone, edged at 3:1 against the
    surface; .button gives a link the same chrome. Tones: --primary (accent fill, at most one per
    view), --ghost (no edge: toolbars and Refresh), --danger (destructive), --link (inline text).
@@ -192,7 +206,7 @@ button,
   color: var(--color-text-strong);
   text-decoration: none;
 }
-button:not(:disabled):hover,
+button:not(:disabled, [aria-disabled="true"]):hover,
 a.button:hover {
   background: var(--color-surface-hover);
 }
@@ -235,6 +249,11 @@ button.danger:not(:disabled):hover {
   padding: var(--space-1) var(--space-2);
   border-color: transparent;
   background: none;
+}
+/* Disclosures that open more detail read as link buttons, not accent text. */
+.button--link,
+.native-document > summary,
+.plugin-access-details > summary {
   color: var(--color-link);
   text-decoration: underline;
   text-underline-offset: 3px;
@@ -290,9 +309,6 @@ button[aria-busy="true"] {
 .repository-profile:has(:focus-visible) {
   outline: var(--focus-ring);
   outline-offset: var(--focus-offset);
-}
-a {
-  color: var(--accent);
 }
 [hidden] {
   display: none !important;
@@ -375,22 +391,47 @@ p {
     opacity: 0;
   }
 }
+/* Sign-in (UX spec 3.12): one card, a 16 px gutter on a phone, and the build in a muted footer. */
 .auth {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
+  width: calc(100% - 2 * var(--space-4));
   max-width: 410px;
-  margin: 14vh auto;
-  padding: 28px;
+  margin: 14vh auto var(--space-4);
+  padding: var(--space-8);
 }
+.auth h1 {
+  font-size: var(--text-2xl);
+  margin-bottom: var(--space-2);
+}
+.auth .auth-intro {
+  margin-bottom: 0;
+}
+.auth .brand {
+  margin-bottom: var(--space-10);
+}
+.auth-footer {
+  margin: var(--space-6) auto var(--space-10);
+  padding: 0 var(--space-4);
+  text-align: center;
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+  color: var(--color-text-muted);
+}
+@media (max-width: 520px) {
+  .auth {
+    padding: var(--space-6);
+  }
+}
+/* The wordmark: mascot and "OpenClaw Enterprise" in ink, normal case. */
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 1.5px;
-  color: var(--accent);
+  gap: var(--space-2);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text-strong);
   margin-bottom: 38px;
 }
 .brand img {
@@ -553,15 +594,28 @@ p {
   gap: var(--space-2);
   margin-top: var(--space-3);
 }
+/* Phone: a status block's actions stack full width, each a full touch target (spec 4). */
+@media (max-width: 520px) {
+  .status-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .status-actions > :is(a, button) {
+    justify-content: center;
+    min-height: var(--touch-min);
+  }
+}
 .shell {
   min-height: 100dvh;
   display: grid;
   grid-template-columns: 258px minmax(0, 1fr);
 }
+/* Warm-quiet shell (spec 3.1): the sidebar is a surface-2 panel with a hairline edge, so the white
+   cards in the content read as raised without a shadow. */
 .sidebar {
-  padding: 26px 16px 16px;
-  background: var(--bg);
-  border-right: 1px solid var(--line);
+  padding: var(--space-6) var(--space-4) var(--space-4);
+  background: var(--color-surface-2);
+  border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
   position: sticky;
@@ -570,11 +624,8 @@ p {
   z-index: 3;
 }
 .sidebar .brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px 0;
-  margin-bottom: 28px;
+  padding: var(--space-2) var(--space-3) 0;
+  margin-bottom: var(--space-6);
 }
 .occ-version {
   color: var(--muted);
@@ -611,28 +662,40 @@ p {
 }
 .nav {
   display: grid;
-  gap: 4px;
+  gap: var(--space-1);
 }
 .nav a {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: center;
+  min-height: 36px;
+  padding: 0 var(--space-3);
   text-decoration: none;
-  color: var(--muted);
-  padding: 10px 12px;
-  border-radius: var(--radius);
-}
-.nav a[aria-current="page"] {
-  background: var(--accent-subtle);
-  color: var(--accent);
-  font-weight: 600;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-md);
 }
 .nav a:hover {
-  background: var(--hover);
+  background: var(--color-surface-hover);
+}
+/* The current page: a white pill with a 3 px accent bar. An inset shadow, not a border, so the
+   text does not shift; the bar's side is square. */
+.nav a[aria-current="page"] {
+  background: var(--color-surface);
+  color: var(--color-text-strong);
+  font-weight: var(--weight-semibold);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+/* Forced colours drop the shadow: draw the bar as a border, inside the same padding. */
+@media (forced-colors: active) {
+  .nav a[aria-current="page"] {
+    border-left: 3px solid Highlight;
+    padding-left: calc(var(--space-3) - 3px);
+  }
 }
 .nav-icon {
-  font-size: 17px;
-  width: 20px;
+  font-size: 16px;
+  width: 16px;
   text-align: center;
 }
 .external-link-icon {
@@ -644,27 +707,61 @@ p {
 .account {
   margin-top: auto;
   position: relative;
-  padding-top: 24px;
+  padding-top: var(--space-6);
 }
+/* The account row: initials avatar, name and email, chevron. */
 .account-toggle {
   width: 100%;
   text-align: left;
-  padding: 14px 12px;
-  font-size: 13px;
-  font-weight: 550;
+  padding: var(--space-3);
+  border-color: var(--color-border);
+  font-weight: var(--weight-regular);
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-3);
 }
-.account-label {
+.account-avatar {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-hover);
+  color: var(--color-text-strong);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  line-height: 1;
+}
+.account-toggle:not(:disabled):hover .account-avatar {
+  background: var(--color-surface);
+}
+.account-text {
+  flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.account-name,
+.account-email {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.account-name {
+  color: var(--color-text-strong);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+  font-weight: var(--weight-medium);
+}
+.account-email {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
 .account-chevron {
   flex-shrink: 0;
+  color: var(--color-text-muted);
 }
 .menu {
   padding: 6px;
@@ -676,7 +773,7 @@ p {
 }
 .account > .menu {
   position: absolute;
-  bottom: 64px;
+  bottom: calc(100% - var(--space-6) + var(--space-2));
   left: 0;
   right: 0;
 }
@@ -703,20 +800,126 @@ p {
   max-width: 1300px;
   width: 100%;
 }
+/* Page header (UX spec 3.2). Collections: the title and its scope line at the left, the actions
+   (compact Namespace control, Refresh) at the right on the title block's last line. */
 .page-header {
   display: flex;
   flex-wrap: wrap;
   justify-content: space-between;
-  align-items: start;
-  gap: 20px;
+  align-items: end;
+  gap: var(--space-4) var(--space-6);
   margin-bottom: 28px;
+}
+.page-title {
+  min-width: 0;
+}
+.page-header h1 {
+  margin-bottom: var(--space-1);
+  font-size: var(--text-2xl);
+  line-height: var(--text-2xl--line-height);
+  letter-spacing: var(--tracking-tight);
+  overflow-wrap: anywhere;
 }
 .page-actions {
   display: flex;
-  align-items: end;
-  gap: 12px;
+  align-items: center;
+  gap: var(--space-3);
   flex-wrap: wrap;
   max-width: 100%;
+}
+/* An Agent's page and Create Agent: ← Agents, the title with the actions at its right, then the
+   meta row (ID, Namespace) across the width. The Agent's name is the page's largest type. */
+.page-header--subpage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "back back"
+    "title actions"
+    "meta meta";
+  align-items: start;
+  gap: var(--space-2) var(--space-6);
+}
+.page-back {
+  grid-area: back;
+  justify-self: start;
+  /* The arrow lines up with the title, not the ghost button's padding. */
+  margin-left: calc(-1 * var(--space-3));
+  color: var(--color-text-muted);
+}
+.page-header--subpage h1 {
+  grid-area: title;
+  justify-self: start;
+}
+.page-header--subpage .page-actions {
+  grid-area: actions;
+  justify-content: end;
+}
+.page-header--agent h1 {
+  margin-bottom: 0;
+  font-size: var(--text-display);
+  line-height: var(--text-display--line-height);
+}
+.page-header--create h1 {
+  margin-bottom: 0;
+}
+.page-meta {
+  grid-area: meta;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.page-meta-id {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.page-meta-id .resource-id {
+  font-size: var(--text-xs);
+}
+/* The separator before the Namespace control; none when the control is hidden. */
+.page-meta-id::after {
+  content: "·" / "";
+  margin-left: var(--space-1);
+}
+.page-meta:not(:has(> .namespace-selector:not([hidden]))) .page-meta-id::after {
+  content: none;
+}
+/* Below 1100 px the row can wrap, and a wrapped separator would trail the ID. */
+@media (max-width: 1100px) {
+  .page-meta-id::after {
+    content: none;
+  }
+}
+.page-meta-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-h-sm);
+  padding: 0;
+  color: var(--color-text-muted);
+}
+.copy-icon {
+  width: 16px;
+  height: 16px;
+}
+.page-meta-copied:empty {
+  display: none;
+}
+@media (max-width: 760px) {
+  /* Phone: ← Agents shares its row with the actions, so the header is the back row, the title
+     and the meta row (spec 3.2 and 4: header bottom <= 240 px at 390). */
+  .page-header--subpage {
+    grid-template-areas:
+      "back actions"
+      "title title"
+      "meta meta";
+    align-items: center;
+  }
 }
 .checking-status {
   margin: 0;
@@ -740,6 +943,59 @@ p {
   border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   text-overflow: ellipsis;
+}
+/* The header's compact control: one 32 px box, "Namespace" as a muted prefix inside it, as wide
+   as the selection up to 240 px. The box draws the focus ring for its borderless select. */
+.namespace-selector--compact {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  max-width: min(240px, 100%);
+  height: var(--control-h-sm);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+}
+.namespace-selector--compact label {
+  flex: none;
+  padding: 0 var(--space-2) 0 var(--space-3);
+  color: var(--color-text-muted);
+  font-weight: var(--weight-regular);
+  white-space: nowrap;
+}
+.namespace-selector--compact select:not([multiple]):not([size]) {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
+  padding: 0 var(--space-8) 0 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background-color: transparent;
+  background-position:
+    right 18px center,
+    right 12px center;
+  color: var(--color-text-strong);
+  font-weight: var(--weight-medium);
+}
+.namespace-selector--compact select:focus-visible {
+  outline: none;
+}
+.namespace-selector--compact:has(select:focus-visible) {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
+.namespace-selector--compact:has(select:disabled) {
+  opacity: 0.6;
+}
+@media (max-width: 760px) {
+  .page-meta .namespace-selector--compact {
+    width: 100%;
+    max-width: 100%;
+  }
 }
 .scope {
   margin: 0;
@@ -778,7 +1034,7 @@ p {
   background: var(--color-surface-2);
 }
 .card--danger {
-  border-color: var(--color-danger-subtle);
+  border-color: color-mix(in srgb, var(--color-danger) 35%, transparent);
 }
 @media (max-width: 520px) {
   .card {
@@ -797,9 +1053,12 @@ p {
   font-weight: 550;
   overflow-wrap: anywhere;
 }
+/* An ID reads character by character: no ligatures, which some monospace fonts (Nimbus Mono PS,
+   a common Linux default) apply to "ff", drawing two characters as one glyph (finding 2114). */
 .resource-id {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
+  font-variant-ligatures: none;
   color: var(--muted);
   user-select: text;
   overflow-wrap: anywhere;
@@ -844,7 +1103,13 @@ p {
 }
 .resource-linked .resource-name a {
   color: var(--text-strong);
-  text-decoration: none;
+  font-weight: var(--weight-medium);
+  text-decoration-color: transparent;
+}
+/* The whole row is the target; its name underlines while the pointer is anywhere on it. */
+.resource-linked:hover .resource-name a,
+.resource-linked .resource-name a:focus-visible {
+  text-decoration-color: currentColor;
 }
 .resource-linked .resource-name a::after {
   content: "";
@@ -860,6 +1125,99 @@ p {
    browser. */
 .resource-linked .resource-name a:focus-visible {
   outline: none;
+}
+/* Namespaces as a table (UX spec 3.12): one card, a surface-2 head row, and hairline-divided
+   rows of Namespace (ID beneath), Status and Created. The rows are list items; the head is visual
+   only, and each cell names itself for a screen reader. */
+.namespace-table {
+  --namespace-columns: minmax(0, 1fr) 10rem 14rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.namespace-table-head,
+.namespace-row {
+  display: grid;
+  grid-template-columns: var(--namespace-columns);
+  gap: var(--space-4);
+  align-items: center;
+  padding: 0 var(--space-4);
+}
+.namespace-table-head {
+  min-height: var(--space-12);
+  background: var(--color-surface-2);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  font-weight: var(--weight-medium);
+}
+.namespace-rows {
+  gap: 0;
+}
+.namespace-row {
+  min-height: 56px;
+  padding-block: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.namespace-row:last-child {
+  border-bottom: 0;
+}
+/* Names match the Agents table: body size, medium weight. */
+.namespace-row .resource-name {
+  margin-bottom: var(--space-1);
+  font-size: var(--text-base);
+}
+.namespace-cell-name {
+  min-width: 0;
+}
+.namespace-cell-created {
+  color: var(--color-text);
+}
+.namespace-cell-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* The table clips its corners, so the focused row draws its ring inside. */
+.namespace-rows .namespace-row:has(.resource-name a:focus-visible) {
+  outline-offset: var(--focus-offset-inset);
+}
+@media (max-width: 1100px) {
+  .namespace-table {
+    --namespace-columns: minmax(0, 1fr) 9rem 12rem;
+  }
+}
+/* Phone: the badge sits beside the name and Created goes underneath, labelled. */
+@media (max-width: 760px) {
+  .namespace-table-head {
+    display: none;
+  }
+  .namespace-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-2) var(--space-3);
+    padding: var(--space-4);
+  }
+  .namespace-cell-status {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: start;
+  }
+  .namespace-cell-created {
+    grid-column: 1 / -1;
+    color: var(--color-text-muted);
+    font-size: var(--text-sm);
+  }
+  .namespace-cell-label {
+    position: static;
+    width: auto;
+    height: auto;
+    overflow: visible;
+    clip-path: none;
+  }
 }
 .state-panel {
   padding: 36px;
@@ -879,19 +1237,62 @@ p {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
-.settings {
+/* Settings (UX spec 3.10): an account card and a session card in one 720 px column. */
+.settings-page {
   display: grid;
-  grid-template-columns: 90px 1fr;
-  gap: 16px;
-  margin: 25px 0;
+  gap: var(--space-6);
+  max-width: 720px;
+}
+.settings-page h2 {
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+}
+.settings-account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+.account-avatar--lg {
+  width: 64px;
+  height: 64px;
+  font-size: var(--text-2xl);
+}
+.settings {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: var(--space-3) var(--space-6);
+  margin: 0;
   overflow-wrap: anywhere;
 }
 .settings dt {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 .settings dd {
   margin: 0;
+  color: var(--color-text-strong);
 }
+.settings-page .hint {
+  margin: var(--space-3) 0 0;
+}
+@media (max-width: 520px) {
+  .settings-account {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-5);
+  }
+  .settings {
+    align-self: stretch;
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+  .settings-sign-out {
+    width: 100%;
+    min-height: var(--touch-min);
+  }
+}
+.topbar,
 .mobile-toggle,
 .drawer-close,
 .scrim {
@@ -904,11 +1305,56 @@ p {
     display: flow-root;
   }
   .content {
-    padding: 30px 20px;
+    padding: var(--space-5) var(--space-4) var(--space-6);
   }
-  .mobile-toggle {
-    display: block;
-    margin: 16px 20px 0;
+  /* Phone top bar (spec 3.1): navigation toggle, wordmark and account avatar on a 56 px bar. */
+  .topbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: 56px;
+    padding: 0 var(--space-2) 0 var(--space-1);
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+    position: relative;
+    z-index: 1;
+  }
+  .mobile-toggle,
+  .drawer-close,
+  .topbar-avatar {
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    width: var(--touch-min);
+    height: var(--touch-min);
+    padding: 0;
+    border-color: transparent;
+    background: transparent;
+  }
+  .topbar-avatar {
+    border-radius: var(--radius-pill);
+  }
+  .line-icon {
+    width: 20px;
+    height: 20px;
+  }
+  .brand--bar {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    white-space: nowrap;
+  }
+  .topbar-account {
+    position: relative;
+  }
+  .topbar-account > .menu {
+    position: absolute;
+    top: calc(100% + var(--space-1));
+    right: 0;
+    z-index: 4;
+  }
+  .nav a {
+    min-height: var(--touch-min);
   }
   .sidebar {
     display: none;
@@ -929,10 +1375,9 @@ p {
     border-radius: 0;
   }
   .drawer-close {
-    display: block;
     position: absolute;
-    top: 15px;
-    right: 14px;
+    top: var(--space-5);
+    right: var(--space-2);
   }
   .resource {
     align-items: start;
@@ -1005,36 +1450,10 @@ select:not([multiple])[size="1"] {
   gap: 12px;
   flex-wrap: wrap;
 }
-.page-header:has(+ div .agent-overview-toolbar) h1 {
-  font-size: clamp(27px, 3vw, 36px);
-  letter-spacing: -0.045em;
-  line-height: 1.12;
-}
-.agent-overview-toolbar {
-  border-bottom: 1px solid var(--line);
-  gap: 10px;
-  padding-bottom: 14px;
-  margin: 0 0 22px;
-}
-.agent-overview-identity {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  min-width: 0;
-}
-.agent-overview-identity a,
 .overview-text-button:not(:hover) {
   color: var(--muted);
 }
-.agent-overview-identity .resource-id {
-  font-size: 11px;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-.agent-overview-status,
-.native-admin-access,
-.deployment-recovery {
+.native-admin-access {
   padding: clamp(15px, 2vw, 24px);
   margin-bottom: 16px;
   border: 1px solid var(--line);
@@ -1042,53 +1461,212 @@ select:not([multiple])[size="1"] {
   background: var(--surface);
   overflow-wrap: anywhere;
 }
+/* The overview: the stat card (facts + the page's one disclosure), then the deployment card. */
 .agent-overview-status {
-  padding-block: 3px 0;
-}
-.agent-current-summary > div {
   display: grid;
-  grid-template-columns: minmax(104px, 34%) minmax(0, 1fr);
-  align-items: baseline;
-  padding: 13px 0;
-  column-gap: 10px;
+  gap: var(--space-6);
+  margin-bottom: var(--space-8);
+  overflow-wrap: anywhere;
 }
-.agent-current-summary > div + div,
-.deployment-evidence {
-  border-top: 1px solid var(--line);
+.agent-overview-status > .agent-card {
+  margin: 0;
 }
-.overview-fact-label {
-  color: var(--muted);
-  line-height: 1.25;
+.agent-overview-status > .deployment-evidence {
+  padding: var(--space-2) var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
 }
-.agent-current-summary strong {
-  font-weight: 650;
-  color: var(--text-strong);
+.agent-overview-status > .deployment-evidence > button {
+  right: var(--space-6);
+  top: calc(var(--space-2) + 6px);
 }
-.agent-current-summary strong[data-outcome="succeeded"]::before,
-.agent-current-summary strong[data-outcome="failed"]::before {
+@media (max-width: 520px) {
+  .agent-overview-status > .deployment-evidence {
+    padding-inline: var(--space-4);
+  }
+  .agent-overview-status > .deployment-evidence > button {
+    right: var(--space-4);
+  }
+}
+/* Facts as a stat row (spec 3.5): label, value, optional help; hairlines between columns. */
+.stats {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: 0 var(--space-6);
+  border-left: 1px solid var(--color-border);
+}
+.stat:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+.stat:last-child {
+  padding-right: 0;
+}
+.stat-label,
+.stat-help {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.stat-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-strong);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+  font-weight: var(--weight-semibold);
+}
+.stat-label,
+.stat-value {
+  overflow-wrap: normal;
+}
+.stat-help {
+  margin: 0;
+}
+.stat-help:empty {
+  display: none;
+}
+/* Beside the sidebar (761-1100) the columns narrow; a fourth fact (Stop requested) stacks. */
+@media (max-width: 1100px) {
+  .stat {
+    padding-inline: var(--space-4);
+  }
+  .stats:has(> .stat:nth-child(4)) {
+    grid-auto-flow: row;
+    grid-template-columns: 1fr;
+  }
+  .stats:has(> .stat:nth-child(4)) > .stat {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    column-gap: var(--space-4);
+    padding: var(--space-3) 0;
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+  }
+  .stats:has(> .stat:nth-child(4)) > .stat:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+  .stats:has(> .stat:nth-child(4)) > .stat:last-child {
+    padding-bottom: 0;
+  }
+  .stats:has(> .stat:nth-child(4)) .stat-help {
+    flex-basis: 100%;
+  }
+}
+/* Phone: one column, label and value on one line, help beneath. */
+@media (max-width: 760px) {
+  .stats {
+    grid-auto-flow: row;
+    grid-template-columns: 1fr;
+  }
+  .stat {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    column-gap: var(--space-4);
+    padding: var(--space-3) 0;
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+  }
+  .stat:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+  .stat:last-child {
+    padding-bottom: 0;
+  }
+  .stat-help {
+    flex-basis: 100%;
+  }
+}
+/* One disclosure per page (spec 3.6): what the page cannot confirm, said once and folded. */
+.disclosure {
+  margin-top: var(--space-5);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.disclosure > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h-sm);
+  cursor: pointer;
+  list-style: none;
+  color: var(--color-link);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  font-weight: var(--weight-medium);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.disclosure > summary::after {
   content: "";
-  display: inline-block;
   width: 8px;
   height: 8px;
-  margin-right: 8px;
-  vertical-align: 1px;
-  background: var(--success);
-  border-radius: 50%;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
 }
-.agent-current-summary strong[data-outcome="failed"]::before {
-  background: var(--warning);
+.disclosure[open] > summary::after {
+  transform: translateY(-2px) rotate(45deg);
 }
-.agent-current-summary p,
+.disclosure > ul {
+  max-width: var(--prose-max);
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+}
+.disclosure li + li {
+  margin-top: var(--space-1);
+}
+/* The bindings sentence speaks for the sharing panel's list, so it shows only on the Access tab,
+   while that panel shows (finding 2091). */
+[aria-live="polite"]:not(:has(.agent-access:not([hidden]))) .disclosure-access {
+  display: none;
+}
+/* What a deploy does explains the draft's next step, so it shows only beside it (UX spec 3.7). */
+[aria-live="polite"]:not(:has(.agent-draft-actions)) .disclosure-deploy {
+  display: none;
+}
+@media (max-width: 520px) {
+  .disclosure > summary {
+    min-height: var(--touch-min);
+  }
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .native-admin-access p {
   margin: 2px 0 0;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
 }
-.agent-current-summary p {
-  grid-column: 2;
-}
-.agent-current-summary p:empty,
 .native-admin-access p:empty {
   display: none;
 }
@@ -1140,23 +1718,6 @@ select:not([multiple])[size="1"] {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-/* Recovery links are buttons: the card edges them itself (below), and its first action stays the
-   primary one. */
-.deployment-recovery-actions a {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 8px 14px;
-  border-radius: var(--radius-md);
-  text-decoration: none;
-  font-weight: var(--weight-medium);
-}
-.deployment-recovery-actions .button--primary,
-.deployment-recovery-actions .overview-primary {
-  color: var(--color-on-accent);
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-}
 /* One primary action: a failed version's recovery outranks native administration and, when it
    offers an action, the draft's own Deploy new version; the draft's Deploy outranks native
    administration. Wherever the recovery card sits. */
@@ -1188,38 +1749,39 @@ select:not([multiple])[size="1"] {
   :is(.primary, .button--primary):not(:disabled):hover {
   background: var(--color-surface-hover);
 }
-.deployment-recovery {
-  background: var(--color-warning-subtle);
-  border-color: var(--color-border-strong);
-}
-.recovery-label {
-  color: var(--color-warning);
-  font-size: 13px;
-  font-weight: 650;
+/* A failed deployment is a full-width danger status block (spec 3.4): the stripe and wash come
+   from .status, the label names the version, the title is one --text-lg line, and the actions
+   are buttons with one primary. */
+.status.deployment-recovery {
+  margin: 0 0 var(--space-8);
+  padding: var(--space-5) var(--space-6);
 }
 .deployment-recovery h2 {
-  color: var(--text-strong);
-  font-size: clamp(23px, 2.5vw, 28px);
-  line-height: 1.14;
-  letter-spacing: -0.045em;
-  margin: 6px 0;
+  margin: 0 0 var(--space-2);
+  color: var(--color-text-strong);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg--line-height);
+  font-weight: var(--weight-semibold);
+  letter-spacing: normal;
 }
-.deployment-recovery p {
-  margin: 0;
-  line-height: 1.45;
+/* line-height 1 keeps a fallback mono font's taller ascent from spacing out the line it sits on. */
+.deployment-recovery .status-body code {
+  font-family: var(--font-mono);
+  font-size: var(--text-md);
+  line-height: 1;
 }
-.deployment-recovery-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 16px;
+.deployment-recovery .status-actions {
+  margin-top: var(--space-4);
 }
-/* The warning tint darkens the card, so the input edge falls below 3:1 there; the muted text
+/* The danger wash darkens the block, so the input edge falls below 3:1 there; the muted text
    colour keeps a white secondary action's edge at 4.6:1 (finding 1958). */
-.deployment-recovery-actions a {
-  border: 1px solid var(--color-text-muted);
-  color: var(--text-strong);
-  background: var(--surface);
+.deployment-recovery-actions .button:not(.button--primary) {
+  border-color: var(--color-text-muted);
+}
+@media (max-width: 520px) {
+  .status.deployment-recovery {
+    padding: var(--space-4);
+  }
 }
 .eyebrow {
   color: var(--muted);
@@ -1252,14 +1814,16 @@ select:not([multiple])[size="1"] {
   padding: 0;
   margin: 20px 0;
 }
+/* Step tiles are inner cards (spec 3.4): a hairline edge on the surface, the marker carries the
+   tone, and only a failed step takes its tone's wash. */
 .deployment-step {
   display: flex;
   align-items: flex-start;
   gap: 10px;
   padding: 14px;
-  background: var(--surface-muted);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
 }
 .deployment-step strong,
 .deployment-step span:not(.deployment-step-marker) {
@@ -1280,25 +1844,16 @@ select:not([multiple])[size="1"] {
   border: 2px solid var(--input-border);
   background: var(--surface);
 }
-.deployment-step-complete {
-  border-color: var(--success);
-  background: var(--success-subtle);
-}
 .deployment-step-complete .deployment-step-marker {
   border-color: var(--success);
   background: var(--success);
-}
-.deployment-step-active {
-  border-color: var(--warning);
-  background: var(--warning-subtle);
 }
 .deployment-step-active .deployment-step-marker {
   border-color: var(--warning);
   background: var(--warning);
 }
 .deployment-step-failed {
-  border-color: var(--danger);
-  background: var(--danger-subtle);
+  background: var(--color-danger-subtle);
 }
 .deployment-step-failed .deployment-step-marker {
   border-color: var(--danger);
@@ -1321,17 +1876,63 @@ select:not([multiple])[size="1"] {
     min-height: 2lh;
   }
 }
+/* The Versions rail beside the selected version's summary (heading, record, a draft's next
+   step); the tabs and open tab run full width below both (UX spec 3.7). */
 .agent-version-layout {
   display: grid;
-  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-areas:
+    "rail summary"
+    "detail detail";
   align-items: start;
-  gap: 20px;
+  gap: var(--space-6) var(--space-5);
+}
+.agent-version-layout > .revision-selector {
+  grid-area: rail;
+  /* The card padding, so its title lines up with the next-step card's. */
+  padding: var(--space-6);
+}
+.agent-version-summary {
+  grid-area: summary;
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.agent-version-summary > * {
+  margin: 0;
+}
+/* A draft's next step leads its column; an Agent-wide tab's heading follows it. */
+.agent-version-summary > .agent-draft-actions {
+  order: -1;
+}
+.version-evidence:empty {
+  display: none;
+}
+.version-evidence {
+  display: grid;
+  gap: var(--space-5);
+}
+.agent-version-summary > .version-evidence > *,
+.agent-version-layout > .revision-selector {
+  margin: 0;
+}
+/* With only a heading beside the rail (Logs, Workspace files and Access on a version), the open
+   tab sits beside the rail under it, as a version's detail always did. */
+@media (min-width: 1101px) {
+  .agent-version-layout[data-summary="heading"] {
+    grid-template-rows: auto 1fr;
+    grid-template-areas:
+      "rail summary"
+      "rail detail";
+    row-gap: 0;
+  }
 }
 .agent-version-detail {
+  grid-area: detail;
   min-width: 0;
 }
 .agent-version-heading {
-  padding: 20px 0 0;
+  padding: var(--space-2) 0 0;
 }
 .agent-version-heading .resource-id {
   margin: 8px 0 4px;
@@ -1345,8 +1946,20 @@ select:not([multiple])[size="1"] {
   margin: 14px 0 22px;
 }
 @media (max-width: 1100px) {
+  /* Stacked: the rail, then the version's summary and tabs. A draft's next step leads the rail,
+     so its Deploy comes before the Versions list on a phone. */
   .agent-version-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "rail"
+      "summary"
+      "detail";
+  }
+  .agent-version-layout[data-draft] {
+    grid-template-areas:
+      "summary"
+      "rail"
+      "detail";
   }
   .version-list {
     max-height: 250px;
@@ -1369,6 +1982,19 @@ select:not([multiple])[size="1"] {
   color: var(--muted);
   text-align: center;
 }
+/* Show older versions follows the scrolling list (finding 2115): the list's gap above it, its
+   bottom margin below. */
+.version-list:has(+ .version-older) {
+  margin-bottom: var(--space-2);
+}
+.version-list + .version-older {
+  margin-bottom: var(--space-6);
+}
+/* Loading older versions keeps focus, so the button is aria-disabled rather than disabled; it
+   looks disabled, and aria-busy gives it the busy cursor. */
+.version-older[aria-disabled="true"] {
+  opacity: 0.6;
+}
 .version-item[aria-current="page"],
 .revision-create[aria-current="page"] {
   background: var(--accent-subtle);
@@ -1379,20 +2005,94 @@ select:not([multiple])[size="1"] {
   margin-block: calc(-1 * var(--space-1));
   margin-left: var(--space-1);
 }
-.agent-draft-actions {
-  margin: 18px 0;
+/* A draft's next step (UX spec 3.7): a checklist whose steps are done (success check) or open
+   (strong ring), then Deploy right-aligned with its status beside it. */
+.agent-draft-actions h2 {
+  margin: 0 0 var(--space-4);
 }
-.agent-draft-actions h3 {
-  margin: 0 0 10px;
-  font-size: 15px;
-}
-.agent-draft-actions > button.primary {
-  margin-top: 4px;
-}
-.draft-steps {
+.checklist {
   display: grid;
-  gap: 8px;
-  padding-left: 20px;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.checklist > li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+.checklist-mark {
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border: 2px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+}
+.checklist > li[data-state="done"] .checklist-mark {
+  border-color: var(--color-success);
+  background: var(--color-success);
+}
+/* The check: a rotated L drawn in the circle. */
+.checklist > li[data-state="done"] .checklist-mark::after {
+  content: "";
+  display: block;
+  width: 5px;
+  height: 9px;
+  margin: 2px auto 0;
+  border: solid var(--color-on-accent);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+/* A hairline joins each mark to the next one. */
+.checklist > li:not(:last-child) > .checklist-mark::before {
+  content: "";
+  position: absolute;
+  top: 24px;
+  bottom: calc(-1 * var(--space-4) + 2px);
+  left: 9px;
+  border-left: 1px solid var(--color-border);
+}
+.checklist-text {
+  color: var(--color-text-strong);
+}
+.checklist-detail {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.agent-draft-actions .card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3) var(--space-4);
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+.agent-draft-actions .card-actions > [role="status"] {
+  order: -1;
+  flex: 1 1 16rem;
+  margin: 0;
+  text-align: right;
+}
+.agent-draft-actions > .status:not(:empty) {
+  margin: var(--space-4) 0 0;
+}
+@media (max-width: 520px) {
+  /* Phone: Deploy is full width, its status under it. */
+  .agent-draft-actions .card-actions > button {
+    flex: 1 1 100%;
+  }
+  .agent-draft-actions .card-actions > [role="status"] {
+    order: 0;
+    text-align: left;
+  }
 }
 .agent-card {
   background: var(--surface);
@@ -1403,6 +2103,16 @@ select:not([multiple])[size="1"] {
 }
 .agent-form {
   max-width: 960px;
+}
+/* The Preset a Create Agent form started from, above its first field (UX plan A2). */
+.create-agent-origin {
+  margin: 0;
+}
+/* A long Preset name wraps inside the card instead of running past it at phone width. */
+.create-agent-origin .badge {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 /* Form field (UX plan C3): label, control, the control's error, then help. Built by field() in
    dom.mjs; .form-field and .channel-field are older names. One control height (--control-h) and
@@ -1489,6 +2199,21 @@ select:not([multiple])[size="1"] {
   justify-content: flex-end;
   flex-wrap: wrap;
   margin-top: 20px;
+}
+.namespace-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-5);
+}
+.namespace-toolbar p {
+  flex: 1 1 18rem;
+  margin: 0;
+}
+.namespace-toolbar button {
+  flex-shrink: 0;
 }
 .repository-selection {
   margin: 24px 0;
@@ -1617,9 +2342,16 @@ select:not([multiple])[size="1"] {
   max-width: 310px;
   overflow-wrap: anywhere;
 }
-.agent-table a {
-  font-weight: 550;
-  text-decoration: none;
+/* A row's name is its primary link: ink, and underlined only on hover, since a column of
+   underlined names reads as noise (spec 3.3). The revision and deployment links keep theirs. */
+.agent-table td:first-child > a {
+  color: var(--color-text-strong);
+  font-weight: var(--weight-medium);
+  text-decoration-color: transparent;
+}
+.agent-table td:first-child > a:hover,
+.agent-table td:first-child > a:focus-visible {
+  text-decoration-color: currentColor;
 }
 .agent-tabs {
   display: flex;
@@ -1683,8 +2415,9 @@ select:not([multiple])[size="1"] {
   margin-top: 24px;
 }
 .native-document summary {
+  width: fit-content;
   cursor: pointer;
-  color: var(--accent);
+  font-weight: var(--weight-medium);
 }
 .native-document pre {
   max-height: 480px;
@@ -1711,6 +2444,86 @@ select:not([multiple])[size="1"] {
 .stop-note .danger:not(:disabled):hover {
   background: var(--danger-subtle);
   color: var(--danger);
+}
+/* Danger zone (UX spec 3.9): one card at the end of the Agent page with a row each for Stop and
+   Delete: title and one sentence, the outlined danger button at the right, and any status the
+   row reports full width below. The confirmations carry the detail. */
+.danger-zone > h2 {
+  margin-bottom: var(--space-3);
+}
+.danger-zone-card {
+  padding-block: 0;
+}
+.danger-zone:not(:has(.danger-zone-row:not([hidden]))) {
+  display: none;
+}
+.danger-zone-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-4);
+  align-items: center;
+  padding: var(--space-6) 0;
+}
+.danger-zone-row:not([hidden]) ~ .danger-zone-row {
+  border-top: 1px solid var(--color-border);
+}
+.danger-zone-text h3 {
+  margin: 0;
+  color: var(--color-text-strong);
+  font-size: var(--text-base);
+  line-height: var(--text-base--line-height);
+  font-weight: var(--weight-semibold);
+}
+.danger-zone-text p {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+}
+.danger-zone-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.danger-zone-feedback {
+  grid-column: 1 / -1;
+}
+.danger-zone-feedback:empty {
+  display: none;
+}
+.danger-zone-row .danger-zone-feedback > * {
+  margin: 0;
+}
+.danger-zone-row .danger-zone-feedback > * + * {
+  margin-top: var(--space-3);
+}
+.danger-zone-feedback .credential-status-list {
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+}
+@media (max-width: 520px) {
+  .danger-zone-row {
+    grid-template-columns: minmax(0, 1fr);
+    padding: var(--space-4) 0;
+  }
+  .danger-zone-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+/* Only the Stop and Delete confirmations' own button is filled; the rows' buttons stay
+   outlined. The dialogs sit inside the rows, so these outrank the row rules above. */
+.dialog.agent-stop-dialog .danger,
+.dialog.agent-delete-dialog .danger {
+  background: var(--color-danger);
+  border-color: var(--color-danger);
+  color: var(--color-on-accent);
+}
+.dialog.agent-stop-dialog button.danger:not(:disabled):hover,
+.dialog.agent-delete-dialog button.danger:not(:disabled):hover {
+  background: var(--color-danger);
+  color: var(--color-on-accent);
 }
 /* Dialog pattern (UX plan C6): every modal shares this chrome, backdrop, shadow and open motion.
    `--wide` holds a workspace (plugins), `--drawer` sits at the right edge (channels), and at
@@ -1958,6 +2771,21 @@ select:not([multiple])[size="1"] {
   margin-top: 12px;
 }
 
+/* The Access tab (spec 3.8): a Share Agent card, then a Direct Agent grants card. */
+.agent-access {
+  display: grid;
+  gap: var(--space-6);
+}
+.agent-access > .card > h3:first-child {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-lg);
+  line-height: var(--text-lg--line-height);
+  font-weight: var(--weight-semibold);
+}
+.agent-access-share > .status {
+  margin-block: var(--space-3);
+}
+
 .agent-access-form {
   display: grid;
   gap: var(--space-3);
@@ -2164,9 +2992,9 @@ select:not([multiple])[size="1"] {
   font-size: 12px;
 }
 .plugin-access-details > summary {
-  color: var(--accent);
+  width: fit-content;
   cursor: pointer;
-  font-weight: 500;
+  font-weight: var(--weight-medium);
 }
 .plugin-access-instructions {
   max-height: min(12rem, 25dvh);
@@ -2513,8 +3341,10 @@ select:not([multiple])[size="1"] {
   margin: 20px 0;
   padding: 28px;
 }
+/* A card heading sits a step under the page title on the type scale (finding 2097). */
 .launch-intro h2 {
-  font-size: 24px;
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
   margin-bottom: 10px;
 }
 .launch-actions {
@@ -2928,8 +3758,7 @@ select:not([multiple])[size="1"] {
   display: none;
 }
 /* The cards below a pending Logs view appear where the shown view puts them (finding 1479). */
-.agent-logs-opening > .stop-note,
-.agent-logs-opening > .deletion-note {
+.agent-logs-opening > .danger-zone {
   visibility: hidden;
 }
 .runtime-strip {

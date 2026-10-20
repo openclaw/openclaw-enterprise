@@ -165,6 +165,8 @@ runs:
     - name: Prepare lane
       shell: bash
       env:
+        # Image builds keep a few minutes of it for the lane's tests (prepare.mjs).
+        CI_RUNNER_DEADLINE_MS: ${{ steps.deadline.outputs.ms }}
         OCC_CI_IMAGE_CACHE: ${{ (inputs.lane == 'images-packaging' || inputs.lane == 'images-model-probes' || inputs.lane == 'images-runtime-startup' || inputs.lane == 'images-runtime-startup-2' || inputs.lane == 'images-runtime-startup-3' || inputs.lane == 'repository-credentials-platform') && '1' || '' }}
         ACTIONS_RUNTIME_TOKEN: ${{ steps.image-cache.outputs.token }}
         ACTIONS_RESULTS_URL: ${{ steps.image-cache.outputs.url }}

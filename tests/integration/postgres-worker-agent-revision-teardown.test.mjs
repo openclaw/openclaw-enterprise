@@ -1086,6 +1086,35 @@ test(
       );
       return deferred.rowCount === 1 ? true : undefined;
     });
+    // A provider outage leaves cleanup pending without making fleet inventory
+    // unavailable, marking the stopped Agent as deploying, or settling the cleanup.
+    // This does not guard the inventory's repository-cleanup filter (#2572): while
+    // the Agent lives, its cleanup work resolves to the revision's settled
+    // :reconcile work, so the read passes with or without the filter. Cleanup that
+    // Agent deletion detached from its owners needs the filter; the -stop sibling's
+    // inventory reads after Agent deletion cover it.
+    const pendingCleanup = async () =>
+      (
+        await fixture.observerPool.query(
+          `SELECT idempotency_key, agent_id, revision_id, state, attempt_count, available_at
+           FROM occ.controller_work WHERE idempotency_key LIKE $1 ORDER BY idempotency_key`,
+          [`agent_revision:${candidate.id}:repository_cleanup:%`],
+        )
+      ).rows;
+    const cleanupBeforeInventory = await pendingCleanup();
+    const inventory = await fixture.controller.getInstallationDeploymentInventory(fixture.actor.id);
+    const agents = inventory.namespaces.find(({ id }) => id === fixture.namespace.id).agents;
+    assert.deepEqual(
+      agents
+        .filter(({ id }) => id === owner.id)
+        .map(({ desiredRuntimeState, deploymentInProgress }) => ({
+          desiredRuntimeState,
+          deploymentInProgress,
+        })),
+      [{ desiredRuntimeState: "stopped", deploymentInProgress: false }],
+    );
+    assert.deepEqual(await pendingCleanup(), cleanupBeforeInventory);
+    assert.equal((await repositoryAttempts(fixture, candidate))[0].phase, "closing");
     unavailable = false;
     await advanceCleanupRetries(fixture, candidate);
     await waitFor(

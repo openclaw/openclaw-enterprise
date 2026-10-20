@@ -6,8 +6,6 @@ export const pages = Object.freeze({
 });
 
 export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
-  let previousCollection = "agents";
-
   function route() {
     const url = new URL(location.href);
     const path = url.pathname;
@@ -54,6 +52,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     "workspace",
     "policy",
     "logs",
+    "access",
   ]);
 
   function validIntent(intent) {
@@ -116,14 +115,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
       return;
     }
     const current = route();
-    if (feature === "settings" && ["agents", "backends", "namespaces"].includes(current.feature)) {
-      previousCollection = current.feature;
-    }
-    history[replace ? "replaceState" : "pushState"](
-      { previousCollection },
-      "",
-      pageUrl(feature, selection),
-    );
+    history[replace ? "replaceState" : "pushState"](null, "", pageUrl(feature, selection));
     // A deliberate list → detail navigation, not a refresh, deep link or history traversal.
     const openingAgent =
       !replace && current.url.pathname === "/console/agents" && Boolean(route().agentId);
@@ -137,16 +129,5 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     validIntent,
     intentUrl,
     navigate,
-    get previousCollection() {
-      return previousCollection;
-    },
-    restoreHistory() {
-      if (["agents", "backends", "namespaces"].includes(history.state?.previousCollection)) {
-        previousCollection = history.state.previousCollection;
-      }
-    },
-    resetHistory() {
-      previousCollection = "agents";
-    },
   };
 }

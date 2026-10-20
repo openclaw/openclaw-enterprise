@@ -213,24 +213,25 @@ maintain those addresses for the optional
 [model-discovery API](../reference/console/create-and-deploy.md#create-an-agent);
 Console model selection and Harness egress do not depend on this policy.
 
-Helm `outboundProxy.enabled` starts a credential-free API proxy with infrastructure
-`denyCidrs`. `apps/controller/src/gateway/control-plane-outbound-proxy.mjs:controlPlaneOutboundPolicy`
-derives trusted Driver destinations and starts restricted `runOutboundProxy`,
-rejecting private, reserved and infrastructure addresses.
+`outboundProxy.enabled` starts an API proxy.
+`apps/controller/src/gateway/control-plane-outbound-proxy.mjs:controlPlaneOutboundPolicy`
+derives trusted Driver destinations; `runOutboundProxy` rejects private, reserved
+and infrastructure addresses (`denyCidrs`).
 
-The chart sets `OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL` and grants release-local API
-traffic. External `api.controlPlaneOutboundProxyUrl` grants an exact IPv4 `/32`
-and port. [Gateway outbound access](../reference/gateway-outbound.md) remains
-revision-owned.
+Helm sets `OCC_CONTROL_PLANE_OUTBOUND_PROXY_URL` and grants API
+traffic. External `api.controlPlaneOutboundProxyUrl` grants an IPv4 `/32` and port.
+[Gateway access](../reference/gateway-outbound.md) remains revision-owned.
 
-Compute verifies server version and authenticated Namespace access. Kubernetes
-below 1.35 emits `compute.preflight-warning` with both versions and continues;
-an invalid response, unreachable API or failed Namespace access fails preflight.
+The Kubernetes Compute Driver queries the API server version and verifies
+authenticated Namespace access. Below the supported 1.35 baseline, the API logs
+`compute.preflight-warning` with both versions and continues. An invalid version
+response, unreachable API, or failed Namespace access fails preflight.
 
-The worker independently validates settings, opens the application-role database,
-loads Drivers, validates IAM, runs Compute preflight, emits `worker.started` and
-polls durable work. Readiness requires fresh queue-health observations; neither
-API nor worker mounts the bootstrap PVC.
+The worker independently validates production settings, opens the same
+application-role database, loads selected Drivers, validates IAM, runs Compute
+preflight with the same advisory warning, emits `worker.started`, and polls
+durable Namespace/AgentRevision work. Readiness requires fresh queue-health
+observations; neither process mounts the bootstrap PVC.
 
 `apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
 
@@ -305,7 +306,7 @@ until tenant deployment/TUI procedures run.
 - Changing an external startup Secret alone does not restart the API or worker;
   run an explicit rollout and repeat readiness plus authenticated proof.
 - `control_plane_outbound_proxy.startup_failed`: inspect proxy ConfigMap exclusions
-  and listener port. Check proxy readiness separately from API/worker readiness.
+  and listener port. Verify proxy readiness.
 - `tests/integration/production-kubernetes-packaging.test.mjs` renders the
   chart; it does not prove deployment or model execution.
 

@@ -30,7 +30,10 @@ import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createTestConfigurationDriver } from "../helpers/configuration-driver.mjs";
 import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
-import { authenticatedHeaders, signInToControllerApp } from "../helpers/auth-session.mjs";
+import {
+  authenticatedHeaders,
+  signInToControllerApp as signInAccount,
+} from "../helpers/auth-session.mjs";
 import {
   ensureDevelopmentBootstrap,
   privateBootstrapDirectory,
@@ -44,9 +47,31 @@ const adminPassword = "postgres-agent-provisioning-password";
 const authBaseURL = "http://127.0.0.1";
 const authSecret = "postgres-agent-provisioning-auth-secret-32-bytes";
 let bootstrapPromise;
+const administratorSessions = new Map();
 const uuidV4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const identifier = (prefix) => new RegExp(`^${prefix}_${uuidV4}$`);
 const defaultModel = "codex/gpt-6-astra";
+
+// The bootstrap administrator signs in once per file (and per set of sign-in options): every
+// fixture's app reads the same stored session (same database and auth secret). No test ends it,
+// and a revoked administrator binding is restored at teardown. Any other account or password
+// signs in on every call.
+function signInToControllerApp(app, credentials, ...options) {
+  if (credentials.email !== adminEmail || credentials.password !== adminPassword) {
+    return signInAccount(app, credentials, ...options);
+  }
+  const key = JSON.stringify(options);
+  if (!administratorSessions.has(key)) {
+    administratorSessions.set(
+      key,
+      signInAccount(app, credentials, ...options).catch((error) => {
+        administratorSessions.delete(key);
+        throw error;
+      }),
+    );
+  }
+  return administratorSessions.get(key);
+}
 
 function agentDefaults() {
   return {

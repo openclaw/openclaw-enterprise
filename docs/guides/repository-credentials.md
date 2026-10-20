@@ -19,7 +19,7 @@ It requires one immutable registry ConfigMap shared by API, worker and service,
 a separate public CA Secret, and service-only configuration, App-key and TLS
 Secrets. The [registry reference](../reference/repository-credentials.md#canonical-platform-registry)
 defines repository and Namespace policy. Set `sessionDurationSeconds: 86400` for
-a 24-hour revision; keep it within the registry's maximum.
+a 24-hour version; keep it within the registry's maximum.
 
 The chart's `repositoryCredentials.enabled` defaults to `false`. Follow the
 installation guide for Backend/Driver selection, images, registry, Secrets,
@@ -43,14 +43,14 @@ import it, select its digest and configure model authentication.
 In **Agents** > **Create Agent**, add up to 16 repositories. They inherit
 the Agent default; expand a selected repository’s card to customize its access.
 Use **Dedicated** for Slack on the same Agent; follow the
-[same-Agent Console sequence](../reference/console/create-and-deploy.md#use-repositories-and-slack-on-the-same-agent)
+[same-Agent Console sequence](../reference/console/repository-access.md#use-repositories-and-slack-on-the-same-agent)
 for channels, credentials and deployment. Repository profiles and model
 authentication are separate. If repository discovery fails, **Create Agent**
 stays blocked until discovery succeeds. The exception is
 `503 REPOSITORY_OPTIONS_UNAVAILABLE` with no repositories selected: you can save
 an ordinary draft, but cannot start guided provisioning. Other errors still
 block creation. Creation and deployment recheck Namespace repository policy;
-see [repository discovery](../reference/console/create-and-deploy.md#create-an-agent).
+see [repository discovery](../reference/console/repository-access.md#discover-and-select-repositories).
 
 The API sequence below shows the Embedded variant.
 
@@ -129,8 +129,8 @@ occ agent deployment-status "$AGENT_ID" "$REVISION_ID"
 ```
 
 Repeat the status command until it reports `succeeded`; a matching
-`activeRevisionId` alone can name a revision that is still starting or has
-failed. The admitted revision exposes
+`activeRevisionId` alone can name a version that is still starting or has
+failed. The saved version exposes
 repository references, profiles and its fixed deadline. Deployment readiness
 alone does not prove a model task or GitHub operation. Failed policy checks,
 unsupported topology, missing material or expired authority must be corrected
@@ -192,11 +192,11 @@ Inspect the actual remote commit and PR to confirm completion. If a push or
 mutation has an uncertain response, inspect remote state before repeating it.
 Stop the Agent through the normal lifecycle when finished; inspect pending
 cleanup separately. A worker restart can retain a surviving service session. If
-the credential service loses an already delivered session, the revision fails and
+the credential service loses an already delivered session, the version fails and
 its runtime is retired; it cannot automatically receive replacement credentials.
 Inspect retained cleanup obligations and explicitly deploy a new authorized
-revision to continue. A new deployment neither settles old cleanup nor replays
-Git/API operations. The revision's absolute deadline is never renewed; expiry
+version to continue. A new deployment neither settles old cleanup nor replays
+Git/API operations. The version's absolute deadline is never renewed; expiry
 also requires a new authorized deployment.
 
 ## Use the standalone service

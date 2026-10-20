@@ -22,7 +22,7 @@ go to the Agent's gateway; model credentials are configured separately.
 - Choose a dedicated Codex Agent on Kubernetes and configure its
   [model authentication](../../reference/agents.md#harness-authentication).
   Embedded OpenClaw execution cannot isolate channel credentials from the
-  Harness, and Kubernetes Compute rejects embedded revisions with external
+  Harness, and Kubernetes Compute rejects embedded versions with external
   channels enabled. The Standard OpenClaw preset must leave channels disabled.
 - First deployment generates required connection credentials. It requires Agent
   `deploy`, plus Agent `read` and `operate` when generation is needed.
@@ -90,10 +90,11 @@ integration access and [the Slack Driver](../../reference/drivers/slack-channel.
 for an approved external control-plane proxy.
 
 Apply the inputs through the installation procedure. Keep Slack tokens in
-Namespace Secrets; the proxies receive no provider credentials. A new deployment
-renders the Gateway's admitted outbound policy. Changes to channel Configuration
-or Agent outbound selection take effect on deployment; changing the API proxy
-requires an API rollout.
+Namespace Secrets; the proxies receive no provider credentials.
+For an existing installation, deploy a new version for each affected running Slack
+Agent to apply changed channel Configuration or Gateway outbound selection.
+Restarting OCC alone does not update existing gateways. Preserve stopped Agents' state.
+Changing only the API proxy requires an API rollout, but no Agent redeployment.
 
 Before handing off the setup, verify both paths:
 
@@ -190,11 +191,11 @@ bot. To enable one-to-one messages:
   inspect saved Secrets, IAM bindings, and Configuration before retrying after a
   partial save; those writes are separate and are not automatically rolled back.
 - **Slack replies with a model error:** check the Agent's model authentication
-  and active revision independently. Slack connection alone does not establish
+  and selected version independently. Slack connection alone does not establish
   model access.
 
 ## Related
 
-- [Console channel editing](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
+- [Console channel editing](../../reference/console/versions-and-channel-drafts.md)
 - [Initial Agent credentials](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
 - [Agent deployment](../../reference/agents/deployment.md)

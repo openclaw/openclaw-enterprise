@@ -221,7 +221,7 @@ dot does not, because the suffix would start a new label with a hyphen.
 `scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`
 
 After validation, hosted `codex-plugin` with omitted `codex.modelDiscoveryCidrs`
-triggers bounded A queries for `auth.openai.com` and `chatgpt.com`. Sorted unique
+queries IPv4 addresses for `auth.openai.com` and `chatgpt.com` with a resolver timeout of 1.5 seconds and one try. Sorted unique
 IPv4 `/32` answers populate the existing API-only TCP 443 Helm policy; the driver
 mutates no Kubernetes resources.
 

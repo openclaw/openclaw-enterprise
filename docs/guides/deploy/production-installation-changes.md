@@ -13,7 +13,7 @@ changes a protected setting`. Diff `deploy/examples/production/installation.yaml
 and `scripts/render-installation-profile.mjs` between the deployed and candidate
 source, decide which changes to adopt, and apply them as a separate change, not
 during an image upgrade. Run these commands from a checkout of the installed
-controller's source revision, not the release checkout, and keep the image
+controller's source commit, not the release checkout, and keep the image
 references in `values.yaml` unchanged:
 
 ```bash

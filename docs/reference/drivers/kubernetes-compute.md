@@ -9,24 +9,23 @@ The experimental `executionCluster` configuration selects a second Kubernetes
 API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/kubernetes.md#two-cluster-validation)
 before using it; cloud deployment and complete runtime acceptance remain pending.
 
-New managed tenant namespaces are named `oce-` plus the first 15 hexadecimal
+New managed namespaces use `oce-` plus the first 15 hexadecimal
 characters of the Namespace ID's SHA-256 digest: stable, DNS-safe, and short
-enough for an OpenShell pre.5 operator Workspace name. An existing managed
-namespace with the earlier `oce-<slug>-<hash12>` name remains valid only when
-discovery finds its exact tenant label, matching `namespace-id`
-annotation, and OpenClaw manager label; the Driver never creates that form.
-Wrong names or duplicate tenant claims fail closed. An explicitly adopted
-namespace keeps its operator-selected name; OpenShell selection rejects it if it
-exceeds that Workspace limit.
+enough for an OpenShell pre.5 operator Workspace name. Earlier managed namespaces
+named `oce-<slug>-<hash12>` remain valid only if discovery finds the exact tenant label,
+matching `namespace-id` annotation, and OpenClaw manager label; the Driver never
+creates this form. Wrong names or duplicate tenant claims fail closed. Adopted
+namespaces keep their operator-selected names; OpenShell rejects names that
+exceed that Workspace limit.
 
 The optional [OpenShell Sandbox Driver](openshell-sandbox.md) is designed to
 own dedicated Codex and native OpenClaw Harness Pods while Compute keeps the
-other resources. Dedicated native OpenClaw is rejected unless the selected
-SandboxDriver provisions the Harness and declares networking, filesystem, and
+other resources. Dedicated native OpenClaw requires a selected
+SandboxDriver that provisions the Harness and declares networking, filesystem, and
 process containment. Stock OpenShell cannot provide required credential and
 workload-identity projections; Agent deployment with OpenShell remains unsupported.
 
-Detailed operator contracts:
+Operator contracts:
 
 - [Storage and credentials](kubernetes-compute/storage-and-credentials.md): separate gateway state, Harness workspaces, and runtime Secrets.
 - [Networking and isolation](kubernetes-compute/networking-and-isolation.md): DNS, private gateway routes, and tenant namespace ownership.
@@ -35,8 +34,8 @@ Detailed operator contracts:
 
 Releases before #925 kept each Namespace's Gateways, Gateway state and canonical
 Secrets in a separate `oce-gateways-<hash>` namespace. In a single cluster, API
-and worker startup preflight refuses such a storage namespace until it carries
-the tenant discovery label. The check changes nothing. Inspect the storage
+and worker startup refuse these storage namespaces without the tenant discovery
+label. The check changes nothing. Inspect the storage
 targets before replacing the controller images:
 
 ```sh
@@ -86,19 +85,19 @@ by hand: the old namespace's claims, routes and transport Secrets would not move
 The worker manages PersistentVolumeClaims and, when private gateway routing is
 enabled, HTTPRoutes through tenant-local RoleBindings. Only the controller API
 issues provider credentials. The worker reads admitted transport/channel material
-and maintains revision-owned Harness Secret projections in the tenant namespace.
+and maintains Harness Secret projections for each Agent revision in the tenant namespace.
 The API does not need gateway Pod reads, exec, route writes, or certificate
 management for workspace-file access. Do not grant wildcard permissions,
 cluster-wide access to tenant resources, workload access to controller
 credentials, or permission to create or escalate RoleBindings.
 
-With OpenShell sandboxing enabled, the optional `SandboxDriver.ensureNamespace`
-hook uses the Compute Driver's Kubernetes access directly; there is no separate
+With OpenShell sandboxing, the optional `SandboxDriver.ensureNamespace`
+hook uses Compute's Kubernetes access directly, without a separate
 SandboxDriver Kubernetes access adapter. The hook applies approved
 namespace-scoped OpenShell labels and NetworkPolicy resources, checks OpenShell
 gateway readiness, and creates or adopts the Namespace Workspace. Harness
 provisioning and cleanup follow the [SandboxDriver lifecycle](sandbox.md#admission-and-lifecycle):
-revision cleanup runs even when Compute's ordinary Harness Deployment is absent,
+Agent revision cleanup runs even when Compute's ordinary Harness Deployment is absent,
 and a failed provider Namespace cleanup keeps the Kubernetes namespace.
 Provider-owned Harness removal stays with the provider, so Compute needs no
 Sandbox custom-resource permissions.
@@ -108,22 +107,22 @@ fail-closed policy ([admission requirements](openshell-sandbox.md#kubernetes-and
 the Harness container itself remains unprivileged.
 
 A provider-owned dedicated Harness is ready only when exactly one live Pod in
-the resolved namespace carries the Agent, revision, and `agent` workload-role
+the resolved namespace carries the Agent ID, Agent revision ID, and `agent` workload-role
 labels used by the active Service selector, plus all supplied Harness
 requirement labels, and reports `Ready=True`. Zero candidates, multiple live
 candidates (including one Ready and one unready), or a single unready candidate
 leave preparation at `ready: false` and prevent activation. Pods with a valid
-deletion timestamp, in another namespace, or with another Agent, revision, or
+deletion timestamp, in another namespace, or with another Agent ID, Agent revision ID, or
 role do not count.
 
-Malformed or incomplete Pod-list observations raise an error, including invalid
-identity or condition fields, duplicate condition types, contradictory Harness
-requirement labels, and pagination indicating more results. Missing optional
+Errors include malformed or incomplete Pod lists, invalid identity or condition
+fields, duplicate condition types, contradictory Harness requirement labels,
+and pagination indicating more results. Missing optional
 Pod status or conditions means not ready. Preparation errors run the existing
 workload cleanup hooks; activation errors occur before changing routing.
-A cancelled observation cannot report ready. The check covers Kubernetes workload readiness and label uniqueness; it does not attest a
-provider Sandbox ID or Pod UID, authenticate the guest, or fence a runtime
-generation.
+Cancelled observations cannot report ready. Checks cover Kubernetes workload
+readiness and label uniqueness; they do not attest provider Sandbox IDs or Pod UIDs,
+authenticate guests, or fence runtime generations.
 
 ## Configuration
 
@@ -231,7 +230,7 @@ Each Agent-owned gateway Deployment has exactly one desired replica and uses
 so gateway rollout can cause transient downtime. Neither Kubernetes Deployment nor OCC routing provides node-level process
 fencing during partitions or manual replacement.
 
-The Agent's Harness configuration determines its execution topology:
+Harness configuration selects the Agent's execution topology:
 
 - **Embedded:** OpenClaw runs the gateway and Harness in one Pod. It accepts
   an Agent-scoped model API key, uses `openai/` models, and does not require
@@ -256,8 +255,8 @@ The Agent's Harness configuration determines its execution topology:
 
 Dedicated replacement opts into the [exclusive preparation contract](compute.md#production-revision-stages):
 the worker stops predecessors before starting the new Harness. This permits RWO
-workspace storage and introduces deployment downtime; restore a previous
-configuration through a new revision instead of restarting its old snapshot.
+workspace storage with deployment downtime; restore previous
+configuration through a new version instead of restarting its old snapshot.
 
 Enabled external channels require dedicated execution. Unsupported Harness and
 execution-mode combinations fail deployment. Embedded OpenClaw is never
@@ -265,16 +264,16 @@ delegated to OpenShell.
 
 Stopping an Agent first deletes its exact gateway route and gateway runtime,
 then removes the dedicated Harness Deployment or delegates provider-owned
-Harness removal; selected Sandbox revision cleanup follows as described above.
+Harness removal; Sandbox cleanup for that Agent revision follows as described above.
 Stop retains Agent-owned PersistentVolumeClaims and runtime credential Secrets;
-retirement is the destructive revision cleanup. Repeated stop
+retirement removes resources for that Agent revision. Repeated stop
 observes exact ownership and converges when the runtime objects are already
 absent.
 
 ### Plugin startup status
 
 Compute-owned OpenClaw and Codex runtimes publish private startup results after
-attempting plugins and verifying configuration: revision, runtime instance,
+attempting plugins and verifying configuration: Agent revision ID, runtime instance,
 successful selection IDs, and [warnings](../agent-plugins.md#lifecycle)
 (`PLUGIN_INSTALL_FAILED` or `PLUGIN_AUTH_REQUIRED`) for disabled selections.
 Compute reads the exact workload through the authenticated Pod proxy under
@@ -288,7 +287,7 @@ refreshes them after changed restart results. Failed-only app bindings are disab
 successful selections retain admitted policy and required shared bindings.
 
 The Codex app-server credential derives from the Agent's transport Secret,
-revision, and startup identity, so a gateway configured for the previous startup
+Agent revision ID, and startup identity, so a gateway configured for the previous startup
 cannot authenticate to a restarted Agent. Its supervisor obtains the new status,
 applies the matching exclusions, and respawns the gateway process with the new
 credential, closing the interval before its next status poll.
@@ -301,9 +300,10 @@ installations remain unchanged; rollback is not promised.
 ### Current runtime diagnostics
 
 Kubernetes Compute implements the optional deployment diagnostics contract. OCC
-authorizes the exact Agent and revision, then the Driver reads the owned
+authorizes the specific Agent and Agent revision, then the Driver reads the owned
 runtime Pods through the Kubernetes apiserver Pod proxy. The private runtime
-endpoint returns bounded generic checks for the requested revision. The API needs
+endpoint returns generic checks for the requested Agent revision ID. Compute
+rejects responses larger than 65,536 bytes or containing more than 32 checks. The API needs
 Pod `get`/`list` and `pods/proxy` `get` permission in each runtime namespace.
 Both roles are read in the tenant namespace for a single cluster. The two-cluster
 profile reads dedicated Gateways in its control-cluster Gateway namespace. The chart adds these read permissions to the
@@ -344,8 +344,8 @@ model turn.
   support, worker PVC permissions, and the PVC's exact ownership. Preserve
   data when resolving an incompatible or foreign claim; the driver does not
   adopt or convert it.
-- **Dedicated Harness cannot start:** Verify that the default StorageClass can
-  provision a `40Gi` `ReadWriteOnce` claim and that the worker can manage
+- **Dedicated Harness cannot start:** Verify the default StorageClass supports
+  a `40Gi` `ReadWriteOnce` claim and the worker can manage
   PersistentVolumeClaims in the tenant namespace.
 - **Agent configuration is rejected:** Confirm the selected Harness supports
   its execution mode; external channels and provider-issued access tokens
@@ -360,8 +360,8 @@ model turn.
 ## Selected-driver lifecycle hooks
 
 The Driver invokes selected non-Compute lifecycle hooks around Namespace
-preparation and workload startup or teardown. Hooks receive the current
-operation's cancellation signal; a failed revocation blocks resource teardown.
+preparation and workload startup or teardown. Hooks receive the operation's
+cancellation signal; failed revocation blocks resource teardown.
 The [ComputeDriver contract](compute.md#optional-selected-driver-hooks) owns the
 hook ordering and environment restrictions, and the
 [lifecycle-hook flow](../../flows/compute-driver-lifecycle-hooks.md) traces the

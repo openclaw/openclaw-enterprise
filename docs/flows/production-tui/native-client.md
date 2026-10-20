@@ -11,8 +11,8 @@ Continue from an activated gateway to Pod discovery, native TUI attachment, and 
 Gateway Pods keep stable labels for the Agent, including
 `app.kubernetes.io/managed-by=openclaw-enterprise`,
 `openclaw.dev/workload-role=gateway`, `openclaw.dev/namespace`, and
-`openclaw.dev/agent`. Those labels are not enough to prove the active immutable
-revision after a cutover. The attach procedure calculates the expected
+`openclaw.dev/agent`. Those labels are not enough to prove the selected immutable
+Agent revision after a cutover. The attach procedure calculates the expected
 ConfigMap name from `AGENT_ID` and `REVISION_ID`, then selects exactly one
 Running, Ready gateway Pod whose volumes mount that ConfigMap.
 
@@ -69,13 +69,13 @@ Automated coverage for this exact lifecycle is
 `tests/integration/production-tui-k3d-real.test.mjs`. It uses
 `tests/helpers/tui-pty.py` to keep the native TUI process open across two
 prompts, verify nonce-only assistant responses, prove fresh invalid-password
-denial, repeat the attach path after immutable revision cutover, and confirm
+denial, repeat the attach path after immutable Agent revision cutover, and confirm
 Ctrl+D exits only the client. Its native Configuration sets
 `agents.defaults.skipBootstrap` to `true` for the disposable demo Agent so
 first-run bootstrap guidance does not consume the nonce prompt.
 
 The test separates production installation, service-key-authenticated provisioning, and
-revision conversations into named stages. Shared scoped Kubernetes commands,
+conversations for each version into named stages. Shared scoped Kubernetes commands,
 resource lookups, and polling come from
 `tests/helpers/kubernetes-real.mjs:createKubernetesClient`; the production test
 retains its credential-redacting process runner. One `nativeTuiArgv` builder

@@ -651,14 +651,15 @@ export function validateModelCredentialReferences(
         asRecord(asRecord(settings)?.env),
       ]);
     }
-    // The entries of the keyed map at `path`, listed once: several rules below read each Agent in
+    // The keys of the map at `path`, listed once: several rules below read each Agent in
     // agents.entries, and a large roster must not be listed for each (finding 1321).
-    const listed = new Map<string, [string, unknown][]>();
-    const children = (path: readonly string[]): [string, unknown][] => {
+    const listed = new Map<string, { values: Readonly<Record<string, unknown>>; keys: string[] }>();
+    const children = (path: readonly string[]) => {
       const name = path.join(".");
       let found = listed.get(name);
       if (found === undefined) {
-        found = Object.entries(at(values, path) ?? {});
+        const children = at(values, path) ?? {};
+        found = { values: children, keys: Object.keys(children) };
         listed.set(name, found);
       }
       return found;
@@ -667,8 +668,9 @@ export function validateModelCredentialReferences(
     // large roster of Agents without the setting costs a lookup each (finding 1321).
     const keyed = (path: readonly string[], each: readonly string[]): [SettingPath, unknown][] => {
       const found: [SettingPath, unknown][] = [];
-      for (const [key, settings] of children(path)) {
-        const value = get(settings, each);
+      const childrenAtPath = children(path);
+      for (const key of childrenAtPath.keys) {
+        const value = get(childrenAtPath.values[key], each);
         if (value !== undefined) {
           found.push([[...path, key, ...each], value]);
         }
@@ -819,8 +821,9 @@ export function validateModelCredentialReferences(
     // skill's, an internal hook's, a provider's local service, an exec secret provider's, the
     // Docker sandbox's (default and per Agent) and the install policy's exec check.
     const keyedEnvironments = (path: readonly string[], each: readonly string[]) => {
-      for (const [key, settings] of children(path)) {
-        const environment = at(settings, each);
+      const childrenAtPath = children(path);
+      for (const key of childrenAtPath.keys) {
+        const environment = at(childrenAtPath.values[key], each);
         if (environment !== undefined) {
           environments.push([[...path, key, ...each], environment]);
         }

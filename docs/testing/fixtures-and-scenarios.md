@@ -15,7 +15,7 @@ an external protocol but must not replace the authorization or lifecycle behavio
 under test.
 
 Captured state must be keyless. The [released Gateway fixture](../../tests/fixtures/runtime-state/released-gateway-state.tar.gz)
-has device identity and config revision keys removed; regenerate it the same
+has device identity and config version keys removed; regenerate it the same
 way using the image identified in its test.
 
 ## Make cases easy to add and diagnose
@@ -42,7 +42,7 @@ and [credential testing guide](repository-credentials.md) for examples.
 
 ## Add properties where they improve coverage
 
-Use constrained inputs, independent properties, bounded execution, reproducible
+Use constrained inputs, independent properties, execution with a time limit, reproducible
 counterexamples, and fresh state. Use an established library for generation and
 shrinking. Keep heavyweight Git and container workflows as selected integration
 scenarios.

@@ -36,7 +36,7 @@ Tracks platform Namespaces, their lifecycle status, and any existing Kubernetes 
 
 ### `agents`
 
-Stores Agent drafts, their desired runtime state, and the active revision reference.
+Stores Agent drafts, their desired runtime state, and the selected version reference.
 
 - `id`
 - `namespace_id`
@@ -308,7 +308,7 @@ Keeps an append-only record of bootstrap, changes to resources, and authorizatio
 
 ### `controller_work`
 
-Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and revision deployments.
+Queues and tracks controller work for Namespace and Agent lifecycle changes, Agent provisioning, and version deployments.
 
 - `work_kind`
 - `idempotency_key`

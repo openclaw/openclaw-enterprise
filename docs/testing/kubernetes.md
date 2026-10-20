@@ -43,7 +43,7 @@ Run these fixture lanes: `k3d-fixture-configuration`,
 )
 ```
 
-All selected cases must pass without skips. The lanes check API/worker lifecycle,
+Selected cases must pass without skips. Lanes check API/worker lifecycle,
 RBAC, storage, revision replacement and enforced network isolation. Enabled Slack
 provisioning uses the actual controller proxy with simulated provider/runtime
 responses; it proves policy and Secret delivery, not native Slack connectivity.
@@ -437,7 +437,7 @@ Supply public CA certificates only. Enable the CP chart's
 `workerKubeconfigSecretName`, `apiCidrs`, and `apiPort`, and set
 `gatewayRouting.remoteNodeCidrs` to the observed DP sources. Workloads do not
 receive kubeconfigs. Canonical model, channel, and transport Secrets stay in CP;
-selected model and transport material is delivered to revision-owned DP Secrets.
+selected model and transport material is delivered to data-plane Secrets for each Agent revision.
 
 Use a `coredns-custom` ConfigMap with a separate `*.server` zone. Resolve the CP
 Gateway hostname to its Service IP in CP and its reachable ingress address in DP,

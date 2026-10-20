@@ -19,9 +19,9 @@ Each Configuration requires immutable `kind: "agent"` and a server-managed
 generation; documents preserve unresolved inline SecretRefs without interpreting
 them. Agent deployment authorizes the separate Secret bindings, applies any
 selected Sandbox Driver transformation, and freezes the admitted values into an
-immutable AgentRevision. Configuration identity, kind, generation, and Secret
+immutable Agent revision. Configuration identity, kind, generation, and Secret
 references are recorded separately. This flow stops when OCC persists that
-revision and hands off workload reconciliation; the selected Compute Driver
+version and hands off workload reconciliation; the selected Compute Driver
 then owns the Agent gateway, while worker execution and secret resolution remain
 outside this flow's scope.
 
@@ -62,7 +62,7 @@ graph TD
   M --> P["Authorize Secret bindings and verify backend references"]
   P --> Q["Apply optional Sandbox transform; validate configuration and Harness"]
   Q --> N["Freeze admitted values, Configuration metadata, and Secret references"]
-  N --> O["Hand off admitted revision to reconciliation"]
+  N --> O["Hand off saved version to reconciliation"]
 ```
 
 ## Execution Trace
@@ -152,7 +152,9 @@ echoed. A Secret the Namespace does not hold stays `404`. The
 the binding contract, and the [Secret flow](secret-storage-and-delivery.md)
 traces storage and delivery. Secret Broker substitution remains unimplemented.
 
-### 4–5. Persist Configuration and freeze its revision
+<a id="45-persist-configuration-and-freeze-its-revision" class="anchor-alias"></a>
+
+### 4–5. Persist Configuration and freeze its version
 
 `apps/controller/src/drivers/configuration/filesystem/index.ts:FilesystemConfigurationDriver.write`
 
@@ -165,7 +167,7 @@ intact until rename succeeds, and other writers' temporary files remain untouche
 and cleanup failures propagate to the caller; this does not add automatic retries
 or alter OCC's metadata transaction and compensation boundary.
 
-[Configuration persistence and revision snapshots](configuration-driver/persistence-and-revisions.md) traces metadata locking, Driver effects, Agent reference resolution, and snapshot validation after request authorization.
+[Configuration persistence and version snapshots](configuration-driver/persistence-and-revisions.md) traces metadata locking, Driver effects, Agent reference resolution, and snapshot validation after request authorization.
 
 ## Debugging and Verification
 
@@ -188,10 +190,10 @@ kind change, requests preserve the exact native document and inline references,
 and ConfigMaps store exactly one `openclaw.json` entry. Verify denials against
 exact Namespace and Configuration identity. Prove snapshot safety by changing
 a nested Configuration value after deployment and confirming the prior
-AgentRevision's native document, Configuration identity, kind, and generation
+Agent revision's native document, Configuration identity, kind, and generation
 remain unchanged while a later deployment observes the new generation. Verify
 same-Namespace Agents receive separate gateways only when an eligible
-development worker prepares their revisions. Kubernetes conformance verifies
+development worker prepares their versions. Kubernetes conformance verifies
 immutable Agent-owned configuration projection without a live cluster;
 dedicated-cluster coverage of the changed projection remains unverified when
 its optional integration is skipped.
