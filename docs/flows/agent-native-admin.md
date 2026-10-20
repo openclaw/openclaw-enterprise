@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-15
-last_updated_session: authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d
+updated: 2026-10-20
+last_updated_session: agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c
 ---
 
 # Agent Native Admin UI Flow
@@ -70,26 +70,32 @@ graph TD
 `scripts/first-agent.mjs:nativeConfiguration`
 `scripts/first-agent.mjs:ensureManagedConfiguration`
 
-The option requires launcher-owned Compose/OpenShell browser state. Because OCC
-assigns the Agent ID, the helper saves disabled Configuration generation 1,
-creates the Agent, derives its origin, and patches generation 2 before
-deployment. Generation 2 enables `controlUi`, pins its origins, and grants the
-`occ-workspace-files` trusted-proxy identity `operator.admin` with device
-auto-approval. An existing helper-owned name cannot change this selection.
+With launcher-owned Compose/OpenShell browser state, the helper saves disabled
+Configuration generation 1, creates the Agent, then derives its origin. Before
+deployment, generation 2 enables `controlUi`, pins origins, and grants
+`occ-workspace-files` trusted-proxy `operator.admin` with device auto-approval.
+An existing helper-owned name cannot change this selection.
 
 ### 1. Console renders native admin availability
 
 `apps/controller/src/console/agents/native-admin.mjs:renderNativeAdminAccess`
 
-Agent detail checks `${path}/native-admin` with access hidden. Disabled or denied stays hidden; stopped, unavailable, and unsupported explain why. Only `available` shows **Open admin console**, beside its gateway access and configuration warning. It opens the returned URL with `noopener noreferrer`. An audited `403` in the session owner’s tab `sessionStorage` suppresses repeat reads until logout, sign-in, or a new tab. Deployment reads refresh access when `activeRevisionId` or `desiredRuntimeState` changes, coalescing an in-flight refresh into one follow-up.
+Agent detail reads `${path}/native-admin`. Disabled or denied access stays hidden;
+other refusals explain why. Only `available` shows **Open admin console**, opening
+with `noopener noreferrer`. An audited `403` in the session owner’s tab
+`sessionStorage` suppresses reads until logout, sign-in, or a new tab. Changes to
+`activeRevisionId` or `desiredRuntimeState` refresh access, coalescing concurrent
+requests into one follow-up.
 
-The warning text tells operators that native admin access can change gateway state outside OCE and that durable configuration should remain in OCE.
+The warning says native edits are outside OCE; durable configuration belongs in OCE.
 
 ### 2. OCC protects the availability route
 
 `apps/controller/src/http/native-admin.ts:nativeAdminStatusOperation`
 
-`createNativeAdminAccess` owns the host interceptor, upgrade listener and socket shutdown hook. It reads the current controller through a getter so an app created before bootstrap uses the initialized controller on later requests. Shared route admission remains in `apps/controller/src/index.ts`.
+`createNativeAdminAccess` owns host interception, upgrades and socket shutdown.
+A getter supplies the initialized controller after bootstrap. Shared route
+admission remains in `apps/controller/src/index.ts`.
 
 `GET /namespaces/:namespaceId/agents/:agentId/native-admin` requires exact-Agent `administer` through `admit` and `resolveIdentity`. `read` and `operate` do not grant access. Even `disabled` is returned only after authorization and existence checks.
 
@@ -114,9 +120,9 @@ Then the selected Compute Driver's `id` and `implementation` must match `revisio
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
 `apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
-`deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/` as the entrypoint.
-
-The first-Agent script imports this Node-only helper without requiring workspace dependencies.
+`deriveNativeAdminHost` hashes Installation, Namespace, and Agent IDs into an opaque
+hostname. `nativeAdminTarget` substitutes it in `publicOrigin` and returns `/`.
+The first-Agent script imports this Node-only helper without workspace dependencies.
 
 Native-host admission resolves the irreversible hash by checking existing Installation, Namespace, and Agent state without a persistent host registry. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
 
@@ -191,6 +197,12 @@ volume. The gateway mounts that same home subdirectory at `/home/node`, so nativ
 edits remain Pod-local and the next Pod starts from the admitted configuration.
 The init container cannot write through the gateway's later mount path.
 
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:configureNativeWorkerProfile`
+reuses only the exact generated worker profile after a container restart;
+conflicting settings fail. `KubernetesComputeDriver.gatewayPrivateStateVolumeMounts`
+retains `client/` and its migration receipt with the Gateway database. Native
+admin Configuration remains Pod-local.
+
 ## Debugging and Verification
 
 - `AGENT_NATIVE_ADMIN_INVALID` at startup points to native admin enablement, the Agent domain, or a missing shared cookie domain. A bad shared cookie domain or public origin reports `AUTH_BASE_URL_INVALID`, short auth secret material `AUTH_SECRET_INVALID`, and a missing gateway API key path `GATEWAY_API_KEY_UNAVAILABLE`.
@@ -219,6 +231,10 @@ The init container cannot write through the gateway's later mount path.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)
+
+- 2026-10-19 23:14: Retain Gateway client state and reuse the exact generated native worker profile on restart. (authoring-run/45df354e-6d46-4430-83a5-3885d8a9fb76 - c584934287f78a4f3cf7c84cfb02febd9f3437ab)
 
 - 2026-10-15 21:30: Present the authorized launch and its access boundaries in the Agent overview. (authoring-run/6d9b833d-e4fc-4f58-98a8-f0fac29f709d - 7adac57cc03545bdd3cdc383c88219396a677fd9)
 - 2026-10-15 20:27: Redirect copied chat navigation to the canonical console. (authoring-run/98164c0a-da1e-45c5-9d9a-8f6649a3a9c3 - b899534fae0070fab31489d54a8763bb81e4842e)
