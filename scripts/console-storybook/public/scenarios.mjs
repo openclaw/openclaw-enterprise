@@ -4145,6 +4145,8 @@ export const scenarios = {
     description:
       "While viewing current v6, deployment activity reports failed v7 with bounded startup failure evidence. Open v7 Logs selects that failed version and brings its output into view.",
     steps: [
+      "Above the facts, the failure is one danger status block: a red stripe on a light red wash, the label DEPLOYMENT FAILED · V7, the title This Agent may be offline, and CONVERGENCE_DEADLINE_EXCEEDED in code at the end of the first sentence. Open v7 Logs is the page's one filled button; at 390 wide it spans the block.",
+      "In Deployment details, the three step tiles are white cards with a light edge; only the failed Deployment work tile has a red wash, and each marker carries its step's colour.",
       "Select Open v7 Logs in Deployment activity. The version selector changes from v6 to v7 and the Logs tab receives focus and its panel scrolls into view.",
       "Check the simulated Pod status and operational output, then use Back to return to v6. Browsing leaves v6 selected for service.",
     ],
@@ -4269,6 +4271,7 @@ export const scenarios = {
       "The same failed model check for a viewer whose permission answer denies Agent update and deploy. Recovery offers Open v7 Logs only.",
     steps: [
       "Check that the recovery has one link, Open v7 Logs, and the header says Open version draft.",
+      "Open v7 Logs is the block's filled primary button; at 390 wide it spans the block.",
     ],
     gap: "The permission answer is simulated; the API still authorizes every page a link opens.",
   },
@@ -4298,6 +4301,7 @@ export const scenarios = {
       "v7 failed because a controller dependency stayed unavailable. The recovery leads with the failure's own next step and offers Deploy again first, because that message says to deploy again.",
     steps: [
       "At 1440 and 390 wide, read the message and see Deploy again without scrolling.",
+      "Deploy again is the one filled button and Open v7 Logs an edged secondary button. At 390 wide they stack, each the block's full width. The message's first sentence ends with DEPENDENCY_UNAVAILABLE in code.",
       "Select Deploy again: the draft opens with its Deploy new version in view and focused, without deploying.",
     ],
     gap: "The failure is simulated; this story does not verify a live deployment.",
