@@ -740,6 +740,27 @@ test("A failed reread leaves the newest readable version Historical under a hidd
   assert.equal(await page.getByText(/^Deployed version/).count(), 0);
 });
 
+// A failure's card folds Deployment details (finding 2094), but it says nothing of a refresh that
+// could not reread the Agent: a Refresh deployment that reads the failure while its Agent read
+// fails keeps the details open on that warning, without the reader opening them.
+test("A failure read by a refresh that cannot reread the Agent keeps its warning in view", async (t) => {
+  const { page, record } = await deployingVersion(t, "Failed refresh");
+  record.status = "failed";
+  record.agentFail = true;
+  await page.getByRole("button", { name: "Refresh deployment" }).click();
+  const recovery = page.getByRole("region", { name: "Deployment needs attention" });
+  await recovery.waitFor();
+  const warning = page.getByText(
+    "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
+  );
+  // The panel renders the warning and the card folds the details in one task, so once the
+  // warning is in the page the details' state is settled.
+  await warning.waitFor({ state: "attached" });
+  const details = page.locator(".deployment-status > details");
+  assert.equal(await details.evaluate((node) => node.open), true);
+  assert.equal(await warning.evaluate((node) => node.checkVisibility()), true);
+});
+
 // A refused record read ends the wait: polling stops, and the version is no longer labelled
 // Deploying from a record the page can no longer follow (internal review of finding 2085).
 test("A refused status read ends the wait and the Deploying label", async (t) => {
