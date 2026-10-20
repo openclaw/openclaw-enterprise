@@ -2019,6 +2019,56 @@ test("A share in flight finishes across a tab switch", async (t) => {
   assert.equal(bindings.length, 2);
 });
 
+// A share writes the Namespace discovery grant, then the Agent grant. Leaving the page between
+// the two cut the share in half and said nothing (finding 2108), so another version, ← Agents and
+// Refresh wait for it, as they do for a draft's writes; the tabs still switch.
+test("A share in flight holds version and page changes until it finishes", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Share hold", {
+    provisionedPeople: ["hold-recipient"],
+  });
+  const agent = await fixture.createAgent(namespace.id, "Hold Agent", nativeValues("v1"));
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const person = fixture.provisionedAccounts[0];
+  const { page } = await newPage(t, fixture, { browser });
+  const write = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+    { method: "POST", once: true },
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
+  await login(page, fixture, url);
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  const version = page.getByRole("button", { name: "View version v1, current version" });
+  assert.equal(await version.isEnabled(), true);
+  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await write.requested;
+
+  assert.equal(await version.isDisabled(), true);
+  const held = page.getByRole("tabpanel").getByText("This page stays open until sharing finishes.");
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await held.waitFor();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  assert.equal(page.url(), url.href);
+  assert.equal(await held.count(), 1);
+  // A tab switch keeps the page, so it is not held.
+  await page.getByRole("tab", { name: "Plugins", exact: true }).click();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "plugins");
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+
+  write.release();
+  await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
+  await held.waitFor({ state: "detached" });
+  assert.equal(await version.isEnabled(), true);
+  const bindings = (
+    await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
+  ).data.filter((binding) => binding.subjectId === person.principal.id);
+  assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
+});
+
 // A draft's next step (UX spec 3.7, plan D1): beside the Versions rail, a checklist whose steps
 // say what is done, then Deploy on the first screen with its status beside it. The deploy
 // explanation moved into the page's disclosure, and the empty Deployment activity card left.

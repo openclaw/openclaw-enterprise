@@ -566,10 +566,15 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       feature === "namespaces" || feature === "settings"
         ? null
         : namespaceSelector("Namespace", { compact: true });
-    const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }), {
-      tone: "ghost",
-      size: "sm",
-    });
+    // Refresh rebuilds the page: one whose write must finish here stays and says why.
+    const refresh = button(
+      "Refresh",
+      () => void (refuseLeave({ refresh: true }) || loadPage({ fromRefresh: true })),
+      {
+        tone: "ghost",
+        size: "sm",
+      },
+    );
     refresh.disabled = true;
     const heading = element("h1", { tabindex: "-1" }, pages[feature]);
     const actions = element(
