@@ -3435,12 +3435,15 @@ export const scenarios = {
     deployed: true,
     revisionHistory: 8,
     revisionPageSize: 3,
+    // Each older page takes 1.5 s, so its loading state can be seen.
+    rules: [{ suffix: "/revisions", queryParam: "cursor", delayMs: 1500 }],
     description:
       "Versions list one page at a time, newest first. Older versions load on request, and nothing is pruned.",
     steps: [
-      "Check that v8, v7, and v6 are listed with Show older versions below them.",
-      "Select Show older versions until v1 is listed and the button is gone.",
-      "With the keyboard, Tab into the list: focus lands on v8. Down and Up move between versions and wrap at either end; Home and End jump to v8 and v1. Tab leaves the list in one press, and Shift+Tab returns to v8, not the version the arrows last reached.",
+      "Check that v8, v7, and v6 are listed with Show older versions below the list.",
+      "With the keyboard, Tab into the list (focus lands on v8), then Tab once more to Show older versions and press Enter. For about 1.5 s it reads Loading older versions…, looks disabled and keeps focus; pressing Enter again loads nothing more. When v5, v4, and v3 appear, focus is still on Show older versions.",
+      "Press Enter again. When v2 and v1 load, the button is gone and focus moves to v2, the first version that loaded, scrolled into view in the list.",
+      "Tab out of the list and Shift+Tab back: focus lands on v8. Down and Up move between versions and wrap at either end; Home and End jump to v8 and v1. Tab leaves the list in one press, and Shift+Tab returns to v8, not the version the arrows last reached.",
       "Press Down twice, to v6, then Enter. v6 opens, and the next Tab into the list lands on v6, the viewed version.",
     ],
     gap: "The fixture uses three versions per page; the API default is 50.",
@@ -4063,7 +4066,8 @@ export const scenarios = {
       "v7 is deploying while v6 stays selected, then the next status poll records success and selects v7. Its notice goes from Deploying version to Current version without showing Historical version in between. The deployment and activation are simulated.",
     steps: [
       'On arrival the notice begins "Deploying version" and Selected version reads v6.',
-      'Within about 5 s the notice begins "Current version" and Selected version reads v7.',
+      "Before the status poll lands, Tab into the Versions list (focus lands on v7, the viewed version) and press Down to v6.",
+      'Within about 5 s the notice begins "Current version" and Selected version reads v7. The Versions list is rebuilt with v7 marked Current, and focus stays on v6; Tab out and back lands on v6.',
     ],
   },
   deploymentCompletesRereadFails: {

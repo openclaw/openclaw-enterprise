@@ -372,7 +372,11 @@ test("A failed version raises no recovery while the current version is on no loa
 
   // Show older versions follows the Versions list rather than sitting in it: the arrows stay on
   // versions and Tab reaches it next. Focus stays on it while it loads, then moves to the first
-  // older version (finding 2115).
+  // older version, scrolled into view (finding 2115). A short list makes v1 overflow it.
+  await page.evaluate(() => {
+    const sheet = [...globalThis.document.styleSheets].find((item) => item.href);
+    sheet.insertRule(".version-list { max-height: 100px; }", sheet.cssRules.length);
+  });
   const rail = page.getByRole("toolbar", { name: "Versions" });
   assert.equal(await rail.getByRole("button", { name: "Show older versions" }).count(), 0);
   await rail.getByRole("button", { name: /^View version v2/ }).focus();
@@ -398,6 +402,17 @@ test("A failed version raises no recovery while the current version is on no loa
   await waitForIdleFetches(page);
   assert.equal(olderRequests, 1);
   assert.equal(await focusedName(), "View version v1");
+  assert.deepEqual(
+    await rail.evaluate((list) => {
+      const box = list.getBoundingClientRect();
+      const item = globalThis.document.activeElement.getBoundingClientRect();
+      return {
+        overflows: list.scrollHeight > list.clientHeight,
+        visible: item.top >= box.top && item.bottom <= box.bottom,
+      };
+    }),
+    { overflows: true, visible: true },
+  );
   assert.equal(await page.getByRole("button", { name: "Show older versions" }).count(), 0);
   await statusLine
     .getByText(
