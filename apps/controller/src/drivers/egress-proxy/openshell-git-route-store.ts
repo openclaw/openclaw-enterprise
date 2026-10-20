@@ -9,7 +9,7 @@ import type {
 /**
  * A revision's OpenShell Git route as the worker holding it last verified it, persisted so
  * a restarted or replacement worker can re-observe the installation and re-adopt the route
- * (finding 2128, migration 0069). Identity and custody facts only: the Sandbox, the binding
+ * (finding 2128, migration 0060). Identity and custody facts only: the Sandbox, the binding
  * id the middleware presents, the provider generation this worker wrote, the reference of
  * the material that generation carries and the last verified observation. Never a token.
  *

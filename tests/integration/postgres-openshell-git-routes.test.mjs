@@ -7,7 +7,7 @@ import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
 import { seedSessionRevision } from "../conformance/repository-sessions.contract.mjs";
 import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 
-// The persisted OpenShell Git route (migration 0069, finding 2128) as the application role
+// The persisted OpenShell Git route (migration 0060, finding 2128) as the application role
 // writes it: identity and custody facts only, one holder named by a fence, a pending write
 // and a tombstone that outlive the worker. The runtime's use of it is covered by
 // tests/conformance/openshell-git-runtime.test.mjs with the in-memory store.

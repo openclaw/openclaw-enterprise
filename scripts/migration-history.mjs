@@ -19,7 +19,7 @@ function refuse(reason) {
 
 async function readManifest() {
   const manifest = JSON.parse(
-    await readFile(join(directory, "meta/canonical-history.json"), "utf8"),
+    await readFile(join(directory, "meta/_canonical-history.json"), "utf8"),
   );
   const journal = JSON.parse(await readFile(join(directory, "meta/_journal.json"), "utf8"));
   const expected = manifest.entries.map(({ sha256: _hash, ...entry }) => entry);
@@ -39,6 +39,9 @@ async function readManifest() {
     refuse("the migration source set differs");
   }
   for (const [index, entry] of manifest.entries.entries()) {
+    if (index > 0 && entry.when <= manifest.entries[index - 1].when) {
+      refuse(`migration timestamp does not advance for ${entry.tag}`);
+    }
     if (migrations[index].hash !== entry.sha256 || migrations[index].folderMillis !== entry.when) {
       refuse(`source bytes differ for ${entry.tag}`);
     }
@@ -106,11 +109,11 @@ function requireReceiptsMatchEntries(receipts, entries) {
 
 function classifyReceipts(receipts, manifest) {
   const canonicalHarnessAuth = manifest.entries[56];
-  const staticEgress = manifest.entries[59];
+  const preview = manifest.compatibleLineages.credentialProxyPreview.sha256;
   const receipt = receipts[56];
   if (
     receipt !== undefined &&
-    receipt.hash === staticEgress.sha256 &&
+    receipt.hash === preview[0] &&
     Number(receipt.created_at) === canonicalHarnessAuth.when
   ) {
     // An experimental release installed static egress in main's Harness-auth slot.
@@ -120,6 +123,19 @@ function classifyReceipts(receipts, manifest) {
     );
   }
 
+  // Preview 0060–0069 and release 0060 reach the same catalog and timestamp.
+  // Compare the history that actually ran; Drizzle can then append the common suffix.
+  const release = manifest.entries;
+  const hasPreview = receipts[59]?.hash === preview[0];
+  const firstPreviewTime = release[59].when - preview.length + 1;
+  const expected = hasPreview
+    ? [
+        ...release.slice(0, 59),
+        ...preview.map((sha256, i) => ({ sha256, when: firstPreviewTime + i })),
+        ...release.slice(60),
+      ]
+    : release;
+
   const providerCompleted = manifest.compatibleLineages?.providerCompleted;
   const providerCount = providerCompleted?.entries.length ?? 0;
   const providerLineage =
@@ -127,153 +143,137 @@ function classifyReceipts(receipts, manifest) {
     receipts.length >= providerCount &&
     receiptsMatchEntries(receipts, [
       ...providerCompleted.entries,
-      ...manifest.entries.slice(providerCount),
+      ...expected.slice(providerCount),
     ]);
   if (!providerLineage) {
-    requireReceiptsMatchEntries(receipts, manifest.entries);
+    requireReceiptsMatchEntries(receipts, expected);
   } else if (receipts.length === providerCount) {
     return "providerCompleted";
   }
   // The Provider and canonical lineages share every subsequent migration and catalog.
-  if (receipts.length === 0) {
+  const count = receipts.length - (expected.length - release.length);
+  if (hasPreview && count < 60) {
+    refuse(
+      "partial Credential Proxy preview; preserve this database, stop its writers, and finish migrations " +
+        "through 0070 using commit 78b106f1ddc6aa5f638a49c12954be732ab16982 before upgrading to this release",
+    );
+  }
+  return catalogAtMigrationCount(count, release.length);
+}
+
+function catalogAtMigrationCount(count, completedCount) {
+  if (count === 0) {
     return "empty";
   }
-  if (receipts.length === 24) {
+  if (count === 24) {
     return "prePresetsMain";
   }
-  if (receipts.length === 25) {
+  if (count === 25) {
     return "main";
   }
-  if (receipts.length === manifest.entries.length) {
+  if (count === completedCount) {
     return "completed";
   }
-  if (receipts.length === 27) {
+  if (count === 27) {
     return "repositoryCredentials";
   }
-  if (receipts.length === 28) {
+  if (count === 28) {
     return "repositoryRetention";
   }
-  if (receipts.length === 29) {
+  if (count === 29) {
     return "workspaceSetup";
   }
-  if (receipts.length === 30) {
+  if (count === 30) {
     return "agentProvisioning";
   }
-  if (receipts.length === 31) {
+  if (count === 31) {
     return "backendCompleted";
   }
-  if (receipts.length === 32) {
+  if (count === 32) {
     return "backendTerminology";
   }
-  if (receipts.length === 33) {
+  if (count === 33) {
     return "prePluginApprovers";
   }
-  if (receipts.length === 34) {
+  if (count === 34) {
     return "preBrokerReceipts";
   }
-  if (receipts.length === 36) {
+  if (count === 36) {
     return "preDeploymentProgress";
   }
-  if (receipts.length === 35) {
+  if (count === 35) {
     return "preAgentDeletion";
   }
-  if (receipts.length === 37) {
+  if (count === 37) {
     return "preHumanAuthentication";
   }
-  if (receipts.length === 38) {
+  if (count === 38) {
     return "preAgentDeletionTakeover";
   }
-  if (receipts.length === 39) {
+  if (count === 39) {
     return "preNamespaceDeletionTakeover";
   }
-  if (receipts.length === 40) {
+  if (count === 40) {
     return "preRepositoryAccess";
   }
-  if (receipts.length === 41) {
+  if (count === 41) {
     return "preRestrictionReadLogs";
   }
-  if (receipts.length === 42) {
+  if (count === 42) {
     return "preOAuth";
   }
-  if (receipts.length === 43) {
+  if (count === 43) {
     return "preCredentialWithdrawals";
   }
-  if (receipts.length === 44) {
+  if (count === 44) {
     return "preBrokerReceiptFence";
   }
-  if (receipts.length === 45) {
+  if (count === 45) {
     return "preModelProbeFailureCause";
   }
-  if (receipts.length === 46) {
+  if (count === 46) {
     return "preProvisioningConfigurationRelease";
   }
-  if (receipts.length === 47) {
+  if (count === 47) {
     return "preAdministratorCredentialSourceGrants";
   }
-  if (receipts.length === 48) {
+  if (count === 48) {
     return "preCodexPatSources";
   }
-  if (receipts.length === 49) {
+  if (count === 49) {
     return "preAgentCredentialSources";
   }
-  if (receipts.length === 50) {
+  if (count === 50) {
     return "preCredentialWithdrawalRequester";
   }
-  if (receipts.length === 51) {
+  if (count === 51) {
     return "preProvisioningDeploymentOutcome";
   }
-  if (receipts.length === 52) {
+  if (count === 52) {
     return "preComputePreparationFailureEvidence";
   }
-  if (receipts.length === 53) {
+  if (count === 53) {
     return "preCredentialSourcePat";
   }
-  if (receipts.length === 54) {
+  if (count === 54) {
     return "preComputeRevisionAdmission";
   }
-  if (receipts.length === 55) {
+  if (count === 55) {
     return "preHeldAuthenticationSession";
   }
-  if (receipts.length === 56) {
+  if (count === 56) {
     return "preCanonicalHarnessAuth";
   }
-  if (receipts.length === 57) {
+  if (count === 57) {
     return "preSandboxPolicies";
   }
-  if (receipts.length === 58) {
+  if (count === 58) {
     return "preSandboxPolicyAdministrator";
   }
-  if (receipts.length === 59) {
+  if (count === 59) {
     return "preStaticEgress";
   }
-  if (receipts.length === 60) {
-    return "preSendReceipts";
-  }
-  if (receipts.length === 61) {
-    return "prePreparedGitHubCustody";
-  }
-  if (receipts.length === 62) {
-    return "prePreparedGitHubEgress";
-  }
-  if (receipts.length === 63) {
-    return "preCredentialFreeMetadata";
-  }
-  if (receipts.length === 64) {
-    return "preRevisionHarnessAuthShape";
-  }
-  if (receipts.length === 65) {
-    return "prePreparedRepositoryGit";
-  }
-  if (receipts.length === 66) {
-    return "prePreparedRepositoryDraftPulls";
-  }
-  if (receipts.length === 67) {
-    return "preLegacyRevisionExecutionAdmission";
-  }
-  if (receipts.length === 68) {
-    return "preOpenShellGitRoutes";
-  }
-  if (receipts.length === 69) {
+  if (count === 60) {
     return "preOpenShellExpiredGit";
   }
   refuse("an incomplete or unsupported development history is installed");

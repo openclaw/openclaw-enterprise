@@ -475,90 +475,18 @@
       "sha256": "5693d93865d61360d2b8943846cfbfb5590c9e52e90f89eac50fec7bd3672498"
     },
     {
-      "idx": 59,
-      "version": "7",
-      "when": 1787000000060,
-      "tag": "0060_static_egress",
-      "breakpoints": true,
-      "sha256": "41187ea37a83a33ef725c762e5c04af7381139e685795ec5a7233024810a53cf"
-    },
-    {
       "idx": 60,
       "version": "7",
-      "when": 1787000000061,
-      "tag": "0061_egress_send_receipts",
+      "when": 1787000000069,
+      "tag": "0060_credential_proxy",
       "breakpoints": true,
-      "sha256": "193a18fe7ad88a7c6418749cdd52be0062267dcbed39d8286d540bd453d43cdf"
+      "sha256": "00bb5e7e735f186b234c5c444de51ef2873ce9fa1f51fc8baea2147424bd2702"
     },
     {
       "idx": 61,
       "version": "7",
-      "when": 1787000000062,
-      "tag": "0062_prepared_github_custody",
-      "breakpoints": true,
-      "sha256": "1d55d6eaac9106490a62a04efa1f8f2b7061d30c757c8c9b6f9f198494bfec96"
-    },
-    {
-      "idx": 62,
-      "version": "7",
-      "when": 1787000000063,
-      "tag": "0063_prepared_github_egress",
-      "breakpoints": true,
-      "sha256": "76f385a160d5662aebef2b439494f7d10e7410351f1c039f2b3f0cea2132fcdc"
-    },
-    {
-      "idx": 63,
-      "version": "7",
-      "when": 1787000000064,
-      "tag": "0064_protected_credential_free_metadata",
-      "breakpoints": true,
-      "sha256": "42835bbf93e5e6b60c28accdec0338ece93ddcb1e4f86dcdd8365a5289ff3988"
-    },
-    {
-      "idx": 64,
-      "version": "7",
-      "when": 1787000000065,
-      "tag": "0065_revision_harness_auth_shape",
-      "breakpoints": true,
-      "sha256": "dd02c82589af7ebd10640e4190cbc27959393baac910af997e836bc825292b82"
-    },
-    {
-      "idx": 65,
-      "version": "7",
-      "when": 1787000000066,
-      "tag": "0066_prepared_repository_git",
-      "breakpoints": true,
-      "sha256": "5fbb2769ec51c46a48c4e6dd9102baba46d71321b39c4176cdd864e1ad178575"
-    },
-    {
-      "idx": 66,
-      "version": "7",
-      "when": 1787000000067,
-      "tag": "0067_prepared_repository_draft_pulls",
-      "breakpoints": true,
-      "sha256": "4cfa28c47b246638a7e3831b93f1eac25a6e6ffca4e7cbd454e4ade306089b07"
-    },
-    {
-      "idx": 67,
-      "version": "7",
-      "when": 1787000000068,
-      "tag": "0068_legacy_revision_execution_admission",
-      "breakpoints": true,
-      "sha256": "76aff98b9d5d220ba089ea32ad0c7b2c34ab3b4c7adb3ea614d7fb31d246ee36"
-    },
-    {
-      "idx": 68,
-      "version": "7",
-      "when": 1787000000069,
-      "tag": "0069_openshell_git_routes",
-      "breakpoints": true,
-      "sha256": "03c19cdc8e4c41b41b47886ad30b54f67ae78c99a86aaffc1d6f954187c8e3e2"
-    },
-    {
-      "idx": 69,
-      "version": "7",
       "when": 1787000000070,
-      "tag": "0070_openshell_expired_git",
+      "tag": "0061_openshell_expired_git",
       "breakpoints": true,
       "sha256": "b85b69c0712769be71e28ebc58e0bc5564595bec12f3c90c96467d4628b356dc"
     }
@@ -621,16 +549,7 @@
     "preCanonicalHarnessAuth": "f2ebd947c770ed1eab2628742752b924c203cdd038094d3f162db411099e2c8d",
     "preSandboxPolicies": "2a66cf512e621405a10b1c8629303220523e1dcc2d2aa90bc857855ed1d26504",
     "preSandboxPolicyAdministrator": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
-    "preStaticEgress": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff",
-    "preSendReceipts": "6e5d4b645e70fb8f905767f63392d1b55b9e9ba14d79632840f285029bc9cd1d",
-    "prePreparedGitHubCustody": "a7ddb7f510bad8c962fde8f8b61b9577b93577b109d20f296a8d3408f2e1ce73",
-    "prePreparedGitHubEgress": "364bb0a0e3963bec78b7a100581e9558d4c7a3c6a2fb38830f77114a3ba46e69",
-    "preCredentialFreeMetadata": "a68806243d20898fdf561443630f185ad91ae285c9f6ec2f94a24a7f72c908a3",
-    "preRevisionHarnessAuthShape": "9dc926f94d6d0a72b64b7ecf3fd90c4288890b3cde1bc3f5d0eb9678a91267e0",
-    "prePreparedRepositoryGit": "dcc8a204d43d548fd9364c55fd0ea842112962702334419b119fdb61f43da6e6",
-    "prePreparedRepositoryDraftPulls": "4dda00f5af0e094e204cfecafbda5c6021f36b29ac56a1f0fa7d6dd49a5841fe",
-    "preLegacyRevisionExecutionAdmission": "a3baa07a6df20acbc3c128d624a9da6620a7717f5ec017888e2f3d59173d7f85",
-    "preOpenShellGitRoutes": "6aa99bf0d1ec3fa97f58816120c33ab6b477849cea82410f4d242014def2e60a"
+    "preStaticEgress": "34374bccb6342bc15262d9d8e77abf1c3a0e317a2623b2bda541d1d06202a3ff"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",
@@ -892,6 +811,20 @@
           "breakpoints": true,
           "sha256": "dd8bc173e141b7cc0320f3d5f4e9bd097ca37a6819bf61bbe1834cdb0c20598c"
         }
+      ]
+    },
+    "credentialProxyPreview": {
+      "sha256": [
+        "41187ea37a83a33ef725c762e5c04af7381139e685795ec5a7233024810a53cf",
+        "193a18fe7ad88a7c6418749cdd52be0062267dcbed39d8286d540bd453d43cdf",
+        "1d55d6eaac9106490a62a04efa1f8f2b7061d30c757c8c9b6f9f198494bfec96",
+        "76f385a160d5662aebef2b439494f7d10e7410351f1c039f2b3f0cea2132fcdc",
+        "42835bbf93e5e6b60c28accdec0338ece93ddcb1e4f86dcdd8365a5289ff3988",
+        "dd02c82589af7ebd10640e4190cbc27959393baac910af997e836bc825292b82",
+        "5fbb2769ec51c46a48c4e6dd9102baba46d71321b39c4176cdd864e1ad178575",
+        "4cfa28c47b246638a7e3831b93f1eac25a6e6ffca4e7cbd454e4ade306089b07",
+        "76aff98b9d5d220ba089ea32ad0c7b2c34ab3b4c7adb3ea614d7fb31d246ee36",
+        "03c19cdc8e4c41b41b47886ad30b54f67ae78c99a86aaffc1d6f954187c8e3e2"
       ]
     }
   }

@@ -4,44 +4,45 @@ The schema can be exercised with ordinary unprotected development revisions. The
 [protected execution cutoff](../../reference/credential-sources/protected-inference.md#execution-admission-cutoff)
 remains closed until the installed pair and its release authority are qualified.
 
-## Upgrade or withdraw a development installation
+## Upgrade an existing development installation
 
-Start with a disposable database on the public migration history through
-`0059_administrator_sandbox_policy_grants`. Migrations 0060 through 0068 add protected egress,
-credential custody and prepared repository access. Migration checks compare the
-receipt ledger, catalog and effective grants. They do not enable protected execution.
+From public migration `0059`, keep your database and plan one control-plane
+restart. Migration `0060_credential_proxy` records that existing Agent revisions
+ran unprotected, restores their immutability, and validates the constraint.
+Reading the same Agent and revision remains supported; old writers must stop before
+migration. Allow time for row updates, locks, and validation on a large history.
+Migration `0061_openshell_expired_git` adds the retained-launch state used at Git
+expiry. Neither migration selects protected execution or requires credential re-enrollment.
 
-If a private database already recorded `static_egress` at 0057 or an earlier slot,
-its history conflicts with the public sequence. Keep its writers on their matching
-release until you can quiesce and retire that installation; start this version on a
-fresh database. Never renumber an applied migration or rewrite its receipt.
+- **Default Docker development stack.** Finish work that must not be interrupted.
+  In the old checkout run `bin/occ dev down` without `--volumes`, update your
+  checkout, then run `bin/occ dev up` with the same project, volumes, and
+  environment. Startup migrates the retained database. A new checkout with an
+  empty database needs only `bin/occ dev up`.
+- **Host development with a retained database.** Quiesce the API, workers, and
+  other writers. With the new checkout and the existing dedicated
+  `OCC_MIGRATION_DATABASE_URL`, run `pnpm db:migrate --check` (expect
+  `preStaticEgress` at `0059`), `pnpm db:migrate`, then `pnpm db:migrate --check`
+  (expect `completed`). Restart the API and workers from that checkout.
+- **Kubernetes or a custom retained stack.** Follow the
+  [upgrade checklist](upgrade-checklist.md). The disposable Kubernetes development
+  harness deletes volumes on teardown; the Docker down/up instructions above do
+  not apply. A custom retained Compose or k3d stack has no supported in-place
+  full-stack upgrade command.
 
-Use this order when keeping a development database:
+If you ran the public Credential Proxy preview, the migrator checks the actual
+receipts, schema, and grants. At preview `0069`, migrate normally: the release
+applies the same final SQL. At preview `0070`, the check reports `completed` and
+the original receipts stay intact. At preview `0060` through `0068`, this release
+stops before changing the database. Keep writers stopped, finish the migration
+through `0070` using [the published preview source](https://github.com/openclaw/openclaw-enterprise/commit/78b106f1ddc6aa5f638a49c12954be732ab16982),
+then switch to this release and check again. A preview Git route without a
+verified retained launch may still require retiring that Agent at Git expiry.
 
-1. **Settle executions on their owning release.** Pause new admissions. Before stopping
-   writers or taking the cutover snapshot, stop or withdraw executions admitted by that release,
-   including any running anonymous reader. Retire predecessors and verify that no revision is
-   active and no cleanup remains. If you cannot settle the work, stay on that release.
-   If you need to deploy under that Agent identity again, stay on its owning release. Stopping an
-   Agent preserves its revisions; revisions admitted before migration 0060 receive the unprotected decision they ran under (migration 0068).
-2. **Quiesce writers and verify a physical snapshot.** Stop admission, workers and maintenance
-   writers. On PostgreSQL 18.6, `CREATE DATABASE ... TEMPLATE ... STRATEGY FILE_COPY` with the
-   same database-level access preserved the catalog and receipt history. A logical restore can
-   reparse CHECK expressions and fail the exact catalog check despite reporting success.
-   Verify that the previous migration command accepts the restored catalog; keep its matching
-   controller, runtime, supplier and configuration revisions.
-3. **Migrate once; retain the old Agent for inspection.** Start the matching API and workers
-   with `credential_proxy` unselected. The revision list preserves the old identity; revision detail
-   reports `SAVED_CONFIGURATION_UNREADABLE` because those revisions recorded no execution admission.
-   Deployment reads _all_ revisions so it can stop or retire them; on this Agent it returns 503
-   without creating a revision or queuing work. Do not delete the history or invent an
-   `execution_admission`. The saved peer admission and credential-source reference are history,
-   not authority for the new controller to release that execution.
-4. **Resume development on a new, independently authorized Agent.** Use an Agent with no
-   pre-cutover revisions, or a fresh disposable installation. In the same Namespace, create a
-   new Agent with its own Configuration and service principal; confirm revision 1 is explicitly
-   `unprotected`. Nothing adopts the old source, copies a credential or grants access. Do not
-   carry forward mounts, helpers or sessions, or arrange delayed reattachment.
+For a divergent history, including experimental `static_egress` at `0057`, keep
+the database with its matching release. Never renumber or rewrite applied receipts.
+If you need a recovery point, verify that the previous release accepts a quiesced
+physical snapshot; a logical restore can reparse constraints and change the catalog.
 
 Execution authority and material approval are independent. Withhold a new binding unless durable
 evidence shows equivalent authority or an authorized binder explicitly admits the broader access.

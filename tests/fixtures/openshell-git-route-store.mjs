@@ -1,5 +1,5 @@
 // An in-memory OpenShellGitRouteStore with the Postgres store's fencing semantics (finding
-// 2128, migration 0069): one row per revision, adopt() moves the fence, every fenced write
+// 2128, migration 0060): one row per revision, adopt() moves the fence, every fenced write
 // answers false for a stale fence, a blocked row is never re-fenced. `fault` makes every
 // call throw (a store that does not answer); `calls` counts them.
 export function routeStore() {

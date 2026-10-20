@@ -681,7 +681,7 @@ export const agentRevisions = occSchema.table(
         AND jsonb_typeof(${table.admittedSpec}->'egress_plan'->'routes') = 'array',
         false)`,
     ),
-    // Migration 0060 installs this NOT VALID; 0068 records the unprotected decision on
+    // Migration 0060 adds this as NOT VALID, records the unprotected decision on
     // revisions admitted before it existed and validates every stored row.
     check(
       "agent_revisions_execution_admission",
@@ -1969,7 +1969,7 @@ const openShellGitObservedKeys = sql`ARRAY['workspace', 'sandbox', 'sandboxId', 
       'supervisorSessionId', 'processInstanceId', 'networkInstanceId']`;
 
 // A revision's OpenShell Git route as the worker that holds it last verified it, so a
-// restarted or replacement worker can re-adopt it (migration 0069, finding 2128). Identity
+// restarted or replacement worker can re-adopt it (migration 0060, finding 2128). Identity
 // and custody facts only, never token material; `fence` names the adoption.
 export const openShellGitRoutes = occSchema.table(
   "openshell_git_routes",

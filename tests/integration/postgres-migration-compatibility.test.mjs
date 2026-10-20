@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -190,7 +190,7 @@ test(
     // Keep the real TypeScript schema/config; only generated output leaves the checkout.
     await writeFile(
       configPath,
-      `import config from ${JSON.stringify(join(repositoryRoot, "drizzle.config.ts"))};\nexport default { ...config, out: ${JSON.stringify(outputDirectory)} };\n`,
+      `import config from ${JSON.stringify(join(repositoryRoot, "drizzle.config.ts"))};\nexport default { ...config, out: ${JSON.stringify(relative(repositoryRoot, outputDirectory))} };\n`,
       { mode: 0o600, flag: "wx" },
     );
     const generateArgs = ["pnpm", "db:generate", "--config", configPath, "--name", "compatibility"];
@@ -249,6 +249,21 @@ test(
     const firstGeneration = await fileHashes(outputDirectory);
     await runCommand(fixture, "corepack", generateArgs);
     assert.deepEqual(await fileHashes(outputDirectory), firstGeneration);
+
+    // Generate a custom migration after the checked-in journal, including its historical
+    // numbering gap. Drizzle chooses the next filename by index and applies SQL by timestamp.
+    await rm(outputDirectory, { recursive: true });
+    await cp(migrationsDirectory, outputDirectory, { recursive: true });
+    const journalPath = join(metadataDirectory, "_journal.json");
+    const readJournal = async () => JSON.parse(await readFile(journalPath, "utf8")).entries;
+    const previous = await readJournal();
+    await runCommand(fixture, "corepack", [...generateArgs, "--custom"]);
+    const next = await readJournal();
+    assert.deepEqual(next.slice(0, -1), previous);
+    const { tag, when } = next.at(-1);
+    const last = previous.at(-1);
+    assert.equal(Number(tag.slice(0, 4)), Number(last.tag.slice(0, 4)) + 1);
+    assert.ok(when > last.when, "Drizzle must see the next migration as pending");
   },
 );
 
@@ -1054,7 +1069,7 @@ async function installProviderCompletedHistory(db) {
   try {
     await mkdir(join(directory, "meta"));
     const manifest = JSON.parse(
-      await readFile(join(migrationsDirectory, "meta/canonical-history.json"), "utf8"),
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
     const entries = manifest.compatibleLineages.providerCompleted.entries;
     assert.equal(entries.length, 31);
@@ -1187,7 +1202,7 @@ async function assertHistoryRefused(db, refusal) {
 
 async function assertCompletedHistory(db, previous = []) {
   const manifest = JSON.parse(
-    await readFile(join(migrationsDirectory, "meta/canonical-history.json"), "utf8"),
+    await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
   );
   const receipts = await historyReceipts(db.migrator);
   assert.deepEqual(receipts.slice(0, previous.length), previous);
@@ -1589,7 +1604,7 @@ async function assertUpgradedAuthentication(db) {
 
 const legacyExecutionAdmission = { version: 2, mode: "unprotected" };
 
-// A revision admitted before 0058 carries no execution admission. The upgrade records
+// A revision admitted before 0060 carries no execution admission. The upgrade records
 // the unprotected decision it was admitted under; every other stored field stays identical.
 function upgradedCanonicalData(data) {
   return {
@@ -1836,16 +1851,7 @@ test(
       [57, "preSandboxPolicies"],
       [58, "preSandboxPolicyAdministrator"],
       [59, "preStaticEgress"],
-      [60, "preSendReceipts"],
-      [61, "prePreparedGitHubCustody"],
-      [62, "prePreparedGitHubEgress"],
-      [63, "preCredentialFreeMetadata"],
-      [64, "preRevisionHarnessAuthShape"],
-      [65, "prePreparedRepositoryGit"],
-      [66, "prePreparedRepositoryDraftPulls"],
-      [67, "preLegacyRevisionExecutionAdmission"],
-      [68, "preOpenShellGitRoutes"],
-      [69, "preOpenShellExpiredGit"],
+      [60, "preOpenShellExpiredGit"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2249,16 +2255,7 @@ test(
       [57, "preSandboxPolicies"],
       [58, "preSandboxPolicyAdministrator"],
       [59, "preStaticEgress"],
-      [60, "preSendReceipts"],
-      [61, "prePreparedGitHubCustody"],
-      [62, "prePreparedGitHubEgress"],
-      [63, "preCredentialFreeMetadata"],
-      [64, "preRevisionHarnessAuthShape"],
-      [65, "prePreparedRepositoryGit"],
-      [66, "prePreparedRepositoryDraftPulls"],
-      [67, "preLegacyRevisionExecutionAdmission"],
-      [68, "preOpenShellGitRoutes"],
-      [69, "preOpenShellExpiredGit"],
+      [60, "preOpenShellExpiredGit"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2347,16 +2344,7 @@ test(
       [57, "preSandboxPolicies"],
       [58, "preSandboxPolicyAdministrator"],
       [59, "preStaticEgress"],
-      [60, "preSendReceipts"],
-      [61, "prePreparedGitHubCustody"],
-      [62, "prePreparedGitHubEgress"],
-      [63, "preCredentialFreeMetadata"],
-      [64, "preRevisionHarnessAuthShape"],
-      [65, "prePreparedRepositoryGit"],
-      [66, "prePreparedRepositoryDraftPulls"],
-      [67, "preLegacyRevisionExecutionAdmission"],
-      [68, "preOpenShellGitRoutes"],
-      [69, "preOpenShellExpiredGit"],
+      [60, "preOpenShellExpiredGit"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2375,16 +2363,9 @@ test(
         // Abort 0056 after its function was created, before the deferred trigger exists.
         // 0057 replaces the Harness validator, so reject that function replacement.
         // 0058 creates the policy table; 0059 has no DDL, so prefix 58 aborts in 0060 too.
-        // Abort 0068 at its final VALIDATE: the decision backfill and the restored
-        // immutability trigger must roll back with it. Abort 0069 at its final GRANT: the
-        // route table and its index roll back with it.
+        // From 0059, fail the final grant in 0061 so the revision backfill, its immutability
+        // trigger, the route table, grants and both new receipts must all roll back together.
         const rollbackTag = [
-          [69, "GRANT"],
-          [68, "GRANT"],
-          [67, "ALTER TABLE"],
-          [66, "GRANT"],
-          [64, "ALTER TABLE"],
-          [63, "CREATE FUNCTION"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
@@ -2399,10 +2380,14 @@ test(
           [27, "CREATE FUNCTION"],
           [0, "ALTER FUNCTION"],
         ].find(([minimum]) => prefix >= minimum)[1];
+        const failAt =
+          prefix >= 58
+            ? "IF NOT EXISTS (SELECT FROM information_schema.columns WHERE table_schema='occ' AND table_name='openshell_git_routes' AND column_name='detached_epoch') THEN RETURN; END IF;"
+            : "";
         await historyAdmin(
           db,
           db.name,
-          `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000'; END $$;
+          `CREATE FUNCTION public.reject_migration_ddl() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN ${failAt} RAISE EXCEPTION 'migration rollback fixture' USING ERRCODE='55000'; END $$;
         CREATE EVENT TRIGGER reject_migration_ddl ON ddl_command_start WHEN TAG IN ('${rollbackTag}') EXECUTE FUNCTION public.reject_migration_ddl()`,
         );
         assert.deepEqual(await runHistoryMigration(db), { ok: false, code: "MIGRATION_FAILED" });
@@ -2436,12 +2421,66 @@ test(
 );
 
 test(
+  "Credential Proxy preview receipts require the exact history before the shared migration",
+  requiresHistoryPostgres,
+  async (context) => {
+    const fixture = await migrationHistoryFixture();
+    const db = await historyDatabase(context, fixture, "proxypreview", { prefix: 60 });
+    const manifest = JSON.parse(
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
+    );
+    const preview = manifest.compatibleLineages.credentialProxyPreview.sha256;
+
+    // Model the preview ledger on the real equivalent 0060 catalog. This tests receipt
+    // compatibility without shipping ten retired SQL files or requiring Git history in CI.
+    await db.migrator.query("DELETE FROM drizzle.__drizzle_migrations WHERE created_at=$1", [
+      manifest.entries[59].when,
+    ]);
+    const append = (hashes, firstTimestamp) =>
+      db.migrator.query(
+        `INSERT INTO drizzle.__drizzle_migrations(hash,created_at)
+           SELECT hash, $2::bigint + n - 1 FROM unnest($1::text[]) WITH ORDINALITY AS entry(hash,n)
+           ORDER BY n`,
+        [hashes, firstTimestamp],
+      );
+    await append(preview.slice(0, 9), 1787000000060);
+    await assertHistoryRefused(
+      db,
+      /through 0070 using commit 78b106f1ddc6aa5f638a49c12954be732ab16982/,
+    );
+
+    // From 0069, append only the real shared migration. From 0070, append nothing.
+    await append(preview.slice(9), 1787000000069);
+    const before = await historyReceipts(db.migrator);
+    assert.equal(before.length, 69);
+    assert.deepEqual(await runHistoryMigration(db), {
+      ok: true,
+      history: "preOpenShellExpiredGit",
+    });
+    const after = await historyReceipts(db.migrator);
+    assert.deepEqual(after.slice(0, before.length), before);
+    assert.deepEqual(
+      after.slice(before.length).map(({ hash, created_at }) => [hash, Number(created_at)]),
+      manifest.entries.slice(60).map(({ sha256, when }) => [sha256, when]),
+    );
+    assert.deepEqual(await runHistoryMigration(db), { ok: true, history: "completed" });
+    assert.deepEqual(await historyReceipts(db.migrator), after);
+
+    // Correct first and last receipts cannot vouch for a changed receipt between them.
+    await db.migrator.query(
+      "UPDATE drizzle.__drizzle_migrations SET hash=repeat('f',64) WHERE created_at=1787000000065",
+    );
+    await assertHistoryRefused(db, /applied receipts differ from canonical history/);
+  },
+);
+
+test(
   "Canonical migration refuses unexplained histories before mutation",
   concurrentHistoryPostgres,
   async (context) => {
     const fixture = await migrationHistoryFixture();
     const manifest = JSON.parse(
-      await readFile(join(migrationsDirectory, "meta/canonical-history.json"), "utf8"),
+      await readFile(join(migrationsDirectory, "meta/_canonical-history.json"), "utf8"),
     );
     const repositorySql = await readFile(
       join(migrationsDirectory, "0025_repository_credentials.sql"),
@@ -2467,7 +2506,7 @@ test(
       ["catalog-object", 25, "CREATE TABLE occ.unexplained(id integer)"],
       [
         "draft-pull-privilege",
-        67,
+        60,
         "GRANT DELETE ON occ.prepared_repository_draft_pulls TO occ_app",
       ],
       ["ledger-grant", 25, "GRANT SELECT ON drizzle.__drizzle_migrations TO occ_app"],
@@ -2484,26 +2523,14 @@ test(
     void context.test(
       "experimental static egress at canonical Harness-auth slot 0057",
       async (child) => {
-        const db = await historyDatabase(child, fixture, "experimentalegress");
-        // Install the old branch's complete SQL and real Drizzle receipts, omitting main's
-        // 0057-0059 and shifting only the unpublished migrations back to their experimental slots.
-        const entries = [
-          ...manifest.entries.slice(0, 56),
-          ...manifest.entries.slice(59).map((entry) => ({
-            ...entry,
-            idx: entry.idx - 3,
-            when: entry.when - 3,
-          })),
-        ];
-        await installCanonicalPrefix(db, entries.length, { entries });
-        await seedCanonicalData(db, {
-          preset: true,
-          computeAdmission: true,
-          executionAdmission: true,
-        });
-        const data = await canonicalData(db);
-        await assertHistoryRefused(db, /experimental 0057_static_egress .*use a fresh database/);
-        assert.deepEqual(await canonicalData(db), data);
+        const db = await historyDatabase(child, fixture, "experimentalegress", { prefix: 56 });
+        // Exercise the receipt collision, without retaining the experimental SQL as a fixture.
+        const [staticEgress] = manifest.compatibleLineages.credentialProxyPreview.sha256;
+        await db.migrator.query(
+          "INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES ($1,$2)",
+          [staticEgress, manifest.entries[56].when],
+        );
+        await assertHistoryRefused(db, /experimental 0057_static_egress .*preserve that database/);
       },
     );
     void context.test("published premerge credential history", async (child) => {

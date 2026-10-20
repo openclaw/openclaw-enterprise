@@ -399,7 +399,7 @@ function isIpAddressHost(host: string): boolean {
 }
 
 /**
- * Worker-local authority over each revision's Git route. The route store (migration 0069)
+ * Worker-local authority over each revision's Git route. The route store (migration 0060)
  * keeps the identity and custody facts of every route this worker prepared, so a restarted
  * or replacement worker re-observes the installation and re-adopts the route the way a
  * reconnected supervisor is adopted (finding 2128): only when the full observation verifies

@@ -850,7 +850,7 @@ const NAME_CONFLICTS: Readonly<Record<string, string>> = Object.freeze({
   credential_sources_namespace_id_name_unique: CREDENTIAL_SOURCE_NAME_CONFLICT,
   // The inline `name ... UNIQUE` on occ.namespaces (0000_occ_initial.sql) gets this default name.
   namespaces_name_key: NAMESPACE_NAME_CONFLICT,
-  // Not a name: 0060_static_egress.sql's inline UNIQUE (namespace_id, revision_id). A second
+  // Not a name: 0060_credential_proxy.sql's inline UNIQUE (namespace_id, revision_id). A second
   // Sandbox for one revision is the state conflict the memory store raises, not an id collision.
   egress_installations_namespace_id_revision_id_key: EGRESS_REVISION_INSTALLED_CONFLICT,
 });
