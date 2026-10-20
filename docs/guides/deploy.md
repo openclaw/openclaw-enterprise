@@ -76,9 +76,9 @@ Follow these pages in order in the same operator shell:
    bootstrap PVC, install the chart, and authenticate to the production API.
 2. [Prepare Namespaces and deploy Agents](deploy/production-agents.md).
    Grant tenant RoleBindings, choose embedded OpenClaw or dedicated Codex,
-   provision exact-Agent credentials, and deploy an immutable revision.
+   provision exact-Agent credentials, and deploy a saved version.
 3. [Verify the production workload](deploy/production-agents.md#verify-production-workloads).
-   Confirm the active revision and require a real model response. The guide
+   Confirm the selected version and require a real model response. The guide
    offers a TUI and an HTTP check using the optional loopback password on
    Kubernetes trusted-proxy gateways.
 

@@ -28,7 +28,7 @@ provision an SSH host.
 Prepare the disposable rig below before selecting this lane; missing inputs or
 skipped tests fail the lane.
 
-Use a disposable Linux systemd host. This suite verifies readiness, revision
+Use a disposable Linux systemd host. This suite verifies readiness, version
 cutover, state persistence, cleanup, and Unix account isolation over real SSH.
 It makes no model call. Without `OCC_TEST_SSH_REAL=1` it skips; a selected run
 fails when prerequisites are missing.

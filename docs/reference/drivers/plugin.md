@@ -4,7 +4,7 @@
 
 `PluginDriver` supplies a curated catalog, policy capabilities, and policy
 validation for an Agent Harness. OpenClaw Control Plane (OCC) owns Agent
-selections, authorization, and immutable revisions.
+selections, authorization, and immutable Agent revisions.
 Compute owns native installation, runtime connections, readiness, activation,
 and retirement. Bundled startup code also translates selected policy into native
 configuration; those helpers are not methods on the exported Driver interface.
@@ -115,15 +115,15 @@ See [Agent plugin permissions](../agent-plugins.md) and [authorization](../autho
 Trusted startup creates the selected bundled Driver and validates its configuration.
 The shared interface has no startup, shutdown, or uninstall operation. Saving an
 Agent's requested plugin map validates supported policy, but does not perform
-authenticated catalog discovery; saved entries remain readable even if the original Driver is unavailable. A revision with
+authenticated catalog discovery; saved entries remain readable even if the original Driver is unavailable. An Agent revision with
 nonempty selections records the selected Driver's ID and implementation and the
 requested IDs and policies, not credential values or native release metadata.
 
 At runtime, Compute and the bundled preparation helpers resolve current native
-metadata, translate supported policy, and apply it to the specific revision
+metadata, translate supported policy, and apply it to the specified Agent revision
 before declaring readiness. Nonempty selections cannot start with a missing,
 changed, or Harness-incompatible Driver. An unsupported policy or unsafe native
-configuration prevents startup or leaves the revision unready. Retries reuse the
+configuration prevents startup or leaves the version unready. Retries reuse the
 requested IDs and policy; they may resolve a newer curated release at that later
 startup. Saving a selection is not evidence that it can start.
 

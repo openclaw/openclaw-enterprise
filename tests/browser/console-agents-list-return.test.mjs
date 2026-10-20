@@ -210,7 +210,7 @@ for (const how of ["Browser Back", "Agents navigation"]) {
     failed.release();
     await page.getByText(READING).first().waitFor({ state: "detached" });
     const after = await deploymentCells(page);
-    assert.match(after[changed.name], /^v1 · failed/);
+    assert.match(after[changed.name], /^v1 · Failed/);
     assert.deepEqual(
       Object.fromEntries(Object.entries(after).filter(([name]) => name !== changed.name)),
       Object.fromEntries(Object.entries(before).filter(([name]) => name !== changed.name)),
@@ -346,7 +346,7 @@ for (const outcome of ["fills", "is refused"]) {
         "focus moved to the row's Agent link",
       );
     } else {
-      assert.match(await deploymentLink.textContent(), /^v2 · succeeded/);
+      assert.match(await deploymentLink.textContent(), /^v2 · Completed/);
       assert.equal(await isFocused(deploymentLink), true, "the fresh link kept focus");
     }
     assert.equal(await viewTag(page), "kept");
@@ -449,7 +449,7 @@ for (const visit of ["a first visit", "a return"]) {
     rows.release();
     await page.getByText(READING).first().waitFor({ state: "detached" });
     for (const text of Object.values(await deploymentCells(page))) {
-      assert.match(text, /^v1 · succeeded/);
+      assert.match(text, /^v1 · Completed/);
     }
   });
 }
@@ -579,7 +579,7 @@ for (const [shownAt, landsAt, fillsAt] of [
       await page.clock.runFor(1);
     }
     for (const text of Object.values(await deploymentCells(page))) {
-      assert.match(text, /^v1 · succeeded/);
+      assert.match(text, /^v1 · Completed/);
     }
     assert.equal(await viewTag(page), "kept");
   });
@@ -674,7 +674,7 @@ test("A list left again during its rows' rereads is reused on the next return an
   rereads.release();
   await page.getByText(READING).first().waitFor({ state: "detached" });
   for (const text of Object.values(await deploymentCells(page))) {
-    assert.match(text, /^v1 · succeeded/);
+    assert.match(text, /^v1 · Completed/);
   }
 });
 
@@ -811,9 +811,12 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
           }),
           breaks,
           display: globalThis.getComputedStyle(row).display,
-          revision: (({ fontFamily, color }) => ({ fontFamily, color }))(
-            globalThis.getComputedStyle(cells[2].querySelector("a") ?? cells[2]),
-          ),
+          revision: {
+            text: cells[2].querySelector("a")?.textContent,
+            ...(({ fontFamily, color }) => ({ fontFamily, color }))(
+              globalThis.getComputedStyle(cells[2].querySelector("a") ?? cells[2]),
+            ),
+          },
         };
       });
       // The table's width without the unbroken names' rows, which must not widen it.
@@ -822,9 +825,27 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       unbroken.forEach((row) => row.style.setProperty("display", "none"));
       const ordinaryWidth = scroll.scrollWidth;
       unbroken.forEach((row) => row.style.removeProperty("display"));
+      // An ID drawn on one line in a row's ID style: "ff" must take two characters' width. A
+      // monospace font with ligatures (Nimbus Mono PS) drew it as one glyph, so an ID with two
+      // "ff" pairs was 14.4 px narrower and fit one line at 360 px (finding 2114).
+      const idWidth = (text) => {
+        const probe = document.createElement("span");
+        probe.className = "resource-id";
+        probe.style.setProperty("display", "inline");
+        probe.style.setProperty("white-space", "nowrap");
+        probe.textContent = text;
+        node.tBodies[0].rows[0].cells[0].append(probe);
+        const box = probe.getBoundingClientRect();
+        probe.remove();
+        return box.width;
+      };
       return {
         width,
         ordinaryWidth,
+        idWidths: [
+          idWidth("agt_ffffffff-ffff-4fff-bfff-ffffffffffff"),
+          idWidth("agt_00000000-0000-4000-8000-000000000000"),
+        ],
         pageFits: view.scrollWidth <= view.clientWidth,
         tableFits: scroll.scrollWidth <= scroll.clientWidth,
         headerShown: node.tHead.getBoundingClientRect().height > 1,
@@ -841,6 +862,10 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
     assert.ok(
       layout.width <= layout.ordinaryWidth + 2,
       `${width}: the unbroken name widens the table from ${layout.ordinaryWidth} to ${layout.width} px`,
+    );
+    assert.ok(
+      Math.abs(layout.idWidths[0] - layout.idWidths[1]) < 0.5,
+      `${width}: an ID with "ff" is ${layout.idWidths[0]} px, one without ${layout.idWidths[1]} px`,
     );
     assert.equal(layout.rows.length, AGENTS);
     assert.equal(layout.rows.filter((row) => row.unbroken).length, 2, `${width}: unbroken rows`);
@@ -889,9 +914,11 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       if (width === 360) {
         assert.ok(row.breaks.length > 0, `${width}: row ${index} ID fits one line`);
       }
-      // A current version's revision ID reads as an ID: mono, in the text colour.
+      // A current version reads as its number, not its revision ID (finding 2093), in the text
+      // colour.
       if (index % 2 === 1) {
-        assert.match(row.revision.fontFamily, /monospace/, `${width}: row ${index} revision`);
+        assert.equal(row.revision.text, "v1", `${width}: row ${index} revision`);
+        assert.doesNotMatch(row.revision.fontFamily, /monospace/, `${width}: row ${index} font`);
         assert.equal(row.revision.color, layout.text, `${width}: row ${index} revision colour`);
       }
       assert.equal(row.display, desktop ? "table-row" : "grid", `${width}: row display`);
@@ -1081,13 +1108,13 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     // run the browser keeps on one line, set in the link's font in a box too narrow for any word.
     // Combining marks share their letter's place, and a space hangs at the end of its line, so
     // neither counts.
-    const measured = await table.evaluate((node) =>
-      Array.from(node.querySelectorAll("a"), (link) => {
+    const measured = await table.getByRole("link").evaluateAll((links) =>
+      links.map((link) => {
         const box = globalThis.document.createElement("div");
         const style = globalThis.getComputedStyle(link);
         box.style.cssText = `position:absolute;width:1px;font:${style.font}`;
         box.textContent = link.textContent;
-        node.after(box);
+        link.closest("table").after(box);
         const range = globalThis.document.createRange();
         let longest = 0;
         let run = 0;
@@ -1117,7 +1144,7 @@ test("Agents list marks names with no break opportunity, hyphen and dash runs in
     for (const entry of cases) {
       const label = `${width}: ${JSON.stringify(entry.name.slice(0, 24))}…`;
       const matches = measured.filter((link) => link.name === entry.name);
-      assert.equal(matches.length, 1, `${label} is listed once`);
+      assert.equal(matches.length, 1, `${label} is listed once as a link`);
       const [shown] = matches;
       assert.equal(shown.marked, entry.unbroken, `${label} marked`);
       assert.equal(shown.longest >= 21, entry.unbroken, `${label} longest run ${shown.longest}`);
@@ -1177,4 +1204,96 @@ test("Agents list search stays responsive with joiner-run names", async (t) => {
       false,
     );
   }
+});
+
+// The Agents list showed the current version as a raw revision ID beside "v122 · succeeded", and
+// the Agent page called the same outcome "Completed" (finding 2093). The list now names the
+// current version by number, read with the row's versions, and shares the page's outcome words.
+test("Agents list names the current version by number in the page's outcome words", async (t) => {
+  const { fixture, namespace, agents, page } = await openTeamList(t, "Version numbers", {
+    newer: [0],
+  });
+  const row = (agent) => page.locator(activeView).getByRole("row").filter({ hasText: agent.name });
+  const cells = (agent) =>
+    row(agent).evaluate((node) => ({
+      current: node.querySelector('[data-label="Current version"]').textContent,
+      href: new URL(node.querySelector('[data-label="Current version"] a').href).searchParams.get(
+        "revision",
+      ),
+      deployment: node.querySelector(".agent-deployment a").textContent,
+    }));
+  const active = (agent) =>
+    fixture
+      .request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`)
+      .then((body) => body.data);
+  const [newer, plain] = [agents[0], agents[1]];
+  // A second version deployed after the current one: v1 is current, v2 is the latest.
+  assert.deepEqual(await cells(newer), {
+    current: "v1",
+    href: (await active(newer)).activeRevisionId,
+    deployment: "v2 · Completed",
+  });
+  assert.deepEqual(await cells(plain), {
+    current: "v1",
+    href: (await active(plain)).activeRevisionId,
+    deployment: "v1 · Completed",
+  });
+  assert.equal(await page.locator(".agent-table").getByText(/rev_/).count(), 0);
+
+  // A current version older than the first page of versions is read on its own.
+  const { page: paged } = await newPage(t, fixture, { browser });
+  await paged.route(`**/namespaces/${namespace.id}/agents/${newer.id}/revisions`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.data = body.data.filter((revision) => revision.revision !== 1);
+    await route.fulfill({ response, json: body });
+  });
+  await paged.route(deploymentsRead(namespace), (route) =>
+    route.fulfill(deploymentRecord(namespace, "succeeded")),
+  );
+  const activeId = (await active(newer)).activeRevisionId;
+  const direct = paged.waitForRequest((request) =>
+    new URL(request.url()).pathname.endsWith(`/agents/${newer.id}/revisions/${activeId}`),
+  );
+  await login(paged, fixture, `/console/agents?namespace=${namespace.id}`);
+  await direct;
+  const pagedRow = paged.locator(settledView).getByRole("row").filter({ hasText: newer.name });
+  await pagedRow.getByRole("link", { name: "v2 · Completed", exact: true }).waitFor();
+  await pagedRow.getByRole("link", { name: "v1", exact: true }).waitFor();
+
+  // A current version the reader cannot read keeps its ID, and its audited 403 is asked once per
+  // tab, not on every list view.
+  const { page: denied } = await newPage(t, fixture, { browser });
+  await denied.route(
+    `**/namespaces/${namespace.id}/agents/${newer.id}/revisions`,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.filter((revision) => revision.revision !== 1);
+      await route.fulfill({ response, json: body });
+    },
+  );
+  let deniedReads = 0;
+  await denied.route(`**/agents/${newer.id}/revisions/${activeId}`, (route) => {
+    deniedReads += 1;
+    return route.fulfill({
+      status: 403,
+      json: {
+        error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
+        meta: {},
+      },
+    });
+  });
+  await denied.route(deploymentsRead(namespace), (route) =>
+    route.fulfill(deploymentRecord(namespace, "succeeded")),
+  );
+  await login(denied, fixture, `/console/agents?namespace=${namespace.id}`);
+  const deniedRow = () =>
+    denied.locator(settledView).getByRole("row").filter({ hasText: newer.name });
+  const idLink = `${activeId.slice(0, 12)}…${activeId.slice(-6)}`;
+  await deniedRow().getByRole("link", { name: idLink, exact: true }).waitFor();
+  await denied.reload();
+  await deniedRow().getByRole("link", { name: "v2 · Completed", exact: true }).waitFor();
+  await deniedRow().getByRole("link", { name: idLink, exact: true }).waitFor();
+  assert.equal(deniedReads, 1);
 });

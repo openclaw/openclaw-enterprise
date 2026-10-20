@@ -1,7 +1,7 @@
 # Compute admission checks
 
 A [ComputeDriver](compute.md) can implement side-effect-free checks that let OCC
-refuse a request before it stores a Configuration or Agent, admits a revision,
+refuse a request before it stores a Configuration or Agent, creates an Agent revision,
 or stops a running one. The checks read only their arguments and the Driver's
 trusted Installation settings, never the backend.
 

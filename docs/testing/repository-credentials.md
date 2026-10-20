@@ -46,7 +46,7 @@ Full Integration's Gateway Routing journey checks the dedicated Agent, managed
 skill, and native network path with a substituted external provider. The Agent
 must return a pull request title absent from its prompt. Record a pass with no
 skips on the reviewed source. The hosted lane accepts only approved main
-revisions; verify the full conversation and cluster policy there or in an
+versions; verify the full conversation and cluster policy there or in an
 authorized equivalent environment.
 
 For native selection and routing, run:
@@ -72,7 +72,7 @@ For durable session and recovery checks, prepare a migrated disposable database
 with an application role as described in [PostgreSQL testing](postgresql.md).
 Run `postgres-repository-sessions.test.mjs`,
 `postgres-repository-broker-receipts.test.mjs`, and the relevant restart and
-worker revision tests with `OCC_TEST_DATABASE_URL` set. These checks do not prove
+worker version tests with `OCC_TEST_DATABASE_URL` set. These checks do not prove
 a running Kubernetes Pod or model turn.
 
 ## Qualify emitted artifacts
@@ -180,7 +180,7 @@ REPOSITORY_CREDENTIALS_LIVE_CA=/run/credential-service/public-ca.pem \
 
 This exercises a real provider through the gateway, not OCC Agent admission or a
 model. Provider keys and installation tokens stay on the service side. The test
-creates unique resources and attempts bounded cleanup. Ambiguous or incomplete
+creates unique resources and attempts cleanup with a timeout. Ambiguous or incomplete
 cleanup fails the test: reconcile the reported run marker and repository manually.
 A closed session is not disposed until its active and pending credential
 obligations are resolved. An unset selector skips the test; selecting it without
@@ -199,7 +199,7 @@ container command or ready Pod does not prove an Agent model turn.
 
 ## Record each evidence boundary
 
-Record the source revision, selected test and pass/fail/skip counts, artifact and
+Record the source commit, selected test and pass/fail/skip counts, artifact and
 image IDs where applicable, and cleanup results. A skip is not a pass. Source,
 packaged artifacts, controlled provider, separate containers, installed Agent,
 and live provider results establish different things; do not substitute one for

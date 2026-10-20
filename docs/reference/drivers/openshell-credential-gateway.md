@@ -57,7 +57,7 @@ The development profile lists Node and both
 x64/ARM64 Codex paths independently of the launcher host.
 A stale path fails the Harness startup model probe with
 `RUNTIME_MODEL_PROBE_FAILED`, or `RUNTIME_AUTHENTICATION_FAILED` when the provider
-rejects the missing credential, and the active revision keeps serving.
+rejects the missing credential, and the current Agent revision keeps serving.
 
 `toolBinaries` is optional: nonempty absolute paths inside the Sandbox image that
 may carry [tool sources](../credential-sources.md#bind-a-source-to-an-agent) to
@@ -160,7 +160,7 @@ before retrieval and discovery; Namespace-scoped OpenShell identities remain def
 Refresh exchanges the device grant into OpenShell custody; OCC stores an opaque
 session. `withSourceToken` requests five-minute validity; OpenShell may refresh
 and persists successors. Tokens enter only the trusted callback, never the Console.
-Cancellation cannot undo refresh. Revisions reuse metadata and placeholders.
+Cancellation cannot undo refresh. Agent revisions reuse metadata and placeholders.
 
 The Sandbox wraps the stable placeholder in the documented JWT alias for Codex's
 local account metadata. OpenShell replaces the whole alias, enforcing identity,
@@ -173,7 +173,7 @@ directory discovery does not prove execution. See
 - **Connection recovery and metadata.** Grant configuration and account metadata
   are separate writes; interrupted handoff may require reconnecting. An initial
   device-poll timeout closes the session and requires a fresh login. Metadata
-  is a login-time snapshot, so account changes require a new login and revision.
+  is a login-time snapshot, so account changes require a new login and Agent revision.
 
 ## OAuth2 refresh sources
 
@@ -230,14 +230,14 @@ The source ID identifies its profile even with an invalid persisted endpoint.
 Deletion refuses an unowned provider; unknown source types and gateway errors
 remain failures.
 
-For a revision, `attachForRevision` updates each source's profile and returns
-its provider name. It fails when two of the revision's sources would use
+For an Agent revision, `attachForRevision` updates each source's profile and returns
+its provider name. It fails when two of the Agent revision's sources would use
 the same environment variable, and the worker then fails the deployment with
 `CREDENTIAL_SOURCE_ENVIRONMENT_CONFLICT` without retrying. The
 OpenShell SandboxDriver appends those names to `SandboxSpec.providers`.
 `attachmentStatus` calls `GetSandboxProviderStatus` for each provider and maps
 OpenShell readiness states to `ready`, `withheld`, `revoked`, `failed`, or
-`pending`. `withdraw` calls `DetachSandboxProvider` for the revision's Sandbox,
+`pending`. `withdraw` calls `DetachSandboxProvider` for the Agent revision's Sandbox,
 then reads that receipt's status. Only `REVOKED` reports `revoked`: the
 Sandbox's placeholders then stop resolving, even in running processes. OpenShell
 reports `REVOKED` once the supervisor sees a running process without the
@@ -341,7 +341,7 @@ and selection rules.
 | Model requests fail with `403` "A credential placeholder in the request body cannot be forwarded" | A tool printed a placeholder into the conversation. Start a new thread, and avoid printing credential variables.                              |
 | Registration returns `503`                                                                        | Check that the API reaches the gateway, the token file is mounted, and the Workspace exists.                                                  |
 | Registration returns `404` for a name conflict                                                    | A provider named for this source exists without OCC's labels. Remove it in OpenShell, then retry.                                             |
-| The revision stays inactive with a `failed` or `withheld` attachment                              | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                                                          |
+| The Agent revision stays inactive with a `failed` or `withheld` attachment                        | Check the provider in OpenShell and the Sandbox's `GetSandboxProviderStatus` reason.                                                          |
 | Deployment fails with `RUNTIME_MODEL_PROBE_FAILED` or `RUNTIME_AUTHENTICATION_FAILED`             | Confirm `binaries` names the selected Harness executable (Codex or Node), the Harness trusts the Sandbox CA, and the credential is valid.     |
 
 ## Related

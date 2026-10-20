@@ -89,7 +89,7 @@ the full square canvas with Pillow's `Image.Resampling.LANCZOS`; do not redraw
 or replace the character. When updating these assets, check the README's relative
 image path, both sites' icon links, and the console asset allowlist. Inspect
 16- and 32-pixel icons on light and dark backgrounds and the Storybook
-**Components / Navigation / OCC build revision**, **Mobile drawer**, and
+**Components / Navigation / `OCC build revision`**, **Mobile drawer**, and
 **Pages / Sign in** previews. Storybook supplies simulated API state.
 
 Visual references: [README](../assets/oce-mech-branding/readme.png),

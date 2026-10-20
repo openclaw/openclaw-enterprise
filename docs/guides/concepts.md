@@ -26,15 +26,18 @@ groups and isolates its Agents, configuration, and credentials. Fresh bootstrap
 creates a platform Namespace named `default`, not an Agent or Kubernetes'
 built-in `default` namespace. Wait for it to become `ready` before deploying.
 
-## Agents and revisions
+<span id="agents-and-revisions" class="anchor-alias"></span>
+
+## Agents and versions
 
 An [Agent](../reference/agents.md) is a persistent workload definition with its
 own identity. Creating it does not start a process.
 
-Deploying creates an immutable **AgentRevision**: a snapshot of the Agent's
-configuration and execution settings. The worker provisions it, then activates
-it to receive traffic. Editing an Agent or Configuration does not change the
-running revision; deploy again to apply those changes.
+Deploying creates an **Agent revision** (`AgentRevision`) that stores the
+configuration and execution settings for the requested version. Its saved values
+cannot change. A worker prepares the workload and enables its route. OCC can
+select the version before that route is ready. Editing an Agent or Configuration
+does not change the running version; deploy again to apply those changes.
 
 ## Gateways and Harnesses
 

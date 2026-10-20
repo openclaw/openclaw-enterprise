@@ -7,6 +7,9 @@ on:
     branches:
       - main
   workflow_dispatch:
+  # Every 6 hours, so the local installation rehearsal (skipped on push) runs on main without a label.
+  schedule:
+    - cron: "17 */6 * * *"
 
 permissions:
   contents: read
@@ -30,7 +33,7 @@ jobs:
     name: Select advisory QA
     if: >-
       (github.ref == 'refs/heads/main' &&
-        (github.event_name == 'push' ||
+        (github.event_name == 'push' || github.event_name == 'schedule' ||
          (github.event_name == 'workflow_dispatch' && github.actor != 'dependabot[bot]'))) ||
       (github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository &&
@@ -45,7 +48,7 @@ jobs:
   local-installation:
     name: QA advisory (local installation)
     needs: eligibility
-    # Run this installation rehearsal with full-qa or a manual dispatch on main.
+    # Run this installation rehearsal with full-qa, the 6-hourly schedule or a manual dispatch on main.
     if: github.event_name != 'push'
     runs-on: ubuntu-22.04
     timeout-minutes: 180

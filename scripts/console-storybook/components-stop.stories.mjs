@@ -5,6 +5,7 @@ export default { title: "Components/Stop Agent" };
 export const Confirmation = story("stopConfirm");
 export const Pending = story("stopPending");
 export const Requested = story("stopRequested");
+export const DeletionDiscovered = story("stopReadDiscoversDeletion");
 export const RepeatConfirmation = story("stopRepeatConfirm");
 export const NoSelectedVersion = story("stopNoSelection");
 export const NeverDeployed = story("stopNeverDeployed");

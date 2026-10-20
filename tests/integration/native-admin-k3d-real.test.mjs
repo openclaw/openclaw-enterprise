@@ -204,9 +204,9 @@ async function launchBrowser(context, ingress) {
 
 async function login(page, origin, credentials, path) {
   await page.goto(new URL(path, origin).href);
-  await page.getByLabel("Username").fill(credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
-  await page.getByRole("button", { name: "Login" }).click();
+  await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL(/\/console\//);
 }
 

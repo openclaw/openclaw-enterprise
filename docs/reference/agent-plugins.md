@@ -1,14 +1,14 @@
 # Agent plugins
 
-Plugins add tools or integrations to an Agent. Selections belong to that Agent,
+Plugins add Agent tools or integrations. Selections belong to that Agent,
 separately from its reusable [Configuration](configuration.md). Changes apply on
-the next successful deployment; other Agents and active revisions stay unchanged.
+the next successful deployment; other Agents and selected versions stay unchanged.
 New Agents start without user-selected plugins.
 
 [Configure Agent plugins](../guides/topics/plugins-configure.md) explains selection,
 deployment and verification. Deploying requires a bundled [Plugin Driver](drivers/plugin.md);
 none is selected by default. OpenClaw Control Plane (OCC) validates policy shape
-and supported controls before saving nonempty selections. Startup performs the
+and supported controls before saving nonempty selections. Startup runs
 [remaining checks](#failures-and-boundaries).
 
 ## Current support
@@ -53,7 +53,7 @@ configuration. Startup resolves and translates current curated metadata inside
 the Agent workload, so a retry or restart can resolve a later curated release
 for the same catalog ID. Kubernetes keeps the native OpenClaw installation
 registry in the Agent-owned state database; serialized gateway replacement
-prevents old and new revisions from installing concurrently. The Agent
+prevents old and new versions from installing concurrently. The Agent
 workspace keeps its existing lifecycle. Ordinary retirement removes old
 workload state but not the Agent-owned database.
 
@@ -84,7 +84,7 @@ provider-owned Harnesses and non-Kubernetes Compute paths; see
 [native preparation](../flows/agent-plugins.md#4-prepare-native-runtime-state-and-hand-off-readiness).
 
 SSH Compute supports embedded OpenClaw only without plugin policy. Before host
-effects, it rejects any revision with a nonempty requested plugin map or an Agent
+effects, it rejects any version with a nonempty requested plugin map or an Agent
 default plugin approver policy (even an empty list), even when a PluginDriver is
 selected.
 
@@ -194,7 +194,9 @@ polling. Plugin failure responses use fixed platform messages and include only
 the admitted plugin ID in `error.data`, never native text, command output,
 credentials, claim tokens, or workload paths.
 
-### Agent and revision plugin fields
+<a id="agent-and-revision-plugin-fields" class="anchor-alias"></a>
+
+### Agent and `AgentRevision` plugin fields
 
 [Agent responses](agents.md) optionally include `plugins`, keyed by plugin ID
 with the desired selections above; an absent or empty map means none.
@@ -202,10 +204,10 @@ with the desired selections above; an absent or empty map means none.
 [AgentRevision responses](api.md) optionally include a `plugins` snapshot of
 admitted deployment state, not another mutation body.
 
-| Revision `plugins` field | Type                      | Meaning                                                |
-| ------------------------ | ------------------------- | ------------------------------------------------------ |
-| `driver`                 | Driver identity object    | Required `id` and `implementation` strings.            |
-| `plugins`                | Object keyed by plugin ID | Frozen requested selections, matching `Agent.plugins`. |
+| Agent revision `plugins` field | Type                      | Meaning                                                |
+| ------------------------------ | ------------------------- | ------------------------------------------------------ |
+| `driver`                       | Driver identity object    | Required `id` and `implementation` strings.            |
+| `plugins`                      | Object keyed by plugin ID | Frozen requested selections, matching `Agent.plugins`. |
 
 `AgentRevision.pluginApprovers` freezes the Agent default for that deployment.
 
@@ -243,7 +245,7 @@ Codex supports only `pluginApprovers`: its approval requests omit plugin and
 tool identity, so OpenClaw would deny every request once any plugin list exists.
 Agent create, update, and deploy reject Codex plugin or tool `approvers` with
 `400 INVALID_REQUEST`; remove them to update or redeploy an Agent saved earlier.
-Its deployed revision keeps running without working plugin approvals.
+Its deployed version keeps running without working plugin approvals.
 
 <!-- TODO(policySubject): allow Codex plugin and tool approvers once upstream
 Codex plugin approval requests carry policySubject. -->

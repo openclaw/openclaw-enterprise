@@ -9,14 +9,15 @@ export function createAgentStop(
   onAgentChanged = () => {},
   allowed = null,
 ) {
+  // One row of the Agent page's danger zone (UX spec 3.9); the confirmation carries the detail.
   const section = element("section", {
-    className: "agent-card stop-note",
+    className: "danger-zone-row stop-note",
     "aria-labelledby": "agent-stop-title",
   });
   const permissionNotice = "Your access does not include stopping this Agent.";
   let restrictConfirmation;
-  const feedback = element("div");
-  const actions = element("div", { className: "form-actions" });
+  const feedback = element("div", { className: "danger-zone-feedback" });
+  const actions = element("div", { className: "danger-zone-actions" });
   const stop = button("Stop Agent", openConfirmation, { className: "danger" });
   const refresh = button("Refresh stop status", () => void refreshStatus(), {
     tone: "ghost",
@@ -35,43 +36,49 @@ export function createAgentStop(
     noReadableVersions: undefined,
     // The page's "vN" label for a version id, once its version list loads.
     versionLabel: () => undefined,
-    // Set once this viewer opens Stop or refreshes here, so the card never vanishes under them.
+    // Set once this viewer opens Stop or refreshes here, so the row never vanishes under them.
     used: false,
   };
 
   // Focus lands here when the control that would take it is not rendered.
-  const title = element("h2", { id: "agent-stop-title", tabindex: "-1" }, "Stop Agent");
+  const title = element("h3", { id: "agent-stop-title", tabindex: "-1" }, "Stop Agent");
   section.append(
-    title,
     element(
-      "p",
-      { className: "muted" },
-      "Stop interrupts the current runtime gateway. Configuration, versions, Credentials, and workspace data are retained.",
+      "div",
+      { className: "danger-zone-text" },
+      title,
+      element(
+        "p",
+        { className: "muted" },
+        "Stops the running version. The Agent stays and can be deployed again.",
+      ),
     ),
-    feedback,
     actions,
+    feedback,
   );
 
   function render() {
     const requested = state.agent.desiredRuntimeState === "stopped";
+    // A running Agent's row is the title, its sentence and Stop; the overview already shows the
+    // current version. After a stop request the row reports what Refresh reads back.
     feedback.replaceChildren(
-      element(
-        "dl",
-        { className: "credential-status-list" },
-        element("dt", {}, "Requested runtime state"),
-        element("dd", {}, requested ? "Stopped" : "Running"),
-        element("dt", {}, "Current version"),
-        element(
-          "dd",
-          {},
-          state.agent.activeRevisionId
-            ? (state.versionLabel(state.agent.activeRevisionId) ??
-                `Version ${shortId(state.agent.activeRevisionId)}`)
-            : "No current version",
-        ),
-      ),
       ...(requested
         ? [
+            element(
+              "dl",
+              { className: "credential-status-list" },
+              element("dt", {}, "Requested runtime state"),
+              element("dd", {}, "Stopped"),
+              element("dt", {}, "Current version"),
+              element(
+                "dd",
+                {},
+                state.agent.activeRevisionId
+                  ? (state.versionLabel(state.agent.activeRevisionId) ??
+                      `Version ${shortId(state.agent.activeRevisionId)}`)
+                  : "No current version",
+              ),
+            ),
             statusBlock(
               "info",
               null,
@@ -102,16 +109,19 @@ export function createAgentStop(
     refresh.disabled = state.pending;
     refresh.textContent = state.pending ? "Checking…" : "Refresh stop status";
     // An Agent created through the API starts stopped and has no version until its first
-    // deploy, so there is nothing to stop or to check (finding 1394), and the card is hidden
+    // deploy, so there is nothing to stop or to check (finding 1394), and the row is hidden
     // (finding 1899). Only what this viewer can read decides it: a member who reads no version
-    // of a deployed Agent sees the same. While the version list loads, the card stays hidden.
+    // of a deployed Agent sees the same. While the version list loads, the row stays hidden.
     const neverStarted =
       requested &&
       !state.agent.activeRevisionId &&
       (state.noReadableVersions === true || state.noReadableVersions === undefined) &&
       !state.pending &&
       !state.needsRefresh;
-    setHidden(section, neverStarted && !state.used);
+    // A viewer whose permission answer denies Agent operate has no row either (UX spec 3.9).
+    // A missing answer keeps it, and the API still decides. An answer that lands while this
+    // viewer has the confirmation open keeps the row, so the reason stays where they were.
+    setHidden(section, (neverStarted || state.forbidden) && !state.used);
     // After a request, a disabled Stop beside Request Stop again only adds noise, and an
     // uncertain outcome offers only Refresh (finding 1899).
     if (neverStarted) {
@@ -164,7 +174,7 @@ export function createAgentStop(
         return;
       }
       if (current?.status === "deleting") {
-        onDeleting();
+        onDeleting({ focus: returnFocus });
         return;
       }
       if (current?.status === "active") {
@@ -219,7 +229,7 @@ export function createAgentStop(
       }
       if (stopped?.status === "deleting") {
         dialog.close();
-        onDeleting();
+        onDeleting({ focus: true });
         return;
       }
       if (stopped?.status !== "active" || stopped?.desiredRuntimeState !== "stopped") {
