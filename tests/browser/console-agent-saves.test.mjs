@@ -1845,4 +1845,19 @@ test("Edit current Configuration opens the draft's Configuration editor in view 
     const box = active?.getBoundingClientRect();
     return active?.id === "configuration-json" && box.top >= 0 && box.top < 120;
   });
+
+  // Unsaved edits keep the draft in its editor: going to v1 and back through Edit current
+  // Configuration brings that editor, with the edits, into view and focus.
+  await editor.fill(`${await editor.inputValue()}\n`);
+  await page.locator('.revision-selector [aria-label$=", current version"]').click();
+  await page.waitForURL((next) => next.searchParams.get("revision") === revision.id);
+  await start.scrollIntoViewIfNeeded();
+  await start.click();
+  await page.waitForURL(/revision=draft/);
+  await page.waitForFunction(() => {
+    const active = globalThis.document.activeElement;
+    const box = active?.getBoundingClientRect();
+    return active?.id === "configuration-json" && box.top >= 0 && box.top < 120;
+  });
+  assert.match(await editor.inputValue(), /\n$/);
 });

@@ -1673,9 +1673,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // Edit current Configuration opens the draft with its Configuration editor open, in view and
     // focused. It switched to the draft at the top of the page, and the editor still needed an
     // Edit Configuration click far below (finding 2061).
-    const editStart = edit
-      ? detailPane.querySelector('button[data-opens="configuration-editor"]')
-      : null;
+    // A draft restored with unsaved edits is already in the editor; otherwise its Edit
+    // Configuration button opens it.
+    const editorTarget = () =>
+      detailPane.querySelector("#configuration-json") ??
+      detailPane.querySelector('button[data-opens="configuration-editor"]');
+    const editStart = edit ? editorTarget() : null;
     if (edit && !editStart && !detailLoadFinished) {
       const tab = selectedTab;
       void Promise.resolve(details).then(
@@ -1686,7 +1689,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             !deleting &&
             selectedTab === tab &&
             (!focused || focused === document.body || focused === tabControls.get(tab)) &&
-            detailPane.querySelector('button[data-opens="configuration-editor"]')
+            editorTarget()
           ) {
             openVersionDetail({ ...options, edit });
           }
@@ -1696,7 +1699,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     if (editStart && !editStart.disabled) {
       // Entering the editor focuses it without scrolling; the editor is then brought into view.
-      editStart.click();
+      if (editStart.id === "configuration-json") {
+        editStart.focus({ preventScroll: true });
+      } else {
+        editStart.click();
+      }
       const field = detailPane.querySelector("#configuration-json")?.closest(".form-field");
       if (field) {
         scrollToVersionDetail(options, field);
@@ -3906,15 +3913,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                   "div",
                   { className: "form-actions" },
                   button("Edit current Configuration", () => {
-                    if (draftEditorBlocksNavigation()) {
-                      showLeaveBlock();
-                      return;
-                    }
-                    // The draft this navigation opens takes it with its editor open.
+                    // The draft this navigation opens takes it with its editor open, unless
+                    // the caller is known to be refused Agent updates (its Save would fail).
                     linkedVersionView = {
                       key: linkedKey("draft", "configuration"),
                       load: consoleLoads + 1,
-                      edit: true,
+                      edit: callerPermissions?.update !== false,
                     };
                     context.navigate(target("draft", "configuration"));
                   }),
