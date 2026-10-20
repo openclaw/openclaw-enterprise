@@ -14,8 +14,12 @@ follows `:focus-visible`. No part of any ring may be cut off.
    the others, then Tab to Edit Configuration and the **View native
    Configuration** disclosure. Each tab shows the inset ring on all four sides;
    the other stops show the outer ring.
-3. Open **Pages / Agent detail / Long version history**. Tab to a version in
-   the version list. It shows the inset ring on all four sides.
+3. Open **Pages / Agent detail / Long version history**. Tab to the version
+   list. Focus lands on v8 with the inset ring on all four sides. The list is
+   one Tab stop: Down and Up move between versions and wrap, Home and End
+   jump to either end, and Tab leaves for **Show older versions**. Shift+Tab
+   returns to v8, not the version the arrows last reached. Press Down, then
+   Enter: v7 opens, and the next Tab into the list lands on v7.
 4. Open **Pages / Agent detail / Runtime logs**. Tab to the log pane. Its ring
    sits inside the pane edge (inset). Tab to a log row summary. Its ring sits
    outside, like a button, and the pane scrolls far enough to show its bottom

@@ -235,7 +235,11 @@ export function installFixture(scenario, evidence) {
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
-    user: { id: "storybook-operator", name: "Demo Operator", email: "operator@example.com" },
+    user: scenario.sessionUser ?? {
+      id: "storybook-operator",
+      name: "Demo Operator",
+      email: "operator@example.com",
+    },
   };
   const namespaces = scenario.emptyNamespaces
     ? []

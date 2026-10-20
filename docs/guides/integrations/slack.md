@@ -204,6 +204,6 @@ bot. To enable one-to-one messages:
 
 ## Related
 
-- [Console channel editing](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
+- [Console channel editing](../../reference/console/versions-and-channel-drafts.md)
 - [Initial Agent credentials](../../reference/console/create-and-deploy.md#initial-runtime-credentials)
 - [Agent deployment](../../reference/agents/deployment.md)

@@ -1216,6 +1216,9 @@ test("every lane job stops its test files before its own timeout", (t) => {
   assert.equal(deadline.id, "deadline", "the deadline counts the lane's setup too");
   const runLane = action.runs.steps.find((step) => step.name === "Run lane");
   assert.equal(runLane.env.CI_RUNNER_DEADLINE_MS, "${{ steps.deadline.outputs.ms }}");
+  // Lane image builds keep part of the same time for the tests (finding 2103).
+  const prepareLane = action.runs.steps.find((step) => step.name === "Prepare lane");
+  assert.equal(prepareLane.env.CI_RUNNER_DEADLINE_MS, "${{ steps.deadline.outputs.ms }}");
 
   const callers = [];
   for (const name of readdirSync(join(repositoryRoot, ".github/workflows"))) {

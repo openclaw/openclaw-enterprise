@@ -503,6 +503,47 @@ function pendingAttempt(attempt) {
   );
 }
 
+// One Tab stop for a list of version buttons, as in the tab strip (UX plan C7): it sits on the
+// viewed version (else the newest), Up/Down (and Home/End) move focus between versions, and
+// Enter or Space opens one. A rail of 51 versions was 51 Tab stops (finding 2101).
+function rovingVersions(list, items) {
+  const home = items.find((item) => item.getAttribute("aria-current") === "page") ?? items[0];
+  const reset = () => {
+    for (const item of items) {
+      item.tabIndex = item === home ? 0 : -1;
+    }
+  };
+  reset();
+  list.addEventListener("keydown", (event) => {
+    const enabled = items.filter((item) => !item.disabled);
+    const at = enabled.indexOf(document.activeElement);
+    const next = {
+      ArrowUp: at - 1,
+      ArrowDown: at + 1,
+      Home: 0,
+      End: enabled.length - 1,
+    }[event.key];
+    if (at === -1 || next === undefined || event.altKey || event.ctrlKey || event.metaKey) {
+      return;
+    }
+    event.preventDefault();
+    const target = enabled[(next + enabled.length) % enabled.length];
+    for (const item of items) {
+      item.tabIndex = item === target ? 0 : -1;
+    }
+    target.focus({ preventScroll: true });
+    target.scrollIntoView({ block: "nearest" });
+  });
+  // Tabbing back in lands on the viewed version, wherever the arrows left focus.
+  list.addEventListener("focusout", () => {
+    queueMicrotask(() => {
+      if (!list.contains(document.activeElement)) {
+        reset();
+      }
+    });
+  });
+}
+
 function createDeploymentStatusPanel(context, path, revision, onAgentChange, onStatusChange) {
   const refresh = button(
     "Refresh deployment",
@@ -2127,8 +2168,43 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
   }
 
+  // The rail's version buttons by revision ID, for the outcome badge the latest one carries.
+  const versionControls = new Map();
+  // A version's own deployment outcome beside its number (finding 2095): the rail knows the
+  // latest version's record, so a failed or deploying latest version is marked; the others have
+  // no record read here and stay plain. The rail may show before that record is read, so the
+  // badge is set in place.
+  function markVersionOutcomes() {
+    const outcome = {
+      queued: ["Queued", "info"],
+      running: ["In progress", "info"],
+      failed: ["Failed", "danger"],
+    }[latestDeploymentStatus];
+    for (const [id, { control, line, label }] of versionControls) {
+      const [text, tone] = (id === activityRevisionId && outcome) || [];
+      const shown = line.querySelector(".version-outcome");
+      if (
+        (shown?.textContent ?? "") === (text ?? "") &&
+        (shown?.dataset.tone ?? "") === (tone ?? "")
+      ) {
+        continue;
+      }
+      shown?.remove();
+      if (text) {
+        line.append(
+          " ",
+          element("span", { className: "badge version-outcome", "data-tone": tone }, text),
+        );
+      }
+      const name = text ? `${label}, deployment ${text.toLowerCase()}` : label;
+      if (control.getAttribute("aria-label") !== name) {
+        control.setAttribute("aria-label", name);
+      }
+    }
+  }
   function renderVersions(revisions, snapshot, historyError = null) {
     revisionControls.clear();
+    versionControls.clear();
     // Opening the draft is navigation. Saving a Configuration and deploying have their own permissions.
     const newVersion = button(
       callerPermissions?.update === false ? "Open version draft" : "Create new version",
@@ -2139,28 +2215,37 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       },
     );
     trackRevisionControl(newVersion);
-    const list = element("div", { className: "version-list" });
+    // The versions, the viewed one included, are one Tab stop (finding 2101), so the list is a
+    // vertical toolbar: screen readers announce it as one control that the arrows move through.
+    const list = element("div", {
+      className: "version-list",
+      role: "toolbar",
+      "aria-orientation": "vertical",
+      "aria-label": "Versions",
+    });
+    const items = [];
     for (const revision of revisions) {
+      const label = `View version v${revision.revision}${revision.id === currentRevisionId ? ", current version" : ""}`;
       const control = button("", () => change(revision.id, "configuration"), {
         className: "version-item",
-        "aria-label": `View version v${revision.revision}${revision.id === currentRevisionId ? ", current version" : ""}`,
+        "aria-label": label,
         ...(selected === revision.id ? { "aria-current": "page" } : {}),
       });
       // The current version's badge follows its number on the same line, after a space.
-      control.append(
-        element(
-          "span",
-          {},
-          element("strong", {}, `v${revision.revision}`),
-          ...(revision.id === currentRevisionId
-            ? // Current means only that OCC selected this version; it can be stopped or failed
-              // (finding 1969), so the badge marks it without claiming health.
-              [" ", element("span", { className: "badge", "data-tone": "info" }, "Current")]
-            : []),
-        ),
-        element("small", {}, displayDate(revision.createdAt)),
+      const line = element(
+        "span",
+        {},
+        element("strong", {}, `v${revision.revision}`),
+        ...(revision.id === currentRevisionId
+          ? // Current means only that OCC selected this version; it can be stopped or failed
+            // (finding 1969), so the badge marks it without claiming health.
+            [" ", element("span", { className: "badge", "data-tone": "info" }, "Current")]
+          : []),
       );
+      control.append(line, element("small", {}, displayDate(revision.createdAt)));
+      versionControls.set(revision.id, { control, line, label });
       trackRevisionControl(control);
+      items.push(control);
       list.append(control);
     }
     if (selected !== "draft" && !revisions.some((revision) => revision.id === selected)) {
@@ -2175,6 +2260,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           element("small", {}, "Viewed version"),
         );
         trackRevisionControl(control);
+        items.push(control);
         list.append(control);
       } else {
         list.append(
@@ -2186,6 +2272,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         );
       }
     }
+    rovingVersions(list, items);
     // Versions list one page at a time, newest first; older pages load on request.
     if (olderCursor && !historyError) {
       const older = button(
@@ -2307,6 +2394,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
 
   function renderLatestDeployment() {
+    markVersionOutcomes();
     const latest = visibleRevisions[0];
     if (!latest) {
       setHidden(recovery, true);

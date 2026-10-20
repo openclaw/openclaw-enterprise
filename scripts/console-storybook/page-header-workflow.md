@@ -25,8 +25,9 @@ Namespace control. Check each story at 1440, 1024 and 390.
 5. Open **Pages / Agent detail / Copy Agent ID without clipboard access**. The
    ID is selected and no "Copied" status shows.
 6. Open **Pages / Create Agent / Choose a starting point** and **Pages / Settings / Account**.
-   Create Agent has ← Agents and the Namespace control under its title.
-   Settings has no Namespace control.
+   Create Agent has ← Agents and the Namespace control under its title. Its
+   card heading, **Your next teammate**, is a step smaller than the page title
+   (18 px against 24 px). Settings has no Namespace control.
 
 Storybook fixtures are simulated UI proof. They do not verify a live
 deployment or clipboard permissions in a real browser profile.

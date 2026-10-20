@@ -2445,8 +2445,11 @@ function settingsView() {
         element(
           "dl",
           { className: "settings" },
-          element("dt", {}, "Name"),
-          element("dd", {}, user.name),
+          // An account with no display name carries its email as the name; the email row
+          // already says it (finding 2099).
+          ...(user.name && user.name !== user.email
+            ? [element("dt", {}, "Name"), element("dd", {}, user.name)]
+            : []),
           element("dt", {}, "Email"),
           element("dd", {}, user.email),
         ),

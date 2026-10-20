@@ -134,7 +134,7 @@ The **Configuration**, **Plugins**, **Channels**, **Repositories**, **Credential
 Repositories and Credentials are available only on the new version draft; Logs only on a
 version; Access only to Installation administrators.
 **Repositories** edits the draft's repository selections and access levels; see
-[repository access](../../reference/console/create-and-deploy.md#create-an-agent).
+[repository access](../../reference/console/repository-access.md).
 Browser Back and Forward restore the selected tab. Leaving a tab clears entered
 token values. The workspace remains live regardless of the viewed version.
 
