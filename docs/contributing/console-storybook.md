@@ -72,8 +72,9 @@ Stories reach error states through real controls after loading fixture data.
 | Stop Agent                                                                 | Confirmation, stopped requested state, permission denial, unknown outcome requiring refresh.                                                                                                                                                                                                                                                                                                                      |
 | Deletion                                                                   | Confirmation, pending cleanup, permission denial, conflict, unknown outcome.                                                                                                                                                                                                                                                                                                                                      |
 
-Pending-read stories use the real client's 15-second timeout; reset them to replay
-loading.
+Pending reads use the client's 15-second timeout; reset to replay loading.
+
+[Gateway people](../../scripts/console-storybook/gateway-people.md).
 
 ## Return navigation
 

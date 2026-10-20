@@ -304,6 +304,7 @@ test("Deployment activity keeps following after Back restores the cached Agent v
   const panel = await activity.elementHandle();
   // The Console caches the Agent view for Back only if its reads finished before it was left.
   await waitForIdleFetches(page);
+  assert.equal(await page.getByRole("region", { name: "People" }).count(), 0);
 
   // While the Agent view is cached, its poll timer fires without a current view.
   await page.getByRole("link", { name: "Namespaces", exact: true }).click();
