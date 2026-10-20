@@ -76,6 +76,7 @@ export const DeploymentUnavailable = story("deploymentUnavailable");
 export const DiagnosticsSuccess = story("diagnosticsSuccess");
 export const DiagnosticsFast = story("diagnosticsFast");
 export const DiagnosticsReader = story("diagnosticsReader");
+export const DangerZoneReader = story("dangerZoneReader");
 export const DiagnosticsRefused = story("diagnosticsRefused");
 export const DiagnosticsUnknown = story("diagnosticsUnknown");
 export const DiagnosticsUnavailable = story("diagnosticsUnavailable");

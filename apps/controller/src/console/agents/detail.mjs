@@ -979,7 +979,7 @@ function createVersionDiagnosticsPanel(
   const section = element("section", { className: "agent-card version-diagnostics" });
   let diagnostics = null;
   // Set when the caller's permission answer denies Agent operate, which diagnostics need: the
-  // button is disabled with the reason, as Stop and Delete are (finding 1992).
+  // button is disabled with the reason (finding 1992).
   let operateDenied = false;
   let error = null;
   let loading = false;
@@ -1383,7 +1383,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       delete badge.dataset.tone;
     }
   }
-  // A requested stop belongs in the summary, not only in the Stop card at the bottom (finding
+  // A requested stop belongs in the summary, not only in the Stop row at the bottom (finding
   // 1899). It is attached only once the Agent has a version: an Agent is created stopped.
   const runtimeNote = element("p", { className: "stat-help" });
   const stat = (label, ...children) =>
@@ -1506,13 +1506,29 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     showDeleting,
     callerPermissionsRead.then((permissions) => permissions?.delete),
   );
+  // Stop and Delete are the rows of one danger zone at the end of the page (UX spec 3.9). A row
+  // hides itself when the caller's permission answer denies it, and the zone hides with no row.
+  const dangerZone = element(
+    "section",
+    { className: "section danger-zone", "aria-labelledby": "danger-zone-title" },
+    element("h2", { id: "danger-zone-title" }, "Danger zone"),
+    element(
+      "div",
+      { className: "card card--danger danger-zone-card" },
+      stopPanel.section,
+      deletion.section,
+    ),
+  );
   function showDeleting() {
     deleting = true;
     headerActions.replaceChildren(
       element("span", { className: "badge", "data-tone": "warning" }, "Deleting"),
     );
     view.classList.remove("agent-detail-pending", "agent-logs-opening");
-    view.replaceChildren(deletion);
+    // A deleting Agent can no longer be stopped; its deletion row is all the page shows.
+    stopPanel.section.remove();
+    deletion.showOnPage();
+    view.replaceChildren(dangerZone);
     context.revealed?.();
   }
   if (deleting) {
@@ -4962,7 +4978,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return container;
   }
 
-  view.append(stopPanel.section, deletion);
+  view.append(dangerZone);
   context.setTabNavigation((next) => {
     const nextRevision = next.searchParams.get("revision") ?? agent.activeRevisionId ?? "draft";
     const nextTab = tabsForSelection.includes(next.searchParams.get("tab"))

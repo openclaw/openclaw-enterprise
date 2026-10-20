@@ -4723,7 +4723,7 @@ export const scenarios = {
     candidateDeploymentStatus: "succeeded",
     agentPermissionSummary: { update: true, deploy: true, operate: false, delete: true },
     description:
-      "Diagnostics need Agent operate. For a viewer whose permission answer denies it, Run diagnostics is disabled and says why, as Stop Agent does.",
+      "Diagnostics need Agent operate. For a viewer whose permission answer denies it, Run diagnostics is disabled and says why, and the danger zone has no Stop row.",
     gap: "The permission answer is simulated; the API still authorizes every request.",
   },
   diagnosticsRefused: {
@@ -6910,6 +6910,16 @@ export const scenarios = {
       "Cancel or press Escape. The page should explain why Stop is unavailable, without sending a stop request.",
     ],
   },
+  dangerZoneReader: {
+    group: "Pages/Agent detail",
+    name: "Danger zone, viewer cannot stop or delete",
+    path: revision,
+    deployed: true,
+    readOnlyPermissionSummary: true,
+    description:
+      "The permission answer denies Agent operate and delete, so the page has no Danger zone: neither Stop Agent nor Delete Agent is offered.",
+    gap: "The permission answer is simulated; the API still authorizes every request.",
+  },
   stopConfirm: {
     group: "Components/Stop Agent",
     name: "Confirmation",
@@ -6946,7 +6956,7 @@ export const scenarios = {
       "Refresh again, then press Tab while Checking is visible. Focus stays on the control you moved to.",
     ],
     description:
-      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the card offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
+      "The requested state is stopped with a selected revision. The overview shows Runtime: Stop requested, and the Stop row offers only Request Stop again and Refresh; shutdown completion is not exposed here.",
   },
   stopRepeatConfirm: {
     group: "Components/Stop Agent",
@@ -6973,7 +6983,7 @@ export const scenarios = {
     name: "Never deployed",
     path: draft,
     description:
-      "An Agent created without a deploy is stopped with no version, so the page has no Stop card and the overview reports no stop request.",
+      "An Agent created without a deploy is stopped with no version, so the danger zone has no Stop row and the overview reports no stop request.",
   },
   stopRepeatUnknown: {
     group: "Components/Stop Agent",
