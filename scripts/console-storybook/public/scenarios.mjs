@@ -4536,6 +4536,8 @@ export const scenarios = {
       "Recovery comes first: v7 failed its startup model check, while selected v6 may have stopped. The detailed record preserves the reported cause without assuming a credential problem.",
     steps: [
       "Open v7 Logs and confirm the failed version, then go Back. Open Configuration goes to the draft without deploying, scrolls it into view and focuses its Configuration tab.",
+      "From the draft, open Channels, then Repositories. Select example/application without saving, then follow Open Configuration in the recovery card.",
+      "Focus returns to Repositories with your selection intact and a reminder to save or cancel. Choose Cancel, then go Back once to Channels and Forward to Repositories.",
       "At phone width, the failure, both recovery links, and selected version are still near the top.",
     ],
   },

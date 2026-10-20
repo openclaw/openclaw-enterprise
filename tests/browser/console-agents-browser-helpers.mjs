@@ -507,11 +507,12 @@ export async function routeFailedDeployment(
             namespaceId,
             agentId,
             status: "failed",
+            cleanup: null,
             error: persistedDeploymentError(code),
             warnings: [],
             progress: null,
           },
-          meta: { requestId: "req_test_failed_deployment" },
+          meta: { requestId: "req_00000000-0000-4000-8000-000000000001" },
         }),
       }),
   );

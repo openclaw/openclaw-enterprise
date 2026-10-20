@@ -11,6 +11,7 @@ import {
   accessBindingPostRequests,
   apiRequests,
   detailUrl,
+  hasFocus,
   holdRequests,
   login,
   nativeValues,
@@ -18,9 +19,11 @@ import {
   pathRequests,
   persistedDeploymentError,
   repositoryCheckbox,
+  routeFailedDeployment,
   secretOptionLabel,
   setSlackSelection,
   selectSecret,
+  settlePageRequests,
   waitForCondition,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
@@ -846,31 +849,87 @@ for (const [field, change] of [
   });
 }
 
+async function deployableRepositoryAgent(t, name) {
+  const { fixture, namespace, modelSecret, grantModelAccess } =
+    await createConsoleRepositoryLaunchFixture(t);
+  const configuration = await fixture.createConfiguration(
+    namespace.id,
+    createHarnessConfiguration("codex", "gpt-5.1"),
+  );
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name,
+      configurationId: configuration.id,
+      executionMode: "dedicated",
+      harnessAuth: { method: "api_key", source: modelSecret.ref },
+    },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const agent = created.data;
+  await grantModelAccess(agent);
+  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const provisioned = await fixture.request("POST", `${path}/runtime-credentials`, {
+    headers: { origin: fixture.origin },
+    body: {},
+  });
+  assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
+  return { fixture, namespace, agent, path };
+}
+
+test("A recovery link refused by unsaved repository changes preserves Back and Forward", async (t) => {
+  const { fixture, namespace, agent } = await deployableRepositoryAgent(t, "Recovery Agent");
+  const revision = await fixture.deployAgent(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  // The controller admitted this revision. Supply its failed status so the real recovery link
+  // is available while the reader edits the draft; no worker or external service runs.
+  await routeFailedDeployment(page, fixture, {
+    namespaceId: namespace.id,
+    agentId: agent.id,
+    deploymentId: revision.id,
+    code: "RUNTIME_MODEL_PROBE_FAILED",
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "channels"));
+  const channels = page.getByRole("tab", { name: "Channels", selected: true });
+  await channels.waitFor();
+  const channelsUrl = page.url();
+  const requests = apiRequests(page, fixture.origin);
+  const repositories = page.getByRole("tab", { name: "Repositories" });
+  await repositories.click();
+  const choice = repositoryCheckbox(page, "example/application");
+  await choice.check();
+  const repositoriesUrl = page.url();
+
+  await page
+    .getByRole("region", { name: "Deployment needs attention" })
+    .getByRole("link", { name: "Open Configuration" })
+    .click();
+  await page.getByText("Save or cancel repository changes before leaving this tab.").waitFor();
+  assert.equal(page.url(), repositoriesUrl);
+  assert.equal(await hasFocus(repositories), true);
+  assert.equal(await choice.isChecked(), true);
+
+  // Cancel rereads the saved selection in place. Back should not revisit a duplicate entry.
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await choice.and(page.locator("input:enabled:not(:checked)")).waitFor();
+  await page.goBack();
+  assert.equal(page.url(), channelsUrl, "one Back after Cancel returns to Channels");
+  await channels.waitFor();
+  await page.goForward();
+  await page.getByRole("tab", { name: "Repositories", selected: true }).waitFor();
+  assert.equal(page.url(), repositoriesUrl);
+  await settlePageRequests(page);
+  assert.deepEqual(
+    requests.filter((request) => request.method !== "GET"),
+    [],
+  );
+});
+
 for (const tab of ["configuration", "repositories"]) {
   test(`Agent deployment keeps ${tab} edits unavailable until the request finishes`, async (t) => {
-    const { fixture, namespace, modelSecret, grantModelAccess } =
-      await createConsoleRepositoryLaunchFixture(t);
-    const configuration = await fixture.createConfiguration(
-      namespace.id,
-      createHarnessConfiguration("codex", "gpt-5.1"),
+    const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
+      t,
+      `Deploying from ${tab}`,
     );
-    const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
-      body: {
-        name: `Deploying from ${tab}`,
-        configurationId: configuration.id,
-        executionMode: "dedicated",
-        harnessAuth: { method: "api_key", source: modelSecret.ref },
-      },
-    });
-    assert.equal(created.status, 201, JSON.stringify(created.body));
-    const agent = created.data;
-    await grantModelAccess(agent);
-    const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-    const provisioned = await fixture.request("POST", `${path}/runtime-credentials`, {
-      headers: { origin: fixture.origin },
-      body: {},
-    });
-    assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
     const { page } = await newPage(t, fixture);
     await login(
       page,
@@ -1727,29 +1786,10 @@ test("Agent credentials block tab changes until Slack Secret grants finish", asy
 });
 
 test("Agent deployment guides a rejected model credential and gates unsaved authentication edits", async (t) => {
-  const { fixture, namespace, modelSecret, grantModelAccess } =
-    await createConsoleRepositoryLaunchFixture(t);
-  const configuration = await fixture.createConfiguration(
-    namespace.id,
-    createHarnessConfiguration("codex", "gpt-5.1"),
+  const { fixture, namespace, agent, path } = await deployableRepositoryAgent(
+    t,
+    "Rejected credential",
   );
-  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
-    body: {
-      name: "Rejected credential",
-      configurationId: configuration.id,
-      executionMode: "dedicated",
-      harnessAuth: { method: "api_key", source: modelSecret.ref },
-    },
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const agent = created.data;
-  await grantModelAccess(agent);
-  const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
-  const provisioned = await fixture.request("POST", `${path}/runtime-credentials`, {
-    headers: { origin: fixture.origin },
-    body: {},
-  });
-  assert.equal(provisioned.status, 200, JSON.stringify(provisioned.body));
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const failure = persistedDeploymentError("RUNTIME_AUTHENTICATION_FAILED");

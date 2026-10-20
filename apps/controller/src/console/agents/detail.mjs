@@ -1323,6 +1323,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         showLeaveBlock();
         return;
       }
+      if (draftEditorBlocksNavigation()) {
+        // Show the refusal at the editor without adding a visit the reader never made.
+        showLeaveBlock();
+        openVersionDetail({ animate: true });
+        return;
+      }
       // The load this navigation starts is the next one.
       linkedVersionView = { key: linkedKey(revision, tab), load: consoleLoads + 1, deploy };
       context.navigate(target(revision, tab));
