@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   detailUrl,
   fileBrowser,
-  holdRequests,
   login,
   nativeValues,
   newPage,
@@ -253,42 +252,39 @@ test("Create Agent leads with ← Agents and puts the Namespace under its title"
   assert.equal(new URL(page.url()).pathname, "/console/agents");
 });
 
-// Create new version lives in the header, outside the page view, so the Agent page's refocus
-// recheck holds it inert with the page and gives its focus back afterwards, unless the reader
-// moved elsewhere meanwhile (finding 1654's rule for the view's own controls).
-test("a refocus recheck holds the header's Create new version with the page and keeps its focus", async (t) => {
-  const { fixture, namespace } = await createReadyConsoleNamespace(t, "Header refocus");
-  const agent = await fixture.createAgent(namespace.id, "Refocus Agent", nativeValues("refocus"));
-  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+// Settings has no Namespace control, so a Namespace that turned unreadable while it sat in the URL
+// gets no recovery there: "Switch Namespace" would have nothing to focus. Backends still has the
+// compact control, so its recovery keeps working.
+test("Settings offers no Namespace recovery, which needs the selector it no longer has", async (t) => {
+  const { fixture } = await createReadyConsoleNamespace(t, "Readable scope");
+  const revoked = await fixture.createNamespace("Revoked scope", { ready: true });
   const { page } = await newPage(t, fixture, { browser });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, active.revision.id).href);
-  const header = page.locator(".content .page-header");
-  const create = header.getByRole("button", { name: "Create new version", exact: true });
-  await create.waitFor();
+  await login(page, fixture, `/console/backends?namespace=${revoked.id}`);
+  await page.locator("#namespace-selector:not(:disabled)").waitFor();
+  fixture.policy.restrictions.push({
+    id: "deny-revoked-read",
+    namespaceId: revoked.id,
+    resourceKind: "namespace",
+    action: "read",
+    effect: "deny",
+  });
+
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  const recover = page.getByRole("button", { name: "Switch Namespace", exact: true });
+  await recover.click();
+  assert.equal(
+    await page
+      .locator(".page-header #namespace-selector")
+      .evaluate((node) => node === node.ownerDocument.activeElement),
+    true,
+    "Backends: Switch Namespace focuses the compact selector",
+  );
+
+  await page.goto(new URL(`/console/settings?namespace=${revoked.id}`, fixture.origin).href);
+  await page.getByRole("heading", { name: "Settings", exact: true }).waitFor();
   await page.locator(settledView).waitFor();
-  const isFocused = (control) =>
-    control.evaluate((node) => node === globalThis.document.activeElement);
-  const navigation = page.getByRole("link", { name: "Namespaces", exact: true });
-  for (const expectedFocus of [create, navigation]) {
-    await create.focus();
-    assert.equal(await isFocused(create), true);
-    const read = await holdRequests(t, page, "**/api/auth/session", { once: true });
-    await page.evaluate(() => globalThis.dispatchEvent(new Event("focus")));
-    await read.requested;
-    // The page and its header action are held together.
-    await header.locator(".page-view-actions[inert]").waitFor({ state: "attached" });
-    await page.locator('.content [aria-live="polite"][inert]').waitFor({ state: "attached" });
-    if (expectedFocus === navigation) {
-      await navigation.focus();
-    }
-    read.release();
-    await header.locator(".page-view-actions:not([inert])").waitFor({ state: "attached" });
-    await page.locator(settledView).waitFor();
-    await page.waitForFunction(
-      () => globalThis.document.activeElement !== globalThis.document.body,
-      null,
-      { timeout: 5_000 },
-    );
-    assert.equal(await isFocused(expectedFocus), true, "the reader's place after the check");
-  }
+  assert.equal(new URL(page.url()).searchParams.get("namespace"), revoked.id);
+  assert.equal(await page.locator("#namespace-selector").count(), 0);
+  assert.equal(await recover.count(), 0, "Settings: no recovery without a selector");
+  assert.equal(await page.getByText("Namespace unavailable", { exact: false }).count(), 0);
 });

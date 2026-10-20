@@ -553,7 +553,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
             namespaceSelector("Choose a valid Namespace"),
           ),
         );
-      } else if (feature !== "namespaces") {
+      } else if (scopeSelector) {
+        // Switch Namespace focuses the header's selector: Settings has none, so it offers none.
         main.append(
           element(
             "p",
