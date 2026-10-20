@@ -1,6 +1,6 @@
 ---
 created: 2026-09-09
-updated: 2026-10-16
+updated: 2026-10-20
 last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 ---
 
@@ -8,8 +8,9 @@ last_updated_session: 01a11d95-ebef-76e1-b9b9-9d3d2e88e99e
 
 ## Overview
 
-Trace Agent edits, credentials, workspace, stop, and deletion. See the
-[parent flow](../platform-console.md).
+Trace Agent edits, credentials, and workspace files. See the
+[parent flow](../platform-console.md); [stop and deletion](agent-stop-and-deletion.md)
+have their own trace.
 
 ## Entry Points
 
@@ -30,8 +31,8 @@ graph TD
     B --> P["Edit Agent plugin selections"]
     B --> Q["Deploy saved draft"]
     B --> D["Read or write workspace files"]
-    B --> E["Confirm Agent deletion"]
-    B --> S["Confirm Agent stop"]
+    B --> E["Confirm Agent deletion (stop and deletion trace)"]
+    B --> S["Confirm Agent stop (stop and deletion trace)"]
   end
   subgraph API["Controller API"]
     C --> F["Authorize exact request"]
@@ -48,15 +49,6 @@ graph TD
     V -->|denied or interrupted| X["Show partial save and grant-only retry"]
     X -->|binding unchanged| V
     D --> F
-    E --> G["DELETE exact Agent"]
-    S --> T["POST exact Agent stop"]
-    T -->|accepted or uncertain| U["Refresh desired state and selected version"]
-    T -->|denied| I
-    G -->|accepted or uncertain| H["Refresh exact Agent"]
-    G -->|denied| I["Show access denied"]
-    H -->|exists| J["Show current Agent state"]
-    J -->|known deleting and manual request| E
-    H -->|not found| K["Return to Agents list"]
   end
 ```
 
@@ -144,7 +136,7 @@ retains plugin selections. Pending channel saves and Secret creation prevent dis
 
 `apps/controller/src/console/channels.mjs:renderChannels` renders Slack settings;
 only **Create new version** permits editing. The
-[console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
+[console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
 
 `agents/detail.mjs:renderConfigurationTab` reads draft Harness authentication
@@ -199,7 +191,7 @@ and asks a Namespace administrator to grant access without repeating the
 channel save. An uncertain PATCH blocks another
 channel write until Refresh. Disabling a draft channel changes Configuration
 but does not stop a running Agent. The
-[console reference](../../reference/console.md#inspect-detail-revisions-and-channel-drafts)
+[console reference](../../reference/console/versions-and-channel-drafts.md)
 describes the supported edits and their deployment boundaries.
 
 <span id="5-provision-initial-runtime-credentials"></span>
@@ -281,54 +273,14 @@ owns initialization, retries, and cleanup. Live editing requires deployment.
 
 ### 7. Request a stop and read back the Agent
 
-[Permission advice](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions) can disable
-Stop before confirmation. If the dialog is open, a negative answer disables confirmation and
-focuses Cancel. Missing advice leaves the normal path available; late advice cannot recall a request.
-
-`apps/controller/src/console/agents/stop.mjs:createAgentStop` sends a bodyless `POST` to the
-Agent’s `/stop` route. OCC’s `packages/occ/src/index.ts:stopAgent` checks Agent `operate`,
-persists the requested stopped state, and queues reconciliation. Success means admission,
-not that Compute has shut down. Cancel restores focus to the invoking button; submission focuses
-**Refresh stop status**.
-
-For a stopped Agent, **Request Stop again** confirms a new stop intent, even with no selected
-version; the Console cannot inspect history or candidate cleanup. With no selected version
-and no readable versions yet (`setNoReadableVersions`), the Stop card is hidden unless the viewer
-just used it. The overview's **Runtime** row reports a requested stop.
-
-Refresh reads desired state and selected version, not live health. Denial stays inline; changed
-state updates panels in place. An uncertain write blocks another Stop until readback succeeds.
-[Deploy to resume](../../reference/agents/deployment.md#stop-and-resume); the lifecycle
-reference covers worker shutdown and preservation of versions, credentials, and state.
+Moved to [Agent stop and deletion](agent-stop-and-deletion.md#7-request-a-stop-and-read-back-the-agent).
 
 <span id="7-confirm-deletion-and-read-back-the-agent"></span>
 <span id="7.-confirm-deletion-and-read-back-the-agent"></span>
 
 ### 8. Confirm deletion and read back the Agent
 
-`apps/controller/src/console/agents/deletion.mjs:createAgentDeletion`
-
-**Delete Agent** requests confirmation before sending a bodyless `DELETE` to the
-exact Agent URL. The controller requires Agent `delete`; a `403` stays visible on
-the detail page. Acceptance starts asynchronous cleanup and marks the Agent deleting. The page
-rereads the exact Agent every few seconds; **Refresh deletion status** reads it
-on demand. A read error stops polling. Only a not-found read after
-an accepted or uncertain request, or when an already-deleting Agent is opened,
-returns to the Agents list in the selected Namespace. An already deleting Agent
-keeps **Request deletion again** beside Refresh. It opens a cancel-first confirmation
-and sends the same bodyless DELETE only when the reader confirms. Queued or claimed
-work stays unchanged; terminal work can restart under the controller's existing
-current-permission and retry-ownership checks. The view does not infer a worker
-outcome from the Agent's deleting state or add a separate status contract.
-
-An uncertain initial or repeated deletion blocks writes until a successful exact
-Agent read. A deleting read clears that guard even when the view was already deleting;
-a failed read does not. Cancel returns focus to the repeat-request button, and
-successful writes retain status refresh. The browser never retries DELETE automatically.
-
-`packages/occ/src/index.ts:deleteAgent` owns deletion admission. The
-[Agent deletion reference](../../reference/agents.md#deletion) covers
-worker cleanup and the Namespace-owned resources it preserves.
+Moved to [Agent stop and deletion](agent-stop-and-deletion.md#8-confirm-deletion-and-read-back-the-agent).
 
 ## Debugging and Verification
 
@@ -341,11 +293,6 @@ worker cleanup and the Namespace-owned resources it preserves.
 - Compare saved `Agent.plugins` with the viewed version's plugin snapshot after
   a plugin edit. A successful Agent update does not install or activate plugins;
   deploy and inspect startup status separately.
-- On repeat `403`, follow the API’s retry-ownership explanation. For ordinary
-  denials, check `delete` on the exact Agent; Agent `read` and
-  `operate` do not authorize deletion. Any failed repeat pauses polling until a manual action. Use the displayed request ID when present.
-- An accepted deletion remains in progress until the exact Agent read reports
-  not found. A failed refresh does not establish whether cleanup finished.
 - See [console failures](../../reference/console.md#failures-and-logout) for
   session, permission, and network recovery.
 
@@ -356,6 +303,7 @@ worker cleanup and the Namespace-owned resources it preserves.
 - [Agent lifecycle reference](../../reference/agents.md#deletion)
 - [Agent plugin flow](../agent-plugins.md)
 - [Agent sharing flow](agent-sharing.md)
+- [Agent stop and deletion flow](agent-stop-and-deletion.md)
 
 ## Manual Notes
 
@@ -363,6 +311,7 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ## Changelog
 
+- 2026-10-20 05:00: Move steps 7 and 8 (stop, deletion) to [their own trace](agent-stop-and-deletion.md). (docs-split-1020)
 - 2026-10-18 20:30: Show each failure's next step; add Deploy again. (ux-a1)
 
 [Console Agent editing documentation history](agent-editing/history.md) preserves the older dated entries.

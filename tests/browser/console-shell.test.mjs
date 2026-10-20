@@ -258,6 +258,28 @@ test("Settings shows the account and session cards, and its Sign out ends the se
   }
 });
 
+// An account with no display name has its email as its name, and Settings showed it twice: Name
+// and Email both nora@example.test (finding 2099). Settings now shows the email once.
+test("Settings shows an account without a display name by its email once", async (t) => {
+  const { fixture, page } = await openAgents(t, desktop);
+  const { email } = fixture.credentials;
+  await page.route("**/api/auth/session", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (body.data?.user) {
+      body.data.user.name = body.data.user.email;
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(new URL("/console/settings", fixture.origin).href);
+  const list = page.locator(settledView).locator(".settings-page dl.settings");
+  await list.waitFor();
+  assert.deepEqual(
+    await list.evaluate((node) => [...node.children].map((child) => child.textContent)),
+    ["Email", email],
+  );
+});
+
 // Each layout has its own account menu; the one a resize hides closes, so it does not reappear
 // open in the drawer or on a return to desktop.
 test("changing between desktop and phone layouts closes the account menu left behind", async (t) => {

@@ -3109,8 +3109,10 @@ select:not([multiple])[size="1"] {
   margin: 20px 0;
   padding: 28px;
 }
+/* A card heading sits a step under the page title on the type scale (finding 2097). */
 .launch-intro h2 {
-  font-size: 24px;
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
   margin-bottom: 10px;
 }
 .launch-actions {

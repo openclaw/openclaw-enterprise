@@ -2018,3 +2018,98 @@ test("A share in flight finishes across a tab switch", async (t) => {
   ).data.filter((binding) => binding.subjectId === person.principal.id);
   assert.equal(bindings.length, 2);
 });
+
+// The Versions list marked only the current version: a failed v2 looked like v1 (finding 2095),
+// and each version was its own Tab stop, 51 on one Agent (finding 2101). The latest version now
+// carries its deployment's outcome while it is in progress or failed, and the
+// list is one Tab stop on the viewed version: Up/Down (wrapping) and Home/End move focus, Enter
+// opens a version, and Tab leaves the list.
+test("Versions list marks the latest version's outcome and is one Tab stop", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Version rail", "Rail Agent");
+  const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  await fixture.deployAgent(namespace.id, agent.id);
+  const latest = await fixture.deployAgent(namespace.id, agent.id);
+  let record = deploymentRecord(namespace, agent, latest, "running");
+  await page.route(deploymentUrl(fixture, namespace, agent, latest), (route) =>
+    route.fulfill(record),
+  );
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await trackSettledFetches(page);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "configuration"),
+  );
+  await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+  const rail = page.getByRole("toolbar", { name: "Versions" });
+  assert.equal(await rail.getAttribute("aria-orientation"), "vertical");
+  const state = () =>
+    rail.evaluate((list) => {
+      const items = [...list.querySelectorAll(".version-item:not(.version-older)")];
+      return {
+        names: items.map((item) => item.getAttribute("aria-label")),
+        outcomes: items.map((item) => {
+          const badge = item.querySelector(".version-outcome");
+          return badge ? `${badge.textContent}/${badge.dataset.tone}` : null;
+        }),
+        stops: items.filter((item) => item.tabIndex === 0).map((item) => item.textContent),
+        focused: list.contains(globalThis.document.activeElement)
+          ? globalThis.document.activeElement.querySelector("strong").textContent
+          : null,
+      };
+    });
+  await rail.getByRole("button", { name: "View version v3, deployment in progress" }).waitFor();
+  const first = await state();
+  assert.deepEqual(first.outcomes, ["In progress/info", null, null]);
+  assert.deepEqual(first.names, [
+    "View version v3, deployment in progress",
+    "View version v2",
+    "View version v1, current version",
+  ]);
+  assert.equal(first.stops.length, 1);
+  assert.match(first.stops[0], /^v1/);
+
+  // The deploy fails; Refresh deployment reads it and v3 takes the Failed badge.
+  record = deploymentRecord(
+    namespace,
+    agent,
+    latest,
+    "failed",
+    persistedDeploymentError("RUNTIME_MODEL_PROBE_FAILED"),
+  );
+  await page
+    .locator(".deployment-status")
+    .getByRole("button", { name: "Refresh deployment" })
+    .click();
+  await rail.getByRole("button", { name: "View version v3, deployment failed" }).waitFor();
+  assert.deepEqual((await state()).outcomes, ["Failed/danger", null, null]);
+  // A poll that read the failure first rereads the Agent and rebuilds the list; let it settle.
+  await waitForIdleFetches(page);
+
+  // One Tab stop on the viewed version; the arrows move focus without opening a version.
+  await rail.getByRole("button", { name: "View version v1, current version" }).focus();
+  for (const [key, focused] of [
+    ["ArrowUp", "v2"],
+    ["ArrowUp", "v3"],
+    ["ArrowUp", "v1"],
+    ["ArrowDown", "v3"],
+    ["End", "v1"],
+    ["Home", "v3"],
+  ]) {
+    await page.keyboard.press(key);
+    const now = await state();
+    assert.equal(now.focused, focused, `${key} to ${focused}`);
+    assert.equal(now.stops.length, 1);
+    assert.match(now.stops[0], new RegExp(`^${focused}`));
+  }
+  assert.equal(new URL(page.url()).searchParams.get("revision"), active.revision.id);
+  // Tab leaves the list, and Shift+Tab comes back to the viewed version.
+  await page.keyboard.press("Tab");
+  assert.equal((await state()).focused, null);
+  await page.keyboard.press("Shift+Tab");
+  assert.equal((await state()).focused, "v1");
+  // Enter opens the focused version.
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Enter");
+  await page.waitForURL(`**revision=${latest.id}**`);
+});
