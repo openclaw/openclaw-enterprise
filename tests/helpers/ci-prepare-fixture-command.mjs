@@ -265,6 +265,10 @@ if (command === "docker" || command === "podman") {
   ) {
     assert.equal(args[4], "--provenance=false");
     assert.equal(args.includes("--load") || args.includes("--cache-to"), false);
+    // A cache miss builds every step in the probe; this one outlasts the lane's time.
+    if (scenario === "image-probe-hung") {
+      await hang();
+    }
     const role = args.includes("--target") ? "controller" : "runtime";
     const metadata = args[args.indexOf("--metadata-file") + 1];
     if (scenario === "engine-bad-metadata") {
@@ -362,6 +366,9 @@ if (command === "docker" || command === "podman") {
     args.includes("-f")
   ) {
     assert.ok(args[args.indexOf("-f") + 1].endsWith("/deploy/runtime/Dockerfile"));
+    if (scenario === "image-build-hung") {
+      await hang();
+    }
     state.runtime = args[args.indexOf("-t") + 1];
     finish();
   }
@@ -437,9 +444,12 @@ if (command === "docker" || command === "podman") {
   if (equals(args, ["image", "rm", "-f", state.tag])) {
     finish();
   }
-  // The hung tag never created its local tag, so the engine has nothing to remove.
+  // The hung tag never created its local tag, nor did a build stopped for the lane's time,
+  // so the engine has nothing to remove.
   if (
-    scenario === "hung-host-tag" &&
+    ["hung-host-tag", "image-probe-hung", "image-build-hung", "image-out-of-time"].includes(
+      scenario,
+    ) &&
     equals(args.slice(0, 3), ["image", "rm", "-f"]) &&
     args[3]?.startsWith("localhost/")
   ) {

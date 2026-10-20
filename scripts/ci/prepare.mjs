@@ -971,6 +971,55 @@ function imageBuildArgs(state, role, localStore) {
   ];
 }
 
+// CI_RUNNER_DEADLINE_MS (Unix epoch milliseconds; the run-ci-lane action sets it five
+// minutes before the job's timeout-minutes) is when the lane's test files must have stopped.
+// A lane image build may use the time before it less this reserve for the tests: the image
+// lanes' test phases took at most 102-171 s per lane over 29 runs each (10-19/20). A build
+// that misses the image cache can take 20 min: on #2905 the engine image probe below, then
+// bounded by a fixed 20 min, was stopped mid-build, the build after it took 4 more min, and
+// the tests got 40 s (finding 2103). Tests shorten the reserve.
+const imageBuildTestReserveMs =
+  Number(process.env.OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_IMAGE_BUILD_TEST_RESERVE_MS)
+    : 3 * 60_000;
+
+// What a lane image build may still take, or undefined outside a lane with a deadline.
+function imageBuildBudgetMs() {
+  const deadline = Number(process.env.CI_RUNNER_DEADLINE_MS ?? "");
+  if (!Number.isSafeInteger(deadline) || deadline <= 0) {
+    return undefined;
+  }
+  return deadline - imageBuildTestReserveMs - Date.now();
+}
+
+// The lane cannot pass once its image build has used the time its tests need, so it stops
+// with this instead of building on and cutting every test file at the deadline.
+function imageBuildOutOfTime(role, limitMs) {
+  const message =
+    `The ${role} image did not finish building within this lane's time` +
+    (limitMs > 0 ? ` (stopped after ${Math.round(limitMs / 1000)} s)` : "") +
+    `; the lane keeps ${Math.round(imageBuildTestReserveMs / 1000)} s before its deadline ` +
+    "for its tests, so it stops here instead of starting them. A build that misses the " +
+    "image cache, for example after a change to the image inputs, can take about 20 min.";
+  process.stdout.write(`::error title=Image build out of lane time::${message}\n`);
+  return Object.assign(new Error(message), { imageBuildOutOfTime: true });
+}
+
+// Runs a lane image build command within the lane's budget (unbounded without one).
+async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
+  if (budgetMs !== undefined && budgetMs < 1_000) {
+    throw imageBuildOutOfTime(role, 0);
+  }
+  try {
+    return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, { timeoutMs: budgetMs });
+  } catch (error) {
+    if (budgetMs !== undefined && error.timedOut) {
+      throw imageBuildOutOfTime(role, budgetMs);
+    }
+    throw error;
+  }
+}
+
 // A restored build otherwise downloads every cached layer (about 20 s for the
 // runtime image) only to load an image the engine often already holds: the
 // hosted runners' Docker data comes from a shared image cache. Resolve the
@@ -980,7 +1029,10 @@ function imageBuildArgs(state, role, localStore) {
 // would load. The warm job, which builds every step for its export, and any probe
 // failure (a timeout, an engine error, unreadable metadata, a failed tag) build as before. The log
 // says "absent" only when the engine reports no such image, "different" when it
-// holds another image under that reference, and "probe-failed" otherwise.
+// holds another image under that reference, and "probe-failed" otherwise. In a lane with a
+// deadline the probe, which builds on a cache miss, may use the whole image build budget;
+// running out of it ends preparation ("out-of-time") instead of building again with no time
+// left for the tests.
 async function reuseEngineImage(state, role, args, tag) {
   if (args[0] !== "buildx" || !args.includes("--load")) {
     return false;
@@ -993,22 +1045,31 @@ async function reuseEngineImage(state, role, args, tag) {
   try {
     directory = await mkdtemp(join(process.env.RUNNER_TEMP ?? tmpdir(), "oce-image-probe-"));
     const metadata = join(directory, "metadata.json");
-    await execFile(
-      docker,
-      [
-        "buildx",
-        "build",
-        "--output",
-        "type=image,push=false,store=false",
-        "--provenance=false",
-        "--metadata-file",
-        metadata,
-        ...args.slice(2).filter((arg) => arg !== "--load"),
-      ],
-      // A cache miss builds the image here; the build below then reuses those
-      // steps from the same builder and only exports and loads.
-      { timeoutMs: 20 * 60_000 },
-    );
+    const probeArgs = [
+      "buildx",
+      "build",
+      "--output",
+      "type=image,push=false,store=false",
+      "--provenance=false",
+      "--metadata-file",
+      metadata,
+      ...args.slice(2).filter((arg) => arg !== "--load"),
+    ];
+    // A cache miss builds the image here; the build below then reuses those
+    // steps from the same builder and only exports and loads.
+    const budgetMs = imageBuildBudgetMs();
+    if (budgetMs === undefined) {
+      await execFile(docker, probeArgs, { timeoutMs: 20 * 60_000 });
+    } else {
+      try {
+        await laneImageCommand(role, probeArgs, budgetMs);
+      } catch (error) {
+        if (error.imageBuildOutOfTime) {
+          outcome = "out-of-time";
+        }
+        throw error;
+      }
+    }
     const id = JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"];
     if (!/^sha256:[a-f0-9]{64}$/u.test(id ?? "")) {
       return false;
@@ -1036,7 +1097,10 @@ async function reuseEngineImage(state, role, args, tag) {
     await boundedImageCommand(["tag", id, tag]);
     outcome = "reused";
     return true;
-  } catch {
+  } catch (error) {
+    if (error.imageBuildOutOfTime) {
+      throw error;
+    }
     outcome = "probe-failed";
     return false;
   } finally {
@@ -1085,7 +1149,7 @@ async function buildRuntimeImages(
   };
   const build = async (role, args) => {
     if (!cacheWarm) {
-      return execFile(process.env.OCC_DOCKER_BIN ?? "docker", args);
+      return laneImageCommand(role, args);
     }
     const exportArgs = imageCacheExportArgs(role, args);
     // A failed or overrunning build fails the job and keeps nothing.
