@@ -33,3 +33,11 @@ Check each story at 1440 and at 390.
    ("Enabled", "Disabled", "Not selected", "Unavailable") is a neutral badge
    under its name. Tab through the list: no badge pushes a plugin's focus ring
    outside the scrolling list.
+7. Open **Pages / Agent detail / New version failed**. The Agent's facts are
+   one card: three columns (Selected version, Latest visible deployment, Live
+   serving) split by hairlines, each an 18 px semibold value under a 12 px
+   label. "Failed" is a red badge after "v7", and "May be offline" an amber
+   one. At 390 the facts stack, each label and value on one line. Under them,
+   "What this page can tell you" is closed; opening it lists what selection,
+   deployment records and listed bindings do not confirm, said nowhere else
+   on the page.

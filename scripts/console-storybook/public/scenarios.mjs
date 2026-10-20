@@ -1182,7 +1182,26 @@ export const scenarios = {
     group: "Pages/Settings",
     name: "Account",
     path: "/console/settings",
-    description: "Signed-in name and email. There are no editable settings in this release.",
+    description:
+      "An account card with initials, name and email, and a Session card with Sign out. There are no editable settings in this release.",
+    steps: [
+      "Check that the page has no Namespace selector and that the account card shows initials, name and email.",
+      "Choose Sign out in the Session card: “Signing out…” appears, then the sign-in page.",
+      "At a phone width, Sign out spans the Session card.",
+    ],
+  },
+  settingsSignOutFailure: {
+    group: "Pages/Settings",
+    name: "Sign-out unconfirmed",
+    path: "/console/settings",
+    rules: [{ path: "/api/auth/sign-out", method: "POST", status: 503 }],
+    // The account menu's hidden Sign out comes first in the page, so name the card's button.
+    actions: [{ selector: ".settings-sign-out", click: true }],
+    description:
+      "Sign out from the Session card fails with the session still active: private content stays hidden until revocation can be confirmed.",
+    steps: [
+      "Choose Retry: it repeats the sign-out and keeps private content hidden until it succeeds.",
+    ],
   },
   notFound: {
     group: "Pages/Navigation",
