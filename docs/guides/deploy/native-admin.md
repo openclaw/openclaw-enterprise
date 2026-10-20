@@ -10,8 +10,8 @@ enabled for the Installation:
 1. [Create and deploy an Agent](../../reference/console/create-and-deploy.md) in the
    console, for example from Standard OpenClaw or Standard Codex. Their UI-enabled
    Configurations receive native admin policy in the first admitted version.
-2. Wait for deployment to succeed, then open **Native admin UI** on the Agent
-   detail page. The account needs `administer` permission on that exact Agent.
+2. Wait for deployment to succeed, then open **Gateway administration** → **Open admin console** on the
+   Agent detail page. The account needs `administer` permission on that exact Agent.
 3. For custom Configurations or existing Agents, follow
    [Deploy each Agent](#configure-each-agent). Explicit opt-outs remain effective;
    existing Agents adopt prepared policy on their next explicit deployment.
@@ -137,7 +137,7 @@ ignores the shared cookie-domain value and keeps the legacy host-only
 Create an Agent from Standard OpenClaw or Standard Codex in the console and
 complete its ordinary deployment. With the Installation feature configured above,
 Kubernetes Compute prepares native admin policy in the first admitted revision.
-Open **Native admin UI** on the Agent detail page after deployment succeeds. Expect the isolated Agent host, including any
+After deployment succeeds, choose **Gateway administration** → **Open admin console** on the Agent detail page. Expect the isolated Agent host, including any
 port configured on the public OCC origin.
 
 For a custom Configuration, select `gateway.controlUi.enabled: true`. Leave
