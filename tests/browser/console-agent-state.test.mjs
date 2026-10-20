@@ -179,12 +179,17 @@ test("Deployment activity names retire cleanup as revision cleanup and follows i
   await login(page, fixture, url);
   await page.getByRole("heading", { name: "Version v1" }).waitFor();
   const activity = page.locator(".deployment-status");
-  await openFoldedDetails(page);
+  // The failure's card says nothing of the cleanup, so the details it would fold stay open and
+  // show it without the reader opening them.
+  await page.getByRole("region", { name: "Deployment needs attention" }).waitFor();
+  assert.equal(await activity.locator(":scope > details").evaluate((node) => node.open), true);
   await activity.getByText("Recorded status: failed").waitFor();
 
   // The same retire cleanup also covers repository credential resources, so the
   // status names the version's cleanup rather than bootstrap resources.
   const status = activity.locator(".deployment-cleanup");
+  assert.equal(await status.isVisible(), true);
+  assert.equal(await status.getAttribute("role"), "status");
   assert.equal(
     await status.innerText(),
     "Revision cleanup pending. This version's resources have not been confirmed removed; the controller will retry.",
