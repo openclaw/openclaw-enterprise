@@ -404,6 +404,13 @@ async function waitingList(t) {
       reads.push(response.status());
     }
   });
+  // Requests, not answers: a check started but not yet answered still counts.
+  let requested = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/namespaces") {
+      requested += 1;
+    }
+  });
   const poll = async () => {
     const read = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/namespaces",
@@ -413,9 +420,9 @@ async function waitingList(t) {
   };
   // No check comes over three more cadences.
   const assertStopped = async () => {
-    const settled = reads.length;
+    const settled = requested;
     await page.clock.runFor(30_000);
-    assert.equal(reads.length, settled);
+    assert.equal(requested, settled);
   };
   const create = view.getByRole("button", { name: "Create Agent" });
   const set = (patch) => patches.set(namespace.id, patch);

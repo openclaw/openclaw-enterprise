@@ -915,6 +915,21 @@ export const scenarios = {
       "Confirm Search Agents keeps its text and focus, Research assistant is still listed, and Create Agent is enabled with no description pointing at the note. No further Namespace reads happen.",
     ],
   },
+  agentsNamespaceMissing: {
+    group: "Pages/Agents",
+    name: "Namespace leaves the list while provisioning",
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    // Rechecks start once the page shows its search box, so the first load still lists it.
+    actions: [{ selector: 'input[type="search"]', focus: true }],
+    description:
+      "The Namespace list the Agents page rereads while its Namespace provisions no longer holds it: it was deleted, or the reader lost access. The wait ends, the note asks for another Namespace, as Create Agent's does, and Create Agent is disabled.",
+    steps: [
+      'Within about 10 s the note "Namespace status: Provisioning." becomes "This Namespace is missing or you no longer have access. Choose another Namespace."',
+      'Confirm Create Agent is disabled and described by that note, the empty state reads "Agents cannot be created in this Namespace.", and no further Namespace reads happen.',
+    ],
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",

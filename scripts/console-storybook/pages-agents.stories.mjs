@@ -28,6 +28,10 @@ export const NamespaceBecomesReady = {
   ...story("agentsNamespaceBecomesReady"),
   name: "Namespace becomes ready",
 };
+export const NamespaceMissing = {
+  ...story("agentsNamespaceMissing"),
+  name: "Namespace leaves the list while provisioning",
+};
 export const AgentsDenied = { ...story("agentsDenied"), name: "Access denied" };
 export const AgentsError = { ...story("agentsError"), name: "Read failure" };
 export const AgentsInterruptedResponse = {
