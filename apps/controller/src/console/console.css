@@ -1886,6 +1886,8 @@ select:not([multiple])[size="1"] {
 }
 .agent-version-layout > .revision-selector {
   grid-area: rail;
+  /* The card padding, so its title lines up with the next-step card's. */
+  padding: var(--space-6);
 }
 .agent-version-summary {
   grid-area: summary;
@@ -1911,20 +1913,15 @@ select:not([multiple])[size="1"] {
 .agent-version-layout > .revision-selector {
   margin: 0;
 }
-/* With only a heading beside the rail (Logs, Workspace files, Access, or a page still loading),
-   the open tab sits beside the rail under it, as a version's detail always did. */
+/* With only a heading beside the rail (Logs, Workspace files and Access on a version), the open
+   tab sits beside the rail under it, as a version's detail always did. */
 @media (min-width: 1101px) {
-  .agent-version-layout:not(
-    :has(
-      > .agent-version-summary > .agent-draft-actions,
-      > .agent-version-summary > .version-evidence:not([hidden], :empty)
-    )
-  ) {
+  .agent-version-layout[data-summary="heading"] {
     grid-template-rows: auto 1fr;
     grid-template-areas:
       "rail summary"
       "rail detail";
-    row-gap: var(--space-5);
+    row-gap: 0;
   }
 }
 .agent-version-detail {
@@ -1946,9 +1943,16 @@ select:not([multiple])[size="1"] {
   margin: 14px 0 22px;
 }
 @media (max-width: 1100px) {
-  /* Stacked, the summary leads, so a draft's Deploy is on a phone's first screen. */
+  /* Stacked: the rail, then the version's summary and tabs. A draft's next step leads the rail,
+     so its Deploy comes before the Versions list on a phone. */
   .agent-version-layout {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "rail"
+      "summary"
+      "detail";
+  }
+  .agent-version-layout[data-draft] {
     grid-template-areas:
       "summary"
       "rail"
@@ -1998,6 +2002,7 @@ select:not([multiple])[size="1"] {
   list-style: none;
 }
 .checklist > li {
+  position: relative;
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr);
   gap: var(--space-3);
@@ -2026,6 +2031,15 @@ select:not([multiple])[size="1"] {
   border-width: 0 2px 2px 0;
   transform: rotate(45deg);
 }
+/* A hairline joins each mark to the next one. */
+.checklist > li:not(:last-child) > .checklist-mark::before {
+  content: "";
+  position: absolute;
+  top: 24px;
+  bottom: calc(-1 * var(--space-4) + 2px);
+  left: 9px;
+  border-left: 1px solid var(--color-border);
+}
 .checklist-text {
   color: var(--color-text-strong);
 }
@@ -2046,6 +2060,7 @@ select:not([multiple])[size="1"] {
   border-top: 1px solid var(--color-border);
 }
 .agent-draft-actions .card-actions > [role="status"] {
+  order: -1;
   flex: 1 1 16rem;
   margin: 0;
   text-align: right;
@@ -2059,7 +2074,7 @@ select:not([multiple])[size="1"] {
     flex: 1 1 100%;
   }
   .agent-draft-actions .card-actions > [role="status"] {
-    order: 1;
+    order: 0;
     text-align: left;
   }
 }

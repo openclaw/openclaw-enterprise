@@ -1527,6 +1527,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // rail; the tabs and open tab run full width below both (UX spec 3.7). Under 1100 px the summary
   // comes first, so a draft's Deploy is on the first screen of a phone too.
   const versionSummary = element("div", { className: "agent-version-summary" });
+  // Known from the address, not from what has loaded, so the tabs never jump as reads land: a
+  // draft's next step or a version's record fills the summary and the tabs run full width below;
+  // with only a heading (Logs, Workspace files, Access on a version) the tab sits beside the rail.
+  function setLayoutShape() {
+    versionLayout.dataset.summary =
+      selected === "draft" || !["workspace", "logs", "access"].includes(selectedTab)
+        ? "full"
+        : "heading";
+    // Stacked, a draft's next step leads the rail, so its Deploy is on a phone's first screens.
+    versionLayout.toggleAttribute("data-draft", selected === "draft");
+  }
   const versionLayout = element(
     "div",
     { className: "agent-version-layout" },
@@ -1534,6 +1545,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     versionSummary,
     detailPane,
   );
+  setLayoutShape();
   const deploymentStatus = element("section", { className: "agent-card deployment-status" });
   deploymentStatus.append(
     element("h2", {}, "Deployment activity"),
@@ -1807,7 +1819,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // and scrolls in the frame that reveals the page, never at the top first (finding 1552).
   let revealHold = null;
   let scrollOnReveal = null;
-  // Brings the version's detail (heading, tab strip and open tab) to the top of the window. A
+  // Brings the version's detail (tab strip and open tab) to the top of the window; the heading
+  // and record sit above it beside the Versions rail (UX spec 3.7). A
   // click in the shown page scrolls smoothly unless the reader asked for reduced motion; a page
   // about to show scrolls at once, so it never paints at the top first (findings 1552, 1586).
   function scrollToVersionDetail({ animate = false } = {}, node = detailPane) {
@@ -2082,6 +2095,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
 
   function renderDetailHeading() {
     detailHeading.hidden = false;
+    // An Agent-wide tab's heading introduces the tab below it; a version's heading leads the
+    // summary beside the Versions rail.
+    const agentWide = ["access", "workspace"].includes(selectedTab);
+    if (agentWide && detailHeading.parentElement !== detailPane) {
+      detailPane.prepend(detailHeading);
+    } else if (!agentWide && detailHeading.parentElement !== versionSummary) {
+      versionSummary.prepend(detailHeading);
+    }
     if (selectedTab === "access") {
       detailHeading.replaceChildren(
         element(
@@ -3164,8 +3185,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           deployStatus.textContent =
             "Select a harness authentication source in Credentials before deployment.";
         } else if (runtimeAuth) {
-          deployStatus.textContent =
-            "Configured on the runtime host; not validated by OCC. Gateway readiness does not confirm model access.";
+          // A rejected operator-managed credential is fixed on the runtime host, not by Deploy.
+          deployStatus.textContent = credentialRejected()
+            ? "The last deployment's model credential was rejected; ask an operator to replace it on the runtime host before deploying again."
+            : "Configured on the runtime host; not validated by OCC. Gateway readiness does not confirm model access.";
         } else {
           const gate = credentials.deployGateMessage();
           // Secret values can be updated in place, so a rejected credential warns instead of
@@ -3209,7 +3232,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     });
     const checklist = element(
       "ol",
-      { className: "checklist" },
+      // list-style: none drops list semantics in some screen readers; keep them.
+      { className: "checklist", role: "list" },
       ...checklistSteps.map((step) => step.item),
     );
     function setStep(step, done, detail) {
@@ -3253,7 +3277,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             ? "The last deployment's model credential was rejected"
             : authenticationReady
               ? `Saved · ${harnessAuthDescription(agent.harnessAuth)}`
-              : "Finish in Credentials",
+              : authenticationSaveState === "saving" || credentials?.isSaving()
+                ? "Saving…"
+                : authenticationSaveState === "uncertain"
+                  ? "Reload this draft"
+                  : "Finish in Credentials",
       );
       setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");
     }
@@ -3392,7 +3420,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       { className: "card agent-draft-actions" },
       element("h2", {}, "Prepare this version"),
       checklist,
-      element("div", { className: "card-actions" }, deployStatus, setupCredentials, deploy),
+      // The status follows Deploy in reading order; on a wide screen it shows to its left.
+      element("div", { className: "card-actions" }, setupCredentials, deploy, deployStatus),
       deployFeedback,
     );
     // A draft refreshed in place swaps its actions in one step (finding 1445).
@@ -3648,6 +3677,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const stripTop = activated && window.scrollY > 0 ? tabs.getBoundingClientRect().top : null;
     renderDetailHeading();
     versionEvidence.hidden = ["workspace", "logs", "access"].includes(selectedTab);
+    setLayoutShape();
     if (stripTop !== null) {
       const moved = tabs.getBoundingClientRect().top - stripTop;
       if (Math.abs(moved) >= 1) {
