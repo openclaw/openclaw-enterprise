@@ -102,6 +102,32 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
   let suggestionsReading = false;
   // A permission refusal is not retried from here: the same request gets the same answer.
   let suggestionsDenied = false;
+  // The first policy read says whether the Sandbox Driver supports per-Agent network policy.
+  // Without it there is no Sandbox log source and no suggestions, so the tab says so once instead
+  // of reading both, showing their refusals and offering an editor (finding 2060). A refused or
+  // failed policy read leaves the logs and suggestions to their own permissions.
+  let policyAnswered;
+  const firstPolicyRead = new Promise((resolve) => {
+    policyAnswered = resolve;
+  });
+  async function policySupported() {
+    await firstPolicyRead;
+    if (!current()) {
+      return false;
+    }
+    if (view?.capability === null) {
+      section.replaceChildren(
+        element("h2", {}, "Policy denials"),
+        element(
+          "p",
+          { role: "status" },
+          "This Sandbox Driver does not support per-Agent network policy. Policy denials, suggestions and Agent network rules are not available for this Agent.",
+        ),
+      );
+      return false;
+    }
+    return true;
+  }
   let logTimer;
   let suggestionTimer;
   let policyTimer;
@@ -164,6 +190,9 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
 
   async function readLogs(restart = false) {
     if (!current() || reading || revisionId === "draft") {
+      return;
+    }
+    if (!(await policySupported()) || reading) {
       return;
     }
     clearTimeout(logTimer);
@@ -258,6 +287,9 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
     if (revisionId === "draft") {
       suggestionStatus.textContent = "Deploy an Agent to collect provider suggestions.";
       renderSuggestions();
+      return;
+    }
+    if (!(await policySupported()) || suggestionsReading) {
       return;
     }
     clearTimeout(suggestionTimer);
@@ -675,6 +707,8 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
         element("p", { role: "alert" }, errorText(error, "read this Agent’s policy")),
         ...(error.status === 403 ? [] : [button("Retry policy read", () => void loadPolicy())]),
       );
+    } finally {
+      policyAnswered();
     }
   }
 
@@ -705,30 +739,10 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
   renderPolicy();
   if (revisionId === "draft") {
     logStatus.textContent = "Deploy an Agent to load Sandbox policy decisions.";
+  } else {
+    void readLogs(true);
   }
-  // The policy read says whether the Sandbox Driver supports per-Agent network policy. Without
-  // it there is no Sandbox log source and no suggestions, so the tab says so once instead of
-  // reading both, showing their refusals, and offering an editor (finding 2060). A refused or
-  // failed policy read leaves the logs and suggestions to their own permissions.
-  void loadPolicy().then(() => {
-    if (!current()) {
-      return;
-    }
-    if (view && view.capability === null) {
-      section.replaceChildren(
-        element("h2", {}, "Policy denials"),
-        element(
-          "p",
-          { role: "status" },
-          "This Sandbox Driver does not support per-Agent network policy. Policy denials, suggestions and Agent network rules are not available for this Agent.",
-        ),
-      );
-      return;
-    }
-    if (revisionId !== "draft") {
-      void readLogs(true);
-    }
-    void loadSuggestions();
-  });
+  void loadPolicy();
+  void loadSuggestions();
   return section;
 }
