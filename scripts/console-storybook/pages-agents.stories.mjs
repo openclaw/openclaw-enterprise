@@ -28,7 +28,7 @@ export const NamespaceBecomesReady = {
   ...story("agentsNamespaceBecomesReady"),
   name: "Namespace becomes ready",
 };
-export const NamespaceMissing = {
+export const NamespaceLeavesList = {
   ...story("agentsNamespaceMissing"),
   name: "Namespace leaves the list while provisioning",
 };
