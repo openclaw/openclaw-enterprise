@@ -444,11 +444,22 @@ test(
     const warnings = [];
     const onWarning = (warning) => warnings.push(warning);
     process.on("warning", onWarning);
+    let worker;
+    context.after(async () => {
+      try {
+        await worker?.stop();
+      } finally {
+        PostgresWorkQueue.prototype.heartbeat = heartbeat;
+        delete performance.now;
+        process.off("warning", onWarning);
+        await observerPool.end();
+      }
+    });
 
     const calls = [];
     const events = [];
     const developmentCompute = createDevelopmentComputeDriver();
-    const worker = createControllerWorker({
+    worker = createControllerWorker({
       pool: workerPool,
       installationId: installation.id,
       pollIntervalMs: 20,
@@ -464,13 +475,6 @@ test(
       emit(event) {
         events.push(event);
       },
-    });
-    context.after(async () => {
-      await worker.stop();
-      PostgresWorkQueue.prototype.heartbeat = heartbeat;
-      delete performance.now;
-      process.off("warning", onWarning);
-      await observerPool.end();
     });
 
     await state.transactWithQueue(async (unit, queue) => {
