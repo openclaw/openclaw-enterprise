@@ -443,6 +443,14 @@ export const DEPLOYMENT_POLL_MS = 5000;
 // pushed the shown overview down (finding 1489).
 export const FIRST_ACTIVITY_WAIT_MS = 2000;
 const PENDING_DEPLOYMENT_STATUSES = new Set(["queued", "running"]);
+// The badge tone of a recorded deployment outcome in the Agent summary; superseded and stopped
+// records stay neutral.
+const DEPLOYMENT_OUTCOME_TONES = {
+  queued: "info",
+  running: "info",
+  succeeded: "success",
+  failed: "danger",
+};
 
 // A recovery link opens a version tab far below the banner it sits in. Only the URL changed and
 // the page stayed at the top, so the link looked dead (finding 1586). The page the link opens,
@@ -1266,8 +1274,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return true;
   };
   context.setLeaveGuard?.(refuseLeave);
-  const currentVersionValue = element("strong");
-  const currentVersionNote = element("p", { className: "muted" });
+  const currentVersionValue = element("strong", { className: "stat-value" });
+  const currentVersionNote = element("p", { className: "stat-help" });
   // The summary's loading text follows the 250 ms rule: a read that settles sooner never shows
   // it, and the version number shows at once (finding 1438).
   function setDelayedText(node, prefix, loading) {
@@ -1275,46 +1283,86 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       node.replaceChildren(prefix, element("span", { className: "delayed-status" }, loading));
     }
   }
-  const latestDeploymentValue = element("strong");
-  const latestDeploymentNote = element("p", { className: "muted" });
+  const latestDeploymentValue = element("strong", { className: "stat-value" });
+  const latestDeploymentNote = element("p", { className: "stat-help" });
   setDelayedText(latestDeploymentValue, "", "Loading…");
   setDelayedText(latestDeploymentNote, "", "Reading deployment history.");
-  const liveServingValue = element("strong", {}, "Not verified");
-  const liveServingNote = element("p", { className: "muted" });
+  // A recorded outcome is the version and a status badge (spec 3.5). The separator stays in the
+  // text for screen readers and text matching ("v7 · Failed"); the badge's gap shows it.
+  function setDeploymentOutcome(node, version, label, tone) {
+    const text = `${version} · ${label}`;
+    const badge = node.querySelector(":scope > .badge");
+    if (node.textContent === text && badge && (badge.dataset.tone ?? "") === (tone ?? "")) {
+      return;
+    }
+    node.replaceChildren(
+      version,
+      element("span", { className: "visually-hidden" }, " · "),
+      element("span", { className: "badge", ...(tone ? { "data-tone": tone } : {}) }, label),
+    );
+  }
+  const liveServingValue = element(
+    "strong",
+    { className: "stat-value" },
+    element("span", { className: "badge" }, "Not verified"),
+  );
+  function setLiveServing(mayBeOffline) {
+    const badge = liveServingValue.firstElementChild;
+    setText(badge, mayBeOffline ? "May be offline" : "Not verified");
+    if (mayBeOffline) {
+      if (badge.dataset.tone !== "warning") {
+        badge.dataset.tone = "warning";
+      }
+    } else if (badge.dataset.tone) {
+      delete badge.dataset.tone;
+    }
+  }
   // A requested stop belongs in the summary, not only in the Stop card at the bottom (finding
   // 1899). It is attached only once the Agent has a version: an Agent is created stopped.
-  const runtimeNote = element("p", { className: "muted" });
-  const runtimeFact = element(
-    "div",
-    {},
-    element("span", { className: "overview-fact-label" }, "Runtime"),
-    element("strong", {}, "Stop requested"),
+  const runtimeNote = element("p", { className: "stat-help" });
+  const stat = (label, ...children) =>
+    element(
+      "div",
+      { className: "stat" },
+      element("span", { className: "overview-fact-label stat-label" }, label),
+      ...children,
+    );
+  const runtimeFact = stat(
+    "Runtime",
+    element("strong", { className: "stat-value" }, "Stop requested"),
     runtimeNote,
   );
+  // The facts are a stat row (spec 3.5); what they cannot tell the reader is said once, in the
+  // disclosure under them, rather than under each fact (spec 3.6, plan D5).
   const currentSummary = element(
     "section",
-    { className: "agent-current-summary", "aria-label": "Agent state at a glance" },
+    { className: "agent-current-summary stats", "aria-label": "Agent state at a glance" },
+    stat("Selected version", currentVersionValue, currentVersionNote),
+    stat("Latest visible deployment", latestDeploymentValue, latestDeploymentNote),
+    stat("Live serving", liveServingValue),
+  );
+  const pageDisclosure = element(
+    "details",
+    { className: "disclosure" },
+    element("summary", {}, "What this page can tell you"),
     element(
-      "div",
+      "ul",
       {},
-      element("span", { className: "overview-fact-label" }, "Selected version"),
-      currentVersionValue,
-      currentVersionNote,
+      element("li", {}, "Selection does not confirm that this version is serving."),
+      element("li", {}, "Deployment records don’t verify live serving or model access."),
+      // Shown only while the sharing panel is (console.css): it speaks for that panel's list.
+      element(
+        "li",
+        { className: "disclosure-access" },
+        "Listed bindings describe present configuration; they do not confirm a previous request’s outcome.",
+      ),
     ),
-    element(
-      "div",
-      {},
-      element("span", { className: "overview-fact-label" }, "Latest visible deployment"),
-      latestDeploymentValue,
-      latestDeploymentNote,
-    ),
-    element(
-      "div",
-      {},
-      element("span", { className: "overview-fact-label" }, "Live serving"),
-      liveServingValue,
-      liveServingNote,
-    ),
+  );
+  const statCard = element(
+    "div",
+    { className: "card agent-stat-card" },
+    currentSummary,
+    pageDisclosure,
   );
   const statusLine = statusBlock("warning", null, null, [], {
     className: "agent-status-line",
@@ -1656,7 +1704,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   const overviewStatus = element(
     "div",
     { className: "agent-overview-status" },
-    currentSummary,
+    statCard,
     statusLine,
     deploymentStatus,
   );
@@ -1879,7 +1927,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         ? "Plugin changes to this Agent appear in the next deployment. Existing versions stay unchanged."
         : "New version. Changes affect future deployments using this Configuration. Admitted versions stay unchanged."
       : selected === currentRevisionId
-        ? "Current version · read-only admitted snapshot. Selection does not confirm that this version is serving."
+        ? "Current version · read-only admitted snapshot."
         : deployingRevision()?.id === selected
           ? "Deploying version · read-only admitted snapshot. It becomes the current version only if its deployment completes."
           : "Historical version · read-only admitted snapshot. Browsing it does not change the current version.";
@@ -2172,8 +2220,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           ? `You cannot read version ${shortId(hidden)}, so its progress and outcome are not shown here. ${readAccessHint}`
           : "",
       );
-      setText(liveServingValue, "Not verified");
-      setText(liveServingNote, "Serving version and model access are unknown.");
+      setLiveServing(false);
       return;
     }
     const label = {
@@ -2230,9 +2277,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       setDelayedText(latestDeploymentValue, `v${latest.revision} · `, "Loading…");
       setDelayedText(latestDeploymentNote, "", "Reading recorded deployment status.");
     } else {
-      setText(
+      setDeploymentOutcome(
         latestDeploymentValue,
-        `v${latest.revision} · ${label ?? (latestDeploymentError ? "Unavailable" : "Loading…")}`,
+        `v${latest.revision}`,
+        label ?? (latestDeploymentError ? "Unavailable" : "Loading…"),
+        DEPLOYMENT_OUTCOME_TONES[latestDeploymentStatus],
       );
       setText(
         latestDeploymentNote,
@@ -2246,11 +2295,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       );
     }
     const mayBeOffline = replacementFailed || selectedFailed;
-    setText(liveServingValue, mayBeOffline ? "May be offline" : "Not verified");
-    setText(
-      liveServingNote,
-      mayBeOffline ? "" : "Deployment records don’t verify live serving or model access.",
-    );
+    setLiveServing(mayBeOffline);
     const outcome = newerHidden ? "" : (latestDeploymentStatus ?? "");
     if (latestDeploymentValue.dataset.outcome !== outcome) {
       latestDeploymentValue.dataset.outcome = outcome;

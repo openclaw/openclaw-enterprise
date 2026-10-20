@@ -437,7 +437,7 @@ test("A page held for Agents keeps its own navigation and header until Agents re
   await page.locator(settledView).locator("dl.settings").waitFor();
   await shownFrames(page);
   const returnRead = await holdOnce(t, page, list);
-  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await returnRead.requested;
   returnRead.release();
   await listShown(page, "Shell Agent");

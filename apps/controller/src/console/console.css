@@ -1234,18 +1234,60 @@ p {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
-.settings {
+/* Settings (UX spec 3.10): an account card and a session card in one 720 px column. */
+.settings-page {
   display: grid;
-  grid-template-columns: 90px 1fr;
-  gap: 16px;
-  margin: 25px 0;
+  gap: var(--space-6);
+  max-width: 720px;
+}
+.settings-page h2 {
+  margin: 0 0 var(--space-5);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+}
+.settings-account {
+  display: flex;
+  align-items: center;
+  gap: var(--space-8);
+}
+.account-avatar--lg {
+  width: 64px;
+  height: 64px;
+  font-size: var(--text-2xl);
+}
+.settings {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: var(--space-3) var(--space-6);
+  margin: 0;
   overflow-wrap: anywhere;
 }
 .settings dt {
-  color: var(--muted);
+  color: var(--color-text-muted);
 }
 .settings dd {
   margin: 0;
+  color: var(--color-text-strong);
+}
+.settings-page .hint {
+  margin: var(--space-3) 0 0;
+}
+@media (max-width: 520px) {
+  .settings-account {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-5);
+  }
+  .settings {
+    align-self: stretch;
+    grid-template-columns: 96px minmax(0, 1fr);
+  }
+  .settings-sign-out {
+    width: 100%;
+    min-height: var(--touch-min);
+  }
 }
 .topbar,
 .mobile-toggle,
@@ -1408,7 +1450,6 @@ select:not([multiple])[size="1"] {
 .overview-text-button:not(:hover) {
   color: var(--muted);
 }
-.agent-overview-status,
 .native-admin-access {
   padding: clamp(15px, 2vw, 24px);
   margin-bottom: 16px;
@@ -1417,53 +1458,207 @@ select:not([multiple])[size="1"] {
   background: var(--surface);
   overflow-wrap: anywhere;
 }
+/* The overview: the stat card (facts + the page's one disclosure), then the deployment card. */
 .agent-overview-status {
-  padding-block: 3px 0;
-}
-.agent-current-summary > div {
   display: grid;
-  grid-template-columns: minmax(104px, 34%) minmax(0, 1fr);
-  align-items: baseline;
-  padding: 13px 0;
-  column-gap: 10px;
+  gap: var(--space-6);
+  margin-bottom: var(--space-8);
+  overflow-wrap: anywhere;
 }
-.agent-current-summary > div + div,
-.deployment-evidence {
-  border-top: 1px solid var(--line);
+.agent-overview-status > .agent-card {
+  margin: 0;
 }
-.overview-fact-label {
-  color: var(--muted);
-  line-height: 1.25;
+.agent-overview-status > .deployment-evidence {
+  padding: var(--space-2) var(--space-6);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
 }
-.agent-current-summary strong {
-  font-weight: 650;
-  color: var(--text-strong);
+.agent-overview-status > .deployment-evidence > button {
+  right: var(--space-6);
+  top: calc(var(--space-2) + 6px);
 }
-.agent-current-summary strong[data-outcome="succeeded"]::before,
-.agent-current-summary strong[data-outcome="failed"]::before {
+@media (max-width: 520px) {
+  .agent-overview-status > .deployment-evidence {
+    padding-inline: var(--space-4);
+  }
+  .agent-overview-status > .deployment-evidence > button {
+    right: var(--space-4);
+  }
+}
+/* Facts as a stat row (spec 3.5): label, value, optional help; hairlines between columns. */
+.stats {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+}
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: 0 var(--space-6);
+  border-left: 1px solid var(--color-border);
+}
+.stat:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+.stat:last-child {
+  padding-right: 0;
+}
+.stat-label,
+.stat-help {
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.stat-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-strong);
+  font-size: var(--text-xl);
+  line-height: var(--text-xl--line-height);
+  font-weight: var(--weight-semibold);
+}
+.stat-label,
+.stat-value {
+  overflow-wrap: normal;
+}
+.stat-help {
+  margin: 0;
+}
+.stat-help:empty {
+  display: none;
+}
+/* Beside the sidebar (761-1100) the columns narrow; a fourth fact (Stop requested) stacks. */
+@media (max-width: 1100px) {
+  .stat {
+    padding-inline: var(--space-4);
+  }
+  .stats:has(> .stat:nth-child(4)) {
+    grid-auto-flow: row;
+    grid-template-columns: 1fr;
+  }
+  .stats:has(> .stat:nth-child(4)) > .stat {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    column-gap: var(--space-4);
+    padding: var(--space-3) 0;
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+  }
+  .stats:has(> .stat:nth-child(4)) > .stat:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+  .stats:has(> .stat:nth-child(4)) > .stat:last-child {
+    padding-bottom: 0;
+  }
+  .stats:has(> .stat:nth-child(4)) .stat-help {
+    flex-basis: 100%;
+  }
+}
+/* Phone: one column, label and value on one line, help beneath. */
+@media (max-width: 760px) {
+  .stats {
+    grid-auto-flow: row;
+    grid-template-columns: 1fr;
+  }
+  .stat {
+    flex-direction: row;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    column-gap: var(--space-4);
+    padding: var(--space-3) 0;
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+  }
+  .stat:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+  .stat:last-child {
+    padding-bottom: 0;
+  }
+  .stat-help {
+    flex-basis: 100%;
+  }
+}
+/* One disclosure per page (spec 3.6): what the page cannot confirm, said once and folded. */
+.disclosure {
+  margin-top: var(--space-5);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.disclosure > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-h-sm);
+  cursor: pointer;
+  list-style: none;
+  color: var(--color-link);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+  font-weight: var(--weight-medium);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.disclosure > summary::after {
   content: "";
-  display: inline-block;
   width: 8px;
   height: 8px;
-  margin-right: 8px;
-  vertical-align: 1px;
-  background: var(--success);
-  border-radius: 50%;
+  border: solid currentColor;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(-45deg);
 }
-.agent-current-summary strong[data-outcome="failed"]::before {
-  background: var(--warning);
+.disclosure[open] > summary::after {
+  transform: translateY(-2px) rotate(45deg);
 }
-.agent-current-summary p,
+.disclosure > ul {
+  max-width: var(--prose-max);
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  line-height: var(--text-md--line-height);
+}
+.disclosure li + li {
+  margin-top: var(--space-1);
+}
+/* The bindings sentence speaks for the sharing panel's list, so it shows only with that panel. */
+[aria-live="polite"]:not(:has(> .agent-access:not([hidden]))) .disclosure-access {
+  display: none;
+}
+@media (max-width: 520px) {
+  .disclosure > summary {
+    min-height: var(--touch-min);
+  }
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 .native-admin-access p {
   margin: 2px 0 0;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
 }
-.agent-current-summary p {
-  grid-column: 2;
-}
-.agent-current-summary p:empty,
 .native-admin-access p:empty {
   display: none;
 }
@@ -1550,7 +1745,7 @@ select:not([multiple])[size="1"] {
    from .status, the label names the version, the title is one --text-lg line, and the actions
    are buttons with one primary. */
 .status.deployment-recovery {
-  margin: 0 0 var(--space-4);
+  margin: 0 0 var(--space-8);
   padding: var(--space-5) var(--space-6);
 }
 .deployment-recovery h2 {

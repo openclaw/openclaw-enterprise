@@ -10,7 +10,7 @@ import { clearRuntimeDenials } from "./agents/logs.mjs";
 import { createApiClient } from "./api-client.mjs";
 import { createViewLifetime } from "./view-lifetime.mjs";
 import { createNavigation, pages } from "./navigation.mjs";
-import { createShell, panel, sorted } from "./shell.mjs";
+import { createShell, initials, panel, sorted } from "./shell.mjs";
 import { createDraftStore } from "./drafts.mjs";
 import { renderRuntimeImages } from "./runtime-images.mjs";
 import { renderNamespaces } from "./namespaces.mjs";
@@ -987,7 +987,7 @@ function showLogin(message = "", destination = null) {
           : error.status === 400 || error.status === 401 || error.status === 403
             ? recoveryOnly
               ? "Could not sign in. Only the recovery account can use a password; other accounts continue with their external sign-in."
-              : "Could not sign in. Check your username and password."
+              : "Could not sign in. Check your email and password."
             : "Sign-in is unavailable. Try again.";
     } finally {
       if (lifetime.isCurrent(active)) {
@@ -1125,7 +1125,7 @@ async function loadPage({
   // page the reader tried to reach stays in history for a later Back. This follows the tab
   // handler, which keeps same-Agent tab changes.
   if (fromHistory && mountedRouteKey !== null && leaveGuard?.({ pendingOnly: true })) {
-    history.pushState({ previousCollection: navigation.previousCollection }, "", mountedRouteKey);
+    history.pushState(null, "", mountedRouteKey);
     return;
   }
   const knownPrivateState = session !== null && Object.hasOwn(pages, current.feature);
@@ -1489,12 +1489,7 @@ async function loadPage({
         namespaces[0]
       )?.id ??
       null;
-    navigation.restoreHistory();
-    history.replaceState(
-      { previousCollection: navigation.previousCollection },
-      "",
-      pageUrl(current.target),
-    );
+    history.replaceState(null, "", pageUrl(current.target));
     const agentsNamespaceUnavailable =
       current.feature === "agents" && !namespaces.some((item) => item.id === namespaceId);
     if (current.namespace !== null && (!held || shownFeature === current.feature)) {
@@ -1757,23 +1752,7 @@ async function loadPage({
       attachDiagnostics(shell.diagnostics);
     }
     if (current.feature === "settings") {
-      shell.view.append(
-        element(
-          "section",
-          { className: "state-panel" },
-          element("h2", {}, "Signed-in account"),
-          element(
-            "dl",
-            { className: "settings" },
-            element("dt", {}, "Name"),
-            element("dd", {}, session.user.name),
-            element("dt", {}, "Email"),
-            element("dd", {}, session.user.email),
-          ),
-          element("p", {}, "No configurable settings in this release."),
-          button("Back", () => navigate(navigation.previousCollection)),
-        ),
-      );
+      shell.view.append(settingsView());
       markMountedRoute(current);
       return;
     }
@@ -2440,6 +2419,52 @@ function resumePage() {
   });
 }
 
+// Settings (UX spec 3.10): the signed-in account, and this session with Sign out. The session
+// read carries no sign-in method, sign-in time or expiry, so the cards show only what it has.
+function settingsView() {
+  const { user } = session;
+  return element(
+    "div",
+    { className: "settings-page" },
+    element(
+      "section",
+      { className: "card" },
+      element("h2", {}, "Signed-in account"),
+      element(
+        "div",
+        { className: "settings-account" },
+        element(
+          "span",
+          { className: "account-avatar account-avatar--lg", "aria-hidden": "true" },
+          initials(user),
+        ),
+        element(
+          "dl",
+          { className: "settings" },
+          element("dt", {}, "Name"),
+          element("dd", {}, user.name),
+          element("dt", {}, "Email"),
+          element("dd", {}, user.email),
+        ),
+      ),
+    ),
+    element(
+      "section",
+      { className: "card" },
+      element("h2", {}, "Session"),
+      button("Sign out", () => void logout(), {
+        className: "settings-sign-out",
+        "aria-describedby": "settings-sign-out-help",
+      }),
+      element(
+        "p",
+        { className: "hint", id: "settings-sign-out-help" },
+        "Signing out ends this session on this device only.",
+      ),
+    ),
+  );
+}
+
 async function logout() {
   loggingOut = true;
   pendingIntent = null;
@@ -2467,7 +2492,6 @@ async function logout() {
   }
   if (confirmed) {
     loggingOut = false;
-    navigation.resetHistory();
     showLogin();
   } else {
     publicPanel(
