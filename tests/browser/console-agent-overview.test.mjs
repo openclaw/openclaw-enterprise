@@ -423,6 +423,52 @@ test("A failed version raises no recovery while the current version is on no loa
   assert.equal(await page.getByText("v2 deployment failed").count(), 0);
 });
 
+// A viewed version on no loaded page shows on its own below the list. When Show older versions
+// loads the page that holds it, focus goes to the first newly listed version, not the viewed
+// one that was already shown (finding 2115).
+test("Show older versions hands focus to the first version it lists", async (t) => {
+  const { fixture, namespace, agent, page } = await agentPage(t, "Paged viewed", "Paged viewed");
+  const first = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const second = await fixture.seedActiveAgentRevision(namespace.id, agent.id, first.revision.id);
+  await fixture.seedActiveAgentRevision(namespace.id, agent.id, second.revision.id);
+  await routeOneVersionPerPage(page, fixture, namespace, agent);
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, first.revision.id, "configuration"),
+  );
+  const rail = page.getByRole("toolbar", { name: "Versions" });
+  await rail.getByRole("button", { name: "View version v1" }).waitFor();
+  assert.equal(await rail.getByRole("button", { name: /^View version v2/ }).count(), 0);
+  // A short list, so the newly listed version must be scrolled into view.
+  await page.evaluate(() => {
+    const sheet = [...globalThis.document.styleSheets].find((item) => item.href);
+    sheet.insertRule(".version-list { max-height: 100px; }", sheet.cssRules.length);
+  });
+  await rail.getByRole("button", { name: "View version v1" }).focus();
+  await page.keyboard.press("Tab");
+  await page.getByRole("button", { name: "Show older versions" }).waitFor();
+  assert.equal(
+    await page.evaluate(() => globalThis.document.activeElement.textContent),
+    "Show older versions",
+  );
+  await page.keyboard.press("Enter");
+  await rail.getByRole("button", { name: /^View version v2/ }).waitFor();
+  assert.deepEqual(
+    await rail.evaluate((list) => {
+      const active = globalThis.document.activeElement;
+      const box = list.getBoundingClientRect();
+      const item = active.getBoundingClientRect();
+      return {
+        focused: active.getAttribute("aria-label"),
+        overflows: list.scrollHeight > list.clientHeight,
+        visible: item.top >= box.top && item.bottom <= box.bottom,
+      };
+    }),
+    { focused: "View version v2", overflows: true, visible: true },
+  );
+});
+
 // A succeeded deployment becomes current, so a different current version on no loaded page may
 // be a newer one this reader cannot read; the summary still read "v2 · Completed" with no hint
 // (finding 1485, a sibling of 1477).

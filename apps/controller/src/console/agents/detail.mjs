@@ -2233,6 +2233,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // Each rail control's key (a revision ID, "new", "older" or "chooser"), so a rebuild of the
   // rail gives focus back to the same control instead of dropping it to the page (finding 2115).
   let railFocusKeys = new Map();
+  // The revisions the rail last listed, not counting a viewed version shown on its own below
+  // them: where the loaded pages ended.
+  let listedRevisionIds = new Set();
   // A version's own deployment outcome beside its number (finding 2095): the rail knows the
   // latest version's record, so a failed or deploying latest version is marked; the others have
   // no record read here and stay plain. The rail may show before that record is read, so the
@@ -2265,7 +2268,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   function renderVersions(revisions, snapshot, historyError = null) {
     const focusKey = railFocusKeys.get(document.activeElement);
-    const shownKeys = new Set(railFocusKeys.values());
+    const listedBefore = listedRevisionIds;
+    listedRevisionIds = new Set(revisions.map((revision) => revision.id));
     // The rebuilt list keeps the reader's scroll position.
     const listScroll = selector.querySelector(".version-list")?.scrollTop ?? 0;
     railFocusKeys = new Map();
@@ -2425,17 +2429,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     list.scrollTop = listScroll;
     // A rebuild while the reader is in the rail (a poll that lands an outcome, or older versions
     // loading) keeps focus on the same control. Once every older version is shown, focus goes to
-    // the first one that just loaded, below those shown before (a poll may add a newer one
-    // meanwhile), else the last version. A version no longer listed gives focus to the list's
+    // the first one that just loaded, below those listed before (a poll may add a newer one
+    // meanwhile; the viewed version shown on its own does not count), else the last version. A version no longer listed gives focus to the list's
     // Tab stop.
     if (focusKey !== undefined && !selector.contains(document.activeElement)) {
       const usable = items.filter((item) => !item.disabled);
-      const lastShown = usable.findLastIndex((item) => shownKeys.has(railFocusKeys.get(item)));
+      const lastShown = usable.findLastIndex((item) => listedBefore.has(railFocusKeys.get(item)));
       const target =
         [...railFocusKeys].find(([control, key]) => key === focusKey && !control.disabled)?.[0] ??
         (focusKey === "older"
           ? (usable.find(
-              (item, index) => index > lastShown && !shownKeys.has(railFocusKeys.get(item)),
+              (item, index) => index > lastShown && !listedBefore.has(railFocusKeys.get(item)),
             ) ?? usable.at(-1))
           : ["new", "chooser"].includes(focusKey)
             ? undefined
