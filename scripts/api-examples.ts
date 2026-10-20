@@ -251,6 +251,7 @@ export const parameterExamples = {
   expectedGeneration: "1",
   namespaceId,
   agentId,
+  profileId: "profile-alice",
   configurationId,
   revisionId,
   deploymentId: revisionId,
@@ -314,6 +315,7 @@ export const requestExamples = {
   updateConfiguration: { expectedGeneration: 1, values: configuration },
   createAgent: { name: agent.name, configurationId, executionMode: "dedicated", harnessAuth },
   updateAgent: { configurationId, executionMode: "dedicated", harnessAuth },
+  updateAgentControlUiBookmark: { url: "https://control.example.test/agent", expectedVersion: 0 },
   provisionAgent: {
     name: agent.name,
     requestId: provisioning.requestId,
@@ -450,6 +452,8 @@ export const responseExamples = {
   getAgent: agent,
   createAgent: agent,
   updateAgent: agent,
+  getAgentControlUiBookmark: { url: null, version: 0 },
+  updateAgentControlUiBookmark: { url: "https://control.example.test/agent", version: 1 },
   deleteAgent: { ...agent, status: "deleting" },
   stopAgent: agent,
   createConfiguration: config,
@@ -533,6 +537,17 @@ export const responseExamples = {
   },
   getAgentHarnessStatus: { status: "unobserved" },
   getAgentNativeAdmin: { status: "stopped" },
+  getAgentGatewayPeople: {
+    people: [
+      {
+        identity: "oidc:member-01",
+        profileId: "profile-alice",
+        displayName: "Alice",
+        role: "member",
+        hasAvatar: false,
+      },
+    ],
+  },
   getAgentRuntimeImages: { status: "undeployed", images: [] },
   getAgentRuntimeCredentials: { transportConfigured: true },
   provisionAgentRuntimeCredentials: { transportConfigured: true },

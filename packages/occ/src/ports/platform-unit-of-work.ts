@@ -144,6 +144,8 @@ export function bindPlatformUnitOfWork(
       "delete",
     ]),
     agents: bindRepository(repositories.agents, lifetime, [
+      "findControlUiBookmark",
+      "updateControlUiBookmark",
       "findAgentForBrowsing",
       "listAgentsForBrowsing",
       "findAgent",

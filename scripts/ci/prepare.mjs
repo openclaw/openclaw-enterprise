@@ -3504,6 +3504,9 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
     });
     resourceIds.push(database.resourceId);
     env.OCC_TEST_DATABASE_URL = database.appUrl;
+    if (relativeFile === "tests/integration/postgres-agent-control-ui-bookmark.test.ts") {
+      env.OCC_TEST_AGENT_CONTROL_UI_BOOKMARK_MIGRATION_DATABASE_URL = database.migrationUrl;
+    }
     if (
       [
         "tests/integration/sandbox-driver-openshell-k3d-real.test.mjs",

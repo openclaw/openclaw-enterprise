@@ -498,6 +498,13 @@
       "when": 1787000000071,
       "tag": "0071_default_users",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "7",
+      "when": 1787000000072,
+      "tag": "0072_agent_control_ui_bookmark",
+      "breakpoints": true
     }
   ]
 }

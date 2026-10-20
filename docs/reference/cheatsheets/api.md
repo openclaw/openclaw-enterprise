@@ -96,7 +96,10 @@
 - [`discoverAgentConfigurations`](../api.md#get-namespacesnamespaceidagentsagentiddriverconfigurations): Discover authorized Agent Driver configuration contributions.
 - [`getAgent`](../api.md#get-namespacesnamespaceidagentsagentid): Get an exact Namespace-owned Agent.
 - [`getAgentCallerPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissions): Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation.
+- [`getAgentControlUiBookmark`](../api.md#get-namespacesnamespaceidagentsagentidcontroluibookmark): Read the shared operator Control UI bookmark.
 - [`getAgentCredentialWithdrawal`](../api.md#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal): Get the withdrawal state of a credential source for an Agent.
+- [`getAgentGatewayPeople`](../api.md#get-namespacesnamespaceidagentsagentidgatewaypeople): List configured Control UI identities with optional native profile details.
+- [`getAgentGatewayPersonAvatar`](../api.md#get-namespacesnamespaceidagentsagentidgatewaypeopleprofileidavatar): Read a profile avatar from one active Agent Gateway.
 - [`getAgentHarnessStatus`](../api.md#get-namespacesnamespaceidagentsagentidharnessstatus): Read the Sandbox Driver's record of a running Agent's dedicated Harness Sandbox.
 - [`getAgentProvisioning`](../api.md#get-namespacesnamespaceidagentsprovisionworkid): Get first-time provisioning status for one exact work item.
 - [`getAgentRuntimeImages`](../api.md#get-namespacesnamespaceidagentsagentidruntimeimages): Read observed images and source commits for an Agent's active runtime.
@@ -110,6 +113,7 @@
 - [`provisionAgent`](../api.md#post-namespacesnamespaceidagentsprovision): Create a new Agent and queue first-time provisioning.
 - [`TEMPORARY_API_WILL_BREAK_IN_FUTURE_setAgentSandboxPolicyEditing`](../api.md#patch-namespacesnamespaceidagentsagentidsandboxpolicyfacetediting): Temporarily enable or disable future policy edits for one Agent.
 - [`updateAgent`](../api.md#patch-namespacesnamespaceidagentsagentid): Replace an exact Namespace-owned Agent's editable draft.
+- [`updateAgentControlUiBookmark`](../api.md#put-namespacesnamespaceidagentsagentidcontroluibookmark): Update or clear the shared operator Control UI bookmark using its current version.
 - [`updateAgentSandboxPolicy`](../api.md#put-namespacesnamespaceidagentsagentidsandboxpolicyfacet): Replace one Agent network policy additions.
 - [`applyAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetapply): Apply the saved policy to the running Agent revision.
 - [`deployAgent`](../api.md#post-namespacesnamespaceidagentsagentiddeploy): Save an Agent revision from the Agent's saved settings.

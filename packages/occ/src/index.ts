@@ -124,6 +124,11 @@ import {
   validateSandboxNetworkGrants,
   sandboxNetworkGrantsWithinCeiling,
 } from "@openclaw-enterprise/contracts";
+import {
+  isValidAgentControlUiBookmarkUrl,
+  type AgentControlUiBookmark,
+  type UpdateAgentControlUiBookmark,
+} from "@openclaw-enterprise/contracts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -3151,6 +3156,68 @@ export class OpenClawController {
       );
     }
     return immutableCopy(result);
+  }
+
+  async getAgentControlUiBookmark(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+  ): Promise<Readonly<AgentControlUiBookmark>> {
+    this.assertControlUiBookmarkScope(namespaceId, agentId);
+    await this.authorize(principalId, "read", { kind: "agent", id: agentId, namespaceId });
+    return this.read(async (state) => {
+      const bookmark = await state.agents.findControlUiBookmark(namespaceId, agentId);
+      if (!bookmark) {
+        throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+      }
+      return immutableCopy(bookmark);
+    });
+  }
+
+  async updateAgentControlUiBookmark(
+    principalId: string,
+    namespaceId: string,
+    agentId: string,
+    input: UpdateAgentControlUiBookmark,
+  ): Promise<Readonly<AgentControlUiBookmark>> {
+    this.assertControlUiBookmarkScope(namespaceId, agentId);
+    await this.authorize(principalId, "update", { kind: "agent", id: agentId, namespaceId });
+    if (!isValidAgentControlUiBookmarkUrl(input.url)) {
+      throw new ScopeViolationError(
+        "The Control UI bookmark must be an HTTPS URL without credentials, query, fragment, or control characters, at most 2048 characters.",
+      );
+    }
+    if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0) {
+      throw new ScopeViolationError("The current Control UI bookmark version is required.");
+    }
+    return this.mutate(async (state) => {
+      const current = await state.agents.findControlUiBookmark(namespaceId, agentId);
+      if (!current) {
+        throw new ScopeViolationError("The Agent does not belong to the exact Namespace.");
+      }
+      if (current.version === Number.MAX_SAFE_INTEGER) {
+        throw new ResourceConflictError("The Control UI bookmark version is exhausted.");
+      }
+      // A narrow conditional UPDATE serializes editors without loading desired state or secrets.
+      const updated = await state.agents.updateControlUiBookmark(
+        namespaceId,
+        agentId,
+        input.url,
+        input.expectedVersion,
+      );
+      if (!updated) {
+        throw new ResourceConflictError(
+          "The Control UI bookmark changed. Read its current version before saving.",
+        );
+      }
+      return immutableCopy(updated);
+    });
+  }
+
+  private assertControlUiBookmarkScope(namespaceId: string, agentId: string): void {
+    if (!isNonEmptyString(namespaceId) || !isNonEmptyString(agentId)) {
+      throw new ScopeViolationError("The exact Namespace and Agent identities are required.");
+    }
   }
 
   async getAgent(

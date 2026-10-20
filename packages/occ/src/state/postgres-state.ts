@@ -3473,6 +3473,22 @@ export class PostgresPlatformState implements PlatformStateStore {
       },
     };
     const agents: AgentRepository = {
+      findControlUiBookmark: async (namespaceId, agentId) => {
+        const result = await client.query(
+          "SELECT control_ui_bookmark_url AS url, control_ui_bookmark_version AS version FROM occ.agents WHERE namespace_id = $1 AND id = $2",
+          [namespaceId, agentId],
+        );
+        const row = rows(result.rows)[0];
+        return row ? { url: row.url as string | null, version: Number(row.version) } : undefined;
+      },
+      updateControlUiBookmark: async (namespaceId, agentId, url, expectedVersion) => {
+        const result = await client.query(
+          "UPDATE occ.agents SET control_ui_bookmark_url = $3, control_ui_bookmark_version = control_ui_bookmark_version + 1 WHERE namespace_id = $1 AND id = $2 AND control_ui_bookmark_version = $4 RETURNING control_ui_bookmark_url AS url, control_ui_bookmark_version AS version",
+          [namespaceId, agentId, url, expectedVersion],
+        );
+        const row = rows(result.rows)[0];
+        return row ? { url: row.url as string | null, version: Number(row.version) } : undefined;
+      },
       setSandboxPolicyEditing: async (namespaceId, agentId, enabled) => {
         await client.query(
           "UPDATE occ.agents SET sandbox_policy_editing = $3 WHERE namespace_id = $1 AND id = $2",
