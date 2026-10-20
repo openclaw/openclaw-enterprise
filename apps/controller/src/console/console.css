@@ -1641,6 +1641,10 @@ select:not([multiple])[size="1"] {
 [aria-live="polite"]:not(:has(.agent-access:not([hidden]))) .disclosure-access {
   display: none;
 }
+/* What a deploy does explains the draft's next step, so it shows only beside it (UX spec 3.7). */
+[aria-live="polite"]:not(:has(.agent-draft-actions)) .disclosure-deploy {
+  display: none;
+}
 @media (max-width: 520px) {
   .disclosure > summary {
     min-height: var(--touch-min);
@@ -1869,17 +1873,66 @@ select:not([multiple])[size="1"] {
     min-height: 2lh;
   }
 }
+/* The Versions rail beside the selected version's summary (heading, record, a draft's next
+   step); the tabs and open tab run full width below both (UX spec 3.7). */
 .agent-version-layout {
   display: grid;
-  grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-areas:
+    "rail summary"
+    "detail detail";
   align-items: start;
-  gap: 20px;
+  gap: var(--space-6) var(--space-5);
+}
+.agent-version-layout > .revision-selector {
+  grid-area: rail;
+}
+.agent-version-summary {
+  grid-area: summary;
+  display: grid;
+  gap: var(--space-5);
+  min-width: 0;
+}
+.agent-version-summary > * {
+  margin: 0;
+}
+/* A draft's next step leads its column; an Agent-wide tab's heading follows it. */
+.agent-version-summary > .agent-draft-actions {
+  order: -1;
+}
+.version-evidence:empty {
+  display: none;
+}
+.version-evidence {
+  display: grid;
+  gap: var(--space-5);
+}
+.agent-version-summary > .version-evidence > *,
+.agent-version-layout > .revision-selector {
+  margin: 0;
+}
+/* With only a heading beside the rail (Logs, Workspace files, Access, or a page still loading),
+   the open tab sits beside the rail under it, as a version's detail always did. */
+@media (min-width: 1101px) {
+  .agent-version-layout:not(
+    :has(
+      > .agent-version-summary > .agent-draft-actions,
+      > .agent-version-summary > .version-evidence:not([hidden], :empty)
+    )
+  ) {
+    grid-template-rows: auto 1fr;
+    grid-template-areas:
+      "rail summary"
+      "rail detail";
+    row-gap: var(--space-5);
+  }
 }
 .agent-version-detail {
+  grid-area: detail;
   min-width: 0;
 }
 .agent-version-heading {
-  padding: 20px 0 0;
+  padding: var(--space-2) 0 0;
 }
 .agent-version-heading .resource-id {
   margin: 8px 0 4px;
@@ -1893,8 +1946,13 @@ select:not([multiple])[size="1"] {
   margin: 14px 0 22px;
 }
 @media (max-width: 1100px) {
+  /* Stacked, the summary leads, so a draft's Deploy is on a phone's first screen. */
   .agent-version-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "summary"
+      "rail"
+      "detail";
   }
   .version-list {
     max-height: 250px;
@@ -1927,20 +1985,83 @@ select:not([multiple])[size="1"] {
   margin-block: calc(-1 * var(--space-1));
   margin-left: var(--space-1);
 }
-.agent-draft-actions {
-  margin: 18px 0;
+/* A draft's next step (UX spec 3.7): a checklist whose steps are done (success check) or open
+   (strong ring), then Deploy right-aligned with its status beside it. */
+.agent-draft-actions h2 {
+  margin: 0 0 var(--space-4);
 }
-.agent-draft-actions h3 {
-  margin: 0 0 10px;
-  font-size: 15px;
-}
-.agent-draft-actions > button.primary {
-  margin-top: 4px;
-}
-.draft-steps {
+.checklist {
   display: grid;
-  gap: 8px;
-  padding-left: 20px;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.checklist > li {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+.checklist-mark {
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  border: 2px solid var(--color-border-strong);
+  border-radius: var(--radius-pill);
+}
+.checklist > li[data-state="done"] .checklist-mark {
+  border-color: var(--color-success);
+  background: var(--color-success);
+}
+/* The check: a rotated L drawn in the circle. */
+.checklist > li[data-state="done"] .checklist-mark::after {
+  content: "";
+  display: block;
+  width: 5px;
+  height: 9px;
+  margin: 2px auto 0;
+  border: solid var(--color-on-accent);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.checklist-text {
+  color: var(--color-text-strong);
+}
+.checklist-detail {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+.agent-draft-actions .card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3) var(--space-4);
+  margin-top: var(--space-5);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+.agent-draft-actions .card-actions > [role="status"] {
+  flex: 1 1 16rem;
+  margin: 0;
+  text-align: right;
+}
+.agent-draft-actions > .status:not(:empty) {
+  margin: var(--space-4) 0 0;
+}
+@media (max-width: 520px) {
+  /* Phone: Deploy is full width, its status under it. */
+  .agent-draft-actions .card-actions > button {
+    flex: 1 1 100%;
+  }
+  .agent-draft-actions .card-actions > [role="status"] {
+    order: 1;
+    text-align: left;
+  }
 }
 .agent-card {
   background: var(--surface);

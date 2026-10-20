@@ -1995,3 +1995,112 @@ test("A share in flight finishes across a tab switch", async (t) => {
   ).data.filter((binding) => binding.subjectId === person.principal.id);
   assert.equal(bindings.length, 2);
 });
+
+// A draft's next step (UX spec 3.7, plan D1): beside the Versions rail, a checklist whose steps
+// say what is done, then Deploy on the first screen with its status beside it. The deploy
+// explanation moved into the page's disclosure, and the empty Deployment activity card left.
+for (const viewport of [
+  { width: 1440, height: 900 },
+  { width: 390, height: 844 },
+]) {
+  const size = `${viewport.width}x${viewport.height}`;
+  test(`A draft's next-step card brings Deploy up at ${size}`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Next step ${size}`);
+    const agent = await fixture.createAgent(namespace.id, "Next Step Agent", nativeValues("v1"));
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    await login(
+      page,
+      fixture,
+      detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"),
+    );
+    const card = page.locator(".agent-draft-actions");
+    await card.getByText("Ready to deploy.", { exact: true }).waitFor();
+    await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+    assert.equal(await page.evaluate(() => globalThis.scrollY), 0);
+
+    await card.getByRole("heading", { level: 2, name: "Prepare this version" }).waitFor();
+    const steps = await card
+      .getByRole("listitem")
+      .evaluateAll((items) =>
+        items.map((item) => [
+          item.dataset.state,
+          item.querySelector(".visually-hidden").textContent,
+          item.querySelector(".checklist-detail").textContent,
+        ]),
+      );
+    assert.deepEqual(steps, [
+      ["done", "Done: ", `Saved · Configuration ${agent.configurationId} · generation 1`],
+      ["done", "Done: ", "API key · Secret configured"],
+      ["pending", "Not done: ", "Creates an immutable version from the saved draft"],
+    ]);
+
+    // Deploy is the page's one primary.
+    const deploy = card.getByRole("button", { name: "Deploy new version" });
+    assert.equal(await deploy.isEnabled(), true);
+    const layout = await page.evaluate(() => {
+      const doc = globalThis.document;
+      const box = (node) => node.getBoundingClientRect();
+      const deployBox = box(doc.querySelector(".agent-draft-actions .primary"));
+      const status = box(doc.querySelector('.agent-draft-actions [role="status"]'));
+      return {
+        deployTop: deployBox.top,
+        deployBottom: deployBox.bottom,
+        sameLine: status.top < deployBox.bottom && deployBox.top < status.bottom,
+        cardTop: box(doc.querySelector(".agent-draft-actions")).top,
+        cardBottom: box(doc.querySelector(".agent-draft-actions")).bottom,
+        railTop: box(doc.querySelector(".revision-selector")).top,
+        tabsTop: box(doc.querySelector(".agent-tabs")).top,
+        tabsWidth: box(doc.querySelector(".agent-tabs")).width,
+        layoutWidth: box(doc.querySelector(".agent-version-layout")).width,
+        primaries: doc.querySelectorAll(".content .button--primary:not(:disabled)").length,
+        activityShown: [...doc.querySelectorAll(".deployment-status")].some((node) =>
+          node.checkVisibility(),
+        ),
+        innerHeight: globalThis.innerHeight,
+      };
+    });
+    // On the first screen at 1440x900; on a phone, within 1,100 px of the top (spec P7).
+    assert.ok(
+      viewport.width > 1100 ? layout.deployBottom <= layout.innerHeight : layout.deployTop < 1100,
+      JSON.stringify(layout),
+    );
+    assert.equal(layout.primaries, 1, JSON.stringify(layout));
+    assert.equal(layout.activityShown, false, "no empty Deployment activity card");
+    // The tabs run full width under the card, and the rail.
+    assert.ok(layout.tabsTop > layout.cardBottom, JSON.stringify(layout));
+    assert.equal(layout.tabsWidth, layout.layoutWidth);
+    if (viewport.width > 1100) {
+      // Beside the Versions rail, Deploy and its status on one line.
+      assert.equal(Math.round(layout.cardTop), Math.round(layout.railTop));
+      assert.equal(layout.sameLine, true, JSON.stringify(layout));
+    } else {
+      // Stacked, the card leads the rail.
+      assert.ok(layout.cardBottom < layout.railTop, JSON.stringify(layout));
+    }
+    // The draft's heading steps aside; the step names its Configuration instead.
+    assert.equal(await page.getByRole("heading", { name: "Create new version" }).count(), 0);
+    await page.getByText(/^Saved · Configuration .* · generation 1$/).waitFor();
+
+    // What a deploy does is in the page's disclosure, once, and only beside the next step.
+    const explanation =
+      "Deployment creates an immutable version from the saved Configuration and plugin selections. Connection credentials are generated automatically on first deployment when needed. A successful request means work was admitted; readiness is tracked above.";
+    assert.equal(await card.getByText(explanation).count(), 0);
+    const disclosure = page.locator("details.disclosure");
+    await disclosure.getByText("What this page can tell you", { exact: true }).click();
+    await disclosure.getByText(explanation, { exact: true }).waitFor();
+    assert.equal(await page.getByText(explanation).count(), 1);
+
+    // An unsaved edit reopens the first step; Deploy waits for it.
+    await page.getByRole("button", { name: "Edit Configuration" }).click();
+    const editor = page.locator("#configuration-json");
+    await editor.fill(`${await editor.inputValue()}\n`);
+    await card.getByText("Save or cancel Configuration edits before deploying.").waitFor();
+    const first = card.getByRole("listitem").first();
+    assert.equal(await first.getAttribute("data-state"), "pending");
+    assert.equal(
+      await first.locator(".checklist-detail").textContent(),
+      `Unsaved changes · Configuration ${agent.configurationId} · generation 1`,
+    );
+    assert.equal(await deploy.isDisabled(), true);
+  });
+}

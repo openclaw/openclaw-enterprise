@@ -145,7 +145,7 @@ const inPlaceCases = [
     tab: "configuration",
     viewport: { width: 1280, height: 720 },
     async prepare(page) {
-      await page.getByRole("heading", { name: "Create new version" }).waitFor();
+      await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
       await page.waitForFunction(
         () =>
           globalThis.document.querySelector(".agent-draft-actions .primary")?.disabled === false,

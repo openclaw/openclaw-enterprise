@@ -1798,14 +1798,26 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
     new RegExp(`revision=${revision.id}&tab=logs`),
   );
   // Secret values can be updated in place, so the rejected binding warns instead of blocking.
+  // It never reads "Ready to deploy.", and the next step keeps the credentials step open:
+  // deploying again does not fix a rejected credential (UX spec 3.7).
   await page
     .getByText(
-      "Ready to deploy. The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.",
+      "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.",
       { exact: true },
     )
     .waitFor();
   const deploy = page.getByRole("button", { name: "Deploy new version" });
   assert.equal(await deploy.isEnabled(), true);
+  const nextStep = page.locator(".agent-draft-actions");
+  assert.equal(await nextStep.getByText("Ready to deploy.").count(), 0);
+  const credentialStep = nextStep.getByRole("listitem").filter({
+    hasText: "Check authentication and credentials",
+  });
+  assert.equal(await credentialStep.getAttribute("data-state"), "pending");
+  assert.equal(
+    await credentialStep.locator(".checklist-detail").textContent(),
+    "The last deployment's model credential was rejected",
+  );
 
   // Creating a Secret from the picker stages it without reopening the listbox over Save.
   const apiKeySecret = page.getByLabel("API key Secret", { exact: true });
@@ -1834,6 +1846,7 @@ test("Agent deployment guides a rejected model credential and gates unsaved auth
   // The saved binding differs from the rejected version's, so the warning clears.
   await page.getByText("Ready to deploy.", { exact: true }).waitFor();
   assert.equal(await deploy.isEnabled(), true);
+  assert.equal(await credentialStep.getAttribute("data-state"), "done");
 });
 
 test("a reload asks first while an Agent editor holds unsaved work", async (t) => {

@@ -1698,7 +1698,10 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
   await page.getByRole("heading", { name: "Workspace files", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Agent workspace", exact: true }).waitFor();
   await page.getByRole("heading", { name: "Versions", exact: true }).waitFor();
-  await page.getByText("No readable deployment records.").waitFor();
+  // The empty Deployment activity card is read but hidden: the facts already say it (UX spec 3.7).
+  const noRecords = page.getByText("No readable deployment records.");
+  await noRecords.waitFor({ state: "attached" });
+  assert.equal(await noRecords.isHidden(), true);
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
   assert.equal(
     requests.some((request) => request.path === configurationPath),

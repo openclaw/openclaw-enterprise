@@ -324,7 +324,7 @@ test("Agent creation stores its API key separately, grants exact access, and sav
     );
   });
   await page.getByRole("button", { name: "Create new version" }).waitFor();
-  await page.getByRole("heading", { name: "Create new version" }).waitFor();
+  await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
   await page.getByText("No version is currently selected for service.").waitFor();
   // A never-deployed Agent has no Stop card and reports no stop request (finding 1899). The
   // card is hidden while versions load too, so wait for the empty version list first.

@@ -104,7 +104,7 @@ for (const issuesEnabled of [true, false]) {
     assert.equal(agent.executionMode, "dedicated");
     assert.deepEqual(agent.harnessAuth, { method: "api_key", source: modelSecret.ref });
     assert.deepEqual(agent.repositoryBindings, expectedBindings);
-    await page.getByRole("heading", { name: "Create new version" }).waitFor();
+    await page.getByRole("heading", { name: "Prepare this version" }).waitFor();
     await page
       .getByText(`application · ${label}, documentation · ${label}`, { exact: true })
       .waitFor();

@@ -16,6 +16,7 @@ import {
 import {
   configuredHarnessId,
   createHarnessAuthFields,
+  harnessAuthDescription,
   renderHarnessAuthSummary,
 } from "./harness-auth.mjs";
 import { renderAgentAccess } from "./access.mjs";
@@ -1373,6 +1374,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       {},
       element("li", {}, "Selection does not confirm that this version is serving."),
       element("li", {}, "Deployment records don’t verify live serving or model access."),
+      // Shown only beside a draft's next step (console.css), which it explains.
+      element(
+        "li",
+        { className: "disclosure-deploy" },
+        "Deployment creates an immutable version from the saved Configuration and plugin selections. Connection credentials are generated automatically on first deployment when needed. A successful request means work was admitted; readiness is tracked above.",
+      ),
       // Shown only while the sharing panel is (console.css): it speaks for that panel's list.
       element(
         "li",
@@ -1475,7 +1482,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   const detailPane = element("div", { className: "agent-version-detail" });
   const detailHeading = element("div", { className: "agent-version-heading" });
   const versionEvidence = element("div", { className: "version-evidence" });
-  const versionLayout = element("div", { className: "agent-version-layout" }, selector, detailPane);
+  // The selected version's heading, record and (on a draft) its next step sit beside the Versions
+  // rail; the tabs and open tab run full width below both (UX spec 3.7). Under 1100 px the summary
+  // comes first, so a draft's Deploy is on the first screen of a phone too.
+  const versionSummary = element("div", { className: "agent-version-summary" });
+  const versionLayout = element(
+    "div",
+    { className: "agent-version-layout" },
+    selector,
+    versionSummary,
+    detailPane,
+  );
   const deploymentStatus = element("section", { className: "agent-card deployment-status" });
   deploymentStatus.append(
     element("h2", {}, "Deployment activity"),
@@ -1542,7 +1559,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   function showLeaveBlock() {
     const reason = leaveReason();
     if (deployInFlight) {
-      showLeaveNote(detailPane.querySelector(":scope > .agent-draft-actions"), reason, "end");
+      showLeaveNote(versionSummary.querySelector(":scope > .agent-draft-actions"), reason, "end");
     } else if (refreshingDraft) {
       // A refresh replaces the draft actions card mid-hold; the tab panel stays until it ends.
       showLeaveNote(content, reason, "start");
@@ -1693,7 +1710,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     );
   };
   tabs.addEventListener("scroll", fadeTabEdges, { passive: true });
-  detailPane.append(detailHeading, versionEvidence, tabs, content);
+  versionSummary.append(detailHeading, versionEvidence);
+  detailPane.append(tabs, content);
   const nativeAdmin = renderNativeAdminAccess(context, path);
   const recoveryTitle = element("h2");
   // A danger status block (spec 3.4): the failed version in the label, the code at the end of
@@ -1810,7 +1828,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // Deploy again opens the draft at its deploy step, whose card can end below a phone's
     // fold when the version detail is at the top: the card is brought to the top, with its
     // Deploy new version focused when the reader can press it (finding 1898).
-    const actions = deploy ? detailPane.querySelector(":scope > .agent-draft-actions") : null;
+    const actions = deploy ? versionSummary.querySelector(":scope > .agent-draft-actions") : null;
     if (deploy && !actions && !detailLoadFinished) {
       // The card is built once the draft's own reads land: open it then, unless the reader has
       // moved on (another tab, or focus taken elsewhere) in the meantime.
@@ -1823,7 +1841,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             !deleting &&
             selectedTab === tab &&
             (!focused || focused === document.body || focused === tabControls.get(tab)) &&
-            detailPane.querySelector(":scope > .agent-draft-actions")
+            versionSummary.querySelector(":scope > .agent-draft-actions")
           ) {
             openVersionDetail({ ...options, deploy });
           }
@@ -2022,6 +2040,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
 
   function renderDetailHeading() {
+    detailHeading.hidden = false;
     if (selectedTab === "access") {
       detailHeading.replaceChildren(
         element(
@@ -2050,6 +2069,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           ),
         ),
       );
+      return;
+    }
+    // A draft's next-step card names it and its Configuration, so the heading steps aside for it
+    // (UX spec 3.7).
+    if (selected === "draft" && versionSummary.querySelector(":scope > .agent-draft-actions")) {
+      detailHeading.replaceChildren();
+      detailHeading.hidden = true;
       return;
     }
     const snapshot = viewedSnapshot;
@@ -2733,7 +2759,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           )
         : element(
             "section",
-            { className: "agent-card deployment-status" },
+            // With no versions the card would repeat the facts' "No readable deployments", so it
+            // stays out of the way of the draft's next step (UX spec 3.7).
+            {
+              className: "agent-card deployment-status",
+              hidden: revisionResult.status !== "rejected",
+            },
             element("h2", {}, "Deployment activity"),
             element(
               "p",
@@ -2917,6 +2948,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               values = configuration.values;
               viewedSnapshot = configuration;
               renderDetailHeading();
+              updateDeployControls();
             },
             onReload: (carried = null) => {
               carriedChannelSecrets = carried;
@@ -3048,16 +3080,94 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
             "Configured on the runtime host; not validated by OCC. Gateway readiness does not confirm model access.";
         } else {
           const gate = credentials.deployGateMessage();
-          // Secret values can be updated in place, so a rejected credential warns instead of blocking.
-          deployStatus.textContent =
-            latestDeploymentErrorCode === "RUNTIME_AUTHENTICATION_FAILED" &&
-            latestRevisionDetail !== null &&
-            latestRevisionDetail.id === visibleRevisions[0]?.id &&
-            JSON.stringify(latestRevisionDetail.harnessAuth) === JSON.stringify(agent.harnessAuth)
-              ? `${gate} The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.`
-              : gate;
+          // Secret values can be updated in place, so a rejected credential warns instead of
+          // blocking. It never reads "Ready to deploy.": deploying again does not fix it.
+          const rejected =
+            "The last deployment's model credential was rejected; update or replace it in Credentials before deploying again.";
+          deployStatus.textContent = !credentialRejected()
+            ? gate
+            : gate === "Ready to deploy."
+              ? rejected
+              : `${gate} ${rejected}`;
         }
       }
+      updateChecklist();
+    }
+    // The last deployment's model credential was rejected and the draft still uses it.
+    function credentialRejected() {
+      return (
+        latestDeploymentErrorCode === "RUNTIME_AUTHENTICATION_FAILED" &&
+        latestRevisionDetail !== null &&
+        latestRevisionDetail.id === visibleRevisions[0]?.id &&
+        JSON.stringify(latestRevisionDetail.harnessAuth) === JSON.stringify(agent.harnessAuth)
+      );
+    }
+    // The next step's checklist (UX spec 3.7): each step is done or still open, with one muted
+    // detail line. A credential the last deployment had rejected keeps its step open.
+    const checklistSteps = [
+      "Edit and save Configuration, plugins, or Channels",
+      "Check authentication and credentials",
+      "Deploy the saved draft",
+    ].map((text) => {
+      const state = element("span", { className: "visually-hidden" });
+      const detail = element("span", { className: "checklist-detail" });
+      const item = element(
+        "li",
+        {},
+        element("span", { className: "checklist-mark", "aria-hidden": "true" }),
+        element("span", { className: "checklist-text" }, state, text, detail),
+      );
+      return { item, state, detail };
+    });
+    const checklist = element(
+      "ol",
+      { className: "checklist" },
+      ...checklistSteps.map((step) => step.item),
+    );
+    function setStep(step, done, detail) {
+      const value = done ? "done" : "pending";
+      if (step.item.dataset.state !== value) {
+        step.item.dataset.state = value;
+        step.state.textContent = done ? "Done: " : "Not done: ";
+      }
+      setText(step.detail, detail);
+    }
+    function updateChecklist() {
+      const retainedConfiguration = retainedConfigurationState();
+      const saving = draftEditorState.saving || pluginEditorState.saving;
+      const reload =
+        draftEditorState.outcomeUnknown ||
+        draftEditorState.reloadRequired ||
+        pluginEditorState.outcomeUnknown ||
+        pluginEditorState.reloadRequired ||
+        retainedConfiguration.reloadRequired ||
+        Boolean(deployReloadMessage);
+      const unsaved =
+        draftEditorState.dirty || pluginEditorState.dirty || retainedConfiguration.dirty;
+      setStep(
+        checklistSteps[0],
+        !saving && !reload && !unsaved,
+        `${saving ? "Saving…" : reload ? "Reload this draft" : unsaved ? "Unsaved changes" : "Saved"} · Configuration ${snapshot.id} · generation ${snapshot.generation}`,
+      );
+      const rejected = credentialRejected();
+      const authenticationReady =
+        Boolean(agent.harnessAuth) &&
+        authenticationSaveState === "idle" &&
+        !authenticationPending &&
+        !authenticationUnsaved &&
+        (runtimeAuth || Boolean(credentials?.credentialsReady()));
+      setStep(
+        checklistSteps[1],
+        authenticationReady && !rejected,
+        !agent.harnessAuth
+          ? "No harness authentication selected"
+          : rejected
+            ? "The last deployment's model credential was rejected"
+            : authenticationReady
+              ? harnessAuthDescription(agent.harnessAuth)
+              : "Finish in Credentials",
+      );
+      setStep(checklistSteps[2], false, "Creates an immutable version from the saved draft");
     }
     refreshDeployControls = updateDeployControls;
     deployStatus = element("p", { className: "muted", role: "status" });
@@ -3191,31 +3301,20 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     updateDeployControls();
     const draftActions = element(
       "section",
-      { className: "agent-card agent-draft-actions" },
-      element("h3", {}, "Prepare this version"),
-      element(
-        "ol",
-        { className: "draft-steps" },
-        element("li", {}, "Edit and save Configuration, plugins, or Channels"),
-        element("li", {}, "Check authentication and credentials"),
-        element("li", {}, "Deploy the saved draft"),
-      ),
-      element(
-        "p",
-        { className: "muted" },
-        "Deployment creates an immutable version from the saved Configuration and plugin selections. Connection credentials are generated automatically on first deployment when needed. A successful request means work was admitted; readiness is tracked above.",
-      ),
-      draft ? element("div", { className: "form-actions" }, deploy, setupCredentials) : deploy,
-      deployStatus,
+      { className: "card agent-draft-actions" },
+      element("h2", {}, "Prepare this version"),
+      checklist,
+      element("div", { className: "card-actions" }, deployStatus, setupCredentials, deploy),
       deployFeedback,
     );
     // A draft refreshed in place swaps its actions in one step (finding 1445).
-    const shownActions = detailPane.querySelector(":scope > .agent-draft-actions");
+    const shownActions = versionSummary.querySelector(":scope > .agent-draft-actions");
     if (shownActions) {
       shownActions.replaceWith(draftActions);
     } else {
-      detailPane.insertBefore(draftActions, tabs);
+      versionSummary.append(draftActions);
     }
+    renderDetailHeading();
     return {
       get snapshot() {
         return snapshot;
@@ -3373,7 +3472,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     settledDetails = next;
     if (data.error) {
-      detailPane.querySelector(":scope > .agent-draft-actions")?.remove();
+      versionSummary.querySelector(":scope > .agent-draft-actions")?.remove();
+      renderDetailHeading();
     }
     details = next;
     // The rebuilt editors start clean; nothing is saving any more.
