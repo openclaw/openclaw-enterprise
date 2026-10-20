@@ -19,7 +19,7 @@ The [shared contracts](../../../packages/contracts/src/index.ts) define the type
 Every `ComputeDriver` has an `id`, `implementation`, and
 `capability: "compute"`.
 
-Optional `configureAgent` prepares deployment copies; see [admission](compute-admission.md#deployment-configuration).
+Optional [`configureAgent`](compute-admission.md#deployment-configuration) prepares deployment copies.
 
 Optional `getRuntimeImages(revision)` returns
 `{workload, container, image, imageId, commit, openclawCommit}` entries for

@@ -226,7 +226,7 @@ The init container cannot write through the gateway's later mount path.
   `closeReason`. Service-worker registration must fail.
 - Browser tests cover visibility and launch. Integration and WebSocket cases
   cover admission, assets, leases, reconnects and denied effects. Genuine native
-  UI proof uses the [Kubernetes procedure](../testing/kubernetes.md#native-admin-ui).
+  UI proof uses the [Kubernetes procedure](../testing/kubernetes.md#native-gateway-sharing).
 
 ## Related docs
 
