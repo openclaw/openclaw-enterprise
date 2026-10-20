@@ -638,9 +638,13 @@ export function createSecretReferenceField({
         setSecretOptions({ preserveSearch: true });
         if (!staged) {
           setStatusTone(status, null);
+          // The list holds only the Secrets this account may read. Someone the session knows is
+          // not an Installation administrator may not see Secrets that exist (finding 2111).
           status.textContent = secrets.length
             ? "Choose an existing Secret or create a new one."
-            : "No readable Secrets yet. Create a new Secret to bind this field.";
+            : context.installationAdmin === false
+              ? "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an administrator for read access to an existing one."
+              : "No readable Secrets yet. Create a new Secret to bind this field.";
         }
         updateValidity();
       })

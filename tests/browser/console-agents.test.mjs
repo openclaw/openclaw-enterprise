@@ -2055,8 +2055,11 @@ test("Agent creation explains a denied capability check instead of offering a re
   const { page } = await newPage(t, fixture);
   // Without a permission answer that grants Agent create, a denied Installation read keeps the
   // refusal; a member the Namespace lets create goes on (console-create-agent-member.test.mjs).
+  let permissions = null;
   await page.route(`**/namespaces/${namespace.id}/permissions`, (route) =>
-    route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
+    permissions
+      ? route.fulfill({ json: { data: permissions } })
+      : route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
   );
   let status = 403;
   await page.route(`${fixture.origin}/installation`, async (route) => {
@@ -2078,11 +2081,17 @@ test("Agent creation explains a denied capability check instead of offering a re
 
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
+  // A failed permission read is not a denial: the form says so and offers that check again
+  // (finding 2110); a known denial then keeps the refusal, with no retry.
+  await page.getByText(/^Your permissions in this Namespace could not be checked/).waitFor();
+  permissions = { agents: { create: false } };
+  await page.getByRole("button", { name: "Retry permission check" }).click();
   await page
     .getByText(
       "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.",
     )
     .waitFor();
+  assert.equal(await page.getByRole("button", { name: "Retry permission check" }).count(), 0);
   const retry = page.getByRole("button", { name: "Retry capability check" });
   assert.equal(await retry.isHidden(), true);
   assert.equal(
@@ -2095,6 +2104,7 @@ test("Agent creation explains a denied capability check instead of offering a re
 
   // A transient failure still offers the retry.
   status = 503;
+  permissions = null;
   await page.goto(`${fixture.origin}/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start without Preset" }).click();
   await page.getByText(/^Installation capabilities unavailable\. /).waitFor();
