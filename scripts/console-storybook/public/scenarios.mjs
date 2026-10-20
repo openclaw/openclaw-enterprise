@@ -915,6 +915,21 @@ export const scenarios = {
       "Confirm Search Agents keeps its text and focus, Research assistant is still listed, and Create Agent is enabled with no description pointing at the note. No further Namespace reads happen.",
     ],
   },
+  agentsNamespaceMissing: {
+    group: "Pages/Agents",
+    name: "Namespace leaves the list while provisioning",
+    emptyAgents: true,
+    namespaceStatus: "provisioning",
+    namespaceRechecks: ["missing"],
+    // Rechecks start once the page shows its search box, so the first load still lists it.
+    actions: [{ selector: 'input[type="search"]', focus: true }],
+    description:
+      "The Namespace list the Agents page rereads while its Namespace provisions no longer holds it: it was deleted, or the reader lost access. The wait ends, the note asks for another Namespace, as Create Agent's does, and Create Agent is disabled.",
+    steps: [
+      'Within about 10 s the note "Namespace status: Provisioning." becomes "This Namespace is missing or you no longer have access. Choose another Namespace."',
+      'Confirm Create Agent is disabled and described by that note, the empty state reads "Agents cannot be created in this Namespace.", and no further Namespace reads happen.',
+    ],
+  },
   agentsDenied: {
     group: "Pages/Agents",
     name: "Access denied",
@@ -1047,7 +1062,7 @@ export const scenarios = {
       { click: "Cancel" },
     ],
     description:
-      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. A browser reload asks the API again.",
+      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. Refresh or a browser reload offers creation again.",
   },
   namespaceCreate: {
     group: "Pages/Namespaces",
@@ -4030,6 +4045,45 @@ export const scenarios = {
     steps: [
       'On arrival the notice begins "Deploying version" and Selected version reads v6.',
       'Within about 5 s the notice begins "Current version" and Selected version reads v7.',
+    ],
+  },
+  deploymentCompletesRereadFails: {
+    group: "Pages/Agent detail",
+    name: "New version completes, Agent reread fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The page's own Agent read answers; the reread after the deployment completes fails.
+    rules: [{ suffix: "/agents/agt_00000000-0000-4000-8000-000000000001", skip: 1, status: 503 }],
+    description:
+      "v7's deployment completes, but the Agent reread that would make it current fails. The notice says the deployment completed and that the current version could not be refreshed, rather than Deploying beside Completed. The deployment and the failure are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version" and Selected version reads v6.',
+      'Within about 5 s Latest visible deployment reads "v7 · Completed", the page says the current version and version history could not be refreshed, and the notice reads "Deployed version · read-only admitted snapshot. Its deployment completed, but the current version could not be refreshed."',
+    ],
+  },
+  deploymentStatusReadRecovers: {
+    group: "Pages/Agent detail",
+    name: "New version in progress, one status read fails",
+    path: `${candidateVersion}&tab=configuration`,
+    deployed: true,
+    candidateDeploymentStatus: "running",
+    candidateActivates: true,
+    // The first poll after arrival fails once; the next one records success.
+    rules: [
+      {
+        suffix: "/deployments/rev_00000000-0000-4000-8000-000000000007",
+        skip: 1,
+        once: true,
+        status: 503,
+      },
+    ],
+    description:
+      "One deployment status read fails while v7 is deploying. The notice keeps Deploying version rather than turning Historical, polling continues, and the next read records success and makes v7 current. The deployment, failure and activation are simulated.",
+    steps: [
+      'On arrival the notice begins "Deploying version". Within about 5 s Latest visible deployment reads "v7 · Unavailable" and the notice still begins "Deploying version".',
+      'Within about 10 s the notice begins "Current version" and Selected version reads v7, with no "Historical version" in between.',
     ],
   },
   deploymentDeferred: {

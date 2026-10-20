@@ -22,7 +22,8 @@ in-memory storage for those API boundaries.
    In **Create Conflict**, change the retained name and resubmit. In
    **Create Denied**, inspect the access guidance and disabled submit. In
    **Create refused, then closed**, the closed form leaves **Create Namespace** disabled
-   with its reason focused.
+   with its reason focused; the reason says to select **Refresh** after an administrator
+   grants access, and Refresh offers **Create Namespace** again.
 4. Open **Create Pending**. Escape cannot dismiss a pending write. After the
    timeout, or in **Create Unknown**, submission is disabled. Select
    **Check Namespaces** to inspect the list before starting another attempt.
