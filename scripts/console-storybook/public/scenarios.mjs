@@ -1047,7 +1047,7 @@ export const scenarios = {
       { click: "Cancel" },
     ],
     description:
-      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. A browser reload asks the API again.",
+      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. Refresh or a browser reload offers creation again.",
   },
   namespaceCreate: {
     group: "Pages/Namespaces",
@@ -2917,10 +2917,27 @@ export const scenarios = {
     name: "Agent creation needs an administrator",
     path: create,
     actions: form,
+    rules: [
+      { path: "/installation", status: 403, code: "FORBIDDEN" },
+      { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
+    ],
+    description:
+      "Without a permission answer that grants Agent create, a caller without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
+    gap: "The permission read fails here; with a grant the form goes on (Member with Agent create).",
+  },
+  createMember: {
+    group: "Pages/Create Agent",
+    name: "Member with Agent create",
+    path: create,
+    actions: form,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A member without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
-    gap: "Namespace IAM cannot grant create; the live check is a member account on a real Installation.",
+      "A member whose Namespace grants Agent create cannot read the Installation. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
+    steps: [
+      'Above the form, "Your access" says you can create Agents in Engineering and that an Installation administrator then gives the new Agent access to its Secrets.',
+      'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
+    ],
+    gap: "The live check is a member account on a real Installation (tests/browser/console-create-agent-member.test.mjs).",
   },
   createRestricted: {
     group: "Pages/Create Agent",
@@ -3356,9 +3373,10 @@ export const scenarios = {
     // The page brings the editor into view itself.
     scrollToTabs: false,
     description:
-      "Edit current Configuration on a version's Configuration tab opens the draft with its Configuration editor already open, brought into view and focused. It used to open the draft at the top of the page and still need an Edit Configuration click far below.",
+      "Edit current Configuration on a version's Configuration tab opens the draft with its Configuration editor already open, brought into view and focused. It used to open the draft at the top of the page and still need an Edit Configuration click far below. The draft's \"New version\" notice comes to the top with the editor below it, so the screen says this is the draft; a window too short for both brings the editor to the top instead.",
     steps: [
-      "The page shows the draft. Configuration JSON is in view with the caret in it; no Edit Configuration button is left to press.",
+      'The page shows the draft. The notice "New version. Changes affect future deployments using this Configuration." sits at the top of the window, and Configuration JSON is in view below it with the caret in it; no Edit Configuration button is left to press. Check this at desktop and phone widths.',
+      "In a window about 420 px tall, open the story again: Configuration JSON comes to the top with the caret in it, and the notice is above the window.",
       "Choose Cancel: the editor closes and Edit Configuration takes focus.",
     ],
   },

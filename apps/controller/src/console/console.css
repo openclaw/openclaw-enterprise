@@ -1952,6 +1952,16 @@ select:not([multiple])[size="1"] {
 .agent-form {
   max-width: 960px;
 }
+/* The Preset a Create Agent form started from, above its first field (UX plan A2). */
+.create-agent-origin {
+  margin: 0;
+}
+/* A long Preset name wraps inside the card instead of running past it at phone width. */
+.create-agent-origin .badge {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 /* Form field (UX plan C3): label, control, the control's error, then help. Built by field() in
    dom.mjs; .form-field and .channel-field are older names. One control height (--control-h) and
    one help layout. */

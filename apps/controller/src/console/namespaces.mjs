@@ -29,10 +29,14 @@ export function namespaceNameProblem(value) {
 
 // The session owner whose Namespace creation the API refused (403) since this page loaded. The
 // API has no advisory Installation permission answer, so a refusal is the only exact sign that
-// creation is not allowed; a browser reload asks again (finding 2059).
+// creation is not allowed (finding 2059). The page's Refresh, or a browser reload, offers
+// creation again: after an administrator grants access, nothing else would (finding 2083).
 let createRefusedFor = null;
 
 export function renderNamespaces(context, items, renderRows) {
+  if (context.fromRefresh) {
+    createRefusedFor = null;
+  }
   const collection = element("div");
   const refused = createRefusedFor !== null && createRefusedFor === context.operatorId;
   // A person who does not administer the Installation may still hold a Namespace create grant,
@@ -46,7 +50,7 @@ export function renderNamespaces(context, items, renderRows) {
   const refusal = element(
     "p",
     { className: "muted", id: "namespace-create-refused" },
-    "Your access does not include creating Namespaces in this Installation.",
+    "Your access does not include creating Namespaces in this Installation. After an administrator grants access, select Refresh to try again.",
   );
   const emptyText = element("p");
   // The API refused this person's creation: the control says so instead of offering another
