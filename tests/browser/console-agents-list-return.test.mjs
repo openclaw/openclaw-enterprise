@@ -1238,4 +1238,40 @@ test("Agents list names the current version by number in the page's outcome word
   const pagedRow = paged.locator(settledView).getByRole("row").filter({ hasText: newer.name });
   await pagedRow.getByRole("link", { name: "v2 · Completed", exact: true }).waitFor();
   await pagedRow.getByRole("link", { name: "v1", exact: true }).waitFor();
+
+  // A current version the reader cannot read keeps its ID, and its audited 403 is asked once per
+  // tab, not on every list view.
+  const { page: denied } = await newPage(t, fixture, { browser });
+  await denied.route(
+    `**/namespaces/${namespace.id}/agents/${newer.id}/revisions`,
+    async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.data = body.data.filter((revision) => revision.revision !== 1);
+      await route.fulfill({ response, json: body });
+    },
+  );
+  let deniedReads = 0;
+  await denied.route(`**/agents/${newer.id}/revisions/${activeId}`, (route) => {
+    deniedReads += 1;
+    return route.fulfill({
+      status: 403,
+      json: {
+        error: { code: "FORBIDDEN", message: "The exact platform operation was not authorized." },
+        meta: {},
+      },
+    });
+  });
+  await denied.route(deploymentsRead(namespace), (route) =>
+    route.fulfill(deploymentRecord(namespace, "succeeded")),
+  );
+  await login(denied, fixture, `/console/agents?namespace=${namespace.id}`);
+  const deniedRow = () =>
+    denied.locator(settledView).getByRole("row").filter({ hasText: newer.name });
+  const idLink = `${activeId.slice(0, 12)}…${activeId.slice(-6)}`;
+  await deniedRow().getByRole("link", { name: idLink, exact: true }).waitFor();
+  await denied.reload();
+  await deniedRow().getByRole("link", { name: "v2 · Completed", exact: true }).waitFor();
+  await deniedRow().getByRole("link", { name: idLink, exact: true }).waitFor();
+  assert.equal(deniedReads, 1);
 });

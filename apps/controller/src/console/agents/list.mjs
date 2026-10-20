@@ -109,9 +109,8 @@ export const NEUTRAL_DEPLOYMENT_NOTES = {
 
 // Revisions list newest first, one page at a time (finding 1323). A page can be empty when
 // its revisions are not readable to the viewer, so follow the cursor to the newest readable one.
-// The current version, `activeId`, is usually on that page too; when it is not, it is read on its
-// own, and an unreadable one is null.
-async function latestReadableRevision(context, path, options, activeId = null) {
+// Returns it with the rest of its page.
+async function latestReadableRevision(context, path, options) {
   let cursor = null;
   do {
     const page = await context.request(
@@ -119,17 +118,37 @@ async function latestReadableRevision(context, path, options, activeId = null) {
       { ...options, includeMeta: true },
     );
     if (page.data.length > 0) {
-      const active =
-        !activeId || page.data.some((revision) => revision.id === activeId)
-          ? (page.data.find((revision) => revision.id === activeId) ?? null)
-          : await context
-              .request(`${path}/${encodeURIComponent(activeId)}`, options)
-              .catch(() => null);
-      return { latest: page.data[0], active };
+      return { latest: page.data[0], page: page.data };
     }
     cursor = page.meta?.nextCursor ?? null;
   } while (cursor);
-  return { latest: null, active: null };
+  return { latest: null, page: [] };
+}
+
+// The current version, `activeId`, for the Agents list (finding 2093). It is usually on the
+// newest readable page; otherwise it is older or unreadable, so it is read on its own. That page
+// lists only readable versions, so a refusal is remembered like the Agent page's denied reads
+// (an audited 403 per list view otherwise). An unreadable or unread version is null.
+async function currentRevision(context, path, options, activeId, page) {
+  const listed = page.find((revision) => revision.id === activeId);
+  if (!activeId || listed || !page.length) {
+    return listed ?? null;
+  }
+  const activePath = `${path}/${encodeURIComponent(activeId)}`;
+  if (context.deniedReads?.has(activePath)) {
+    return null;
+  }
+  try {
+    return await context.request(activePath, options);
+  } catch (error) {
+    if (error.status === 401) {
+      throw error;
+    }
+    if (error.status === 403) {
+      context.deniedReads?.remember(activePath);
+    }
+    return null;
+  }
 }
 
 export function message(error, mutation = false) {
@@ -425,23 +444,49 @@ export function renderAgentList(context) {
   // from being retained either (finding 1663): leaving aborts it, and the list rereads it.
   const cells = new Map(); // The shown rows' deployment cells, each with its Agent.
   const rowRead = { revalidate: false, rereadOnResume: true };
+  // The row's revisions read, then its latest deployment and its current version side by side.
   function readDeployment(item) {
     const agentPath = `${namespacePath(context.namespaceId)}/agents/${encodeURIComponent(item.id)}`;
-    return latestReadableRevision(
-      context,
-      `${agentPath}/revisions`,
-      rowRead,
-      item.activeRevisionId,
-    ).then(async ({ latest, active }) => {
-      if (!latest) {
-        return { active };
-      }
-      const status = await context.request(
-        `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
-        rowRead,
-      );
-      return { revision: latest, status, active };
+    const revisions = latestReadableRevision(context, `${agentPath}/revisions`, rowRead);
+    return {
+      current: revisions.then(({ page }) =>
+        currentRevision(context, `${agentPath}/revisions`, rowRead, item.activeRevisionId, page),
+      ),
+      deployment: revisions.then(async ({ latest }) => {
+        if (!latest) {
+          return null;
+        }
+        const status = await context.request(
+          `${agentPath}/deployments/${encodeURIComponent(latest.id)}`,
+          rowRead,
+        );
+        return { revision: latest, status };
+      }),
+    };
+  }
+  // A read that lands before a cell's reading text shows, or after it has shown long enough,
+  // fills the cell now; otherwise once it has. The text shows in the frame its delay animation
+  // ends in, not render time plus the delay: the animation starts with the frame that first styles
+  // the text, which can be a frame or two either side of the render, so that estimate let a read
+  // landing between the two fill the cell one frame after the text painted (finding 1716). A later
+  // resume or render replaces the text, and its own read fills the cell instead.
+  function fillAfterReading(reading, apply) {
+    let shownAt;
+    reading?.addEventListener("animationend", () => {
+      shownAt = performance.now();
     });
+    return (...content) => {
+      const wait = shownAt === undefined ? 0 : shownAt + READING_SHOWN_MS - performance.now();
+      if (wait <= 0) {
+        apply(...content);
+        return;
+      }
+      setTimeout(() => {
+        if (context.isCurrent() && reading.isConnected) {
+          apply(...content);
+        }
+      }, wait);
+    };
   }
   // Fills a row's deployment cell. Focus in the cell moves to its new link, or to the row's Agent
   // link when it has none.
@@ -475,41 +520,25 @@ export function renderAgentList(context) {
     if (!deployments.has(item.id)) {
       deployments.set(item.id, readDeployment(item));
     }
-    // The cell's "Reading deployment…" (or its focusable holder) and when its text shows: the
-    // frame its delay animation ends in, not render time plus the delay. The animation starts
-    // with the frame that first styles the text, which can be a frame or two either side of the
-    // render, so that estimate let a read landing between the two fill the cell one frame after
-    // the text painted (finding 1716).
-    const reading = deployment.firstElementChild;
-    let shownAt;
-    reading.addEventListener("animationend", () => {
-      shownAt = performance.now();
-    });
-    // A read that lands before the text shows, or after it has shown long enough, fills the cell
-    // now; otherwise once it has. A later resume or render replaces the text, and its own read
-    // fills the cell instead.
-    const fill = (active, ...content) => {
-      const wait = shownAt === undefined ? 0 : shownAt + READING_SHOWN_MS - performance.now();
-      if (wait <= 0) {
-        fillCurrent(current, item, active);
-        fillDeployment(deployment, ...content);
-        return;
-      }
-      setTimeout(() => {
-        if (context.isCurrent() && reading.isConnected) {
-          fillCurrent(current, item, active);
-          fillDeployment(deployment, ...content);
-        }
-      }, wait);
-    };
-    void deployments
-      .get(item.id)
+    const reads = deployments.get(item.id);
+    // The cell's "Reading deployment…" (or its focusable holder).
+    const fill = fillAfterReading(deployment.firstElementChild, (...content) =>
+      fillDeployment(deployment, ...content),
+    );
+    const fillVersion = fillAfterReading(current.querySelector(".delayed-status"), (active) =>
+      fillCurrent(current, item, active),
+    );
+    void reads.current.then(
+      (active) => context.isCurrent() && fillVersion(active),
+      () => context.isCurrent() && fillVersion(null),
+    );
+    void reads.deployment
       .then((result) => {
         if (!context.isCurrent()) {
           return;
         }
-        if (!result.revision) {
-          fill(result.active, "No visible deployments");
+        if (result === null) {
+          fill("No visible deployments");
           return;
         }
         const neutral = neutralDeploymentOutcome(result.status);
@@ -519,7 +548,6 @@ export function renderAgentList(context) {
             : null;
         // A long failure fits one line; its title and the Agent page give the whole text.
         fill(
-          result.active,
           link(
             `v${result.revision.revision} · ${outcomeLabel(deploymentOutcome(result.status))}`,
             `agents/${item.id}?revision=${result.revision.id}`,
@@ -541,7 +569,7 @@ export function renderAgentList(context) {
         if (!context.isCurrent()) {
           return;
         }
-        fill(null, error.status === 403 ? "Deployment access denied" : "Deployment unavailable");
+        fill(error.status === 403 ? "Deployment access denied" : "Deployment unavailable");
       });
   }
   function render() {
