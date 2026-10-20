@@ -2354,7 +2354,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // page as it does on a load: below the open Deployment details it sat below the fold and
     // repeated their error (finding 2094, which reverses 1655's placement). The card now carries
     // that error and its next step, so the details fold once for each failed version it shows;
-    // the reader can open them again.
+    // the reader can open them again, and evidence the panel records later (a cleanup's status,
+    // startup warnings) opens them as it does without a card.
     if (recovery.hidden && !hideRecovery && recoveryFolded !== latest.id) {
       recoveryFolded = latest.id;
       const details = activityPanel.querySelector?.(":scope > details");
