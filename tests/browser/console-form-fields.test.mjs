@@ -486,10 +486,15 @@ for (const viewport of consoleViewports) {
     await page.getByRole("button", { name: "Start with default Preset" }).click();
     await waitForCreateFormReads(page);
     await page.getByLabel("Agent name", { exact: true }).fill("Picker Label Agent");
+    // A valid picker still opens on focus alone, as Tab gives it (#2922; finding 2076).
+    const apiKey = page.getByLabel("API key Secret", { exact: true });
+    await apiKey.focus();
+    assert.equal(await apiKey.getAttribute("aria-expanded"), "true");
+    await apiKey.press("Escape");
+    assert.equal(await apiKey.getAttribute("aria-expanded"), "false");
     const create = page.getByRole("button", { name: "Create Agent", exact: true });
     await create.click();
     assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
-    const apiKey = page.getByLabel("API key Secret", { exact: true });
     await assertFieldError(page, apiKey, {
       name: "API key Secret",
       error: "API key Secret is required.",
@@ -590,6 +595,22 @@ for (const viewport of consoleViewports) {
     assert.equal(
       await focusedId(page),
       await dialog.getByLabel("Name", { exact: true }).getAttribute("id"),
+    );
+    // An unknown outcome disables Name, Value and the submit, so its message takes focus like a
+    // refusal (finding 2075). It is last: the dialog refuses another try until a refresh.
+    refusal.status = 503;
+    refusal.code = "SERVICE_UNAVAILABLE";
+    const unknown = "Secret creation outcome could not be confirmed. Refresh before trying again.";
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+    await dialog.getByRole("alert").filter({ hasText: unknown }).waitFor();
+    const focused = await focusedRefusal();
+    assert.equal(focused.inDialog, true, "503: focus stays in the dialog");
+    assert.equal(focused.role, "alert", "503: on the message");
+    assert.ok(focused.text.startsWith(unknown), `503: ${focused.text}`);
+    assert.equal(focused.inView, true, "503: in view");
+    assert.equal(
+      await dialog.getByRole("button", { name: "Create Secret", exact: true }).isDisabled(),
+      true,
     );
   });
 }
