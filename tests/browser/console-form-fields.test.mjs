@@ -367,10 +367,11 @@ test("choosing a model credential Secret by click clears its required error", as
   assert.equal(await focusedId(page), "provider-credential-secret");
   await assertFieldError(page, picker, {
     name: "API key Secret",
-    error: "Model credential Secret is required.",
+    error: "API key Secret is required.",
   });
   assert.deepEqual(nonAuthWriteRequests(requests), []);
-  // Focus opened the list; picking by pointer types nothing into the field.
+  // A click opens the list; picking by pointer types nothing into the field.
+  await picker.click();
   await page.getByRole("option", { name: "Picked model key", exact: true }).click();
   await page.getByText("Secret selected. Create Agent binds it.", { exact: true }).waitFor();
   assert.equal(await picker.getAttribute("aria-invalid"), null, "aria-invalid cleared");
@@ -451,3 +452,144 @@ test("the shared submit check stops a failing form and opens the collapsed secti
     error: false,
   });
 });
+
+// The required Secret picker as the console's check leaves it: the error names the label the
+// page shows (finding 1987), and the list stays closed so it does not cover that error (finding
+// 1988). Click, typing and ArrowDown still open it.
+const pickerState = (control) =>
+  control.evaluate((node) => {
+    const error = globalThis.document.getElementById(`${node.id}-error`);
+    const listbox = globalThis.document.getElementById(node.getAttribute("aria-controls"));
+    const box = error.getBoundingClientRect();
+    const top = globalThis.document.elementFromPoint(box.left + 4, box.top + box.height / 2);
+    return {
+      expanded: node.getAttribute("aria-expanded"),
+      listboxHidden: listbox.hidden,
+      errorOnTop: error.contains(top),
+      focused: globalThis.document.activeElement === node,
+    };
+  });
+
+const closedPicker = { expanded: "false", listboxHidden: true, errorOnTop: true, focused: true };
+
+for (const viewport of consoleViewports) {
+  test(`Create Agent's required Secret error names its field and stays in sight at ${viewport.width}px`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Picker label", { ready: true });
+    await fixture.createSecret(namespace.id, "Label model key", "synthetic-label-key");
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    const invalidEvents = await countInvalidEvents(page);
+    await routeInstallationWithoutProvisioning(page, fixture);
+    const requests = apiRequests(page, fixture.origin);
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start with default Preset" }).click();
+    await waitForCreateFormReads(page);
+    await page.getByLabel("Agent name", { exact: true }).fill("Picker Label Agent");
+    const create = page.getByRole("button", { name: "Create Agent", exact: true });
+    await create.click();
+    assert.deepEqual(await invalidEvents(), [], "no browser validation bubble");
+    const apiKey = page.getByLabel("API key Secret", { exact: true });
+    await assertFieldError(page, apiKey, {
+      name: "API key Secret",
+      error: "API key Secret is required.",
+    });
+    assert.deepEqual(await pickerState(apiKey), closedPicker);
+    // Another method renames the field; the shown error follows, and a second check uses it.
+    await page.getByLabel("Authentication method", { exact: true }).selectOption("codex_pat");
+    const token = page.getByLabel("Service account token Secret", { exact: true });
+    await assertFieldError(page, token, {
+      name: "Service account token Secret",
+      error: "Service account token Secret is required.",
+    });
+    await create.click();
+    await assertFieldError(page, token, {
+      name: "Service account token Secret",
+      error: "Service account token Secret is required.",
+    });
+    assert.deepEqual(await pickerState(token), closedPicker);
+    assert.deepEqual(nonAuthWriteRequests(requests), []);
+    // Click, ArrowDown and typing still open the list.
+    await token.click();
+    assert.equal(await token.getAttribute("aria-expanded"), "true");
+    await token.press("Escape");
+    assert.equal(await token.getAttribute("aria-expanded"), "false");
+    await token.press("ArrowDown");
+    assert.equal(await token.getAttribute("aria-expanded"), "true");
+    await token.press("Escape");
+    await token.pressSequentially("Label");
+    assert.equal(await token.getAttribute("aria-expanded"), "true");
+    await page.getByRole("option", { name: "Label model key", exact: true }).click();
+    await page.getByText("Secret selected. Create Agent binds it.", { exact: true }).waitFor();
+    assert.equal(await errorPlacement(token), null, "the required error is gone");
+  });
+}
+
+// A Create Secret refusal other than a name conflict disables the submit while it runs; the
+// refusal then takes focus inside the dialog, in view, instead of the page behind it (finding
+// 1989).
+for (const viewport of consoleViewports) {
+  test(`a refused Create Secret keeps focus in the dialog, on the refusal, at ${viewport.width}px`, async (t) => {
+    const fixture = await createConsoleAppFixture(t);
+    await fixture.bootstrap();
+    const namespace = await fixture.createNamespace("Secret refusals", { ready: true });
+    const { page } = await newPage(t, fixture, { browser, context: { viewport } });
+    await routeInstallationWithoutProvisioning(page, fixture);
+    const refusal = { status: 409, code: "NAMESPACE_NOT_READY" };
+    await page.route(`**/namespaces/${namespace.id}/secrets`, (route, request) =>
+      request.method() === "POST"
+        ? route.fulfill({
+            status: refusal.status,
+            contentType: "application/json",
+            body: JSON.stringify({ error: { code: refusal.code, message: "refused" } }),
+          })
+        : route.fallback(),
+    );
+    await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
+    await page.getByRole("button", { name: "Start with default Preset" }).click();
+    await waitForCreateFormReads(page);
+    await openCreateSecretDialog(page, "API key Secret");
+    const dialog = page.getByRole("dialog", { name: "Create model credential Secret" });
+    await dialog.getByLabel("Value", { exact: true }).fill("synthetic-refused-value");
+    const focusedRefusal = () =>
+      page.evaluate(() => {
+        const active = globalThis.document.activeElement;
+        const box = active.getBoundingClientRect();
+        return {
+          inDialog: Boolean(active.closest("dialog[open]")),
+          role: active.getAttribute("role"),
+          text: active.textContent,
+          inView: box.top >= 0 && box.bottom <= globalThis.innerHeight,
+        };
+      });
+    const cases = [
+      [409, "NAMESPACE_NOT_READY", "This Namespace is not ready, so it cannot store Secrets yet."],
+      [
+        403,
+        "FORBIDDEN",
+        "Access denied. You do not have permission to manage this Secret binding.",
+      ],
+      [429, "RATE_LIMITED", "Too many requests. Wait before trying again."],
+    ];
+    for (const [status, code, text] of cases) {
+      refusal.status = status;
+      refusal.code = code;
+      await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+      await dialog.getByRole("alert").filter({ hasText: text }).waitFor();
+      const focused = await focusedRefusal();
+      assert.equal(focused.inDialog, true, `${status}: focus stays in the dialog`);
+      assert.equal(focused.role, "alert", `${status}: on the refusal`);
+      assert.ok(focused.text.startsWith(text), `${status}: ${focused.text}`);
+      assert.equal(focused.inView, true, `${status}: in view`);
+    }
+    // A name conflict still puts focus on Name to change it.
+    refusal.code = "RESOURCE_CONFLICT";
+    refusal.status = 409;
+    await dialog.getByRole("button", { name: "Create Secret", exact: true }).click();
+    await dialog.getByRole("alert").filter({ hasText: "may already exist" }).waitFor();
+    assert.equal(
+      await focusedId(page),
+      await dialog.getByLabel("Name", { exact: true }).getAttribute("id"),
+    );
+  });
+}

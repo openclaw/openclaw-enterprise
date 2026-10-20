@@ -92,7 +92,7 @@ images selected below. These checks make no model calls.
 
 ### Check published images
 
-On a native host for each target architecture, use the source revision that
+On a native host for each target architecture, use the source commit that
 produced the images. Follow [image selection and registry authentication](../guides/deploy/production-installation.md#use-published-images).
 Set the immutable `CONTROLLER_IMAGE` and `RUNTIME_IMAGE` references, then run:
 

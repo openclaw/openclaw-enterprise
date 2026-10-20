@@ -137,7 +137,7 @@ material is never forwarded to a redirect target. It preserves the existing
 `unreachable`; HTTP rejection, malformed replies, and `AbortError` are
 `unavailable`. The HTTP handler returns `503 DEPENDENCY_UNAVAILABLE`, naming
 `auth.openai.com` and API Pod egress only for `unreachable`. The
-`device_authorization.start_failed` warning keeps the Refresh boundary and bounded
+`device_authorization.start_failed` warning keeps the Refresh boundary and allowed
 failure class, never provider messages, response bodies, or nested causes.
 
 `apps/controller/src/drivers/credential-refresh/openshell.ts:pollDeviceAuthorization`
@@ -150,9 +150,9 @@ retried as pending. Failures from code acquisition onward likewise close the
 session without replay. OpenShell owns
 future refresh and successor persistence. Polling uses existing state after handoff; unfinished refresh stays
 pending, while a persistent uncertain marker needs operator inspection.
-Ready confirms a usable token. Later revisions attach the existing provider
+Ready confirms a usable token. Later versions attach the existing provider
 without reseeding credentials; account metadata changes require a new login and
-revision.
+version.
 
 For plugin configuration, the Gateway reads ownership/account metadata using its
 ordinary Backend identity, then calls `GetProviderCredentials` through the

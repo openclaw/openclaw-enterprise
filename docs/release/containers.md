@@ -184,15 +184,16 @@ on `main` with:
 - `source_sha`: the original image source SHA.
 - `preparation_run_id` and `preparation_attempt`: the original **Enterprise
   Containers** run, with successful validation and both prepare/smoke jobs.
-- `workflow_ci_run_id`: successful main-push CI for the current recovery workflow
-  revision. This is separate from the original image's CI evidence in its seal.
+- `workflow_ci_run_id`: successful main-push CI for the selected recovery workflow
+  commit. This is separate from the original image's CI evidence in its seal.
 
 Review the original digests and current public package settings before dispatch.
 Recovery validates artifact IDs and downloads the exact
 artifact IDs from the original run, verifies seals and archive hashes, and
-rechecks original source CI as well as recovery workflow CI. Source must remain
-in main history and precede the recovery workflow revision. The approved Node
-base must still match the original seals.
+rechecks original source CI as well as recovery workflow CI. The original source
+commit must remain in `main` history. It must match the recovery workflow commit
+or be one of its ancestors. The approved Node base must still match the original
+seals.
 
 An existing source tag must match both package metadata and its remote manifest
 digest; recovery leaves it untouched even when package metadata lags. Only an
@@ -200,8 +201,8 @@ authenticated manifest-unknown response permits copying an unlisted tag; other
 inspection failures stop the run. Missing tags receive the original OCI bytes, with digest preservation and remote verification. Conflicting tags,
 expired or changed producer evidence, or failed checks stop the
 run. Neither recovery nor ordinary publication automatically rolls back a copy.
-GitHub metadata GET transport failures receive bounded retries (normally three
-attempts) and report the failing endpoint; authorization failures and other HTTP
+GitHub metadata GET transport failures are retried up to a set limit (normally
+three attempts) and report the failing endpoint; authorization failures and other HTTP
 errors still fail immediately, except the bootstrap's explicit 404 retry.
 
 Success produces `container-recovery-publication-<run-id>-<attempt>` with a

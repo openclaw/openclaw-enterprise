@@ -98,8 +98,8 @@ jq -r '.[].id' "$BASELINE/occ-namespaces.json" | while read -r ns; do
 done
 ```
 
-The deployment inventory lists every Namespace, Agent, desired state and active
-revision. A controller that predates `deployment-inventory` cannot answer it;
+The deployment inventory lists every Namespace, Agent, desired state and selected
+version. A controller that predates `deployment-inventory` cannot answer it;
 the per-Namespace `agent list` records the same Agents. `secret list` returns
 metadata only.
 
@@ -144,12 +144,12 @@ eligible node, as the [Codex sandbox procedure](codex-sandbox.md) shows.
 Rerun the same commands into a new directory and compare. Expect new image
 digests and Pod names, new Helm revisions, the new controller image and
 Installation checksum in the live values, receipts appended by the release's
-migrations and, after a runtime release, new active revision IDs. Several of an
+migrations and, after a runtime release, new selected Agent revision IDs. Several of an
 Agent's NetworkPolicies and, for a dedicated Agent, its Harness Service select
-the active revision, so a runtime release changes the revision in those
+the selected version, so a runtime release changes the Agent revision ID in those
 selectors. A dedicated Agent's gateway Deployment, Service and HTTPRoute can
 also be recreated; the Service gets a new cluster IP and the HTTPRoute new
-revision annotations. Agents add and delete
+Agent revision annotations. Agents add and delete
 their own workspace files, so the file count can change slightly. Investigate
 any other change, in particular a changed PVC UID, a missing or altered earlier
 receipt, any other NetworkPolicy, Service or RoleBinding change, a different

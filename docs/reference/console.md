@@ -28,8 +28,8 @@ See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-de
 
 With `debug=true`, the sidebar shows **OCE** followed by the first eight
 characters of the running OCC image's source commit, or **dev** for builds
-without metadata; hover for the full revision. Published images bake the checked
-release revision into the console HTML.
+without metadata; hover for the full commit. Published images bake the checked
+release commit into the console HTML.
 
 ## Browse and select a Namespace
 
@@ -85,7 +85,7 @@ Kubernetes differences, inspection scope, and unavailable states.
 ## Agent creation and deployment
 
 Dedicated provisioning waits for first activation; failure links the original
-request’s existing Agent and revision. Otherwise, creation
+request’s existing Agent and version. Otherwise, creation
 saves a draft: provide model and channel credentials when prompted, then select
 **Deploy new version**. If the Compute Driver requires them, OCC generates
 missing connection credentials during that first deployment.
@@ -95,7 +95,9 @@ Plugin selections follow the API's Agent create/update contract: an omitted map
 is preserved, `{}` clears it, and deployment startup reports unsupported catalog
 or policy choices.
 
-## Inspect detail, revisions, and channel drafts
+<a id="inspect-detail-revisions-and-channel-drafts" class="anchor-alias"></a>
+
+## Inspect detail, versions, and channel drafts
 
 Agent tabs change only their panel; Back/Forward restores the selected tab.
 Unsaved JSON, plugin policies, workspace text, authentication, Slack drawers,
@@ -148,7 +150,7 @@ Agent update. Partial saves survive navigation. Grants do not prove runtime or
 provider readiness.
 
 Configuration and Slack summaries show bound Secret names and IDs for the viewed
-draft or revision. Names require exact same-Namespace Secret `read`; denied,
+draft or version. Names require exact same-Namespace Secret `read`; denied,
 missing, or failed reads show the ID with **Metadata unavailable**. **No Secret
 bound** means no binding. Values are never read, and metadata does not prove
 credential validity.
@@ -156,10 +158,10 @@ credential validity.
 AgentRevision snapshots cannot be edited, rolled back, or redeployed. **Create
 new version** and **Edit current Configuration** open the saved draft without
 changing the viewed snapshot; **Deploy new version** admits it as another
-immutable revision. Admission, recorded activation, and `activeRevisionId` are
+immutable version. Admission, recorded activation, and `activeRevisionId` are
 separate facts, and startup evidence does not establish live gateway health; see the
 [deployment guide](../guides/deploy/production-agents.md#configure-the-agent-runtime)
-and [deployment reference](agents/deployment.md#revisions-and-deployment).
+and [deployment reference](agents/deployment.md#versions-and-deployment).
 
 Channels edits the saved Slack draft. Teams credentials and Bot Framework ingress
 require operator setup; Teams has no editor, its settings remain in Configuration
@@ -173,7 +175,7 @@ Before saving, Agent and Configuration reads verify association and generation;
 concurrent changes can still race the PATCH. Refresh after a conflict. An
 unconfirmed PATCH may have succeeded and is never replayed automatically: it shows **Outcome unknown** and disables
 channel writes until Refresh loads saved state. **Disable Slack** changes only
-the draft, not access, execution, or admitted revisions.
+the draft, not access, execution, or saved versions.
 
 Slack requires dedicated execution and Kubernetes runtime projection. Socket Mode
 uses unresolved `SLACK_APP_TOKEN` and `SLACK_BOT_TOKEN` references.
@@ -215,17 +217,17 @@ through the API or operator workflow.
 
 Open the Agent, select **Stop Agent**, review its effect, and
 confirm. Stop requires exact Agent `operate`. It requests shutdown while
-retaining revision history, credentials, gateway state, and workspace files.
+retaining version history, credentials, gateway state, and workspace files.
 
 An accepted request means shutdown was queued. **Refresh stop status** rereads
-the Agent's desired state and selected revision without probing the runtime.
+the Agent's desired state and selected version without probing the runtime.
 Refresh before retrying an uncertain result. Denials remain visible; the console
 never repeats a stop automatically. After Stop, **Request Stop again** confirms
 a new stop intent, even without a selected version, but not when you can read no version, as before a first deploy. That does not prove cleanup
 finished.
 
 To resume, open **Create new version** and select **Deploy new version**, which
-creates a new revision. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
+creates a new version. See [Stop and resume](agents/deployment.md#stop-and-resume) for the
 worker lifecycle and preservation guarantees.
 
 ## Delete an Agent
@@ -281,8 +283,8 @@ for the release binding, limits, and deployment failure behavior.
 
 Open **Workspace files** on an Agent to load the same four files from the live
 workspace, not the Configuration draft or a browsed AgentRevision. Loading needs
-an active revision and a reachable gateway; selection does not prove access.
-Files are not copied into a Configuration or revision.
+a selected version and a reachable gateway; selection does not prove access.
+Files are not copied into a Configuration or version.
 
 Each file has **Save** and **Reload**. Save creates or replaces that file through
 the [workspace file API](agents.md#workspace-files), within its 16 KiB UTF-8 and Unicode limit.
@@ -305,13 +307,12 @@ UI** panel to callers with exact Agent `administer`.
 It is hidden otherwise, when the Installation disables the feature, and until
 the next sign-in or new tab after a denial. The panel reports a stopped Agent
 (including before first deployment) as needing to be started, asks you to check
-deployment and refresh access when a desired-running Agent has no active
-revision, and reports when native admin is unsupported. Installation
+deployment and refresh access when a desired-running Agent has no selected version, and reports when native admin is unsupported. Installation
 administrators can [share an Agent](console/agent-sharing.md) with an existing
 person.
 
-**Open admin console** opens the Agent's active revision in a new tab, even
-from a draft or older revision. Its visible warning is part of the operator
+**Open admin console** opens the Agent's selected version in a new tab, even
+from a draft or older version. Its visible warning is part of the operator
 contract: native UI changes to the gateway bypass OCE and are not recorded in
 AgentRevisions. Use OCE for durable configuration. The tab shares
 the console's OCE session cookie through the configured shared cookie parent

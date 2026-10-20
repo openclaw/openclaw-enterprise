@@ -8,10 +8,14 @@ the Installation. No model credentials are needed.
    is available even when you have no readable Namespaces; the API checks your
    permission when you submit.
 2. Enter a name unique within this Installation, then select **Create Namespace**.
-   Names cannot currently be changed. Cancel or press Escape before submitting
-   to leave without creating anything.
+   Names are 1 to 200 characters with no tabs, line breaks, or other control
+   characters; the form refuses other names before submitting. Names cannot
+   currently be changed. Cancel or press Escape before submitting to leave
+   without creating anything.
 3. **Namespace created** confirms that the request succeeded. Select **Open
-   Agents** to use the new Namespace, or **Done** to return to its card.
+   Agents** to use the new Namespace, or **Done** to return to its card. If
+   your access does not include viewing the new Namespace, the confirmation
+   says so and offers only **Done**; ask an administrator for access.
 4. Select **Refresh** on Namespaces to check readiness. Provisioning continues
    asynchronously. You can save Agent drafts while it provisions, but deployment
    waits for readiness. See [Namespace lifecycle](../../reference/namespaces.md#lifecycle).

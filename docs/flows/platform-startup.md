@@ -60,7 +60,7 @@ graph TD
   subgraph Runtime["Compute-owned tenant runtimes"]
     N["One isolated backing namespace per Namespace"]
     J["One OpenClaw gateway per deployed Agent"]
-    K["Embedded OpenClaw or dedicated Codex revision"]
+    K["Embedded OpenClaw or dedicated Codex Agent revision"]
   end
 
   Y --> B
@@ -217,7 +217,7 @@ own selected ComputeDriver under the claim's ownership and cancellation scope.
 Compute prepares Namespace backing infrastructure and creates one gateway for
 each deployed Agent. Default PostgreSQL-backed development uses Docker networks
 and runtime containers; the bundled Kubernetes Driver prepares either an
-embedded OpenClaw or dedicated Codex revision, activates its exact Agent-owned
+embedded OpenClaw or dedicated Codex Agent revision, activates its exact Agent-owned
 gateway route, and retires any predecessor. Reviewed installed Compute Drivers
 can also be selected in development and production. Docker containers and
 Kubernetes Pods are downstream tenant
@@ -253,7 +253,7 @@ execution begins in the adjacent
 - [Controller worker operation](../reference/controller.md)
 - [Controller and Installation configuration](../reference/settings.md)
 - [ComputeDriver contract](../reference/drivers/compute.md)
-- [Configuration Driver and Agent Revision flow](configuration-driver.md)
+- [Configuration Driver and Agent revision flow](configuration-driver.md)
 - [Installation Driver package loading flow](driver-plugin-loading.md)
 - [Compute Driver lifecycle-hook flow](compute-driver-lifecycle-hooks.md)
 - [Service Account Driver credential delivery flow](service-account-driver-credential-delivery.md)

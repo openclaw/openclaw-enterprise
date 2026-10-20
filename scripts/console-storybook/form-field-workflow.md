@@ -23,9 +23,16 @@ each story at 1440 and at 390.
    shows "Enter a valid Plugin selections JSON object." under it and has
    focus; the status line below Save does not repeat it.
 6. Open **Authentication source required fields**. The API key Secret field
-   shows "API key Secret is required." and has focus. Press Escape to close
-   its list and read the error. Choose another source: the error goes.
-7. Open **Workspace file too large**. AGENTS.md shows the 16 KiB error and has
+   shows "API key Secret is required." and has focus; its list stays closed,
+   so nothing covers the error. Click the field or press ArrowDown to open
+   the list. Choose another source: the error goes.
+7. Open **Pages / Create Agent / Model credential Secret required**. The
+   Service account token Secret field shows "Service account token Secret is
+   required." with its list closed. Switch to API key: the error follows the
+   label.
+8. Open **Pages / Create Agent / Create Secret refused**. The "not ready"
+   refusal shows in the dialog and has focus.
+9. Open **Workspace file too large**. AGENTS.md shows the 16 KiB error and has
    focus. Save again: the same error, no bubble. Reload AGENTS.md clears it.
-8. With a screen reader, focus each field with an error: it reads the label,
-   then the error and the help.
+10. With a screen reader, focus each field with an error: it reads the label,
+    then the error and the help.

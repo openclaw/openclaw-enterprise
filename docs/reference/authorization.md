@@ -85,7 +85,7 @@ Ordinary service keys are deliberately unavailable to Agent-owned principals.
 When explicitly selected, the
 [Kubernetes Compute Driver](drivers/kubernetes-compute.md) provisions an Agent-specific
 ServiceAccount and can project a short-lived, audience-scoped ServiceAccount
-token into that Agent's revision Pods. The token is credential evidence for the
+token into that Agent's version Pods. The token is credential evidence for the
 Agent's existing ServicePrincipal, not another platform principal.
 
 That evidence comes from its issuing cluster and ServiceAccount; it is not a
@@ -94,7 +94,7 @@ cluster trust domains cannot share one cluster's ServiceAccount identity. OCC
 token verification, identity exchange, and ServicePrincipal workload
 authentication through the controller API remain deferred: a future path must
 verify each environment's local evidence, exchange it for a short-lived
-credential scoped to the existing Agent ServicePrincipal and revision, and authenticate the Gateway and Harness
+credential scoped to the existing Agent ServicePrincipal and version, and authenticate the Gateway and Harness
 independently. Until OCC has that verifier, exchange, authorization, and a
 runtime client, the projected token does not authenticate an Agent request.
 
@@ -288,7 +288,7 @@ path Namespace. A human does not need a separate Namespace ServicePrincipal.
 The Role and target must exist in the path Namespace. `namespace` Permissions
 support only `read`; for a `namespace` target, `resourceId` must equal the
 Namespace ID in the path.
-Revision `read` needs an `agent_revision` target, not its parent Agent. A
+Agent revision `read` needs an `agent_revision` target, not its parent Agent. A
 ServiceAccount resource is not an IAM identity. Caller IDs, scope, wildcard
 targets, Groups, and unknown permissions are rejected. An invalid Permission,
 or a subject, Role or target that is not usable in the path Namespace (including an Agent being
@@ -362,9 +362,9 @@ checks Agent `read` and `operate` if Compute must generate missing transport
 credentials.
 
 [Agent runtime reads](../guides/topics/agent-logs.md#who-can-see-what) use two
-tiers on the exact Agent and revision: Pod status and Events need Agent
-`operate` and `read` plus revision `read`; container log text needs Agent
-`read_logs` or `administer` and Agent `read`, which cover every revision of that
+tiers on the exact Agent and version: Pod status and Events need Agent
+`operate` and `read` plus Agent revision `read`; container log text needs Agent
+`read_logs` or `administer` and Agent `read`, which cover every version of that
 Agent, including later deployments. A matching
 `read_logs` Restriction denies log text even to a holder of `administer`. Each
 follow poll is authorized again, so revoking a grant stops the next poll.

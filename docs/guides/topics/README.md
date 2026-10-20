@@ -43,7 +43,7 @@ Enterprise, start with [Concepts](../concepts.md) or
   change an Agent's selections.
 - [Configuration](../../reference/configuration.md): what belongs to an
   installation, a Namespace, or an Agent draft.
-- [Agent Revisions](agent-revisions.md): change a draft, deploy it, and inspect
+- [Agent revisions](agent-revisions.md): change a draft, deploy it, and inspect
   the snapshot the Agent runs.
 
 For setup instructions for a specific vendor or Driver, use

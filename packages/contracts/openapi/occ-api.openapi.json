@@ -926,7 +926,7 @@
             "properties": {
               "harness": {
                 "additionalProperties": false,
-                "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited.",
+                "description": "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
                 "properties": {
                   "code": {
                     "anyOf": [
@@ -16044,7 +16044,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Begin or retry deletion of an exact Namespace-owned Agent and its AgentRevisions",
+        "summary": "Begin or retry deletion of the requested Agent and its Agent revisions",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "delete", "resourceKind": "agent", "scope": "requested" }
@@ -17195,7 +17195,7 @@
                           "type": "string"
                         },
                         "revisionId": {
-                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
+                          "description": "Identifies the Agent revision for the reported withdrawal. This is the selected Agent revision unless another Agent revision that can still run has a `pending` withdrawal for this source. A status read first reports a `pending` withdrawal with no queued or running attempt. `revoked` means every Agent revision that can still run with this source has confirmed withdrawal.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -17204,10 +17204,10 @@
                             { "const": "pending", "type": "string" },
                             { "const": "revoked", "type": "string" }
                           ],
-                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve."
+                          "description": "`revoked` only after the Credential Gateway confirms that the Agent revision's placeholders no longer resolve."
                         },
                         "withdrawalInProgress": {
-                          "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
+                          "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no queued or running attempt. OCC maintenance can queue a new attempt. To request another attempt, send the withdraw request again.",
                           "type": "boolean"
                         }
                       },
@@ -17285,7 +17285,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Revoke one credential source from an Agent's active revision",
+        "summary": "Revoke one credential source from the selected Agent revision",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" }
@@ -17362,7 +17362,7 @@
                           "type": "string"
                         },
                         "revisionId": {
-                          "description": "The revision whose withdrawal is reported: the active one, unless an earlier revision not yet retired or a later admitted one still has a `pending` withdrawal of the source (one with no attempt queued first). So `revoked` means every revision that may run with the source confirmed it.",
+                          "description": "Identifies the Agent revision for the reported withdrawal. This is the selected Agent revision unless another Agent revision that can still run has a `pending` withdrawal for this source. A status read first reports a `pending` withdrawal with no queued or running attempt. `revoked` means every Agent revision that can still run with this source has confirmed withdrawal.",
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                           "type": "string"
                         },
@@ -17371,10 +17371,10 @@
                             { "const": "pending", "type": "string" },
                             { "const": "revoked", "type": "string" }
                           ],
-                          "description": "`revoked` only after the Credential Gateway confirmed that the revision's placeholders no longer resolve."
+                          "description": "`revoked` only after the Credential Gateway confirms that the Agent revision's placeholders no longer resolve."
                         },
                         "withdrawalInProgress": {
-                          "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no attempt queued; unless revision maintenance queues one, send the withdraw request again to retry it.",
+                          "description": "`true` while a withdrawal attempt is queued or running. A `pending` withdrawal with `false` has no queued or running attempt. OCC maintenance can queue a new attempt. To request another attempt, send the withdraw request again.",
                           "type": "boolean"
                         }
                       },
@@ -17838,7 +17838,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Admit an immutable revision from the Agent's saved draft",
+        "summary": "Save an Agent revision from the Agent's saved settings",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "deploy", "resourceKind": "agent", "scope": "requested" },
@@ -17878,7 +17878,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}": {
       "get": {
-        "description": "Requires read permission on the requested AgentRevision.",
+        "description": "Requires read permission on the requested Agent revision.",
         "operationId": "getAgentDeployment",
         "parameters": [
           {
@@ -17952,7 +17952,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Durable retirement of this exact revision, independent of its deployment outcome. Null means no retirement obligation was registered; succeeded confirms cleanup completed."
+                          "description": "Saved cleanup status for this Agent revision, separate from its deployment result. `null` means no cleanup requirement was recorded. `succeeded` confirms that cleanup is complete."
                         },
                         "deploymentId": {
                           "pattern": "^rev_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -18328,7 +18328,7 @@
                               "type": "object"
                             }
                           ],
-                          "description": "Null unless deployment failed. A failure contains code, a fixed safe message, and optional allowlisted data. CONVERGENCE_DEADLINE_EXCEEDED may include data.timeoutMs and data.runtimeFailure with bounded startup-failure evidence; a component, check or code outside the runtime's own vocabulary reads UNRECOGNIZED. RUNTIME_MODEL_PROBE_FAILED may include data.runtimeFailure with the classified cause of the startup model check failure. Native error text is never returned."
+                          "description": "`null` unless deployment failed. A failure contains `code`, a fixed safe message, and optional data with known fields. `CONVERGENCE_DEADLINE_EXCEEDED` can include `data.timeoutMs` and `data.runtimeFailure` with startup failure details. A component, check, or code unknown to the runtime is shown as `UNRECOGNIZED`. `RUNTIME_MODEL_PROBE_FAILED` can include `data.runtimeFailure` with the cause of the failed startup model check. The response never includes native error text."
                         },
                         "namespaceId": {
                           "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -18483,7 +18483,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Get the durable deployment status for one admitted Agent revision",
+        "summary": "Get the saved deployment status for an Agent revision",
         "tags": ["Agent deployments"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent_revision", "scope": "requested" }
@@ -18492,7 +18492,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/diagnostics": {
       "post": {
-        "description": "Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.",
+        "description": "Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested Agent revision.",
         "operationId": "diagnoseAgentDeployment",
         "parameters": [
           {
@@ -18654,7 +18654,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Run explicit current-runtime diagnostics for one exact Agent revision",
+        "summary": "Check the current runtime for an Agent revision",
         "tags": ["Agent deployments"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" },
@@ -18665,7 +18665,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/deployments/{deploymentId}/runtime": {
       "get": {
-        "description": "Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested AgentRevision.",
+        "description": "Requires operate permission on the requested Agent. Requires read permission on the requested Agent. Requires read permission on the requested Agent revision.",
         "operationId": "getAgentDeploymentRuntime",
         "parameters": [
           {
@@ -18708,7 +18708,7 @@
                       "properties": {
                         "harness": {
                           "additionalProperties": false,
-                          "description": "A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited.",
+                          "description": "The Sandbox Driver reports this provider-owned Harness Sandbox (OpenShell). `lost` means that the Sandbox does not serve this Agent revision. OCC will not restart it. Deploy the Agent again to replace it. `starting` with `HARNESS_RESTARTING` means that the provider is restarting a Harness process that exited.",
                           "properties": {
                             "code": {
                               "anyOf": [
@@ -19076,7 +19076,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Read Pod status, restarts, Events and log sources for one exact Agent revision",
+        "summary": "Read Pod status, restart counts, Events, and log sources for an Agent revision",
         "tags": ["Agent deployments"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" },
@@ -19655,7 +19655,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Read one bounded, redacted page of container output for one exact Agent revision",
+        "summary": "Read one page of redacted container output for an Agent revision",
         "tags": ["Agent deployments"],
         "x-openclaw-permissions": [
           { "action": "read_logs", "resourceKind": "agent", "scope": "requested" },
@@ -21170,11 +21170,11 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/revisions": {
       "get": {
-        "description": "Requires read permission on the requested Agent. Only AgentRevision resources with individual read permission are returned.",
+        "description": "Requires read permission on the requested Agent. Only Agent revision resources with individual read permission are returned.",
         "operationId": "listAgentRevisions",
         "parameters": [
           {
-            "description": "Revisions per page, 1 to 100; default 50.",
+            "description": "Agent revisions per page, 1 to 100; default 50.",
             "in": "query",
             "name": "limit",
             "required": false,
@@ -21214,9 +21214,9 @@
                   "additionalProperties": false,
                   "properties": {
                     "data": {
-                      "description": "Readable revisions, newest first.",
+                      "description": "Agent revisions that you can read, newest first.",
                       "items": {
-                        "description": "Revision summary without saved settings. Read the exact revision for its configuration, or for configurationReadError when the saved settings are unreadable.",
+                        "description": "Agent revision summary without saved settings. Read this Agent revision for its configuration. If OCC cannot read the saved settings, the response contains `configurationReadError`.",
                         "properties": {
                           "agentId": {
                             "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -21293,7 +21293,7 @@
                       "properties": {
                         "nextCursor": {
                           "anyOf": [{ "maxLength": 32, "type": "string" }, { "type": "null" }],
-                          "description": "Pass as `cursor` to read older revisions. A cursor indicates that an older revision was found readable when checked during this request; a later page may be empty if access changes. `null` means no older revision was found readable when checked."
+                          "description": "Pass this value as `cursor` to read older Agent revisions. OCC returns a cursor only when it finds an older Agent revision that you can read during this request. A later page can be empty if access changes. `null` means OCC found no older Agent revision that you can read."
                         },
                         "requestId": {
                           "pattern": "^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -21348,7 +21348,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "List authorized immutable revision summaries for one exact Agent, newest first",
+        "summary": "List Agent revision summaries that you can read for the requested Agent, newest first",
         "tags": ["Agent revisions"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
@@ -21358,7 +21358,7 @@
     },
     "/namespaces/{namespaceId}/agents/{agentId}/revisions/{revisionId}": {
       "get": {
-        "description": "Requires read permission on the requested AgentRevision.",
+        "description": "Requires read permission on the requested Agent revision.",
         "operationId": "getAgentRevision",
         "parameters": [
           {
@@ -21764,7 +21764,7 @@
                           "type": "object"
                         }
                       ],
-                      "description": "An immutable revision with readable saved settings, or revision metadata with configurationReadError (code SAVED_CONFIGURATION_UNREADABLE and the unreadable field). The error variant omits saved configuration fields."
+                      "description": "Returns an Agent revision with saved settings that cannot change. If OCC cannot read them, the response omits saved configuration fields and includes `configurationReadError` with code `SAVED_CONFIGURATION_UNREADABLE` and the unreadable field."
                     },
                     "meta": {
                       "additionalProperties": false,
@@ -21822,7 +21822,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Get an exact authorized immutable Agent revision",
+        "summary": "Get an Agent revision that you can read",
         "tags": ["Agent revisions"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent_revision", "scope": "requested" }
@@ -22016,7 +22016,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Read bounded policy suggestions for one exact revision",
+        "summary": "Read policy suggestions for the requested Agent revision",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "read", "resourceKind": "agent", "scope": "requested" },
@@ -23229,7 +23229,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Apply the saved policy to the exact running revision",
+        "summary": "Apply the saved policy to the running Agent revision",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "manage_policy", "resourceKind": "agent", "scope": "requested" },
@@ -23994,7 +23994,7 @@
             "description": "Default Response"
           }
         },
-        "summary": "Stop one Agent while retaining its revision and persistent state",
+        "summary": "Stop one Agent and keep its saved Agent revision and persistent state",
         "tags": ["Agents"],
         "x-openclaw-permissions": [
           { "action": "operate", "resourceKind": "agent", "scope": "requested" }
@@ -26239,7 +26239,7 @@
         ]
       },
       "post": {
-        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the request body Agent when the AccessBinding targets that resource kind. Requires read permission on the request body AgentRevision when the AccessBinding targets that resource kind. Requires read permission on the request body Configuration when the AccessBinding targets that resource kind. Requires read permission on the request body CredentialSource when the AccessBinding targets that resource kind. Requires read permission on the request body Namespace when the AccessBinding targets that resource kind. Requires read permission on the request body Preset when the AccessBinding targets that resource kind. Requires read permission on the request body Secret when the AccessBinding targets that resource kind. Requires read permission on the request body ServiceAccount when the AccessBinding targets that resource kind.",
+        "description": "Requires administer permission on the requested Installation. Requires read permission on the requested Namespace. Requires read permission on the request body Agent when the AccessBinding targets that resource kind. Requires read permission on the request body Agent revision when the AccessBinding targets that resource kind. Requires read permission on the request body Configuration when the AccessBinding targets that resource kind. Requires read permission on the request body CredentialSource when the AccessBinding targets that resource kind. Requires read permission on the request body Namespace when the AccessBinding targets that resource kind. Requires read permission on the request body Preset when the AccessBinding targets that resource kind. Requires read permission on the request body Secret when the AccessBinding targets that resource kind. Requires read permission on the request body ServiceAccount when the AccessBinding targets that resource kind.",
         "operationId": "createIAMAccessBinding",
         "parameters": [
           {
@@ -29156,7 +29156,7 @@
                           "description": "Current references that block deletion of the Secret. Returned by the exact Secret read only.",
                           "properties": {
                             "agents": {
-                              "description": "Readable Agents whose draft, active revision, or pending deployment references the Secret. Each needs a new deployment to receive a rotated value.",
+                              "description": "Agents that you can read. Each Agent has a Secret reference in its saved settings, selected Agent revision, or pending deployment. Deploy each Agent again to use a rotated value.",
                               "items": {
                                 "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                                 "type": "string"

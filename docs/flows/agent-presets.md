@@ -10,7 +10,7 @@ last_updated_session: authoring-run/23d60562-6525-4593-ad0c-29ce57483c38
 
 The Console renders a Namespace Preset and saves an independent Configuration
 and Agent through existing APIs. This flow stops at the draft; deployment follows
-[revision admission](configuration-driver/persistence-and-revisions.md).
+[version admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
 
@@ -56,7 +56,7 @@ graph TD
   O -->|Grant fails| R["Retain Agent and retry credential access"]
   F -->|Invalid variable| E
   I -->|Agent save fails| K["Keep Configuration ID for safe retry"]
-  J --> L["Credential preparation and revision admission"]
+  J --> L["Credential preparation and version admission"]
 ```
 
 ## Execution Trace
@@ -253,9 +253,9 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 The saved Agent has a new identity and no Preset reference. Variable inputs are
 not stored as a separate map. Rendered values are ordinary Agent/Configuration
-settings. Credential preparation and [revision admission](configuration-driver/persistence-and-revisions.md)
+settings. Credential preparation and [version admission](configuration-driver/persistence-and-revisions.md)
 read those resources, not the Preset. Later Preset changes cannot change a draft
-or an immutable admitted revision.
+or an immutable saved version.
 
 ## Debugging and Verification
 

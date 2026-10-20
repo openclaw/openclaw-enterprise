@@ -1042,6 +1042,17 @@ export const scenarios = {
     description:
       "Submitting an empty name shows a persistent inline error and focuses the field without sending a request.",
   },
+  namespaceCreateInvalidName: {
+    group: "Pages/Namespaces",
+    name: "Create invalid name",
+    path: "/console/namespaces",
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support\tteam" },
+    ],
+    description:
+      "A pasted tab is refused at the field as it arrives, by the API's own Name rule, before any request. More than 200 characters is refused the same way instead of being cut.",
+  },
   namespaceCreateConflict: {
     group: "Pages/Namespaces",
     name: "Create name conflict",
@@ -1105,6 +1116,21 @@ export const scenarios = {
     ],
     description:
       "Creation succeeded in the simulated fixture. The dialog distinguishes provisioning from readiness and offers the new Namespace's Agents.",
+  },
+  namespaceCreateUnreadable: {
+    group: "Pages/Namespaces",
+    name: "Created without read access",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    // A create-only role: the authorized list never includes the new Namespace.
+    rules: [{ path: "/namespaces", data: [] }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+    ],
+    description:
+      "The caller may create Namespaces but not read them. The dialog says the Namespace was created and that their access does not include viewing it, and offers only Done.",
   },
   namespacesDenied: {
     group: "Pages/Namespaces",
@@ -2003,6 +2029,32 @@ export const scenarios = {
     ],
     description:
       "Create Secret with no value: the Value field shows its error under the control and takes focus, with no browser bubble.",
+  },
+  createSecretRefused: {
+    group: "Pages/Create Agent",
+    name: "Create Secret refused",
+    path: create,
+    rules: [{ suffix: "/secrets", method: "POST", status: 409, code: "NAMESPACE_NOT_READY" }],
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      ...createModelSecret("storybook-model-api-key"),
+    ],
+    description:
+      "Create Secret on a Namespace that is not ready: the refusal shows in the dialog and takes focus there, not on the page behind it.",
+  },
+  createModelSecretRequired: {
+    group: "Pages/Create Agent",
+    name: "Model credential Secret required",
+    path: create,
+    actions: [
+      ...form,
+      { selector: "#agent-name", value: "Research assistant" },
+      { selector: "#agent-auth-method", value: "codex_pat" },
+      click("Create Agent"),
+    ],
+    description:
+      "Create Agent with Service Accounts and no Secret: the error names the Service account token Secret field and the field takes focus with its list closed, so the error stays in sight.",
   },
   createSlackSecretStaged: {
     group: "Pages/Create Agent",
