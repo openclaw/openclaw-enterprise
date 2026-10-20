@@ -973,8 +973,10 @@ function imageBuildArgs(state, role, localStore) {
 
 // CI_RUNNER_DEADLINE_MS (Unix epoch milliseconds; the run-ci-lane action sets it five
 // minutes before the job's timeout-minutes) is when the lane's test files must have stopped.
-// A lane image build may use the time before it less this reserve for the tests: the image
-// lanes' test phases took at most 102-171 s per lane over 29 runs each (10-19/20). A build
+// A lane image build may use the time before it less this reserve for the rest of preparation
+// (an Envoy image, a seccomp profile, a fixture build or k3d imports in some lanes) and the
+// tests: the image lanes' test phases took at most 102-171 s per lane over 29 runs each
+// (10-19/20). A build
 // that misses the image cache can take 20 min: on #2905 the engine image probe below, then
 // bounded by a fixed 20 min, was stopped mid-build, the build after it took 4 more min, and
 // the tests got 40 s (finding 2103). Tests shorten the reserve.
@@ -999,7 +1001,7 @@ function imageBuildOutOfTime(role, limitMs) {
     `The ${role} image did not finish building within this lane's time` +
     (limitMs > 0 ? ` (stopped after ${Math.round(limitMs / 1000)} s)` : "") +
     `; the lane keeps ${Math.round(imageBuildTestReserveMs / 1000)} s before its deadline ` +
-    "for its tests, so it stops here instead of starting them. A build that misses the " +
+    "for the rest of preparation and its tests, so it stops here. A build that misses the " +
     "image cache, for example after a change to the image inputs, can take about 20 min.";
   process.stdout.write(`::error title=Image build out of lane time::${message}\n`);
   return Object.assign(new Error(message), { imageBuildOutOfTime: true });
@@ -1032,7 +1034,8 @@ async function laneImageCommand(role, args, budgetMs = imageBuildBudgetMs()) {
 // holds another image under that reference, and "probe-failed" otherwise. In a lane with a
 // deadline the probe, which builds on a cache miss, may use the whole image build budget;
 // running out of it ends preparation ("out-of-time") instead of building again with no time
-// left for the tests.
+// left for the tests. The trade-off: a probe that hangs, rather than builds slowly, no longer
+// hands over to a fresh build after 20 min in the longer lanes.
 async function reuseEngineImage(state, role, args, tag) {
   if (args[0] !== "buildx" || !args.includes("--load")) {
     return false;

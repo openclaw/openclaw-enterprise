@@ -550,7 +550,7 @@ describe("CI preparation", { concurrency }, () => {
     // The probe (a full build on a cache miss) outlasts the budget: no second build starts.
     { scenario: "image-probe-hung", aheadMs: 6_000, probes: 1, outcome: "out-of-time" },
     // The probe resolves an image the engine lacks, and the loading build outlasts the budget.
-    { scenario: "image-build-hung", aheadMs: 6_000, probes: 1, outcome: "absent" },
+    { scenario: "image-build-hung", aheadMs: 10_000, probes: 1, outcome: "absent" },
     // Nothing is left of the budget when the build would start.
     { scenario: "image-out-of-time", aheadMs: 0, probes: 0, outcome: "out-of-time" },
   ]) {
@@ -570,7 +570,7 @@ describe("CI preparation", { concurrency }, () => {
       assert.ok(performance.now() - started < 30_000);
       assertStderrMatch(
         prepared.stderr,
-        /The runtime image did not finish building within this lane's time.*keeps 2 s before its deadline for its tests/,
+        /The runtime image did not finish building within this lane's time.*keeps 2 s before its deadline for the rest of preparation and its tests/,
       );
       assert.match(
         prepared.stdout,
