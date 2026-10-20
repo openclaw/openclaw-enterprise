@@ -10,7 +10,7 @@ last_updated_session: docs-split-1020
 
 Trace **Stop Agent** and **Delete Agent** on Agent detail, from confirmation to
 readback. See the [parent flow](../platform-console.md) and
-[Agent editing](agent-editing.md); the trace keeps its step numbers.
+[Agent editing](agent-editing.md); steps 7 and 8 continue that trace's numbering.
 
 ## Entry Points
 

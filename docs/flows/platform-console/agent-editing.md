@@ -31,8 +31,8 @@ graph TD
     B --> P["Edit Agent plugin selections"]
     B --> Q["Deploy saved draft"]
     B --> D["Read or write workspace files"]
-    B --> E["Confirm Agent deletion"]
-    B --> S["Confirm Agent stop"]
+    B --> E["Confirm Agent deletion (stop and deletion trace)"]
+    B --> S["Confirm Agent stop (stop and deletion trace)"]
   end
   subgraph API["Controller API"]
     C --> F["Authorize exact request"]

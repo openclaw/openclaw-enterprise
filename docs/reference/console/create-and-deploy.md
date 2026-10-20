@@ -42,7 +42,8 @@ block direct Secret-backed model and environment projection.
    Use [OpenAI API keys](https://platform.openai.com/api-keys), or
    [OpenAI admin](https://admin.openai.com/) → your workspace → **Service accounts**
    to create a token with Codex scope.
-   Choose a model Secret or **Create new Secret...**.
+   Unless a Preset binds one or you use ChatGPT OAuth, choose a model Secret or
+   **Create new Secret...**.
    Choose a model from the starter list or select **Enter model ID manually**.
    **Choose a model from the list** returns. Switching modes retains that provider's listed models; returning with an unlisted custom ID
    requires another selection. Other settings remain.
@@ -170,6 +171,10 @@ registration safety window if needed. See the [provisioning flow](../../flows/ag
 A failed or stopped first deployment, or a Stop before it
 (`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
 retry. Open that Agent and deploy. If it failed for another reason, correct that cause first.
+
+If Agent creation is rejected after Configuration saves, correct the ordinary
+zero-binding Agent's editable fields and retry. The retry reuses Configuration
+and needs no repository choices or Repo Driver.
 
 An unknown Agent response may mean a successful save; the form hides rejection
 actions. Check the **Agents** list and any displayed Configuration ID's

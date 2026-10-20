@@ -37,10 +37,6 @@ Other failures, including generic `503`, throttling and connection errors, block
 both writes and offer retry. Denial and Namespace lifecycle conflict remain
 distinct. Each subsequent write rechecks authorization.
 
-If Agent creation is rejected after Configuration saves, correct the ordinary
-zero-binding Agent's editable fields and retry. The retry reuses Configuration
-and needs no repository choices or Repo Driver.
-
 After a known repository-scoped Agent rejection, **Reload repository choices** clears
 selections/search, resets pagination, reveals results, and refreshes Namespace
 policy while retaining the Configuration. Retry requires an approved repository;

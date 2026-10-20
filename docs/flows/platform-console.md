@@ -319,6 +319,7 @@ refresh and inspection.
 
 - [Console reference](../reference/console.md)
 - [Console Agent creation](platform-console/agent-creation.md)
+- [Console Agent stop and deletion](platform-console/agent-stop-and-deletion.md)
 - [Authentication](../reference/authentication.md)
 - [Backend-managed credential delivery](service-account-driver-credential-delivery.md)
 - [Configuration and Agent revision](configuration-driver.md)

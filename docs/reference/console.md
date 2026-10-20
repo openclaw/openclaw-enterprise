@@ -13,7 +13,7 @@ runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 Enter your provisioned account email and password, then select **Sign in**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
-your administrator for an account or password reset. To set up your own
+your administrator for an account or password reset. For your own
 Installation, see the
 [quickstart](../guides/quickstart.md#open-the-platform-console) or
 [deployment guide](../guides/deploy.md#open-the-platform-console).
@@ -27,8 +27,8 @@ See [sign-in destinations](authentication/external-sign-in.md#console-sign-in-de
 
 With `debug=true`, the sidebar wordmark shows the first eight characters of the
 running OCC image's source commit, or **dev** for builds without metadata; hover
-for the full commit. Published images bake the checked release commit into the
-console HTML.
+for the full commit. Published images bake their source commit into the console
+HTML.
 
 ## Browse and select a Namespace
 

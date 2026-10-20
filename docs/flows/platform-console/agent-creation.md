@@ -49,7 +49,7 @@ While mounted, Available and Configured retain separate selected plugins, querie
 tool filters, and expanded rows without fetching pages or changing drafts.
 Removed selections clear their details; discovery resets clear both tabs.
 
-`create.mjs:loadPluginCatalog` and `loadPluginTools` implement
+`agents/plugin-discovery.mjs:createPluginDiscovery` (`loadCatalog`, `loadTools`) implements
 [PAT discovery](../agent-plugins.md#credential-scoped-discovery): the selected or
 Preset Secret takes precedence over an entered token. OCC reads the
 Secret server-side. Pagination is upstream; filtering is local. Selecting a plugin loads tools.
@@ -84,7 +84,7 @@ failures block submission.
 
 Supported Dedicated runtimes submit inline Configuration, optional repository
 access, and Secret references to [provisioning](../agent-provisioning.md), even after
-that outage. The worker reauthorizes, creates resources and exact Secret grants,
+a `503 REPOSITORY_OPTIONS_UNAVAILABLE` outage. The worker reauthorizes, creates resources and exact Secret grants,
 and deploys; Console polls and opens the saved version.
 
 Ordinary drafts first check values and plugins with
