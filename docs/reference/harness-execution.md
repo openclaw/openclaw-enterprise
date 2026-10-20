@@ -4,6 +4,9 @@ A Harness calls models and runs Agent tools. Bundled deployments run OpenClaw
 inside the gateway or OpenClaw or Codex in a separate runtime. Select the Agent's
 execution mode and a compatible model and Harness in its Configuration.
 
+For an overview of the Gateway/Harness boundary and file flows, see
+[Remote Harness execution and split storage](../guides/topics/remote-harness.md).
+
 ## Supported topology
 
 | Harness  | Agent execution mode | Workloads and support                                                                                                                                                    |

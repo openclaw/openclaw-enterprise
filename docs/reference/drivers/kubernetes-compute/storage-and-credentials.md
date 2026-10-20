@@ -1,6 +1,6 @@
 # Kubernetes storage and credentials
 
-Configure separate Gateway and Harness storage, and runtime
+Configure [separate Gateway and Harness storage](../../../guides/topics/remote-harness.md) and runtime
 Secrets for the [Kubernetes Compute Driver](../kubernetes-compute.md).
 
 ## Shared contracts and the Codex implementation
