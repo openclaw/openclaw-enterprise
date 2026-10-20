@@ -533,6 +533,170 @@ test("QA waits report the last observation when they time out", async () => {
   );
 });
 
+// Finding 2106: six QA cells failed "Timed out: Agent deployment" at 600 s with no status.
+test("a QA Agent deployment timeout names its last status, attempt and Pods", async () => {
+  const { deployQaAgentAndWait } = await import("../helpers/qa-installation.mjs");
+  const base = "/namespaces/namespace-1/agents/agent-1";
+  function fixture({ runtime, finalStatus = "running" } = {}) {
+    let clock = 0;
+    const calls = [];
+    const records = [];
+    const lastAttempt = {
+      at: "2026-10-19T19:40:00.000Z",
+      code: "RUNTIME_NOT_READY",
+      message: "The Agent runtime is not ready yet.",
+    };
+    const f = {
+      async api(method, path) {
+        calls.push(`${method} ${path}`);
+        if (method === "POST" && path === `${base}/deploy`) {
+          return { id: "rev-1" };
+        }
+        if (path === `${base}/deployments/rev-1`) {
+          clock += 100;
+          // Queued for the first observations, then running until the wait ends.
+          const status = clock <= 200 ? "queued" : finalStatus;
+          return {
+            status,
+            progress: status === "succeeded" ? null : { lastAttempt, nextAttemptAt: null },
+            error: null,
+            cleanup: null,
+            warnings: [],
+          };
+        }
+        if (path === `${base}/deployments/rev-1/runtime`) {
+          if (!runtime) {
+            throw new Error(`OCC GET ${path}: HTTP 404`);
+          }
+          return runtime;
+        }
+        throw new Error(`unexpected ${method} ${path}`);
+      },
+      async record(name, value) {
+        records.push({ name, value });
+      },
+    };
+    const agent = { id: "agent-1", namespaceId: "namespace-1", preset: "Codex" };
+    return { f, agent, calls, records, options: { timeout: 1_000, interval: 0, now: () => clock } };
+  }
+
+  const runtime = {
+    revisionId: "rev-1",
+    observedAt: "2026-10-19T19:46:00.000Z",
+    sources: [],
+    pods: [
+      {
+        role: "gateway",
+        cluster: "control",
+        name: "gateway-0",
+        uid: "uid-1",
+        phase: "Pending",
+        ready: false,
+        createdAt: "2026-10-19T19:36:10.000Z",
+        containers: [
+          {
+            name: "gateway",
+            state: "waiting",
+            reason: "ContainerCreating",
+            ready: false,
+            restartCount: 0,
+            startedAt: null,
+            lastTermination: null,
+          },
+        ],
+        events: [
+          {
+            type: "Normal",
+            container: null,
+            reason: "Scheduled",
+            message: "Successfully assigned",
+            count: 1,
+            lastObservedAt: null,
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedMount",
+            message: "MountVolume.SetUp failed for volume " + "x".repeat(300),
+            count: 4,
+            lastObservedAt: null,
+          },
+        ],
+      },
+    ],
+  };
+  const timedOut = fixture({ runtime });
+  await assert.rejects(
+    deployQaAgentAndWait(timedOut.f, timedOut.agent, timedOut.options),
+    (error) => {
+      const [observation, pods] = error.message
+        .replace(/^Timed out: Agent deployment; last observation: /, "")
+        .split("; runtime: ");
+      assert.deepEqual(JSON.parse(observation), {
+        status: "running",
+        // Running since the third observation (clock 300) until the last one (clock 1,000).
+        statusForMs: 700,
+        lastAttempt: {
+          at: "2026-10-19T19:40:00.000Z",
+          code: "RUNTIME_NOT_READY",
+          message: "The Agent runtime is not ready yet.",
+        },
+        nextAttemptAt: null,
+        error: null,
+      });
+      assert.deepEqual(JSON.parse(pods), {
+        pods: [
+          {
+            role: "gateway",
+            phase: "Pending",
+            ready: false,
+            containers: [
+              { name: "gateway", state: "waiting", reason: "ContainerCreating", restartCount: 0 },
+            ],
+            warnings: [
+              {
+                reason: "FailedMount",
+                message: ("MountVolume.SetUp failed for volume " + "x".repeat(300)).slice(0, 200),
+                count: 4,
+              },
+            ],
+          },
+        ],
+      });
+      return true;
+    },
+  );
+  assert.equal(timedOut.calls.at(-1), `GET ${base}/deployments/rev-1/runtime`);
+  assert.deepEqual(timedOut.records, []);
+
+  // Runtime details are best effort: the timeout keeps its status when they are unavailable.
+  const noRuntime = fixture();
+  await assert.rejects(
+    deployQaAgentAndWait(noRuntime.f, noRuntime.agent, noRuntime.options),
+    (error) =>
+      error.message.startsWith(
+        'Timed out: Agent deployment; last observation: {"status":"running","statusForMs":700,',
+      ) &&
+      error.message.endsWith(
+        `; runtime unavailable (OCC GET ${base}/deployments/rev-1/runtime: HTTP 404)`,
+      ),
+  );
+
+  // A deployment that succeeds is recorded and returned, with no runtime request.
+  const succeeded = fixture({ finalStatus: "succeeded" });
+  const result = await deployQaAgentAndWait(succeeded.f, succeeded.agent, succeeded.options);
+  assert.equal(result.status.status, "succeeded");
+  assert.deepEqual(result.revision, { id: "rev-1" });
+  assert.deepEqual(
+    succeeded.records.map(({ name }) => name),
+    ["Codex-agent-1-rev-1-deployment"],
+  );
+  assert.equal(
+    succeeded.calls.some((call) => call.endsWith("/runtime")),
+    false,
+  );
+});
+
 test("a QA Agent stop timeout names the remaining Pods and keeps redacted platform logs", async () => {
   const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
   const { stopQaAgent, describeStopObservation } = await import("../helpers/qa-repository.mjs");
