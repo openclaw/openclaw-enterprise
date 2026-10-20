@@ -332,7 +332,7 @@ export function installFixture(scenario, evidence) {
     selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
   }
   const agent = {
-    id: "agt_00000000-0000-4000-8000-000000000001",
+    id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
     name: scenario.agentName ?? "Research assistant",
     status: scenario.deleting ? "deleting" : "active",

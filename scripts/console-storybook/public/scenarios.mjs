@@ -4231,6 +4231,15 @@ export const scenarios = {
     description:
       "The same 200-character name at 390 px wraps inside its stacked row, and the page does not scroll sideways.",
   },
+  agentsIdLigaturesPhone: {
+    group: "Pages/Agents",
+    name: "Agent ID with ff (phone)",
+    deployed: true,
+    mobile: true,
+    agentId: "agt_ffffffff-ffff-4fff-bfff-ffffffffffff",
+    description:
+      'Each character of an ID is its own glyph: "ff" never draws as a ligature, so this ID is as wide as one with no "f". To compare, view it where the monospace font has ligatures (Nimbus Mono PS, a common Linux default): before finding 2114 each "ff" there drew as one glyph, and this ID was a third shorter.',
+  },
   agentsDeploymentFailed: {
     group: "Pages/Agents",
     name: "Latest deployment failed",
