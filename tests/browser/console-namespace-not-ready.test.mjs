@@ -288,6 +288,51 @@ test("a return to the Agents list and Create Agent shows a Namespace that became
   assert.equal(await view.getByText(NOT_READY).count(), 0);
 });
 
+// A reader who stays on the Agents list, with no refocus, return or Refresh, kept seeing the
+// provisioning note after the Namespace turned ready (finding 2058). The list rereads the
+// Namespace at Create Agent's cadence while the note waits, and stops once it is ready.
+test("the Agents list sees its Namespace become ready without a Refresh", async (t) => {
+  const { fixture, namespace } = await createReadyConsoleNamespace(t, "team");
+  const { page } = await newPage(t, fixture, { browser });
+  await page.clock.install({ time: new Date("2026-10-20T12:00:00Z") });
+  const patches = new Map([[namespace.id, { status: "provisioning" }]]);
+  await reportNamespaces(page, patches);
+  await routeInstallationProvisioning(page, fixture);
+  const view = page.locator(settledView);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
+  await view.getByText(DRAFT_INVITATION).waitFor();
+  const reads = [];
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/namespaces") {
+      reads.push(response);
+    }
+  });
+  // One check: its read must arrive, so its answer, not the absence of one, keeps the note.
+  const poll = async () => {
+    const read = page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/namespaces",
+    );
+    await page.clock.runFor(10_000);
+    await read;
+  };
+  await poll();
+  await view.getByRole("status").filter({ hasText: NOT_READY }).waitFor();
+  release();
+  await poll();
+  await view.getByText(INVITATION).waitFor();
+  assert.equal(await view.getByText(NOT_READY).count(), 0);
+  assert.equal(await view.getByRole("button", { name: "Create Agent" }).isEnabled(), true);
+  // A ready Namespace needs no more checks.
+  const settled = reads.length;
+  await page.clock.runFor(30_000);
+  assert.equal(reads.length, settled);
+
+  function release() {
+    patches.delete(namespace.id);
+  }
+});
+
 // Create Agent open on a provisioning Namespace with a Dedicated plan waits for the Namespace.
 // The page skips its own recheck while a form is open, so the form rechecks the Namespace itself
 // and updates only the gate: the typed name, its caret and focus stay (finding 2012).

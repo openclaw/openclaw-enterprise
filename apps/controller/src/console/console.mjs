@@ -1759,6 +1759,8 @@ async function loadPage({
         viewState.revalidators.add(check);
         return () => viewState.revalidators.delete(check);
       },
+      // Rechecks the shown page as a refocus does: an unchanged view stays, a changed one rebuilds.
+      recheckPage: resumePage,
       onExpired: () => {
         if (lifetime.isCurrent(viewState.active)) {
           showLogin("Your session has expired.");

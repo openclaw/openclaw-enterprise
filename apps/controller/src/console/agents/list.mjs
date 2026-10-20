@@ -30,6 +30,10 @@ const NOT_READY_REASONS = {
     "This Namespace is being deleted, so it cannot hold new Agents. Choose another Namespace.",
 };
 
+// How often an open Create Agent form, or the Agents list, rereads a provisioning Namespace while
+// its note is shown: the runtime status poll's cadence (findings 2012, 2058).
+export const NAMESPACE_RECHECK_MS = 10_000;
+
 // What the selected Namespace's status means where Agent creation starts (finding 1895): null
 // when it is ready or its status is unknown, otherwise the status and its consequence, and
 // whether the API refuses every new Agent there (`blocked`). A provisioning Namespace still
@@ -623,4 +627,49 @@ export function renderAgentList(context) {
   });
   search.addEventListener("input", render);
   render();
+  // A provisioning Namespace becomes ready on its own. A refocus, return or Refresh rechecks the
+  // page and drops the note, but a reader who stayed on the list kept seeing "Provisioning"
+  // (finding 2058). While the note waits on provisioning, reread the Namespace at Create Agent's
+  // cadence; once its status changes, recheck the page as a refocus does. A hidden tab stops,
+  // and its return rechecks the page anyway.
+  if (context.namespace?.status === "provisioning" && context.recheckPage) {
+    let timer = null;
+    let reading = false;
+    const recheckNamespace = async () => {
+      timer = null;
+      if (!context.isCurrent() || document.hidden || reading) {
+        return;
+      }
+      reading = true;
+      let status;
+      try {
+        const namespaces = await context.request("/namespaces", {
+          revalidate: false,
+          rereadOnResume: true,
+        });
+        status = namespaces.find((item) => item.id === context.namespaceId)?.status ?? null;
+      } catch {
+        // A failed read changes nothing on screen; the next check comes at the usual cadence.
+      } finally {
+        reading = false;
+      }
+      if (!context.isCurrent()) {
+        return;
+      }
+      // The page recheck rebuilds this list, which ends this wait. A recheck that could not run
+      // now (an open dialog, another recheck) leaves it waiting for the next check.
+      if (status !== undefined && status !== "provisioning") {
+        context.recheckPage();
+      }
+      waitForNamespace();
+    };
+    const waitForNamespace = () => {
+      if (timer === null) {
+        timer = setTimeout(() => void recheckNamespace(), NAMESPACE_RECHECK_MS);
+      }
+    };
+    waitForNamespace();
+    // A retained list comes back with its timer stopped, as Create Agent's does.
+    context.onResume?.(waitForNamespace);
+  }
 }
