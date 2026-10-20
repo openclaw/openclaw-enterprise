@@ -7319,7 +7319,7 @@ for (const [id, source, name, theme] of [
   ["themeEmpty", "agentsEmpty", "Custom empty state", "custom"],
   ["themeDenied", "agentsDenied", "Custom denied state", "custom"],
   ["themeLoading", "agentsLoading", "Custom loading state", "custom"],
-  ["themeCredentials", "revisionCredentialsMissing", "Custom missing credentials", "custom"],
+  ["themeCredentials", "authMissing", "Custom missing credentials", "custom"],
   ["themePublicError", "sessionUnavailable", "Custom public error", "custom"],
 ]) {
   scenarios[id] = {
