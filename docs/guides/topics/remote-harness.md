@@ -23,39 +23,24 @@ config:
     lineColor: "#8B949E"
     edgeLabelBackground: "#FFFFFF"
   flowchart:
-    nodeSpacing: 28
-    rankSpacing: 36
-    padding: 14
-    subGraphTitleMargin:
-      top: 10
-      bottom: 16
+    nodeSpacing: 20
+    rankSpacing: 28
+    padding: 12
 ---
-flowchart TB
-  Channel["<b>Channel</b><br/>Messages and replies"]
-  subgraph GatewayWorkload["Gateway workload"]
-    Gateway["<b>Gateway</b><br/>Routing, sessions, tool policy"]
-    GatewayState[("<b>Gateway storage</b><br/>Conversations and index<br/>Delivery media")]
-    Gateway -->|retain state| GatewayState
-  end
-  subgraph HarnessWorkload["Harness workload"]
-    Runtime["<b>Codex or native OpenClaw</b><br/>Model and native tools"]
-    Node["<b>Workspace service</b><br/>Enrolled OpenClaw node"]
-    Workspace[("<b>Harness storage</b><br/>Agent files<br/>Execution workspaces")]
-    Runtime -->|execute| Workspace
-    Node -->|read and write allowed files| Workspace
-  end
-  Channel -->|send messages| Gateway
-  Gateway -->|dispatch turns| Runtime
-  Gateway -->|access files, Memory, Skills| Node
+flowchart LR
+  Gateway["<b>Gateway</b><br/>Routing and policy"]
+  Harness["<b>Harness</b><br/>Codex or native OpenClaw<br/>Workspace service"]
+  GatewayState[("<b>Gateway storage</b><br/>Conversations, index<br/>Delivery media")]
+  Workspace[("<b>Harness storage</b><br/>Agent files<br/>Execution workspaces")]
+  Gateway -->|dispatch turns| Harness
+  Gateway -->|access files| Harness
+  Gateway -->|persist| GatewayState
+  Harness -->|read/write| Workspace
 
   classDef state fill:#EDF2F7,stroke:#879AB0,color:#25364A,stroke-width:1px
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
-  classDef external fill:#F1EEF5,stroke:#A091AD,color:#3A3243,stroke-width:1px
   class GatewayState,Workspace state
-  class Gateway,Runtime,Node operation
-  class Channel external
-  style GatewayWorkload fill:#FAFBFC,stroke:#D8DEE6,stroke-width:1px
-  style HarnessWorkload fill:#FAFBFC,stroke:#D8DEE6,stroke-width:1px
+  class Gateway,Harness operation
 ```
 
 Each Agent revision uses one Harness runtime. Codex uses an app-server plus a
