@@ -8,8 +8,9 @@ last_updated_session: authoring-run/d45560cc-1312-47a3-bc97-9e85137cdea9
 
 ## Overview
 
-Namespace Presets seed Agent drafts; [revision admission](configuration-driver/persistence-and-revisions.md)
-owns deployment.
+The Console renders a Namespace Preset and saves an independent Configuration
+and Agent through existing APIs. This flow stops at the draft; deployment follows
+[version admission](configuration-driver/persistence-and-revisions.md).
 
 ## Entry Points
 
@@ -26,8 +27,8 @@ owns deployment.
 - [CLI](../../internal/occcli/cli.go): `presetCommand` provides `occ preset list`,
   `get`, and `delete` over the same routes; create and update stay HTTP-only.
 - [Console selector](../../apps/controller/src/console/agents/presets.mjs):
-  `createPresetFields` requires an authenticated Namespace selection.
-  Saving needs Configuration, Agent, and credential grants.
+  `createPresetFields` requires a selected Namespace and an authenticated user.
+  Saving also needs the existing Configuration, Agent, and credential grants.
 
 ## Flow
 
@@ -55,7 +56,7 @@ graph TD
   O -->|Grant fails| R["Retain Agent and retry credential access"]
   F -->|Invalid variable| E
   I -->|Agent save fails| K["Keep Configuration ID for safe retry"]
-  J --> L["Credential preparation and revision admission"]
+  J --> L["Credential preparation and version admission"]
 ```
 
 ## Execution Trace
@@ -69,11 +70,12 @@ administrator Role. Its guarded update preserves customized Roles; the exact
 
 `apps/controller/src/composition/installation-presets.ts:loadInstallationPresets`
 
-The loader validates options, names and templates; explicit paths resolve beside
-startup YAML. Missing, malformed, invalid or duplicate-name files fail. A file named
-like a bundled default replaces it; API composition warns `presets.bundled-default-shadowed`. API and worker share
-a startup snapshot and source path without watching files; only the API applies
-defaults and logs warnings. [Production composition](../../apps/controller/src/composition/production.ts)
+The loader validates the opt-in boolean and file list, reads bundled JSON, and
+resolves explicit paths beside the startup YAML. It validates names/templates and rejects missing,
+malformed, invalid, or duplicate-name files; a file named like a bundled default
+replaces it, and API composition warns `presets.bundled-default-shadowed`. API and worker share the startup
+snapshot and source path (files are not watched), but only the API applies
+defaults and logs Preset warnings. [Production composition](../../apps/controller/src/composition/production.ts)
 and [development composition](../../apps/controller/src/composition/development-postgres.ts)
 pass generic definitions into `ControllerOptions.defaultPresets` and initialize
 defaults after selecting Configuration and IAM Drivers. They try each persisted
@@ -147,12 +149,12 @@ path records mutations and denials without template or variable contents.
 `apps/controller/src/console/agents/presets.mjs:createPresetFields`
 
 [`createPresetFields`](../../apps/controller/src/console/agents/presets.mjs)
-lists summaries with Namespace read, then reads the selection once. Quick-start prefers `default-codex`, otherwise the first readable Preset in
-case-insensitive locale order, with exact name order breaking ties. Custom
-starters appear by name. Variable-free templates apply immediately; variables
-retain the chooser and its edits. Empty or failed lists and reads cannot
-apply hidden templates. **Start without Preset** opens the form without a Preset
-read; it does not replace a denied selection. Creation authorization applies.
+lists summaries, then reads the exact selection. Quick-start prefers
+`default-codex`, otherwise the first readable Preset in case-insensitive locale
+order, with exact names breaking ties. The shortcut and accessible hint name
+custom starters. Variable-free templates apply immediately; variables retain
+the chooser and edits. Empty lists or failed reads cannot apply hidden templates.
+**Start without Preset** opens independently; creation authorization applies.
 
 `console-assets.ts:readConsoleAsset` serves the public
 [`default-codex`](../../deploy/presets/default-codex.json) as
@@ -160,23 +162,25 @@ read; it does not replace a denied selection. Creation authorization applies.
 empty templates, reset and Harness transitions, adding model routing. Installed
 Namespace templates are never exposed by that module.
 
-The chooser prefills defaults. Strings accept multiple lines;
-untouched defaults and restored drafts retain line endings, while edits use LF. Empty strings override defaults. Referenced variables lacking defaults
-are required; others are optional. The password variable
+The chooser prefills typed defaults. String controls accept multiple lines;
+untouched defaults and restored drafts retain exact line endings, while edits use
+browser LF. Empty strings override defaults. Referenced variables without defaults
+are required; defaulted or unused variables are optional. The password variable
 offers a masked new token or an existing same-Namespace Secret. The chooser reads
 Secret metadata, validates the original template, then substitutes the selected
 reference in a temporary copy. Changing mode discards tokens; stale catalog
 responses cannot replace a later selection.
-**Use Preset** invokes the shared
-[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs), which
+The user then selects **Use Preset**. The shared
+[`renderPresetTemplate`](../../packages/contracts/src/preset-variables.mjs)
 walks JSON once, rejects missing or mistyped inputs and duplicate rendered native
 keys, and preserves runtime placeholders and unresolved SecretRefs.
 
-Rendering makes no requests. Success opens an editable form with rendered settings
-and ephemeral Secret metadata for grants. The chooser moves passwords into the
-masked credential input and clears detached controls. Before saving, **Start over**
-confirms discarding edits and reopens the chooser. Successful or uncertain saves
-disable restart and use creation recovery.
+Rendering makes no requests. Success opens the Agent form with rendered settings
+and optional ephemeral Secret metadata for grants. The alphabetic chooser moves
+password values into the masked credential input and clears detached controls;
+later Preset changes cannot alter the form. Before saving, **Start over** confirms
+discard and opens a fresh chooser. A successful or uncertain save disables restart
+and uses ordinary creation recovery.
 
 `apps/controller/src/console/console.mjs:loadPage`
 
@@ -248,9 +252,9 @@ another creation attempt. See [creation recovery](../reference/console/create-an
 
 The saved Agent has a new identity and no Preset reference. Variable inputs are
 not stored as a separate map. Rendered values are ordinary Agent/Configuration
-settings. Credential preparation and [revision admission](configuration-driver/persistence-and-revisions.md)
+settings. Credential preparation and [version admission](configuration-driver/persistence-and-revisions.md)
 read those resources, not the Preset. Later Preset changes cannot change a draft
-or an immutable admitted revision.
+or an immutable saved version.
 
 ## Debugging and Verification
 

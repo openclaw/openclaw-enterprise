@@ -28,7 +28,7 @@ and who can stop affected workloads if access must be revoked immediately.
 | Backend-managed account credential   | The selected ServiceAccount Driver manages the upstream account, credential, and account-owned Secret.                         | Issuance is separate from creation. A second issuance conflicts; refresh and rotation are not implemented. See [service accounts](../../reference/service-accounts.md#account-and-credential-lifecycle).                                                                                                                                 |
 | Native OCC ServiceAccount credential | The operator owns the referenced source Secret.                                                                                | The API can replace a native `api_key` reference; that reference cannot select model authentication. See [native API-key references](../../reference/service-accounts.md#native-api-key-references).                                                                                                                                     |
 | Harness API key                      | The upstream provider issues the key; the selected Secret Driver stores it as an OCC Secret.                                   | Bind its exact same-Namespace reference through Agent `harnessAuth`. Update the source, explicitly deploy each consumer, verify model access, then revoke the old key upstream.                                                                                                                                                          |
-| Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before the first revision.                                  | Supported Agent creation or the first deployment creates missing transport Secrets. Neither rotates existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
+| Generated transport credentials      | The selected Compute Driver generates per-Agent transport material before the first version.                                   | Supported Agent creation or the first deployment creates missing transport Secrets. Neither rotates existing values. Replacing transport credentials requires a separate stopped-runtime procedure when supported. See [runtime credentials](../../reference/drivers/kubernetes-compute/storage-and-credentials.md#runtime-credentials). |
 | OCC Secret bindings                  | The Secret Driver stores harness and channel values; Agent `harnessAuth` and Configurations bind them to authorized consumers. | Value updates preserve the reference. They do not restart consumers or remove delivered values. Channel Secrets are projected only to selected gateways after explicit deployment. See [update and redeploy](../../reference/drivers/kubernetes-secret.md#update-and-redeploy).                                                          |
 | Private gateway-routing service key  | The operator manages the Envoy credential and OCC's mounted client key.                                                        | Use the separate [routing key rotation](workspace-routing.md#rotate-the-service-key-and-certificates) procedure; OCC reads the file for each operation. This is not an OCC API key.                                                                                                                                                      |
 | Auth signing and bootstrap material  | The operator protects the mounted auth Secret and bootstrap password/key output.                                               | Auth-secret changes require API restart. Bootstrap does not regenerate existing credentials or recover missing output. See [production settings](../../reference/settings/production.md) and [bootstrap recovery](../../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap).                                   |
@@ -67,7 +67,7 @@ source Secret changes. For a model API key, the supported sequence is:
 1. Update the existing OCC Secret through its API, retaining the Secret reference.
 2. Run `occ agent deploy "$AGENT_ID"` for each consuming Agent, even when its
    Configuration and `harnessAuth` reference are unchanged.
-3. Wait for the new revision to become active, then perform a
+3. Wait for OCC to select the new version, then perform a
    [real model request](../operate/model-verification.md).
 
 With Kubernetes Compute, OCE preparation refreshes the Harness's DP credential
@@ -83,13 +83,13 @@ Where the provider permits overlap, revoke the old upstream credential after
 successful replacement checks. A stored credential status does not show that
 the provider accepts the value. Dedicated Gateway restarts read current canonical
 channel values; Harness restarts read their existing runtime projection.
-Revision history does not restore old source values.
+Version history does not restore old source values.
 
 Backend-managed account credentials require separate handling: OCC cannot
 refresh, rotate, or manually replace an issued token. Monitor expiry and arrange
 a separately issued replacement account before it expires. Bind that account
 and explicitly deploy each intended consumer. Account deletion performs upstream
-cleanup and is blocked by Agent drafts, active revisions, and pending deployments;
+cleanup and is blocked by Agent drafts, selected versions, and pending deployments;
 inactive history alone does not retain the source indefinitely.
 
 ## Use a personal Codex login
@@ -115,7 +115,7 @@ access for subsequent refresh.
    for a usable access token; the token service owns refresh. Another device login
    is needed only when replacing or recovering the connection.
 4. To replace the connection, sign in from the credential editor, save the new
-   source, and deploy. Saving a draft does not change the running revision.
+   source, and deploy. Saving a draft does not change the running version.
 
 Starting requires Agent-create, Secret-create and credential-source-create in the
 Namespace, plus `operate` on the resulting session Secret and source. For an

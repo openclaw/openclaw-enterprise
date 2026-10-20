@@ -1,13 +1,14 @@
 # Agent Presets
 
-A Namespace Preset stores reusable Agent settings and variables. Select it,
-fill variables, and edit the copy before saving. Later Preset changes cannot
-change saved Agents, Configurations, or revisions.
+A Preset stores reusable Agent launch settings and variables in a Namespace.
+Select it during Agent creation, fill its variables, and edit copied settings before
+saving. Later Preset edits or deletion cannot change the Agent, Configuration, or
+deployed versions.
 See [Create an Agent from a Preset](../guides/topics/agent-presets.md).
 
-Install the [standard Codex Preset](../guides/topics/standard-codex-preset.md)
-manually or through [Installation defaults](#installation-defaults).
-Its native sandbox settings do not establish Pod-wide egress isolation.
+The checked-in [standard Codex Preset](../guides/topics/standard-codex-preset.md)
+uses this same API and chooser. Install it manually or enable the
+[Installation defaults](#installation-defaults); its native sandbox settings do not establish Pod-wide egress isolation.
 
 ## Installation defaults
 
@@ -21,10 +22,8 @@ presets:
 ```
 
 `includeDefaults: true` seeds `default-codex`, **Standard Codex**, and **Standard OpenClaw**.
-Omitting or disabling it in startup YAML stops bundled seeding. The
-[profile renderer](../guides/deploy/installation-profiles.md) writes `true` unless
-its site inputs explicitly set `presets.includeDefaults: false`; explicit `files`
-still load. Each JSON file contains one `{ "name": "...", "template": { ... } }`
+Startup YAML requires opt-in; the [profile renderer](../guides/deploy/installation-profiles.md)
+defaults `presets.includeDefaults` to `true`. Explicit `files` still load. Each JSON file contains one `{ "name": "...", "template": { ... } }`
 object. Relative paths resolve beside the Installation YAML. The Helm chart mounts
 only that YAML, so on Helm list only files shipped in the controller image, by
 absolute path. Missing, malformed, invalid, or duplicate-name files, and names
@@ -85,16 +84,12 @@ Codex `config.toml` or a reasoning-effort override.
 
 ### Plain console default
 
-Quick-start prefers the readable `default-codex` copy in the
-selected Namespace, otherwise the first readable Preset by name using the
-browser's case-insensitive locale order, with exact name order breaking ties.
+Quick-start prefers readable `default-codex`, otherwise the first readable Preset
+in case-insensitive browser locale order, with exact names breaking ties.
 Custom starters appear by name; `default-codex` keeps **Start with default Preset**.
-Select specific templates manually.
-It reads that exact resource; a denied read does not open a substitute form.
-The shipped default has no variables, model, name, or credential; the ordinary
-form collects them. Templates with variables open the variable chooser first.
-Empty or unavailable lists disable quick-start with setup or error feedback.
-Loss of read access after listing leaves the chooser open with an error.
+The exact-resource read must succeed. Denial leaves an error; empty or unavailable
+lists disable quick-start. Variables open the chooser; other templates apply
+immediately. The shipped default leaves model, name and credential to the form.
 **Start without Preset** is independent of Namespace Presets; it uses the
 console's shared configuration base and ordinary creation permissions.
 
@@ -174,9 +169,9 @@ is valid. Its optional fields are:
 | `configuration.values`         | Native Configuration JSON for models, Harness, channels, and sandbox settings.    |
 | `configuration.secretBindings` | Namespace Secret bindings.                                                        |
 
-The [Agent](agents.md) and [Configuration](configuration.md) contracts apply;
-Driver selection, generated identities, runtime state, and revision IDs are not
-template settings. A supplied
+These use the existing [Agent](agents.md) and [Configuration](configuration.md)
+contracts. Installation-owned Driver selection, generated identities, runtime
+state, and Agent revision IDs are not template settings. A supplied
 `configuration.values` replaces the console's starter JSON; it does not merge
 with it. Omitted settings use the form's normal defaults.
 
@@ -308,7 +303,8 @@ and response envelopes.
 | `PATCH` exact Preset with `name` and/or `template` | `200`, updated Preset            | `preset:update` on that Preset.                                 |
 | `DELETE` exact Preset                              | `204`                            | `preset:delete` on that Preset.                                 |
 
-An included `template` replaces it completely; omitted fields stay unchanged. Writes check the template structure,
+An included `template` replaces the whole template, including variable
+definitions; omitted fields stay unchanged. Writes check the template structure,
 variable syntax and default types, credential-binding structure, known
 cross-Namespace credential references, and credential literals at their native
 use sites. Ordinary launch-field errors, such as an invalid execution mode or
@@ -329,9 +325,10 @@ owner must explicitly grant Preset access; rerunning bootstrap does not change
 stored Roles. The public Namespace policy API supports exact-Preset access, but
 cannot edit an Installation Role or grant collection-wide `create`.
 
-Preset access does not grant Agent creation or Secret access. Creation enforces
-schemas, credentials, and authorization; deployment rechecks admission.
-Console checks do not replace server validation. Audit omits templates and
+Preset access grants no permission to create Agents or use referenced Secrets.
+After rendering, Configuration and Agent creation enforce their existing schemas,
+credential rules, and authorization before saving. Deployment rechecks admission.
+Console checks do not replace server validation. Audit records omit templates and
 variable values.
 
 Invalid inputs return `400`; denied access returns `403`; a missing exact target
@@ -343,8 +340,9 @@ bindings, but keeps copied Agents, Configurations, and credential sources.
 ## Limits and recovery
 
 Create and update Presets through the HTTP API; `occ preset list`, `get`, and
-`delete` cover the rest ([CLI reference](cli.md#resource-commands)). The console selects and applies them. Presets have no inheritance, version
-history, or Agent metadata recording their use. Creation still saves a Configuration
+`delete` cover the rest ([CLI reference](cli.md#resource-commands)). The console
+only selects and applies them. There is no inheritance, version history, or Agent
+metadata recording which Preset was used. Creation still saves a Configuration
 and an Agent separately. Follow [partial-save recovery](console/create-and-deploy.md#create-an-agent)
 if the second save fails or a response is lost.
 
@@ -354,5 +352,6 @@ does not update or reread the Preset. **Start over** discards the unsaved draft
 and returns to the chooser, but is disabled once a Configuration has saved or a
 save outcome is uncertain.
 
-Agent validation can leave a saved Configuration; follow the recovery steps
-above. Deployments read the Agent's own draft.
+A valid Preset is not necessarily a valid Agent configuration. A later Agent
+validation error can leave a saved Configuration; follow the recovery steps
+above. Later deployments read the Agent's own draft.

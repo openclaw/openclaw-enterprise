@@ -1,9 +1,13 @@
 # Render installation profiles
 
-Choose OpenClaw or Codex defaults, or a trusted customization, to render Helm
-values and Installation startup YAML. Prepare infrastructure, Secrets, DNS,
-certificates, credentials, optional service accounts, registries and Slack
-consumers separately; rendering provisions none of them.
+Installation profiles generate the two trusted files used by a production
+OpenClaw Enterprise install: a Helm values overlay and the Installation startup
+YAML mounted into the controller. Use a profile when you want the standard
+OpenClaw or Codex defaults without editing the production examples by hand.
+
+Profiles only render configuration for an already prepared environment. They do
+not create clusters, Secrets, databases, DNS, certificates, hosted plugin
+credentials, ChatGPT service accounts, repository registries, or Slack consumers.
 
 ## Choose a profile
 
@@ -298,28 +302,24 @@ node scripts/render-installation-profile.mjs \
   --out-dir .build/profile-renders/codex
 ```
 
-To select an operator-maintained profile definition, add
-`--profile-file .build/profiles/codex.json`. Copy the matching file from
-`deploy/profiles/` and adjust its PluginDriver configuration, for example
-[selecting the curated catalog](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
-This is trusted configuration, separate from site inputs. Its `name` must match
-`--profile`, which remains `openclaw` or `codex`. The selected file replaces the
-bundled definition; an unreadable, invalid or mismatched file fails without
-falling back. Relative file paths resolve from the command's working directory.
+For a trusted custom profile, copy the matching `deploy/profiles/` file and add
+`--profile-file .build/profiles/codex.json`. Paths resolve from the working
+directory. Adjust `installation.drivers.plugin`, for example to
+[select the curated catalog](../../reference/drivers/plugin-bundled.md#selection-and-catalogs).
+Its `name` must match `--profile` (`openclaw` or `codex`). Unreadable, invalid or
+mismatched profiles fail without fallback; unsupported fields fail too.
 
-Only the PluginDriver selection under `installation.drivers.plugin` is copied
-from the profile. The remaining fields (`description`, `recommendedPreset`,
-`agentHarness`, `pluginSelection`) are required descriptive strings; they do
-not select a Console default or override infrastructure. Unsupported fields
-fail. Omitted Driver `configuration` renders as `{}`; supplied values must be
-objects. The Driver validates its options at controller startup. Rendering is not startup
-validation or deployment proof. This option does not load custom modules or
-change the profile family selected by `--profile`.
+Only the bundled PluginDriver selection is copied. Required strings
+`description`, `recommendedPreset`, `agentHarness`, and `pluginSelection` are
+metadata; they do not override infrastructure or Console defaults. Omitted
+Driver `configuration` becomes `{}`; supplied configuration must be an object.
+Startup validates Driver options. Rendering proves neither startup nor deployment,
+and cannot load custom modules or change the selected profile family.
 
-For custom-only Presets, set `presets.includeDefaults: false` and
-`presets.files` in the **site input** JSON. Existing copies remain.
-The Console [chooses a readable starter](../../reference/presets.md#plain-console-default)
-when `default-codex` is absent; `recommendedPreset` does not select it.
+For custom-only Presets, set `presets.includeDefaults: false` and `presets.files`
+in **site inputs**. Existing copies remain. The Console
+[chooses a readable starter](../../reference/presets.md#plain-console-default)
+independently of `recommendedPreset`.
 
 On success, the output directory contains:
 

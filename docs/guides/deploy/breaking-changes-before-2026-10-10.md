@@ -73,8 +73,8 @@ chats ran as an Agent other than the one the files page edits.
 
 **Who is affected.** Dedicated Codex Agents whose Configuration matches one of
 these. No bundled Preset does. Running workloads are not changed, but until the
-Agent is deployed again with a fixed Configuration, re-preparing its active
-revision reports the same refusal and skips repair. Embedded OpenClaw and SSH
+Agent is deployed again with a fixed Configuration, re-preparing its selected
+version reports the same refusal and skips repair. Embedded OpenClaw and SSH
 Compute are unchanged.
 
 **How to tell.** Check the Agent's Configuration for the settings above.
@@ -198,7 +198,7 @@ service-account source. The old release keeps running; nothing is changed.
 
 **Who is affected.** Installations that ever deployed an Agent with
 `harnessAuth.method` `chatgpt_service_account`, including Agents since changed
-to another method, because their old revisions keep it.
+to another method, because their old versions keep it.
 
 **How to tell.** Before upgrading, on the old release:
 
@@ -207,10 +207,10 @@ occ agent list -o json | jq -r '.[] | select(.harnessAuth.method == "chatgpt_ser
 ```
 
 Run it in every Namespace (`--namespace`). An Agent changed away from the method
-still has old revisions; check them with
+still has old versions; check them with
 `GET /namespaces/<id>/agents/<agent>/revisions`.
 
-**Steps.** Deleting an Agent removes its revisions and provisioning requests,
+**Steps.** Deleting an Agent removes its versions and provisioning requests,
 which clears the refusal.
 
 1. Record each affected Agent's settings (`occ agent get <id> -o json`) and
@@ -252,7 +252,7 @@ A row with an empty `NAMESPACE` column is a split-layout tenant.
 
 **Steps.** Adopt each tenant in place with the
 [split-layout upgrade](split-layout-upgrade.md): each `oce-gateways-<hash>`
-namespace becomes its tenant's namespace, and IDs, Namespace names, revisions,
+namespace becomes its tenant's namespace, and IDs, Namespace names, versions,
 Secrets, service-account credentials, chat history and Harness workspaces all
 stay. Tenants that can't be adopted use the export fallback on the same page,
 which re-creates them under new IDs.

@@ -49,8 +49,8 @@ gh api --method PUT repos/openclaw/openclaw-enterprise/pages \
 Public access is a separate maintainer action, not a deployment side effect.
 Before authorizing it, review the generated site's contents, including hidden
 navigation pages and search results: hidden pages are still published. Record
-the approved deployment revision and team approval in the launch PR or issue.
-Confirm the latest successful documentation deployment is that reviewed revision,
+the approved deployment commit and team approval in the launch PR or issue.
+Confirm the latest successful documentation deployment is that reviewed commit,
 the repository is still private, and the domain has working enforced HTTPS.
 
 An authorized maintainer or agent can then run this explicit launch command:

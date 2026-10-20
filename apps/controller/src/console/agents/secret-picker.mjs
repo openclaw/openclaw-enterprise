@@ -2,6 +2,7 @@ import {
   dismissOnBackdrop,
   element,
   field as formField,
+  revealStatus,
   setFieldError,
   setStatusTone,
   statusBlock,
@@ -205,6 +206,9 @@ export function createSecretReferenceField({
     hidden: "",
   });
   const status = element("p", { id: `${id}-status`, className: "hint", role: "status" });
+  // Forms rename the field by method (API key or Service account token Secret); its required
+  // error names the label the page shows (finding 1987).
+  const labelNode = element("label", { for: id }, label);
   const metadataLink = credentialLink("#", metadataLabel);
   const secrets = [];
   // Set once a binding is staged, so a Secret list that arrives later keeps its hint.
@@ -387,14 +391,16 @@ export function createSecretReferenceField({
   function updateValidity() {
     input.required = requiredWhenEnabled;
     input.disabled = manuallyDisabled;
+    const missing = `${labelNode.textContent.trim() || label} is required.`;
     input.setCustomValidity(
-      requiredWhenEnabled && !manuallyDisabled && currentSecretId() === null
-        ? `${label} is required.`
-        : "",
+      requiredWhenEnabled && !manuallyDisabled && currentSecretId() === null ? missing : "",
     );
     // A binding is chosen without an input event; its "is required" error goes with it.
     if (input.validity.valid) {
       setFieldError(input, "");
+    } else if (input.getAttribute("aria-invalid") === "true") {
+      // A shown error follows a renamed label.
+      setFieldError(input, missing);
     }
     if (manuallyDisabled) {
       closeListbox({ restoreSelection: true });
@@ -580,6 +586,10 @@ export function createSecretReferenceField({
         value.disabled = outcomeUnknown;
         if (error.status === 409 && error.code !== "NAMESPACE_NOT_READY") {
           name.focus();
+        } else {
+          // The disabled submit dropped focus to the page behind the open dialog; the refusal
+          // takes it, in view (finding 1989).
+          revealStatus(feedback, dialog);
         }
       } finally {
         creating = false;
@@ -628,9 +638,13 @@ export function createSecretReferenceField({
         setSecretOptions({ preserveSearch: true });
         if (!staged) {
           setStatusTone(status, null);
+          // The list holds only the Secrets this account may read. Someone the session knows is
+          // not an Installation administrator may not see Secrets that exist (finding 2111).
           status.textContent = secrets.length
             ? "Choose an existing Secret or create a new one."
-            : "No readable Secrets yet. Create a new Secret to bind this field.";
+            : context.installationAdmin === false
+              ? "No Secrets you can read in this Namespace. Create a new Secret to bind this field, or ask an administrator for read access to an existing one."
+              : "No readable Secrets yet. Create a new Secret to bind this field.";
         }
         updateValidity();
       })
@@ -652,11 +666,18 @@ export function createSecretReferenceField({
   input.addEventListener("focus", () => {
     searchQuery = "";
     input.select();
-    if (suppressFocusOpen) {
+    // A field showing its error opens on click, typing or ArrowDown, not on focus: the console's
+    // own check focuses it, and the open list covered the error under it (finding 1988).
+    if (suppressFocusOpen || input.getAttribute("aria-invalid") === "true") {
       suppressFocusOpen = false;
       return;
     }
     openListbox();
+  });
+  input.addEventListener("click", () => {
+    if (!listboxOpen) {
+      openListbox();
+    }
   });
   input.addEventListener("input", () => {
     searchQuery = input.value;
@@ -709,7 +730,7 @@ export function createSecretReferenceField({
   const field = element(
     "div",
     { className: fieldClassName },
-    element("label", { for: input.id }, label),
+    labelNode,
     element("div", { className: "secret-typeahead" }, input, listbox),
     metadataLink,
     status,

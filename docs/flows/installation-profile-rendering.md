@@ -68,16 +68,13 @@ files remain untouched.
 
 `scripts/render-installation-profile.mjs:readProfile`
 
-Selected paths resolve from the working directory; bundled profiles live under
-`deploy/profiles/`. The renderer requires a matching `name`, descriptive strings,
-and a bundled PluginDriver; unknown fields fail. Omitted configuration renders
-as `{}`; supplied values must be objects. Driver options are validated at startup.
-Failures never fall back.
-`recommendedPreset` remains metadata; the [Preset flow](agent-presets.md) owns
-Console selection.
-
-The trusted profile selects the PluginDriver. Site inputs supply infrastructure. Hosted `codex-plugin` discovery needs a PAT under either profile
-family; curated discovery does not. Runtime credentials remain per Agent.
+Paths resolve from the working directory; bundled profiles live in `deploy/profiles/`.
+Profiles require matching `name`, descriptive strings and a bundled PluginDriver;
+unknown fields fail. Omitted configuration becomes `{}`; supplied configuration
+must be an object. Startup validates Driver options. Failures never fall back.
+`recommendedPreset` is metadata; [Preset selection](agent-presets.md) is independent.
+Site inputs supply infrastructure. Hosted `codex-plugin` discovery needs a PAT
+under either family; curated discovery does not. Runtime credentials remain per Agent.
 
 Explicit discovery CIDRs keep rendering offline and stable; omitted hosted
 Codex CIDRs make Helm values depend on DNS.
@@ -102,9 +99,16 @@ slashes, or uppercase. Compute applies the same rule to `gatewayNamespace` and
 and `dns`. NetworkPolicies select peers by Namespace-only
 `kubernetes.io/metadata.name`; invalid names fail preflight.
 
-`buildRendered` applies the shared Kubernetes image-reference rule, requiring
-literal `sha256`, 64 lowercase hexadecimal characters, and lowercase repository
-paths. Invalid images produce only failed preflight; IPv6 registry hosts pass.
+`buildRendered` requires the literal `sha256` algorithm and 64 lowercase
+hexadecimal characters for `controlPlane.controllerImage`, `runtime.image`, and
+enabled `repository.image`. All three must also pass `imageReferenceProblem`
+(`packages/occ/src/image-reference.ts`), a port of the Kubernetes reference
+parser that Compute, the chart and the image tools share: a reference Kubernetes
+refuses to pull, such as an uppercase repository path, fails, and an IPv6
+registry host passes.
+
+Noncanonical digest casing adds a field-specific diagnostic; the final error
+branch writes only `preflight.json`, leaving no deployable artifacts.
 
 `controlPlane.clusterName` uses the chart/bootstrap `installation.name` rule:
 1–200 characters, without edge whitespace, control characters, or line/paragraph
@@ -215,7 +219,7 @@ dot does not, because the suffix would start a new label with a hyphen.
 `scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`
 
 After validation, hosted `codex-plugin` with omitted `codex.modelDiscoveryCidrs`
-triggers bounded A queries for `auth.openai.com` and `chatgpt.com`. Sorted unique
+queries IPv4 addresses for `auth.openai.com` and `chatgpt.com` with a resolver timeout of 1.5 seconds and one try. Sorted unique
 IPv4 `/32` answers populate the existing API-only TCP 443 Helm policy; the driver
 mutates no Kubernetes resources.
 

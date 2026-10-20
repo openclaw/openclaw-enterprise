@@ -93,14 +93,14 @@ export async function createQaBrowser(f) {
   f.resources.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(f.consoleUrl + "/console/");
-  await page.getByLabel("Username").fill(f.credentials.email);
+  await page.getByLabel("Email", { exact: true }).fill(f.credentials.email);
   await page.getByLabel("Password").fill(f.credentials.password);
   const signedIn = page.waitForResponse(
     (response) =>
       new URL(response.url()).pathname === "/api/auth/sign-in/email" &&
       response.request().method() === "POST",
   );
-  await page.getByRole("button", { name: "Login", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
   assert.equal((await signedIn).status(), 200, "console sign-in must succeed");
   // An authenticated API read disambiguates a still-visible login page.
   const authenticated = await page.evaluate(async () => (await fetch("/installation")).status);

@@ -87,14 +87,14 @@ retain their selected Compute identity and immutable
 Configuration snapshot and explicit Harness execution mode. Production worker
 claim, stale-claim recovery, and backlog queries include Namespace and both
 approved AgentRevision pairs: `dedicated` Codex and `embedded` OpenClaw. Each
-Agent-owned gateway serves only its own active revision; unsupported
+Agent-owned gateway serves only its own selected version; unsupported
 Harness/mode combinations and external ingress remain unavailable.
 
 ## Reconciliation lifecycle
 
 Namespace creation and deletion queue infrastructure work. Agent stop and
 deletion queue exact-Agent lifecycle work. Agent deployment queues an immutable
-revision; the worker prepares it, activates its route, and retires its
+version; the worker prepares it, activates its route, and retires its
 predecessor. Kubernetes uses a single-replica gateway with `Recreate`, so
 replacement can interrupt serving. For embedded OpenClaw, the predecessor can
 stop before the replacement passes authentication and readiness. Read
@@ -112,7 +112,7 @@ configure export, and verify delivery. The API and worker share the OCC Pino
 logger. The API disables Fastify's default request logging and emits one
 sanitized `http.completed` record per response with the generated
 request ID, method, route template, status, and duration. Unexpected internal
-failures add `http.unexpected_error` with a bounded error code.
+failures add `http.unexpected_error` with an error code that passes the log filter.
 
 The worker emits fixed operational event classes through the same logger:
 
@@ -123,17 +123,17 @@ The worker emits fixed operational event classes through the same logger:
   and a stable result code; for an Agent stop, deletion or credential-source
   withdrawal, an exhausted retry is `outcome: permanent` while `result` stays
   the Driver's classification; AgentRevision operations also include `agentId` and
-  `revisionId`. A failed or deferred revision pass adds `cause`: the error class,
+  `revisionId`. A failed or deferred version pass adds `cause`: the error class,
   or for a transient dependency its closed failure code, with `dependency` naming
   the dependency. An HTTP failure adds `status`, and the Kubernetes Status `reason`
   when its cause keeps one, such as `403` and `Forbidden` for a refused Secret
-  write. A revision pass that loses the race for the Agent's active revision logs
+  write. A version pass that loses the race for the Agent's selected version logs
   outcome `retry` with code `ACTIVE_REVISION_CHANGED`; the work fails once its
   attempts are exhausted.
   A pass that could not stop a refused candidate stays pending with code
   `REFUSED_CANDIDATE_STOP_PENDING` and adds `refusal`, the refusal's code
   (`CONVERGENCE_DEADLINE_EXCEEDED` once a lifted refusal outlived the deadline),
-  until the stop succeeds. A stopped Agent's stop or revision pass whose Gateway drain
+  until the stop succeeds. A stopped Agent's stop or version pass whose Gateway drain
   yielded to other work stays pending with `AGENT_STOP_YIELDED` and runs again after it;
   a deployment whose dedicated predecessor's drain yielded stays pending with
   `PREDECESSOR_STOP_YIELDED`. Such a deployment that then fails (with the full wait), is
@@ -142,7 +142,7 @@ The worker emits fixed operational event classes through the same logger:
   Only the work's first yield, then at most one a minute, is logged; these lines and the
   work's next other line add `stopYields`, the yields this worker counted for it. A provisioning plan that the Compute Driver refuses for a reason the caller
   cannot fix adds that `reason`. A failed Namespace pass adds the Compute Driver's
-  `reason` when it gives one: bounded printable text that never carries another
+  `reason` when it gives one: at most 256 printable characters that never carry another
   tenant's values. These fields stay in the local log; the Collector
   exports only the result code. Each deployment pass adds worker wall-clock milliseconds:
   `durationMs` for the pass, `deployPasses` and summed Compute `prepareMs` so
@@ -168,7 +168,7 @@ success records to stdout. Their structured failure diagnostics go to stderr.
 Startup failures write `startup-error`, `worker.startup-error`,
 `installation.bootstrap-failed`, or `migration.failed` and exit before serving
 or processing work. Log sanitization keeps only reviewed scalar fields and drops
-credentials, provider payloads, request objects, and unbounded error values. The
+credentials, provider payloads, request objects, and error values that fail its filters. The
 worker does not expose an HTTP health endpoint. A startup Installation with an
 invalid Gateway StorageClass name emits `GATEWAY_STORAGE_CLASS_INVALID`; a
 Compute gateway or Agent image without a required digest, or with an uppercase
@@ -188,7 +188,7 @@ repository path, emits `RUNTIME_IMAGE_INVALID`.
   `/app/.development/configurations` mount backed by `occ_configuration_data`.
 - **AgentRevision does not activate:** Confirm its Namespace is `ready`, the
   original actor retains exact-Agent `deploy` permission and `read` on any
-  account in its immutable revision, and its pinned Harness descriptor and
+  account in its immutable version, and its pinned Harness descriptor and
   Compute implementation match the worker.
 - **Kubernetes Namespace or Agent workload does not become ready:** Confirm
   the API and worker selected the same configured driver and the worker uses
@@ -241,7 +241,7 @@ repository path, emits `RUNTIME_IMAGE_INVALID`.
   Kubernetes Secret Driver.
 - **`AUTHORIZATION_DENIED` or `ACTOR_REVOKED`:** Inspect the initiating actor's
   current role, binding, exact-Namespace Restrictions, and `read` permission on
-  any service account captured in the immutable revision; see [IAM](authorization.md).
+  any service account captured in the immutable version; see [IAM](authorization.md).
 - **`CLAIM_LOST`:** Another valid claim recovered the operation. The stale
   attempt cannot publish lifecycle state; inspect subsequent worker events.
 
@@ -249,7 +249,7 @@ repository path, emits `RUNTIME_IMAGE_INVALID`.
 
 - [API operations, authentication, and permission reference](api.md)
 - [Namespace lifecycle and deletion](namespaces.md)
-- [Agent Configuration, revisions, and deployment](agents.md)
+- [Agent Configuration, versions, and deployment](agents.md)
 - [Native service accounts and account authorization](service-accounts.md)
 - [Controller and PostgreSQL configuration](settings.md)
 - [Docker Compute Driver and Compose development](drivers/docker-compute.md)

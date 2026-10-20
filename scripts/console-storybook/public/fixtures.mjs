@@ -150,6 +150,13 @@ function candidateDeploymentError(scenario, checkedAt) {
   }
   // Deployment error messages copy deploymentErrorMessage in
   // packages/occ/src/state/controller-work.ts; keep them in step.
+  if (scenario.candidateCredentialRejected) {
+    return {
+      code: "RUNTIME_AUTHENTICATION_FAILED",
+      message:
+        "The model provider rejected this version's credential (HTTP 401 or 403). Check that the key or token is valid and can use the selected model, update or replace the Agent's model credential, then deploy a new version.",
+    };
+  }
   if (scenario.candidateModelProbeCause) {
     return {
       code: "RUNTIME_MODEL_PROBE_FAILED",
@@ -228,7 +235,11 @@ export function installFixture(scenario, evidence) {
   const session = {
     authenticated: true,
     sessionKey: "storybook-session",
-    user: { id: "storybook-operator", name: "Demo Operator", email: "operator@example.com" },
+    user: scenario.sessionUser ?? {
+      id: "storybook-operator",
+      name: "Demo Operator",
+      email: "operator@example.com",
+    },
   };
   const namespaces = scenario.emptyNamespaces
     ? []
@@ -320,8 +331,9 @@ export function installFixture(scenario, evidence) {
   } else if (scenario.deployed) {
     selectedRevisionId = "rev_00000000-0000-4000-8000-000000000001";
   }
+  let agentReadCount = 0;
   const agent = {
-    id: "agt_00000000-0000-4000-8000-000000000001",
+    id: scenario.agentId ?? "agt_00000000-0000-4000-8000-000000000001",
     namespaceId,
     name: scenario.agentName ?? "Research assistant",
     status: scenario.deleting ? "deleting" : "active",
@@ -803,6 +815,14 @@ export function installFixture(scenario, evidence) {
         },
       });
     }
+    if (path === "/namespaces" && method === "POST") {
+      if (namespaces.some((item) => item.name === body.name)) {
+        return error(409, "RESOURCE_CONFLICT");
+      }
+      const created = { id: nextId("ns"), name: body.name, status: "provisioning", createdAt };
+      namespaces.push(created);
+      return response(created, 201);
+    }
     if (path === "/namespaces" && method === "GET") {
       // Once the story's actions ran, each read takes the next recheck answer: a status for the
       // story's Namespace, "missing" to leave it out of the list, or an HTTP status to fail
@@ -832,6 +852,9 @@ export function installFixture(scenario, evidence) {
     if (match) {
       const [, ns, resource] = match;
       if (ns !== namespaceId) {
+        if (resource === "permissions" && namespaces.some((item) => item.id === ns)) {
+          return response({ agents: { create: true } });
+        }
         return response([]);
       }
       const deviceLogin = resource.match(
@@ -1490,6 +1513,9 @@ export function installFixture(scenario, evidence) {
         }
         if (suffix === "") {
           if (method === "GET") {
+            if (scenario.deletingOnRefresh && ++agentReadCount > 1) {
+              saved.status = "deleting";
+            }
             if (deleted.has(id)) {
               agents.delete(id);
               return error(404);

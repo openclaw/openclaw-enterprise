@@ -1,6 +1,6 @@
 # Deliver images to a private registry
 
-Select a controller, runtime, and Helm chart from a verified source revision,
+Select a controller, runtime, and Helm chart from a verified source commit,
 then make the images available to every eligible Kubernetes node. This guide
 copies an already published image pair from public GHCR to private Amazon
 Elastic Container Registry (ECR) without rebuilding it. Use the
@@ -30,7 +30,7 @@ examples, and helpers. From the repository root, compare `git rev-parse HEAD`
 with the recorded full source SHA and check `git status --short` for changes.
 The images listed in the installation guide were built from an older commit;
 they are not evidence for a chart from a newer checkout. If a separately
-published chart is available, verify its publication receipt, source revision,
+published chart is available, verify its publication receipt, source commit,
 chart digest, and image annotations against the selected image publication;
 use it only when the release owner confirms compatibility. Chart publication
 is a separate process and is not assumed to have occurred for an image release.

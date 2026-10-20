@@ -20,7 +20,7 @@ compatible Plugin Driver before an Agent can save nonempty plugin selections.
 
 ## Know when a change takes effect
 
-Saving a selection does not change the running Agent. Deploy a new revision to
+Saving a selection does not change the running Agent. Deploy a new version to
 apply it. A deployment can succeed with a plugin disabled if installation fails
 or, for Codex, the app still needs authentication.
 [Check the deployment warnings](plugins-configure.md#check-the-result), then

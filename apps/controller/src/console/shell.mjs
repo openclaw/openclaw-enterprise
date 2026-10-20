@@ -1,3 +1,4 @@
+import { displayDate } from "./agents/list.mjs";
 import { element, button } from "./dom.mjs";
 
 export function panel(target, title, description, actionLabel, action, requestId) {
@@ -71,6 +72,14 @@ const namespaceStatuses = {
 };
 const backendTypes = { chatgpt: "ChatGPT", github: "GitHub", openshell: "OpenShell" };
 
+// Initials for the account avatar: the first letters of the first and last words of the
+// name, or of the email when the account has no name.
+export function initials(user) {
+  const words = (user?.name ?? "").trim().split(/\s+/).filter(Boolean);
+  const letters = (words.length > 1 ? [words[0], words.at(-1)] : words).map((word) => [...word][0]);
+  return (letters.join("") || [...(user?.email ?? "")][0] || "?").toUpperCase();
+}
+
 export function createShell({ app, pages, route, pageUrl, navigate, loadPage, logout }) {
   let session = null;
   let namespaces = [];
@@ -85,6 +94,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   const mobileLayout = window.matchMedia("(max-width: 760px)");
 
   mobileLayout.addEventListener("change", (event) => {
+    // The account menu of the layout being left is hidden; close it so it doesn't reappear open.
+    menuControls?.close();
     if (!event.matches) {
       drawerControls?.close(false);
     }
@@ -109,6 +120,22 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     return svg;
   }
 
+  // A 20 px line icon for the icon-only buttons of the phone top bar and drawer.
+  function lineIcon(d) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "line-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    svg.append(path);
+    return svg;
+  }
+
   function publicPanel(title, description, actionLabel, action) {
     menuControls = null;
     drawerControls = null;
@@ -129,36 +156,19 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
-  function accountMenu() {
-    // A page load can render the shell twice (a Loading or retained preview, then the
-    // fresh view). Keep the same menu so one opened in between stays open and clickable.
-    // reset(), publicPanel() and a session-less render drop it, so each navigation
-    // starts with a closed menu.
-    if (menuControls) {
-      return menuControls.account;
-    }
-    const account = element("div", { className: "account" });
+  function accountControl({ id, rootClass, toggle, menuFirst }) {
+    const account = element("div", { className: rootClass });
     const menu = element("div", {
       className: "menu",
-      id: "account-menu",
+      id,
       role: "menu",
       "aria-label": "Account",
       hidden: "",
     });
-    const toggle = button(
-      "OpenClaw Enterprise",
-      () => (menu.hidden ? openAccount() : closeAccount()),
-      {
-        className: "account-toggle",
-        "aria-haspopup": "menu",
-        "aria-expanded": "false",
-        "aria-controls": "account-menu",
-      },
-    );
-    toggle.replaceChildren(
-      element("span", { className: "account-label" }, "OpenClaw Enterprise"),
-      element("span", { className: "account-chevron", "aria-hidden": "true" }, "⌃"),
-    );
+    toggle.setAttribute("aria-haspopup", "menu");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", id);
+    toggle.addEventListener("click", () => (menu.hidden ? openAccount() : closeAccount()));
     function closeAccount(focus = true) {
       menu.hidden = true;
       toggle.setAttribute("aria-expanded", "false");
@@ -182,19 +192,73 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     enableMenuKeys(menu, closeAccount);
     menu.append(
       button("Settings", () => navigate("settings"), { role: "menuitem", tabindex: "-1" }),
-      button("Logout", () => void logout(), { role: "menuitem", tabindex: "-1" }),
+      button("Sign out", () => void logout(), { role: "menuitem", tabindex: "-1" }),
     );
-    account.append(menu, toggle);
+    account.append(...(menuFirst ? [menu, toggle] : [toggle, menu]));
     account.addEventListener("focusout", (event) => {
       if (event.relatedTarget && !account.contains(event.relatedTarget)) {
         closeAccount(false);
       }
     });
+    return { account, close: () => closeAccount(false) };
+  }
+
+  function accountMenus() {
+    // A page load can render the shell twice (a Loading or retained preview, then the
+    // fresh view). Keep the same menus so one opened in between stays open and clickable.
+    // reset(), publicPanel() and a session-less render drop them, so each navigation
+    // starts with closed menus.
+    if (menuControls) {
+      return menuControls;
+    }
+    const user = session.user;
+    const name = user?.name || user?.email || "Account";
+    // The sidebar's account row: avatar, name and email. At phone width the sidebar is the
+    // navigation drawer, so the top bar's avatar opens its own copy of the menu.
+    const toggle = element(
+      "button",
+      { type: "button", className: "account-toggle" },
+      element("span", { className: "account-avatar", "aria-hidden": "true" }, initials(user)),
+      element(
+        "span",
+        { className: "account-text" },
+        element("span", { className: "account-name" }, name),
+        // Flex items drop this space visually; it keeps the name and email apart in the
+        // button's accessible name.
+        user?.email && user.email !== name ? " " : null,
+        user?.email && user.email !== name
+          ? element("span", { className: "account-email" }, user.email)
+          : null,
+      ),
+      element("span", { className: "account-chevron", "aria-hidden": "true" }, "⌃"),
+    );
+    const avatar = element(
+      "button",
+      { type: "button", className: "topbar-avatar", "aria-label": `Account: ${name}` },
+      element("span", { className: "account-avatar", "aria-hidden": "true" }, initials(user)),
+    );
+    const side = accountControl({
+      id: "account-menu",
+      rootClass: "account",
+      toggle,
+      menuFirst: true,
+    });
+    const top = accountControl({
+      id: "account-menu-top",
+      rootClass: "topbar-account",
+      toggle: avatar,
+      menuFirst: false,
+    });
     menuControls = {
-      account,
-      close: () => closeAccount(false),
+      side,
+      top,
+      contains: (node) => side.account.contains(node) || top.account.contains(node),
+      close: () => {
+        side.close();
+        top.close();
+      },
     };
-    return account;
+    return menuControls;
   }
 
   function updateNamespaceSelector() {
@@ -221,7 +285,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     }
   }
 
-  function namespaceSelector(label = "Namespace") {
+  // The page header's selector is compact (UX spec 3.2): one 32 px control whose label sits
+  // inside it as a muted prefix. The Namespace recovery panel keeps the full-size field.
+  function namespaceSelector(label = "Namespace", { compact = false } = {}) {
     namespaceSelect = element("select", { id: "namespace-selector" });
     updateNamespaceSelector();
     namespaceSelect.addEventListener("change", (event) => {
@@ -241,10 +307,95 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     });
     return element(
       "div",
-      { className: "namespace-selector" },
+      {
+        className: compact
+          ? "namespace-selector namespace-selector--compact"
+          : "namespace-selector",
+      },
       element("label", { for: "namespace-selector" }, label),
       namespaceSelect,
     );
+  }
+
+  function copyIcon() {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "copy-icon");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "2");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    const back = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    for (const [name, value] of Object.entries({ x: 9, y: 9, width: 12, height: 12, rx: 2 })) {
+      back.setAttribute(name, String(value));
+    }
+    const front = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    front.setAttribute("d", "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1");
+    svg.append(back, front);
+    return svg;
+  }
+
+  // The Agent's ID under its name, with a copy button. Copying falls back to selecting the ID
+  // where the clipboard is unavailable (an http origin, say), so it can be copied by hand.
+  function agentIdentity(agentId) {
+    const id = element("span", { className: "resource-id", title: "Agent ID" }, agentId);
+    const copied = element("span", { className: "page-meta-copied", role: "status" });
+    let clearCopied = null;
+    const copy = button(
+      "",
+      () => {
+        const done = () => {
+          copied.textContent = "Copied";
+          clearTimeout(clearCopied);
+          clearCopied = setTimeout(() => {
+            copied.textContent = "";
+          }, 2000);
+        };
+        const select = () => {
+          const range = document.createRange();
+          range.selectNodeContents(id);
+          document.getSelection()?.removeAllRanges();
+          document.getSelection()?.addRange(range);
+        };
+        if (navigator.clipboard?.writeText) {
+          navigator.clipboard.writeText(agentId).then(done, select);
+        } else {
+          select();
+        }
+      },
+      {
+        tone: "ghost",
+        size: "sm",
+        className: "page-meta-copy",
+        "aria-label": "Copy Agent ID",
+        title: "Copy Agent ID",
+      },
+    );
+    copy.append(copyIcon());
+    return element("span", { className: "page-meta-id" }, id, copy, copied);
+  }
+
+  // ← Agents on an Agent's page and on Create Agent. A page that cannot be left yet (an open
+  // draft editor, a write in flight) keeps the reader and says why (findings 1902, 1937).
+  function backToAgents() {
+    const back = element(
+      "a",
+      { href: pageUrl("agents"), className: "button button--ghost button--sm page-back" },
+      "← Agents",
+    );
+    back.addEventListener("click", (event) => {
+      if (event.button || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+        return;
+      }
+      event.preventDefault();
+      if (refuseLeave()) {
+        return;
+      }
+      navigate("agents");
+    });
+    return back;
   }
 
   function updateNamespaces(readable, { preservePageScope = false } = {}) {
@@ -280,11 +431,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       observabilityUrl,
       namespaceAdmissionPending = true,
     } = state);
+    // An Agent's page ({ agentId }) or Create Agent ({ creating: true }): ← Agents above the
+    // title, and the ID and Namespace in a meta row under it (UX spec 3.2).
+    const subpage = feature === "agents" && state.page ? state.page : null;
     // A page held during a navigation shows Namespace recovery only if it already did.
     const recovery = state.recovery ?? true;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
-    const menuFocus = menuControls?.account.contains(document.activeElement)
+    const menuFocus = menuControls?.contains(document.activeElement)
       ? document.activeElement
       : null;
     // Like the menu, a mobile drawer opened between a page load's two renders stays open.
@@ -380,8 +534,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "p",
         { className: "brand" },
-        element("img", { src: "/console/oce-mascot.png", alt: "", width: "40", height: "40" }),
-        "OCE",
+        element("img", { src: "/console/oce-mascot.png", alt: "", width: "20", height: "20" }),
+        "OpenClaw Enterprise",
         debug
           ? element(
               "span",
@@ -395,7 +549,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       ),
       nav,
       diagnostics,
-      session ? accountMenu() : null,
+      session ? accountMenus().side.account : null,
     );
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
@@ -407,28 +561,55 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           : feature === "backends"
             ? "Installation-wide · Experimental"
             : "Installation-wide";
-    const scopeSelector = feature === "namespaces" ? null : namespaceSelector();
-    const refresh = button("Refresh", () => void loadPage({ fromRefresh: true }), {
-      tone: "ghost",
-      size: "sm",
-    });
-    refresh.disabled = true;
-    const header = element(
-      "header",
-      { className: "page-header" },
-      element(
-        "div",
-        {},
-        element("h1", { tabindex: "-1" }, pages[feature]),
-        element("p", { className: "scope" }, scope),
-      ),
-      element(
-        "div",
-        { className: "page-actions" },
-        scopeSelector,
-        feature === "settings" ? null : refresh,
-      ),
+    // Settings is about the account, and Namespaces lists them: neither has a Namespace scope.
+    const scopeSelector =
+      feature === "namespaces" || feature === "settings"
+        ? null
+        : namespaceSelector("Namespace", { compact: true });
+    // Refresh rebuilds the page: one whose write must finish here stays and says why.
+    const refresh = button(
+      "Refresh",
+      () => void (refuseLeave({ refresh: true }) || loadPage({ fromRefresh: true })),
+      {
+        tone: "ghost",
+        size: "sm",
+      },
     );
+    refresh.disabled = true;
+    const heading = element("h1", { tabindex: "-1" }, pages[feature]);
+    const actions = element(
+      "div",
+      { className: "page-actions" },
+      subpage ? null : scopeSelector,
+      feature === "settings" ? null : refresh,
+    );
+    const header = subpage
+      ? element(
+          "header",
+          {
+            className: `page-header page-header--subpage ${subpage.agentId ? "page-header--agent" : "page-header--create"}`,
+          },
+          backToAgents(),
+          heading,
+          actions,
+          element(
+            "div",
+            { className: "page-meta" },
+            subpage.agentId ? agentIdentity(subpage.agentId) : null,
+            scopeSelector,
+          ),
+        )
+      : element(
+          "header",
+          { className: "page-header" },
+          element(
+            "div",
+            { className: "page-title" },
+            heading,
+            element("p", { className: "scope" }, scope),
+          ),
+          actions,
+        );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
     if (recovery && session && feature !== "agents" && namespaceId !== null && !selected) {
@@ -441,7 +622,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
             namespaceSelector("Choose a valid Namespace"),
           ),
         );
-      } else if (feature !== "namespaces") {
+      } else if (scopeSelector) {
+        // Switch Namespace focuses the header's selector: Settings has none, so it offers none.
         main.append(
           element(
             "p",
@@ -453,12 +635,26 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       }
     }
     main.append(view);
-    const mobileToggle = button("Open navigation", () => openDrawer(), {
+    const mobileToggle = button(lineIcon("M4 6h16M4 12h16M4 18h16"), () => openDrawer(), {
       className: "mobile-toggle",
+      "aria-label": "Open navigation",
       "aria-controls": "navigation-drawer",
       "aria-expanded": "false",
     });
-    const wrapper = element("div", {}, mobileToggle, main);
+    // The phone top bar: navigation toggle, wordmark, and the account avatar.
+    const topbar = element(
+      "div",
+      { className: "topbar" },
+      mobileToggle,
+      element(
+        "p",
+        { className: "brand brand--bar" },
+        element("img", { src: "/console/oce-mascot.png", alt: "", width: "20", height: "20" }),
+        "OpenClaw Enterprise",
+      ),
+      session ? accountMenus().top.account : null,
+    );
+    const wrapper = element("div", {}, topbar, main);
     const shell = element("div", { className: "shell" }, sidebar, wrapper);
     function closeDrawer(focus = true) {
       shell.classList.remove("drawer-open");
@@ -469,6 +665,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       }
     }
     function openDrawer(focus = true) {
+      menuControls?.top.close();
       shell.classList.add("drawer-open");
       main.inert = true;
       mobileToggle.setAttribute("aria-expanded", "true");
@@ -476,7 +673,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         nav.querySelector("a").focus();
       }
     }
-    sidebar.prepend(button("Close navigation", () => closeDrawer(), { className: "drawer-close" }));
+    sidebar.prepend(
+      button(lineIcon("M6 6l12 12M18 6L6 18"), () => closeDrawer(), {
+        className: "drawer-close",
+        "aria-label": "Close navigation",
+      }),
+    );
     shell.append(
       button("Close navigation overlay", () => closeDrawer(), {
         className: "scrim",
@@ -506,7 +708,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         menuControls?.close();
       }
     }
-    return { view, refresh, diagnostics, scopeSelector };
+    return { view, refresh, diagnostics, scopeSelector, actions };
   }
 
   function sameControl(node, root) {
@@ -540,38 +742,88 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       );
       return;
     }
+    if (feature === "namespaces") {
+      renderNamespaceRows(view, items);
+      return;
+    }
     const list = element("ul", { className: "collection", "aria-label": pages[feature] });
     for (const item of sorted(items)) {
-      const name = item.name ?? item.id;
-      // A Namespace row opens that Namespace's Agents (finding 1897).
-      const label =
-        feature === "namespaces" ? namespaceLink(name, item.id) : element("span", {}, name);
-      const status = feature === "namespaces" ? namespaceStatuses[item.status] : undefined;
       list.append(
         element(
           "li",
-          {
-            className: feature === "namespaces" ? "card resource resource-linked" : "card resource",
-          },
+          { className: "card resource" },
           element(
             "div",
             {},
-            element("p", { className: "resource-name" }, label),
+            element("p", { className: "resource-name" }, element("span", {}, item.name ?? item.id)),
             feature === "backends" ? null : element("span", { className: "resource-id" }, item.id),
           ),
           feature === "agents"
             ? null
-            : element(
-                "span",
-                { className: "badge", ...(status ? { "data-tone": status.tone } : {}) },
-                feature === "backends"
-                  ? (backendTypes[item.type] ?? item.type)
-                  : (status?.label ?? item.status),
-              ),
+            : element("span", { className: "badge" }, backendTypes[item.type] ?? item.type),
         ),
       );
     }
     view.replaceChildren(list);
+  }
+
+  // Namespaces read as a table (UX spec 3.12): Namespace with its ID beneath, Status, Created.
+  // The rows stay a list, so each row is one item to a screen reader, and the column names
+  // above them are visual only: each cell carries its own name. A row opens that Namespace's
+  // Agents (finding 1897).
+  function renderNamespaceRows(view, items) {
+    const list = element("ul", {
+      className: "collection namespace-rows",
+      "aria-label": pages.namespaces,
+    });
+    for (const item of sorted(items)) {
+      const status = namespaceStatuses[item.status];
+      list.append(
+        element(
+          "li",
+          { className: "resource-linked namespace-row" },
+          element(
+            "div",
+            { className: "namespace-cell-name" },
+            element(
+              "p",
+              { className: "resource-name" },
+              namespaceLink(item.name ?? item.id, item.id),
+            ),
+            element("span", { className: "resource-id" }, item.id),
+          ),
+          element(
+            "span",
+            { className: "namespace-cell-status" },
+            element(
+              "span",
+              { className: "badge", ...(status ? { "data-tone": status.tone } : {}) },
+              status?.label ?? item.status,
+            ),
+          ),
+          element(
+            "span",
+            { className: "namespace-cell-created" },
+            element("span", { className: "namespace-cell-label" }, "Created "),
+            item.createdAt ? displayDate(item.createdAt) : "Unknown",
+          ),
+        ),
+      );
+    }
+    view.replaceChildren(
+      element(
+        "div",
+        { className: "namespace-table" },
+        element(
+          "div",
+          { className: "namespace-table-head", "aria-hidden": "true" },
+          element("span", {}, "Namespace"),
+          element("span", {}, "Status"),
+          element("span", {}, "Created"),
+        ),
+        list,
+      ),
+    );
   }
 
   function namespaceLink(name, id) {
@@ -593,8 +845,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   document.addEventListener("pointerdown", (event) => {
-    if (menuControls && !menuControls.account.contains(event.target)) {
-      menuControls.close();
+    for (const control of [menuControls?.side, menuControls?.top]) {
+      if (control && !control.account.contains(event.target)) {
+        control.close();
+      }
     }
   });
   document.addEventListener("keydown", (event) => {
@@ -627,7 +881,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     updateNamespaces,
     // The shown shell's control, outside its page view, that matches one from an earlier
     // render: the same sidebar link or button, Namespace selector, Refresh, heading or navigation
-    // toggle. A new shell's account menu starts closed, so its items give way to the toggle. At
+    // toggle. A new shell's account menus start closed, so their items give way to their toggle (the
+    // account row, or the top bar's avatar). At
     // phone width its navigation drawer starts closed too, so every control from the open drawer
     // gives way to the drawer's toggle (finding 1680).
     matchingControl(node) {
@@ -644,6 +899,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       }
       if (node.closest(".account")) {
         return shell.querySelector(".account-toggle");
+      }
+      if (node.closest(".topbar-account")) {
+        return shell.querySelector(".topbar-avatar");
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);

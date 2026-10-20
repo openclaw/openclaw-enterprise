@@ -138,9 +138,9 @@ Migration `0049_codex_pat_sources` fails with `Unsupported legacy managed PAT
 authentication: recreate development Agents, revisions, and provisioning
 requests before migrating` when an Agent draft, any AgentRevision, or a
 provisioning plan still holds a retired `chatgpt_service_account` binding. No
-API deletes a revision or provisioning request on its own: delete each affected
-Agent, which also deletes its revisions and requests, and create it again after
-the upgrade. Changing an Agent's binding does not clear historical revisions.
+API deletes an Agent revision or provisioning request on its own: delete each affected
+Agent, which also deletes its Agent revisions and requests, and create it again after
+the upgrade. Changing an Agent's binding does not clear earlier Agent revisions.
 
 A provisioning request that never created an Agent survives Agent deletion.
 Let queued or running requests finish. Then, as the migration role, list the
@@ -266,7 +266,7 @@ NODE_ENV=production node apps/controller/src/worker.mjs
 
 The worker never handles controller API sessions. In production it claims,
 recovers, and counts Namespace work plus embedded OpenClaw and dedicated Codex
-AgentRevision work. Each Agent has its own active revision; the worker does not
+AgentRevision work. Each Agent has its own selected version; the worker does not
 impose a Namespace-wide Agent limit.
 
 ## Local Compose and PostgreSQL configuration
@@ -335,7 +335,7 @@ least-privilege local roles:
 
 Never give the controller the migrator or administrator URL. The application
 role cannot create schema objects, modify migration history, or rewrite
-immutable audit and revision records.
+immutable audit and Agent revision records.
 
 For database-only debugging, start PostgreSQL and apply migrations using its
 dedicated role:
