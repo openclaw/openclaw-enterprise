@@ -128,6 +128,7 @@
     "tests/conformance/split-layout-adopt.test.mjs": 400,
     "tests/conformance/split-layout-tenants.test.mjs": 2400,
     "tests/conformance/ssh-compute.test.mjs": 19500,
+    "tests/conformance/temporary-directory.test.mjs": 200,
     "tests/conformance/test-files.test.mjs": 1200,
     "tests/conformance/url-authority.test.mjs": 200,
     "tests/conformance/utils.test.mjs": 100,

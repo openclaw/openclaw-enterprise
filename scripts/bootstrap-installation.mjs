@@ -7,7 +7,9 @@ import {
   validHttpBaseURL,
 } from "../apps/controller/src/auth/configuration.ts";
 import {
+  BootstrapOutputPreflightError,
   bootstrapOutputPath,
+  requireAbsentBootstrapOutput,
   writeProtectedBootstrapFile,
   writeProtectedBootstrapJson,
 } from "../apps/controller/src/composition/bootstrap-output.ts";
@@ -194,7 +196,6 @@ function freshBootstrapConfig(config) {
   if (config.mode === "production") {
     const passwordPath = passwordOutputPath(required("OCC_BOOTSTRAP_PASSWORD_FILE"));
     return {
-      password: randomPassword(),
       installationName: installationName(
         required("OCC_BOOTSTRAP_INSTALLATION_NAME"),
         "OCC_BOOTSTRAP_INSTALLATION_NAME",
@@ -373,6 +374,11 @@ try {
     });
   } else {
     const freshConfig = freshBootstrapConfig(config);
+    if (freshConfig.passwordPath !== undefined) {
+      await requireAbsentBootstrapOutput(freshConfig.passwordPath);
+    }
+    await requireAbsentBootstrapOutput(freshConfig.serviceKeyPath);
+    const password = freshConfig.password ?? randomPassword();
     const installation = {
       id: `ins_${randomUUID()}`,
       name: freshConfig.installationName,
@@ -384,7 +390,7 @@ try {
       serviceKeyFile: freshConfig.serviceKeyPath,
     };
     const auth = await createAuth(pool, config, installation.id);
-    const user = await createCredentialUser(auth, config.adminEmail, freshConfig.password);
+    const user = await createCredentialUser(auth, config.adminEmail, password);
     bootstrapAttempt = { ...bootstrapAttempt, authAccountId: user.id };
     const authorization = authorizationFor(auth, installation.id, user.id);
     bootstrapAttempt = {
@@ -402,7 +408,7 @@ try {
       serviceKeyExpiresAt: serviceKey.expiresAt,
     };
     if (freshConfig.passwordPath !== undefined) {
-      await writeProtectedBootstrapFile(freshConfig.passwordPath, `${freshConfig.password}\n`);
+      await writeProtectedBootstrapFile(freshConfig.passwordPath, `${password}\n`);
     }
     await writeProtectedBootstrapJson(freshConfig.serviceKeyPath, {
       data: serviceKey,
@@ -452,9 +458,14 @@ try {
     });
   }
 } catch (error) {
+  const preflightFailure = error instanceof BootstrapOutputPreflightError;
+  if (preflightFailure) {
+    // This message is fixed; filesystem causes may contain private paths.
+    process.stderr.write(`${error.message}\n`);
+  }
   emitOccLogEvent(logger, {
     event: "installation.bootstrap-failed",
-    code: bootstrapFailureCode(error),
+    code: preflightFailure ? error.code : bootstrapFailureCode(error),
     attempt: bootstrapAttempt,
   });
   process.exitCode = 1;

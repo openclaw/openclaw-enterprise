@@ -26,6 +26,7 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -133,7 +134,7 @@ function repositoryConfiguration(upstreamCidrs = ["192.0.2.30/32"]) {
 function render(
   profile,
   input,
-  directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`)),
+  directory = fileTemporaryDirectory(`oce-profile-${profile}-`),
   root = repository,
   dnsServer,
 ) {

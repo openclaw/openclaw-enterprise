@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
@@ -42,13 +42,16 @@ export function apiRequests(page, origin) {
   return requests;
 }
 
+// Screenshots stay only in OCC_TEST_CONSOLE_ARTIFACT_DIR. Without it each test gets a
+// directory that is removed when the test ends, because local runs share one TMPDIR.
 async function artifactDirectory(t) {
   const configured = process.env.OCC_TEST_CONSOLE_ARTIFACT_DIR;
-  const directory =
-    configured === undefined || configured.length === 0
-      ? await mkdtemp(join(tmpdir(), "openclaw-console-agents-browser-"))
-      : configured;
-  t.diagnostic(`console Agent browser artifacts: ${directory}`);
+  if (configured !== undefined && configured.length > 0) {
+    t.diagnostic(`console Agent browser artifacts: ${configured}`);
+    return configured;
+  }
+  const directory = await mkdtemp(join(tmpdir(), "openclaw-console-agents-browser-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
 }
 

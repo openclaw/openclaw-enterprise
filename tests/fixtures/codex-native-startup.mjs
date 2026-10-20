@@ -32,8 +32,9 @@ const modelCredentials = ["OPENAI_API_KEY", "CODEX_ACCESS_TOKEN", "CODEX_CHATGPT
 const transportCredentials = ["APP_SERVER_TOKEN", "APP_TOKEN_SHA"];
 
 export const timedOut = { status: null, signal: "SIGKILL", error: { code: "ETIMEDOUT" } };
-export function login(result = { status: 0 }) {
-  return { operation: "login", result };
+// elapsed advances the fixture clock by a login's run time when it does not time out.
+export function login(result = { status: 0 }, timeout, elapsed) {
+  return { operation: "login", result, timeout, elapsed };
 }
 // elapsed advances the fixture clock by a probe's run time when it does not time out.
 export function probe(events, result = {}, timeout, elapsed) {
@@ -77,6 +78,10 @@ export function createCodexStartup(
     loginMode = providerPat ? "codex_pat" : "api_key",
     protectedInference,
     transportToken: tokenMode = protectedInference ? "verifier" : "raw",
+    // The retry jitter's Math.random() value, fixed so a retry's delay is exact.
+    random = 0,
+    // How much later than asked a login retry wait wakes (a throttled or stopped process).
+    lateWakeMs = 0,
   },
 ) {
   const directory = mkdtempSync(join(tmpdir(), "openclaw-plugin-ready-"));
@@ -87,6 +92,7 @@ export function createCodexStartup(
   const diagnostics = [];
   const idleTimers = [];
   const retryTimers = [];
+  const loginPauses = [];
   const boundaryErrors = [];
   let statusHandler;
   let enrollmentHandler;
@@ -124,6 +130,15 @@ export function createCodexStartup(
     URL,
     Buffer,
     performance,
+    Math: Object.create(Math, { random: { value: () => random } }),
+    // A login retry waits synchronously; the fake records the wait and advances the clock.
+    Atomics: {
+      wait(array, index, value, milliseconds) {
+        loginPauses.push(milliseconds);
+        clock += milliseconds + lateWakeMs;
+        return "timed-out";
+      },
+    },
     setTimeout(callback, delay) {
       const timer = { callback, delay };
       retryTimers.push(timer);
@@ -264,6 +279,14 @@ export function createCodexStartup(
                     loginMode === "codex_pat" ? "at-fixture-token" : "fixture-api-key",
                   );
                 }
+                assert.ok(options.timeout > 0 && options.timeout <= 30000);
+                if (step.timeout !== undefined) {
+                  assert.equal(options.timeout, step.timeout);
+                }
+                if (step.result.error?.code === "ETIMEDOUT" && step.result.signal === "SIGKILL") {
+                  clock += options.timeout;
+                }
+                clock += step.elapsed ?? 0;
               } else {
                 assert.ok(args.includes("exec"));
                 if (protectedInference) {
@@ -329,6 +352,7 @@ export function createCodexStartup(
     diagnostics,
     idleTimers,
     retryTimers,
+    loginPauses,
     get appServerStarts() {
       return appServerStarts;
     },
@@ -428,7 +452,7 @@ export async function checkCodexStartup(t, scenario) {
     assert.equal(runtime.marker(), undefined);
     assert.equal(runtime.status().runtimeFailure, undefined);
     assert.equal(runtime.retryTimers.length, 1);
-    assert.equal(runtime.retryTimers[0].delay, 1000);
+    assert.equal(runtime.retryTimers[0].delay, scenario.retryDelayMs ?? 1000);
     runtime.retryAfter(scenario.retryAfterMs);
   }
   assert.equal(
@@ -437,6 +461,7 @@ export async function checkCodexStartup(t, scenario) {
     "no unexpected retry",
   );
   runtime.assertNativeScriptConsumed();
+  assert.deepEqual(runtime.loginPauses, scenario.loginPauses ?? [], "login retry waits");
   const expected = scenario.expect;
   const probes = checkStartupDiagnostics(runtime, scenario);
   const messages = runtime.diagnostics.filter((line) => !line.startsWith("{"));
@@ -486,7 +511,27 @@ function checkStartupDiagnostics(runtime, scenario) {
   const expected = scenario.expect;
   const json = runtime.diagnostics.filter((line) => line.startsWith("{")).map(JSON.parse);
   const phases = json.filter(({ event }) => event === "runtime.startup_phase");
-  const probes = json.filter(({ event }) => event !== "runtime.startup_phase");
+  const logins = json.filter(({ event }) => event === "codex.login");
+  const probes = json.filter(
+    ({ event }) => event !== "runtime.startup_phase" && event !== "codex.login",
+  );
+  // Each failed native login attempt logs its number, exit code and output class only.
+  assert.deepEqual(
+    logins.map(({ failureClass }) => failureClass),
+    scenario.loginClasses ?? [],
+  );
+  for (const [index, attempt] of logins.entries()) {
+    assert.deepEqual(Object.keys(attempt), [
+      "event",
+      "attempt",
+      "elapsedMs",
+      "exitCode",
+      "failureClass",
+    ]);
+    assert.equal(attempt.attempt, index + 1);
+    assert.ok(Number.isInteger(attempt.elapsedMs) && attempt.elapsedMs >= 0);
+    assert.ok(CODEX_FAILURE_OUTPUT_CLASSES.includes(attempt.failureClass));
+  }
   assert.deepEqual(
     probes.map(({ code }) => code),
     scenario.probeCodes ?? (expected.check === "login" ? [] : [expected.code]),

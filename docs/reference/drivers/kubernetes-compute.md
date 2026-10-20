@@ -331,8 +331,8 @@ model turn.
   [network profile](kubernetes-compute/networking-and-isolation.md#explicit-network-profiles)
   label. Private HTTP readiness returns `503` until native, plugin,
   authentication, or identity gates pass. Dedicated Codex clears its plugin
-  marker at process start to reject stale readiness. Access-token login retries only native process
-  timeouts, up to three 30-second attempts. Exhausted startup remains unready
+  marker at process start to reject stale readiness. Access-token login retries timeouts,
+  `network` and `http_5xx` failures: five attempts, 90 seconds. Exhausted startup remains unready
   until an explicit restart; see the
   [authentication probe contract](../harness-execution.md#harness-authentication)
   for model-probe retries and sanitized attempt logs.
