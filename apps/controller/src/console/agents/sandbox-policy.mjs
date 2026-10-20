@@ -314,7 +314,7 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
     }
     suggestionsReading = false;
     renderSuggestions();
-    if (current() && follow.checked) {
+    if (current() && follow.checked && !suggestionsDenied) {
       suggestionTimer = setTimeout(() => {
         if (follow.checked) {
           void loadSuggestions();
@@ -676,6 +676,11 @@ export function renderAgentSandboxPolicy(context, { agent, revisionId }) {
       }
       const wasPending = view?.policy.application?.state === "pending";
       view = loaded;
+      if (view.capability === null) {
+        // The draft tab reads no logs or suggestions, so the unsupported state is shown from here too.
+        void policySupported();
+        return;
+      }
       if (wasPending && view.policy.application?.state !== "pending") {
         feedback.textContent = "Policy refreshed.";
         if (view.policy.application?.state === "applied") {

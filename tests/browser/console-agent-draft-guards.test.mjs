@@ -191,6 +191,14 @@ test("Policy denials says once that the Sandbox Driver lacks per-Agent network p
       .filter((path) => path.includes("/runtime/logs") || path.endsWith("/recommendations")),
     [],
   );
+  // The draft tab reads neither, but says the same instead of offering the editor.
+  await page.goto(detailUrl(fixture, namespace.id, created.id, "draft", "policy").href);
+  await tab
+    .getByRole("status")
+    .filter({ hasText: "This Sandbox Driver does not support per-Agent network policy." })
+    .waitFor();
+  assert.equal(await tab.getByRole("button", { name: "Enable policy editing" }).count(), 0);
+  assert.equal(await page.getByText("does not support per-Agent network policy").count(), 1);
 });
 
 // A member whose grants do not include the Agent's SandboxPolicy gets a refusal; Retry would only
