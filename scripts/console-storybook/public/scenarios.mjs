@@ -2898,10 +2898,27 @@ export const scenarios = {
     name: "Agent creation needs an administrator",
     path: create,
     actions: form,
+    rules: [
+      { path: "/installation", status: 403, code: "FORBIDDEN" },
+      { suffix: "/permissions", status: 503, code: "DEPENDENCY_UNAVAILABLE" },
+    ],
+    description:
+      "Without a permission answer that grants Agent create, a caller without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
+    gap: "The permission read fails here; with a grant the form goes on (Member with Agent create).",
+  },
+  createMember: {
+    group: "Pages/Create Agent",
+    name: "Member with Agent create",
+    path: create,
+    actions: form,
     rules: [{ path: "/installation", status: 403, code: "FORBIDDEN" }],
     description:
-      "A member without Installation access can open the form, but Create Agent stays disabled and the page says an Installation administrator must create the Agent. No retry is offered.",
-    gap: "Namespace IAM cannot grant create; the live check is a member account on a real Installation.",
+      "A member whose Namespace grants Agent create cannot read the Installation. The form goes on: an info status above it says why, the badge names the Preset, and Create Agent stays available; the API still decides at the preflight and at create.",
+    steps: [
+      'Above the form, "Your access" says you can create Agents in Engineering and that giving the new Agent access to its Secrets needs Installation administration access.',
+      'The form starts with the badge "From Preset · default-codex", and no mid-form note asks for Installation access.',
+    ],
+    gap: "The live check is a member account on a real Installation (tests/browser/console-create-agent-member.test.mjs).",
   },
   createRestricted: {
     group: "Pages/Create Agent",

@@ -54,7 +54,7 @@ function member(fixture, namespaceId, label, actions) {
 const ACCESS_FROM_PRESET =
   "You can create Agents in Member team. Installation-wide capabilities are not readable with your access, so the options below come from this Namespace's Presets.";
 const MEMBER_CREDENTIAL_ACCESS =
-  "Giving a new Agent access to its Secrets needs an Installation administrator.";
+  "Giving a new Agent access to its Secrets needs Installation administration access.";
 const INSTALLATION_REFUSAL =
   "Creating an Agent needs Installation access that your account does not have. Ask an Installation administrator to create this Agent.";
 
@@ -120,6 +120,11 @@ test("a member with Agent create completes the default Preset path without Insta
   // Above the form, not mid-form.
   assert.equal(await access.evaluate((node) => node.nextElementSibling?.id), "create-agent-form");
   assert.equal(await page.getByText(INSTALLATION_REFUSAL).count(), 0);
+  // Without the Installation's capabilities the line under the fields claims no deploy outcome.
+  assert.equal(
+    await page.locator("#create-agent-capability-status").textContent(),
+    "Agents you create here are saved as drafts for later deployment.",
+  );
   assert.equal(await page.getByRole("button", { name: "Retry capability check" }).isHidden(), true);
   // The form names the Preset it started from.
   assert.equal(
@@ -146,7 +151,7 @@ test("a member with Agent create completes the default Preset path without Insta
   await page
     .getByRole("alert")
     .filter({
-      hasText: `The Agent was created as a draft. ${MEMBER_CREDENTIAL_ACCESS} Open the saved Agent and ask one to grant it access to its saved model and channel Secrets.`,
+      hasText: `The Agent was created as a draft. ${MEMBER_CREDENTIAL_ACCESS} Open the saved Agent and ask an Installation administrator to grant it access to its saved model and channel Secrets.`,
     })
     .waitFor();
   assert.match(

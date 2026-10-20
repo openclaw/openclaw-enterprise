@@ -461,7 +461,7 @@ export function renderCreateAgent(context, draft) {
 
 // A member's Agent reaches its Secrets through an Installation administrator's grant (UX plan A2).
 const MEMBER_CREDENTIAL_ACCESS =
-  "Giving a new Agent access to its Secrets needs an Installation administrator.";
+  "Giving a new Agent access to its Secrets needs Installation administration access.";
 
 // A complete Namespace list the open form read without its Namespace: it was deleted, or the
 // reader lost access. Waiting changes nothing, so the reader chooses another one.
@@ -1312,7 +1312,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     [
       typeof presetOptions.presetName === "string"
         ? `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so the options below come from this Namespace's Presets.`
-        : `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so Create Agent checks your choices with the server before saving anything.`,
+        : `You can create Agents in ${namespaceName}. Installation-wide capabilities are not readable with your access, so Create Agent checks the Configuration with the server before saving it.`,
       MEMBER_CREDENTIAL_ACCESS,
     ],
     [],
@@ -2064,10 +2064,11 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           ? notReady
             ? "Dedicated Agents are provisioned and deployed when created, so this Namespace must be ready first. Create Agent is unavailable until then."
             : "Dedicated Agents are provisioned and deployed when created."
-          : mode.value === "embedded"
-            ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."
-            : capabilitiesUnreadable
-              ? "This Agent is saved as a draft. Deploy it from the Agent page after creation."
+          : capabilitiesUnreadable
+            ? // Without the Installation's capabilities, deploying may need an administrator.
+              "Agents you create here are saved as drafts for later deployment."
+            : mode.value === "embedded"
+              ? "Embedded Agents are saved as drafts. Deploy them from the Agent page after creation."
               : "This installation creates draft Agents for later deployment.";
       }
       if (capabilityStatus.textContent !== nextStatus) {
@@ -2858,7 +2859,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         savedAgent && !credentialRegistration && capabilitiesUnreadable && error.status === 403;
       feedback.textContent =
         (memberGrantRefused
-          ? `The Agent was created as a draft. ${MEMBER_CREDENTIAL_ACCESS} Open the saved Agent and ask one to grant it access to its saved model and channel Secrets.`
+          ? `The Agent was created as a draft. ${MEMBER_CREDENTIAL_ACCESS} Open the saved Agent and ask an Installation administrator to grant it access to its saved model and channel Secrets.`
           : detail) +
         guidance +
         (error.requestId ? ` Request ID: ${error.requestId}` : "");
