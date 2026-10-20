@@ -22,7 +22,7 @@ import (
 // controller downloads and network-policy probes, which only a real cluster proves
 // (see dev-up-openshell-k3d-real and local-first-agent-openshell-k3d-real).
 
-const profileTestDigest = "sha256:bdb4fe248070032c88be78f029dad9325cb698480e90486e1413a674a5d8edc8"
+const profileTestDigest = "sha256:ca0bc15a045017ee20bfab682f1a561eca6e6c6ed7d021d20641da24aaa6dfb6"
 
 // fakeProfileCommands puts fake binaries on PATH. Each records its arguments and
 // answers only the listed cases, so a step that issues a new command fails.
@@ -329,6 +329,8 @@ func TestKubernetesOnlyOpenShellGatewayInstallsImportedImagesBehindAClusterIP(t 
 		"--set-string=gateway.image.digest=" + profileTestDigest,
 		"--set=workspaceResources.enabled=false",
 		"--set=server.drivers.kubernetes.allowDriverConfig=true",
+		// Without this allowlist the gateway rejects every Harness Sandbox at create.
+		openShellAllowedPodLabelsValue,
 		"--set=server.drivers.kubernetes.resourceAdmission.enabled=false",
 		"--set-string=server.drivers.kubernetes.workspaceMode=operator",
 		"--set-string=server.drivers.kubernetes.operatorNamespaceLabel=openshell.ai/openclaw-workspace=true",

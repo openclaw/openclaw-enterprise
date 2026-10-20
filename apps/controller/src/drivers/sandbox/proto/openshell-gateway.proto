@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Minimal OpenShell v0.1.4 gateway surface used by OpenClaw Enterprise.
+// Minimal OpenShell v0.1.5 gateway surface used by OpenClaw Enterprise.
 //
 // This intentionally models only the messages needed for lifecycle-safe
 // Workspace, Sandbox, and credential provider lifecycle, plus the read-only

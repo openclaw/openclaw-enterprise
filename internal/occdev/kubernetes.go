@@ -459,7 +459,7 @@ func openShellInstallationConfiguration(s *developmentState, workspaceResources 
 	return map[string]any{
 		"id": openShellSandboxID,
 		"configuration": map[string]any{
-			// OpenShell v0.1.4 exposes the route before the canonical
+			// OpenShell v0.1.5 exposes the route before the canonical
 			// process listens. Keep the first Gateway from consuming it early.
 			"startupDelayMs": 30000,
 			"gateway": map[string]any{
