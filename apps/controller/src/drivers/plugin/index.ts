@@ -1,8 +1,5 @@
-import {
-  validateConfiguration as validateDriverConfiguration,
-  requireConfiguration,
-  ConfigurationValidationError,
-} from "@openclaw-enterprise/contracts";
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { asRecord, deepFreeze, immutableCopy } from "@openclaw-enterprise/utils";
 import {
   type JSONSchema,
@@ -230,17 +227,6 @@ function requiredString(value: unknown, path: string): string {
   return value;
 }
 
-function validateEmptyConfiguration(configuration: unknown, name: string): void {
-  const value = asRecord(configuration);
-  if (value === undefined) {
-    throw new PluginValidationError(`${name} configuration must be one object.`);
-  }
-  const keys = Object.keys(value);
-  if (keys.length > 0) {
-    throw new PluginValidationError(`${name} configuration does not accept options.`);
-  }
-}
-
 function validateCodexConfiguration(configuration: unknown): {
   catalogSource: "hosted" | "openai-curated";
   reader: ConstructorParameters<typeof NativeCodexPluginCatalogReader>[0] | undefined;
@@ -375,14 +361,8 @@ export class OCCPluginDriver extends BundledPluginDriverBase implements PluginDr
     this.validate("openclaw", selections, defaultApprovers);
   }
 
-  static validateConfiguration(configuration: unknown) {
-    return validateDriverConfiguration<Readonly<Record<string, unknown>>>(
-      OCCPluginDriver.configurationSchema,
-      configuration,
-      (configuration) => {
-        validateEmptyConfiguration(configuration, "OpenClaw Plugin Driver");
-      },
-    );
+  static validateConfiguration(): readonly ErrorDetail[] {
+    return [];
   }
 
   constructor(configuration: ConfigurationRecord = {}, selection: PluginDriverSelection = {}) {
@@ -454,14 +434,24 @@ export class CodexPluginDriver extends BundledPluginDriverBase implements Plugin
   private readonly catalogSource: "hosted" | "openai-curated";
   readonly discoveryCredential: "required" | "none";
 
-  static validateConfiguration(configuration: unknown) {
-    return validateDriverConfiguration<Readonly<Record<string, unknown>>>(
-      CodexPluginDriver.configurationSchema,
-      configuration,
-      (configuration) => {
-        validateCodexConfiguration(configuration);
-      },
-    );
+  static validateConfiguration(
+    configuration: Readonly<Record<string, unknown>>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateCodexConfiguration(configuration);
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
+    }
   }
 
   async discoverCatalog(

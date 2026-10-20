@@ -1,5 +1,5 @@
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
 import {
-  validateConfiguration as validateDriverConfiguration,
   requireConfiguration,
   SandboxNetworkPolicyConfiguration,
   ConfigurationValidationError,
@@ -2495,12 +2495,23 @@ function checkStartupConfiguration(configuration: unknown): void {
   validateOptions(options as unknown as OpenShellSandboxDriverOptions);
 }
 
-export function validateConfiguration(configuration: unknown) {
-  return validateDriverConfiguration<OpenShellSandboxDriverOptions>(
-    configurationSchema,
-    configuration,
-    checkStartupConfiguration,
-  );
+export function validateConfiguration(
+  configuration: Readonly<OpenShellSandboxDriverOptions>,
+): readonly ErrorDetail[] {
+  try {
+    checkStartupConfiguration(configuration);
+    return [];
+  } catch (error) {
+    return error instanceof ConfigurationValidationError
+      ? error.error.details
+      : [
+          {
+            path: "",
+            code: "INVALID_VALUE",
+            message: "Configuration violates the Driver's constraints.",
+          },
+        ];
+  }
 }
 
 export const configurationContributions = Object.freeze([SandboxNetworkPolicyConfiguration]);
@@ -2519,7 +2530,9 @@ export class OpenShellSandboxDriver implements SandboxDriver {
   private readonly options: OpenShellSandboxDriverOptions;
   private readonly backend: Backend<OpenShellGateway>;
 
-  static validateConfiguration(configuration: unknown) {
+  static validateConfiguration(
+    configuration: Readonly<OpenShellSandboxDriverOptions>,
+  ): readonly ErrorDetail[] {
     return validateConfiguration(configuration);
   }
 

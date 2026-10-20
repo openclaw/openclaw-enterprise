@@ -110,7 +110,6 @@ const reviewedImports = {
   // Standalone grants hash only nonsecret configuration/profile policy, never key material.
   "drivers/repo/github/credentials/grants.ts": { "node:crypto": ["createHash"] },
   "drivers/repo/github/driver.ts": {
-    "@openclaw-enterprise/contracts": ["validateConfiguration"],
     "@openclaw-enterprise/occ": ["DependencyUnavailableError", "ScopeViolationError"],
   },
   // The isolated image probe reports only a synthetic binding and failure kind.

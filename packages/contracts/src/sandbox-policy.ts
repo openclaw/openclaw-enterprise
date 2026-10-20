@@ -1,10 +1,6 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
-import {
-  ConfigurationValidationError,
-  requireConfiguration,
-  validateConfiguration,
-} from "./configuration-definition.ts";
+import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
 import type { ErrorDetail } from "./api/common.ts";
 import type { OpenClawConfigurationDocument } from "./index.ts";
 
@@ -137,59 +133,55 @@ export const SandboxNetworkPolicyConfiguration = Object.freeze({
   scope: "agent" as const,
   key: "sandbox-network-policy",
   configurationSchema: { ...NetworkPolicyConfigurationSchema },
-  validateConfiguration(input: unknown) {
-    return validateConfiguration<Type.Static<typeof NetworkPolicyConfigurationSchema>>(
-      { ...NetworkPolicyConfigurationSchema },
-      input,
-      ({ additions }) => {
-        const details: ErrorDetail[] = [];
-        const ids = new Set<string>();
-        additions.forEach((grant, index) => {
-          const path = `/additions/${index}`;
-          if (ids.has(grant.id)) {
-            details.push({
-              path: `${path}/id`,
-              code: "INVALID_VALUE",
-              message: "Grant IDs must be unique.",
-            });
-          }
-          ids.add(grant.id);
-          if (
-            grant.binary
-              .split("/")
-              .some((part, i) => i > 0 && (part === "" || part === "." || part === ".."))
-          ) {
-            details.push({
-              path: `${path}/binary`,
-              code: "INVALID_VALUE",
-              message: "Use a normalized absolute executable path.",
-            });
-          }
-          if (
-            grant.host
-              .replace(/^\*\./, "")
-              .split(".")
-              .some((part) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part))
-          ) {
-            details.push({
-              path: `${path}/host`,
-              code: "INVALID_VALUE",
-              message: "Use a valid DNS host or single-label wildcard.",
-            });
-          }
-          grant.ports.forEach(({ from, to }, port) => {
-            if (from > to) {
-              details.push({
-                path: `${path}/ports/${port}/to`,
-                code: "INVALID_RANGE",
-                message: "The end port must be at least the start port.",
-              });
-            }
-          });
+  validateConfiguration({
+    additions,
+  }: Readonly<Type.Static<typeof NetworkPolicyConfigurationSchema>>): readonly ErrorDetail[] {
+    const details: ErrorDetail[] = [];
+    const ids = new Set<string>();
+    additions.forEach((grant, index) => {
+      const path = `/additions/${index}`;
+      if (ids.has(grant.id)) {
+        details.push({
+          path: `${path}/id`,
+          code: "INVALID_VALUE",
+          message: "Grant IDs must be unique.",
         });
-        return details;
-      },
-    );
+      }
+      ids.add(grant.id);
+      if (
+        grant.binary
+          .split("/")
+          .some((part, i) => i > 0 && (part === "" || part === "." || part === ".."))
+      ) {
+        details.push({
+          path: `${path}/binary`,
+          code: "INVALID_VALUE",
+          message: "Use a normalized absolute executable path.",
+        });
+      }
+      if (
+        grant.host
+          .replace(/^\*\./, "")
+          .split(".")
+          .some((part) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part))
+      ) {
+        details.push({
+          path: `${path}/host`,
+          code: "INVALID_VALUE",
+          message: "Use a valid DNS host or single-label wildcard.",
+        });
+      }
+      grant.ports.forEach(({ from, to }, port) => {
+        if (from > to) {
+          details.push({
+            path: `${path}/ports/${port}/to`,
+            code: "INVALID_RANGE",
+            message: "The end port must be at least the start port.",
+          });
+        }
+      });
+    });
+    return details;
   },
 });
 

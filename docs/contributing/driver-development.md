@@ -28,9 +28,11 @@ IAM lives in `packages/iam/`. Composition lives in `apps/controller/src/composit
 
 For an installed implementation, export a closed `configurationSchema`,
 `validateConfiguration`, and `createDriver` from a precompiled JavaScript ESM
-entry point. The validator returns the typed success/error result described in
+entry point. The platform validates structure before calling the semantic validator,
+which returns a readonly field-error list (empty on success), as described in
 [configuration definitions](../reference/drivers/selection.md#configuration-definitions-and-discovery);
-factories consume its admitted data. Declare runtime contributions only when a
+factories consume the original validated input. Callbacks receive an isolated,
+frozen copy and cannot replace configuration values. Declare runtime contributions only when a
 resource-owner binding supplies their authorization and lifecycle. A Sandbox
 advertising `networkPolicy` must contribute `(agent, sandbox-network-policy)`.
 Return the selected `id` and `implementation`, the expected

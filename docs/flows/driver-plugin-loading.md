@@ -1,7 +1,7 @@
 ---
 created: 2026-08-21
-updated: 2026-10-19
-last_updated_session: authoring-run/9b1f7ddf-52fe-46c8-9fa9-fa7a1acfa64a
+updated: 2026-10-20
+last_updated_session: authoring-run/5095b5aa-1826-472c-a40d-c34550457c0e
 ---
 
 # Installation Driver Package Loading Flow
@@ -67,9 +67,10 @@ Optional `service_account` selection identifies the bundled Backend member;
 it has no package-loading path. The
 [operator installation guide](../reference/drivers/selection.md) defines the package,
 pinning, registry, and configuration contract. TypeBox checks each selected
-Driver's closed schema before implementation-owned semantic validation;
-the validator returns typed data or safe structured errors without transforming
-input. Composition retains each definition with its selection, registers startup
+Driver's closed schema once per admission call before implementation-owned
+semantic validation. `requireConfiguration` gives the callback an isolated frozen
+copy, checks its field-error list, and returns the original input. Driver callbacks
+cannot supply replacement data; malformed results and throws fail closed. Composition retains each definition with its selection, registers startup
 and named contributions in `packages/occ/src/configuration-registry.ts`, and
 rejects missing owner bindings, duplicate identities, or unsupported schemas before
 construction. Invalid package exports, identity, capability, or lifecycle wiring reject
@@ -109,8 +110,8 @@ validation and lockfile integrity do not establish publisher trust.
 
 Local Setup also calls the shared admission path before provisioning:
 `internal/occdev/sandbox_network_policy.go:loadSandboxNetworkPolicies` invokes
-`scripts/validate-sandbox-network-policy.mjs`, which consumes the Driver result
-through `requireConfiguration`. A failure stops before creating development state
+`scripts/validate-sandbox-network-policy.mjs`, which uses `requireConfiguration`
+for platform structural validation and Driver semantic checks. A failure stops before creating development state
 or invoking a container engine. API and worker startup log
 `DRIVER_CONFIGURATION_INVALID` with bounded field diagnostics; semantic messages
 identify the setting without echoing submitted values.
@@ -195,6 +196,8 @@ their existing Harness-owned runtime topology.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-20 05:56: Assign structural validation and accepted input ownership to the platform; Driver semantic callbacks return only field errors. (authoring-run/5095b5aa-1826-472c-a40d-c34550457c0e - 01ee10b27e1de60faccccf2f386cff394c1afedc)
 
 - 2026-10-19 20:34: Trace shared definitions, contextual discovery, and preview admission in the accompanying implementation. (authoring-run/9b1f7ddf-52fe-46c8-9fa9-fa7a1acfa64a - 7fa0a561df615296a612126d430a4bbfa1124d9c)
 

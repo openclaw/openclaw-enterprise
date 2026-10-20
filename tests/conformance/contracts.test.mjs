@@ -27,6 +27,7 @@ import { deploymentDiagnostics } from "../../packages/occ/src/deployment-diagnos
 import { validateFailureData } from "../../packages/occ/src/state/controller-work.ts";
 import {
   validateConfiguration,
+  requireConfiguration,
   CONFIGURATION_KINDS,
   DRIVER_CAPABILITIES,
   LOGGING_LEVELS,
@@ -880,4 +881,50 @@ test("configuration diagnostics collapse extra-field noise without accepting fal
     assert.equal(result.success, false);
     assert.equal(result.error.details[0].message, "Configuration does not satisfy boolean.");
   }
+});
+
+test("configuration admission retains original values while isolating semantic callback references", () => {
+  const input = { endpoint: { port: 443 } };
+  let retained;
+  const definition = {
+    configurationSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        endpoint: {
+          type: "object",
+          additionalProperties: false,
+          properties: { port: { type: "integer" } },
+        },
+      },
+    },
+    validateConfiguration(value) {
+      retained = value;
+      return [];
+    },
+  };
+  assert.equal(requireConfiguration(definition, input), input);
+  // A Driver retaining its argument cannot change data already admitted for another caller.
+  assert.throws(() => {
+    retained.endpoint.port = 80;
+  }, TypeError);
+  assert.deepEqual(input, { endpoint: { port: 443 } });
+  const accessor = {
+    get endpoint() {
+      throw new Error("input getter must not run");
+    },
+  };
+  assert.throws(
+    () => requireConfiguration(definition, accessor),
+    (error) => {
+      assert.deepEqual(error.error.details, [
+        {
+          path: "",
+          code: "INVALID_TYPE",
+          message: "Configuration must contain only plain JSON values.",
+        },
+      ]);
+      return true;
+    },
+  );
 });

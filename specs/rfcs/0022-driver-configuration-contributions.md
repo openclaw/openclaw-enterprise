@@ -8,7 +8,7 @@ author: kevinlin-openai
 
 - **ID:** RFC-0022
 - **Created:** 2026-10-16
-- **Last updated:** 2026-10-19
+- **Last updated:** 2026-10-20
 - **Implementation plan:** [TASK-0046](../plans/0046-driver-configuration-contributions.md)
 
 ## Decision and scope
@@ -16,7 +16,8 @@ author: kevinlin-openai
 Use one typed configuration definition for Installation Driver startup settings
 and Agent runtime network-policy settings. A generic contribution registry exposes
 available configuration to the console and dispatches by `scope` and `key`. Each
-definition supplies a schema, complete validation, and field errors. Values retain
+definition supplies a schema and semantic checks that return field errors. The
+platform owns structural validation. Values retain
 their existing owners: operator-managed startup configuration and OCC-managed
 SandboxPolicy resources. This shares definition and validation, not persistence;
 it does not add Installation hot reconfiguration or a generic configuration store.
@@ -38,7 +39,7 @@ Export through the existing contracts entry point:
 ```ts
 interface ConfigurationDefinition<T> {
   readonly configurationSchema: JSONSchema;
-  validateConfiguration(input: unknown): ConfigurationResult<T>;
+  validateConfiguration(input: Readonly<T>): readonly ErrorDetail[];
 }
 
 type ConfigurationResult<T> =
@@ -48,15 +49,22 @@ type ConfigurationResult<T> =
 
 `DriverImplementation<T>` uses this definition for startup. Bundled static members
 and package exports keep their existing shape; factories receive the validated
-`T`. Composition keeps the definition alongside each selected Driver. Update API,
+`T`, not a replacement value returned by a Driver. Composition keeps the definition
+alongside each selected Driver. Update API,
 worker, package, and direct-construction callers together; remove legacy `void`
-validation. Invalid results or unexpected exceptions fail closed before construction.
+validation. An empty error list means semantic success. Malformed lists and
+unexpected exceptions fail closed before construction. `ConfigurationResult<T>`
+is the platform result used by preview; it is not the Driver callback contract.
 
 Use the installed TypeBox facilities (`Check`/`Errors` from `typebox/value`) and
 schema-inferred types. Definitions expose serializable schemas supported by that
 installed version; unsupported schemas fail registration. Do not introduce a
 separate JSON Schema dialect or validator framework. Collect structural errors
-first; run semantic validation only after structural success. Validation is
+once per admission call; invoke semantic checks only after structural success,
+with an isolated, frozen copy. The platform validates the returned error list and
+returns the original input on success. It does not validate replacement data or
+compare returned configuration values. Independent constructor entry points retain
+their own admission checks. Validation is
 synchronous, deterministic, and side-effect-free, with no coercion, default
 insertion, or field stripping. Closed objects reject unknown fields.
 
@@ -230,3 +238,5 @@ separate gates; local implementation and proof do not establish release readines
 - 2026-10-16: Proposed Driver configuration contributions and linked the existing TASK-0046 delivery plan.
 - 2026-10-19: Simplified to shared definitions and explicit Sandbox integration on merged #2599; reused field errors and snapshot admission; renumbered RFC-0021 to RFC-0022 after the Runtime contract RFC landed.
 - 2026-10-19: Restored the generic contribution registry, scope/key dispatch, and contextual UI discovery; deferred ceiling configuration integration to a separate RFC.
+
+- 2026-10-20: Assigned structural validation and accepted input ownership to the platform; Driver semantic callbacks return only field errors.

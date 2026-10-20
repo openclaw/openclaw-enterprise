@@ -1,4 +1,4 @@
-import { validateConfiguration as validateDriverConfiguration } from "@openclaw-enterprise/contracts";
+import type { ErrorDetail } from "@openclaw-enterprise/contracts";
 import type {
   JSONSchema,
   OpenRepositorySessionInput,
@@ -56,44 +56,28 @@ export class GitHubRepoDriver implements RepoDriver {
     },
   });
 
-  static validateConfiguration(configuration: unknown) {
-    return validateDriverConfiguration<Readonly<Record<string, unknown>>>(
-      GitHubRepoDriver.configurationSchema,
-      configuration,
-      (configuration) => {
-        if (
-          configuration === null ||
-          typeof configuration !== "object" ||
-          Array.isArray(configuration)
-        ) {
-          throw new Error("Repository credential Driver configuration is required.");
-        }
-        const value = configuration as Record<string, unknown>;
-        if (
-          Object.keys(value).some(
-            (key) => !["controlSocket", "sessionDurationSeconds", "publicCaPath"].includes(key),
-          ) ||
-          typeof value.sessionDurationSeconds !== "number" ||
-          !Number.isSafeInteger(value.sessionDurationSeconds) ||
-          value.sessionDurationSeconds < 1 ||
-          value.sessionDurationSeconds > Math.floor(Number.MAX_SAFE_INTEGER / 1000)
-        ) {
-          throw new Error("Repository credential Driver configuration is invalid.");
-        }
-        for (const field of ["controlSocket", "publicCaPath"] as const) {
-          const path = value[field];
-          if (
-            typeof path !== "string" ||
-            !isAbsolute(path) ||
-            resolve(path) !== path ||
-            hasControlCharacter(path) ||
-            (field === "controlSocket" && Buffer.byteLength(path) > 103)
-          ) {
-            throw new Error("Repository credential Driver paths must be absolute.");
-          }
-        }
-      },
-    );
+  static validateConfiguration(
+    configuration: Readonly<Record<string, unknown>>,
+  ): readonly ErrorDetail[] {
+    for (const field of ["controlSocket", "publicCaPath"] as const) {
+      const path = configuration[field];
+      if (
+        typeof path !== "string" ||
+        !isAbsolute(path) ||
+        resolve(path) !== path ||
+        hasControlCharacter(path) ||
+        (field === "controlSocket" && Buffer.byteLength(path) > 103)
+      ) {
+        return [
+          {
+            path: "",
+            code: "INVALID_VALUE",
+            message: "Configuration violates the Driver's constraints.",
+          },
+        ];
+      }
+    }
+    return [];
   }
 
   readonly capability = "repo" as const;

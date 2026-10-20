@@ -1,5 +1,6 @@
 import { Type } from "typebox";
-import { Check, Errors, Equal } from "typebox/value";
+import { Check, Errors } from "typebox/value";
+import { immutableCopy } from "@openclaw-enterprise/utils";
 import {
   Build,
   Meta,
@@ -25,7 +26,7 @@ export type ConfigurationResult<T> =
 
 export interface ConfigurationDefinition<T> {
   readonly configurationSchema: JSONSchema;
-  validateConfiguration(input: unknown): ConfigurationResult<T>;
+  validateConfiguration(input: Readonly<T>): readonly ErrorDetail[];
 }
 
 export interface ConfigurationContribution<T = unknown> extends ConfigurationDefinition<T> {
@@ -271,6 +272,10 @@ function isJsonInput(value: unknown, ancestors = new Set<object>()): boolean {
   if (Object.getOwnPropertySymbols(value).length > 0) {
     return false;
   }
+  // Getters can change values between validation and construction; they are not JSON data.
+  if (Object.values(Object.getOwnPropertyDescriptors(value)).some((entry) => !("value" in entry))) {
+    return false;
+  }
   ancestors.add(value);
   const valid = Object.values(value).every((child) => isJsonInput(child, ancestors));
   ancestors.delete(value);
@@ -281,7 +286,7 @@ function isJsonInput(value: unknown, ancestors = new Set<object>()): boolean {
 export function validateConfiguration<T>(
   schema: JSONSchema,
   input: unknown,
-  semantics?: (value: T) => readonly ErrorDetail[] | void,
+  semantics?: (value: Readonly<T>) => readonly ErrorDetail[],
 ): ConfigurationResult<T> {
   if (!isJsonInput(input)) {
     return {
@@ -352,23 +357,28 @@ export function validateConfiguration<T>(
       break;
     }
   }
-  if (details.length === 0) {
+  if (details.length === 0 && semantics !== undefined) {
+    let result: unknown;
     try {
-      details.push(...(semantics?.(input as T) ?? []));
-    } catch (error) {
-      // Never relay exception text: existing provider checks can mention submitted values.
-      details.push(
-        ...(error instanceof ConfigurationValidationError
-          ? error.error.details
-          : [
-              {
-                path: "",
-                code: "INVALID_VALUE" as const,
-                message: "Configuration violates the Driver's constraints.",
-              },
-            ]),
-      );
+      // Semantic checks cannot replace, coerce, or retain a mutable reference to the input.
+      result = semantics(immutableCopy(input as T));
+      if (!isJsonInput(result) || !Check(Type.Array(ErrorDetail), result)) {
+        throw new Error();
+      }
+    } catch {
+      throw new Error("Driver configuration validator failed.");
     }
+    const errors = result as readonly ErrorDetail[];
+    if (errors.some((detail) => !detail.message)) {
+      throw new Error("Driver configuration validator returned incomplete diagnostics.");
+    }
+    details.push(
+      ...errors.slice(0, 32).map((detail) => ({
+        path: safePath(schema, detail.path, input),
+        code: detail.code,
+        message: detail.message!,
+      })),
+    );
   }
   return details.length === 0
     ? { success: true, data: input as T }
@@ -378,59 +388,13 @@ export function validateConfiguration<T>(
       };
 }
 
-/** Recheck the public result at trust boundaries, including compiled Driver packages. */
+/** Validate at each owning entry point and return the original, unmodified input. */
 export function requireConfiguration<T>(definition: ConfigurationDefinition<T>, input: unknown): T {
-  const structural = validateConfiguration<T>(definition.configurationSchema, input);
-  if (!structural.success) {
-    throw new ConfigurationValidationError(structural.error.details);
+  const result = validateConfiguration<T>(definition.configurationSchema, input, (value) =>
+    definition.validateConfiguration(value),
+  );
+  if (!result.success) {
+    throw new ConfigurationValidationError(result.error.details);
   }
-  const original = structuredClone(input);
-  let result: unknown;
-  try {
-    result = definition.validateConfiguration(structuredClone(input));
-    if (
-      !isJsonInput(result) ||
-      !Check(
-        Type.Union([
-          Type.Object(
-            { success: Type.Literal(true), data: Type.Unknown() },
-            { additionalProperties: false },
-          ),
-          Type.Object(
-            {
-              success: Type.Literal(false),
-              error: Type.Object(
-                {
-                  details: Type.Array(ErrorDetail, { minItems: 1, maxItems: 32 }),
-                },
-                { additionalProperties: false },
-              ),
-            },
-            { additionalProperties: false },
-          ),
-        ]),
-        result,
-      )
-    ) {
-      throw new Error();
-    }
-  } catch {
-    throw new Error("Driver configuration validator failed.");
-  }
-  const validated = result as ConfigurationResult<T>;
-  if (!validated.success) {
-    if (validated.error.details.some((detail) => !detail.message)) {
-      throw new Error("Driver configuration validator returned incomplete diagnostics.");
-    }
-    throw new ConfigurationValidationError(
-      validated.error.details.map((detail) => ({
-        ...detail,
-        path: safePath(definition.configurationSchema, detail.path, input),
-      })) as [ErrorDetail, ...ErrorDetail[]],
-    );
-  }
-  if (!Check(definition.configurationSchema, validated.data) || !Equal(original, validated.data)) {
-    throw new Error("Driver configuration validator returned invalid data.");
-  }
-  return validated.data;
+  return result.data;
 }

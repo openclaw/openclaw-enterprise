@@ -23,7 +23,9 @@ worker rechecks are implemented locally; verification and review remain in progr
    validation error. Extend existing `ErrorDetail` with safe messages and needed
    semantic codes. Use installed TypeBox validation and inferred concrete types.
    Update bundled/package definitions, factories, and API/worker composition in
-   `apps/controller/src/composition/` together; construction consumes validated data.
+   `apps/controller/src/composition/` together; construction consumes the original structurally validated input. Driver callbacks
+   return only semantic error lists; the platform checks structure once per admission,
+   isolates callback input, and validates diagnostics without a returned-data envelope.
 2. Register startup definitions and named `ConfigurationContribution` entries by
    capability, Driver ID, scope, and key. Add owner bindings and reject unsupported
    or ambiguous registrations. Add the Sandbox policy contribution around
@@ -82,7 +84,7 @@ selector excludes those unrelated phases without omitting required policy checks
 The merged `manage_policy`/policy `update` authority is unchanged. Independent
 review stopped at authentication and produced no assessment. Native media uploads
 and review remain delivery blockers.
-Implementation is in [draft PR #2980](https://github.com/openclaw/openclaw-enterprise/pull/2980).
+Implementation is in [PR #2980](https://github.com/openclaw/openclaw-enterprise/pull/2980).
 The runtime proof covers implementation commit `4d57c6eda955a37643cb0d8e9818f09994b29b1f`;
 the subsequent delivery-record update changes documentation only. No merge has occurred.
 A later Storybook-only fix removes a root-package import from isolated asset
@@ -96,11 +98,25 @@ Targeted Go, SSH, Helm packaging, certificate, and API/worker startup checks pas
 These startup and fixture fixes do not change the runtime policy lifecycle above.
 Final-head CI and input-safety re-evaluation remain pending.
 
+The 2026-10-20 ownership simplification removes Driver-side structural validation
+and returned configuration data. The platform validates structure, runs semantic
+checks on an isolated frozen copy, validates field errors, and returns the original
+input. Constructor admission remains for independent callers. The existing
+executionCluster recursive configuration algorithm is unchanged and remains
+separate follow-up work. The preceding head `01ee10b27` passed all 28 selected CI
+jobs (one unselected native-container lane); focused local proof for this refactor passed 202 checks, with one existing
+image-backed initializer skipped because its runtime image was not selected.
+This includes package construction/refusal, original-input and callback-reference
+isolation, bundled startup, and API/worker/Helm diagnostic paths. Typechecking,
+lint, OpenAPI, credential/workspace boundaries, and documentation checks passed.
+Hosted qualification is recorded in PR #2980. No UI
+or wire-result change is intended.
+
 Required proof through existing real callers:
 
 - `tests/integration/driver-plugin-installation.test.mjs` and startup coverage:
   package and bundled definitions, multiple nested structural errors, semantic
-  refusals, malformed results, and throws; invalid input never constructs a Driver.
+  refusals, malformed error arrays, mutation attempts, rejected data envelopes, and throws; invalid input never constructs a Driver.
   Reject duplicate keys, unknown scopes, missing owner bindings, and invalid
   schemas. Typecheck concrete factory inputs.
 - Actual Fastify routes and PostgreSQL policy integration: authorized schema reads,
@@ -139,3 +155,5 @@ current documentation, recorded here with the implementation revision.
 - 2026-10-19: Simplified delivery around RFC-0022 and merged #2599; retained TASK-0046 and its required real workflow proof.
 
 - 2026-10-19: Paused implementation and aligned delivery with restored registry, scope/key dispatch, and generic configuration discovery.
+
+- 2026-10-20: Simplified validation ownership to platform structural checks and Driver semantic error lists; retained independent entry-point validation and existing runtime proof.

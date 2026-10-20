@@ -1,7 +1,8 @@
 import {
-  validateConfiguration as validateDriverConfiguration,
-  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+  type ErrorDetail,
 } from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import {
   asRecord,
   isNonEmptyString,
@@ -140,26 +141,27 @@ export function kubernetesConfigurationName(configurationId: string): string {
 export class KubernetesConfigurationDriver implements ConfigurationDriver {
   static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
-  static validateConfiguration(configuration: unknown) {
-    return validateDriverConfiguration<KubernetesConfigurationDriverOptions>(
-      KubernetesConfigurationDriver.configurationSchema,
-      configuration,
-      (configuration) => {
-        const value = asRecord(configuration);
-        if (value === undefined) {
-          throw new ConfigurationValidationError("Kubernetes configuration options are required.");
-        }
-        if ("clients" in value || Object.keys(value).some((key) => key !== "authentication")) {
-          throw new ConfigurationValidationError(
-            "Injected clients and unknown Kubernetes configuration options are not supported.",
-          );
-        }
-        validateKubernetesAuthentication(
-          value.authentication,
-          (message) => new ConfigurationValidationError(message),
-        );
-      },
-    );
+  static validateConfiguration(
+    configuration: Readonly<KubernetesConfigurationDriverOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateKubernetesAuthentication(
+        configuration.authentication,
+        (message) => new ConfigurationValidationError(message),
+      );
+
+      return [];
+    } catch (error) {
+      return error instanceof SharedConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
+    }
   }
 
   readonly id: string;

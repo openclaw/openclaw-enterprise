@@ -4,16 +4,11 @@ export const configurationSchema = Object.freeze({
   properties: {},
 });
 
-export function validateConfiguration(configuration) {
-  if (configuration === null || typeof configuration !== "object" || Array.isArray(configuration) || Object.keys(configuration).length !== 0) {
-    return { success: false, error: { details: [{ path: "", code: "INVALID_VALUE", message: "Use an empty configuration object." }] } };
-  }
-  return { success: true, data: configuration };
+export function validateConfiguration() {
+  return [];
 }
 
-export function createDriver({ id, implementation, configuration, platformState }) {
-  const admitted = validateConfiguration(configuration);
-  if (!admitted.success) {throw new Error("Driver configuration refused.");}
+export function createDriver({ id, implementation, platformState }) {
   if (typeof platformState?.loadNativeIAMState !== "function") {
     throw new Error("The test IAM Driver requires platform state.");
   }

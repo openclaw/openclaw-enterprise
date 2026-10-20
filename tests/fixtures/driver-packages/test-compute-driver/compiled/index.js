@@ -10,17 +10,11 @@ export const configurationSchema = Object.freeze({
   },
 });
 
-export function validateConfiguration(configuration) {
-  if (configuration === null || typeof configuration !== "object" || Array.isArray(configuration) || configuration.provisionPath !== "/tmp/local-test" || Object.keys(configuration).some(key => !["provisionPath", "revisionStages"].includes(key)) || (configuration.revisionStages !== undefined && typeof configuration.revisionStages !== "boolean")) {
-    return { success: false, error: { details: [{ path: "/provisionPath", code: "INVALID_VALUE", message: "Use the supported fixture provision path and options." }] } };
-  }
-  return { success: true, data: configuration };
+export function validateConfiguration() {
+  return [];
 }
 
 export function createDriver({ id, implementation, configuration, getOperationAbortSignal }) {
-  const admitted = validateConfiguration(configuration);
-  if (!admitted.success) {throw new Error("Driver configuration refused.");}
-  configuration = admitted.data;
   if (typeof getOperationAbortSignal !== "function") {
     throw new Error("The Compute Driver requires its controller-owned operation signal getter.");
   }

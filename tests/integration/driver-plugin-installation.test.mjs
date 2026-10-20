@@ -613,7 +613,7 @@ test("Driver entry format follows the nearest package.json scope Node's import u
   // `exports` is undefined in ESM, so Node can load this file only as CommonJS.
   const commonJSDriver = [
     'exports.configurationSchema = { type: "object" };',
-    "exports.validateConfiguration = () => {};",
+    "exports.validateConfiguration = () => [];",
     'exports.createDriver = () => { throw new Error("The CommonJS Driver must never be created."); };',
     "",
   ].join("\n");
@@ -761,7 +761,7 @@ test("Driver export URLs retain the selected query and fragment during construct
           '  if (configuration.endpoint !== "memory:" + selected.search + selected.hash) {',
           '    throw new Error("The selected Driver export URL profile was lost.");',
           "  }",
-          "  return { success: true, data: configuration };",
+          "  return [];",
           "}",
           "export function createDriver(options) {",
           "  validateConfiguration(options.configuration);",
@@ -962,6 +962,27 @@ test("startup definitions collect safe structural errors and reject invalid vali
       (error) => assert.match(error.message, /validator failed/),
     ],
     [
+      "replacement data envelope",
+      { endpoint: { "a/b~c": "ok", ports: [443] } },
+      "return { success: true, data: input }",
+      (error) => assert.match(error.message, /validator failed/),
+    ],
+    [
+      "input mutation",
+      { endpoint: { "a/b~c": "ok", ports: [443] } },
+      "input.endpoint.ports[0] = 80; return []",
+      (error) => assert.match(error.message, /validator failed/),
+    ],
+    [
+      "malformed field errors",
+      { endpoint: { "a/b~c": "ok", ports: [443] } },
+      "return [{ path: '/endpoint', code: 'INVALID_VALUE', message: 'Refused.', value: 'private-input' }]",
+      (error) => {
+        assert.match(error.message, /validator failed/);
+        assert.equal(error.message.includes("private-input"), false);
+      },
+    ],
+    [
       "thrown secret",
       { endpoint: { "a/b~c": "ok", ports: [443] } },
       "throw new Error('private-input')",
@@ -973,7 +994,7 @@ test("startup definitions collect safe structural errors and reject invalid vali
     [
       "semantic refusal",
       { endpoint: { "a/b~c": "ok", ports: [443] } },
-      "return { success: false, error: { details: [{ path: '/endpoint/ports/0', code: 'INVALID_VALUE', message: 'This port is not supported.' }] } }",
+      "return [{ path: '/endpoint/ports/0', code: 'INVALID_VALUE', message: 'This port is not supported.' }]",
       (error) => {
         assert.equal(error.error.details[0].message, "This port is not supported.");
       },
@@ -998,6 +1019,13 @@ test("startup definitions collect safe structural errors and reject invalid vali
         return true;
       });
       await assert.rejects(stat(marker), { code: "ENOENT" });
+      if (name === "input mutation") {
+        assert.deepEqual(
+          submitted.endpoint.ports,
+          [443],
+          "The caller's submitted configuration stays unchanged.",
+        );
+      }
     });
   }
 });
@@ -1020,7 +1048,7 @@ test("startup rejects unbound contributions, reserved keys, unknown scopes, and 
       await writeFile(
         entry,
         (await readFile(entry, "utf8")) +
-          `\nexport const configurationContributions = [{ ...${JSON.stringify(contribution)}, validateConfiguration(input) { return { success: true, data: input }; } }];`,
+          `\nexport const configurationContributions = [{ ...${JSON.stringify(contribution)}, validateConfiguration() { return []; } }];`,
       );
       const configured = installation();
       configured.drivers.configuration = selectedConfiguration();
@@ -1058,7 +1086,7 @@ test("Sandbox contribution registration rejects duplicates and invalid schemas b
           `
         export const configurationContributions = ${JSON.stringify(contributions)}.map(value => ({
           configurationSchema: { type: 'object', additionalProperties: false, properties: {} },
-          validateConfiguration(input) { return { success: true, data: input }; }, ...value
+          validateConfiguration() { return []; }, ...value
         }));
       `,
       );

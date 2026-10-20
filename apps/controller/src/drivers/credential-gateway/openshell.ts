@@ -1,7 +1,5 @@
-import {
-  validateConfiguration as validateDriverConfiguration,
-  requireConfiguration,
-} from "@openclaw-enterprise/contracts";
+import { ConfigurationValidationError, type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import type {
   Backend,
   CredentialAttachmentStatus,
@@ -816,14 +814,24 @@ export class OpenShellCredentialGatewayDriver implements CredentialGatewayDriver
     },
   });
 
-  static validateConfiguration(configuration: unknown) {
-    return validateDriverConfiguration<OpenShellCredentialGatewayOptions>(
-      OpenShellCredentialGatewayDriver.configurationSchema,
-      configuration,
-      (configuration) => {
-        validateOptions(configuration as OpenShellCredentialGatewayOptions);
-      },
-    );
+  static validateConfiguration(
+    configuration: Readonly<OpenShellCredentialGatewayOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateOptions(configuration as OpenShellCredentialGatewayOptions);
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
+    }
   }
 
   readonly id: string;

@@ -1,8 +1,5 @@
-import {
-  validateConfiguration as validateDriverConfiguration,
-  requireConfiguration,
-  ConfigurationValidationError,
-} from "@openclaw-enterprise/contracts";
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 /// <reference lib="es2024.string" />
 
 import {
@@ -165,27 +162,28 @@ function timeoutFailure(action: string): Error {
 export class KubernetesSecretDriver implements SecretDriver {
   static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
-  static validateConfiguration(configuration: unknown) {
-    return validateDriverConfiguration<KubernetesSecretDriverOptions>(
-      KubernetesSecretDriver.configurationSchema,
-      configuration,
-      (configuration) => {
-        const value = asRecord(configuration);
-        if (value === undefined) {
-          throw new SecretValidationError("Kubernetes Secret options are required.");
-        }
-        if ("clients" in value || Object.keys(value).some((key) => key !== "authentication")) {
-          throw new SecretValidationError(
-            "Injected clients and unknown Kubernetes Secret options are not supported.",
-          );
-        }
-        validateKubernetesAuthentication(
-          value.authentication,
-          (message, path) =>
-            new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]),
-        );
-      },
-    );
+  static validateConfiguration(
+    configuration: Readonly<KubernetesSecretDriverOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateKubernetesAuthentication(
+        configuration.authentication,
+        (message, path) =>
+          new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]),
+      );
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
+    }
   }
 
   readonly id: string;
