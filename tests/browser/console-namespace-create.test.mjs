@@ -12,6 +12,8 @@ import {
 } from "./console-agents-browser-helpers.mjs";
 
 const browser = fileBrowser();
+const isPrimary = (locator) =>
+  locator.evaluate((node) => node.classList.contains("button--primary"));
 const creates = (requests) =>
   requests.filter(({ method, path }) => method === "POST" && path === "/namespaces");
 // After the dialog closes and the list reloads, focus is on the new Create Namespace button
@@ -39,6 +41,8 @@ test("create a Namespace from the console, then open its Agent workflow", async 
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, "/console/namespaces");
   const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
+  // An Installation administrator gets creation as the page's primary action.
+  assert.equal(await isPrimary(opener), true);
   await opener.click();
   let dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
   await dialog.getByLabel("Namespace name").fill("Cancelled team");
@@ -273,7 +277,10 @@ test("a creator who cannot read Namespaces is told so instead of offered Open Ag
   });
   const { page } = await newPage(t, fixture, { browser });
   await login(page, fixture, "/console/namespaces", creator.credentials);
-  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  // Not an administrator, so not the primary action, but a create grant still works from it.
+  const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
+  assert.equal(await isPrimary(opener), false);
+  await opener.click();
   await page
     .getByRole("dialog", { name: "Create Namespace", exact: true })
     .getByLabel("Namespace name")
@@ -298,7 +305,7 @@ test("a creator who cannot read Namespaces is told so instead of offered Open Ag
   await focusReturnsToOpener(page);
 });
 
-test("an empty Namespace list offers creation and reports the real IAM denial", async (t) => {
+test("a member is not invited to create, and a real IAM denial disables Create Namespace", async (t) => {
   const audit = new InMemoryAuditSink();
   const fixture = await createConsoleAppFixture(t, { auditSink: audit });
   await fixture.bootstrap();
@@ -307,9 +314,20 @@ test("an empty Namespace list offers creation and reports the real IAM denial", 
     browser,
     context: { viewport: { width: 390, height: 844 } },
   });
+  const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, "/console/namespaces", limited.credentials);
   await page.getByRole("heading", { name: "No accessible namespaces", exact: true }).waitFor();
-  await page.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  // Not an Installation administrator: no filled primary and no invitation to create, but the
+  // control stays usable, since a role may still grant Namespace creation (finding 2059).
+  const opener = page.getByRole("button", { name: "Create Namespace", exact: true });
+  const emptyText = page.locator(settledView).locator(".state-panel p");
+  assert.equal(await opener.isEnabled(), true);
+  assert.equal(await isPrimary(opener), false);
+  assert.equal(
+    await emptyText.textContent(),
+    "Ask an administrator for access to an existing Namespace, or create one if your role allows it.",
+  );
+  await opener.click();
   const dialog = page.getByRole("dialog", { name: "Create Namespace", exact: true });
   await dialog.getByLabel("Namespace name").fill("Forbidden team");
   await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
@@ -324,6 +342,50 @@ test("an empty Namespace list offers creation and reports the real IAM denial", 
   // Nothing in the form can succeed now, so the name is not left editable as if it could.
   assert.equal(await dialog.getByLabel("Namespace name").isDisabled(), true);
   await dialog.getByRole("button", { name: "Cancel" }).click();
+  // The refusal is the API's answer for this person: the page stops offering creation, says
+  // why, and keeps focus on that reason rather than on a disabled button.
+  const refused = "Your access does not include creating Namespaces in this Installation.";
+  await page.getByRole("status").filter({ hasText: refused }).waitFor();
+  assert.equal(await opener.isDisabled(), true);
+  assert.equal(
+    await page.getByRole("button", { name: "Create Namespace", description: refused }).count(),
+    1,
+  );
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), refused);
+  assert.equal(
+    await emptyText.textContent(),
+    "Ask an administrator to create a Namespace or grant access to an existing one.",
+  );
+  // Refresh rerenders the list (a second list read) and keeps the refusal.
+  const listReads = () =>
+    requests.filter(({ method, path }) => method === "GET" && path === "/namespaces").length;
+  const readsBefore = listReads();
+  await page.locator("#namespace-create-refused").evaluate((node) => {
+    node.dataset.old = "";
+  });
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.locator(settledView).locator("#namespace-create-refused:not([data-old])").waitFor();
+  assert.ok(listReads() > readsBefore);
+  assert.equal(await opener.isDisabled(), true);
+  // A browser reload asks the API again; Escape after that refusal also leaves focus on it.
+  await page.reload();
+  await page
+    .locator(settledView)
+    .getByRole("heading", { name: "No accessible namespaces", exact: true })
+    .waitFor();
+  assert.equal(await opener.isEnabled(), true);
+  await opener.click();
+  await dialog.getByLabel("Namespace name").fill("Forbidden team");
+  await dialog.getByRole("button", { name: "Create Namespace", exact: true }).click();
+  await dialog
+    .getByRole("alert")
+    .filter({ hasText: /do not have permission/ })
+    .waitFor();
+  await page.keyboard.press("Escape");
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(await opener.isDisabled(), true);
+  assert.equal(await page.evaluate(() => globalThis.document.activeElement?.textContent), refused);
+  assert.equal(creates(requests).length, 2);
   assert.equal(
     (await fixture.request("GET", "/namespaces")).data.some(
       (item) => item.name === "Forbidden team",

@@ -182,15 +182,15 @@ Agents use the selected Namespace's route. OCC authorizes Namespace reads and
 filters Agents by exact read permission; Namespace listing filters its
 Installation-wide collection. No readable selection means no Agent request.
 `GET /backends` ignores selection and requires Installation `administer` before
-returning safe startup summaries. Empty configuration returns an empty list;
-missing wiring or failed dependencies return errors.
+returning safe startup summaries (empty without configuration) or wiring and
+dependency errors.
 
 `apps/controller/src/console/namespaces.mjs:renderNamespaces` sends Name-rule-valid names
 through tracked `POST /namespaces`; `OpenClawController.createNamespace` authorizes
 and queues provisioning; `perform` audits. Open Agents needs the Namespace in the
-reread list; closing refocuses the opener. Pending writes block dismissal; 400s mark
-names. Conflicts retain input; denials block resubmission. Unconfirmed responses
-require list inspection.
+reread list; closing refocuses the opener, or the refusal after a 403 disables it.
+Pending writes block dismissal; 400s mark names; conflicts retain input. Unconfirmed
+responses need list inspection.
 
 Agents and Create Agent read Namespace permissions before rendering. If `agents.create`
 is false, or the [Namespace status](../reference/namespaces.md#lifecycle) refuses Agents, both explain why and recheck on return. A failed read keeps creation available;

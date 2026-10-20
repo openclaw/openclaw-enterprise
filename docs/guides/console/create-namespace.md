@@ -6,7 +6,8 @@ the Installation. No model credentials are needed.
 
 1. Open **Namespaces** in the sidebar and select **Create Namespace**. Creation
    is available even when you have no readable Namespaces; the API checks your
-   permission when you submit.
+   permission when you submit. If you do not administer the Installation, it is
+   a secondary action: creating a Namespace then needs a role that grants it.
 2. Enter a name unique within this Installation, then select **Create Namespace**.
    Names are 1 to 200 characters with no tabs, line breaks, or other control
    characters; the form refuses other names before submitting. Names cannot
@@ -28,7 +29,8 @@ with Installation administration and operator-prepared infrastructure.
 
 A name conflict preserves the input: choose another name and submit again.
 Deleted Namespaces reserve their names. A permission denial asks you to contact
-an administrator and disables resubmission.
+an administrator and disables resubmission. After you close the form,
+**Create Namespace** stays disabled until you reload the page.
 
 While creation is pending, the form cannot be dismissed. If the response is
 interrupted or unconfirmed, submission stays disabled. Select **Check

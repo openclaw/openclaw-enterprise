@@ -1024,6 +1024,31 @@ export const scenarios = {
     description:
       "No accessible Namespaces. Create Namespace remains available; the API decides whether creation is permitted.",
   },
+  namespacesEmptyMember: {
+    group: "Pages/Namespaces",
+    name: "Empty for a member",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    observabilityDenied: true,
+    description:
+      "A person who does not administer the Installation gets Create Namespace as a secondary action and is told to ask an administrator. A Namespace create grant still works from it.",
+  },
+  namespaceCreateRefused: {
+    group: "Pages/Namespaces",
+    name: "Create refused, then closed",
+    path: "/console/namespaces",
+    emptyNamespaces: true,
+    observabilityDenied: true,
+    rules: [{ path: "/namespaces", method: "POST", status: 403, code: "FORBIDDEN" }],
+    actions: [
+      { click: "Create Namespace" },
+      { selector: "#namespace-name", value: "Support" },
+      { selector: 'dialog button[type="submit"]', click: true },
+      { click: "Cancel" },
+    ],
+    description:
+      "After the API refuses creation, the page disables Create Namespace, says why, and focuses that reason. A browser reload asks the API again.",
+  },
   namespaceCreate: {
     group: "Pages/Namespaces",
     name: "Create Namespace",
