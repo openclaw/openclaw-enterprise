@@ -432,7 +432,7 @@ function main() {
 // or when that cannot be told (as it always ran before).
 function startedAsScript() {
   try {
-    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
   } catch {
     return true;
   }
