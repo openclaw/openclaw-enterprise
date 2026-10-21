@@ -176,6 +176,19 @@ async function cluster(t) {
       response.end(JSON.stringify(missing));
       return;
     }
+    if (request.url.startsWith("/api/v1/namespaces/gone")) {
+      response.statusCode = 404;
+      response.end(
+        JSON.stringify({
+          ...missing,
+          message:
+            request.url === "/api/v1/namespaces/gone"
+              ? 'namespaces "gone" not found'
+              : 'pods "missing" not found',
+        }),
+      );
+      return;
+    }
     const body = routes[request.url];
     response.statusCode = body === undefined ? 503 : 200;
     response.end(JSON.stringify(body ?? { kind: "Status", reason: "ServiceUnavailable" }));
@@ -387,6 +400,11 @@ test("a failed read fails as kubectl fails, transient only when kubectl's would 
   assert.equal(notFound.stderr, 'Error from server (NotFound): pods "missing" not found\n');
   assert.match(notFound.message, /^Command failed: kubectl get pod missing -n team -o json\n/);
   assert.equal(isTransientKubectlFailure(notFound), false);
+  // In a Namespace that does not exist, kubectl names the Namespace.
+  const namespaceGone = await failure(
+    kubectlGetJson(selection, ["get", "pod", "missing", "-n", "gone", "-o", "json"]),
+  );
+  assert.equal(namespaceGone.stderr, 'Error from server (NotFound): namespaces "gone" not found\n');
 
   // A plain-text 503 reads as kubectl's ServiceUnavailable, which callers retry.
   const unavailable = await failure(

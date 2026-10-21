@@ -142,9 +142,17 @@ export async function kubectlGetJson(selection, args, { signal, timeoutMs } = {}
     `${resource.plural}${get.name === undefined ? "" : `/${encodeURIComponent(get.name)}`}` +
     `${get.query.size > 0 ? `?${get.query}` : ""}`;
   const limits = [timeoutMs, get.timeoutMs].filter((limit) => limit !== undefined);
-  const body = await read(path, args, {
-    signal,
-    timeoutMs: limits.length > 0 ? Math.min(...limits) : undefined,
+  const options = { signal, timeoutMs: limits.length > 0 ? Math.min(...limits) : undefined };
+  const body = await read(path, args, options).catch(async (error) => {
+    // A named object kubectl does not find: it reports a missing Namespace instead.
+    if (
+      namespace !== undefined &&
+      get.name !== undefined &&
+      /^Error from server \(NotFound\)/.test(error.stderr ?? "")
+    ) {
+      await read(`/api/v1/namespaces/${encodeURIComponent(namespace)}`, args, options);
+    }
+    throw error;
   });
   if (get.name !== undefined) {
     return printed(body);
