@@ -2457,8 +2457,13 @@ test("a naturally expired session returns to the requested page after sign-in", 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Expired session", { ready: true });
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  // The button shows before the Namespace's Preset read returns. If that read reached the API
+  // after the expiry below, its 401 would show the expired sign-in on this page before the click,
+  // and the Namespaces link would be gone. Expire only once the page has no read in flight.
+  await waitForIdleFetches(page);
   // Expire the actual session: the controller must reject it before returning to login.
   for (const session of fixture.memoryDatabase.session) {
     session.expiresAt = new Date(Date.now() - 1000);
