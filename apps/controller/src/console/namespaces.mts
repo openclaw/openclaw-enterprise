@@ -332,7 +332,7 @@ export function renderNamespaces(
           message = "Too many requests. Wait before trying again.";
         } else {
           // A 400 carries the API's own sentence naming what it refused, which other console
-          // writes show too (rejectionMessage in agents/list.mjs).
+          // writes show too (rejectionMessage in agents/list.mts).
           message =
             (error.status === 400 && error.serverMessage) ||
             "Namespace creation was refused. Check the name and try again.";

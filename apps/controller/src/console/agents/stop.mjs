@@ -1,9 +1,6 @@
 import { button, element, setHidden, statusBlock } from "../dom.mjs";
+import { STOP_CONFIRMATION } from "./lifecycle-confirmation.mjs";
 import { message, shortId } from "./list.mjs";
-
-// Shared with the Agents list's row action, so both confirmations describe the same effect.
-export const STOP_CONFIRMATION =
-  "This interrupts the current runtime gateway and ends any reply in progress; open chats can keep showing it as responding. Configuration, versions, Credentials, and workspace data are retained. Deploy a new version to start the Agent again.";
 
 export function createAgentStop(
   context,

@@ -6,23 +6,11 @@ import {
   setText,
   statusBlock,
 } from "../dom.mjs";
+import { DELETE_CONFIRMATION, keptResourcesText } from "./lifecycle-confirmation.mjs";
 import { message } from "./list.mjs";
 
 // Deletion finishes in the background; poll until the Agent is gone, then return to the list.
 export const DELETION_POLL_MS = 3000;
-
-export const DELETE_CONFIRMATION =
-  "This permanently deletes the Agent, its version history, and its workspace data. This cannot be undone.";
-
-// Agent deletion keeps Namespace-owned Configuration and Secret records, including ones created
-// with this Agent. Keep their exact IDs and CLI cleanup commands beside the destructive action.
-export function keptResourcesText(agent) {
-  const source = agent.harnessAuth?.source;
-  if (source?.kind !== "secret") {
-    return `Its Configuration is kept, even if it was created with this Agent. Once nothing else uses it, delete it with occ configuration delete ${agent.configurationId}.`;
-  }
-  return `Its Configuration and model credential Secret are kept, even if they were created with this Agent. Once nothing else uses them, delete them with occ configuration delete ${agent.configurationId} and occ secret delete ${source.id}.`;
-}
 
 export function createAgentDeletion(context, path, agent, onDeleting, allowed = null) {
   // One row of the Agent page's danger zone (UX spec 3.9); the confirmation carries the detail.

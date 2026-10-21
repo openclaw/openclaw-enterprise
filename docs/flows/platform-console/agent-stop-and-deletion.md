@@ -103,7 +103,7 @@ worker cleanup and the Namespace-owned resources it preserves.
 
 ### Stop or delete from an Agents list row
 
-`apps/controller/src/console/agents/collection.mjs:renderAgentList` rows use the
+`apps/controller/src/console/agents/collection.mts:renderAgentList` rows use the
 same Stop and Delete confirmations. Each row reads
 [permission advice](../../reference/api.md#get-namespacesnamespaceidagentsagentidpermissions)
 like its deployment, and reads it again when a retained list resumes.

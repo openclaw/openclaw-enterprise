@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
-import { message } from "../../apps/controller/src/console/agents/list.mjs";
+import { message } from "../../apps/controller/src/console/agents/list.mts";
 import { createApiClient } from "../../apps/controller/src/console/api-client.mts";
 import { createViewLifetime } from "../../apps/controller/src/console/view-lifetime.mts";
 

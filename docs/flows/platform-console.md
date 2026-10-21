@@ -164,7 +164,7 @@ reads, password input, and mutations prevent reuse; read-only catalog and diagno
 
 **Back to Agents:** session, Namespace, permission, and collection checks gate the
 list, not row reads. Each row's newest readable revisions page feeds its deployment
-and `agents/collection.mjs:currentRevision`, which reads an off-page current version alone;
+and `agents/collection.mts:currentRevision`, which reads an off-page current version alone;
 `deniedReadsFor` keeps a `403`. On reuse, `renderAgentList` sets visible deployment
 cells to **Reading deployment…**, hidden 250 ms, then kept at least 150 ms, before paint, then shows
 each fresh result or refusal. Back or refocus from a deployment focuses that cell,
@@ -228,7 +228,7 @@ mark names; conflicts keep input; unconfirmed responses need inspection.
 
 Agents and Create Agent read permissions. False `agents.create` or an Agent-refusing
 [Namespace status](../reference/namespaces.md#lifecycle) explains why, rechecking on return; failed reads keep creation open.
-Refused `GET /installation` saves only drafts. `agents/collection.mjs` polls provisioning Namespaces;
+Refused `GET /installation` saves only drafts. `agents/collection.mts` polls provisioning Namespaces;
 omission disables Create (`NAMESPACE_MISSING`) and stops; failures retry.
 OCC authorizes writes ([Agent creation](../reference/console/create-and-deploy.md)).
 
