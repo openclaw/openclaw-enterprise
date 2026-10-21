@@ -7,8 +7,8 @@ import { parsers } from "prettier/plugins/typescript";
 // parameter: server.mjs and scripts/bootstrap-installation.mjs pass process.env,
 // and the sign-in parity tests run the same code in process with their own
 // environment. A process.env read in these files would make those tests check
-// the test runner's environment instead of the one they pass, so a port of a
-// server.mjs edit must read `env`.
+// the test runner's environment instead of the one they pass, so an edit ported
+// from server.mjs or scripts/bootstrap-installation.mjs must read `env`.
 const parameterizedSources = [
   "apps/controller/src/api-startup.mjs",
   "scripts/lib/bootstrap-configuration.mjs",
@@ -32,10 +32,14 @@ function isReference(parent, key) {
   return key !== "id" && key !== "label";
 }
 
+const processModule = /^(node:)?process$/;
+const globalObjects = new Set(["globalThis", "global"]);
+
 // Returns "line:column what" for each way the source reaches process.env: a
 // process.env member read, process used as a value (destructuring, aliasing or a
-// computed member that cannot be named), globalThis.process, or an import of the
-// process module. process.exitCode, process.once and the like stay allowed.
+// computed member that cannot be named), process reached through globalThis, or
+// an import of the process module. process.exitCode, process.once and the like
+// stay allowed.
 function environmentReads(source) {
   const reads = [];
   const deny = (node, what) =>
@@ -44,17 +48,25 @@ function environmentReads(source) {
     if (!node || typeof node.type !== "string") {
       return;
     }
-    if (node.type === "ImportDeclaration" && /^(node:)?process$/.test(node.source.value)) {
+    if (
+      [
+        "ImportDeclaration",
+        "ImportExpression",
+        "ExportNamedDeclaration",
+        "ExportAllDeclaration",
+      ].includes(node.type) &&
+      processModule.test(node.source?.value)
+    ) {
       deny(node, `import from ${node.source.value}`);
     }
-    if (node.type === "MemberExpression" && propertyName(node) === "process") {
-      deny(node, "global process object");
-    }
-    if (node.type === "Identifier" && node.name === "process" && isReference(parent, key)) {
+    if (node.type === "Identifier" && isReference(parent, key)) {
       const property =
         parent?.type === "MemberExpression" && key === "object" ? propertyName(parent) : undefined;
-      if (property === undefined || property === "env") {
+      if (node.name === "process" && (property === undefined || property === "env")) {
         deny(node, property === "env" ? "process.env" : "process used as a value");
+      }
+      if (globalObjects.has(node.name) && (property === undefined || property === "process")) {
+        deny(node, `${node.name} used for process`);
       }
     }
     for (const [childKey, child] of Object.entries(node)) {
@@ -82,12 +94,17 @@ test("API startup and bootstrap configuration read settings only from their env 
       ['process["env"].OCC_HOST;', "process.env"],
       ["const { env: ambient } = process;", "process used as a value"],
       ["const key = 'env'; process[key];", "process used as a value"],
-      ["globalThis.process.env.OCC_HOST;", "global process object"],
+      ["globalThis.process.env.OCC_HOST;", "globalThis used for process"],
+      ["const { process: ambient } = globalThis;", "globalThis used for process"],
       ['import { env as ambient } from "node:process";', "import from node:process"],
+      ['await import("node:process");', "import from node:process"],
     ]) {
       const reads = environmentReads(`${source}\n${read}\n`);
       assert.equal(reads.length, 1, `${path} + ${read}: ${reads.join("; ")}`);
-      assert.match(reads[0], new RegExp(`${expected.replace(".", "\\.")}$`));
+      assert.ok(reads[0].endsWith(` ${expected}`), `${path} + ${read}: ${reads[0]}`);
     }
+    // A property that is merely named process, and other process members, stay allowed.
+    const allowed = "const options = { process: 1 }; options.process; process.exitCode = 1;";
+    assert.deepEqual(environmentReads(`${source}\n${allowed}\n`), []);
   }
 });
