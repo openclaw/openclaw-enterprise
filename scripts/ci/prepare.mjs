@@ -675,12 +675,13 @@ async function createAndMigrateDatabase(
   return createDatabase(statePath, state, server, { kind, label, source });
 }
 
-// The server's migrated database (one per kind) that every file's database of that kind copies. Migrating takes a
-// pnpm process and seconds of CPU, and it ran once per file under the CI state lock, where
-// each test's own copy waited behind it: a worker revision file's first test waited for the
-// runner to migrate the files that start with it (finding 2178). A copy is the same database
-// (schemas, their ACLs, every migration); nothing connects to the template, so PostgreSQL
-// can copy it, and lane cleanup drops it with the server's other databases.
+// The server's migrated database, one per kind, that each file's database of that kind
+// copies. Migrating takes a pnpm process and seconds of CPU, and it ran once per file
+// under the CI state lock, where each test's own copy waited behind it: a worker revision
+// file's first test waited for the runner to migrate the files that start with it
+// (finding 2178). A copy is the same database (schemas, their ACLs, every migration).
+// PostgreSQL copies only a database without sessions, and nothing connects to the
+// template: its URL is never handed out. Lane cleanup drops it with the other databases.
 async function laneTemplateDatabase(statePath, state, server, kind) {
   const existing = state.resources.find(
     (resource) =>
