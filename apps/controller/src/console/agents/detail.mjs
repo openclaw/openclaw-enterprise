@@ -3619,6 +3619,17 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // page to its summary, made about 12 reads, scrolled to the top and dropped focus with no
   // saved message (finding 1445). `focus` names the button that takes focus afterwards.
   async function refreshDraftInPlace({ agent: freshAgent = null, saved = "", focus = null } = {}) {
+    if (deleting) {
+      // Delete took the editors: there is nothing to rebuild, and a settled save no longer holds
+      // the page (finding 2125).
+      draftEditorNavigationBlock = null;
+      draftEditorSaving = false;
+      authenticationSaveState = "idle";
+      if (context.isCurrent()) {
+        updateNavigationControls();
+      }
+      return;
+    }
     if (freshAgent && freshAgent.configurationId !== agent.configurationId) {
       // The draft now edits another Configuration; reload the page for it.
       context.navigate(target("draft", selectedTab), namespaceId, true);

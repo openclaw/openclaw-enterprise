@@ -561,6 +561,53 @@ for (const pending of [
   });
 }
 
+// A plugin save keeps its editor locked until the tab rebuilds. After Delete there is no tab to
+// rebuild, so the settled save held ← Agents, the sidebar and a reload for good (finding 2125).
+test("a plugin save that settles after Delete lets the page go", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const driver = new OCCPluginDriver();
+  fixture.controller.registerDriver(driver);
+  fixture.controller.selectDriver("plugin", driver.id);
+  const namespace = await fixture.createNamespace("Plugin save delete", { ready: true });
+  const { agent } = await createSlackAgent(fixture, namespace, "Plugin Delete Agent");
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "plugins"));
+  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
+  // The controller applies the save; its answer waits until after Delete.
+  const held = await holdRequests(t, page, `**/namespaces/${namespace.id}/agents/${agent.id}`, {
+    method: "PATCH",
+    once: true,
+    afterServer: true,
+  });
+  await page.locator("summary", { hasText: "Plugin selections JSON" }).first().click();
+  await page
+    .getByLabel("Plugin selections JSON")
+    .fill(JSON.stringify({ "occ-plugin:diffs": { enabled: true } }));
+  await page.getByRole("button", { name: "Save plugin selections" }).click();
+  await held.requested;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete Plugin Delete Agent?" })
+    .getByRole("button", { name: "Permanently delete Agent" })
+    .click();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  const reason = page.getByText(
+    "Wait for plugin selections to finish saving before leaving this tab.",
+    { exact: true },
+  );
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await reason.waitFor();
+  assert.equal(await asksBeforeUnload(page), true);
+
+  held.release();
+  await reason.waitFor({ state: "detached" });
+  assert.equal(await asksBeforeUnload(page), false);
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await heading(page, "Agents").waitFor();
+});
+
 test("Back during a Configuration save preserves the previous Agent tab", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();

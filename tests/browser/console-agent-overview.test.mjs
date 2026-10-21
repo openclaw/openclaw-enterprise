@@ -2268,7 +2268,9 @@ test("Delete during a Configuration save keeps saying why the page stays open", 
   assert.equal(page.url(), url.href);
 
   write.release();
+  // The settled save holds nothing more: there is no editor left to reread it into.
   await held.waitFor({ state: "detached" });
+  assert.equal(await asksBeforeUnload(page), false);
   await page.getByRole("link", { name: "← Agents" }).click();
   await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
 });
