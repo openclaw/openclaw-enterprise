@@ -1,7 +1,7 @@
 ---
 created: "2026-09-19"
-updated: 2026-10-19
-last_updated_session: authoring-run/e63eaa44-e02d-49aa-b1c6-4711bd49d919
+updated: 2026-10-20
+last_updated_session: agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c
 ---
 
 # Agent Native Admin UI Flow
@@ -76,28 +76,29 @@ graph TD
 `scripts/first-agent.mjs:nativeConfiguration`
 `scripts/first-agent.mjs:ensureManagedConfiguration`
 
-The option requires launcher-owned Compose/OpenShell browser state. Because OCC
-assigns the Agent ID, the helper saves disabled Configuration generation 1,
-creates the Agent, derives its origin, and patches generation 2 before
-deployment. Generation 2 enables `controlUi`, pins its origins, and grants the
-`occ-workspace-files` trusted-proxy identity `operator.admin` with device
-auto-approval. An existing helper-owned name cannot change this selection.
+With launcher-owned Compose/OpenShell browser state, the helper saves disabled
+Configuration generation 1, creates the Agent, then derives its origin. Before
+deployment, generation 2 enables `controlUi`, pins origins, and grants
+`occ-workspace-files` trusted-proxy `operator.admin` with device auto-approval.
+An existing helper-owned name cannot change this selection.
 
 ### 1. Console renders native admin availability
 
 `apps/controller/src/console/agents/runtime-access.mjs:renderRuntimeAccess`
 
-Agent detail requests `${path}/native-admin`. Disabled responses and ordinary-user denials hide the panel. Denied Installation administrators see self-assignment guidance and **Refresh access**. Other states show feedback; only `available` exposes **Open OpenClaw**, opening with `noopener noreferrer`.
+Agent detail reads `${path}/native-admin`. Disabled responses and ordinary-user denials hide the panel; denied Installation administrators see self-assignment guidance and **Refresh access**. Other states explain refusals. Only `available` shows **Open OpenClaw** with `noopener noreferrer`.
 
-Tab `sessionStorage` caches audited `403` paths per session owner. **Refresh access** forgets this path and retries; logout, sign-in or a new tab asks afresh. The [page cache](platform-console.md#2-resolve-the-session-before-private-reads) owns Back revalidation. Polling or **Refresh deployment** refreshes changed `activeRevisionId` or `desiredRuntimeState`; a pending read queues one retry. Native edits do not update OCE Configuration.
+`sessionStorage` caches audited `403` paths per session owner/tab. **Refresh access** forgets the path and retries; logout, sign-in or a new tab resets it. The [page cache](platform-console.md#2-resolve-the-session-before-private-reads) owns Back revalidation. Polling/**Refresh deployment** retries changed `activeRevisionId`/`desiredRuntimeState`, queuing one follow-up during pending reads. Native edits do not update OCE Configuration.
 
 ### 2. OCC protects the availability route
 
 `apps/controller/src/http/native-admin.ts:nativeAdminStatusOperation`
 
-`createNativeAdminAccess` owns the host interceptor, upgrade listener and socket shutdown hook. Its controller getter lets apps created before bootstrap use the initialized controller. Shared route admission remains in `apps/controller/src/index.ts`.
+`createNativeAdminAccess` owns host interception, upgrades and socket shutdown.
+A getter supplies the initialized controller after bootstrap. Shared route
+admission remains in `apps/controller/src/index.ts`.
 
-`GET /namespaces/:namespaceId/agents/:agentId/native-admin` admits a human session through the ordinary `admit` and `resolveIdentity` middleware. When enabled, it requires exact Agent `use` and a runtime assignment; `read` or `operate` alone cannot admit the caller. When disabled, it requires exact Agent `administer` and existence before returning `disabled`, without requiring a runtime assignment.
+`GET /namespaces/:namespaceId/agents/:agentId/native-admin` admits humans through `admit`/`resolveIdentity`. Enabled access requires exact Agent `use` plus a runtime assignment, not just `read`/`operate`. Disabled access requires exact Agent `administer` and existence, without an assignment.
 
 ### 3. Shared availability resolver checks feature and active revision state
 
@@ -106,15 +107,15 @@ Tab `sessionStorage` caches audited `403` paths per session owner. **Refresh acc
 `packages/occ/src/index.ts:getUsableActiveAgentRevision`
 
 Enabled access requires a public origin and native domain.
-`getUsableActiveAgentRevision` selects the active revision and successor. A
-stopped Agent without an active revision raises `ResourceStateConflictError`
-and returns `stopped`, including before first deployment.
-`NoActiveAgentRevisionError` returns `unavailable` while a desired-running Agent
-awaits activation. Dependency failures, including IAM Driver errors caught by
-`authorizeAgentRuntimeAccess`, return `503`; authorization denial returns `403`
-with human IAM audit evidence. The panel reports the active revision.
+`getUsableActiveAgentRevision` selects the active revision and successor.
+Without an active revision, stopped Agents raise `ResourceStateConflictError`,
+returning `stopped` even before first deployment. Desired-running Agents awaiting
+activation raise `NoActiveAgentRevisionError`, returning `unavailable`.
+Dependencies, including IAM Driver errors caught by `authorizeAgentRuntimeAccess`,
+return `503`; denials return `403` with human IAM audits.
+The panel reports the active revision.
 
-A newer successor on a Compute Driver requiring stopped predecessors also produces `unavailable`: the worker removes the old workload before starting its replacement. A failed replacement leaves the old revision recorded as active without a serving workload. Both status and proxy admission check this boundary.
+A successor on a Compute Driver requiring stopped predecessors produces `unavailable`: the worker removes the old workload first. Failed replacement leaves the old revision active without a serving workload. Status and proxy admission both check this boundary.
 
 OCC derives the target from the active revision; desired state other than
 `running` returns `stopped`. Compute qualifies trusted-proxy identity, role
@@ -125,14 +126,14 @@ headers and device approval covering the selected role.
 insufficient device approval or unsupported transport. Missing endpoints and
 unclean private `wss:` URLs also return `unsupported`. Only `available` carries
 private `gatewayBase`, omitted from browser responses.
-Then the selected Compute Driver ID and implementation must match `revision.compute`. A mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint, key or transport lookup. Selection changes do not migrate existing revisions.
+The selected Compute Driver ID and implementation must match `revision.compute`; mismatch returns `503 DEPENDENCY_UNAVAILABLE` before endpoint/key/transport lookup. Driver changes do not migrate revisions.
 
 ### 4. OCC derives the isolated Agent host
 
 `apps/controller/src/gateway/native-admin.ts:nativeAdminTarget`
 `apps/controller/src/gateway/native-admin-host.mjs:deriveNativeAdminHost`
 
-`deriveNativeAdminHost` hashes Installation, Namespace and Agent IDs under the configured domain. `nativeAdminTarget` substitutes that host in `publicOrigin` and returns `/`. first-Agent imports this helper without workspace dependencies.
+`deriveNativeAdminHost` hashes Installation, Namespace and Agent IDs into an opaque hostname under the configured domain. `nativeAdminTarget` substitutes that host in `publicOrigin` and returns `/`. first-Agent imports this helper without workspace dependencies.
 
 Native-host admission resolves the hash from Installation, Namespace, and Agent state. Unknown hosts, wrong suffixes, deleted Agents, and non-unique matches fail closed.
 
@@ -196,7 +197,7 @@ Kubernetes offers configured roles and reserved `platform-administrator`. [Runti
 
 Configured roles use `/people/namespaces/<namespaceId>/agents/<agentId>`, `oce:<Principal ID>` and a policy digest; service traffic uses `/namespaces`. Preparation preserves the serving route across failed candidates; role-free successors leave it for predecessor retirement. OCC overwrites browser authority headers.
 
-The Gateway verifies trusted-proxy authentication, managed identity scope and policy digest, refusing profiles with multiple managed identities. It commits the selected role before admission. HTTP retires prior authority with `401`; new requests use the committed role without OCC replay. OpenClaw enforces permissions; backend connections retain `oce-service`, and independently authenticated local owners retain access.
+The Gateway verifies trusted-proxy authentication, managed identity scope and policy digest. Profiles with multiple managed identities fail. Admission commits the role; HTTP retires prior authority with `401`. Subsequent requests use that role without OCC replay. OpenClaw enforces permissions; backend connections retain `oce-service` and independently authenticated local owners retain access.
 
 OpenClaw intersects requested/proxy scopes for operators; other connections require exact matches. Leases close changed assignments/descriptors within 30 seconds. HTTP/upgrades check current policy; reconnect updates profiles.
 
@@ -222,6 +223,12 @@ copies the admitted configuration from `/etc/openclaw-managed/openclaw.json` to
 volume. The gateway mounts that same home subdirectory at `/home/node`, so native
 edits remain Pod-local and the next Pod starts from the admitted configuration.
 The init container cannot write through the gateway's later mount path.
+
+`apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts:configureNativeWorkerProfile`
+reuses only the exact generated worker profile after a container restart;
+conflicting settings fail. `KubernetesComputeDriver.gatewayPrivateStateVolumeMounts`
+retains `client/` and its migration receipt with the Gateway database. Native
+admin Configuration remains Pod-local.
 
 ## Debugging and Verification
 
@@ -254,6 +261,10 @@ checks role changes and selective revocation with real model turns.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-20 14:54: Extract persistence repair; trim repeated prose. (agent:roboclaw:dashboard:830a6ba7-3357-4ae0-9037-95d98205608c - 1ce18eeea10c83c856c8c08f6b0815e4b39308e0)
+
+- 2026-10-19 23:14: Retain Gateway client state and reuse the exact generated native worker profile on restart. (authoring-run/45df354e-6d46-4430-83a5-3885d8a9fb76 - c584934287f78a4f3cf7c84cfb02febd9f3437ab)
 
 - 2026-10-19 22:11: Document return to the requested page after session expiry. (authoring-run/e63eaa44-e02d-49aa-b1c6-4711bd49d919 - 332455338271720ef29c63e5e7fb209fa3da6ec2)
 
