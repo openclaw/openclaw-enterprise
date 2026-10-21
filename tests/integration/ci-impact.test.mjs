@@ -1837,10 +1837,10 @@ test("a test-only change selects the lanes that list its files", async (t) => {
       // A new file registered in its lane's manifest.
       [
         ({ put }) => {
-          put("tests/integration/postgres-c.test.mjs", "// new\n");
+          put("tests/integration/postgres-c.test.ts", "// new\n");
           put(
             "scripts/ci/test-suites/postgres.json",
-            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-c.test.mjs"]),
+            laneManifest([...suiteLanes.postgres, "tests/integration/postgres-c.test.ts"]),
           );
         },
         ["postgres"],
@@ -1901,7 +1901,7 @@ test("helper, fixture and other test-tree changes select full", async (t) => {
       "tests/integration/support.mjs",
       "tests/integration/nested/deep.test.mjs",
       "tests/unknown/other.test.mjs",
-      "tests/integration/postgres-a.test.ts",
+      "tests/integration/support.ts",
     ],
     async (path) => {
       const [f, shallow] = await suiteFixture(
@@ -1987,6 +1987,7 @@ test("unmapped, non-CI, referenced or irregular test files select full", async (
     // Not registered in any lane, or only in a manual lane.
     unmapped_test: [
       [({ put }) => put("tests/integration/unlisted.test.mjs", "// new\n")],
+      [({ put }) => put("tests/integration/postgres-c.test.ts", "// new\n")],
       [editTest("tests/integration/openshell-real.test.mjs")],
     ],
     // Another file reads, copies or runs it; Markdown mentions do not count.

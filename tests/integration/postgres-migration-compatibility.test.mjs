@@ -1245,13 +1245,17 @@ async function assertCompletedHistory(db, previous = []) {
     (
       await db.migrator.query(`SELECT p.oid::pg_catalog.regprocedure::text AS identity,
       pg_catalog.pg_get_userbyid(p.proowner) AS owner,p.proconfig,
-      pg_catalog.has_function_privilege('occ_app',p.oid,'EXECUTE') AS app_execute
+      pg_catalog.has_function_privilege('occ_app',p.oid,'EXECUTE') AS app_execute,
+      pg_catalog.has_function_privilege('public',p.oid,'EXECUTE') AS public_execute
     FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
     WHERE n.nspname='occ' AND p.prosecdef ORDER BY identity`)
     ).rows,
     [
+      // The app records a standing execution; only the Agent lifecycle trigger can close it.
+      ["occ.close_repository_standing_execution()", false],
       ["occ.create_agent_sandbox_policy()", false, "search_path=pg_catalog, occ"],
       ["occ.finalize_agent_deletion(text,text,text,uuid)", true],
+      ["occ.record_repository_standing_execution(text,text,text,text,text)", true],
       ["occ.remove_sandbox_policy_access()", false, "search_path=pg_catalog, occ"],
       ["occ.retry_failed_agent_deletion(text,text,text,text)", true],
       ["occ.retry_failed_namespace_deletion(text,text,text)", true],
@@ -1265,6 +1269,7 @@ async function assertCompletedHistory(db, previous = []) {
       owner: "occ_migrator",
       proconfig: [searchPath],
       app_execute,
+      public_execute: false,
     })),
   );
 }
@@ -2078,6 +2083,9 @@ test(
           broker_protocol: 0,
           live_revision_id: revisionId,
           cleanup_context: { driver: snapshot.driver, binding: snapshot.bindings[0] },
+          // Upgrading this attempt must not turn it into a successor of another session.
+          predecessor_admission_id: null,
+          execution_fingerprint: null,
         },
       })),
     );

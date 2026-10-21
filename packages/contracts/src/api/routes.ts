@@ -1423,7 +1423,7 @@ export const occApiRoutes = [
         { expectedGeneration: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) },
         { additionalProperties: false },
       ),
-      response: { 204: Type.Null(), ...mutationErrors },
+      response: { 204: Type.Null(), ...createErrors },
     },
   },
   {

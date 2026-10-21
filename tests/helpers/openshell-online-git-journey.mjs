@@ -93,7 +93,7 @@ export async function gitExpiryGateway(
     modelFailed: false,
     gitExpiresAt: deadline,
     installedDigest: "",
-    id: "",
+    id: /** @type {string | undefined} */ (undefined),
   };
   const profiles = {
     inference: {
