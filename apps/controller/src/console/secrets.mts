@@ -1,15 +1,72 @@
+import type { Namespace, SecretConsumers, SecretMetadata } from "@openclaw-enterprise/contracts";
+import { requestFailure, responseFields } from "./api-client.mjs";
 import { button, dismissOnBackdrop, element, field, statusBlock, validateFields } from "./dom.mjs";
-import { namespaceNameProblem } from "./namespaces.mjs";
-import { sorted } from "./shell.mjs";
+import { namespaceNameProblem, type NamespacePageContext } from "./namespaces.mjs";
+import type { createNavigation } from "./navigation.mjs";
+
+type SecretSummary = Pick<SecretMetadata, "id" | "name">;
+type SecretDetail = SecretSummary & { consumers: SecretConsumers };
+
+function secretSummary(value: unknown): SecretSummary {
+  const { id, name } = responseFields(value);
+  if (typeof id !== "string" || typeof name !== "string") {
+    throw new Error("Invalid Secret metadata");
+  }
+  return { id, name };
+}
+
+function secretList(value: unknown): SecretSummary[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Invalid Secret list");
+  }
+  // Keep only the metadata the page uses. A Secret read never supplies an editable value.
+  return value.map(secretSummary);
+}
+
+function isIdList(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((id: unknown) => typeof id === "string");
+}
+
+function hasConsumerDetails(value: unknown): value is SecretConsumers {
+  const { agents, configurations, credentialSources, provisioningRequests, unreadable, truncated } =
+    responseFields(value);
+  return (
+    isIdList(agents) &&
+    isIdList(configurations) &&
+    isIdList(credentialSources) &&
+    isIdList(provisioningRequests) &&
+    typeof unreadable === "number" &&
+    Number.isSafeInteger(unreadable) &&
+    unreadable >= 0 &&
+    typeof truncated === "boolean"
+  );
+}
+
+function clearSecretInputs(dialog: HTMLDialogElement) {
+  for (const input of dialog.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+    "input, textarea",
+  )) {
+    input.value = "";
+  }
+}
 
 const REPLACEMENT_NOTICE =
   "Replacing a value keeps the Secret ID and bindings. Deploy consuming Agents again to deliver it. CredentialSources keep a separate copy and require an explicit source update. Existing values cannot be read back.";
 
-export function renderSecrets(context) {
+export function renderSecrets(
+  context: NamespacePageContext & {
+    namespaceId: string;
+    namespace: Pick<Namespace, "name" | "status"> | undefined;
+    items: unknown;
+    sorted(items: readonly SecretSummary[]): SecretSummary[];
+    pageUrl: ReturnType<typeof createNavigation>["pageUrl"];
+  },
+) {
   const path = `/namespaces/${encodeURIComponent(context.namespaceId)}/secrets`;
-  const exactPath = (id) => `${path}/${encodeURIComponent(id)}`;
-  let items = context.items;
-  let modal = null;
+  const exactPath = (id: string) => `${path}/${encodeURIComponent(id)}`;
+  let items = secretList(context.items);
+  type SecretModal = ReturnType<typeof openModal>;
+  let modal: SecretModal | null = null;
   let readVersion = 0;
   const search = element("input", {
     type: "search",
@@ -55,9 +112,9 @@ export function renderSecrets(context) {
 
   function renderList() {
     const query = search.value.trim().toLocaleLowerCase();
-    const shown = sorted(items).filter((item) =>
-      `${item.name} ${item.id}`.toLocaleLowerCase().includes(query),
-    );
+    const shown = context
+      .sorted(items)
+      .filter((item) => `${item.name} ${item.id}`.toLocaleLowerCase().includes(query));
     if (!shown.length) {
       list.replaceChildren(
         element(
@@ -112,14 +169,12 @@ export function renderSecrets(context) {
     const current = modal;
     modal = null;
     readVersion += 1;
-    current.dialog.querySelectorAll("input, textarea").forEach((input) => {
-      input.value = "";
-    });
+    clearSecretInputs(current.dialog);
     current.dialog.close();
     current.dialog.remove();
   }
 
-  function openModal(title) {
+  function openModal(title: string) {
     closeModal();
     const dialog = element("dialog", {
       className: "dialog dialog--framed secret-dialog",
@@ -148,9 +203,7 @@ export function renderSecrets(context) {
       "close",
       () => {
         // Native close and view teardown also erase entered material, including a retained view.
-        dialog.querySelectorAll("input, textarea").forEach((input) => {
-          input.value = "";
-        });
+        clearSecretInputs(dialog);
         if (modal === current) {
           modal = null;
           readVersion += 1;
@@ -168,11 +221,16 @@ export function renderSecrets(context) {
     return current;
   }
 
-  function isOpen(current) {
+  function isOpen(current: SecretModal) {
     return modal === current && current.dialog.open && context.isCurrent();
   }
 
-  function showError(current, error, description, tone = "danger") {
+  function showError(
+    current: SecretModal,
+    error: ReturnType<typeof requestFailure>,
+    description: string,
+    tone: "danger" | "warning" = "danger",
+  ) {
     if (error.status === 401) {
       context.onExpired();
       return;
@@ -188,12 +246,12 @@ export function renderSecrets(context) {
   async function refreshList() {
     const next = await context.request(path);
     if (context.isCurrent()) {
-      items = next;
+      items = secretList(next);
       renderList();
     }
   }
 
-  async function openDetail(item) {
+  async function openDetail(item: SecretSummary) {
     const current = openModal(item.name);
     const version = ++readVersion;
     current.body.append(statusBlock("info", null, "Reading Secret metadata and consumers…"));
@@ -202,11 +260,18 @@ export function renderSecrets(context) {
       if (!isOpen(current) || version !== readVersion) {
         return;
       }
-      renderDetail(current, detail);
-    } catch (error) {
+      const secret = secretSummary(detail);
+      const { consumers } = responseFields(detail);
+      // Incomplete or unrecognized consumer metadata cannot establish that deletion is safe.
+      if (secret.id !== item.id || !hasConsumerDetails(consumers)) {
+        throw new Error("Invalid Secret detail");
+      }
+      renderDetail(current, { ...secret, consumers });
+    } catch (cause) {
       if (!isOpen(current) || version !== readVersion) {
         return;
       }
+      const error = requestFailure(cause);
       current.body.replaceChildren();
       let description = "Could not read this Secret. Close and try again.";
       if (error.status === 403) {
@@ -219,7 +284,7 @@ export function renderSecrets(context) {
     }
   }
 
-  function renderDetail(current, detail) {
+  function renderDetail(current: SecretModal, detail: SecretDetail) {
     const consumers = detail.consumers;
     current.body.replaceChildren(
       element("p", { className: "resource-id" }, detail.id),
@@ -235,7 +300,7 @@ export function renderSecrets(context) {
       ["Configurations", consumers.configurations],
       ["CredentialSources", consumers.credentialSources],
       ["Pending provisioning requests", consumers.provisioningRequests],
-    ];
+    ] as const;
     const count = groups.reduce((total, [, ids]) => total + ids.length, 0);
     for (const [label, ids] of groups) {
       if (!ids.length) {
@@ -311,7 +376,7 @@ export function renderSecrets(context) {
     current.actions.append(replace, remove);
   }
 
-  function editValue(secret = null) {
+  function editValue(secret: SecretSummary | null = null) {
     const replacing = secret !== null;
     const current = openModal(replacing ? "Replace Secret value" : "Create Secret");
     const name = element("input", {
@@ -345,9 +410,9 @@ export function renderSecrets(context) {
       }
       value.setCustomValidity(problem);
     });
-    if (!multiline) {
+    if (value instanceof HTMLInputElement) {
       value.addEventListener("paste", (event) => {
-        if (/[\r\n]/.test(event.clipboardData.getData("text"))) {
+        if (/[\r\n]/.test(event.clipboardData?.getData("text") ?? "")) {
           event.preventDefault();
           value.setCustomValidity(
             "This browser cannot mask multiline values. Use a browser with multiline masking support.",
@@ -360,7 +425,7 @@ export function renderSecrets(context) {
       "Show value",
       () => {
         const masked = value.classList.toggle("secret-value--masked");
-        if (!multiline) {
+        if (value instanceof HTMLInputElement) {
           value.type = masked ? "password" : "text";
         }
         reveal.textContent = masked ? "Show value" : "Hide value";
@@ -448,20 +513,21 @@ export function renderSecrets(context) {
         );
         try {
           await refreshList();
-        } catch (error) {
+        } catch (cause) {
           if (isOpen(current)) {
             showError(
               current,
-              error,
+              requestFailure(cause),
               "The save succeeded, but the list could not be refreshed. Close and select Refresh to read the saved state.",
             );
           }
         }
-      } catch (error) {
+      } catch (cause) {
         if (!isOpen(current)) {
           return;
         }
-        unknown = ![400, 403, 404, 409, 429].includes(error.status);
+        const error = requestFailure(cause);
+        unknown = error.status === undefined || ![400, 403, 404, 409, 429].includes(error.status);
         value.value = "";
         let description = "The value was not saved. Check the input and enter it again.";
         if (unknown) {
@@ -480,7 +546,7 @@ export function renderSecrets(context) {
             "This Secret or Namespace is no longer available. Close and Refresh the list.";
         }
         showError(current, error, description, unknown ? "warning" : "danger");
-        submit.disabled = unknown || [403, 404].includes(error.status);
+        submit.disabled = unknown || error.status === 403 || error.status === 404;
         submit.textContent = replacing ? "Replace value" : "Create Secret";
         name.disabled = unknown;
         value.disabled = unknown;
@@ -498,7 +564,7 @@ export function renderSecrets(context) {
     });
   }
 
-  function confirmDelete(secret) {
+  function confirmDelete(secret: SecretSummary) {
     const current = openModal("Delete Secret");
     current.body.append(
       element(
@@ -530,11 +596,12 @@ export function renderSecrets(context) {
         confirm.remove();
         current.heading.textContent = "Secret deleted";
         current.body.replaceChildren(statusBlock("success", null, "The Secret was deleted."));
-      } catch (error) {
+      } catch (cause) {
         if (!isOpen(current)) {
           return;
         }
-        unknown = ![400, 403, 404, 409, 429].includes(error.status);
+        const error = requestFailure(cause);
+        unknown = error.status === undefined || ![400, 403, 404, 409, 429].includes(error.status);
         let description = "Could not delete this Secret. Close and Refresh before trying again.";
         if (unknown) {
           description =
@@ -580,12 +647,14 @@ export function renderSecrets(context) {
               "The Secret still exists. Close and inspect its consumers before deciding to delete again.",
             ),
           );
-          current.body.replaceChildren(element("p", {}, `${detail.name} · ${detail.id}`));
+          const { id, name } = secretSummary(detail);
+          current.body.replaceChildren(element("p", {}, `${name} · ${id}`));
         }
-      } catch (error) {
+      } catch (cause) {
         if (!isOpen(current)) {
           return;
         }
+        const error = requestFailure(cause);
         if (error.status === 404) {
           items = items.filter((item) => item.id !== secret.id);
           renderList();

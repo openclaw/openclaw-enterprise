@@ -2030,7 +2030,7 @@ async function loadPage({
         renderRows,
       );
     } else if (current.feature === "secrets") {
-      renderSecrets({ ...agentContext, items });
+      renderSecrets({ ...agentContext, items, sorted });
     } else {
       if (current.feature === "backends" && backendsDenied) {
         backendsDenied = false;
