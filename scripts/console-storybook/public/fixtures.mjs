@@ -1131,7 +1131,7 @@ export function installFixture(scenario, evidence) {
         }
         if (method === "PATCH") {
           Object.assign(saved, body, { generation: saved.generation + 1 });
-          return response(saved);
+          return response({ ...saved, id: scenario.configurationSaveResponseId ?? saved.id });
         }
       }
       if (resource === "permissions" && method === "GET") {

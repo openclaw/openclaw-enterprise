@@ -4011,6 +4011,18 @@ export const scenarios = {
     description:
       "A viewer without Configuration update saves: the refusal is an alert that takes focus and comes into view.",
   },
+  configurationSaveUnconfirmed: {
+    group: "Pages/Agent detail",
+    name: "Save response names another Configuration",
+    path: draft,
+    configurationSaveResponseId: "cfg_00000000-0000-4000-8000-000000000002",
+    description:
+      "The simulated save succeeds, but the response names a different Configuration. The editor requires a reload before another save.",
+    steps: [
+      "Choose Enable gateway password access, then Save Configuration. Save stays disabled and the message says the outcome is unknown.",
+      "Choose Reload draft. The saved password reference is visible without a second save.",
+    ],
+  },
   gatewayPasswordAccess: {
     group: "Pages/Agent detail",
     name: "Enable gateway password access",

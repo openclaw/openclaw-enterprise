@@ -19,7 +19,7 @@ See the [parent flow](../platform-console.md) and the
 
 - `apps/controller/src/console/agents/access.mjs:renderAgentAccess` renders the
   sharing panel on Agent detail's Access tab.
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts it when
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts it when
   that tab first opens.
 - Assumptions: a signed-in Installation administrator, an existing Principal ID,
   and the Namespace IAM policy endpoints.
@@ -72,7 +72,7 @@ configuration evidence, not a historical receipt, and never triggers a write.
 
 ### 3. Hold the page while writes run
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
 Each request belongs to the page and stops when the page goes. So while a share or
 removal runs, the panel's `onWriting` callback has Agent detail hold version and

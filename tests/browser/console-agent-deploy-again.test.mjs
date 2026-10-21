@@ -22,6 +22,7 @@ import {
   deploymentDetailsOpen,
   deploymentRecordUrl,
 } from "./console-deployment-activity-helpers.mjs";
+import { replyWithDifferentAgentId } from "./console-agents-test-support.mjs";
 import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // Failed-version recovery's Deploy again: the API's DEPENDENCY_UNAVAILABLE message says to deploy
@@ -628,6 +629,34 @@ test("A completed deployment whose Agent reread fails is labelled Deployed, not 
   );
   assert.equal(labels.includes("Historical version"), false, labels.join(" → "));
 });
+
+for (const [status, label] of [
+  ["succeeded", "Completed"],
+  ["failed", "Failed"],
+]) {
+  test(`A ${status} deployment stays visible when the overview returns another Agent`, async (t) => {
+    const { fixture, namespace, agent, page, record, summary } = await deployingVersion(
+      t,
+      "Mismatched overview",
+    );
+    const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+    await page.route(agentUrl, (route) => replyWithDifferentAgentId(route, agent.id, 200));
+    record.status = status;
+    await page.getByRole("button", { name: "Refresh deployment" }).click();
+
+    // Wait for either settled outcome: losing the valid record used to show "Unavailable".
+    const result = summary.getByText(`v2 · ${label}`, { exact: true });
+    await result.or(summary.getByText("v2 · Unavailable", { exact: true })).waitFor();
+    assert.equal(await result.isVisible(), true);
+    await page
+      .getByText(
+        "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.equal(await summary.getByText("v1", { exact: true }).isVisible(), true);
+  });
+}
 
 // One failed status read while v2 still deployed flipped the notice to Historical (the finding
 // 2065 mislabel) and stopped polling, so it stayed there after the API recovered (finding 2085).

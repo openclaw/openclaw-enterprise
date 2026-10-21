@@ -525,6 +525,22 @@ test("Configuration save stops when fresh Agent settings become unreadable", asy
   await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
   await page.getByText(/Saved plugin selections could not be read/).waitFor();
   assert.deepEqual(nonAuthWriteRequests(requests), []);
+  // Another Agent in this Namespace may use this very Configuration. A successful read of
+  // that Agent is not preflight for saving this one, even when the generation still matches.
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  await page.unroute(agentUrl);
+  await page.route(agentUrl, (route) => replyWithDifferentAgentId(route, agent.id, 200));
+  await page.getByRole("button", { name: "Save Configuration", exact: true }).click();
+  const refused = page.getByText(
+    "Service unavailable. The read could not be completed. Try again.",
+    {
+      exact: true,
+    },
+  );
+  const incorrectlySaved = page.getByText("Configuration saved.", { exact: true });
+  await refused.or(incorrectlySaved).first().waitFor();
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await refused.isVisible(), true);
   const saved = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
@@ -2397,9 +2413,36 @@ test("Agent credentials report partial harness Secret grant failure", async (t) 
     source: replacementSecret.ref,
   });
   assert.deepEqual(
-    accessBindingPostRequests(requests, namespace.id).map((request) => request.body.resourceId),
-    [replacementSecret.id],
+    accessBindingPostRequests(requests, namespace.id).map(({ body }) => [
+      body.subjectId,
+      body.resourceId,
+    ]),
+    [[agent.servicePrincipalId, replacementSecret.id]],
   );
+
+  // A retry after this denial must not grant the Secret to a different service principal.
+  const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
+  assert.notEqual(other.servicePrincipalId, agent.servicePrincipalId);
+  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  await page.route(agentUrl, async (route) => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const { data, meta } = await response.json();
+    assert.equal(data.servicePrincipalId, agent.servicePrincipalId);
+    await route.fulfill({
+      response,
+      json: { data: { ...data, servicePrincipalId: other.servicePrincipalId }, meta },
+    });
+  });
+  requests.length = 0;
+  const reread = page.waitForResponse(agentUrl);
+  const retry = page.getByRole("button", { name: "Retry credential access" });
+  await retry.click();
+  assert.equal((await reread).status(), 200);
+  await waitForEnabled(page.getByRole("button", { name: "Reload authentication source" }));
+  assert.deepEqual(nonAuthWriteRequests(requests), []);
+  assert.equal(await retry.isDisabled(), true);
+  await page.getByText(/Agent identity changed. Reload authentication source/).waitFor();
 });
 
 test("Agent detail blocks repeat Configuration saves after an uncertain draft update", async (t) => {
@@ -2477,6 +2520,37 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   await revealNativeConfiguration(page, "View native Configuration");
   await page.getByText('"marker": "after-unknown"').waitFor();
   assert.equal(interceptedPatches, 1);
+
+  // The controller accepts this next edit, but the 200 describes another Configuration.
+  // Require the same no-repeat recovery as a lost reply; confirm exactly one write reached OCC.
+  const otherValues = nativeValues("after-unconfirmed-success");
+  await page.unroute(`**${configurationPath}`);
+  await page.route(`**${configurationPath}`, async (route, request) => {
+    if (request.method() !== "PATCH") {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const { data, meta } = await response.json();
+    assert.equal(data.id, agent.configurationId);
+    assert.deepEqual(data.values, otherValues);
+    await route.fulfill({ response, json: { data: { ...data, id: `cfg_${randomUUID()}` }, meta } });
+  });
+  const save = page.getByRole("button", { name: "Save Configuration", exact: true });
+  const editor = page.getByLabel("Configuration JSON");
+  requests.length = 0;
+  await page.getByRole("button", { name: "Edit Configuration" }).click();
+  await editor.fill(JSON.stringify(otherValues));
+  await save.click();
+  const unknown = page.getByText("Outcome unknown. Configuration may have been saved.");
+  const incorrectlySaved = page.getByText("Configuration saved.", { exact: true });
+  await unknown.or(incorrectlySaved).first().waitFor();
+  assert.equal(await unknown.isVisible(), true);
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(configurationPatchRequests(requests, namespace.id, agent.configurationId).length, 1);
+  const confirmed = await fixture.request("GET", configurationPath);
+  assert.equal(confirmed.data.generation, saved.data.generation + 1);
+  assert.deepEqual(confirmed.data.values, otherValues);
 });
 
 test("Agent stop confirmation uses the real API, preserves Agent state, and deploy resumes", async (t) => {

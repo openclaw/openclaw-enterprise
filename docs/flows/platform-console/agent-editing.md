@@ -14,7 +14,7 @@ have their own trace.
 
 ## Entry Points
 
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` loads the exact Agent and composes the detail actions.
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` loads the exact Agent and composes the detail actions.
 - `apps/controller/src/console/agents/credentials.mjs:createChannelSecretsPanel` saves channel Secret bindings.
 - `packages/occ/src/index.ts:OpenClawController.deployAgent` admits a version after first-deployment credential setup.
 - A signed-in caller must hold each action's permission on the exact resource.
@@ -58,7 +58,7 @@ graph TD
 
 ### 4. Render draft, version, or channels
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail`
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail`
 
 The page reads Agent, readable versions, and current Configuration
 (`revision=draft`) or immutable Agent revision (`revision=<id>`).
@@ -75,7 +75,8 @@ shows the newest readable version's recorded status. It does not measure live he
 Routine completion folds. Pending work, read errors, warnings, and cleanup stay visible.
 If the first read finishes after the `FIRST_ACTIVITY_WAIT_MS` reveal, the summary shows its
 outcome and the details stay folded so the version tabs do not move. Cleanup, warnings, or an
-overview error still open the details.
+overview error still open the details. If an overview refresh cannot identify this Agent,
+the page keeps the recorded deployment outcome and says the overview could not be refreshed.
 
 On failure, `agents/deployment-recovery.mts` shows the API's message or suggests checking
 Logs if the message gives no next step. It hides the Logs link if the caller was denied the
@@ -98,6 +99,9 @@ values. Stop/deletion target the Agent.
 **Edit Configuration** rereads the Agent and Configuration, then PATCHes only
 `{ values, expectedGeneration }`, preserving `secretBindings`. A changed ID or stale
 generation (including a `409` from a racing save) requires **Reload draft**.
+The response must identify the same Configuration and Namespace, a newer generation, and
+the values and bindings sent as JSON. If it does not, the page reports an unknown outcome
+and requires a reload before another save.
 When a focused **Save Configuration** becomes disabled, focus moves to **Checking Configuration…**.
 Success focuses **Edit Configuration**, unless the reader moved focus elsewhere during the save.
 
@@ -150,7 +154,7 @@ only **Create new version** permits editing. The
 [console reference](../../reference/console/versions-and-channel-drafts.md)
 owns Slack requirements and rejected native shapes; Teams remains native JSON.
 
-`agents/detail.mjs:renderConfigurationTab` reads draft Harness authentication
+`agents/detail.mts:renderConfigurationTab` reads draft Harness authentication
 from the Agent, or admitted authentication and channel `secretBindings` from the
 version. `agents/secret-picker.mjs:renderSecretReference` checks the source
 Namespace and reads exact Secret metadata. Successful reads link names and IDs;
@@ -172,7 +176,7 @@ and native `dm.enabled` remain unchanged. Configuration save persists the
 selection; redeployment applies it. See
 [Slack policies](../../reference/configuration/secrets.md#native-channel-configuration).
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` supplies Namespace,
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` supplies Namespace,
 bindings, and Credentials URL to `channels/slack.mjs:credentialReferenceField`.
 It loads `GET /namespaces/:namespaceId/secrets`; Namespace read is required.
 `packages/occ/src/index.ts:listSecrets` filters records by exact Secret read
@@ -191,8 +195,9 @@ uncertain outcomes block retries until refresh. The
 recovery. Metadata and Credentials links open new tabs, preserving edits.
 Values are never retrieved.
 
-Channel saves reread the Agent and Configuration. A changed association or stale generation
-offers **Reload draft**; a provisioning reservation explains the refusal. PATCH sends
+Channel saves reread the Agent and Configuration. A changed Configuration, service principal,
+or generation requires **Reload draft** before a write or Secret grant. A provisioning
+reservation explains the refusal. PATCH sends
 `{ values, expectedGeneration }` and changed `secretBindings`. Rejection grants no Secret access.
 
 After PATCH, `apps/controller/src/console/agents/credential-access.mjs:ensureCredentialOperateBinding`
@@ -211,7 +216,7 @@ describes the supported edits and their deployment boundaries.
 
 ### 5. Save authentication and deploy the first version
 
-`apps/controller/src/console/agents/detail.mjs:renderAgentDetail` rereads the
+`apps/controller/src/console/agents/detail.mts:renderAgentDetail` rereads the
 Agent and rejects changed bindings before saving authentication. PATCH replaces
 the prior Harness `credentialSources` entry, preserving unrelated entries without
 deleting the old source or revoking grants. After PATCH,
@@ -221,7 +226,8 @@ or CredentialSource `operate` through the actor's IAM authority. Managed
 ServiceAccount PATs and runtime authentication skip this grant.
 
 Grant failure preserves saved authentication and freezes controls.
-**Retry credential access** rejects changed bindings and retries only the grant;
+**Retry credential access** checks that the Agent still has the same service principal and
+authentication binding as the saved response, then retries only the grant;
 rereading bindings recovers lost responses. An uncertain PATCH requires
 **Reload authentication source** before saving or granting. Pending access
 survives navigation and blocks deployment until confirmed or reloaded. Admission

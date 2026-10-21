@@ -16,7 +16,7 @@ from confirmation to readback. See the [parent flow](../platform-console.md) and
 
 - `apps/controller/src/console/agents/stop.mjs:createAgentStop` sends the stop request.
 - `apps/controller/src/console/agents/deletion.mjs:createAgentDeletion` sends the deletion request.
-- `apps/controller/src/console/agents/detail.mjs:renderAgentDetail` mounts both as rows of one **Danger zone** card;
+- `apps/controller/src/console/agents/detail.mts:renderAgentDetail` mounts both as rows of one **Danger zone** card;
   [Agents list rows](#stop-or-delete-from-an-agents-list-row) also offer them.
 - A signed-in caller needs Agent `operate` to stop and Agent `delete` to delete.
 
