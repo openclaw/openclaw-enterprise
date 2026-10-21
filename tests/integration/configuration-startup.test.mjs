@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test, { after } from "node:test";
+import test, { after, before } from "node:test";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
@@ -70,6 +70,37 @@ async function boot(script, env, timeout = 10_000) {
   }
   return result;
 }
+
+// Warm the compile cache with one API and one worker boot through production startup to the
+// database connection, the furthest any case here goes. Node writes a cold cache when a process
+// exits, and the first test starts all its boots at once: each one compiled the whole graph and
+// spent seconds writing the same cache at exit, so on a loaded runner the valid case's API had
+// logged its startup error but had not exited within its 15 s budget.
+before(async () => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-installation-warm-"));
+  try {
+    const path = join(directory, "installation.yaml");
+    await writeFile(path, JSON.stringify(installation()), "utf8");
+    const env = {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: path,
+      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+    };
+    const [server, worker] = await settled([
+      boot("apps/controller/src/server.mjs", { ...env, ...productionServer }, 60_000),
+      boot("apps/controller/src/worker.mjs", env, 60_000),
+    ]);
+    // A boot that stopped earlier would leave the composition modules uncached.
+    assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "PERSISTENCE_UNAVAILABLE");
+    assert.equal(
+      startupDiagnostic(worker.stderr, "worker.startup-error").code,
+      "PERSISTENCE_UNAVAILABLE",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 async function fixture(t, configuration = installation()) {
   const directory = await mkdtemp(join(tmpdir(), "occ-installation-startup-"));
