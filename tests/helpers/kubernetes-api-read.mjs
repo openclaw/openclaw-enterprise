@@ -154,6 +154,7 @@ export async function kubectlGetJson(selection, args, { signal, timeoutMs } = {}
   const limits = [timeoutMs, get.timeoutMs].filter((limit) => limit !== undefined);
   const options = { signal, timeoutMs: limits.length > 0 ? Math.min(...limits) : undefined };
   const notFound = (error) => /^Error from server \(NotFound\)/.test(error?.stderr ?? "");
+  const startedAt = Date.now();
   const body = await read(path, args, options).catch(async (error) => {
     // A named object kubectl does not find, outside the default Namespace: when
     // its Namespace is missing too, kubectl reports that instead. Any other
@@ -164,13 +165,19 @@ export async function kubectlGetJson(selection, args, { signal, timeoutMs } = {}
       get.name !== undefined &&
       notFound(error)
     ) {
-      await read(`/api/v1/namespaces/${encodeURIComponent(namespace)}`, args, options).catch(
-        (namespaceError) => {
-          if (namespaceError?.name === "AbortError" || notFound(namespaceError)) {
-            throw namespaceError;
-          }
-        },
-      );
+      // Within what is left of the read's timeout, as one kubectl run.
+      const timeLeft =
+        options.timeoutMs === undefined
+          ? undefined
+          : Math.max(1, options.timeoutMs - (Date.now() - startedAt));
+      await read(`/api/v1/namespaces/${encodeURIComponent(namespace)}`, args, {
+        signal,
+        timeoutMs: timeLeft,
+      }).catch((namespaceError) => {
+        if (signal?.aborted || notFound(namespaceError)) {
+          throw namespaceError;
+        }
+      });
     }
     throw error;
   });
@@ -291,9 +298,9 @@ function unstructuredStatus(statusCode, text) {
 }
 
 async function createReader(kubeconfigPath, kubernetesContext) {
-  let configuration;
+  let stdout;
   try {
-    const { stdout } = await execute(
+    ({ stdout } = await execute(
       "kubectl",
       [
         "--kubeconfig",
@@ -308,13 +315,13 @@ async function createReader(kubeconfigPath, kubernetesContext) {
         "json",
       ],
       { maxBuffer: 4 * 1024 * 1024, timeout: 30_000 },
-    );
-    configuration = JSON.parse(stdout);
+    ));
   } catch (error) {
     throw Object.assign(new Error("kubectl config view failed", { cause: error }), {
       unreadConfiguration: true,
     });
   }
+  const configuration = JSON.parse(stdout);
   const cluster = configuration.clusters?.[0]?.cluster ?? {};
   const user = configuration.users?.[0]?.user ?? {};
   const context = configuration.contexts?.[0]?.context ?? {};

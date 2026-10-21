@@ -456,9 +456,11 @@ test("a failed read fails as kubectl fails, transient only when kubectl's would 
   // kubectl's transport failure.
   const droppedAt = Date.now();
   const dropped = await failure(
-    kubectlGetJson(selection, ["get", "pods", "-n", "dropped", "-o", "json"], { timeoutMs: 2_500 }),
+    kubectlGetJson(selection, ["get", "pods", "-n", "dropped", "-o", "json"], { timeoutMs: 1_200 }),
   );
-  assert.ok(Date.now() - droppedAt < 2_900, "no retry waits or starts past the read's timeout");
+  // Tried at 0 and 1 s, then the wait is cut to the 0.2 s left: about 1.2 s, where
+  // a full second's wait would end past 2 s.
+  assert.ok(Date.now() - droppedAt < 1_800, "no retry waits or starts past the read's timeout");
   assert.match(dropped.stderr, /^Unable to connect to the server: /);
   assert.equal(isTransientKubectlFailure(dropped), true);
 
