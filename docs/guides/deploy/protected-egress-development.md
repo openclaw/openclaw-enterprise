@@ -6,55 +6,55 @@ remains closed until the installed pair and its release authority are qualified.
 
 ## Upgrade an existing development installation
 
-From public migration `0059`, keep your database and plan one control-plane
-restart. Migration `0060_credential_proxy` records that existing Agent revisions
-ran unprotected, restores their immutability, and validates the constraint.
-Reading the same Agent and revision remains supported; old writers must stop before
-migration. Allow time for row updates, locks, and validation on a large history.
-Migration `0061_openshell_expired_git` adds the retained-launch state used at Git
-expiry. Neither migration selects protected execution or requires credential re-enrollment.
+Keep your database. For a developer on public migration `0063`, this is one
+planned control-plane interruption and three forward migrations (`0064`–`0066`).
+You do not need to reset volumes or enroll credentials again. The interruption
+includes stopping writers, migrating, and restarting the API and workers together.
+Allow time for locks and validation, especially if upgrading from `0059`, where
+the migration also records that existing Agent revisions ran unprotected.
 
-- **Default Docker development stack.** Finish work that must not be interrupted.
-  In the old checkout run `bin/occ dev down` without `--volumes`, update your
-  checkout, then run `bin/occ dev up` with the same project, volumes, and
-  environment. Startup migrates the retained database. A new checkout with an
-  empty database needs only `bin/occ dev up`.
-- **Host development with a retained database.** Quiesce the API, workers, and
-  other writers. With the new checkout and the existing dedicated
-  `OCC_MIGRATION_DATABASE_URL`, run `pnpm db:migrate --check` (expect
-  `preStaticEgress` at `0059`), `pnpm db:migrate`, then `pnpm db:migrate --check`
-  (expect `completed`). Restart the API and workers from that checkout.
-- **Kubernetes or a custom retained stack.** Follow the
-  [upgrade checklist](upgrade-checklist.md). The disposable Kubernetes development
-  harness deletes volumes on teardown; the Docker down/up instructions above do
-  not apply. A custom retained Compose or k3d stack has no supported in-place
-  full-stack upgrade command.
+Stop admitting new work, then finish work you cannot interrupt. If Git is active,
+keep the old worker and receipt owner available to settle outstanding issuance,
+withdrawal, or possible use before stopping them. A closed session alone does not
+prove disposal; follow the [repository custody and recovery procedure](../repository-credentials/installation.md#select-composition-and-network-access)
+if the outcome is uncertain. Preserve any spent or possibly spent draft allowance.
+The migration does not move a running Agent onto protected Git, enable protected
+execution, or turn a finite grant into standing approval. An older controller
+cannot read a new [protected Git admission](../../reference/repository-credentials/protected-openshell-git.md).
+A preview Agent whose launch cannot be verified may still need to be retired at
+Git expiry. Keep execution authority and credential approval separate; broadening
+either requires equivalent recorded authority or explicit approval from an authorized binder.
 
-If you ran the public Credential Proxy preview, the migrator checks the actual
-receipts, schema, and grants. At preview `0069`, migrate normally: the release
-applies the same final SQL. At preview `0070`, the check reports `completed` and
-the original receipts stay intact. At preview `0060` through `0068`, this release
-stops before changing the database. Keep writers stopped, finish the migration
-through `0070` using [the published preview source](https://github.com/openclaw/openclaw-enterprise/commit/78b106f1ddc6aa5f638a49c12954be732ab16982),
-then switch to this release and check again. A preview Git route without a
-verified retained launch may still require retiring that Agent at Git expiry.
+| Database you have                                                         | What to expect                                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Public `0063`                                                             | Three migrations add protected Driver registration, repository sessions for the Credential Proxy, and a record of each possible draft use. The initial check reports `preProtectedDriverRegistration`.                                                       |
+| Public `0059`                                                             | Seven migrations, `0060`–`0066`. The initial check reports `preStaticEgress`.                                                                                                                                                                                |
+| Public Credential Proxy preview `0069` or later                           | Keep the original receipts. Preview `0069` corresponds to public `0060` (six migrations remain); preview `0070` corresponds to public `0061` (five remain). The completed history has 75 receipts on this path, 66 on the public path.                       |
+| Partial preview `0060`–`0068`                                             | This release stops before changing the database. With writers stopped, finish through `0070` using [the published preview](https://github.com/openclaw/openclaw-enterprise/commit/78b106f1ddc6aa5f638a49c12954be732ab16982), then migrate with this release. |
+| Private or divergent history, including experimental `0057_static_egress` | Keep that database and its matching release. Use an upgrade supplied by its owner for that exact history, or start this release with a separate, empty database. Never renumber or rewrite applied receipts.                                                 |
 
-For a divergent history, including experimental `static_egress` at `0057`, keep
-the database with its matching release. Never renumber or rewrite applied receipts.
-If you need a recovery point, verify that the previous release accepts a quiesced
-physical snapshot; a logical restore can reparse constraints and change the catalog.
+The migrator checks receipt hashes and timestamps, the schema, and effective grants.
+A matching count alone is insufficient. Once prior work is settled:
 
-Execution authority and material approval are independent. Withhold a new binding unless durable
-evidence shows equivalent authority or an authorized binder explicitly admits the broader access.
-Permission to update the source is not that consent.
+- **Default Docker development stack.** In the old checkout run `bin/occ dev down`
+  without `--volumes`. Update the checkout, then run `bin/occ dev up` with the same
+  project, volumes, and environment. Startup migrates the retained database.
+- **Host development with a retained database.** Stop the API, workers, and other
+  writers. From the new checkout, use the existing dedicated
+  `OCC_MIGRATION_DATABASE_URL`. Run `pnpm db:migrate --check`, `pnpm db:migrate`,
+  then `pnpm db:migrate --check` again. Expect `completed` before starting the
+  updated API and workers.
+- **Kubernetes or a custom retained stack.** Use the [upgrade checklist](upgrade-checklist.md).
+  The disposable Kubernetes development harness deletes volumes on teardown. A
+  custom retained Compose or k3d stack has no supported full-stack upgrade command.
 
-If the migration transaction fails, verify the previous history before resuming
-the old installation. After a successful migration, switching binaries alone
-does not restore the old writer contract. Before admitting any work, withdrawal
-can restore the quiesced snapshot and its matching binaries as a unit. After
-new admissions or a possible provider send, stop writers and reconcile those
-effects first. Never delete a dispatch receipt or replay an uncertain operation to
-make a rollback appear clean.
+There is no in-place downgrade. If you need a recovery point, verify that the old
+release accepts a physical snapshot taken with writers stopped; a logical restore
+can reparse constraints and change the catalog. If migration fails, verify the old
+history before resuming. After a successful migration but before admitting work,
+you can restore that snapshot and its matching binaries together. After a new
+admission or possible provider send, stop writers and reconcile the effects first.
+Never delete a dispatch receipt or replay an operation whose outcome is unknown.
 
 ## Select fresh whole-execution protection
 
