@@ -122,15 +122,21 @@ async function settled(work) {
   const before = new Set(await backendPids());
   const result = await work();
   const deadline = Date.now() + 5_000;
-  while ((await backendPids()).some((pid) => !before.has(pid)) && Date.now() < deadline) {
+  for (;;) {
+    const left = (await backendPids()).filter((pid) => !before.has(pid));
+    if (left.length === 0) {
+      return result;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`Backends ${left.join(", ")} were still connected 5 s after the step.`);
+    }
     await delay(10);
   }
-  return result;
 }
 
 // Most runs call authMaintain (what scripts/auth-maintain.mjs runs) in this process, with the
 // command's environment and arguments, which saves a Node start per run. maintainScript runs the
-// real script for its exit status and output: 0, 1, 2 and 64 each have one such run below.
+// real script for its exit status and output: 0, 1, 2, 3 and 64 each have one such run below.
 function maintain(args, url = migrationUrl, environment = {}) {
   return settled(async () => {
     const stdout = outputSink();
@@ -288,7 +294,7 @@ test(
       assert.equal(status.output.profile, "legacy");
 
       // A failed activation precondition is a refusal (exit 3), not a failure.
-      const unknown = await maintain([
+      const unknown = await maintainScript([
         "activate",
         "--recovery-user",
         "missing-user",

@@ -208,7 +208,9 @@ async function verifiedWithoutAuth(pool, state, installation, email) {
  * settings from `environment` and its arguments from `args`, never from process.env or argv, so
  * tests can call it in process with their own settings. It writes its result line to `stdout`,
  * fixed diagnostics to `stderr` and log events to `logDestination` ("stderr" for the Job), and
- * returns the exit status: 0, or 1 on any failure.
+ * returns the exit status: 0, or 1 on any failure. A failure's status also goes to `onFailure`
+ * before the database pool closes, so the Job keeps its exit status even if closing the pool
+ * never settles.
  *
  * Dependencies still read a few process-wide settings themselves, such as OCC_DATABASE_AUTH in
  * the database pool and NODE_ENV in Better Auth's defaults (OCC sets the options that matter).
@@ -219,6 +221,7 @@ export async function bootstrapInstallation({
   stdout = process.stdout,
   stderr = process.stderr,
   logDestination = "stderr",
+  onFailure = () => {},
 }) {
   let bootstrapAttempt;
   let pool;
@@ -372,6 +375,7 @@ export async function bootstrapInstallation({
       attempt: bootstrapAttempt,
     });
     status = 1;
+    onFailure(status);
   } finally {
     await pool?.end();
   }
@@ -389,11 +393,11 @@ function startedAsEntryPoint() {
   }
 }
 if (import.meta.main ?? startedAsEntryPoint()) {
-  const status = await bootstrapInstallation({
+  await bootstrapInstallation({
     environment: process.env,
     args: process.argv.slice(2),
+    onFailure: (status) => {
+      process.exitCode = status;
+    },
   });
-  if (status !== 0) {
-    process.exitCode = status;
-  }
 }

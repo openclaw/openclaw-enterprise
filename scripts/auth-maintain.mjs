@@ -101,6 +101,8 @@ async function run(options, maintenance, state, installationId, stderr) {
  * so tests can call it in process with their own settings. It writes its result line to
  * `stdout`, messages to `stderr` and log events to `logDestination` ("stderr" for the command),
  * and returns the exit status: 0, 1 (failed), 2 (writers running), 3 (refused) or 64 (usage).
+ * A failure's status also goes to `onFailure` before the database pool closes, so the command
+ * keeps its exit status even if closing the pool never settles.
  *
  * Dependencies still read a few process-wide settings themselves, such as OCC_DATABASE_AUTH in
  * the database pool.
@@ -111,6 +113,7 @@ export async function authMaintain({
   stdout = process.stdout,
   stderr = process.stderr,
   logDestination = "stderr",
+  onFailure = () => {},
 }) {
   const output = (event, fields) => stdout.write(outputLine(event, fields));
   let pool;
@@ -177,6 +180,7 @@ export async function authMaintain({
       });
       status = EXIT_FAILED;
     }
+    onFailure(status);
   } finally {
     await pool?.end();
   }
@@ -194,8 +198,11 @@ function startedAsEntryPoint() {
   }
 }
 if (import.meta.main ?? startedAsEntryPoint()) {
-  const status = await authMaintain({ environment: process.env, args: process.argv.slice(2) });
-  if (status !== 0) {
-    process.exitCode = status;
-  }
+  await authMaintain({
+    environment: process.env,
+    args: process.argv.slice(2),
+    onFailure: (status) => {
+      process.exitCode = status;
+    },
+  });
 }
