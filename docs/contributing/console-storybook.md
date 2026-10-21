@@ -37,9 +37,19 @@ APIs and rejects syntax that needs more than type erasure.
 Add the source path to the controller's allowlist in
 `apps/controller/src/console-assets.ts`. The controller and Storybook both use
 Node 24 to remove types, preserve line numbers, and serve JavaScript at the same
-URL as before. During migration, an old `.mjs` file may re-export the `.mts`
-source for tests that still import Console modules directly in Node. Remove it
-when those consumers migrate. The browser never loads that forwarding file.
+URL as before.
+
+Node resolves imports literally, including imports inside an `.mts` file. Point
+Node callers of a standalone module directly at its `.mts` source. For example,
+when the starter model moves, change the first-agent scripts and test helpers to
+import `agents/starter-model.mts`.
+Test browser behavior through the served `.mjs` URLs, where the controller
+resolves the whole module graph.
+
+Keep a temporary source forwarder such as `dom.mjs` only while a Node caller
+still reaches that exact path. Renaming the caller alone leaves the import in
+place. Remove the forwarder, then run those consumers and the browser tests to
+verify both paths. A browser-only module needs no forwarder.
 
 ## Appearance review
 
