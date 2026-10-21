@@ -43,15 +43,21 @@ GitHub App, installation, repository selection, allowed refs and API permissions
 access to one repository and review branch without granting installation-wide access. Missing or
 unrecognized duration cannot select standing approval. Do not encode it as a distant deadline.
 
-**Use the approval.** The worker and repository credential service currently bind an admitted
-revision and its session to the same absolute deadline. Change both contracts. Keep each session,
-request and token time-limited; OCE may establish the next finite session under the same approval.
-Before preparing or installing material, verify the approval generation, current policy, active
-Agent revision and exact execution. Renew in the background early enough for ordinary Git to
-continue. Use the existing OpenShell dynamic grant and [online authorization](online-authorization.md)
-where qualified. On every request, verify the signed sandbox identity against that execution and
-check the actual operation against current authority. Record a material version and expiry, never
-the token. Report any connection interruption during renewal; the conversation must remain usable.
+**Admit the execution.** The OpenShell Git trial requires a repository broker session and excludes
+`credential_proxy`. For new protected Git admissions, select the
+[Driver's Sandbox and Credential Proxy capabilities](contracts.md#select-sandbox-and-credential-proxy-from-one-driver).
+OCC establishes successive finite sessions under the same approval. Before
+preparation or installation, check approval ID and generation, current policy, grant, active Agent
+revision and verified execution. Admit, renew, authorize and withdraw without a repository broker,
+control socket, session bearer or broker receipt.
+
+**Authorize the Git operation.** Repo defines repository, ref and operation constraints. The
+Token Service prepares short-lived tokens in the background. Credential Proxy binds the actual
+request and signed sandbox identity to this execution. Before allowing it, check current OCC authority
+and the exact installed token attempt, version and expiry. In that transaction, record possible use
+and consume any applicable draft allowance. Serialize with withdrawal and replacement. Bound the allow
+by the earliest applicable deadline. With [online authorization](online-authorization.md), OpenShell injects the
+credential and sends. Keep the conversation usable across renewal and report any Git interruption.
 
 **Stop using the approval.** Commit removal and advance its generation before acknowledging it.
 Deny the next authorization even while GitHub would accept the token. Stop preparation, detach
@@ -69,16 +75,25 @@ uncertain mint, installation or Git write. If OCE cannot establish current autho
 installed material, deny Git and report what needs recovery. Granting access again creates a new
 approval generation; restart, policy restoration or token renewal cannot revive a withdrawn one.
 
+Give this path a distinct admission. Fence the old owner and settle overlapping custody before
+issuance. Old receipts cannot grant access. Preserve spent or possibly spent draft allowances by
+grant across migration and renewal; if uncertain, deny another create. Dedicated Kubernetes Codex
+without a Sandbox can still select native Git, where the broker authorizes and sends. Never fall back to it.
+
 ### Prove the same Agent can still fetch after the old deadline
 
-1. Grant standing access once. From an installed team Agent, fetch a known Git object into an empty
-   object store. Record the Agent, revision, execution, conversation, approval generation and
-   nonsecret material version. Keep existing push and pull request evidence unless another write is authorized.
-2. After the former one-hour deadline has actually passed, use that conversation to fetch an object
-   absent locally. Verify object transfer, unchanged identities and a different short-lived material
-   version installed under the original approval. An allow decision alone cannot identify the token
-   OpenShell sent. Exercise the time boundary with a controlled clock locally; record real elapsed time separately.
+1. Install without the repository broker. Grant standing access once. Use a controlled private
+   repository that denies anonymous reads; fetch a known object into an empty object store.
+   Record Agent, revision, execution, conversation, approval generation and material version.
+   Reuse existing push and pull request evidence.
+2. Wait past both the first session's expiry (one hour for the former default) and the first token's
+   expiry. In the same conversation and repository, fetch an object absent locally and verify its ID.
+   Record actual elapsed time, both deadlines, unchanged identities, the successor session and a
+   different token version installed under the original approval. A shorter controlled-clock test
+   complements this run. An allow decision alone cannot identify the token OpenShell sent.
 3. Remove approval while the latest token would still be valid. Show a fresh fetch denied before any
    provider request, and a reply in the same conversation if chat remains authorized. Also cover policy
-   loss, stop and explicit resume, replacement, stale renewal, failed or uncertain issuance, and the
-   existing finite grant expiring on schedule.
+   loss, stop and explicit resume, replacement, stale renewal and finite grants expiring on schedule.
+   At controlled transaction boundaries, race withdrawal with installation and authorization. Lose
+   an issuance, installation or send reply and verify no second attempt. Qualify a released,
+   unmodified OpenShell against the [online release requirements](online-authorization.md) before offering this route.
