@@ -1,3 +1,4 @@
+import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { rewrittenIpv4Hostname } from "../../../auth/configuration.ts";
 import {
   normalizeOpenAiBaseUrl,
@@ -44,6 +45,7 @@ import type {
   V1VolumeMount,
 } from "@kubernetes/client-node";
 import type {
+  ErrorDetail,
   AgentDeploymentDiagnostics,
   AgentRevision,
   AgentRuntimeContainerStatus,
@@ -1405,9 +1407,13 @@ const WORKLOAD_PEER_SCHEMA = Object.freeze({
   },
 });
 
-function required(value: unknown, description: string): string {
+function required(value: unknown, description: string, path?: string): string {
   if (!isNonEmptyString(value)) {
-    throw new ConfigurationFailure(`${description} must be explicitly configured.`);
+    throw configurationConstraintFailure(
+      `${description} must be explicitly configured.`,
+      path,
+      "REQUIRED",
+    );
   }
   return value;
 }
@@ -1499,9 +1505,9 @@ function namespaceFailureReason(error: unknown): string {
     : `A Namespace preparation request failed with HTTP status ${status}.`;
 }
 
-function validatePort(value: number, description: string): void {
+function validatePort(value: number, description: string, path?: string): void {
   if (!Number.isInteger(value) || value < 1 || value > 65_535) {
-    throw new ConfigurationFailure(`${description} must be a valid port.`);
+    throw configurationConstraintFailure(`${description} must be a valid port.`, path);
   }
 }
 
@@ -1573,7 +1579,10 @@ function validateResources(value: V1ResourceRequirements, description: string, p
   const requests = asRecord(resources?.requests);
   const limits = asRecord(resources?.limits);
   if (requests === undefined || limits === undefined) {
-    throw new ConfigurationFailure(`${description} requests and limits must be configured.`);
+    throw configurationConstraintFailure(
+      `${description} requests and limits must be configured.`,
+      `/${path.replaceAll(".", "/")}`,
+    );
   }
   for (const [resource, kind] of [
     ["cpu", "CPU"],
@@ -1591,14 +1600,19 @@ function validateResources(value: V1ResourceRequirements, description: string, p
     );
     const compared = compareResourceQuantities(request, limit);
     if (compared === undefined) {
-      throw new ConfigurationFailure(
-        `${description} ${kind} requests and limits (${path}) must be Kubernetes quantity strings.`,
+      throw configurationConstraintFailure(
+        `${description} ${kind} requests and limits must be Kubernetes quantity strings.`,
+        `/${path.replaceAll(".", "/")}`,
       );
     }
     if (compared > 0) {
-      throw new ConfigurationFailure(
-        `${description} ${kind} request (${path}.requests.${resource}) cannot exceed its limit (${path}.limits.${resource}).`,
-      );
+      throw new ConfigurationValidationError([
+        {
+          path: `/${path.replaceAll(".", "/")}/requests/${resource}`,
+          code: "INVALID_RANGE",
+          message: `${description} ${kind} request (${path}.requests.${resource}) cannot exceed its limit (${path}.limits.${resource}).`,
+        },
+      ]);
     }
   }
 }
@@ -1607,31 +1621,53 @@ function validateResources(value: V1ResourceRequirements, description: string, p
 // number, so name the fix instead of reporting the value as missing.
 function resourceQuantity(value: unknown, description: string, path: string): string {
   if (typeof value === "number") {
-    throw new ConfigurationFailure(
-      `${description} (${path}) must be a quoted Kubernetes quantity string: write "${value}", not ${value}.`,
+    throw configurationConstraintFailure(
+      "Resource quantities must be quoted Kubernetes quantity strings.",
+      `/${path.replaceAll(".", "/")}`,
     );
   }
-  return required(value, description);
+  return required(value, description, `/${path.replaceAll(".", "/")}`);
 }
 
-function validatePeer(value: KubernetesWorkloadPeer, description: string): void {
+function configurationConstraintFailure(
+  message: string,
+  path?: string,
+  code: ErrorDetail["code"] = "INVALID_FORMAT",
+): Error {
+  return path === undefined
+    ? new ConfigurationFailure(message)
+    : new ConfigurationValidationError([{ path, code, message }]);
+}
+
+function validatePeer(value: KubernetesWorkloadPeer, description: string, path?: string): void {
   if (asRecord(value) === undefined) {
-    throw new ConfigurationFailure(`${description} is required.`);
+    throw configurationConstraintFailure(`${description} is required.`, path, "REQUIRED");
   }
   // NetworkPolicies select the peer on kubernetes.io/metadata.name, which only ever holds a
   // Namespace name; anything else matches nothing, or is not even a valid label value.
   validateKubernetesNamespaceName(
-    required(value.namespace, `${description} namespace`),
+    required(
+      value.namespace,
+      `${description} namespace`,
+      path === undefined ? undefined : `${path}/namespace`,
+    ),
     `${description} namespace`,
+    path === undefined ? undefined : `${path}/namespace`,
   );
   const labels = asRecord(value.podLabels);
   if (labels === undefined || Object.keys(labels).length === 0) {
-    throw new ConfigurationFailure(`${description} Pod labels cannot be empty.`);
+    throw configurationConstraintFailure(
+      `${description} Pod labels cannot be empty.`,
+      path === undefined ? undefined : `${path}/podLabels`,
+    );
   }
   for (const [key, label] of Object.entries(labels)) {
-    required(key, `${description} label key`);
+    required(key, `${description} label key`, path === undefined ? undefined : `${path}/podLabels`);
     if (typeof label !== "string") {
-      throw new ConfigurationFailure(`${description} labels must be strings.`);
+      throw configurationConstraintFailure(
+        `${description} labels must be strings.`,
+        path === undefined ? undefined : `${path}/podLabels`,
+      );
     }
     const parts = key.split("/");
     const name = parts.at(-1) ?? "";
@@ -1643,11 +1679,15 @@ function validatePeer(value: KubernetesWorkloadPeer, description: string): void 
       !POD_LABEL_VALUE.test(name) ||
       (prefix !== undefined && !isKubernetesResourceName(prefix))
     ) {
-      throw new ConfigurationFailure(`${description} label keys must be Kubernetes label keys.`);
+      throw configurationConstraintFailure(
+        `${description} label keys must be Kubernetes label keys.`,
+        path === undefined ? undefined : `${path}/podLabels`,
+      );
     }
     if (label.length > 63 || !POD_LABEL_VALUE.test(label)) {
-      throw new ConfigurationFailure(
+      throw configurationConstraintFailure(
         `${description} label values must be Kubernetes label values.`,
+        path === undefined ? undefined : `${path}/podLabels`,
       );
     }
   }
@@ -1660,9 +1700,9 @@ interface ParsedCidr {
   readonly prefix: number;
 }
 
-function parseCidr(value: unknown, description: string): ParsedCidr {
+function parseCidr(value: unknown, description: string, path?: string): ParsedCidr {
   if (typeof value !== "string") {
-    throw new ConfigurationFailure(`${description} must be a CIDR string.`);
+    throw configurationConstraintFailure(`${description} must be a CIDR string.`, path);
   }
   const [address = "", prefix, extra] = value.split("/");
   const family = isIP(address);
@@ -1675,7 +1715,7 @@ function parseCidr(value: unknown, description: string): ParsedCidr {
     prefixValue < 0 ||
     prefixValue > (family === 4 ? 32 : 128)
   ) {
-    throw new ConfigurationFailure(`${description} must be a valid IPv4 or IPv6 CIDR.`);
+    throw configurationConstraintFailure(`${description} must be a valid IPv4 or IPv6 CIDR.`, path);
   }
   return { value, address, family: family === 4 ? 4 : 6, prefix: prefixValue };
 }
@@ -1755,20 +1795,31 @@ function cidrCoversEveryAddress(cidr: ParsedCidr): boolean {
 // The one rule for every operator CIDR that grants reach (trusted proxies, status proxy
 // sources, execution endpoints): a range covering every IPv4 or IPv6 address is refused.
 // The profile renderer names the same rule with the same words.
-function scopedCidr(value: unknown, description: string, index: number): ParsedCidr {
-  const parsed = parseCidr(value, `${description} ${index}`);
+function scopedCidr(value: unknown, description: string, index: number, path?: string): ParsedCidr {
+  const parsed = parseCidr(value, `${description} ${index}`, path);
   if (cidrCoversEveryAddress(parsed)) {
-    throw new ConfigurationFailure(`${description}s cannot cover every address.`);
+    throw configurationConstraintFailure(`${description}s cannot cover every address.`, path);
   }
   return parsed;
 }
 
-function trustedProxyCidrSet(value: unknown, description: string): ReadonlySet<string> {
+function trustedProxyCidrSet(
+  value: unknown,
+  description: string,
+  path?: string,
+): ReadonlySet<string> {
   if (!Array.isArray(value) || value.length === 0) {
-    throw new ConfigurationFailure(`${description} must contain at least one CIDR.`);
+    throw configurationConstraintFailure(`${description} must contain at least one CIDR.`, path);
   }
   return new Set(
-    value.map((entry, index) => scopedCidr(entry, description, index).value.toLowerCase()),
+    value.map((entry, index) =>
+      scopedCidr(
+        entry,
+        description,
+        index,
+        path === undefined ? undefined : `${path}/${index}`,
+      ).value.toLowerCase(),
+    ),
   );
 }
 
@@ -1789,7 +1840,7 @@ function cidrSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): b
   return left.size === right.size && [...left].every((cidr) => right.has(cidr));
 }
 
-function validateDnsHostname(value: string, description: string): void {
+function validateDnsHostname(value: string, description: string, path?: string): void {
   if (
     value.length > 253 ||
     !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(
@@ -1800,9 +1851,11 @@ function validateDnsHostname(value: string, description: string): void {
     const addressHint = /(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(value)
       ? " A numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers."
       : "";
-    throw new ConfigurationFailure(
-      `${description} must be a DNS hostname without a port or path.${addressHint}`,
-    );
+    const message = `${description} must be a DNS hostname without a port or path.${addressHint}`;
+    if (path !== undefined) {
+      throw new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]);
+    }
+    throw new ConfigurationFailure(message);
   }
 }
 
@@ -1811,37 +1864,44 @@ function validateDnsHostname(value: string, description: string): void {
 const SANDBOX_DOMAIN_MAX_LENGTH = 253 - "agent-.".length - 32;
 
 function validateSandboxDomain(value: string): void {
+  const path = "/gatewayRouting/sandbox/domain";
+  const invalid = (message: string) =>
+    new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]);
   // This is a suffix: even canonical IPv4 is invalid after agent-<32 hex>.
   if (/(^|\.)(?:0x[0-9a-f]*|[0-9]+)$/.test(value)) {
-    throw new ConfigurationFailure(
+    throw invalid(
       "Sandbox domain must be a DNS hostname usable after an Agent label; use a DNS suffix such as previews.example.com, not a numeric or 0x last label.",
     );
   }
-  validateDnsHostname(value, "Sandbox domain");
+  validateDnsHostname(value, "Sandbox domain", path);
   // Like the chart, require two labels: browsers and Node refuse a wildcard certificate
   // directly under a single label (*.localhost), so such a domain could never serve previews.
   if (!value.includes(".")) {
-    throw new ConfigurationFailure(
+    throw invalid(
       "Sandbox domain must have at least two DNS labels, such as previews.example.com.",
     );
   }
   if (value.length > SANDBOX_DOMAIN_MAX_LENGTH) {
-    throw new ConfigurationFailure(
+    throw invalid(
       `Sandbox domain must not exceed ${SANDBOX_DOMAIN_MAX_LENGTH} characters, leaving room for the agent-<32 hex>. prefix of dedicated Agent hostnames.`,
     );
   }
 }
 
-function validateKubernetesResourceName(value: string, description: string): void {
+function validateKubernetesResourceName(value: string, description: string, path?: string): void {
   if (!isKubernetesResourceName(value)) {
-    throw new ConfigurationFailure(`${description} must be a DNS-safe Kubernetes resource name.`);
+    throw configurationConstraintFailure(
+      `${description} must be a DNS-safe Kubernetes resource name.`,
+      path,
+    );
   }
 }
 
-function validateKubernetesNamespaceName(value: string, description: string): void {
+function validateKubernetesNamespaceName(value: string, description: string, path?: string): void {
   if (!isKubernetesNamespaceName(value)) {
-    throw new ConfigurationFailure(
+    throw configurationConstraintFailure(
       `${description} must be a Kubernetes namespace name: a DNS label of at most 63 characters.`,
+      path,
     );
   }
 }
@@ -1853,11 +1913,12 @@ const GATEWAY_NAME_MAX_LENGTH = 63;
 
 type GatewayRoutingSetting = "Gateway routing" | "Harness routing";
 
-function validateGatewayName(value: string, setting: GatewayRoutingSetting): void {
-  validateKubernetesResourceName(value, `${setting} Gateway name`);
+function validateGatewayName(value: string, setting: GatewayRoutingSetting, path: string): void {
+  validateKubernetesResourceName(value, `${setting} Gateway name`, path);
   if (value.length > GATEWAY_NAME_MAX_LENGTH) {
-    throw new ConfigurationFailure(
+    throw configurationConstraintFailure(
       `${setting} Gateway name must not exceed ${GATEWAY_NAME_MAX_LENGTH} characters, because it is also a Kubernetes label value.`,
+      path,
     );
   }
 }
@@ -1870,25 +1931,39 @@ function validateGatewayRoutingTarget(
   routing: Partial<KubernetesGatewayRoutingOptions>,
   setting: GatewayRoutingSetting,
 ): void {
-  validateGatewayName(required(routing.gatewayName, `${setting} Gateway name`), setting);
-  validateKubernetesNamespaceName(
-    required(routing.gatewayNamespace, `${setting} Gateway namespace`),
-    `${setting} Gateway namespace`,
+  const path =
+    setting === "Gateway routing" ? "/gatewayRouting" : "/executionCluster/harnessRouting";
+  validateGatewayName(
+    required(routing.gatewayName, `${setting} Gateway name`, `${path}/gatewayName`),
+    setting,
+    `${path}/gatewayName`,
   );
   validateKubernetesNamespaceName(
-    required(routing.envoyNamespace, `${setting} Envoy namespace`),
+    required(routing.gatewayNamespace, `${setting} Gateway namespace`, `${path}/gatewayNamespace`),
+    `${setting} Gateway namespace`,
+    setting === "Gateway routing"
+      ? "/gatewayRouting/gatewayNamespace"
+      : "/executionCluster/harnessRouting/gatewayNamespace",
+  );
+  validateKubernetesNamespaceName(
+    required(routing.envoyNamespace, `${setting} Envoy namespace`, `${path}/envoyNamespace`),
     `${setting} Envoy namespace`,
+    setting === "Gateway routing"
+      ? "/gatewayRouting/envoyNamespace"
+      : "/executionCluster/harnessRouting/envoyNamespace",
   );
   validatePort(
     routing.envoyHttpsTargetPort ?? 10443,
     setting === "Harness routing"
       ? "Harness routing Envoy HTTPS target port"
       : "Envoy HTTPS target port",
+    `${path}/envoyHttpsTargetPort`,
   );
 }
 
 function validateCodexSeccompProfile(value: unknown): string {
-  const profile = required(value, "Codex seccomp localhost profile");
+  const path = "/runtime/codexSeccompProfile";
+  const profile = required(value, "Codex seccomp localhost profile", path);
   const segments = profile.split("/");
   if (
     isAbsolute(profile) ||
@@ -1896,8 +1971,9 @@ function validateCodexSeccompProfile(value: unknown): string {
     segments.some((segment) => segment === "" || segment === "." || segment === "..") ||
     segments.some((segment) => segment.toLowerCase() === "unconfined")
   ) {
-    throw new ConfigurationFailure(
+    throw configurationConstraintFailure(
       "Codex seccomp localhost profile must be a relative profile path without traversal or unconfined mode.",
+      path,
     );
   }
   return profile;
@@ -1990,14 +2066,20 @@ type ChannelProxy =
 function channelProxy(
   value: unknown,
   managedProxy?: KubernetesWorkloadPeer & { readonly hostname: string; readonly port: number },
+  path?: string,
 ): ChannelProxy {
-  const raw = required(value, "Channel proxy URL");
+  const raw = required(
+    value,
+    "Channel proxy URL",
+    path === undefined ? undefined : `${path}/proxyUrl`,
+  );
   let parsed: URL;
   try {
     parsed = new URL(raw);
   } catch {
-    throw new ConfigurationFailure(
+    throw configurationConstraintFailure(
       "Channel proxy URL must identify one exact HTTP(S) IP endpoint.",
+      path === undefined ? undefined : `${path}/proxyUrl`,
     );
   }
   const address = parsed.hostname.replace(/^\[|\]$/g, "");
@@ -2005,15 +2087,24 @@ function channelProxy(
   const explicitPort = raw.match(/^https?:\/\/(?:\[[^\]]+\]|[^:/?#\\]+):([0-9]+)(?=[/?#]|$)/i)?.[1];
   const port = Number(parsed.port || explicitPort);
   if (managedProxy !== undefined) {
-    validatePeer(managedProxy, "Managed channel proxy");
-    required(managedProxy.hostname, "Managed channel proxy hostname");
+    validatePeer(
+      managedProxy,
+      "Managed channel proxy",
+      path === undefined ? undefined : `${path}/managedProxy`,
+    );
+    required(
+      managedProxy.hostname,
+      "Managed channel proxy hostname",
+      path === undefined ? undefined : `${path}/managedProxy/hostname`,
+    );
     if (
       !/^[a-z0-9]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc$/.test(
         managedProxy.hostname,
       )
     ) {
-      throw new ConfigurationFailure(
+      throw configurationConstraintFailure(
         "Managed channel proxy hostname must be the exact namespace-qualified Service DNS name.",
+        path === undefined ? undefined : `${path}/managedProxy/hostname`,
       );
     }
     if (
@@ -2021,7 +2112,10 @@ function channelProxy(
       managedProxy.port < 1 ||
       managedProxy.port > 65535
     ) {
-      throw new ConfigurationFailure("Managed channel proxy port must be a valid TCP port.");
+      throw configurationConstraintFailure(
+        "Managed channel proxy port must be a valid TCP port.",
+        path === undefined ? undefined : `${path}/managedProxy/port`,
+      );
     }
     if (
       !["http:", "https:"].includes(parsed.protocol) ||
@@ -2033,8 +2127,9 @@ function channelProxy(
       parsed.search ||
       parsed.hash
     ) {
-      throw new ConfigurationFailure(
+      throw configurationConstraintFailure(
         "Managed channel proxy URL must match the exact configured Service host and port.",
+        path === undefined ? undefined : `${path}/proxyUrl`,
       );
     }
     return { kind: "managed", peer: managedProxy, port };
@@ -2049,8 +2144,9 @@ function channelProxy(
     parsed.search ||
     parsed.hash
   ) {
-    throw new ConfigurationFailure(
+    throw configurationConstraintFailure(
       "Channel proxy URL must identify one credential-free HTTP(S) IP endpoint.",
+      path === undefined ? undefined : `${path}/proxyUrl`,
     );
   }
   // The URL parser rewrites octal, shorthand, integer, and hex IPv4 hosts.
@@ -2066,8 +2162,9 @@ function channelProxy(
     }
     const writtenHost = /^https?:\/\/([^:/?#\\]+)/i.exec(hostSource)?.[1];
     if (writtenHost === undefined || writtenHost !== parsed.hostname) {
-      throw new ConfigurationFailure(
+      throw configurationConstraintFailure(
         "Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+        path === undefined ? undefined : `${path}/proxyUrl`,
       );
     }
   }
@@ -2075,11 +2172,12 @@ function channelProxy(
   // host (::ffff:0:0/96) leaves as IPv4 traffic that its IPv6 egress ipBlock
   // never matches. Neither reaches a proxy.
   if (unspecifiedOrIpv4MappedHost(address)) {
-    throw new ConfigurationFailure(
+    throw configurationConstraintFailure(
       "Channel proxy URL host must not be an unspecified or IPv4-mapped IPv6 address; write the proxy's own IPv4 or IPv6 address.",
+      path === undefined ? undefined : `${path}/proxyUrl`,
     );
   }
-  validatePort(port, "Channel proxy port");
+  validatePort(port, "Channel proxy port", path === undefined ? undefined : `${path}/proxyUrl`);
   return { kind: "ip", address, port };
 }
 
@@ -2960,7 +3058,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
               envoyHttpsTargetPort: { type: "integer", minimum: 1, maximum: 65535 },
             },
           },
-          caBundle: { type: "string", minLength: 1 },
+          caBundle: { type: "string", minLength: 1, maxLength: 65536 },
           network: {
             type: "object",
             additionalProperties: false,
@@ -3153,345 +3251,537 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private mergePatchOptions:
     ReturnType<typeof import("@kubernetes/client-node").setHeaderOptions> | undefined;
 
-  static validateConfiguration(configuration: unknown): void {
-    const candidate = asRecord(configuration);
-    if (candidate === undefined) {
-      throw new ConfigurationFailure("Kubernetes options are required.");
-    }
-    if ("clients" in candidate) {
-      throw new ConfigurationFailure("Injected Kubernetes API clients are not supported.");
-    }
-    for (const key of Object.keys(candidate)) {
-      if (!(key in KubernetesComputeDriver.configurationSchema.properties)) {
-        throw new ConfigurationFailure(
-          `The Kubernetes driver configuration contains unsupported option ${key}.`,
+  static validateConfiguration(
+    configuration: Readonly<KubernetesComputeDriverOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      const options = configuration;
+      const authentication = options.authentication;
+      if (asRecord(authentication) === undefined) {
+        throw configurationConstraintFailure(
+          "Exactly one explicit Kubernetes authentication mode is required.",
+          "/authentication",
         );
       }
-    }
-    const options = candidate as unknown as KubernetesComputeDriverOptions;
-    const authentication = options.authentication;
-    if (asRecord(authentication) === undefined) {
-      throw new ConfigurationFailure(
-        "Exactly one explicit Kubernetes authentication mode is required.",
-      );
-    }
-    if (authentication.mode === "inCluster") {
-      if ("kubeconfigPath" in authentication || "context" in authentication) {
-        throw new ConfigurationFailure(
-          "In-cluster and kubeconfig authentication cannot be combined.",
-        );
-      }
-    } else if (authentication.mode === "kubeconfig") {
-      const path = required(authentication.kubeconfigPath, "Dedicated kubeconfig path");
-      if (!isAbsolute(path)) {
-        throw new ConfigurationFailure("Dedicated kubeconfig path must be absolute.");
-      }
-      required(authentication.context, "Explicit Kubernetes context");
-    } else {
-      throw new ConfigurationFailure(
-        "Exactly one explicit Kubernetes authentication mode is required.",
-      );
-    }
-    if (
-      asRecord(options.images) === undefined ||
-      typeof options.images.requireImmutableDigest !== "boolean"
-    ) {
-      throw new ConfigurationFailure(
-        "Image references and immutable-image policy must be configured.",
-      );
-    }
-    for (const [description, image] of [
-      ["Gateway", options.images.gateway],
-      ["Agent", options.images.agent],
-    ] as const) {
-      required(image, `${description} image`);
-      if (options.images.requireImmutableDigest && !/@sha256:[a-f0-9]{64}$/.test(image)) {
-        throw new ConfigurationFailure(
-          `${description} image must use an immutable SHA-256 digest.`,
-        );
-      }
-      // Kubernetes refuses to pull a reference its parser refuses (InvalidImageName), such as
-      // an uppercase repository path; profile preflight, the chart and the image tools apply the
-      // same rule. Only the registry host and the tag may use uppercase.
-      const problem = imageReferenceProblem(image);
-      if (problem === "uppercase-repository") {
-        throw new ConfigurationFailure(
-          `${description} image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.`,
-        );
-      }
-      if (problem !== undefined) {
-        throw new ConfigurationFailure(
-          `${description} image must be a container image reference Kubernetes can pull.`,
-        );
-      }
-    }
-    if (
-      asRecord(options.resources) === undefined ||
-      asRecord(options.resources.namespace) === undefined
-    ) {
-      throw new ConfigurationFailure("Workload and namespace resource policies are required.");
-    }
-    validateResources(options.resources.gateway, "Gateway", "resources.gateway");
-    validateResources(options.resources.agent, "Agent", "resources.agent");
-    validateResources(
-      options.resources.namespace.containerDefaults,
-      "Namespace default",
-      "resources.namespace.containerDefaults",
-    );
-    const quota = asRecord(options.resources.namespace.quota);
-    if (quota === undefined || Object.keys(quota).length === 0) {
-      throw new ConfigurationFailure("Namespace resource quota must be configured.");
-    }
-    for (const [key, quantity] of Object.entries(quota)) {
-      required(key, "Quota resource");
-      resourceQuantity(quantity, `Quota ${key}`, `resources.namespace.quota.${key}`);
-    }
-    if (asRecord(options.network) === undefined) {
-      throw new ConfigurationFailure("Network policy is required.");
-    }
-    validatePeer(options.network.dns, "DNS peer");
-    validatePort(options.network.gatewayPort, "Gateway port");
-    // Plugin status also serves on 18791 without a native runtime (OpenClaw Gateways
-    // with enabled plugins), so the reservation does not depend on options.runtime.
-    if (options.network.gatewayPort === PLUGIN_RUNTIME_STATUS_PORT) {
-      throw new ConfigurationFailure(
-        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
-      );
-    }
-    trustedProxyCidrSet(options.network.gatewayTrustedProxyCidrs, "Trusted proxy CIDR");
-    if (options.network.pluginStatusProxySourceCidrs !== undefined) {
-      if (!Array.isArray(options.network.pluginStatusProxySourceCidrs)) {
-        throw new ConfigurationFailure("Plugin status proxy source CIDRs must be an array.");
-      }
-      options.network.pluginStatusProxySourceCidrs.forEach((cidr, index) =>
-        scopedCidr(cidr, "Plugin status proxy CIDR", index),
-      );
-    }
-    if (options.network.repositoryCredentials !== undefined) {
-      validatePeer(options.network.repositoryCredentials, "Repository credential gateway");
-      validatePort(
-        options.network.repositoryCredentials.port,
-        "Repository credential gateway port",
-      );
-    }
-    if (options.network.publicGithubRead !== undefined) {
-      const reader = options.network.publicGithubRead;
-      validatePeer(reader, "Public GitHub reader");
-      if (isIP(reader.address) !== 4 || options.executionCluster !== undefined) {
-        throw new ConfigurationFailure(
-          "Public GitHub reader requires an IPv4 ClusterIP in single-cluster execution.",
-        );
-      }
-    }
-    if (options.network.providerHarness !== undefined) {
-      validatePeer(options.network.providerHarness, "Provider Harness gateway");
-      if (isIP(options.network.providerHarness.address) === 0) {
-        throw new ConfigurationFailure("Provider Harness gateway address must be an IP address.");
-      }
-      validatePort(options.network.providerHarness.port, "Provider Harness gateway port");
-    }
-    const hasDirectGatewayClients = Object.hasOwn(options.network, "gatewayClients");
-    if (options.gatewayRouting === undefined) {
-      if (
-        !Array.isArray(options.network.gatewayClients) ||
-        options.network.gatewayClients.length === 0
-      ) {
-        throw new ConfigurationFailure("At least one exact gateway client peer is required.");
-      }
-      options.network.gatewayClients.forEach((peer, index) =>
-        validatePeer(peer, `Gateway client ${index}`),
-      );
-    } else if (hasDirectGatewayClients) {
-      throw new ConfigurationFailure(
-        "Gateway routing derives the Envoy gateway client peer; do not configure network.gatewayClients.",
-      );
-    }
-    const credentials = options.servicePrincipalCredentials;
-    if (asRecord(credentials) === undefined) {
-      throw new ConfigurationFailure(
-        "ServicePrincipal credential projection must be explicitly configured.",
-      );
-    }
-    if (credentials.mode === "projectedServiceAccountToken") {
-      required(credentials.audience, "ServicePrincipal token audience");
-      const expiration = credentials.expirationSeconds;
-      if (!Number.isSafeInteger(expiration) || expiration < 600 || expiration > 86_400) {
-        throw new ConfigurationFailure(
-          "ServicePrincipal token expiration must be between 600 and 86400 seconds.",
-        );
-      }
-    } else if (credentials.mode !== "disabled") {
-      throw new ConfigurationFailure(
-        "ServicePrincipal credential projection must be explicitly configured.",
-      );
-    }
-    if (options.runtime !== undefined) {
-      const { transportSecretPrefix, channels } = options.runtime;
-      const runtimeProperties = asRecord(
-        KubernetesComputeDriver.configurationSchema.properties.runtime.properties,
-      );
-      if (runtimeProperties === undefined) {
-        throw new ConfigurationFailure("Kubernetes runtime configuration schema is invalid.");
-      }
-      const runtimeKeys = new Set(Object.keys(runtimeProperties));
-      for (const key of Object.keys(options.runtime)) {
-        if (!runtimeKeys.has(key)) {
-          throw new ConfigurationFailure(
-            `The Kubernetes runtime configuration contains unsupported option ${key}.`,
+      if (authentication.mode === "inCluster") {
+        if ("kubeconfigPath" in authentication || "context" in authentication) {
+          throw configurationConstraintFailure(
+            "In-cluster and kubeconfig authentication cannot be combined.",
+            "/authentication",
           );
         }
-      }
-      required(transportSecretPrefix, "Agent transport Secret name prefix");
-      // Credential provisioning builds `<prefix>-<12 hex>` and refuses a name that is
-      // not DNS-safe. Check that shape here so startup fails before an Agent is created.
-      try {
-        validateKubernetesResourceName(
-          `${transportSecretPrefix}-${"a".repeat(12)}`,
-          "Agent runtime credential Secret name",
+      } else if (authentication.mode === "kubeconfig") {
+        const path = required(
+          authentication.kubeconfigPath,
+          "Dedicated kubeconfig path",
+          "/authentication/kubeconfigPath",
         );
-      } catch (error) {
-        if (error instanceof ConfigurationFailure) {
-          throw new ConfigurationFailure(
-            "runtime.transportSecretPrefix must produce a DNS-safe Agent transport Secret name, including its 12-character suffix.",
-          );
+        if (!isAbsolute(path)) {
+          throw new ConfigurationValidationError([
+            {
+              path: "/authentication/kubeconfigPath",
+              code: "INVALID_FORMAT",
+              message: "Dedicated kubeconfig path must be absolute.",
+            },
+          ]);
         }
-        throw error;
-      }
-      const gatewayStorageClassName = required(
-        options.runtime.gatewayStorageClassName,
-        "SQLite-compatible gateway storage class",
-      );
-      validateKubernetesResourceName(
-        gatewayStorageClassName,
-        "SQLite-compatible gateway storage class",
-      );
-      const nativeOpenClawSessionCapacity = options.runtime.nativeOpenClawSessionCapacity;
-      if (
-        nativeOpenClawSessionCapacity !== undefined &&
-        (!Number.isSafeInteger(nativeOpenClawSessionCapacity) ||
-          nativeOpenClawSessionCapacity < 1 ||
-          nativeOpenClawSessionCapacity > 1024)
-      ) {
-        throw new ConfigurationFailure(
-          "Native OpenClaw session capacity must be an integer between 1 and 1024.",
+        required(authentication.context, "Explicit Kubernetes context", "/authentication/context");
+      } else {
+        throw configurationConstraintFailure(
+          "Exactly one explicit Kubernetes authentication mode is required.",
+          "/authentication",
         );
       }
       if (
-        options.runtime.codexModelBaseUrl !== undefined &&
-        (normalizeOpenAiBaseUrl(options.runtime.codexModelBaseUrl) === undefined ||
-          openAiBaseUrlRewritesIpv4(options.runtime.codexModelBaseUrl))
+        asRecord(options.images) === undefined ||
+        typeof options.images.requireImmutableDigest !== "boolean"
       ) {
-        throw new ConfigurationFailure(
-          openAiBaseUrlSpellingMessage("Codex model endpoint", options.runtime.codexModelBaseUrl) ??
-            (openAiBaseUrlRewritesIpv4(options.runtime.codexModelBaseUrl)
-              ? "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address."
-              : "Codex model endpoint requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment."),
+        throw configurationConstraintFailure(
+          "Image references and immutable-image policy must be configured.",
+          "/images",
         );
       }
-      if (options.runtime.codexSeccompProfile !== undefined) {
-        validateCodexSeccompProfile(options.runtime.codexSeccompProfile);
-      }
-      if (channels !== undefined) {
-        if (asRecord(channels) === undefined) {
-          throw new ConfigurationFailure("Channel runtime proxy must be explicitly configured.");
-        }
-        channelProxy(channels.proxyUrl, channels.managedProxy);
-      }
-    }
-    if (options.executionCluster !== undefined) {
-      const execution = options.executionCluster;
-      if (asRecord(execution) === undefined || execution.authentication?.mode !== "kubeconfig") {
-        throw new ConfigurationFailure(
-          "The execution cluster requires its own explicit kubeconfig.",
-        );
-      }
-      if (options.runtime === undefined || !options.gatewayRouting?.hostname) {
-        throw new ConfigurationFailure(
-          "Two-cluster execution requires runtime storage and an explicit CP routing hostname.",
-        );
-      }
-      // Checked before the execution plane's own check below, which reads the harness routing
-      // as its Gateway routing, so a refusal names the setting the operator wrote.
-      const harnessHostname: unknown = execution.harnessRouting?.hostname;
-      if (harnessHostname !== undefined && typeof harnessHostname !== "string") {
-        throw new ConfigurationFailure(
-          "Harness routing hostname must be a DNS hostname without a port or path.",
-        );
-      }
-      validateDnsHostname(
-        required(harnessHostname, "Harness routing hostname"),
-        "Harness routing hostname",
-      );
-      validateGatewayRoutingTarget(execution.harnessRouting, "Harness routing");
-      const { executionCluster: _executionCluster, ...control } = options;
-      const { gatewayClients: _gatewayClients, ...network } = options.network;
-      KubernetesComputeDriver.validateConfiguration({
-        ...control,
-        authentication: execution.authentication,
-        gatewayRouting: execution.harnessRouting,
-        network: { ...network, dns: execution.network?.dns },
-      });
-      for (const [description, cidrs] of [
-        ["Harness endpoint CIDR", execution.network?.harnessEndpointCidrs],
-        ["Gateway endpoint CIDR", execution.network?.gatewayEndpointCidrs],
-        ["Execution status proxy CIDR", execution.network?.pluginStatusProxySourceCidrs],
+      for (const [description, image] of [
+        ["Gateway", options.images.gateway],
+        ["Agent", options.images.agent],
       ] as const) {
-        if (!Array.isArray(cidrs) || cidrs.length === 0) {
-          throw new ConfigurationFailure(`${description}s must be explicit and nonempty.`);
+        const path = description === "Gateway" ? "/images/gateway" : "/images/agent";
+        required(image, `${description} image`, path);
+        if (options.images.requireImmutableDigest && !/@sha256:[a-f0-9]{64}$/.test(image)) {
+          throw configurationConstraintFailure(
+            `${description} image must use an immutable SHA-256 digest.`,
+            path,
+          );
         }
-        cidrs.forEach((cidr, index) => scopedCidr(cidr, description, index));
+        // Kubernetes refuses to pull a reference its parser refuses (InvalidImageName), such as
+        // an uppercase repository path; profile preflight, the chart and the image tools apply the
+        // same rule. Only the registry host and the tag may use uppercase.
+        const problem = imageReferenceProblem(image);
+        if (problem === "uppercase-repository") {
+          throw configurationConstraintFailure(
+            `${description} image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.`,
+            path,
+          );
+        }
+        if (problem !== undefined) {
+          throw configurationConstraintFailure(
+            `${description} image must be a container image reference Kubernetes can pull.`,
+            path,
+          );
+        }
       }
-      if (execution.caBundle !== undefined) {
-        const certificates = execution.caBundle.match(
-          /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+      if (
+        asRecord(options.resources) === undefined ||
+        asRecord(options.resources.namespace) === undefined
+      ) {
+        throw configurationConstraintFailure(
+          "Workload and namespace resource policies are required.",
+          "/resources",
         );
+      }
+      validateResources(options.resources.gateway, "Gateway", "resources.gateway");
+      validateResources(options.resources.agent, "Agent", "resources.agent");
+      validateResources(
+        options.resources.namespace.containerDefaults,
+        "Namespace default",
+        "resources.namespace.containerDefaults",
+      );
+      const quota = asRecord(options.resources.namespace.quota);
+      if (quota === undefined || Object.keys(quota).length === 0) {
+        throw configurationConstraintFailure(
+          "Namespace resource quota must be configured.",
+          "/resources/namespace/quota",
+        );
+      }
+      for (const [key, quantity] of Object.entries(quota)) {
+        required(key, "Quota resource", "/resources/namespace/quota");
+        resourceQuantity(quantity, "Namespace quota resource", "resources.namespace.quota");
+      }
+      if (asRecord(options.network) === undefined) {
+        throw configurationConstraintFailure("Network policy is required.", "/network");
+      }
+      validatePeer(options.network.dns, "DNS peer", "/network/dns");
+      validatePort(options.network.gatewayPort, "Gateway port", "/network/gatewayPort");
+      // Plugin status also serves on 18791 without a native runtime (OpenClaw Gateways
+      // with enabled plugins), so the reservation does not depend on options.runtime.
+      if (options.network.gatewayPort === PLUGIN_RUNTIME_STATUS_PORT) {
+        throw new ConfigurationValidationError([
+          {
+            path: "/network/gatewayPort",
+            code: "INVALID_VALUE",
+            message: `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+          },
+        ]);
+      }
+      trustedProxyCidrSet(
+        options.network.gatewayTrustedProxyCidrs,
+        "Trusted proxy CIDR",
+        "/network/gatewayTrustedProxyCidrs",
+      );
+      if (options.network.pluginStatusProxySourceCidrs !== undefined) {
+        if (!Array.isArray(options.network.pluginStatusProxySourceCidrs)) {
+          throw configurationConstraintFailure(
+            "Plugin status proxy source CIDRs must be an array.",
+            "/network/pluginStatusProxySourceCidrs",
+          );
+        }
+        options.network.pluginStatusProxySourceCidrs.forEach((cidr, index) =>
+          scopedCidr(
+            cidr,
+            "Plugin status proxy CIDR",
+            index,
+            `/network/pluginStatusProxySourceCidrs/${index}`,
+          ),
+        );
+      }
+      if (options.network.repositoryCredentials !== undefined) {
+        validatePeer(
+          options.network.repositoryCredentials,
+          "Repository credential gateway",
+          "/network/repositoryCredentials",
+        );
+        validatePort(
+          options.network.repositoryCredentials.port,
+          "Repository credential gateway port",
+          "/network/repositoryCredentials/port",
+        );
+      }
+      if (options.network.publicGithubRead !== undefined) {
+        const reader = options.network.publicGithubRead;
+        validatePeer(reader, "Public GitHub reader", "/network/publicGithubRead");
+        if (isIP(reader.address) !== 4 || options.executionCluster !== undefined) {
+          throw configurationConstraintFailure(
+            "Public GitHub reader requires an IPv4 ClusterIP in single-cluster execution.",
+            "/network/publicGithubRead/address",
+          );
+        }
+      }
+      if (options.network.providerHarness !== undefined) {
+        validatePeer(
+          options.network.providerHarness,
+          "Provider Harness gateway",
+          "/network/providerHarness",
+        );
+        if (isIP(options.network.providerHarness.address) === 0) {
+          throw configurationConstraintFailure(
+            "Provider Harness gateway address must be an IP address.",
+            "/network/providerHarness/address",
+          );
+        }
+        validatePort(
+          options.network.providerHarness.port,
+          "Provider Harness gateway port",
+          "/network/providerHarness/port",
+        );
+      }
+      const hasDirectGatewayClients = Object.hasOwn(options.network, "gatewayClients");
+      if (options.gatewayRouting === undefined) {
         if (
-          !certificates?.length ||
-          execution.caBundle
-            .replace(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g, "")
-            .trim()
+          !Array.isArray(options.network.gatewayClients) ||
+          options.network.gatewayClients.length === 0
         ) {
-          throw new ConfigurationFailure("Execution trust must contain only PEM certificates.");
+          throw configurationConstraintFailure(
+            "At least one exact gateway client peer is required.",
+            "/network/gatewayClients",
+          );
         }
-        try {
-          for (const certificate of certificates) {
-            new X509Certificate(certificate);
+        options.network.gatewayClients.forEach((peer, index) =>
+          validatePeer(peer, `Gateway client ${index}`, `/network/gatewayClients/${index}`),
+        );
+      } else if (hasDirectGatewayClients) {
+        throw configurationConstraintFailure(
+          "Gateway routing derives the Envoy gateway client peer; do not configure network.gatewayClients.",
+          "/network/gatewayClients",
+        );
+      }
+      const credentials = options.servicePrincipalCredentials;
+      if (asRecord(credentials) === undefined) {
+        throw configurationConstraintFailure(
+          "ServicePrincipal credential projection must be explicitly configured.",
+          "/servicePrincipalCredentials",
+        );
+      }
+      if (credentials.mode === "projectedServiceAccountToken") {
+        required(
+          credentials.audience,
+          "ServicePrincipal token audience",
+          "/servicePrincipalCredentials/audience",
+        );
+        const expiration = credentials.expirationSeconds;
+        if (!Number.isSafeInteger(expiration) || expiration < 600 || expiration > 86_400) {
+          throw configurationConstraintFailure(
+            "ServicePrincipal token expiration must be between 600 and 86400 seconds.",
+            "/servicePrincipalCredentials/expirationSeconds",
+          );
+        }
+      } else if (credentials.mode !== "disabled") {
+        throw configurationConstraintFailure(
+          "ServicePrincipal credential projection must be explicitly configured.",
+          "/servicePrincipalCredentials",
+        );
+      }
+      if (options.runtime !== undefined) {
+        const { transportSecretPrefix, channels } = options.runtime;
+        const runtimeProperties = asRecord(
+          KubernetesComputeDriver.configurationSchema.properties.runtime.properties,
+        );
+        if (runtimeProperties === undefined) {
+          throw configurationConstraintFailure(
+            "Kubernetes runtime configuration schema is invalid.",
+            "/runtime",
+          );
+        }
+        const runtimeKeys = new Set(Object.keys(runtimeProperties));
+        for (const key of Object.keys(options.runtime)) {
+          if (!runtimeKeys.has(key)) {
+            throw configurationConstraintFailure(
+              "The Kubernetes runtime configuration contains an unsupported option.",
+              "/runtime",
+              "UNKNOWN_FIELD",
+            );
           }
-        } catch {
-          throw new ConfigurationFailure("Execution trust contains an invalid certificate.");
         }
-      }
-    }
-    if (options.gatewayRouting !== undefined) {
-      const routing = options.gatewayRouting;
-      if (asRecord(routing) === undefined) {
-        throw new ConfigurationFailure("Gateway routing must be explicitly configured.");
-      }
-      if (routing.hostname !== undefined) {
-        if (typeof routing.hostname !== "string") {
-          throw new ConfigurationFailure(
-            "Gateway routing hostname must be a DNS hostname without a port or path.",
+        required(
+          transportSecretPrefix,
+          "Agent transport Secret name prefix",
+          "/runtime/transportSecretPrefix",
+        );
+        // Credential provisioning builds `<prefix>-<12 hex>` and refuses a name that is
+        // not DNS-safe. Check that shape here so startup fails before an Agent is created.
+        try {
+          validateKubernetesResourceName(
+            `${transportSecretPrefix}-${"a".repeat(12)}`,
+            "Agent runtime credential Secret name",
+          );
+        } catch (error) {
+          if (error instanceof ConfigurationFailure) {
+            throw configurationConstraintFailure(
+              "runtime.transportSecretPrefix must produce a DNS-safe Agent transport Secret name, including its 12-character suffix.",
+              "/runtime/transportSecretPrefix",
+            );
+          }
+          throw error;
+        }
+        const gatewayStorageClassName = required(
+          options.runtime.gatewayStorageClassName,
+          "SQLite-compatible gateway storage class",
+          "/runtime/gatewayStorageClassName",
+        );
+        if (!isKubernetesResourceName(gatewayStorageClassName)) {
+          throw new ConfigurationValidationError([
+            {
+              path: "/runtime/gatewayStorageClassName",
+              code: "INVALID_FORMAT",
+              message:
+                "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+            },
+          ]);
+        }
+        const nativeOpenClawSessionCapacity = options.runtime.nativeOpenClawSessionCapacity;
+        if (
+          nativeOpenClawSessionCapacity !== undefined &&
+          (!Number.isSafeInteger(nativeOpenClawSessionCapacity) ||
+            nativeOpenClawSessionCapacity < 1 ||
+            nativeOpenClawSessionCapacity > 1024)
+        ) {
+          throw configurationConstraintFailure(
+            "Native OpenClaw session capacity must be an integer between 1 and 1024.",
+            "/runtime/nativeOpenClawSessionCapacity",
           );
         }
-        if (routing.hostname.length > 0) {
-          validateDnsHostname(routing.hostname, "Gateway routing hostname");
-        }
-      }
-      validatePort(routing.endpointPort ?? 443, "Gateway routing endpoint port");
-      validateGatewayRoutingTarget(routing, "Gateway routing");
-      if (routing.sandbox !== undefined) {
-        validateSandboxDomain(required(routing.sandbox.domain, "Sandbox domain"));
-        validatePort(routing.sandbox.publicPort ?? 443, "Public sandbox port");
-        validatePort(options.network.gatewayPort + 1, "Gateway sandbox port");
-        if (options.runtime === undefined) {
-          throw new ConfigurationFailure("Sandbox routing requires a native Gateway runtime.");
-        }
-        if (options.network.gatewayPort + 1 === PLUGIN_RUNTIME_STATUS_PORT) {
-          throw new ConfigurationFailure(
-            `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+        if (
+          options.runtime.codexModelBaseUrl !== undefined &&
+          (normalizeOpenAiBaseUrl(options.runtime.codexModelBaseUrl) === undefined ||
+            openAiBaseUrlRewritesIpv4(options.runtime.codexModelBaseUrl))
+        ) {
+          throw configurationConstraintFailure(
+            openAiBaseUrlSpellingMessage(
+              "Codex model endpoint",
+              options.runtime.codexModelBaseUrl,
+            ) ??
+              (openAiBaseUrlRewritesIpv4(options.runtime.codexModelBaseUrl)
+                ? "Codex model endpoint IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address."
+                : "Codex model endpoint requires HTTPS, a nonzero port, and a path ending in /v1 without credentials, wildcards, query, or fragment."),
+            "/runtime/codexModelBaseUrl",
           );
         }
+        if (options.runtime.codexSeccompProfile !== undefined) {
+          validateCodexSeccompProfile(options.runtime.codexSeccompProfile);
+        }
+        if (channels !== undefined) {
+          if (asRecord(channels) === undefined) {
+            throw configurationConstraintFailure(
+              "Channel runtime proxy must be explicitly configured.",
+              "/runtime/channels",
+            );
+          }
+          channelProxy(channels.proxyUrl, channels.managedProxy, "/runtime/channels");
+        }
       }
+      if (options.executionCluster !== undefined) {
+        const execution = options.executionCluster;
+        if (asRecord(execution) === undefined || execution.authentication?.mode !== "kubeconfig") {
+          throw configurationConstraintFailure(
+            "The execution cluster requires its own explicit kubeconfig.",
+            "/executionCluster/authentication",
+          );
+        }
+        if (options.runtime === undefined || !options.gatewayRouting?.hostname) {
+          throw configurationConstraintFailure(
+            "Two-cluster execution requires runtime storage and an explicit CP routing hostname.",
+            "/executionCluster",
+          );
+        }
+        // Checked before the execution plane's own check below, which reads the harness routing
+        // as its Gateway routing, so a refusal names the setting the operator wrote.
+        const harnessHostname: unknown = execution.harnessRouting?.hostname;
+        if (harnessHostname !== undefined && typeof harnessHostname !== "string") {
+          throw configurationConstraintFailure(
+            "Harness routing hostname must be a DNS hostname without a port or path.",
+            "/executionCluster/harnessRouting/hostname",
+          );
+        }
+        validateDnsHostname(
+          required(
+            harnessHostname,
+            "Harness routing hostname",
+            "/executionCluster/harnessRouting/hostname",
+          ),
+          "Harness routing hostname",
+          "/executionCluster/harnessRouting/hostname",
+        );
+        validateGatewayRoutingTarget(execution.harnessRouting, "Harness routing");
+        const { executionCluster: _executionCluster, ...control } = options;
+        const { gatewayClients: _gatewayClients, ...network } = options.network;
+        try {
+          requireConfiguration(KubernetesComputeDriver, {
+            ...control,
+            authentication: execution.authentication,
+            gatewayRouting: execution.harnessRouting,
+            network: { ...network, dns: execution.network?.dns },
+          });
+        } catch (error) {
+          if (!(error instanceof ConfigurationValidationError)) {
+            throw error;
+          }
+          // Only these inputs were replaced when constructing the execution-plane options.
+          // Inherited control-plane fields retain their original paths.
+          const fields = [
+            ["/authentication", "/executionCluster/authentication"],
+            ["/gatewayRouting", "/executionCluster/harnessRouting"],
+            ["/network/dns", "/executionCluster/network/dns"],
+          ] as const;
+          throw new ConfigurationValidationError(
+            error.error.details.map((detail) => {
+              const field = fields.find(
+                ([source]) => detail.path === source || detail.path.startsWith(`${source}/`),
+              );
+              return {
+                ...detail,
+                path: field ? field[1] + detail.path.slice(field[0].length) : detail.path,
+              };
+            }) as [ErrorDetail, ...ErrorDetail[]],
+          );
+        }
+        for (const [key, description, cidrs] of [
+          [
+            "harnessEndpointCidrs",
+            "Harness endpoint CIDR",
+            execution.network?.harnessEndpointCidrs,
+          ],
+          [
+            "gatewayEndpointCidrs",
+            "Gateway endpoint CIDR",
+            execution.network?.gatewayEndpointCidrs,
+          ],
+          [
+            "pluginStatusProxySourceCidrs",
+            "Execution status proxy CIDR",
+            execution.network?.pluginStatusProxySourceCidrs,
+          ],
+        ] as const) {
+          if (!Array.isArray(cidrs) || cidrs.length === 0) {
+            throw configurationConstraintFailure(
+              `${description}s must be explicit and nonempty.`,
+              `/executionCluster/network/${key}`,
+            );
+          }
+          cidrs.forEach((cidr, index) =>
+            scopedCidr(cidr, description, index, `/executionCluster/network/${key}/${index}`),
+          );
+        }
+        if (execution.caBundle !== undefined) {
+          const begin = "-----BEGIN CERTIFICATE-----";
+          const end = "-----END CERTIFICATE-----";
+          const bundle = execution.caBundle;
+          let offset = 0;
+          let count = 0;
+          const invalid = (message: string) =>
+            new ConfigurationValidationError([
+              {
+                path: "/executionCluster/caBundle",
+                code: "INVALID_FORMAT",
+                message,
+              },
+            ]);
+          // The schema bounds the bundle; each delimiter scan advances past its consumed block.
+          while (offset < bundle.length) {
+            while (offset < bundle.length && bundle[offset]!.trim() === "") {
+              offset += 1;
+            }
+            if (offset === bundle.length) {
+              break;
+            }
+            const finish = bundle.indexOf(end, offset + begin.length);
+            if (!bundle.startsWith(begin, offset) || finish === -1) {
+              throw invalid("Execution trust must contain only PEM certificates.");
+            }
+            const next = finish + end.length;
+            try {
+              new X509Certificate(bundle.slice(offset, next));
+            } catch {
+              throw invalid("Execution trust contains an invalid certificate.");
+            }
+            count += 1;
+            offset = next;
+          }
+          if (count === 0) {
+            throw invalid("Execution trust must contain only PEM certificates.");
+          }
+        }
+      }
+      if (options.gatewayRouting !== undefined) {
+        const routing = options.gatewayRouting;
+        if (asRecord(routing) === undefined) {
+          throw configurationConstraintFailure(
+            "Gateway routing must be explicitly configured.",
+            "/gatewayRouting",
+          );
+        }
+        if (routing.hostname !== undefined) {
+          if (typeof routing.hostname !== "string") {
+            throw configurationConstraintFailure(
+              "Gateway routing hostname must be a DNS hostname without a port or path.",
+              "/gatewayRouting/hostname",
+            );
+          }
+          if (routing.hostname.length > 0) {
+            validateDnsHostname(
+              routing.hostname,
+              "Gateway routing hostname",
+              "/gatewayRouting/hostname",
+            );
+          }
+        }
+        validatePort(
+          routing.endpointPort ?? 443,
+          "Gateway routing endpoint port",
+          "/gatewayRouting/endpointPort",
+        );
+        validateGatewayRoutingTarget(routing, "Gateway routing");
+        if (routing.sandbox !== undefined) {
+          validateSandboxDomain(
+            required(routing.sandbox.domain, "Sandbox domain", "/gatewayRouting/sandbox/domain"),
+          );
+          validatePort(
+            routing.sandbox.publicPort ?? 443,
+            "Public sandbox port",
+            "/gatewayRouting/sandbox/publicPort",
+          );
+          validatePort(
+            options.network.gatewayPort + 1,
+            "Gateway sandbox port",
+            "/network/gatewayPort",
+          );
+          if (options.runtime === undefined) {
+            throw configurationConstraintFailure(
+              "Sandbox routing requires a native Gateway runtime.",
+              "/gatewayRouting/sandbox",
+            );
+          }
+          if (options.network.gatewayPort + 1 === PLUGIN_RUNTIME_STATUS_PORT) {
+            throw new ConfigurationValidationError([
+              {
+                path: "/network/gatewayPort",
+                code: "INVALID_VALUE",
+                message: `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+              },
+            ]);
+          }
+        }
+      }
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
     }
   }
 
@@ -3507,13 +3797,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly readNodeCa?: () => Promise<string | undefined>;
     } = {},
   ) {
-    KubernetesComputeDriver.validateConfiguration(options);
+    options = requireConfiguration(KubernetesComputeDriver, options);
     this.id = required(selection.id ?? "compute-kubernetes-local", "Kubernetes Compute Driver ID");
     this.implementation = required(
       selection.implementation ?? "kubernetes-local",
       "Kubernetes Compute Driver implementation",
     );
-    this.options = options;
+    // Keep the Driver-owned configuration isolated from its constructor caller.
+    this.options = structuredClone(options);
     if (options.runtime !== undefined) {
       this.requiresAgentRuntimeCredentials = true;
     }

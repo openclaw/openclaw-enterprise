@@ -82,6 +82,19 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       ) {
         error.serverMessage = serverMessage;
       }
+      error.details = Array.isArray(payload?.error?.details)
+        ? payload.error.details
+            .slice(0, 32)
+            .filter(
+              (detail) =>
+                typeof detail?.path === "string" &&
+                detail.path.length <= 512 &&
+                /^(?:\/(?:[^~/]|~0|~1)*)*$/.test(detail.path) &&
+                typeof detail.code === "string" &&
+                (detail.message === undefined ||
+                  (typeof detail.message === "string" && detail.message.length <= 512)),
+            )
+        : [];
       const detailPaths = Array.isArray(payload?.error?.details)
         ? payload.error.details
             .map((detail) => detail?.path)

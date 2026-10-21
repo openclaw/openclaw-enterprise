@@ -1,3 +1,4 @@
+import { assertConfigurationSchema, requireConfiguration } from "@openclaw-enterprise/contracts";
 import { validateSandboxNetworkGrants } from "@openclaw-enterprise/contracts";
 import type { SandboxNetworkGrant } from "@openclaw-enterprise/contracts";
 import { readFile } from "node:fs/promises";
@@ -30,10 +31,11 @@ import {
   type BundledPresetVersion,
   type NativeWorkerSupport,
   type OpenClawController,
+  DriverConfigurationRegistry,
   type PostgresPlatformState,
   type SkippedDefaultPreset,
 } from "@openclaw-enterprise/occ";
-import { Check, Errors } from "typebox/value";
+
 import {
   KubernetesComputeDriver,
   type KubernetesComputeDriverOptions,
@@ -85,6 +87,7 @@ export interface SelectedDriverConfiguration<T = ConfigurationRecord> {
   readonly implementation: string;
   readonly package?: string;
   readonly configuration: T;
+  readonly definition: DriverImplementation;
 }
 
 export interface InstallationStartupConfiguration {
@@ -108,6 +111,24 @@ export interface InstallationStartupConfiguration {
     readonly service_account?: { readonly id: string };
     readonly repo?: SelectedDriverConfiguration;
   };
+}
+
+/** Definitions stay with their selected identities across API and worker composition. */
+export function installationDriverConfigurations(
+  installation: InstallationStartupConfiguration | undefined,
+): readonly import("@openclaw-enterprise/occ").DriverConfigurationRegistration[] {
+  return Object.entries(installation?.drivers ?? {}).flatMap(([capability, selection]) =>
+    "definition" in selection
+      ? [
+          {
+            capability: capability as import("@openclaw-enterprise/contracts").DriverCapability,
+            driverId: selection.id,
+            implementation: selection.implementation,
+            definition: selection.definition,
+          },
+        ]
+      : [],
+  );
 }
 
 export type ServiceAccountDriverFactory = (
@@ -399,39 +420,23 @@ function selected(
   if (schema.additionalProperties !== false) {
     throw new Error(`${path} must expose a closed configuration schema before construction.`);
   }
-  let validSchema = false;
-  try {
-    validSchema = Check(schema, configuration);
-  } catch {
-    // An unsupported schema must fail closed instead of skipping validation.
-  }
-  if (!validSchema) {
-    throw new Error(
-      `${path}.configuration does not match its Driver configuration schema${schemaMismatch(schema, configuration)}.`,
-    );
-  }
-  driver.validateConfiguration(configuration);
+  assertConfigurationSchema(schema);
+  new DriverConfigurationRegistry().register({
+    capability,
+    driverId: id,
+    implementation,
+    definition: driver,
+  });
+  const validated = object(requireConfiguration(driver, configuration), `${path}.configuration`);
   return Object.freeze({
     id,
     implementation,
     ...(Object.hasOwn(selection, "package")
       ? { package: nonempty(selection.package, `${path}.package`) }
       : {}),
-    configuration,
+    configuration: validated,
+    definition: driver,
   });
-}
-
-// Names the first mismatched field and the expected shape, never the value,
-// which may be a credential reference.
-function schemaMismatch(schema: Record<string, unknown>, configuration: unknown): string {
-  try {
-    for (const error of Errors(schema, configuration)) {
-      return ` at ${error.instancePath || "/"}: ${error.message}`;
-    }
-  } catch {
-    // The generic message still fails closed.
-  }
-  return "";
 }
 
 /**
@@ -516,7 +521,7 @@ export async function loadInstallationConfiguration(options: {
   const cluster = nonempty(occ.cluster, "occ.cluster");
   const sandboxNetworkPolicyCeiling = configuration.sandboxNetworkPolicyCeiling;
   if (sandboxNetworkPolicyCeiling !== undefined) {
-    validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling);
+    validateSandboxNetworkGrants(sandboxNetworkPolicyCeiling, "/sandboxNetworkPolicyCeiling");
   }
   const observability = observabilityConfiguration(configuration.observability);
   const runtime = runtimeConfiguration(configuration.runtime);

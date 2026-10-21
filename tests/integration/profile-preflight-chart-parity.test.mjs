@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -286,12 +287,22 @@ function fieldParity(
 
 // Compute must admit or refuse the same value at Driver creation.
 const configured = conformanceKubernetesOptions({ gatewayTrustedProxyCidrs: ["10.42.0.0/16"] });
-function assertCompute(overrides, accepted, refusal, label) {
+function assertCompute(overrides, accepted, refusal, label, path, code = "INVALID_FORMAT") {
   const create = () => createKubernetesComputeDriver({ ...configured, ...overrides });
   if (accepted) {
     assert.doesNotThrow(create, label);
   } else {
-    assert.throws(create, refusal, label);
+    assert.throws(
+      create,
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.equal(error.error.details[0].path, path);
+        assert.equal(error.error.details[0].code, code);
+        assert.match(error.error.details[0].message, refusal);
+        return true;
+      },
+      label,
+    );
   }
 }
 
@@ -477,6 +488,7 @@ test(
         accepted,
         /Gateway routing Envoy namespace must be a Kubernetes namespace name/,
         `${label}: Compute`,
+        "/gatewayRouting/envoyNamespace",
       );
     });
   },
@@ -541,6 +553,7 @@ test(
         accepted,
         /DNS peer namespace must be a Kubernetes namespace name/,
         `dns ${label}: Compute`,
+        "/network/dns/namespace",
       );
     });
   },
@@ -637,11 +650,11 @@ const peerSelectorCases = [
   [{ [`${"a".repeat(253)}/Name`]: "" }, true],
   [{ [`${"a".repeat(64)}.example/zone`]: "east" }, true],
   [{ 123: "0" }, true],
-  [{ app: "kube/dns" }, false],
-  [{ app: "a".repeat(64) }, false],
-  [{ app: "value\n" }, false],
-  [{ app: "-dns" }, false],
-  [{ app: "@platform" }, false],
+  [{ app: "kube/dns" }, false, /^Configuration does not satisfy pattern\.$/],
+  [{ app: "a".repeat(64) }, false, /^Configuration does not satisfy maxLength\.$/, "TOO_LONG"],
+  [{ app: "value\n" }, false, /^Configuration does not satisfy pattern\.$/],
+  [{ app: "-dns" }, false, /^Configuration does not satisfy pattern\.$/],
+  [{ app: "@platform" }, false, /^Configuration does not satisfy pattern\.$/],
   [{ "k8s.io/name/extra": "dns" }, false],
   [{ "example.com/": "dns" }, false],
   [{ "Example.com/Name": "dns" }, false],
@@ -658,16 +671,18 @@ test("peer Pod selectors get Compute's verdict in preflight, and the chart rende
     "controlPlane.metrics.scraperNamespaceLabels",
     "controlPlane.metrics.scraperPodLabels",
   ];
-  const admitDns = (dns, accepted, label) =>
+  const admitDns = (dns, accepted, label, refusal, code) =>
     assertCompute(
       { network: { ...configured.network, dns } },
       accepted,
-      /DNS peer label (?:keys|values) must be Kubernetes/,
+      refusal ?? /DNS peer label keys must be Kubernetes/,
       label,
+      "/network/dns/podLabels",
+      code,
     );
-  return each(peerSelectorCases, async ([podLabels, accepted]) => {
+  return each(peerSelectorCases, async ([podLabels, accepted, refusal, code]) => {
     const label = JSON.stringify(podLabels);
-    admitDns({ namespace: "kube-system", podLabels }, accepted, label);
+    admitDns({ namespace: "kube-system", podLabels }, accepted, label, refusal, code);
     const profile = input({});
     // Each path names the field to set and, below, the field the refusal must name.
     for (const path of peers) {
@@ -803,6 +818,7 @@ test(
               false,
               /Gateway image repository path must be lowercase/,
               name,
+              "/images/gateway",
             );
             return;
           }
@@ -946,6 +962,7 @@ test("image references get Kubernetes' verdict in preflight and Compute", () =>
         ? /Gateway image repository path must be lowercase/
         : /Gateway image must be a container image reference Kubernetes can pull/,
       label,
+      "/images/gateway",
     );
     const accepted = immutableImageAccepted(image, problem);
     // One profile carries the reference in all three image fields; preflight refuses each.

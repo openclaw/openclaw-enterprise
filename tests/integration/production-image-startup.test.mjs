@@ -213,6 +213,7 @@ function assertStartupFailureCode(output, event, code) {
     .find((line) => line?.event === event);
   assert.ok(diagnostic, output);
   assert.equal(diagnostic.code, code);
+  return diagnostic;
 }
 
 async function productionFixture(t) {
@@ -298,8 +299,20 @@ test(
       "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
       image,
     ]);
-    assertStartupFailureCode(output, "startup-error", "GATEWAY_STORAGE_CLASS_INVALID");
-    assert.doesNotMatch(output, /SQLite-compatible gateway storage class/);
+    const diagnostic = assertStartupFailureCode(
+      output,
+      "startup-error",
+      "DRIVER_CONFIGURATION_INVALID",
+    );
+    assert.deepEqual(diagnostic.details, [
+      {
+        path: "/runtime/gatewayStorageClassName",
+        code: "INVALID_FORMAT",
+        message:
+          "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+      },
+    ]);
+    assert.doesNotMatch(output, /Bad_Class/);
     assert.doesNotMatch(output, /PERSISTENCE_UNAVAILABLE/);
     assertNoPackagingFailure(output);
   },
@@ -367,6 +380,27 @@ test(
 
     const path = join(fixture, "installation.json");
     const installation = JSON.parse(await readFile(path, "utf8"));
+    const invalidDriver = structuredClone(installation);
+    invalidDriver.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+    await writeFile(path, JSON.stringify(invalidDriver), { mode: 0o644 });
+    await assert.rejects(
+      runDocker(check, { timeout: 60_000 * imageSmokeTimeoutMultiplier }),
+      (error) => {
+        assert.equal(error.code, 1);
+        assert.match(error.stderr, /installation-check:.*DRIVER_CONFIGURATION_INVALID/);
+        const details = JSON.parse(error.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1]);
+        assert.deepEqual(details, [
+          {
+            path: "/runtime/gatewayStorageClassName",
+            code: "INVALID_FORMAT",
+            message:
+              "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+          },
+        ]);
+        assert.doesNotMatch(error.stderr, /Bad_Class/);
+        return true;
+      },
+    );
     installation.presets = { files: ["presets/missing.json"] };
     await writeFile(path, `${JSON.stringify(installation, undefined, 2)}\n`, {
       encoding: "utf8",

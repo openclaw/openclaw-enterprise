@@ -2056,6 +2056,14 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       throw failure(404, "NOT_FOUND", "The requested platform resource was not found.");
     }
 
+    if (operation.operationId === "discoverInstallationConfigurations") {
+      const configurations = await controller.discoverConfigurations(context.actorId, {
+        scope: "installation",
+      });
+      reply.send({ data: { configurations }, meta: { requestId: request.id } });
+      return;
+    }
+
     if (operation.operationId === "getInstallation") {
       reply.send({
         data: clientInstallation(

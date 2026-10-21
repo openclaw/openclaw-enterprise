@@ -54,7 +54,18 @@ test(
     });
     await save();
     context.diagnostic(`QA evidence: ${artifacts}`);
-    for (const installation of selection.installations) {
+    if (selection.sandboxPolicy) {
+      const { verifyQaSandboxPolicy } = await import("../helpers/qa-sandbox-policy.mjs");
+      await stage(
+        context,
+        "kubernetes/Codex/OpenShell",
+        "shared Driver configuration and real network enforcement",
+        () => verifyQaSandboxPolicy(artifacts),
+      );
+    }
+    for (const installation of selection.installations.filter((value) =>
+      selection.cells.some((cell) => cell.installation === value && cell.scenarios.length > 0),
+    )) {
       await context.test(
         `${installation} OCC + Kubernetes compute / Sandbox none`,
         { timeout: 7_000_000 },

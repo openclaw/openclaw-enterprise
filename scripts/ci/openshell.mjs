@@ -92,7 +92,7 @@ async function ensurePrivateDirectory(path) {
 }
 
 function openShellSourceUrl() {
-  return `https://github.com/NVIDIA/OpenShell/archive/refs/tags/v${openShellVersion}.tar.gz`;
+  return `https://codeload.github.com/NVIDIA/OpenShell/tar.gz/refs/tags/v${openShellVersion}`;
 }
 
 function agentSandboxManifestUrl() {

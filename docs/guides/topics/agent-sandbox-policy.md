@@ -12,10 +12,11 @@ observed denials. Policy reads and changes have independent permissions; see the
    counts are aggregated provider data. Choose **Review suggestion**, or enter a
    grant manually under **Agent network policy**. A denial with an exact path and
    destination can also prefill a grant.
-3. Under **Proposed network rules**, use **+** to add a rule and **×** to remove
-   one. These changes stay local. Review the executable path, hostname, and complete
+3. In the discovered configuration section, use **Add Network rules** and
+   **Remove Network rules** to edit additions. These changes stay local. Review the executable path, hostname, and complete
    port scope against the **Installation delegation ceiling**, then select
-   **Review changes**. **Back to editing** preserves your proposal.
+   **Review changes**. The preview shows field errors without saving or applying.
+   Correct errors and review again. **Back to editing** preserves your proposal.
 4. Choose **Save** to persist the policy without changing the current revision,
    or **Save and apply to current revision** to save and request live application
    to the selected running revision. Wait for `applied` and a provider version
@@ -26,7 +27,9 @@ observed denials. Policy reads and changes have independent permissions; see the
    When live application is unsupported, use **Deploy new version** explicitly.
    Deployment requires deploy permission and can interrupt the Agent.
 
-An addition outside the ceiling is rejected with a visible error. Correct the
+The schema supplies field descriptions and constraints. Shapes without a form
+use a schema-aware JSON editor. A preview for an older draft or policy version
+cannot replace newer edits. An addition outside the ceiling is rejected with a visible error. Correct the
 retained edit and review it again; the saved policy remains unchanged and no
 application is requested. If saving succeeds but application is rejected, the
 error identifies the saved version. Refresh and inspect the current revision

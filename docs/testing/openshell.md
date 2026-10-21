@@ -67,7 +67,8 @@ Gateway access, real model and tool turns, credential delivery, restricted
 filesystem and network access, replacement, and cleanup. Local fixture tests
 alone do not prove these outcomes. See [OpenShell coverage](openshell-coverage.md) for the individual checks.
 
-For direct Codex file runs, also provide the
+Preparation requires the Codex credential and model; running the complete lane
+also requires the separate native OpenAI key. For direct Codex file runs, also provide the
 [policy fixture's migrator connection](openshell-coverage.md#agent-network-policy).
 
 The suite delivers initial workspace files through real `ExecSandbox` and reads

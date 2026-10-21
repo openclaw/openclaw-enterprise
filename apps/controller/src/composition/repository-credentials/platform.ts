@@ -1,3 +1,4 @@
+import { requireConfiguration } from "@openclaw-enterprise/contracts";
 import { constants } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { createSecureContext } from "node:tls";
@@ -82,7 +83,7 @@ export async function composeRepoDriver(input: {
   if (selection.implementation !== "github" || selection.id !== definition.drivers.repo) {
     throw new Error("The repository credential Driver must match its owning Backend.");
   }
-  GitHubRepoDriver.validateConfiguration(selection.configuration);
+  requireConfiguration(GitHubRepoDriver, selection.configuration);
   const configuration = selection.configuration as Readonly<{
     controlSocket: string;
     sessionDurationSeconds: number;

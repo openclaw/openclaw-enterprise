@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
@@ -58,20 +59,39 @@ test("SSH startup rejects Sandbox composition, missing Secret selection and inva
   const missingSecret = installation();
   delete missingSecret.drivers.secret;
   await assert.rejects(loadInstallationFile(t, missingSecret), /drivers\.secret/);
-  for (const mutate of [
-    (c) => (c.ssh.identityFile = "relative"),
-    (c) => (c.hosts.stable.user = "deploy"),
-    (c) => (c.hosts.stable.port = 65536),
-    (c) => (c.executor = {}),
-    (c) => (c.runtime.extra = true),
+  for (const [mutate, path, code] of [
+    [(c) => (c.ssh.identityFile = "relative"), "/ssh/identityFile", "INVALID_FORMAT"],
+    [(c) => (c.hosts.stable.user = "deploy"), "/hosts", "INVALID_VALUE"],
+    [(c) => (c.hosts.stable.port = 65536), "/hosts", "INVALID_VALUE"],
+    [(c) => (c.executor = {}), "", "UNKNOWN_FIELD"],
+    [(c) => (c.runtime.extra = true), "/runtime", "UNKNOWN_FIELD"],
   ]) {
     const invalid = installation();
     mutate(invalid.drivers.compute.configuration);
-    await assert.rejects(loadInstallationFile(t, invalid), /configuration.*schema/);
+    await assert.rejects(loadInstallationFile(t, invalid), (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.ok(
+        error.error.details.some(
+          (detail) => detail.path === path && detail.code === code && detail.message,
+        ),
+      );
+      assert.doesNotMatch(JSON.stringify(error.error.details), /relative|deploy|65536/);
+      return true;
+    });
   }
   const range = installation();
   range.drivers.compute.configuration.network.gatewayPortRange = { start: 2000, end: 1999 };
-  await assert.rejects(loadInstallationFile(t, range), /start must not exceed end/);
+  await assert.rejects(loadInstallationFile(t, range), (error) => {
+    assert.ok(error instanceof ConfigurationValidationError);
+    assert.deepEqual(error.error.details, [
+      {
+        path: "/network/gatewayPortRange/end",
+        code: "INVALID_RANGE",
+        message: "Gateway port range start must not exceed end.",
+      },
+    ]);
+    return true;
+  });
 });
 
 test("every other packageless Compute id retains Kubernetes selection and production checks", async (t) => {

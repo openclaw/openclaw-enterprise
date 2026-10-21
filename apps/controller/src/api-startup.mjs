@@ -17,7 +17,7 @@ import { composeProduction } from "./composition/production.ts";
 import { validateWorkspaceFilesApiKeyPath } from "./composition/workspace-files.ts";
 import { createOccLogger, emitOccLogEvent } from "./logging.ts";
 import { createOccMetrics } from "./metrics/index.ts";
-import { startupDependencyFailure, startupPolicyNameFailure } from "./startup-failure.ts";
+import { startupDependencyFailure, startupConfigurationFailure } from "./startup-failure.ts";
 import { metricsConfiguration, startMetricsListener } from "./metrics/listener.ts";
 
 const developmentBindHosts = new Set(["127.0.0.1", "::1", "0.0.0.0"]);
@@ -83,9 +83,6 @@ function startupFailureCode(error) {
   if (/OCC_DATABASE_URL|PostgreSQL connection URL/.test(message)) {
     return "DATABASE_CONFIGURATION_INVALID";
   }
-  if (/SQLite-compatible gateway storage class/.test(message)) {
-    return "GATEWAY_STORAGE_CLASS_INVALID";
-  }
   if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
     return "PERSISTENCE_UNAVAILABLE";
   }
@@ -96,7 +93,7 @@ function startupFailureCode(error) {
 export function startupFailureFields(error) {
   return (
     startupDependencyFailure(error) ??
-    startupPolicyNameFailure(error) ?? { code: startupFailureCode(error) }
+    startupConfigurationFailure(error) ?? { code: startupFailureCode(error) }
   );
 }
 

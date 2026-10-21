@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-18"
-last_updated_session: "authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d"
+updated: "2026-10-21"
+last_updated_session: "authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6"
 ---
 
 # Production Startup Flow
@@ -11,7 +11,7 @@ last_updated_session: "authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d"
 Prepare a fresh protected bootstrap PVC; install Helm with approved images,
 PostgreSQL/authentication credentials, trusted Installation YAML and network
 policies. Wait for private API/worker readiness; authenticate `/installation`
-with the service key. Tenant deployment/model-backed TUI proof remains separate.
+with the service key.
 
 [Deployment guide](../guides/deploy.md).
 
@@ -131,16 +131,17 @@ before upgrade/restart.
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
 rejects invalid Kubernetes peer maps, preserving null/empty semantics and accepted labels.
 
-On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` first
-loads the Installation as API startup does, without database or Kubernetes access;
-a refusal fails the hook before migration and API replacement.
+On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` validates
+Installation without database/Kubernetes access; refusal stops migration and API
+replacement. The check uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
+and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
+diagnostics, without submitted values.
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and
 migration Secret keys against Kubernetes syntax before use. `installation.key`
 and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
 not `.` or a `..` prefix.
-Bootstrap receives auth, administrator, Installation and output settings.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
@@ -176,9 +177,8 @@ IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
 database TLS not pinned to that CA.
 
-API and worker start after initialization. Before readiness, the API
-validates its listener, Better Auth, database, Installation YAML, Drivers,
-Backend membership and Compute preflight. Private routes, `/healthz` and
+After initialization, API readiness requires listener, Better Auth, database,
+Installation YAML, Driver, Backend membership, and Compute preflight validation. Private routes, `/healthz` and
 database-backed `/readyz` use the operator-managed endpoint. The startup probe
 allows 120 one-second failures: two minutes to listen, then readiness within a second.
 
@@ -288,18 +288,19 @@ until tenant deployment/TUI procedures run.
 - `pnpm db:migrate:production --check` reports the accepted database history
   without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
   inspected; initialization never repairs its ledger.
-- The API should emit `listening`; the worker should emit `worker.started`
-  followed by `worker.health`. `listening` carries `startupMs` since process
-  start and `phasesMs` per startup phase, so a slow boot names its slow phase.
+- The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
+  `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
   A stopping API emits `shutdown.started` and then `shutdown.completed`.
 - `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
   Kubernetes to 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
-  `KUBERNETES_API_UNAVAILABLE` means Compute cannot reach the Kubernetes API at
-  the logged `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
+  `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
+  `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
 - Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
-- Code `GATEWAY_STORAGE_CLASS_INVALID`: correct `runtime.gatewayStorageClassName`
-  to a Kubernetes DNS-subdomain resource name before restarting.
+- `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
+  `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
+  `apps/controller/src/api-startup.mjs:startupFailureFields` passes these diagnostics
+  to `server.mjs`.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
@@ -328,6 +329,10 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21 19:06: Preserve shared configuration diagnostics through the rebased API startup entry point. (authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6 - d4e78cadca361efaf089a31972f084a91ff307e1)
+
+- 2026-10-20 01:48: Trace safe typed startup refusals. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
 
 - 2026-10-18 14:40: Compare database CA mount destinations before rendering. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
 
