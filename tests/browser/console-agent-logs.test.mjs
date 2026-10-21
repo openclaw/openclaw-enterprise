@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { openShellLogDecision } from "../../apps/controller/src/drivers/sandbox/openshell-log-decisions.ts";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
@@ -23,14 +23,40 @@ import {
 
 // The console runs against the production controller app, IAM, cursor signing and
 // sanitizer. The Compute Driver serves in-memory Pod state in place of a cluster.
+// The tests share one app (fileConsoleApp) and its Compute Driver: each test gets its own
+// Namespace, Agent and revision, and starts and ends with the Driver's Pod state, calls and
+// properties as they were when it was made. The Driver's methods hold its `state` and `calls`, so
+// tests change those in place and never replace them.
+const computeDriver = createRuntimeLogComputeDriver();
+const initialDriver = { ...computeDriver, state: structuredClone(computeDriver.state) };
+const logsApp = fileConsoleApp({
+  computeDriver,
+  agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
+});
+let logsNamespaces = 0;
+
+function resetComputeDriver() {
+  for (const key of Object.keys(computeDriver)) {
+    if (!Object.hasOwn(initialDriver, key)) {
+      delete computeDriver[key];
+    }
+  }
+  Object.assign(computeDriver, initialDriver, { state: computeDriver.state });
+  for (const key of Object.keys(computeDriver.state)) {
+    delete computeDriver.state[key];
+  }
+  Object.assign(computeDriver.state, structuredClone(initialDriver.state));
+  computeDriver.calls.length = 0;
+}
+
 async function logsFixture(t) {
-  const computeDriver = createRuntimeLogComputeDriver();
-  const fixture = await createConsoleAppFixture(t, {
-    computeDriver,
-    agentRuntimeLogs: { enabled: true, cursorSecret: `console-logs-${randomUUID()}` },
+  const fixture = await logsApp(t);
+  resetComputeDriver();
+  t.after(resetComputeDriver);
+  logsNamespaces += 1;
+  const namespace = await fixture.createNamespace(`Runtime logs ${logsNamespaces}`, {
+    ready: true,
   });
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Runtime logs", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Logs Agent", nativeValues("v1"));
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   return { fixture, computeDriver, namespace, agent, revisionId: active.revision.id };

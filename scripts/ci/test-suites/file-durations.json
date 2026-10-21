@@ -61,6 +61,7 @@
     "tests/conformance/http-errors.test.mjs": 300,
     "tests/conformance/iam.test.mjs": 1400,
     "tests/conformance/k3d-failure-diagnostics.test.mjs": 700,
+    "tests/conformance/kubernetes-api-read.test.mjs": 1000,
     "tests/conformance/kubernetes-client.test.mjs": 6000,
     "tests/conformance/kubernetes-compute.test.mjs": 10100,
     "tests/conformance/kubernetes-configuration.test.mjs": 500,

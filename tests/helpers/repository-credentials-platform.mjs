@@ -18,6 +18,7 @@ import {
   validateExplicitK3dLoopbackContext,
 } from "./kubernetes-real.mjs";
 import { followContainerLog } from "./container-log-capture.mjs";
+import { kubectlGetJson } from "./kubernetes-api-read.mjs";
 import { grantAgentSecretOperate } from "./postgres-harness-auth.mjs";
 import { createResourceScope } from "../fixtures/repository-credentials/resources.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
@@ -340,6 +341,7 @@ async function setupRepositoryPlatformFixture(context, diagnostic) {
       ...options,
     });
   const kubectl = async (...args) =>
+    (await kubectlGetJson(selection, args)) ??
     (await execute("kubectl", kubectlArguments(selection, args))).stdout;
   const kube = createKubernetesClient({
     selection,

@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 import { createInstallationDriverConfiguration } from "./installation-driver-configuration.mjs";
+import { kubectlGetJson } from "./kubernetes-api-read.mjs";
 
 const execute = promisify(execFile);
 
@@ -30,6 +31,10 @@ async function kubectlFor(selection, ...args) {
   // Inside a failure diagnostic, kubectl stops at its deadline (finding 1557).
   const signal = diagnosticDeadline.getStore();
   signal?.throwIfAborted();
+  const answered = await kubectlGetJson(selection, args, { signal });
+  if (answered !== undefined) {
+    return answered;
+  }
   const { stdout } = await execute("kubectl", kubectlArguments(selection, args), {
     maxBuffer: 4 * 1024 * 1024,
     signal,
