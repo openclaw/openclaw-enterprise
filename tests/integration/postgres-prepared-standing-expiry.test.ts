@@ -323,9 +323,10 @@ function protectedSuccessor(draftPullLimit: "none" | undefined, unregistered = f
       }),
     );
     await f.pool.query(
-      `insert into occ.openshell_git_routes
-    (revision_id,namespace_id,agent_id,workspace,sandbox,binding_id,worker_instance,credential_state,provider_id,profile_version,provider_resource_version,observed)
-    values($1,$2,$3,'w','s',$4,$5,'bootstrap',$6,'1','1',$7)`,
+      `insert into occ.credential_deliveries
+    (revision_id,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed)
+    values($1,$2,$3,'{"transport":"openshell-repository-git/v1","workspace":"w","sandbox":"s"}',$4,$5,
+      jsonb_build_object('credentialState','bootstrap','providerId',$6::text,'profileVersion','1','resourceVersion','1','expiresAt',''),$7)`,
       [
         revisionId,
         namespaceId,
@@ -365,7 +366,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined, unregistered = f
     );
     await f.owner.maintain(); // the previous issuer owns its retirement
     const recordObserved = (value: typeof observed) =>
-      f.pool.query("update occ.openshell_git_routes set observed=$2 where revision_id=$1", [
+      f.pool.query("update occ.credential_deliveries set observed=$2 where revision_id=$1", [
         revisionId,
         JSON.stringify(value),
       ]);
@@ -393,15 +394,45 @@ function protectedSuccessor(draftPullLimit: "none" | undefined, unregistered = f
         sessionId,
       }) as import("../../packages/contracts/src/index.ts").PreparedGitHubUseRequest;
     const unavailable = { kind: "denied", reason: "unavailable" };
+    const anotherBinding = "z".repeat(32);
+    if (!draftPullLimit) {
+      // Another binding can observe the same execution. Its installation receipt must not
+      // satisfy the Git binding's proof that this material was installed.
+      await f.pool.query(
+        `insert into occ.credential_deliveries
+           (revision_id,namespace_id,agent_id,target,binding_id,worker_instance,desired,observed,material_version,preparation_attempt_id)
+         select revision_id,namespace_id,agent_id,target || '{"sandbox":"another-sandbox"}'::jsonb,$5,worker_instance,desired,observed,$3,$4
+         from occ.credential_deliveries where revision_id=$1 and binding_id=$2`,
+        [
+          revisionId,
+          executionId,
+          installed.materialVersion,
+          installed.preparationAttemptId,
+          anotherBinding,
+        ],
+      );
+    }
     assert.deepEqual(
       await exact.authorize(request(), installed, signal),
       unavailable,
       "not installed yet",
     );
+    if (!draftPullLimit) {
+      await f.pool.query(
+        "update occ.credential_deliveries set blocked='withdrawn' where revision_id=$1 and binding_id=$2",
+        [revisionId, anotherBinding],
+      );
+    }
     await f.pool.query(
-      `update occ.openshell_git_routes set credential_state='active',material_expires_at=$2,
-    preparation_attempt_id=$3,material_version=$4 where revision_id=$1`,
-      [revisionId, material.expiresAt, installed.preparationAttemptId, installed.materialVersion],
+      `update occ.credential_deliveries set desired=desired || jsonb_build_object('credentialState','active','expiresAt',$2::text),
+    preparation_attempt_id=$3,material_version=$4 where revision_id=$1 and binding_id=$5`,
+      [
+        revisionId,
+        material.expiresAt,
+        installed.preparationAttemptId,
+        installed.materialVersion,
+        executionId,
+      ],
     );
     const first = request();
     const permit = await exact.authorize(first, installed, signal);

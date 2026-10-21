@@ -7804,7 +7804,13 @@ export class KubernetesComputeDriver implements ComputeDriver {
         },
         binding,
       );
-      return { sourceId: source.id, state: removed ? "revoked" : "pending" };
+      if (removed === "retire-runtime") {
+        throw new CredentialWithdrawalRefusedError(
+          "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
+          "The selected Credential Proxy cannot verify a reduced policy on this execution.",
+        );
+      }
+      return { sourceId: source.id, state: removed === "withdrawn" ? "revoked" : "pending" };
     }
     const sandbox = sandboxDriver.harnessResource({ namespace: sandboxNamespace, revision });
     this.verifySandboxResourceRef(sandbox, revision, namespace);

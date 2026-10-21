@@ -507,20 +507,30 @@ function unrevokedAttempts(
   }));
 }
 
-/**
- * An authorized withdrawal still awaiting confirmation retries the claim. Otherwise a denied
- * requester fails it, after every authorized withdrawal was revoked in the same pass.
- */
+const CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT =
+  "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT";
+
+/** Retry unconfirmed reductions; fail a refused withdrawal only after attempting the others. */
 function settleCredentialWithdrawal(
   attempts: readonly CredentialWithdrawalAttempt[],
 ): CredentialWithdrawalDispatchResult {
-  const denied = attempts.find(({ denial }) => denial !== undefined);
-  if (attempts.some(({ revoked, denial }) => !revoked && denial === undefined)) {
+  if (
+    attempts.some(
+      ({ revoked, denial, code }) =>
+        !revoked &&
+        denial === undefined &&
+        code !== CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT,
+    )
+  ) {
     return { outcome: "retry", code: "CREDENTIAL_WITHDRAWAL_PENDING", attempts };
   }
-  return denied === undefined
+  const failed = attempts.find(
+    ({ denial, code }) =>
+      denial !== undefined || code === CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT,
+  );
+  return failed === undefined
     ? { outcome: "success", code: "CREDENTIALS_WITHDRAWN", attempts }
-    : { outcome: "permanent", code: denied.code, attempts };
+    : { outcome: "permanent", code: failed.code, attempts };
 }
 
 /**
@@ -533,6 +543,7 @@ const CREDENTIAL_WITHDRAWAL_REPLAY_REASONS: ReadonlySet<string> = new Set([
   "AUTHORIZATION_DENIED",
   "ACTOR_REVOKED",
   "CREDENTIAL_WITHDRAWAL_MISCONFIGURED",
+  CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT,
   "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
 ]);
 
@@ -3138,16 +3149,26 @@ export class ControllerWorker {
         }
         for (const { withdrawal, source } of allowed) {
           this.assertCredentialWithdrawalOwner(revision, source);
-          const status = await this.withClaimHeartbeat(claim, (signal) =>
-            withdraw(revision, source, signal),
-          );
-          const revoked = status.state === "revoked" || status.state === "absent";
-          attempts.push({
-            credentialSourceId: source.id,
-            requestedBy: withdrawal.requestedBy,
-            code: revoked ? "CREDENTIALS_WITHDRAWN" : "CREDENTIAL_WITHDRAWAL_PENDING",
-            revoked,
-          });
+          const attempt = { credentialSourceId: source.id, requestedBy: withdrawal.requestedBy };
+          try {
+            const status = await this.withClaimHeartbeat(claim, (signal) =>
+              withdraw(revision, source, signal),
+            );
+            const revoked = status.state === "revoked" || status.state === "absent";
+            attempts.push({
+              ...attempt,
+              code: revoked ? "CREDENTIALS_WITHDRAWN" : "CREDENTIAL_WITHDRAWAL_PENDING",
+              revoked,
+            });
+          } catch (error) {
+            if (
+              !(error instanceof CredentialWithdrawalRefusedError) ||
+              error.code !== CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT
+            ) {
+              throw error;
+            }
+            attempts.push({ ...attempt, code: error.code, revoked: false });
+          }
         }
       }
       result = settleCredentialWithdrawal([...attempts, ...denied]);
@@ -3344,11 +3365,16 @@ export class ControllerWorker {
     if (!reassigned) {
       return result;
     }
-    // settleCredentialWithdrawal failed the claim only for its denials when every other
-    // withdrawal was revoked; it now retries. Any other failure keeps its outcome and code.
+    // A reassigned denial needs another attempt even when another source requires runtime
+    // retirement. Other failure classes keep their original outcome and code.
     if (
       result.outcome === "permanent" &&
-      attempts.every(({ revoked, denial }) => revoked || denial !== undefined)
+      attempts.every(
+        ({ revoked, denial, code }) =>
+          revoked ||
+          denial !== undefined ||
+          code === CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT,
+      )
     ) {
       return { outcome: "retry", code: "CREDENTIAL_WITHDRAWAL_REASSIGNED", attempts: settled };
     }

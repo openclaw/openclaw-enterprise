@@ -1,7 +1,13 @@
-import { protectedRepositoryGitInstallationSql } from "../repo/credentials/protected-repository-git-installation.ts";
+import {
+  openShellGitDeliveryTransport,
+  protectedRepositoryGitInstallationSql,
+} from "../repo/credentials/protected-repository-git-installation.ts";
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import {
   repositoryWithdrawalStateSql,
+  CredentialDeliveryReductions,
+  CredentialDeliveries,
+  type CredentialDeliveryKey,
   type PostgresClient,
   type PostgresPool,
 } from "@openclaw-enterprise/occ";
@@ -14,11 +20,12 @@ import type {
 /**
  * A revision's OpenShell Git route as the worker holding it last verified it, persisted so
  * a restarted or replacement worker can re-observe the installation and re-adopt the route
- * (finding 2128, migration 0060). Identity and custody facts only: the Sandbox, the binding
+ * (finding 2128). Identity and custody facts only: the Sandbox, the binding
  * id the middleware presents, the provider generation this worker wrote, the reference of
  * the material that generation carries and the last verified observation. Never a token.
  *
- * Ownership is a fence: adopt() moves it, every write by the holder carries it, and a
+ * OCC stores these facts in its generic delivery state; this adapter interprets the
+ * OpenShell policy and recipient. Ownership is a fence: adopt() moves it, every write by the holder carries it, and a
  * worker whose fence is stale writes nothing and stops using the route (the work-queue
  * claim decides which worker prepares a revision; the fence makes that decision stick for
  * the route). A write marked pending when a worker stopped has an unknown outcome, and a
@@ -88,7 +95,12 @@ export interface OpenShellGitRouteStore {
     | undefined
   >;
   /** Marks a provider write in flight. False when the fence is stale. */
-  writing(revisionId: string, fence: number, write: OpenShellGitRouteWrite): Promise<boolean>;
+  writing(
+    revisionId: string,
+    fence: number,
+    write: OpenShellGitRouteWrite,
+    material?: OpenShellGitMaterialReference,
+  ): Promise<boolean>;
   /** Records the route as verified and clears a pending write. False when the fence is stale. */
   record(revisionId: string, fence: number, snapshot: OpenShellGitRouteSnapshot): Promise<boolean>;
   /** Whether the fence still names the holder. */
@@ -124,10 +136,19 @@ export interface OpenShellGitRouteStore {
   ): Promise<boolean>;
 }
 
-const table = "occ.openshell_git_routes";
-const columns = `revision_id, namespace_id, agent_id, workspace, sandbox, binding_id, fence,
-  provider_id, profile_version, provider_resource_version, credential_state, material_expires_at,
-  material_version, preparation_attempt_id, observed, write_pending, blocked`;
+const table = "occ.credential_deliveries";
+const recognizedGitDelivery = `r.target->>'transport'='${openShellGitDeliveryTransport}'
+  AND (r.namespace_id,r.agent_id)=(v.namespace_id,v.agent_id)
+  AND r.binding_id ~ '^[A-Za-z0-9_-]{32}$'
+  AND jsonb_typeof(r.target->'workspace')='string' AND jsonb_typeof(r.target->'sandbox')='string'
+  AND r.target - 'transport' - 'workspace' - 'sandbox'='{}'::jsonb
+  AND (NOT (v.admitted_spec ? 'egress_plan') OR r.binding_id=v.admitted_spec#>>'{egress_plan,execution,executionId}')`;
+const columns = `r.revision_id, r.namespace_id, r.agent_id, r.target->>'workspace' AS workspace,
+  r.target->>'sandbox' AS sandbox, r.binding_id, r.fence,
+  r.desired->>'providerId' AS provider_id, r.desired->>'profileVersion' AS profile_version,
+  r.desired->>'resourceVersion' AS provider_resource_version,
+  r.desired->>'credentialState' AS credential_state, r.desired->>'expiresAt' AS material_expires_at,
+  r.material_version, r.preparation_attempt_id, r.observed, r.write_pending, r.blocked`;
 
 interface Row {
   revision_id: string;
@@ -141,7 +162,7 @@ interface Row {
   profile_version: string | null;
   provider_resource_version: string | null;
   credential_state: "bootstrap" | "active" | null;
-  material_expires_at: Date | null;
+  material_expires_at: string | null;
   material_version: string | null;
   preparation_attempt_id: string | null;
   observed: OpenShellPreparedGitInstalled | null;
@@ -169,7 +190,7 @@ function record(row: Row): OpenShellGitRouteRecord {
             profileVersion: row.profile_version,
             resourceVersion: row.provider_resource_version,
             credentialState: row.credential_state,
-            expiresAt: row.material_expires_at?.toISOString() ?? "",
+            expiresAt: row.material_expires_at ?? "",
           },
     material:
       row.material_version === null || row.preparation_attempt_id === null
@@ -220,21 +241,64 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     }
   }
 
+  private async key(
+    c: PostgresClient,
+    revisionId: string,
+    lock = true,
+  ): Promise<
+    | (CredentialDeliveryKey & {
+        readonly fence: number;
+        readonly blocked: string | null;
+        readonly retainedPolicyHash: string | null;
+      })
+    | undefined
+  > {
+    const { rows } = await c.query(
+      `SELECT r.binding_id,r.fence,r.blocked,r.retained_policy_hash,(${recognizedGitDelivery}) AS recognized
+       FROM ${table} r JOIN occ.agent_revisions v ON v.id=r.revision_id
+       WHERE r.revision_id=$1${lock ? " FOR UPDATE OF r" : ""}`,
+      [revisionId],
+    );
+    if (rows.length > 1) {
+      throw new Error("OpenShell repository delivery supports one binding per execution.");
+    }
+    const row = rows[0] as
+      | {
+          binding_id: string;
+          fence: string;
+          blocked: string | null;
+          retained_policy_hash: string | null;
+          recognized: boolean | null;
+        }
+      | undefined;
+    if (!row) {
+      return;
+    }
+    if (row.recognized !== true) {
+      throw new Error("Unknown OpenShell repository delivery identity.");
+    }
+    return {
+      revisionId,
+      bindingId: row.binding_id,
+      fence: Number(row.fence),
+      blocked: row.blocked,
+      retainedPolicyHash: row.retained_policy_hash,
+    };
+  }
+
   async open(route: OpenShellGitRouteIdentity, workerInstance: string): Promise<void> {
+    if (!/^[A-Za-z0-9_-]{32}$/.test(route.bindingId)) {
+      throw new Error("Invalid OpenShell binding identity.");
+    }
     await this.query((c) =>
-      c.query(
-        `INSERT INTO ${table}
-          (revision_id, namespace_id, agent_id, workspace, sandbox, binding_id, worker_instance, write_pending)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'bootstrap')`,
-        [
-          route.revisionId,
-          route.namespaceId,
-          route.agentId,
-          route.workspace,
-          route.sandbox,
-          route.bindingId,
-          workerInstance,
-        ],
+      new CredentialDeliveries(c).open(
+        route,
+        {
+          transport: openShellGitDeliveryTransport,
+          workspace: route.workspace,
+          sandbox: route.sandbox,
+        },
+        workerInstance,
       ),
     );
   }
@@ -245,24 +309,20 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     disposition?: "close-preview",
   ): Promise<OpenShellGitRouteRecord | undefined> {
     return this.query(async (c) => {
-      const adopted = await c.query(
-        `UPDATE ${table}
-        SET fence = fence + 1, worker_instance = $2, adopted_at = clock_timestamp(), updated_at = clock_timestamp(),
-            blocked = CASE WHEN $3 THEN 'worker_replaced' ELSE blocked END,
-            write_pending = CASE WHEN $3 THEN NULL ELSE write_pending END
-        WHERE revision_id = $1 AND blocked IS NULL
-        RETURNING ${columns}`,
-        [revisionId, workerInstance, disposition === "close-preview"],
+      const key = await this.key(c, revisionId);
+      if (!key) {
+        return;
+      }
+      await new CredentialDeliveries(c).adopt(
+        key,
+        workerInstance,
+        disposition === "close-preview" ? "worker_replaced" : undefined,
       );
-      const row =
-        (adopted.rows[0] as Row | undefined) ??
-        ((
-          await c.query(
-            `SELECT ${columns} FROM ${table} WHERE revision_id = $1 AND blocked IS NOT NULL`,
-            [revisionId],
-          )
-        ).rows[0] as Row | undefined);
-      return row === undefined ? undefined : record(row);
+      const { rows } = await c.query(
+        `SELECT ${columns} FROM ${table} r WHERE revision_id=$1 AND binding_id=$2`,
+        [key.revisionId, key.bindingId],
+      );
+      return record(rows[0] as Row);
     });
   }
 
@@ -272,28 +332,39 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       return;
     }
     return this.query(async (c) => {
+      const key = await this.key(c, revision.id, false);
+      if (!key) {
+        return;
+      }
       // A cold execution check precedes session renewal and normal route adoption. Require a
       // previously witnessed installation and the exact live approval and execution. This read
       // takes no route ownership and cannot turn a pending write or finite admission into renewal.
       const { rows } = await c.query(
-        `SELECT r.*, e.fingerprint AS execution_fingerprint FROM ${table} r
+        `SELECT ${columns}, r.retained_policy_hash AS retained_launch_hash, e.fingerprint AS execution_fingerprint FROM ${table} r
          JOIN occ.repository_standing_executions e USING (namespace_id, agent_id, revision_id)
          JOIN occ.agent_revisions v ON v.id = r.revision_id AND v.agent_id = r.agent_id AND v.namespace_id = r.namespace_id
          WHERE (r.revision_id, r.namespace_id, r.agent_id) = ($1, $2, $3)
+           AND r.binding_id=$5
            AND v.admitted_spec->'repository_credentials' = $4::jsonb
            AND (v.admitted_spec #>> '{execution_admission,version}' NOT IN ('4','5') OR EXISTS (
                 SELECT FROM occ.egress_installations p WHERE ${protectedRepositoryGitInstallationSql}
                 AND p.installation->'plan'=v.admitted_spec->'egress_plan'
                 AND p.installation#>'{plan,repositoryGit}'=$4::jsonb))
            AND e.execution_id = r.revision_id
-           AND r.blocked IS NULL AND r.write_pending IS NULL AND r.detach_request_id IS NULL
-           AND r.credential_state = 'active' AND r.material_version IS NOT NULL AND r.preparation_attempt_id IS NOT NULL
-           AND r.retained_launch_hash IS NOT NULL AND r.observed->>'executionId' = r.revision_id
-           AND r.observed->>'credentialState' = 'active' AND r.observed->>'workspace' = r.workspace
-           AND r.observed->>'sandbox' = r.sandbox AND r.observed->>'providerId' = r.provider_id
-           AND r.observed->>'providerResourceVersion' = r.provider_resource_version AND r.observed->>'profileVersion' = r.profile_version
+           AND r.blocked IS NULL AND r.write_pending IS NULL
+           AND (r.desired->>'credentialState') = 'active' AND r.material_version IS NOT NULL AND r.preparation_attempt_id IS NOT NULL
+           AND r.retained_policy_hash IS NOT NULL AND r.observed->>'executionId' = r.revision_id
+           AND r.observed->>'credentialState' = 'active' AND r.observed->>'workspace' = (r.target->>'workspace')
+           AND r.observed->>'sandbox' = (r.target->>'sandbox') AND r.observed->>'providerId' = (r.desired->>'providerId')
+           AND r.observed->>'providerResourceVersion' = (r.desired->>'resourceVersion') AND r.observed->>'profileVersion' = (r.desired->>'profileVersion')
            AND occ.repository_standing_execution_is_current($4::jsonb, $2, $3, $1)`,
-        [revision.id, revision.namespaceId, revision.agentId, JSON.stringify(credentials)],
+        [
+          revision.id,
+          revision.namespaceId,
+          revision.agentId,
+          JSON.stringify(credentials),
+          key.bindingId,
+        ],
       );
       const row = rows[0] as
         (Row & { retained_launch_hash: string; execution_fingerprint: string }) | undefined;
@@ -307,21 +378,23 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     });
   }
 
+  private async held(
+    revisionId: string,
+    work: (state: CredentialDeliveries, key: CredentialDeliveryKey) => Promise<boolean>,
+  ): Promise<boolean> {
+    return this.query(async (c) => {
+      const key = await this.key(c, revisionId);
+      return key ? work(new CredentialDeliveries(c), key) : false;
+    });
+  }
+
   async writing(
     revisionId: string,
     fence: number,
     write: OpenShellGitRouteWrite,
+    material?: OpenShellGitMaterialReference,
   ): Promise<boolean> {
-    return this.query(
-      async (c) =>
-        (
-          await c.query(
-            `UPDATE ${table} SET write_pending = $3, updated_at = clock_timestamp()
-            WHERE revision_id = $1 AND fence = $2 AND blocked IS NULL`,
-            [revisionId, fence, write],
-          )
-        ).rowCount === 1,
-    );
+    return this.held(revisionId, (state, key) => state.writing(key, fence, write, material));
   }
 
   async record(
@@ -329,46 +402,69 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     fence: number,
     snapshot: OpenShellGitRouteSnapshot,
   ): Promise<boolean> {
-    const { generation, material, observed } = snapshot;
-    return this.query(
-      async (c) =>
-        (
-          await c.query(
-            `UPDATE ${table} SET provider_id = $3, profile_version = $4, provider_resource_version = $5,
-              credential_state = $6, material_expires_at = $7, material_version = $8,
-              preparation_attempt_id = $9, observed = $10::jsonb, write_pending = NULL,
-              retained_launch_hash = coalesce(retained_launch_hash, $11), updated_at = clock_timestamp()
-            WHERE revision_id = $1 AND fence = $2 AND blocked IS NULL
-              AND ($11::text IS NULL OR retained_launch_hash IS NULL OR retained_launch_hash = $11)`,
-            [
-              revisionId,
-              fence,
-              generation.providerId,
-              generation.profileVersion,
-              generation.resourceVersion,
-              generation.credentialState,
-              generation.credentialState === "active" ? new Date(generation.expiresAt) : null,
-              material?.materialVersion ?? null,
-              material?.preparationAttemptId ?? null,
-              observed === undefined ? null : JSON.stringify(observed),
-              snapshot.retainedLaunchHash ?? null,
-            ],
-          )
-        ).rowCount === 1,
+    const { generation, observed } = snapshot;
+    if (
+      !/^[1-9][0-9]*$/.test(generation.resourceVersion) ||
+      !/^[1-9][0-9]*$/.test(generation.profileVersion) ||
+      !["bootstrap", "active"].includes(generation.credentialState) ||
+      (generation.credentialState === "active" &&
+        !Number.isFinite(Date.parse(generation.expiresAt)))
+    ) {
+      throw new Error("Invalid OpenShell provider generation.");
+    }
+    // Provider-specific shape validation stays at the adapter. The common durable owner
+    // accepts nonsecret delivery facts and does not know the OpenShell wire schema.
+    const fields = [
+      "workspace",
+      "sandbox",
+      "sandboxId",
+      "executionId",
+      "provider",
+      "providerId",
+      "providerResourceVersion",
+      "profileVersion",
+      "credentialState",
+      "attachmentEpoch",
+      "providerEnvRevision",
+      "configRevision",
+      "policyHash",
+      "supervisorSessionId",
+      "processInstanceId",
+      "networkInstanceId",
+    ];
+    const hook = observed?.observedHook;
+    if (
+      observed &&
+      (fields.some((field) => !(field in observed)) ||
+        Object.keys(observed).some(
+          (field) => !fields.includes(field) && field !== "observedHook",
+        ) ||
+        ("observedHook" in observed &&
+          (!hook ||
+            Object.keys(hook).length !== 2 ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+              hook.startupId,
+            ) ||
+            !/^[0-9a-f]{64}$/.test(hook.observationId))))
+    ) {
+      throw new Error("Invalid OpenShell delivery observation.");
+    }
+    return this.held(revisionId, (state, key) =>
+      state.record(key, fence, {
+        desired: { ...snapshot.generation },
+        ...(snapshot.observed && { observed: { ...snapshot.observed } }),
+        ...(snapshot.material && { material: snapshot.material }),
+        ...(snapshot.retainedLaunchHash && { retainedPolicyHash: snapshot.retainedLaunchHash }),
+      }),
     );
   }
 
   async owns(revisionId: string, fence: number): Promise<boolean> {
-    // Asked on every Git request: one primary-key read, no transaction (the request's own
-    // budget bounds it; a store that does not answer denies that request only).
     const c = await this.pool.connect();
     let discard = false;
     try {
-      const result = await c.query(
-        `SELECT 1 FROM ${table} WHERE revision_id = $1 AND fence = $2 AND blocked IS NULL`,
-        [revisionId, fence],
-      );
-      return result.rowCount === 1;
+      const key = await this.key(c, revisionId, false);
+      return key?.fence === fence && key.blocked === null;
     } catch (error) {
       discard = true;
       throw error;
@@ -382,16 +478,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     fence: number,
     reason: OpenShellGitRouteBlockReason,
   ): Promise<boolean> {
-    return this.query(
-      async (c) =>
-        (
-          await c.query(
-            `UPDATE ${table} SET blocked = $3, write_pending = NULL, updated_at = clock_timestamp()
-            WHERE revision_id = $1 AND fence = $2 AND blocked IS NULL`,
-            [revisionId, fence, reason],
-          )
-        ).rowCount === 1,
-    );
+    return this.held(revisionId, (state, key) => state.block(key, fence, reason));
   }
 
   async confirmPreviewBlocked(
@@ -401,29 +488,24 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     reason: OpenShellGitRouteBlockReason,
   ): Promise<"confirmed" | "superseded"> {
     return this.query(async (c) => {
-      // Read first, including after a lost COMMIT reply. Holding the row lock through the update
-      // means neither another worker nor a withdrawal can change this disposition between them.
-      const { rows } = await c.query(
-        `SELECT worker_instance, fence, blocked FROM ${table} WHERE revision_id = $1 FOR UPDATE`,
-        [revisionId],
-      );
-      const route = rows[0] as
-        (Pick<Row, "fence" | "blocked"> & { worker_instance: string }) | undefined;
-      if (!route) {
+      const key = await this.key(c, revisionId);
+      if (!key) {
         throw new Error("Missing the OpenShell preview route to close.");
       }
+      const { rows } = await c.query(
+        `SELECT worker_instance, fence, blocked FROM ${table} WHERE revision_id=$1 AND binding_id=$2`,
+        [revisionId, key.bindingId],
+      );
+      const route = rows[0] as Pick<Row, "fence" | "blocked"> & { worker_instance: string };
       if (route.worker_instance !== workerInstance || Number(route.fence) !== fence) {
         return "superseded";
       }
       if (route.blocked !== null) {
         return route.blocked === reason ? "confirmed" : "superseded";
       }
-      await c.query(
-        `UPDATE ${table} SET blocked = $2, write_pending = NULL, updated_at = clock_timestamp()
-         WHERE revision_id = $1`,
-        [revisionId, reason],
-      );
-      return "confirmed";
+      return (await new CredentialDeliveries(c).block(key, fence, reason))
+        ? "confirmed"
+        : "superseded";
     });
   }
 
@@ -439,25 +521,30 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       return;
     }
     return this.query(async (c) => {
+      const key = await this.key(c, revision.id);
+      if (!key) {
+        return;
+      }
       const { rows } = await c.query(
         `UPDATE ${table} r SET blocked = 'repository_expired'
         FROM occ.agent_revisions v JOIN occ.agents a ON a.namespace_id = v.namespace_id AND a.id = v.agent_id
         WHERE r.revision_id = $1 AND r.namespace_id = $2 AND r.agent_id = $3
-          AND r.workspace = $4 AND r.sandbox = $5 AND r.revision_id = v.id
+          AND r.binding_id = $8
+          AND (r.target->>'workspace') = $4 AND (r.target->>'sandbox') = $5 AND r.revision_id = v.id
           AND a.id = r.agent_id AND a.namespace_id = r.namespace_id
           AND a.status = 'active' AND a.desired_runtime_state = 'running' AND a.active_revision_id = r.revision_id
           AND v.admitted_spec->'repository_credentials' = $6::jsonb
           AND CASE WHEN $6::jsonb ? 'standingApprovalId'
                 THEN ${repositoryWithdrawalStateSql("r")} = 'expiry'
                 ELSE clock_timestamp() >= to_timestamp($7::double precision / 1000) END
-          AND r.credential_state = 'active' AND r.write_pending IS NULL AND r.material_version IS NOT NULL
-          AND r.retained_launch_hash IS NOT NULL AND r.observed->>'executionId' = v.id
-          AND r.observed->>'credentialState' = 'active' AND r.observed->>'workspace' = r.workspace
-          AND r.observed->>'sandbox' = r.sandbox AND r.observed->>'providerId' = r.provider_id
-          AND r.observed->>'providerResourceVersion' = r.provider_resource_version
-          AND r.observed->>'profileVersion' = r.profile_version
+          AND (r.desired->>'credentialState') = 'active' AND r.write_pending IS NULL AND r.material_version IS NOT NULL
+          AND r.retained_policy_hash IS NOT NULL AND r.observed->>'executionId' = v.id
+          AND r.observed->>'credentialState' = 'active' AND r.observed->>'workspace' = (r.target->>'workspace')
+          AND r.observed->>'sandbox' = (r.target->>'sandbox') AND r.observed->>'providerId' = (r.desired->>'providerId')
+          AND r.observed->>'providerResourceVersion' = (r.desired->>'resourceVersion')
+          AND r.observed->>'profileVersion' = (r.desired->>'profileVersion')
           AND (r.blocked IS NULL OR r.blocked = 'repository_expired')
-        RETURNING retained_launch_hash, observed, detach_request_id, detached_epoch`,
+        RETURNING r.binding_id, r.fence, r.material_version, r.retained_policy_hash AS retained_launch_hash, r.observed`,
         [
           revision.id,
           revision.namespaceId,
@@ -466,29 +553,54 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           sandbox,
           JSON.stringify(revision.repositoryCredentials),
           deadline,
+          key.bindingId,
         ],
       );
       const row = rows[0] as
         | {
             observed: OpenShellPreparedGitInstalled;
             retained_launch_hash: string;
-            detach_request_id: string | null;
-            detached_epoch: string | null;
+            binding_id: string;
+            fence: string;
+            material_version: string;
           }
         | undefined;
       if (row) {
+        const progress = await new CredentialDeliveryReductions(c).desire({
+          revisionId: revision.id,
+          bindingId: row.binding_id,
+          fence: Number(row.fence),
+          recipient: { ...row.observed },
+          materialVersion: row.material_version,
+          retainedPolicyHash: row.retained_launch_hash,
+        });
         return {
           observed: row.observed,
           retainedLaunchHash: row.retained_launch_hash,
-          ...(row.detach_request_id && {
+          ...(progress.requestId && {
             detach: {
-              requestId: row.detach_request_id,
-              ...(row.detached_epoch && { epoch: row.detached_epoch }),
+              requestId: progress.requestId,
+              ...(progress.observedGeneration && { epoch: progress.observedGeneration }),
             },
           }),
         };
       }
       return undefined;
+    });
+  }
+
+  private async reducing<T>(
+    revision: string,
+    launch: string,
+    work: (state: CredentialDeliveryReductions, binding: string, fence: number) => Promise<T>,
+  ): Promise<T | false> {
+    return this.query(async (c) => {
+      const key = await this.key(c, revision);
+      // Keep the exact provider tombstone locked through the common state change.
+      if (!key || key.blocked !== "repository_expired" || key.retainedPolicyHash !== launch) {
+        return false;
+      }
+      return work(new CredentialDeliveryReductions(c), key.bindingId, key.fence);
     });
   }
 
@@ -498,15 +610,8 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     requestId: string,
     resourceVersion: string,
   ): Promise<boolean> {
-    return this.query(
-      async (c) =>
-        (
-          await c.query(
-            `UPDATE ${table} SET detach_request_id = $3, detach_resource_version = $4, updated_at = clock_timestamp()
-       WHERE revision_id = $1 AND retained_launch_hash = $2 AND blocked = 'repository_expired' AND detach_request_id IS NULL`,
-            [revision, launch, requestId, resourceVersion],
-          )
-        ).rowCount === 1,
+    return this.reducing(revision, launch, (state, binding, fence) =>
+      state.begin(revision, binding, fence, launch, requestId, resourceVersion),
     );
   }
 
@@ -516,16 +621,8 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
     requestId: string,
     epoch: string,
   ): Promise<boolean> {
-    return this.query(
-      async (c) =>
-        (
-          await c.query(
-            `UPDATE ${table} SET detached_epoch = $4, updated_at = clock_timestamp()
-       WHERE revision_id = $1 AND retained_launch_hash = $2 AND detach_request_id = $3 AND blocked = 'repository_expired'
-         AND (detached_epoch IS NULL OR detached_epoch = $4)`,
-            [revision, launch, requestId, epoch],
-          )
-        ).rowCount === 1,
+    return this.reducing(revision, launch, (state, binding, fence) =>
+      state.confirm(revision, binding, fence, launch, requestId, epoch),
     );
   }
 
@@ -534,12 +631,26 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
       "revisionId" in selector
         ? ["revision_id", selector.revisionId]
         : ["namespace_id", selector.namespaceId];
-    await this.query((c) =>
-      c.query(
-        `UPDATE ${table} SET blocked = 'withdrawn', write_pending = NULL, updated_at = clock_timestamp()
-        WHERE ${column} = $1 AND (blocked IS NULL OR blocked = 'repository_expired')`,
+    await this.query(async (c) => {
+      const { rows } = await c.query(
+        `SELECT r.revision_id,r.binding_id FROM ${table} r
+         JOIN occ.agent_revisions v ON v.id=r.revision_id
+         WHERE r.${column}=$1 AND ${recognizedGitDelivery}
+         ORDER BY r.revision_id,r.binding_id FOR UPDATE OF r`,
         [value],
-      ),
-    );
+      );
+      const keys = rows as { revision_id: string; binding_id: string }[];
+      if (new Set(keys.map(({ revision_id }) => revision_id)).size !== keys.length) {
+        throw new Error("OpenShell repository delivery supports one binding per execution.");
+      }
+      await new CredentialDeliveries(c).withdraw(
+        keys.map(({ revision_id, binding_id }) => ({
+          revisionId: revision_id,
+          bindingId: binding_id,
+        })),
+        "withdrawn",
+        "repository_expired",
+      );
+    });
   }
 }

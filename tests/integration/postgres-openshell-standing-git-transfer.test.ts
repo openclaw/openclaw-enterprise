@@ -133,6 +133,7 @@ test(
     let bindingId = "";
     let stops = 0;
     let withdrawn = 0;
+    let lostDetachReply = false;
     let originCallsBeforeActivation = 0;
     const deadline = credentials.deadlineWallMs;
     const cwd = await temporaryDirectory(t, "standing-private-git-destination-");
@@ -348,7 +349,7 @@ test(
             const {
               rows: [route],
             } = await f.observerPool.query(
-              "SELECT fence, credential_state, material_version, preparation_attempt_id FROM occ.openshell_git_routes WHERE revision_id=$1",
+              "SELECT fence, desired->>'credentialState' AS credential_state, material_version, preparation_attempt_id FROM occ.credential_deliveries WHERE revision_id=$1",
               [r.id],
             );
             assert.deepEqual(route, {
@@ -380,6 +381,9 @@ test(
         const result = await kube.retireExpiredRepositoryAccess(r, signal);
         if (result === "withdrawn") {
           withdrawn++;
+        }
+        if (result === "pending" && world.detaches.length === 1) {
+          lostDetachReply = true;
         }
         return result;
       },
@@ -714,16 +718,51 @@ test(
         "one live successor retirement",
       );
       await start();
-      // The peer commits the first detach but loses its reply. Normal subsequent maintenance
-      // must again prove Git absent and the independently authorized model ready on this launch.
+      // Stop both owners after the peer committed detach but lost its reply. Recovery must
+      // observe the reduced policy, never send a second detach or bootstrap an installation.
+      await waitFor("lost detach reply", async () => lostDetachReply || undefined, 60_000);
+      await f.stop();
+      const reduction = async () =>
+        (
+          await f.observerPool.query(
+            `SELECT binding_id, fence, recipient, material_version, retained_policy_hash,
+                request_id, expected_version, observed_generation
+         FROM occ.credential_delivery_reductions WHERE revision_id=$1`,
+            [revision.id],
+          )
+        ).rows;
+      const [pendingReduction] = await reduction();
+      assert.ok(pendingReduction?.request_id);
+      assert.equal(pendingReduction.binding_id, bindingId);
+      assert.equal(pendingReduction.recipient.sandboxId, sandboxId);
+      // The worker can complete an observation before stop joins it; neither disposition
+      // permits replay. The accepted operation identity must survive either restart point.
+      const acceptedRequest = pendingReduction.request_id;
+      await runtime.close();
+      runtime = newRuntime();
+      const beforeRestartObservations = withdrawn;
+      await start();
       await waitFor(
         "withdrawal followed by ordinary maintenance on the reduced execution",
-        async () => (withdrawn >= 2 && true) || undefined,
+        async () => (withdrawn >= beforeRestartObservations + 2 && true) || undefined,
         100_000,
       );
       await f.stop();
       await prepared.maintain();
       assert.deepEqual([world.detaches.length, world.writes, creates, stops], [1, 2, 1, 0]);
+      const [settledReduction] = await reduction();
+      assert.equal(settledReduction.request_id, acceptedRequest);
+      assert.ok(settledReduction.observed_generation);
+      assert.equal(settledReduction.material_version, pendingReduction.material_version);
+      const originalSandbox = world.id;
+      world.id = crypto.randomUUID();
+      assert.equal(
+        await kube.retireExpiredRepositoryAccess(revision, t.signal),
+        "retire-runtime",
+        "a replacement execution cannot confirm or inherit the old reduction",
+      );
+      world.id = originalSandbox;
+      assert.deepEqual(await reduction(), [settledReduction]);
       assert.ok(
         world.reports.some(([name, state]: string[]) => name === model && state === "READY"),
       );

@@ -297,7 +297,7 @@ test("provider authentication rejection fences the exact material version and en
   assert.ok(result.body, "new authoritative version does not inherit the old rejection");
 });
 
-test("protected admission requires the actual counterpart and exact loaded policy; withdrawal removes only its owned Sandbox", async (t) => {
+test("protected admission requires the actual counterpart and exact loaded policy; revision removal deletes only its owned Sandbox", async (t) => {
   const f = await staticEgressFixture(t);
   // Inspect the production attachment before protobuf can erase an explicit zero.
   // OpenShell requires omission for automatic TLS termination, not TERMINATE or SKIP.
@@ -417,29 +417,21 @@ test("protected admission requires the actual counterpart and exact loaded polic
     ...originalAnnotations,
     "openclaw.dev/agent-id": "other-agent",
   };
-  await assert.rejects(
-    f.egress.withdrawBinding(f.context, f.context.plan.routes[0].binding.binding),
-    { message: "Protected Sandbox ownership differs from admission." },
-  );
+  await assert.rejects(f.egress.removeRevision(f.context), {
+    message: "Protected Sandbox ownership differs from admission.",
+  });
   assert.equal(f.observed.deleted.length, 0);
   f.observed.sandbox.annotations = originalAnnotations;
-  assert.equal(
-    await f.egress.withdrawBinding(f.context, f.context.plan.routes[0].binding.binding),
-    true,
-  );
+  assert.equal(await f.egress.removeRevision(f.context), true);
   assert.equal(f.observed.deleted.length, 1);
   // Finding 2055: a missing Sandbox is confirmed removed only while the identity still sees
   // the Workspace; a refusal there holds instead of recording the withdrawal.
   f.observed.workspaceVisible = false;
-  await assert.rejects(
-    f.egress.withdrawBinding(f.context, f.context.plan.routes[0].binding.binding),
-    { message: /refused the controller gateway identity/ },
-  );
+  await assert.rejects(f.egress.removeRevision(f.context), {
+    message: /refused the controller gateway identity/,
+  });
   f.observed.workspaceVisible = true;
-  assert.equal(
-    await f.egress.withdrawBinding(f.context, f.context.plan.routes[0].binding.binding),
-    true,
-  );
+  assert.equal(await f.egress.removeRevision(f.context), true);
   assert.equal(f.observed.deleted.length, 1);
 });
 

@@ -1996,6 +1996,7 @@ test(
       [67, "preCredentialProxyGitHubInstallation"],
       [68, "preRepositoryGitOnlineAuthorization"],
       [69, "preRepositoryGitObservedHook"],
+      [70, "preCredentialDeliveries"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2418,6 +2419,7 @@ test(
       [67, "preCredentialProxyGitHubInstallation"],
       [68, "preRepositoryGitOnlineAuthorization"],
       [69, "preRepositoryGitObservedHook"],
+      [70, "preCredentialDeliveries"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2516,6 +2518,7 @@ test(
       [67, "preCredentialProxyGitHubInstallation"],
       [68, "preRepositoryGitOnlineAuthorization"],
       [69, "preRepositoryGitObservedHook"],
+      [70, "preCredentialDeliveries"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

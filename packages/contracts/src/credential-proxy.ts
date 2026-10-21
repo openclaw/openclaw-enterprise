@@ -404,7 +404,12 @@ export interface CredentialProxyDriver extends Driver {
     context: ProxyRevisionContext,
     installation: EgressInstallation,
   ): Promise<boolean>;
-  withdrawBinding(context: ProxyRevisionContext, binding: EgressRef): Promise<boolean>;
+  /** Reduce the policy on this exact execution and independently verify it. A provider
+   * that cannot prove reduction requests retirement; it must not destroy the runtime here. */
+  withdrawBinding(
+    context: ProxyRevisionContext,
+    binding: EgressRef,
+  ): Promise<"withdrawn" | "pending" | "retire-runtime">;
   removeRevision(context: ProxyRevisionContext): Promise<boolean>;
 }
 

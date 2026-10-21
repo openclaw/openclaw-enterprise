@@ -1,7 +1,9 @@
+import type { OpenShellGitRuntimeConfiguration } from "../drivers/egress-proxy/openshell-git-runtime.ts";
 import {
-  OpenShellGitRuntime,
-  type OpenShellGitRuntimeConfiguration,
-} from "../drivers/egress-proxy/openshell-git-runtime.ts";
+  createOpenShellCapabilities,
+  type OpenShellRepositoryTransport,
+} from "../drivers/egress-proxy/openshell-registration.ts";
+import type { OpenShellSandboxDriverSelection } from "../drivers/sandbox/openshell.ts";
 import type { OpenShellSandboxDriverOptions } from "../drivers/sandbox/openshell.ts";
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
 import {
@@ -167,7 +169,7 @@ export interface InstallationRuntimeDrivers {
   readonly repositoryPolicy?: RepositoryPolicyDriver;
   readonly nativeRepositorySender?: NativeRepositorySender;
   readonly preparedRepositoryGit?: PreparedRepositoryGitConfiguration;
-  readonly openShellGit?: OpenShellGitRuntime;
+  readonly repositoryTransport?: OpenShellRepositoryTransport;
   readonly repositoryRegistry?: Awaited<
     ReturnType<typeof composeRepositoryAccess>
   >["repositoryRegistry"];
@@ -276,13 +278,7 @@ export async function loadStartupConfigurationSnapshot(options: {
 interface BundledOpenShellSandboxDriverModule extends DriverImplementation {
   readonly OpenShellSandboxDriver: new (
     configuration: ConfigurationRecord,
-    selection: {
-      readonly id: string;
-      readonly implementation: string;
-      readonly backend: Backend<OpenShellGateway>;
-      readonly operatorOwnedKubernetesResources?: boolean;
-      readonly openShellGit?: OpenShellGitRuntime;
-    },
+    selection: OpenShellSandboxDriverSelection,
   ) => SandboxDriver;
 }
 
@@ -1130,16 +1126,17 @@ export async function loadInstallationConfiguration(options: {
       "OpenShell Git requires prepared GitHub custody, the bundled Kubernetes/OpenShell pair and an authenticated HTTPS gateway.",
     );
   }
-  const openShellGit =
+  const repositoryTransportConfiguration =
     openShellGitConfiguration && repositoryRuntime
-      ? new OpenShellGitRuntime(
-          {
+      ? {
+          configuration: {
             ...openShellGitConfiguration,
-            ...(proxySelection && { protectedExecution: true }),
+            ...(proxySelection && { protectedExecution: true as const }),
           },
-          repositoryRuntime.repositoryRegistry,
-        )
+          registry: repositoryRuntime.repositoryRegistry,
+        }
       : undefined;
+  let repositoryTransport: OpenShellRepositoryTransport | undefined;
   const credentialGatewayDriver =
     credentialGateway === undefined
       ? undefined
@@ -1199,30 +1196,21 @@ export async function loadInstallationConfiguration(options: {
       );
     } else {
       // One configured OpenShell owner, with the original capability IDs retained for v2 revisions.
-      const common = {
+      const capabilities = createOpenShellCapabilities({
+        sandbox,
         backend: openShell!,
-        id: sandbox.id,
-        implementation: sandbox.implementation,
         operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
-      };
-      const sandboxView = new bundledSandboxPackage!.OpenShellSandboxDriver(
-        { ...sandbox.configuration, egress: proxySelection.configuration },
-        { ...common, ...(openShellGit && { openShellGit }) },
-      );
-      const proxy = new OpenShellCredentialProxyDriver(
-        proxySelection.configuration as unknown as OpenShellProxyOptions,
-        {
+        createSandbox: (configuration, selection) =>
+          new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
+        ...(repositoryTransportConfiguration && { repository: repositoryTransportConfiguration }),
+        proxy: {
           id: proxySelection.id,
-          backend: openShell!,
-          sandbox: sandboxView,
+          configuration: proxySelection.configuration as unknown as OpenShellProxyOptions,
           preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
           ...(egressAuthority && { exchangeAuthority: egressAuthority }),
-          ...(openShellGit && {
-            bindRepositoryGit: openShellGit.bindRepositoryGit.bind(openShellGit),
-            previewEnforcement: openShellGit.previewEnforcement.bind(openShellGit),
-          }),
         },
-      );
+      });
+      repositoryTransport = capabilities.repositoryTransport;
       protectedDriver = new InstalledDriver(
         {
           ...sandbox,
@@ -1230,7 +1218,7 @@ export async function loadInstallationConfiguration(options: {
             sandbox: sandbox.configuration,
             backend: openShellBackend,
             proxy: drivers.credential_proxy,
-            ...(openShellGit && {
+            ...(repositoryTransport && {
               repository: configuration.repository,
               modelGateway: drivers.credential_gateway,
             }),
@@ -1238,8 +1226,8 @@ export async function loadInstallationConfiguration(options: {
           },
         },
         {
-          capabilities: { sandbox: sandboxView, credential_proxy: proxy },
-          close: () => common.backend.client.close(),
+          capabilities: { sandbox: capabilities.sandbox, credential_proxy: capabilities.proxy! },
+          close: capabilities.close,
         },
         { sandbox: sandbox.id, credential_proxy: proxySelection.id },
       );
@@ -1252,13 +1240,20 @@ export async function loadInstallationConfiguration(options: {
         : options.createSandboxDriver !== undefined
           ? validateCreatedSandboxDriver(options.createSandboxDriver(sandbox, openShell), sandbox)
           : sandboxPackage === undefined
-            ? new bundledSandboxPackage!.OpenShellSandboxDriver(sandbox.configuration, {
-                id: sandbox.id,
-                implementation: sandbox.implementation,
-                backend: openShell!,
-                operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
-                ...(openShellGit ? { openShellGit } : {}),
-              })
+            ? (() => {
+                const capabilities = createOpenShellCapabilities({
+                  sandbox,
+                  backend: openShell!,
+                  operatorOwnedKubernetesResources: preprovisionedNamespace !== undefined,
+                  createSandbox: (configuration, selection) =>
+                    new bundledSandboxPackage!.OpenShellSandboxDriver(configuration, selection),
+                  ...(repositoryTransportConfiguration && {
+                    repository: repositoryTransportConfiguration,
+                  }),
+                });
+                repositoryTransport = capabilities.repositoryTransport;
+                return capabilities.sandbox;
+              })()
             : (createExternalDriver(sandboxPackage.module, sandbox, "sandbox") as SandboxDriver);
   }
   const credentialRefreshDriver =
@@ -1270,7 +1265,7 @@ export async function loadInstallationConfiguration(options: {
           backend: openShell!,
         });
   const repositoryGitDriver =
-    packageRepositoryGit || openShellGit?.configuration.protectedExecution
+    packageRepositoryGit || repositoryTransportConfiguration?.configuration.protectedExecution
       ? protectedDriver
       : undefined;
   // This check admits an implementation to try installation. Compute still verifies its
@@ -1303,7 +1298,7 @@ export async function loadInstallationConfiguration(options: {
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
         ...(protectedDriver === undefined ? {} : { protectedDriver }),
         preparedTokens: tokenService,
-        ...(preparedRepositoryGit === undefined || openShellGit || repositoryGitDriver
+        ...(preparedRepositoryGit === undefined || repositoryTransport || repositoryGitDriver
           ? {}
           : { preparedRepositoryIngress: true }),
         preprovisionedNamespace,
@@ -1352,7 +1347,7 @@ export async function loadInstallationConfiguration(options: {
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     ...(repositoryRuntime ?? {}),
     ...(preparedRepositoryGit ? { preparedRepositoryGit } : {}),
-    ...(openShellGit ? { openShellGit } : {}),
+    ...(repositoryTransport ? { repositoryTransport } : {}),
   });
 }
 

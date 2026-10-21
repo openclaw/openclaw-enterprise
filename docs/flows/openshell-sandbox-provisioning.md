@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
-updated: 2026-10-19
-last_updated_session: authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13
+updated: 2026-10-21
+last_updated_session: authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -64,6 +64,11 @@ graph TD
   S -- "ready" --> Z{"<b>Active Harness</b>"}
   Z -- "Codex" --> L["<b>Run model turn</b><br/>Gateway to Codex"]
   Z -- "OpenClaw" --> U["<b>Run native turn</b>"]
+  L -- "Git withdrawn" --> D1["<b>Fence delivery</b><br/>OCC commits intent"]
+  D1 --> D2{"<b>Verify reduction</b><br/>Exact execution"}
+  D2 -- "pending" --> D2
+  D2 -- "withdrawn" --> L
+  D2 -- "cannot prove" --> D3["<b>Request retirement</b><br/>Caller decides"]
   L --> N["<b>Delete Sandbox</b><br/>Version cleanup"]
   U --> N
   N --> O["<b>Delete Workspace</b><br/>Namespace cleanup"]
@@ -73,10 +78,10 @@ graph TD
   classDef operation fill:#EBF3F0,stroke:#7F9D93,color:#2B4038,stroke-width:1px
   classDef gate fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   classDef blocked fill:#F3F4F6,stroke:#98A2AE,color:#44505F,stroke-width:1px
-  class A,B,F state
+  class A,B,F,D1 state
   class D,E,I,Q,W,W1,W2,H,J,K,L,M,N,O,P,R1,T,U operation
-  class C,G,S,V,Y,Y0,Z,W0 gate
-  class X,R,R0 blocked
+  class C,G,S,V,Y,Y0,Z,W0,D2 gate
+  class X,R,R0,D3 blocked
   linkStyle default stroke:#8B949E,stroke-width:1px
 ```
 
@@ -311,6 +316,31 @@ owned providers/profile, sends idempotent `DeleteWorkspace`, then removes chart
 resources/NetworkPolicies in reverse order. Terminating Workspaces retry after
 lost responses. Compute deletes the Kubernetes namespace only after cleanup succeeds.
 
+### 6. Withdraw Git without retiring the execution
+
+`apps/controller/src/drivers/egress-proxy/openshell-registration.ts:createOpenShellCapabilities`
+keeps the transport inside the installed Driver. The Token Service supplies material;
+`packages/occ/src/state/credential-deliveries.ts:CredentialDeliveries` stores target, binding,
+fence, desired and observed policy, installed and pending material versions. Unknown
+writes survive restart. A forward migration preserves receipts and fences former writers.
+
+After OCC withdraws authority,
+`apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts:expire`
+fences the delivery and commits its reduction intent through
+`packages/occ/src/state/credential-delivery-reductions.ts:CredentialDeliveryReductions`.
+`apps/controller/src/drivers/egress-proxy/openshell-expired-git.ts:subtractExpiredOpenShellGit`
+conditionally detaches Git. It independently verifies the reduced generation, original
+process and network, retained providers and model attachment. Lost replies consume the
+send opportunity: restart observes without resending. A replacement cannot settle it.
+
+This supports one Git binding with separately authorized model access. Removing the last Git route
+denies Git while that conversation continues. Multiple independent Git bindings
+remain unsupported. For generic exchange routes, `withdrawBinding` returns
+`retire-runtime`: Compute reports `CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT`
+without deleting the Sandbox or claiming detachment. The worker leaves that source pending
+and attempts other authorized withdrawals in the same batch. Runtime retirement is a
+separate action. The mandatory stock gate stays closed; observed-hook assurance stays separate.
+
 ## Debugging and verification
 
 The [testing guide](../testing/openshell.md) defines prerequisites and proof. Compose
@@ -333,6 +363,10 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21 23:23: Record per-source retirement refusal in the accompanying worker change. (authoring-run/67a0706e-56ab-4514-adca-35cf217b0c3b - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
+
+- 2026-10-21 23:06: Trace OCC delivery ownership and explicit withdrawal outcomes in the accompanying change. (authoring-run/785bc245-2a9c-4ebe-ad96-da5cdd3c4851 - 7e5773662f34dc38be8138757ee47fd246bc3f9e)
 
 - 2026-10-19 09:48: Preserve main and policy traces; condense prose. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
 

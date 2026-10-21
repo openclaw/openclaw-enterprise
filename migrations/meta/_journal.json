@@ -491,6 +491,13 @@
       "when": 1787000000079,
       "tag": "0070_repository_git_observed_hook",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "7",
+      "when": 1787000000080,
+      "tag": "0071_credential_deliveries",
+      "breakpoints": true
     }
   ]
 }

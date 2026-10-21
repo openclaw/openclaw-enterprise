@@ -331,7 +331,7 @@ function externalGitJourney(scope: "repository" | "installation" | "online-insta
     assert.equal(drivers.installation.drivers.repo, undefined);
     assert.equal(drivers.nativeRepositorySender, undefined);
     assert.equal("open" in drivers.repositoryPolicy!, false);
-    assert.equal(drivers.openShellGit, undefined);
+    assert.equal(drivers.repositoryTransport, undefined);
     const apiOwner = apiDrivers.repositoryGitDriver!;
     assert.notEqual(apiOwner, owner);
     assert.deepEqual(apiOwner.ref, owner.ref);

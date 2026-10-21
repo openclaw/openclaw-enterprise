@@ -2100,6 +2100,109 @@ export const preparedRepositoryDraftPulls = occSchema.table(
   ],
 );
 
+export const credentialDeliveries = occSchema.table(
+  "credential_deliveries",
+  {
+    revisionId: text("revision_id")
+      .notNull()
+      .references(() => agentRevisions.id, { onDelete: "cascade" }),
+    bindingId: text("binding_id").notNull(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    target: jsonb("target").notNull(),
+    fence: bigint("fence", { mode: "number" }).notNull().default(1),
+    workerInstance: uuid("worker_instance").notNull(),
+    adoptedAt: timestamp("adopted_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .default(sql`clock_timestamp()`),
+    desired: jsonb("desired"),
+    observed: jsonb("observed"),
+    materialVersion: uuid("material_version"),
+    preparationAttemptId: uuid("preparation_attempt_id"),
+    targetMaterialVersion: uuid("target_material_version"),
+    targetPreparationAttemptId: uuid("target_preparation_attempt_id"),
+    writePending: text("write_pending"),
+    blocked: text("blocked"),
+    retainedPolicyHash: text("retained_policy_hash"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.revisionId, t.bindingId] }),
+    index("credential_deliveries_namespace").on(t.namespaceId),
+    unique("credential_deliveries_revision_id_target_key").on(t.revisionId, t.target),
+    check("credential_deliveries_binding_id_check", sql`${t.bindingId} <> ''`),
+    check("credential_deliveries_target_check", sql`jsonb_typeof(${t.target}) = 'object'`),
+    check("credential_deliveries_fence_check", sql`${t.fence} >= 1`),
+    check("credential_deliveries_desired_check", sql`jsonb_typeof(${t.desired}) = 'object'`),
+    check("credential_deliveries_observed_check", sql`jsonb_typeof(${t.observed}) = 'object'`),
+    check(
+      "credential_deliveries_write_pending_check",
+      sql`${t.writePending} IN ('bootstrap','rotate')`,
+    ),
+    check(
+      "credential_deliveries_retained_policy_hash_check",
+      sql`${t.retainedPolicyHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check(
+      "credential_deliveries_check",
+      sql`(${t.materialVersion} IS NULL) = (${t.preparationAttemptId} IS NULL)`,
+    ),
+    check(
+      "credential_deliveries_check1",
+      sql`(${t.targetMaterialVersion} IS NULL) = (${t.targetPreparationAttemptId} IS NULL)`,
+    ),
+  ],
+);
+
+export const credentialDeliveryReductions = occSchema.table(
+  "credential_delivery_reductions",
+  {
+    revisionId: text("revision_id")
+      .notNull()
+      .references(() => agentRevisions.id, { onDelete: "cascade" }),
+    bindingId: text("binding_id").notNull(),
+    fence: bigint("fence", { mode: "number" }).notNull(),
+    recipient: jsonb("recipient").notNull(),
+    materialVersion: uuid("material_version").notNull(),
+    retainedPolicyHash: text("retained_policy_hash").notNull(),
+    requestId: uuid("request_id"),
+    expectedVersion: text("expected_version"),
+    observedGeneration: text("observed_generation"),
+  },
+  (t) => [
+    primaryKey({ columns: [t.revisionId, t.bindingId] }),
+    foreignKey({
+      columns: [t.revisionId, t.bindingId],
+      foreignColumns: [credentialDeliveries.revisionId, credentialDeliveries.bindingId],
+    }).onDelete("cascade"),
+    check("credential_delivery_reductions_binding_id_check", sql`${t.bindingId} <> ''`),
+    check("credential_delivery_reductions_fence_check", sql`${t.fence} >= 1`),
+    check(
+      "credential_delivery_reductions_recipient_check",
+      sql`jsonb_typeof(${t.recipient}) = 'object'`,
+    ),
+    check(
+      "credential_delivery_reductions_retained_policy_hash_check",
+      sql`${t.retainedPolicyHash} ~ '^[a-f0-9]{64}$'`,
+    ),
+    check("credential_delivery_reductions_expected_version_check", sql`${t.expectedVersion} <> ''`),
+    check(
+      "credential_delivery_reductions_observed_generation_check",
+      sql`${t.observedGeneration} <> ''`,
+    ),
+    check(
+      "credential_delivery_reductions_check",
+      sql`(${t.requestId} IS NULL) = (${t.expectedVersion} IS NULL)`,
+    ),
+    check(
+      "credential_delivery_reductions_check1",
+      sql`${t.observedGeneration} IS NULL OR ${t.requestId} IS NOT NULL`,
+    ),
+  ],
+);
+
 // The identity keys of one verified OpenShell Git installation (the provider's
 // OpenShellPreparedGitInstalled), the only keys `observed` may carry.
 const openShellGitObservedKeys = sql`ARRAY['workspace', 'sandbox', 'sandboxId', 'executionId', 'provider',

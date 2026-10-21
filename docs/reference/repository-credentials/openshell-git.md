@@ -260,7 +260,7 @@ After a Gateway or worker restart, Git stays closed until the worker verifies
 the same Sandbox, provider generation, supervisor process and network instance.
 A new Gateway control session is expected. On its first maintenance pass the
 worker reads identity and custody (never a token) from
-`occ.openshell_git_routes`, verifies the installation, then reads the prepared
+`occ.credential_deliveries`, verifies the installation, then reads the prepared
 material. This usually takes less than a minute. A failed read retries with
 bounded backoff; it does not repeat a write.
 

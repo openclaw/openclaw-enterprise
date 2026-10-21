@@ -1122,7 +1122,12 @@ export class OpenShellGitRuntime {
   }
 
   /** Whether this worker still holds the route; a provider write is marked before it runs. */
-  private async fenced(entry: Entry, signal: AbortSignal, write?: "rotate"): Promise<void> {
+  private async fenced(
+    entry: Entry,
+    signal: AbortSignal,
+    write?: "rotate",
+    material?: OpenShellGitMaterialReference,
+  ): Promise<void> {
     const routes = this.routes;
     const fence = entry.fence;
     if (routes === undefined || fence === undefined) {
@@ -1132,7 +1137,7 @@ export class OpenShellGitRuntime {
       () =>
         write === undefined
           ? routes.owns(entry.revision.id, fence)
-          : routes.writing(entry.revision.id, fence, write),
+          : routes.writing(entry.revision.id, fence, write, material),
       signal,
     );
     if (!held) {
@@ -2070,7 +2075,7 @@ export class OpenShellGitRuntime {
           this.pending(entry, "unverified");
           // Marked before the write: a worker that stops in between leaves the outcome
           // unknown, and a stale fence writes nothing.
-          await this.fenced(entry, signal, "rotate");
+          await this.fenced(entry, signal, "rotate", material);
           try {
             const rotated = await entry.provider.rotate(
               entry.binding,

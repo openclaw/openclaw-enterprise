@@ -40,7 +40,7 @@
     "tests/integration/postgres-prepared-standing-removal.test.ts",
     "tests/integration/postgres-prepared-github-git-use.test.mjs",
     "tests/integration/postgres-openshell-online-git-journey.test.mjs",
-    "tests/integration/postgres-openshell-git-routes.test.mjs",
+    "tests/integration/postgres-openshell-git-routes.test.ts",
     "tests/integration/postgres-openshell-standing-route.test.ts",
     "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
@@ -333,7 +333,7 @@
       ]
     },
     {
-      "path": "tests/integration/postgres-openshell-git-routes.test.mjs",
+      "path": "tests/integration/postgres-openshell-git-routes.test.ts",
       "expectedTests": [
         "OpenShell Git routes persist identity and custody facts under one fenced holder"
       ]

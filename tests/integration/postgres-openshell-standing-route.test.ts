@@ -269,7 +269,7 @@ test(
     const {
       rows: [last],
     } = await f.observerPool.query(
-      "SELECT fence, write_pending, blocked, material_version FROM occ.openshell_git_routes WHERE revision_id=$1",
+      "SELECT fence, write_pending, blocked, material_version FROM occ.credential_deliveries WHERE revision_id=$1",
       [revision.id],
     );
     assert.deepEqual(
@@ -322,7 +322,7 @@ test(
               sql,
               values === undefined ? undefined : [...values],
             );
-            if (sql.includes("INSERT INTO occ.openshell_git_routes")) {
+            if (sql.includes("INSERT INTO occ.credential_deliveries")) {
               initialReservation = true;
             }
             if (sql === "COMMIT" && initialReservation && lostAcknowledgements === 0) {
@@ -358,7 +358,7 @@ test(
     const {
       rows: [reserved],
     } = await f.observerPool.query(
-      "SELECT binding_id, write_pending, blocked, material_version FROM occ.openshell_git_routes WHERE revision_id=$1",
+      "SELECT binding_id, write_pending, blocked, material_version FROM occ.credential_deliveries WHERE revision_id=$1",
       [revision.id],
     );
     assert.ok(reserved);
@@ -405,7 +405,7 @@ test(
     assert.equal(peer.originCalls(), 0);
     assert.equal(lostAcknowledgements, 1);
     const { rows } = await f.observerPool.query(
-      "SELECT blocked, material_version FROM occ.openshell_git_routes WHERE revision_id=$1",
+      "SELECT blocked, material_version FROM occ.credential_deliveries WHERE revision_id=$1",
       [revision.id],
     );
     assert.deepEqual(rows, [{ blocked: "write_unknown", material_version: null }]);
@@ -510,7 +510,7 @@ for (const fault of ["before write", "after commit", "during worker replacement"
       const blocked = async () =>
         (
           await f.observerPool.query(
-            "SELECT blocked FROM occ.openshell_git_routes WHERE revision_id = $1",
+            "SELECT blocked FROM occ.credential_deliveries WHERE revision_id = $1",
             [id],
           )
         ).rows[0]!.blocked;

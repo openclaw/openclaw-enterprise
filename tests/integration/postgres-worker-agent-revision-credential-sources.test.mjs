@@ -2100,16 +2100,27 @@ revisionTest(
   async (fixture) => {
     const partial = await agentWithHarnessAndToolSources(fixture, "withdraw-partial", 2);
     const moved = await agentWithHarnessAndToolSources(fixture, "withdraw-moved", 1);
+    const retirement = await agentWithHarnessAndToolSources(fixture, "withdraw-retirement", 2);
     const partialRevision = await fixture.revision(partial, 1);
     const movedRevision = await fixture.revision(moved, 1);
+    const retirementRevision = await fixture.revision(retirement, 1);
     const [first, second] = toolSources(partial).map(({ sourceId }) => sourceId);
     const [movedSource] = toolSources(moved).map(({ sourceId }) => sourceId);
+    const [refusedSource, reducibleSource] = toolSources(retirement).map(
+      ({ sourceId }) => sourceId,
+    );
     const withdrawn = [];
     let failSecond = true;
     const compute = {
       ...fixture.compute,
       async withdrawCredentialSource(revision, source) {
         withdrawn.push([revision.id, source.id]);
+        if (source.id === refusedSource) {
+          throw new CredentialWithdrawalRefusedError(
+            "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT",
+            "The selected Credential Proxy cannot verify a reduced policy.",
+          );
+        }
         if (source.id === second && failSecond) {
           failSecond = false;
           throw new Error("Sandbox unreachable");
@@ -2122,6 +2133,7 @@ revisionTest(
     await fixture.start(compute, options);
     await fixture.work(partialRevision, "succeeded");
     await fixture.work(movedRevision, "succeeded");
+    await fixture.work(retirementRevision, "succeeded");
     await fixture.stop();
 
     const withdraw = async (owner, revision, credentialSourceIds) => {
@@ -2174,6 +2186,23 @@ revisionTest(
     const pending = await read(moved, movedSource);
     assert.equal(pending.state, "pending");
     assert.equal(pending.lastReason, "COMPUTE_DRIVER_MISMATCH");
+
+    // A per-source retirement refusal must not suppress a later, independently reducible source.
+    const retirementWork = await withdraw(retirement, retirementRevision, [
+      refusedSource,
+      reducibleSource,
+    ]);
+    await fixture.start(compute, options);
+    await fixture.work(retirementWork, "failed_permanent", 30_000);
+    await fixture.stop();
+    assert.deepEqual(withdrawn.slice(3), [
+      [retirementRevision.id, refusedSource],
+      [retirementRevision.id, reducibleSource],
+    ]);
+    const refused = await read(retirement, refusedSource);
+    assert.equal(refused.state, "pending");
+    assert.equal(refused.lastReason, "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT");
+    assert.equal((await read(retirement, reducibleSource)).state, "revoked");
   },
 );
 

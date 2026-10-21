@@ -550,13 +550,17 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     return undefined;
   }
 
-  async withdrawBinding(context: ProxyRevisionContext, binding: EgressRef): Promise<boolean> {
+  async withdrawBinding(
+    context: ProxyRevisionContext,
+    binding: EgressRef,
+  ): Promise<"withdrawn" | "pending" | "retire-runtime"> {
+    this.assertPlan(context);
     if (!context.plan.routes.some((route) => isDeepStrictEqual(route.binding.binding, binding))) {
       throw new Error("Unknown egress withdrawal binding.");
     }
-    // TODO(egress multi-binding): install a reducing successor policy without stopping the
-    // Harness. The first single-binding slice confirms Sandbox destruction instead.
-    return this.removeRevision(context);
+    // The installed exchange protocol does not attest a reduced route set. OCC already
+    // denies this binding; only the lifecycle caller may decide to retire its execution.
+    return "retire-runtime";
   }
 
   async removeRevision(context: ProxyRevisionContext): Promise<boolean> {

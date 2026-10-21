@@ -37,7 +37,7 @@ material is issued or replayed on adoption.
 
 A worker restart (a rollout, an OOM kill, a node drain, an upgrade) does not
 require a new version either. The worker records each route it prepares in
-PostgreSQL (`occ.openshell_git_routes`): the Sandbox, the binding id the Sandbox
+PostgreSQL (`occ.credential_deliveries`): the Sandbox, the binding id the Sandbox
 presents, the provider generation it wrote, a reference to the material that
 generation carries and the last verified observation. Never a token. The restarted
 (or replacement) worker adopts the route from that record on its first maintenance

@@ -1023,7 +1023,10 @@ export class CredentialSourceRevisionError extends Error {
  * again. The message stays in the controller.
  */
 export class CredentialWithdrawalRefusedError extends Error {
-  readonly code: "CREDENTIAL_WITHDRAWAL_MISCONFIGURED" | "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT";
+  readonly code:
+    | "CREDENTIAL_WITHDRAWAL_MISCONFIGURED"
+    | "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT"
+    | "CREDENTIAL_WITHDRAWAL_REQUIRES_RUNTIME_RETIREMENT";
 
   constructor(code: CredentialWithdrawalRefusedError["code"], message: string) {
     super(message);

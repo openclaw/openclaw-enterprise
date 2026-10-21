@@ -29,6 +29,7 @@ export const registeredGitSelection = `p.installation#>>'{plan,repositoryGit,bin
 // verifies the complete profile, not just this name. Keep the installed observation schema and
 // existing narrow names; an installation recipient must agree with this distinct profile family.
 export const openShellInstallationGitProviderPrefix = "oce-github-installation-";
+export const openShellGitDeliveryTransport = "openshell-repository-git/v1";
 const observedInstallationProfile =
   "r.observed->>'provider' ~ '^" + openShellInstallationGitProviderPrefix + "[0-9a-f]{32}$'";
 
@@ -45,13 +46,14 @@ const observedHookSelection = `(${admittedAuthorization} = 'request-hook-observe
 
 export const protectedRepositoryGitInstallationSql = `
   (p.namespace_id,p.agent_id,p.revision_id)=(r.namespace_id,r.agent_id,r.revision_id)
+  AND r.target->>'transport'='${openShellGitDeliveryTransport}'
   AND ((${registeredGitSelection} AND NOT (r.observed ? 'observedHook')) OR ${observedHookSelection})
   AND CASE WHEN ${recipient} ? 'deliveryProfile'
     THEN ${observedInstallationProfile} AND ${admittedAuthorization} IN ('online-request','request-hook-observed')
     ELSE NOT (${observedInstallationProfile}) END
   AND p.sandbox_id = r.observed->>'sandboxId'
   AND r.binding_id = p.installation#>>'{plan,execution,executionId}'
-  AND r.observed->>'executionId' = r.revision_id AND r.observed->>'providerId' = r.provider_id
+  AND r.observed->>'executionId' = r.revision_id AND r.observed->>'providerId' = (r.desired->>'providerId')
   AND nullif(r.observed->>'policyHash', '') = p.installation#>>'{enforcement,policyHash}'
   AND p.installation#>>'{enforcement,authorityScope}' = 'execution'
   AND ${["instanceId", "configurationId"]
@@ -134,9 +136,11 @@ export interface RepositoryGitRecipientEvidence {
   readonly installed: string;
 }
 
-const openShellRoute = "occ.openshell_git_routes";
+const openShellRoute = "occ.credential_deliveries";
 const openShellObserved = `SELECT FROM ${openShellRoute} WHERE revision_id=$1 AND fence=$2
-  AND observed=$3::jsonb AND blocked IS NULL AND detach_request_id IS NULL`;
+  AND binding_id=(SELECT admitted_spec#>>'{egress_plan,execution,executionId}' FROM occ.agent_revisions WHERE id=$1)
+  AND target->>'transport'='${openShellGitDeliveryTransport}'
+  AND observed=$3::jsonb AND blocked IS NULL`;
 
 /** Only a terminal tombstone for this same observed preview retires its possibly installed
  * material. Lost evidence stays unknown; neither strict mode nor another recipient matches. */
@@ -153,7 +157,7 @@ export const openShellPreviewEnded = `EXISTS (
 /** Read the bundled observer's existing fenced route; no duplicate registration or adoption. */
 export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({
   join: `${openShellRoute} r USING(namespace_id, agent_id, revision_id)`,
-  released: `${protectedRepositoryGitInstallationSql} AND r.blocked IS NULL AND r.detach_request_id IS NULL`,
+  released: `${protectedRepositoryGitInstallationSql} AND r.blocked IS NULL`,
   observed: openShellObserved,
   installed: `${openShellObserved} AND observed->>'credentialState'='active' AND write_pending IS NULL
     AND preparation_attempt_id=$4 AND material_version=$5`,

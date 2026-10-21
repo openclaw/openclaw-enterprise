@@ -5515,10 +5515,10 @@ test(
     assert.equal(protectedGit.repositoryOwner.controlSocket, undefined);
     assert.equal(protectedGit.nativeRepositorySender, undefined);
     assert.equal(protectedGit.egressAuthority, undefined);
-    assert.equal(protectedGit.openShellGit.configuration.protectedExecution, true);
+    assert.equal(protectedGit.sandboxDriver.openShellGit.configuration.protectedExecution, true);
     await protectedGit.proxyDriver.sourceControl.assertAvailable(t.signal, "repository_git");
 
-    const runtime = drivers.openShellGit;
+    const runtime = drivers.sandboxDriver.openShellGit;
     t.after(() => runtime.close());
     assert.ok(runtime);
     drivers.computeDriver.validateRepositoryCredentials(
@@ -5576,7 +5576,7 @@ test(
     await t.test(
       "protected Sandbox accepts only the separately admitted model alongside Git",
       async () => {
-        const git = protectedGit.openShellGit;
+        const git = protectedGit.sandboxDriver.openShellGit;
         const proxy = protectedGit.proxyDriver;
         const sandbox = protectedGit.sandboxDriver;
         const revisionId = "rev_" + randomUUID();

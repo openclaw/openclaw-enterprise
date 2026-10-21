@@ -1,3 +1,13 @@
+export { CredentialDeliveries } from "./state/credential-deliveries.ts";
+export type {
+  CredentialDeliveryKey,
+  CredentialDeliverySnapshot,
+} from "./state/credential-deliveries.ts";
+export { CredentialDeliveryReductions } from "./state/credential-delivery-reductions.ts";
+export type {
+  CredentialDeliveryReduction,
+  CredentialDeliveryReductionProgress,
+} from "./state/credential-delivery-reductions.ts";
 export { repositoryApprovalFingerprint } from "./repository-approval.ts";
 import { repositoryApprovalFingerprint } from "./repository-approval.ts";
 
