@@ -51,6 +51,11 @@ one send attempt and its response to the same execution. Select the level explic
 admission. Never satisfy an exact-dispatch requirement with online authorization, or either
 protected level with an unprotected execution.
 
+An operator may separately [preview the configured request hook](online-authorization.md#preview-the-configured-request-hook)
+in an isolated installation. Record that OCE observed the hook working, not that OpenShell
+will require it after the operator changes the installation. Neither protection level above
+can be satisfied by this preview, and no existing admission changes meaning.
+
 ## From startup to one repository read with exact dispatch
 
 1. **Admit the execution.** The OpenClaw Control Plane (OCC) admits the routes and grants. Sandbox enforces the plan and authenticates the execution and supervisor installation.
