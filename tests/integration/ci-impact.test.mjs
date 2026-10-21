@@ -392,10 +392,10 @@ test("pnpm impact reports a changed workspace package and its dependents", async
   // GitHub merges onto the current base, which can be newer than base.sha.
   const stale = join(f.dir, "stale-event.json");
   writeFileSync(stale, JSON.stringify(pr("1".repeat(40), f.head)));
-  for (const packages of await all([{}, { GITHUB_EVENT_PATH: stale }], (overrides) =>
-    affectedPackages(f, overrides),
-  )) {
-    assert.deepEqual(packages, affected);
+  // One at a time: every `pnpm list` briefly creates a _tmp_ file in the project root (its
+  // store-path probe), which a concurrent run's dirty-checkout check would report.
+  for (const overrides of [{}, { GITHUB_EVENT_PATH: stale }]) {
+    assert.deepEqual(await affectedPackages(f, overrides), affected);
   }
 });
 
