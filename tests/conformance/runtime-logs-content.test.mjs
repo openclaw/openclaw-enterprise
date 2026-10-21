@@ -2434,9 +2434,10 @@ test("a full 1 MiB container window is cut after sanitizing it once", async (t) 
   // With tailLines=1000 a chatty container fills the kubelet's 1 MiB read on every
   // poll: twice what one 512 KiB page may carry. Choosing the cut must not sanitize
   // the window again for each candidate prefix (a binary search did about five
-  // window sanitizations per poll). Classifying a JSON log line parses it once, so
-  // counting JSON.parse calls on the window's lines counts line sanitizations without
-  // depending on runner load. The spy calls through: every result is the real one.
+  // window sanitizations per poll). Sanitizing a line classifies it (one JSON.parse of
+  // the raw line) and redacts its message (one argv split of the message text), so
+  // call-through spies on both count per-line work without depending on runner load.
+  // Every spied call returns the real result.
   const started = Date.parse("2026-09-30T12:00:00Z");
   const lines = Array.from({ length: 1000 }, (_, index) => ({
     time: iso(started + index),
@@ -2445,20 +2446,28 @@ test("a full 1 MiB container window is cut after sanitizing it once", async (t) 
   assert.ok(lines.reduce((sum, { raw }) => sum + Buffer.byteLength(raw), 0) > 1024 * 1024);
   const stream = { source: "gateway", pod: "gateway-test-0", container: "gateway" };
   const raws = new Set(lines.map(({ raw }) => raw));
+  const texts = new Set(lines.map(({ raw }) => JSON.parse(raw).message));
   const parse = t.mock.method(JSON, "parse");
-  const parses = async (work) => {
+  const split = t.mock.method(String.prototype, "split");
+  const work = async (run) => {
     parse.mock.resetCalls();
-    await work();
-    return parse.mock.calls.filter(({ arguments: [text] }) => raws.has(text)).length;
+    split.mock.resetCalls();
+    await run();
+    return {
+      classified: parse.mock.calls.filter(({ arguments: [text] }) => raws.has(text)).length,
+      redacted: split.mock.calls.filter((call) => texts.has(String(call.this))).length,
+    };
   };
   // The Driver's byte cut drops the final, partial line before any classification.
   const complete = lines.slice(0, -1);
-  const evidence = await parses(() => runtimeLogEvidence(complete));
-  const once = await parses(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
-  // The proxy holds: one sanitization parses each complete line exactly once.
-  assert.equal(once, complete.length);
+  const evidence = await work(() => runtimeLogEvidence(complete));
+  const once = await work(() => sanitizeRuntimeLogChunk({ stream, lines, truncated: true }));
+  // The proxies hold: one sanitization classifies and redacts each complete line once,
+  // and the evidence pass classifies without redacting.
+  assert.deepEqual(once, { classified: complete.length, redacted: complete.length });
+  assert.equal(evidence.redacted, 0);
   let page;
-  const cut = await parses(async () => {
+  const cut = await work(async () => {
     page = await pollReader().poll(lines, { truncated: true });
   });
   const delivered = lineRecords(page).length;
@@ -2466,11 +2475,15 @@ test("a full 1 MiB container window is cut after sanitizing it once", async (t) 
   assert.ok(delivered > 300 && delivered < 999, `${delivered} lines delivered`);
   assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
   // The fetched safety evidence classifies every complete line once; the prefix
-  // builds then share one sanitization. Re-sanitizing even the delivered prefix once
-  // more would add at least 300 lines.
+  // builds then share one sanitization. Both bounds are exact today: classifying or
+  // redacting even the delivered prefix once more adds at least 300 lines.
   assert.ok(
-    cut <= evidence + once,
-    `the cut page parsed ${cut} window lines; the evidence pass and one sanitization parse ${evidence + once}`,
+    cut.classified <= evidence.classified + once.classified,
+    `the cut page classified ${cut.classified} window lines; the evidence pass and one sanitization classify ${evidence.classified + once.classified}`,
+  );
+  assert.ok(
+    cut.redacted <= once.redacted,
+    `the cut page redacted ${cut.redacted} window messages; one sanitization redacts ${once.redacted}`,
   );
 });
 
