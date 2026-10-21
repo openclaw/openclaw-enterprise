@@ -1,4 +1,18 @@
 import type { AgentRead } from "@openclaw-enterprise/contracts";
+import type { createApiClient } from "../api-client.mjs";
+import type { AgentNavigation } from "./list.mjs";
+
+/** Stop and Delete follow the selected Agent until the operator leaves its detail page. */
+export interface AgentLifecycleContext extends Pick<AgentNavigation, "navigate"> {
+  request: ReturnType<typeof createApiClient>;
+  isCurrent(): boolean;
+  onExpired(): void;
+}
+
+export interface LifecycleError {
+  text: string;
+  requestId: string | undefined;
+}
 
 // Agent list and detail use the same confirmation and explain which resources deletion keeps.
 export const STOP_CONFIRMATION =

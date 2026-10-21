@@ -6826,6 +6826,24 @@ export const scenarios = {
     description:
       "A file the API confirms missing says so on first load and can be created; unrelated file editors still load.",
   },
+  workspaceResourceMissing: {
+    group: "Components/Workspace",
+    name: "Agent unavailable while reading a file",
+    path: `${revision}&tab=workspace`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/AGENTS.md",
+        method: "GET",
+        status: 404,
+        code: "NOT_FOUND",
+        message: "The requested platform resource was not found.",
+        once: true,
+      },
+    ],
+    description: "The Agent was unavailable, so the editor cannot assume AGENTS.md is empty.",
+    steps: ["Choose Reload AGENTS.md. Once its contents load, edit the file to enable Save."],
+  },
   workspaceUnknown: {
     group: "Components/Workspace",
     name: "Write outcome unknown",
@@ -6840,7 +6858,7 @@ export const scenarios = {
       click("Save AGENTS.md"),
     ],
     description:
-      "An uncertain write blocks retry until Reload lets the reader inspect current content.",
+      "After an uncertain save, reload the same file to inspect its contents before deciding whether to save again.",
   },
   workspaceMissingReadback: {
     group: "Components/Workspace",
@@ -7062,7 +7080,7 @@ export const scenarios = {
     ],
     actions: [click("Delete Agent"), click("Permanently delete Agent")],
     description:
-      "The request may have started cleanup. Refresh status instead of submitting again.",
+      "Deletion may have started. Refresh deletion status checks this Agent without sending another deletion request.",
   },
   createFlow: {
     group: "Flows",
@@ -7484,7 +7502,7 @@ export const scenarios = {
     rules: [{ suffix: "/stop", method: "POST", status: 503, once: true }],
     actions: [click("Stop Agent"), { selector: ".agent-stop-dialog button.danger", click: true }],
     description:
-      "An uncertain stop response requires a status refresh before another stop request.",
+      "Stop may have been accepted. Refresh stop status checks this Agent without sending another stop request.",
   },
   stopFlow: {
     group: "Flows",

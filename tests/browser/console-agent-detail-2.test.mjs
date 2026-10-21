@@ -50,6 +50,7 @@ import {
   assertRevisionUrl,
   agentDeleteRequests,
   agentStopRequests,
+  replyWithDifferentAgentId,
   nativeAdminComputeDriver,
   nativeAdminValues,
   waitForLiveControls,
@@ -315,15 +316,7 @@ test("Agent delete uncertainty requires refresh before another destructive reque
       return;
     }
     interceptedDeletes += 1;
-    await route.fetch();
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked deletion response" },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000000503" },
-      }),
-    });
+    await replyWithDifferentAgentId(route, agent.id, 202);
   });
 
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "configuration"));
@@ -341,6 +334,16 @@ test("Agent delete uncertainty requires refresh before another destructive reque
   assert.equal(agentDeleteRequests(requests, namespace.id, agent.id).length, 1);
   const deleting = await fixture.request("GET", deletePath);
   assert.equal(deleting.data.status, "deleting");
+
+  // A read for a different Agent cannot unlock another destructive request either.
+  await page.route(
+    fixture.origin + deletePath,
+    (route) => replyWithDifferentAgentId(route, agent.id, 200),
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "Refresh deletion status" }).click();
+  await page.getByText("Could not refresh deletion status.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Delete Agent" }).isDisabled(), true);
 
   const refresh = page.waitForResponse(
     (response) =>
@@ -3444,25 +3447,6 @@ test("explicit missing-file readback settles an uncertain workspace create witho
     }
     await route.continue();
   });
-  await login(
-    page,
-    fixture,
-    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
-  );
-  const editor = page.getByLabel("USER.md", { exact: true });
-  await waitForWorkspaceEditors(page, ["USER.md"]);
-  await editor.fill("# Interrupted first create\n");
-  const save = page.getByRole("button", { name: "Save USER.md", exact: true });
-  const reload = page.getByRole("button", { name: "Reload USER.md", exact: true });
-  const form = page.locator("form").filter({ has: editor });
-  await save.click();
-  await form.getByText("Outcome unknown.", { exact: false }).waitFor();
-  assert.equal(await save.isDisabled(), true);
-  assert.equal((await fixture.request("GET", path)).status, 404);
-  const writeRequests = () =>
-    requests.filter((request) => request.path === path && request.method === "PUT");
-  assert.equal(writeRequests().length, 1);
-  // A formal resource 404, unlike file absence, cannot settle this unknown write.
   const missingAgent = await fixture.request(
     "GET",
     `/namespaces/${namespace.id}/agents/agt_${randomUUID()}/workspace/files/USER.md`,
@@ -3472,23 +3456,45 @@ test("explicit missing-file readback settles an uncertain workspace create witho
     code: "NOT_FOUND",
     message: "The requested platform resource was not found.",
   });
-  await page.route(fixture.origin + path, async (route) => {
-    if (route.request().method() === "GET") {
-      await route.fulfill({
-        status: missingAgent.status,
-        contentType: "application/json",
-        body: JSON.stringify(missingAgent.body),
-      });
-    } else {
-      await route.fallback();
-    }
-  });
+  const answerWithMissingAgent = () =>
+    page.route(
+      fixture.origin + path,
+      (route) => {
+        assert.equal(route.request().method(), "GET");
+        return route.fulfill({ status: missingAgent.status, json: missingAgent.body });
+      },
+      { times: 1 },
+    );
+  await answerWithMissingAgent();
+  await login(
+    page,
+    fixture,
+    detailUrl(fixture, namespace.id, agent.id, active.revision.id, "workspace"),
+  );
+  const editor = page.getByLabel("USER.md", { exact: true });
+  const save = page.getByRole("button", { name: "Save USER.md", exact: true });
+  const reload = page.getByRole("button", { name: "Reload USER.md", exact: true });
+  const form = page.locator("form").filter({ has: editor });
+  // An unavailable Agent does not tell us its file is absent, even on the first read.
+  await form.getByText("File unavailable or missing.", { exact: false }).waitFor();
+  assert.equal(await editor.isDisabled(), true);
+  await reload.click();
+  await waitForWorkspaceEditors(page, ["USER.md"]);
+  await editor.fill("# Interrupted first create\n");
+  await save.click();
+  await form.getByText("Outcome unknown.", { exact: false }).waitFor();
+  assert.equal(await save.isDisabled(), true);
+  assert.equal((await fixture.request("GET", path)).status, 404);
+  const writeRequests = () =>
+    requests.filter((request) => request.path === path && request.method === "PUT");
+  assert.equal(writeRequests().length, 1);
+  // A formal resource 404, unlike file absence, cannot settle this unknown write.
+  await answerWithMissingAgent();
   await reload.click();
   await form.getByText("File unavailable or missing.", { exact: false }).waitFor();
   assert.equal(await editor.isDisabled(), true);
   assert.equal(await save.isDisabled(), true);
   assert.equal(writeRequests().length, 1);
-  await page.unroute(fixture.origin + path);
   // A real IAM refusal also leaves the draft guarded. Restore the fixture's own grant afterwards.
   const administrator = fixture.policy.roles[0];
   const permissions = administrator.permissions;
@@ -3522,13 +3528,29 @@ test("explicit missing-file readback settles an uncertain workspace create witho
   assert.equal(await editor.inputValue(), "", "explicit Reload discards the uncertain draft");
   assert.equal(writeRequests().length, 1, "readback never automatically repeats a write");
   await editor.fill("# Deliberate replacement create\n");
-  const saved = page.waitForResponse(
-    (response) => response.url() === fixture.origin + path && response.request().method() === "PUT",
+  // The controller saves USER.md. A success naming SOUL.md cannot confirm that write,
+  // and a later read naming SOUL.md cannot authorize a replacement of USER.md either.
+  await page.route(
+    fixture.origin + path,
+    async (route) => {
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const { data, meta } = await response.json();
+      assert.equal(data.name, "USER.md");
+      await route.fulfill({ response, json: { data: { ...data, name: "SOUL.md" }, meta } });
+    },
+    { times: 2 },
   );
   await save.click();
-  assert.equal((await saved).status(), 200);
-  await form.getByText("USER.md saved.", { exact: true }).waitFor();
+  await form.getByText("Outcome unknown.", { exact: false }).waitFor();
+  assert.equal(await save.isDisabled(), true);
   assert.equal(await readFile(join(root, "USER.md"), "utf8"), "# Deliberate replacement create\n");
+  await reload.click();
+  await form.getByText("Workspace access is unavailable.", { exact: false }).waitFor();
+  assert.equal(await save.isDisabled(), true);
+  await reload.click();
+  await form.getByText("USER.md loaded.", { exact: true }).waitFor();
+  assert.equal(await editor.inputValue(), "# Deliberate replacement create\n");
   assert.equal(writeRequests().length, 2);
 });
 

@@ -10,6 +10,10 @@ export const WorkspaceUnavailable = {
 export const WorkspaceDenied = { ...story("workspaceDenied"), name: "Access denied" };
 export const WorkspaceSaveDenied = { ...story("workspaceSaveDenied"), name: "Save denied" };
 export const WorkspaceMissing = { ...story("workspaceMissing"), name: "Missing file" };
+export const WorkspaceResourceMissing = {
+  ...story("workspaceResourceMissing"),
+  name: "Agent unavailable while reading a file",
+};
 export const WorkspaceUnknown = { ...story("workspaceUnknown"), name: "Write outcome unknown" };
 
 export const WorkspaceNavigation = story("workspaceNavigation");

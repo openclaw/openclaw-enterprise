@@ -45,6 +45,7 @@ import {
   withholdPermissionSummary,
   assertRevisionUrl,
   agentStopRequests,
+  replyWithDifferentAgentId,
   configurationPatchRequests,
   nativeAdminValues,
   waitForLiveControls,
@@ -2779,7 +2780,8 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   const active = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
-  const stopPath = `/namespaces/${namespace.id}/agents/${agent.id}/stop`;
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stopPath = `${agentPath}/stop`;
   let interceptedStops = 0;
   await page.route(`**${stopPath}`, async (route, request) => {
     if (request.method() !== "POST") {
@@ -2787,15 +2789,7 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
       return;
     }
     interceptedStops += 1;
-    await route.fetch();
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        error: { code: "DEPENDENCY_UNAVAILABLE", message: "masked stop response" },
-        meta: { requestId: "req_00000000-0000-4000-8000-000000503" },
-      }),
-    });
+    await replyWithDifferentAgentId(route, agent.id, 202);
   });
 
   await login(
@@ -2824,6 +2818,16 @@ test("Agent stop uncertainty requires refresh before another stop request", asyn
   assert.equal(agentStopRequests(requests, namespace.id, agent.id).length, 1);
   const stopped = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
   assert.equal(stopped.data.desiredRuntimeState, "stopped");
+
+  // A read for a different Agent cannot unlock another destructive request either.
+  await page.route(
+    fixture.origin + agentPath,
+    (route) => replyWithDifferentAgentId(route, agent.id, 200),
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "Refresh stop status" }).click();
+  await page.getByText("Could not refresh stop status.").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Request Stop again" }).count(), 0);
 
   const refresh = page.waitForResponse(
     (response) =>

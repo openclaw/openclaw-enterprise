@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
@@ -16,6 +17,16 @@ export const STARTER_CONTROL_UI = {
   enabled: true,
   allowedOrigins: ["http://127.0.0.1:18789", "http://localhost:18789"],
 };
+
+// Let the real operation finish, then change only the returned Agent ID. This tests a
+// plausible success that cannot settle the selected Agent's Stop or Delete request.
+export async function replyWithDifferentAgentId(route, agentId, expectedStatus) {
+  const response = await route.fetch();
+  assert.equal(response.status(), expectedStatus);
+  const { data, meta } = await response.json();
+  assert.equal(data.id, agentId);
+  await route.fulfill({ response, json: { data: { ...data, id: `agt_${randomUUID()}` }, meta } });
+}
 
 export async function openCreateSecretDialog(scope, label, options = {}) {
   const field = scope.getByLabel(label, { exact: true });
