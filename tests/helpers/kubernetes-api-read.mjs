@@ -46,7 +46,17 @@ async function readerFor({ kubeconfigPath, kubernetesContext }) {
   }
   const key = `${kubeconfigPath}\0${kubernetesContext}\0${text}`;
   if (!readers.has(key)) {
-    readers.set(key, createReader(kubeconfigPath, kubernetesContext));
+    // A kubeconfig kubectl could not read this time is tried again on the
+    // next read; any other failure to set up a reader leaves the reads to kubectl.
+    readers.set(
+      key,
+      createReader(kubeconfigPath, kubernetesContext).catch((error) => {
+        if (error?.unreadConfiguration) {
+          readers.delete(key);
+        }
+        return undefined;
+      }),
+    );
   }
   return readers.get(key);
 }
@@ -143,26 +153,36 @@ export async function kubectlGetJson(selection, args, { signal, timeoutMs } = {}
     `${get.query.size > 0 ? `?${get.query}` : ""}`;
   const limits = [timeoutMs, get.timeoutMs].filter((limit) => limit !== undefined);
   const options = { signal, timeoutMs: limits.length > 0 ? Math.min(...limits) : undefined };
+  const notFound = (error) => /^Error from server \(NotFound\)/.test(error?.stderr ?? "");
   const body = await read(path, args, options).catch(async (error) => {
-    // A named object kubectl does not find: it reports a missing Namespace instead.
+    // A named object kubectl does not find, outside the default Namespace: when
+    // its Namespace is missing too, kubectl reports that instead. Any other
+    // answer to that second read leaves the first error, as in kubectl.
     if (
       namespace !== undefined &&
+      namespace !== "default" &&
       get.name !== undefined &&
-      /^Error from server \(NotFound\)/.test(error.stderr ?? "")
+      notFound(error)
     ) {
-      await read(`/api/v1/namespaces/${encodeURIComponent(namespace)}`, args, options);
+      await read(`/api/v1/namespaces/${encodeURIComponent(namespace)}`, args, options).catch(
+        (namespaceError) => {
+          if (namespaceError?.name === "AbortError" || notFound(namespaceError)) {
+            throw namespaceError;
+          }
+        },
+      );
     }
     throw error;
   });
   if (get.name !== undefined) {
-    return printed(body);
+    return printed(withoutManagedFields(body));
   }
   return printed({
     apiVersion: "v1",
     items: (body.items ?? []).map((item) => ({
       apiVersion: resource.groupVersion,
       kind: resource.kind,
-      ...item,
+      ...withoutManagedFields(item),
     })),
     kind: "List",
     metadata: { resourceVersion: "" },
@@ -174,7 +194,10 @@ function raceSignal(promise, signal) {
   if (signal === undefined) {
     return promise;
   }
-  signal.throwIfAborted();
+  if (signal.aborted) {
+    promise.catch(() => {});
+    throw signal.reason;
+  }
   return new Promise((resolve, reject) => {
     const aborted = () => reject(signal.reason);
     signal.addEventListener("abort", aborted, { once: true });
@@ -182,11 +205,21 @@ function raceSignal(promise, signal) {
   });
 }
 
+// An API object as kubectl prints it: its own metadata.managedFields left out
+// (only the object's, not a field of the same name deeper in it).
+function withoutManagedFields(object) {
+  if (object?.metadata?.managedFields === undefined) {
+    return object;
+  }
+  const { managedFields: _managedFields, ...metadata } = object.metadata;
+  return { ...object, metadata };
+}
+
 // The text `kubectl get -o json` prints for an object: Go's json.MarshalIndent
 // of it with four spaces (keys sorted; <, >, & and the line separators
-// escaped), without metadata.managedFields, and a newline.
+// escaped), and a newline.
 function printed(object) {
-  const sorted = (value, parentKey) => {
+  const sorted = (value) => {
     if (Array.isArray(value)) {
       return value.map((entry) => sorted(entry));
     }
@@ -195,9 +228,7 @@ function printed(object) {
     }
     const result = {};
     for (const key of Object.keys(value).sort()) {
-      if (!(parentKey === "metadata" && key === "managedFields")) {
-        result[key] = sorted(value[key], key);
-      }
+      result[key] = sorted(value[key]);
     }
     return result;
   };
@@ -279,8 +310,10 @@ async function createReader(kubeconfigPath, kubernetesContext) {
       { maxBuffer: 4 * 1024 * 1024, timeout: 30_000 },
     );
     configuration = JSON.parse(stdout);
-  } catch {
-    return undefined;
+  } catch (error) {
+    throw Object.assign(new Error("kubectl config view failed", { cause: error }), {
+      unreadConfiguration: true,
+    });
   }
   const cluster = configuration.clusters?.[0]?.cluster ?? {};
   const user = configuration.users?.[0]?.user ?? {};
@@ -346,19 +379,19 @@ async function createReader(kubeconfigPath, kubernetesContext) {
           );
         },
       );
-      call.on("timeout", () =>
-        call.destroy(Object.assign(new Error("i/o timeout"), { code: "ETIMEDOUT" })),
-      );
+      // A timeout settles the read first, so the reset it causes mid-body is
+      // not taken for a dropped connection and retried.
+      const timedOut = (message) => {
+        const error = Object.assign(new Error(message), { code: "ETIMEDOUT" });
+        reject(error);
+        call.destroy(error);
+      };
+      call.on("timeout", () => timedOut("i/o timeout"));
       const deadline =
         deadlineAt === undefined
           ? undefined
           : setTimeout(
-              () =>
-                call.destroy(
-                  Object.assign(new Error("context deadline exceeded (Client.Timeout exceeded)"), {
-                    code: "ETIMEDOUT",
-                  }),
-                ),
+              () => timedOut("context deadline exceeded (Client.Timeout exceeded)"),
               Math.max(0, deadlineAt - Date.now()),
             );
       call.on("close", () => clearTimeout(deadline));
@@ -371,9 +404,16 @@ async function createReader(kubeconfigPath, kubernetesContext) {
   const read = async (path, args, { signal, timeoutMs } = {}) => {
     signal?.throwIfAborted();
     const deadlineAt = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+    const left = () => (deadlineAt === undefined ? Infinity : deadlineAt - Date.now());
     for (let attempt = 0; ; attempt += 1) {
       let answer;
       try {
+        // A retry waits only within the read's timeout, and none starts after it.
+        if (attempt > 0 && left() <= 0) {
+          throw Object.assign(new Error("context deadline exceeded (Client.Timeout exceeded)"), {
+            code: "ETIMEDOUT",
+          });
+        }
         answer = await exchange(path, { signal, deadlineAt });
       } catch (error) {
         if (error?.name === "AbortError") {
@@ -381,14 +421,10 @@ async function createReader(kubeconfigPath, kubernetesContext) {
         }
         const dropped =
           ["ECONNRESET", "EPIPE"].includes(error.code) || /socket hang up/.test(error.message);
-        if (
-          dropped &&
-          attempt < maxRetries &&
-          (deadlineAt === undefined || Date.now() < deadlineAt)
-        ) {
+        if (dropped && attempt < maxRetries && left() > 0) {
           // A kept-alive connection the server closed is retried at once.
           if (!error.reused) {
-            await delay(1_000, undefined, { signal });
+            await delay(Math.min(1_000, left()), undefined, { signal });
           }
           continue;
         }
@@ -408,13 +444,14 @@ async function createReader(kubeconfigPath, kubernetesContext) {
         return body;
       }
       const retryAfter = Number(headers["retry-after"]);
+      const pause = Math.min(retryAfter, 10) * 1000;
       if (
         (statusCode === 429 || statusCode >= 500) &&
         Number.isInteger(retryAfter) &&
         attempt < maxRetries &&
-        (deadlineAt === undefined || Date.now() + retryAfter * 1000 < deadlineAt)
+        pause < left()
       ) {
-        await delay(Math.min(retryAfter, 10) * 1000, undefined, { signal });
+        await delay(pause, undefined, { signal });
         continue;
       }
       // kubectl prints an API Status as "Error from server (Reason): message".

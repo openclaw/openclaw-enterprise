@@ -102,7 +102,8 @@ const routes = {
       managedFields: [{ manager: "kubectl", operation: "Apply" }],
       annotations: { note: "a<b & c>d" },
     },
-    spec: { replicas: 1 },
+    // A field of the same name deeper in the object is not the object's own.
+    spec: { replicas: 1, template: { metadata: { managedFields: [{ manager: "kept" }] } } },
   },
   "/api/v1/namespaces/team": {
     kind: "Namespace",
@@ -171,7 +172,20 @@ async function cluster(t) {
       response.end("service unavailable\n");
       return;
     }
-    if (request.url === "/api/v1/namespaces/team/pods/missing") {
+    // A Namespace the caller may not read, as RBAC denies it.
+    if (request.url === "/api/v1/namespaces/locked") {
+      response.statusCode = 403;
+      response.end(
+        JSON.stringify({
+          ...missing,
+          message: 'namespaces "locked" is forbidden',
+          reason: "Forbidden",
+          code: 403,
+        }),
+      );
+      return;
+    }
+    if (/^\/api\/v1\/namespaces\/(team|default|locked)\/pods\/missing$/.test(request.url)) {
       response.statusCode = 404;
       response.end(JSON.stringify(missing));
       return;
@@ -313,7 +327,16 @@ const printed = {
         "namespace": "team"
     },
     "spec": {
-        "replicas": 1
+        "replicas": 1,
+        "template": {
+            "metadata": {
+                "managedFields": [
+                    {
+                        "manager": "kept"
+                    }
+                ]
+            }
+        }
     }
 }
 `,
@@ -386,7 +409,7 @@ test("a read retries what kubectl's client retries", async (t) => {
 });
 
 test("a failed read fails as kubectl fails, transient only when kubectl's would be", async (t) => {
-  const { selection, kubeconfig, user } = await cluster(t);
+  const { selection, kubeconfig, user, requests } = await cluster(t);
   const failure = (promise) =>
     promise.then(
       () => assert.fail("the read succeeded"),
@@ -405,6 +428,19 @@ test("a failed read fails as kubectl fails, transient only when kubectl's would 
     kubectlGetJson(selection, ["get", "pod", "missing", "-n", "gone", "-o", "json"]),
   );
   assert.equal(namespaceGone.stderr, 'Error from server (NotFound): namespaces "gone" not found\n');
+  // Any other answer about the Namespace leaves the object's NotFound, and the
+  // default Namespace is not looked up, as in kubectl.
+  for (const namespace of ["locked", "default"]) {
+    const kept = await failure(
+      kubectlGetJson(selection, ["get", "pod", "missing", "-n", namespace, "-o", "json"]),
+    );
+    assert.equal(
+      kept.stderr,
+      'Error from server (NotFound): pods "missing" not found\n',
+      namespace,
+    );
+  }
+  assert.equal(requests.includes("/api/v1/namespaces/default"), false);
 
   // A plain-text 503 reads as kubectl's ServiceUnavailable, which callers retry.
   const unavailable = await failure(
@@ -418,9 +454,11 @@ test("a failed read fails as kubectl fails, transient only when kubectl's would 
 
   // A server that drops every connection: retried until the read's timeout, then
   // kubectl's transport failure.
+  const droppedAt = Date.now();
   const dropped = await failure(
     kubectlGetJson(selection, ["get", "pods", "-n", "dropped", "-o", "json"], { timeoutMs: 2_500 }),
   );
+  assert.ok(Date.now() - droppedAt < 2_900, "no retry waits or starts past the read's timeout");
   assert.match(dropped.stderr, /^Unable to connect to the server: /);
   assert.equal(isTransientKubectlFailure(dropped), true);
 
