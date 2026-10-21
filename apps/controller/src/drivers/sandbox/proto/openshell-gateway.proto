@@ -536,7 +536,8 @@ message SandboxCondition {
   string status = 2;
   string reason = 3;
   string message = 4;
-  string last_transition_time = 5;
+  reserved 5;
+  reserved "last_transition_time";
 }
 
 enum SandboxPhase {

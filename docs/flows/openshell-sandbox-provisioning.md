@@ -1,7 +1,7 @@
 ---
 created: "2026-09-21"
 updated: 2026-10-20
-last_updated_session: claude-code/session_016ma8eD5SYoBTV5kswEV3Dn
+last_updated_session: authoring-run/016ma8eD5SYoBTV5kswEV3Dn
 ---
 
 # OpenShell Sandbox provisioning flow
@@ -195,8 +195,8 @@ keys, old `passthrough` TLS spelling and missing executable paths fail before
 launch. Readiness `timeoutMs` requires a positive safe integer. Configuration errors
 prevent Kubernetes calls. Duplicate names and
 `workspace-node-enrollment` prevent Driver construction.
-The template forwards the Harness Pod labels; the Gateway rejects a create whose
-labels its `allowed_pod_labels` does not admit.
+The template includes the Harness Pod labels. The Gateway rejects the request if
+any label key is missing from `allowed_pod_labels`.
 
 `provisionHarness` creates or adopts the provider with final setup. Renewal checks the provider version and updates only `node_setup_json` through `UpdateProvider`. For Codex, a configured post-create delay of at most 120 seconds precedes route exposure. Compute rolls the Gateway before checking enrollment.
 
@@ -336,7 +336,7 @@ proof on a Landlock-capable host; Console admission and initialized files are in
 
 ## Changelog
 
-- 2026-10-20 21:45: Pin OpenShell v0.1.5 and admit Harness template labels at the Gateway. (claude-code/session_016ma8eD5SYoBTV5kswEV3Dn - bca5b199b)
+- 2026-10-20 21:45: Pin OpenShell v0.1.5 and admit Harness template labels at the Gateway. (authoring-run/016ma8eD5SYoBTV5kswEV3Dn - bca5b199b)
 
 - 2026-10-19 09:48: Preserve main and policy traces; condense prose. (authoring-run/545665b0-3aef-44dc-beb8-492b753b1a13 - bc3ba215dd9927692bc2882ffaf06a35c27fed4a)
 

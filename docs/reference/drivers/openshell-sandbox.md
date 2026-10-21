@@ -51,7 +51,7 @@ The Driver requests three [containment facets](sandbox.md#containment-facets):
 | ------------ | --------------------------------------------------------------------------------------------- |
 | `networking` | Binary-scoped OpenShell policies for Harness tool traffic, plus Kubernetes baseline policies. |
 | `filesystem` | Approved PVC subpath mounts and OpenShell filesystem policy for read-only/read-write paths.   |
-| `process`    | OpenShell process policy; v0.1.5 ignores its run-as user and group.                           |
+| `process`    | OpenShell runs the workload with the UID and GID selected by its driver.                      |
 
 The Driver requires `hard_requirement` for Landlock filesystem enforcement. Omit
 `policy.landlockCompatibility` or set it to `hard_requirement`; any other value,
@@ -134,8 +134,7 @@ not satisfy the per-Agent production requirement below.
 
 Optional readiness observes a Service and Pods in the OCC namespace; a paired
 Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
-positive `timeoutMs`. Development sets `startupDelayMs` to
-30 seconds because v0.1.5 exposes its service before the process listens.
+positive `timeoutMs`. Development retains the 30-second `startupDelayMs`.
 
 Install OpenShell's gateway separately. Required `gateway.workspaceMode`
 accepts `operator` or `managed`; deferred managed mode fails before Kubernetes

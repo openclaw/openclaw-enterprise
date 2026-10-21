@@ -2387,8 +2387,7 @@ test("OpenShell provisions dedicated Codex with bearer passthrough and provider 
   assert.deepEqual(providerCreate[1].credentials, {});
   assert.deepEqual(providerCreate[1].credentialExpirationTimes, {});
   const runtimeProfile = gatewayClient.profiles.get("oce-codex-runtime").profile;
-  // One annotation carries both ownership and content identity, so the profile
-  // revision changes only when the managed content changes.
+  // One annotation identifies the owner and the managed content.
   assert.deepEqual(Object.keys(runtimeProfile.annotations), ["openclaw.dev/managed-by"]);
   assert.match(
     runtimeProfile.annotations["openclaw.dev/managed-by"],
