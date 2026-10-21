@@ -339,9 +339,10 @@ function prepareDocument(input, { sourceFile, root, seen = new Set() }, firstLin
 }
 
 // slugify 2.2.1 builds a RegExp for each of about 2,000 transliteration entries
-// on every call, and a build slugs the same titles again and again (each page is
-// parsed for validation and again for rendering, then counted). A slug depends
-// only on its title and options, so each process computes it once.
+// on every call, and a build slugs the same titles again and again: each page is
+// parsed for validation and again for rendering, and the heading counter slugs
+// each base slug once more. A slug depends only on its title and options, so each
+// process computes it once.
 const slugs = new Map();
 function slugify(title, options = {}) {
   const key = `${JSON.stringify(options)}\0${title}`;
