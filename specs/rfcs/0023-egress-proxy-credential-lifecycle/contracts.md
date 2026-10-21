@@ -58,6 +58,22 @@ action, exact target generations, audience, input digest and expiry.
 Compute builds the `ProxyPlan` from admitted routes, bindings and source projections. A Sandbox receipt records what was applied;
 wiring and receipts do not authorize requests.
 
+### Select Sandbox and Credential Proxy from one Driver
+
+An Installation registers a Driver once, with one identity, configuration generation and lifecycle
+owner. It exposes the typed capabilities it implements. A Driver can provide Sandbox, Credential
+Proxy or both. In each API or worker process, load the configuration once, start and stop the
+Driver once, and give each consumer only its selected interface. Reject conflicting registrations
+before activation.
+Preserve existing single-capability selections and the identities recorded in admitted revisions.
+
+For this protected composition, Compute requires both interfaces from the same registration. It
+verifies the authenticated wiring against the Sandbox's report of what it actually installed, as
+specified above. An implementation name, matching Driver IDs or a `supportsProxy` flag cannot
+establish that provenance. Exercise installation and admission with a differently named Driver.
+Reject a missing interface, views from different owners, or an installed policy that differs from
+the plan. Qualify the actual transport and [protection level](online-authorization.md) separately.
+
 ## Request authorization and forwarding
 
 | Interface | Responsibility |
@@ -89,6 +105,17 @@ Resolve neither contacts the provider nor signs, issues, refreshes or schedules 
 | `CredentialRefreshDriver.configureRefresh`, `refreshStatus` | Admit family, single owner, issuer, input authority, grant keys, renewal lead and minimum validity. Report configuration, eligibility, current attempt, activity, next renewal and required recovery separately. |
 | `prepare`, `removeRefresh` | Separately authorized management may ensure readiness or request rotation. Removal stops preparation and settles owned artifacts. Retain a family while another admitted source or grant depends on it. |
 | `CredentialIssuer.issue`, `inspect`, `retire` | Bind attempt, input version, grant, family, epoch and deadline. Distinguish known refusal, no dispatch, candidate and uncertain exchange. Inspect without repeating issuance. Retire exact custody and report provider revocation only where supported. |
+
+For OCE-managed dynamic credentials, the **Token Service** owns this lifecycle and the warm
+reader. Start with the worker's existing background preparation, encrypted custody and fenced
+issuer attempts. The GitHub adapter issues, validates and retires an installation token. A trusted
+sender can receive only eligible, committed material for its admitted grant and isolation. The
+authorizer can check that the exact installed attempt and value version are still current without
+reading the token. A cold or expired lookup issues nothing. Distinguish confirmed retirement,
+expiry without confirmed revocation, and an operation whose outcome is still unknown.
+
+These interfaces can run in one process. [Protected Git](github-installation-access.md#let-a-team-keep-git-access-until-it-removes-approval)
+uses this owner. OpenShell can remain the lifecycle owner for a different credential family.
 
 ## Control operation recovery
 
