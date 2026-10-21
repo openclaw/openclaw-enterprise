@@ -46,7 +46,7 @@ graph TD
   end
 
   subgraph API["OCC API process"]
-    A["server.mjs validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
+    A["startApi validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
     B --> C["Compose authorized OCC and Fastify"]
     C --> E["Listen for requests and enqueue durable work"]
   end

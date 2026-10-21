@@ -213,9 +213,11 @@ function jobRefusal(baseUrl) {
   return undefined;
 }
 
-// Runs a Node entrypoint with exactly `env` and returns the code of its structured `event` line.
+// Runs a Node entrypoint with exactly `env`, requires it to exit with status 1, and returns the
+// code of its structured `event` line. The deadline only stops a hung start: these few starts
+// share the file's CPUs with its renders.
 async function entrypointCode(script, event, env) {
-  const { killed, output } = await limited(
+  const { killed, status, output } = await limited(
     () =>
       new Promise((resolve) => {
         execFile(
@@ -224,14 +226,16 @@ async function entrypointCode(script, event, env) {
           {
             cwd: repository,
             env: { PATH: process.env.PATH, ...compileCacheEnvironment, ...env },
-            timeout: 20_000,
+            timeout: 60_000,
           },
-          (error, _stdout, stderr) => resolve({ killed: error?.killed === true, output: stderr }),
+          (error, _stdout, stderr) =>
+            resolve({ killed: error?.killed === true, status: error?.code ?? 0, output: stderr }),
         );
       }),
   );
   // execFile also kills on its output limit, far above what these entrypoints print.
   assert.ok(!killed, `${script} timed out for OCC_AUTH_BASE_URL ${env.OCC_AUTH_BASE_URL}`);
+  assert.equal(status, 1, output);
   const diagnostic = output
     .split("\n")
     .filter((line) => line.startsWith("{") && line.endsWith("}"))

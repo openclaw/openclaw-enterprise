@@ -301,10 +301,12 @@ function configuration(env) {
 }
 
 /**
- * Starts the API from `env`: configuration, the Installation's Drivers, production or
- * development composition, then the listener. server.mjs runs it with process.env; tests run
- * it in process with their own environment. It throws on a refused setting or an unavailable
- * dependency, and startupFailureFields names the failure.
+ * Starts the API with the settings in `env`: configuration, the Installation's Drivers,
+ * production or development composition, then the listener. server.mjs runs it with
+ * process.env; tests run it in process with their own environment. Dependencies below it still
+ * read process.env for a few process-wide settings, such as OCC_DATABASE_AUTH for the database
+ * pool. It throws on a refused setting or an unavailable dependency, and startupFailureFields
+ * names the failure.
  */
 export async function startApi(env) {
   // Time since process start: Node bootstrap and loading the module graph before startApi().
