@@ -22,6 +22,7 @@ export type {
   EgressBinding,
   EgressRoute,
   ProxyPlan,
+  RepositoryGitDeliveryProfile,
   RepositoryGitRecipient,
   EgressInstallation,
   EgressRequest,
@@ -48,6 +49,8 @@ export {
   assertExecutionReleaseAllowed,
   repositoryGitRecipientFields,
   validRepositoryGitRecipient,
+  repositoryGitDeliveryProfile,
+  repositoryGitProfileAvailable,
 } from "./credential-proxy.ts";
 export type { SandboxPolicyDecision } from "./sandbox-policy.ts";
 export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandbox-policy.ts";
@@ -160,6 +163,7 @@ export type {
   RepositoryCredentialSessionStatus,
   RepositoryRevisionState,
 } from "./repo.ts";
+export { githubInstallationProfile, isInstallationRepositoryProfile } from "./repo.ts";
 
 export const DRIVER_CAPABILITIES = Object.freeze([
   "iam",
@@ -2418,6 +2422,9 @@ export {
 export type {
   ProtectedRepositoryGitAuthority,
   ProtectedRepositoryGitMaterial,
+  ProtectedGitHubInstallationMaterial,
+  GitHubInstallationSendDecision,
+  GitHubInstallationSendPermit,
   RepositoryGitInstallationFence,
   RepositoryGitMaterialVersion,
   RepositoryGitSendDecision,

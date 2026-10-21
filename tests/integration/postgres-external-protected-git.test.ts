@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { get } from "node:https";
+import { get, request } from "node:https";
+import { json } from "node:stream/consumers";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type {
   AgentRevision,
@@ -25,6 +26,7 @@ import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/c
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import {
   cleanEnvironment,
+  listen,
   run,
   temporaryDirectory,
 } from "../fixtures/repository-credentials/process.mjs";
@@ -36,17 +38,30 @@ import { requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionPlatform } from "../helpers/postgres-standing-execution.ts";
 import { standingGitOrigin } from "../helpers/prepared-standing-git-peer.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
+import { installationOrigin } from "../fixtures/driver-packages/protected-execution-driver/installation-origin.ts";
 
 // Production package selection, OCC deployment, worker and custody. The external package,
 // its workload, Kubernetes placement, GitHub and the private Git origin are controlled locally.
+const journeyOptions = { ...requiresPostgres, timeout: 150_000 };
 test(
   "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
-  { ...requiresPostgres, timeout: 150_000 },
-  async (t) => {
+  journeyOptions,
+  externalGitJourney("repository"),
+);
+test(
+  "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
+  journeyOptions,
+  externalGitJourney("installation"),
+);
+
+function externalGitJourney(scope: "repository" | "installation") {
+  return async (t: TestContext) => {
     const f = await standingExecutionPlatform(t, import.meta.url);
     const { id: namespaceId } = f.namespace;
+    const broad = scope === "installation" ? await installationOrigin(t, namespaceId) : undefined;
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
-      await standingGitOrigin(t, namespaceId, 300_000);
+      broad ?? (await standingGitOrigin(t, namespaceId, 300_000));
+    const installationApiOrigin = broad?.gh.origin;
     const id = "cedar-git-fixture";
     const { directory, entry } = await protectedDriverPackage(t, id, "repository-git");
     const cedar = (await import(
@@ -57,7 +72,8 @@ test(
     await writeFile(registryPath, JSON.stringify(registry));
     const path = join(directory, "installation.json");
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
-    const { keyFile, certFile } = tls;
+    const { certFile } = tls;
+    const peerOrigin = await listen(t, cedar.createCounterpart(tls));
     const releaseKey = publicKey.export({ format: "pem", type: "spki" }).toString();
     await writeFile(
       path,
@@ -77,7 +93,13 @@ test(
           sandbox: {
             id,
             package: id,
-            configuration: { origin: origin.origin, keyFile, certFile, releaseKey },
+            configuration: {
+              origin: origin.origin,
+              peerOrigin,
+              certFile,
+              releaseKey,
+              installationApiOrigin,
+            },
           },
           credential_proxy: { id, configuration: {} },
           repo: {
@@ -93,17 +115,25 @@ test(
         },
       }),
     );
-    const drivers = (await loadInstallationConfiguration({
-      mode: "production",
-      packageRoot: directory,
-      environment: { OCC_CONFIG_PATH: path },
-    }))!;
+    // Production loads this package independently in the API and worker processes. Use separate
+    // installed copies here, with the same durable identity and HTTPS peer; only the worker binds.
+    const load = (packageRoot: string) =>
+      loadInstallationConfiguration({
+        mode: "production",
+        packageRoot,
+        environment: { OCC_CONFIG_PATH: path },
+      });
+    const apiPackage = await protectedDriverPackage(t, id, "repository-git");
+    const apiDrivers = (await load(apiPackage.directory))!;
+    const drivers = (await load(directory))!;
     const { repositoryOwner, repositoryRegistry, repositoryGitDriver: owner } = drivers;
     assert.ok(owner && repositoryOwner && repositoryRegistry && drivers.preparedRepositoryGit);
     assert.equal(repositoryOwner.controlSocket, undefined);
     assert.equal(drivers.openShellGit, undefined);
-    const repo = drivers.repoDriver!;
-    const kube = drivers.computeDriver;
+    const apiOwner = apiDrivers.repositoryGitDriver!;
+    assert.notEqual(apiOwner, owner);
+    assert.deepEqual(apiOwner.ref, owner.ref);
+    const kube = apiDrivers.computeDriver;
     const release = new ProtectedExecutionDriver(owner);
     // Use the worker's selected authority, configured trust and sender binding. Control only the
     // maintenance schedule so we can withdraw while the replacement credential is still usable.
@@ -139,6 +169,19 @@ test(
         const { egressPlan: plan } = revision;
         assert.ok(plan?.repositoryGit && custody.currentEgressInstallation);
         const context = { plan, revision, namespace, signal: t.signal };
+        if (broad) {
+          peer.reportRepositoryOnly = true;
+          await assert.rejects(
+            release.configure(context),
+            /no longer supports GitHub installation access/,
+          );
+          assert.equal(
+            gh.issuesOfTokens.length,
+            0,
+            "a repository-only sender cannot prepare a broad token",
+          );
+          delete peer.reportRepositoryOnly;
+        }
         const wiring = await release.configure(context);
         assert.equal(
           await release.enroll(
@@ -177,15 +220,15 @@ test(
         }),
     };
     const { actor, observerPool: pool } = f;
-    const backends = drivers.installation.backend;
+    const backends = apiDrivers.installation.backend;
     const controller = createBackendController(f, { backends });
     const { id: who } = actor;
-    controller.installDriver(owner, ["sandbox", "credential_proxy"]);
-    for (const d of [repo, compute]) {
+    controller.installDriver(apiOwner, ["sandbox", "credential_proxy"]);
+    for (const d of [apiDrivers.repoDriver!, compute]) {
       controller.registerDriver(d);
       controller.selectDriver(d.capability, d.id);
     }
-    const repositoryRef = "source";
+    const repositoryRef = broad?.installation.repositoryRef ?? "source";
     const approvalId = randomUUID();
     const { id: configurationId } = await controller.createConfiguration(who, {
       namespaceId,
@@ -200,7 +243,12 @@ test(
         name: "External Git",
         executionMode: "dedicated",
         harnessAuth: { method: "runtime" },
-        repositoryBindings: [{ repositoryRef, profile: "git-write" }],
+        repositoryBindings: [
+          {
+            repositoryRef,
+            profile: broad ? "github-installation" : "git-write",
+          },
+        ],
       },
       resolveApprovedHarness,
     );
@@ -224,8 +272,20 @@ test(
       },
       resolveApprovedHarness,
     );
-    const revision = await controller.deployAgent(who, key, resolveApprovedHarness);
-    assert.deepEqual(revision.executionAdmission, { version: 4, mode: "protected" });
+    const deploy = () => controller.deployAgent(who, key, resolveApprovedHarness);
+    if (broad) {
+      peer.reportRepositoryOnly = true;
+      await assert.rejects(deploy, /did not confirm installation-wide repository access/);
+      assert.equal(gh.issuesOfTokens.length, 0);
+      delete peer.reportRepositoryOnly;
+    }
+    const probes = peer.capabilityRequests;
+    const revision = await deploy();
+    assert.ok(peer.capabilityRequests > probes, "API admission reached the worker's HTTPS peer");
+    assert.deepEqual(revision.executionAdmission, {
+      version: 4,
+      mode: "protected",
+    });
     assert.deepEqual(revision.egressPlan?.driver, owner.ref);
     assert.equal(revision.repositoryCredentials?.standingApprovalId, approvalId);
     assert.equal(revision.harnessAuth.method, "runtime");
@@ -254,21 +314,25 @@ test(
       const cwd = await temporaryDirectory(t, "cedar-git-destination-");
       const env = cleanEnvironment({ GIT_SSL_CAINFO: certFile });
       const git = (args: string[], allowFailure = false) =>
-        run("git", ["-C", cwd, ...args], { env, allowFailure, timeout: 15_000 });
+        run("git", ["-C", cwd, ...args], {
+          env,
+          allowFailure,
+          timeout: 15_000,
+        });
       await git(["init", "--quiet"]);
       const { traffic } = origin;
+      const remote = new URL("/" + origin.repository + ".git", peer.url).href;
+      // Actual Git credential protocol: the Driver's 401 makes Git invoke the host-scoped
+      // helper. It returns only a marker; the provider separately proves that marker is useless.
+      const auth = broad
+        ? "credential." +
+          peer.url.origin +
+          '.helper=!f() { test "$1" != get || printf \'username=x-access-token\\npassword=' +
+          peer.gitMarker +
+          "\\n'; }; f"
+        : "http.extraHeader=" + peer.clientHeader;
       const fetch = (mayDeny = false) =>
-        git(
-          [
-            "-c",
-            "http.extraHeader=" + peer.clientHeader,
-            "fetch",
-            "--no-tags",
-            new URL("/" + origin.repository + ".git", peer.url).href,
-            "refs/heads/main",
-          ],
-          mayDeny,
-        );
+        git(["-c", auth, "fetch", "--no-tags", remote, "refs/heads/main"], mayDeny);
       const transfer = async (oid: string) => {
         assert.notEqual(
           (await git(["cat-file", "-e", oid], true)).code,
@@ -279,20 +343,200 @@ test(
         await fetch();
         assert.equal(
           traffic().requests,
-          n + 2,
+          n + (broad ? 3 : 2),
           "the real Git discovery and upload reached the private origin",
         );
         assert.equal((await git(["rev-parse", "FETCH_HEAD"])).stdout.trim(), oid);
         assert.equal((await git(["cat-file", "-t", oid])).stdout.trim(), "commit");
       };
       await transfer(await origin.ref("main"));
+      if (broad) {
+        const provider = broad.installation;
+        const { repositories, apiRequests } = provider;
+        const [a, b, c] = repositories;
+        assert.deepEqual(
+          repositories.map((repo) => repo.id),
+          [71, 72, 73],
+        );
+        assert.equal(
+          provider.acceptedGitRequests(),
+          3,
+          "Git v2 discovery, ls-refs and actual pack, with the installation token",
+        );
+        assert.equal(origin.trace.at(-1)!.gitProtocol, "version=2");
+        await peer.replayLastInstallationExchange!();
+        assert.equal(
+          provider.acceptedGitRequests(),
+          3,
+          "replaying the exchange did not send a second pack",
+        );
+
+        await git(["checkout", "--quiet", "-b", "installation-feature", "FETCH_HEAD"]);
+        await git([
+          "-c",
+          "user.name=Cedar",
+          "-c",
+          "user.email=cedar@example.test",
+          "commit",
+          "--quiet",
+          "--allow-empty",
+          "-m",
+          "Work in the second private repository",
+        ]);
+        const commit = (await git(["rev-parse", "HEAD"])).stdout.trim();
+        const providerGit = (args: string[], allowFailure = false) =>
+          run("git", ["-C", origin.bare, ...args], { env, allowFailure });
+        assert.notEqual(
+          (await providerGit(["cat-file", "-e", commit], true)).code,
+          0,
+          "the push must transfer a new object",
+        );
+        await git(["-c", auth, "push", "--quiet", remote, "HEAD:refs/heads/installation-feature"]);
+        assert.equal(await origin.ref("refs/heads/installation-feature"), commit);
+        await providerGit(["fsck", "--strict"]);
+        await providerGit(["config", "receive.hideRefs", "refs/heads/provider-protected"]);
+        const blocked = await git(
+          ["-c", auth, "push", remote, "HEAD:refs/heads/provider-protected"],
+          true,
+        );
+        assert.notEqual(blocked.code, 0);
+        assert.match(
+          blocked.stderr,
+          /deny updating a hidden ref/,
+          "the provider still enforces its branch policy",
+        );
+
+        const api = (
+          path: string,
+          method = "GET",
+          body?: object,
+          target = peer.apiUrl,
+          host = target.host,
+        ) =>
+          new Promise<{ status: number; data: Record<string, unknown> }>((resolve, reject) => {
+            request(
+              target,
+              {
+                ca: tls.ca,
+                agent: false,
+                family: 4,
+                signal: t.signal,
+                path,
+                method,
+                headers: {
+                  host,
+                  authorization:
+                    target === peer.url
+                      ? "Basic " +
+                        Buffer.from("x-access-token:" + peer.gitMarker).toString("base64")
+                      : "Bearer " + peer.gitMarker,
+                  ...(body && { "content-type": "application/json" }),
+                },
+              },
+              (res) => {
+                const status = res.statusCode!;
+                if (!res.headers["content-type"]?.startsWith("application/json")) {
+                  res.resume();
+                  resolve({ status, data: {} });
+                  return;
+                }
+                void json(res).then(
+                  (data) =>
+                    resolve({
+                      status,
+                      data: data as Record<string, unknown>,
+                    }),
+                  reject,
+                );
+              },
+            )
+              .once("error", reject)
+              .end(body && JSON.stringify(body));
+          });
+        const repos = "/repos/";
+        const atB = repos + origin.repository;
+        const initial = apiRequests.length;
+        for (const [path, target, host] of [
+          [atB, peer.url, peer.url.host], // API cannot travel on the Git route
+          ["/installation/token", peer.apiUrl, peer.apiUrl.host],
+          [atB, peer.apiUrl, "credentials.example.test"],
+        ] as const) {
+          assert.equal(
+            (await api(path, "GET", undefined, target, host)).status,
+            403,
+            "route denial for " + host + path,
+          );
+        }
+        assert.equal(
+          apiRequests.length,
+          initial,
+          "wrong host, route and credential-owner paths never reached the provider",
+        );
+        for (const repo of [a!, b!]) {
+          const { status, data } = await api(repos + repo.full_name);
+          assert.equal(status, 200);
+          assert.equal(data.full_name, repo.full_name);
+          assert.equal(data.id, repo.id);
+          assert.equal(data.private, true);
+        }
+        for (const resource of ["issues", "pulls"]) {
+          const at = atB + "/" + resource;
+          const { data, status } = await api(at, "POST", {
+            title: "Installation work",
+            head: "installation-feature",
+            base: "main",
+            draft: false,
+          });
+          assert.equal(status, 201);
+          const edit = await api(at + "/" + data.number, "PATCH", {
+            title: "Updated work",
+          });
+          assert.equal(edit.status, 200);
+          assert.equal(edit.data.title, "Updated work");
+        }
+        const query =
+          '{ repository(owner: "fixture", name: "private-b") { nameWithOwner isPrivate } }';
+        const graph = await api("/graphql", "POST", { query });
+        assert.equal(graph.status, 200);
+        const result = (
+          graph.data as {
+            data: {
+              repository: { nameWithOwner: string; isPrivate: boolean };
+            };
+          }
+        ).data.repository;
+        assert.equal(result.nameWithOwner, origin.repository);
+        assert.equal(result.isPrivate, true);
+        assert.equal(
+          c!.private,
+          true,
+          "the provider independently knows that C exists and is private",
+        );
+        const missing = "fixture/never-existed";
+        for (const name of [c!.full_name, missing]) {
+          const path = repos + name;
+          const masked = { status: 404, data: { message: "Not Found" } };
+          assert.deepEqual(await api(path), masked, "the workload sees the same masked 404");
+          assert.deepEqual(apiRequests.at(-1), {
+            path,
+            authenticated: true,
+            exists: name !== missing,
+            selected: false,
+            status: 404,
+          });
+        }
+      }
 
       // Send raw request targets through the working sender. Even targets resolving to the
       // allowed URL must be refused before authorization or any connection to the private origin.
       const discovery = `/${origin.repository}.git/info/refs?service=git-upload-pack`;
       const upstream = new URL(origin.origin);
       const ca = await readFile(certFile);
-      const headers = { authorization: peer.clientHeader.slice("Authorization: ".length) };
+      const headers = {
+        authorization: broad
+          ? "Basic " + Buffer.from("x-access-token:" + peer.gitMarker).toString("base64")
+          : peer.clientHeader.slice("Authorization: ".length),
+      };
       const prior = { traffic: traffic(), decisions: peer.decisions.length };
       for (const path of [
         `//${upstream.host}${discovery}`,
@@ -311,11 +555,14 @@ test(
 
       // The same working sender now holds a committed positive until its actual send cutoff,
       // while the original request is still in time. Never ask for a second authorization.
-      for (const holdAt of ["connect", "request"] as const) {
+      for (const holdAt of broad ? (["request"] as const) : (["connect", "request"] as const)) {
         const before = traffic();
         const decisions = peer.decisions.length;
-        const held: { permit: RepositoryGitSendPermit; releaseAt: number; deadlineAt: string }[] =
-          [];
+        const held: {
+          permit: RepositoryGitSendPermit;
+          releaseAt: number;
+          deadlineAt: string;
+        }[] = [];
         peer.beforeSend = async (stage, permit, deadlineAt) => {
           if (stage !== holdAt) {
             return;
@@ -353,7 +600,7 @@ test(
         ]);
         const { rows } = await pool.query(
           `SELECT send_start_by, material_version, attempt_id, request_digest_sha256
-             FROM occ.prepared_repository_git_uses WHERE exchange_id=$1`,
+           FROM occ.prepared_repository_git_uses WHERE exchange_id=$1`,
           [permit.exchangeId],
         );
         assert.deepEqual(
@@ -377,17 +624,22 @@ test(
 
       // Real owner deadlines: the 5-minute fixture token is inside the 10-minute renewal window.
       // Wait for the persisted next check, without extending or editing a token or session deadline.
-      const {
-        rows: [{ delay_ms }],
-      } = await pool.query(
-        "SELECT extract(epoch FROM next_check_at-clock_timestamp())*1000 AS delay_ms FROM occ.prepared_github_families WHERE enabled AND source #>> '{session,revisionId}'=$1",
-        [revision.id],
-      );
-      await delay(Math.max(0, Number(delay_ms) + 25), undefined, { signal: t.signal });
-      await prepared.maintain();
-      const second = await peer.install();
-      assert.notEqual(first.materialVersion, second.materialVersion);
-      await transfer(await origin.addCommit());
+      let second = first;
+      if (!broad) {
+        const {
+          rows: [{ delay_ms }],
+        } = await pool.query(
+          "SELECT extract(epoch FROM next_check_at-clock_timestamp())*1000 AS delay_ms FROM occ.prepared_github_families WHERE enabled AND source #>> '{session,revisionId}'=$1",
+          [revision.id],
+        );
+        await delay(Math.max(0, Number(delay_ms) + 25), undefined, {
+          signal: t.signal,
+        });
+        await prepared.maintain();
+        second = await peer.install();
+        assert.notEqual(first.materialVersion, second.materialVersion);
+        await transfer(await origin.addCommit());
+      }
       const receiptCount = () =>
         pool
           .query(
@@ -395,11 +647,25 @@ test(
             [second.materialVersion],
           )
           .then((r) => r.rows[0].n);
-      assert.equal(await receiptCount(), 2);
+      const committed = await receiptCount();
+      if (broad) {
+        assert.equal(
+          committed,
+          broad.installation.acceptedGitRequests() + broad.installation.apiRequests.length + 1,
+          "one possible use per authenticated Git or API request, plus the permit that expired after TLS",
+        );
+      } else {
+        assert.equal(committed, 2);
+      }
 
       // Send another actual request to the same still-equipped sender. Check the transport and
       // HTTP boundaries before the client result, so an erroneous forward fails at the origin oracle.
-      const before = traffic();
+      const providerTraffic = () => ({
+        ...traffic(),
+        apiRequests: broad?.installation.apiRequests.length,
+        issues: gh.issuesOfTokens.length,
+      });
+      const before = providerTraffic();
       const decisions = peer.decisions.length;
       await controller.removeAgentStandingApproval(who, {
         ...key,
@@ -408,9 +674,9 @@ test(
       });
       const denied = await fetch(true);
       assert.deepEqual(
-        traffic(),
+        providerTraffic(),
         before,
-        "no connection or HTTP request may reach the origin after withdrawal",
+        "no Git connection, API request or issuance may reach the provider after withdrawal",
       );
       assert.deepEqual(peer.decisions.slice(decisions), [
         {
@@ -424,6 +690,15 @@ test(
         Date.now() < Date.parse(second.expiresAt),
         "withdrawal was tested while the installed credential was usable",
       );
+      assert.equal(await receiptCount(), committed, "withdrawal did not add a possible use");
+      if (broad) {
+        await broad.installation.verifyTokenStillWorks();
+        t.diagnostic(
+          "one installation token, private Git v2 pack and push, provider-protected ref, REST and GraphQL; fresh Git denied after withdrawal, zero provider connection or HTTP, then direct proof the same token was still accepted",
+        );
+        return;
+      }
+      assert.ok("tokenState" in gh);
       const [, live] = gh.tokenState();
       assert.equal(live?.uses, 2);
       assert.equal(live.revoked, false);
@@ -434,5 +709,5 @@ test(
     } finally {
       await f.stop();
     }
-  },
-);
+  };
+}

@@ -42,6 +42,7 @@ export async function fixture(
     dnsIssuer = false,
     sessionLifetimeMs = 3_600_000,
     standingApproval = false,
+    installationAccess = false,
   } = {},
 ) {
   const directory = await socketDirectory(t, "prepared-git-");
@@ -55,6 +56,7 @@ export async function fixture(
   const gh = await startGitHubFixture(t, {
     clock: createSystemClock(),
     additionalPermissions: [permissions],
+    installationAccess,
     draftResponse,
   });
   await writeFile(privateKeyPath, gh.privateKey.export({ type: "pkcs8", format: "pem" }), {
@@ -76,6 +78,12 @@ export async function fixture(
     githubInstallationId: fixtureInstallationId,
     maximumDurationSeconds: 3600,
     ...(standingApproval && { allowStandingApprovals: true }),
+    ...(installationAccess && {
+      installationAccess: {
+        repositoryRef: "team-install",
+        namespaces: [{ namespaceId, accessMode: "installation" }],
+      },
+    }),
     repositories: [
       {
         repositoryRef,
@@ -257,6 +265,7 @@ export async function fixture(
     binding,
     admissionId: attempt.admissionId,
     approval,
+    registry,
     familyId: `repository-git:${attempt.admissionId}`,
     request(overrides = {}) {
       return {

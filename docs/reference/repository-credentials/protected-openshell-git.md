@@ -31,6 +31,31 @@ custody Secret and approved issuer CIDRs. Only the worker mounts the signing and
 keys. Configure the [middleware certificate, public issuer key and trusted callers](openshell-git.md#maintain-the-earlier-git-trial)
 for TCP 8445. This installation has no broker listener, control socket or broker CA.
 
+## Grant access to a GitHub App installation
+
+Use this scope only with a Driver qualified for `github_installation`. The bundled OpenShell
+Driver does not offer it. GitHub sets the ceiling: the Agent can act on the repositories
+(including private ones) and with the permissions available to that App installation. If GitHub
+limits the installation to selected repositories, that limit still applies. OCE neither changes
+installation membership nor adds permissions. Keep repository-scoped Git when that is sufficient.
+
+Apply the database migration first. Upgrade all controllers, workers and the paired Sandbox and
+Credential Proxy Driver before enabling the policy. Let the previous owner close its session and
+settle its tokens when changing scope. An upgrade leaves existing grants and approvals unchanged.
+
+1. In the GitHub registry, set `installationAccess.repositoryRef` to a distinct name such as
+   `team-installation`. In its `namespaces` list, set the intended `namespaceId` and
+   `accessMode: installation`. This makes the scope available in that Namespace.
+2. In the Agent's `repositoryBindings`, select `repositoryRef: team-installation` and
+   `profile: github-installation` together. No default profile or wildcard selects this scope.
+
+Access is finite by default. Standing access requires a separate approval of this exact scope
+and permission for standing approvals in both the installation and Namespace policies. Each
+credential and session still expires. Removing approval denies the next request; a send that
+already passed authorization can finish. The Agent never receives the GitHub token.
+Before a registry edit changes the paired Driver’s identity, withdraw live access in OCE and let
+the original owner settle credentials even for Namespaces whose policy is unchanged.
+
 ## Move from the earlier trial
 
 Keep `openshellGit.mode: broker-trial` and the broker enabled while its original owner

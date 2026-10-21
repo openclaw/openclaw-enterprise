@@ -17,6 +17,7 @@ import {
   type RepositoryCredentialControlClient,
 } from "../../../backends/repository-credentials/control-client.ts";
 import {
+  githubInstallationProfile,
   resolveGitHubRepositoryBinding,
   resolveGitHubStandingApprovalScope,
   validateGitHubRepositoryRegistry,
@@ -169,6 +170,16 @@ export class GitHubRepoDriver implements RepoDriver {
       );
       approved.set(repository.repositoryRef, repository.repositoryId);
     });
+    const installation = this.#registry.installationAccess;
+    if (installation?.namespaces.some((policy) => policy.namespaceId === input.namespaceId)) {
+      options.push(
+        Object.freeze({
+          repositoryRef: installation.repositoryRef,
+          displayName: "All repositories and permissions available to this GitHub App installation",
+          allowedProfiles: Object.freeze([githubInstallationProfile]),
+        }),
+      );
+    }
     const descriptionRefs = (input.descriptionRefs ?? []).filter((ref) => approved.has(ref));
     if (descriptionRefs.length === 0 || !this.#client) {
       return Object.freeze({ options: Object.freeze(options), descriptionsPending: false });
@@ -269,6 +280,11 @@ export class GitHubRepoDriver implements RepoDriver {
     input: OpenRepositorySessionInput,
     signal: AbortSignal,
   ): Promise<OpenRepositorySessionResult> {
+    if (input.binding.profile === githubInstallationProfile) {
+      throw new ScopeViolationError(
+        "GitHub installation access requires the protected Credential Proxy.",
+      );
+    }
     if (input.recoverOnly !== true && input.binding.backendId !== this.#backendId) {
       throw new ScopeViolationError(
         "The repository binding does not belong to the selected Backend.",

@@ -1,10 +1,9 @@
-/** A controlled external Driver and its actual terminal sender. Only loopback Git fetch is implemented. */
+/** A controlled external Driver and its actual terminal sender. Both delivery profiles are limited to test-owned HTTPS peers on loopback. */
 import assert from "node:assert/strict";
 import { createHash, randomUUID, verify, X509Certificate } from "node:crypto";
-import { once } from "node:events";
-import { readFile } from "node:fs/promises";
-import { createServer, request } from "node:https";
-import type { IncomingMessage } from "node:http";
+import { readFileSync } from "node:fs";
+import { createServer, request, type ServerOptions } from "node:https";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { buffer, json } from "node:stream/consumers";
 import { isDeepStrictEqual } from "node:util";
 import { createDriver as releaseDriver } from "./index.ts";
@@ -21,12 +20,21 @@ import type {
 export const configurationSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["origin", "certFile", "keyFile", "releaseKey"],
+  required: ["origin", "certFile", "peerOrigin", "releaseKey"],
   properties: Object.fromEntries(
-    ["origin", "certFile", "keyFile", "releaseKey"].map((k) => [k, { type: "string" }]),
+    ["origin", "certFile", "peerOrigin", "releaseKey", "installationApiOrigin"].map((k) => [
+      k,
+      { type: "string" },
+    ]),
   ),
 };
-type Config = { origin: string; certFile: string; keyFile: string; releaseKey: string };
+type Config = {
+  origin: string;
+  certFile: string;
+  peerOrigin: string;
+  releaseKey: string;
+  installationApiOrigin?: string;
+};
 export function validateConfiguration({ origin }: Config) {
   const { protocol, hostname, origin: expectedOrigin } = new URL(origin);
   assert.equal(protocol, "https:");
@@ -36,9 +44,21 @@ export function validateConfiguration({ origin }: Config) {
 
 // The test has the workload's credential-free endpoint and can drive ordinary installer work.
 // The installed credential is private to the sender, and each Git request has one send opportunity.
+let counterpart: ReturnType<typeof createServer>;
+export function createCounterpart(tls: ServerOptions) {
+  counterpart = createServer(tls);
+  return counterpart;
+}
+
 export let peer: {
   url: URL;
   clientHeader: string;
+  // A nonsecret marker from the workload's host-scoped Git helper; no provider material.
+  gitMarker: string;
+  capabilityRequests: number;
+  reportRepositoryOnly?: boolean;
+  apiUrl: URL;
+  replayLastInstallationExchange?(): Promise<void>;
   decisions: { operation: string; decision: unknown }[];
   /** The test can hold this already committed permit at either boundary, but cannot replace it. */
   beforeSend?(
@@ -55,7 +75,10 @@ export function createDriver(options: {
 }): DriverRegistration {
   const config = options.configuration;
   validateConfiguration(config);
-  const { origin } = config;
+  const { origin, installationApiOrigin } = config;
+  if (installationApiOrigin) {
+    validateConfiguration({ ...config, origin: installationApiOrigin });
+  }
   const base = releaseDriver({
     ...options,
     configuration: { endpoint: origin, ca: "unused" },
@@ -67,12 +90,23 @@ export function createDriver(options: {
   const observationSecret = randomUUID();
   const sandboxId = randomUUID();
   let status: EgressInstallation | undefined;
-  let url: URL;
-  let ca: Buffer;
-  let peerKeyId: string;
+  validateConfiguration({ ...config, origin: config.peerOrigin });
+  const url = new URL(config.peerOrigin);
+  const ca = readFileSync(config.certFile);
+  const peerKeyId = new X509Certificate(ca).fingerprint256;
   let authority: Authority;
   let route: Route | undefined;
-  let installed: Material | undefined;
+  type Broad = NonNullable<Authority["githubInstallation"]>;
+  type InstallationMaterial = Extract<
+    Awaited<ReturnType<Broad["readMaterial"]>>,
+    { value: string }
+  >;
+  type InstallationOperation = Parameters<Broad["authorize"]>[0]["operation"];
+  let installed: Material | InstallationMaterial | undefined;
+  let apiUrl: URL;
+  let checkedCapability = false;
+  const gitMarker = "cedar-workload-marker";
+  const basic = (v: string) => "Basic " + Buffer.from("x-access-token:" + v).toString("base64");
   const decisions: typeof peer.decisions = [];
   const signal = () => AbortSignal.timeout(5000);
   const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -96,6 +130,10 @@ export function createDriver(options: {
   };
   function configure(plan: ProxyPlan) {
     assert.ok(plan.repositoryGit && !plan.routes.length);
+    if (installationApiOrigin) {
+      assert.equal(plan.repositoryGit.bindings[0]?.profile, "github-installation");
+      assert.equal(checkedCapability, true, "release requires the installation delivery profile");
+    }
     const execution = plan.execution.executionId;
     status ??= {
       plan,
@@ -113,6 +151,9 @@ export function createDriver(options: {
           providerId: sender.id,
           processInstanceId: randomUUID(),
           networkInstanceId: url.origin,
+          ...(installationApiOrigin && {
+            deliveryProfile: "github_installation" as const,
+          }),
         },
       },
     };
@@ -120,66 +161,163 @@ export function createDriver(options: {
   }
   async function bind(host: Authority) {
     authority = host;
-    ca = await readFile(config.certFile);
-    peerKeyId = new X509Certificate(ca).fingerprint256;
-    const server = createServer(
-      { cert: ca, key: await readFile(config.keyFile) },
-      async (req, res) => {
+    const server = counterpart;
+    assert.ok(server.listening, "only the worker binds the test-owned HTTPS counterpart");
+    server.on(
+      "request",
+      async function serveProtectedRepositoryGitRequest(req: IncomingMessage, res: ServerResponse) {
         try {
+          if (req.url === "/capability") {
+            peer.capabilityRequests++;
+            res
+              .writeHead(200)
+              .end(
+                JSON.stringify(
+                  installationApiOrigin && !peer.reportRepositoryOnly
+                    ? "github_installation"
+                    : "repository_git",
+                ),
+              );
+            return;
+          }
           if (req.url === "/installation" && req.headers.authorization === observationSecret) {
             const { preparationAttemptId, materialVersion } = installed ?? {};
-            res
-              .writeHead(status ? 200 : 503)
-              .end(JSON.stringify({ installation: status, preparationAttemptId, materialVersion }));
+            res.writeHead(status ? 200 : 503).end(
+              JSON.stringify({
+                installation: status,
+                preparationAttemptId,
+                materialVersion,
+              }),
+            );
             return;
           }
           const m = installed;
-          if (!route || !m || req.headers.authorization !== clientSecret) {
+          if (!route || !m) {
             res.writeHead(403).end();
             return;
           }
-          // Construct the outbound request from the installed repository and a closed operation.
-          // Compare the raw inbound target exactly; never resolve it against the credentialed origin.
-          const upload = req.method === "POST";
-          const method = upload ? "POST" : "GET";
-          const service = upload ? "git-upload-pack" : "info/refs?service=git-upload-pack";
-          const path = `/${m.repository}.git/${service}`;
-          if (req.method !== method || req.url !== path) {
+          const broad = "scope" in m;
+          const api = broad && req.headers.host === apiUrl.host;
+          const path = req.url ?? "";
+          const method = req.method;
+          const marker = broad ? (api ? "Bearer " + gitMarker : basic(gitMarker)) : clientSecret;
+          if ((!api && req.headers.host !== url.host) || !method) {
             res.writeHead(403).end();
             return;
           }
-          const operation = upload ? "upload-pack" : "advertise-upload-pack";
+          if (req.headers.authorization !== marker) {
+            // Ordinary Git challenges, invokes its host-scoped helper, and presents the marker.
+            res
+              .writeHead(401, {
+                "www-authenticate": 'Basic realm="cedar-fixture"',
+              })
+              .end();
+            return;
+          }
+          // Interpret the actual raw target without resolving or normalizing it. Git and API
+          // arrive with different Host values and have separate fixed, TLS-verified origins.
+          let operation: InstallationOperation;
+          let contentType: string | undefined;
+          let gitProtocol: string | undefined;
+          if (api) {
+            if (method === "POST" && path === "/graphql") {
+              operation = "github-graphql";
+            } else if (
+              ["GET", "POST", "PATCH"].includes(method) &&
+              /^\/repos\/[\w-]+\/[\w-]+(?:\/[\w/-]+)?$/.test(path)
+            ) {
+              operation = "github-rest";
+            } else {
+              res.writeHead(403).end();
+              return;
+            }
+            contentType = req.headers["content-type"];
+          } else {
+            const match =
+              /^\/([\w-]+\/[\w-]+)\.git\/(info\/refs\?service=)?git-(upload|receive)-pack$/.exec(
+                path,
+              );
+            const [, repository, discovery, service] = match ?? [];
+            if (
+              !match ||
+              method !== (discovery ? "GET" : "POST") ||
+              (!broad && (m.repository !== repository || service !== "upload"))
+            ) {
+              res.writeHead(403).end();
+              return;
+            }
+            operation = discovery
+              ? service === "upload"
+                ? "advertise-upload-pack"
+                : "advertise-receive-pack"
+              : service === "upload"
+                ? "upload-pack"
+                : "receive-pack";
+            if (!discovery) {
+              contentType = "application/x-git-" + service + "-pack-request";
+            }
+            if (contentType !== req.headers["content-type"]) {
+              res.writeHead(403).end();
+              return;
+            }
+            if (broad && req.headers["git-protocol"] === "version=2") {
+              gitProtocol = "version=2";
+            }
+          }
+          const upstreamOrigin = api ? installationApiOrigin! : origin;
           const body = await buffer(req);
-          const contentType = upload ? req.headers["content-type"] : undefined;
-          const {
-            sessionId,
-            grantId,
-            repositoryId,
-            providerInstanceId,
-            pushRef,
-            preparationAttemptId,
-            materialVersion,
-          } = m;
+          const { sessionId, grantId, providerInstanceId, preparationAttemptId, materialVersion } =
+            m;
           const requestDigestSha256 = hash(
-            Buffer.concat([Buffer.from(JSON.stringify([method, origin, path, contentType])), body]),
+            Buffer.concat([
+              Buffer.from(JSON.stringify([method, upstreamOrigin, path, contentType, gitProtocol])),
+              body,
+            ]),
           );
           const exchangeId = randomUUID();
           const deadlineAt = new Date(Date.now() + 20_000).toISOString();
-          const decision = await host.authorize(
-            {
-              sessionId,
-              grantId,
-              repositoryId,
-              providerInstanceId,
-              pushRef,
-              operation,
-              exchangeId,
-              requestDigestSha256,
-              deadlineAt,
-            },
-            { route, preparationAttemptId, materialVersion },
-            signal(),
-          );
+          const q = {
+            sessionId,
+            grantId,
+            providerInstanceId,
+            exchangeId,
+            requestDigestSha256,
+            deadlineAt,
+          };
+          const confirmation = { route, preparationAttemptId, materialVersion };
+          const allowInstallation = (operation: InstallationOperation, installationId: string) => {
+            const authorize = () =>
+              host.githubInstallation!.authorize(
+                {
+                  ...q,
+                  scope: "github-installation",
+                  installationId,
+                  operation,
+                },
+                confirmation,
+                signal(),
+              );
+            peer.replayLastInstallationExchange = async () => {
+              assert.equal(
+                (await authorize()).kind,
+                "denied",
+                "the same exchange cannot get a second send opportunity",
+              );
+            };
+            return authorize();
+          };
+          const decision = broad
+            ? await allowInstallation(operation, m.installationId)
+            : await host.authorize(
+                {
+                  ...q,
+                  operation: operation as "upload-pack" | "advertise-upload-pack",
+                  repositoryId: m.repositoryId,
+                  pushRef: m.pushRef,
+                },
+                confirmation,
+                signal(),
+              );
           decisions.push({ operation, decision });
           if (decision.kind !== "permit") {
             res.writeHead(403).end();
@@ -193,6 +331,12 @@ export function createDriver(options: {
             preparationAttemptId,
             materialVersion,
             sendStartBy,
+            ...(broad && {
+              scope: "github-installation",
+              operation,
+              revisionId: route.revisionId,
+              fence: route.fence,
+            }),
           });
           const until = Date.parse(sendStartBy);
           assert.ok(until <= Date.parse(deadlineAt));
@@ -208,7 +352,7 @@ export function createDriver(options: {
           }
           const upstream = await new Promise<IncomingMessage | undefined>((resolve, reject) => {
             const out = request(
-              origin,
+              upstreamOrigin,
               {
                 method,
                 path,
@@ -216,9 +360,9 @@ export function createDriver(options: {
                 agent: false,
                 signal: AbortSignal.timeout(15_000),
                 headers: {
-                  authorization:
-                    "Basic " + Buffer.from("x-access-token:" + m.value).toString("base64"),
-                  ...(upload && {
+                  authorization: api ? "Bearer " + m.value : basic(m.value),
+                  ...(gitProtocol && { "git-protocol": gitProtocol }),
+                  ...(contentType && {
                     "content-type": contentType,
                     "content-length": String(body.length),
                   }),
@@ -255,16 +399,39 @@ export function createDriver(options: {
           res.writeHead(502).end();
         }
       },
-    ).listen(0, "127.0.0.1");
-    await once(server, "listening");
-    url = new URL("https://127.0.0.1:" + (server.address() as { port: number }).port);
+    );
+    apiUrl = new URL(url);
+    apiUrl.hostname = "localhost";
     peer = {
       url,
+      apiUrl,
+      gitMarker,
       clientHeader: "Authorization: " + clientSecret,
       decisions,
+      capabilityRequests: 0,
       async install() {
-        const m = await host.readMaterial(route!, signal());
+        const selected = installationApiOrigin ? host.githubInstallation! : host;
+        if (installationApiOrigin) {
+          const legacy = await host.readMaterial(route!, signal());
+          assert.ok(
+            !legacy || !("value" in legacy),
+            "repository Git port cannot disclose installation material",
+          );
+          const stale = await selected.readMaterial(
+            { ...route!, fence: route!.fence - 1 },
+            signal(),
+          );
+          assert.ok(
+            !stale || !("value" in stale),
+            "a previous recipient cannot receive the current installation token",
+          );
+        }
+        const m = await selected.readMaterial(route!, signal());
         assert.ok(m && "value" in m, "expected live material for this observed recipient");
+        if ("scope" in m) {
+          assert.equal(m.scope, "github-installation");
+          assert.equal(m.apiOrigin, installationApiOrigin);
+        }
         const { preparationAttemptId, materialVersion } = m;
         const pending = await host.recipients.beginInstall(route!, {
           preparationAttemptId,
@@ -286,7 +453,11 @@ export function createDriver(options: {
         return { materialVersion: m.materialVersion, expiresAt: m.expiresAt };
       },
     };
-    return { close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
+    return {
+      async close() {
+        server.removeAllListeners("request");
+      },
+    };
   }
   return {
     capabilities: {
@@ -303,7 +474,9 @@ export function createDriver(options: {
             signature,
           } = (await release(startupId)) as {
             challenge: { startupId: string };
-            installation: EgressInstallation["enforcement"] & { sandboxId: string };
+            installation: EgressInstallation["enforcement"] & {
+              sandboxId: string;
+            };
             expiresAt: number;
             signature: string;
           };
@@ -320,7 +493,10 @@ export function createDriver(options: {
             ),
           );
           assert.equal(
-            await authority.recipients.observe({ ...live, sandboxId: randomUUID() }),
+            await authority.recipients.observe({
+              ...live,
+              sandboxId: randomUUID(),
+            }),
             undefined,
             "a different sandbox cannot receive this installation",
           );
@@ -352,8 +528,13 @@ export function createDriver(options: {
         sourceControl: {
           ...proxy.sourceControl,
           providers: [],
-          assertAvailable: async (_signal, profile) => {
-            assert.equal(profile, "repository_git");
+          assertAvailable: async (signal, profile) => {
+            assert.equal(profile, installationApiOrigin ? "github_installation" : "repository_git");
+            // The API registration knows only the configured peer and its public TLS certificate.
+            const res = await exchange(new URL("/capability", url), { signal });
+            assert.equal(res.statusCode, 200);
+            checkedCapability = (await json(res)) === profile;
+            return checkedCapability && profile === "github_installation" ? profile : undefined;
           },
         },
         bindRepositoryGit: bind,

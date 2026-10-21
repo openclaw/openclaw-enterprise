@@ -9,6 +9,7 @@ import type {
   RepositoryCredentialSessionStatus,
   RepositoryExecutionIdentity,
 } from "@openclaw-enterprise/contracts";
+import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
 import {
   isRepositoryCleanupWork,
   repositoryApprovalFingerprint,
@@ -147,9 +148,11 @@ export class RepositoryCredentialLifecycle {
     if (snapshot === undefined) {
       return undefined;
     }
+    const protectedGit = revision.executionAdmission.version === 4;
     if (
-      revision.executionAdmission.version === 4 &&
-      !isDeepStrictEqual(revision.egressPlan?.repositoryGit, snapshot)
+      (!protectedGit &&
+        snapshot.bindings.some((binding) => isInstallationRepositoryProfile(binding.profile))) ||
+      (protectedGit && !isDeepStrictEqual(revision.egressPlan?.repositoryGit, snapshot))
     ) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_PROXY_ADMISSION_MISMATCH");
     }

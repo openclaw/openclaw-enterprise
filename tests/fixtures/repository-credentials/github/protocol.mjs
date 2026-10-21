@@ -20,6 +20,7 @@ export function createGitHubProtocol({
   tokenLifetimeMs = 3600000,
   tokenResponse = (packet) => packet,
   additionalPermissions = [],
+  installationAccess = false,
   encodeIssueResponse = JSON.stringify,
   beforeIssue,
   beforeIssueResponse,
@@ -36,6 +37,7 @@ export function createGitHubProtocol({
     lifetimeMs: tokenLifetimeMs,
     repositoryId,
     additionalPermissions,
+    installationAccess,
   });
   const resources = createRepositoryResources({ repository, repositoryId, description });
   const trace = [];

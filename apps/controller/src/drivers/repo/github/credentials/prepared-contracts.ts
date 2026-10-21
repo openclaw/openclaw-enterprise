@@ -8,19 +8,28 @@ import type {
   TokenPreparationStore,
 } from "../../../../backends/token-service/custody.ts";
 
+type GrantIdentity = Readonly<{
+  id: string;
+  isolationId: string;
+  appId: string;
+  installationId: string;
+}>;
+
+/** Inherit this App installation's selection and permissions. There is no repository or ref override. */
+export type GitHubInstallationGrant = GrantIdentity & Readonly<{ profile: "github-installation" }>;
+
 export interface GitHubPreparationAdmission extends TokenAdmission {
-  readonly grant: Readonly<{
-    id: string;
-    isolationId: string;
-    appId: string;
-    installationId: string;
-    repositoryId: string;
-    repository: string;
-    profile: GitHubTokenProfile;
-    /** Only the repository Git family has an exact admitted review ref. */
-    pushRef?: string;
-    pullRequestBase?: string;
-  }>;
+  readonly grant:
+    | GitHubInstallationGrant
+    | (GrantIdentity &
+        Readonly<{
+          repositoryId: string;
+          repository: string;
+          profile: GitHubTokenProfile;
+          /** Only the repository Git family has an exact admitted review ref. */
+          pushRef?: string;
+          pullRequestBase?: string;
+        }>);
 }
 
 export type GitHubPreparationAttempt = TokenAttempt<GitHubPreparationAdmission>;

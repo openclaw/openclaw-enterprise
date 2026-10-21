@@ -6,6 +6,7 @@ import { isDeepStrictEqual } from "node:util";
 import type {
   DriverRegistrationRef,
   PreparedGitHubUseRequest,
+  PreparedGitHubInstallationUseRequest,
   PreparedGitHubPullResult,
   RepositoryGitInstallationFence,
 } from "@openclaw-enterprise/contracts";
@@ -28,6 +29,7 @@ import {
 } from "../../drivers/repo/github/credentials/registry.ts";
 import {
   protectedGitAdoption,
+  installationGitAdoption,
   type RepositoryGitRecipientEvidence,
 } from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
 import { TokenService } from "../token-service/service.ts";
@@ -66,19 +68,26 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
   tokenService?: TokenService;
 }
 
-function useRequest(input: unknown): PreparedGitHubUseRequest {
-  const q = input as PreparedGitHubUseRequest;
+function useRequest(input: unknown): PreparedGitHubUseRequest;
+function useRequest(
+  input: unknown,
+  scope: "github-installation",
+): PreparedGitHubInstallationUseRequest;
+function useRequest(input: unknown, scope?: "github-installation") {
+  const q = input as PreparedGitHubUseRequest & PreparedGitHubInstallationUseRequest;
+  const installation = scope === "github-installation";
   const fields = [
     "providerInstanceId",
     "grantId",
-    "repositoryId",
     "sessionId",
     "exchangeId",
     "operation",
     "requestDigestSha256",
-    "pushRef",
     "deadlineAt",
-    ...(q?.operation === "create-draft-pull" ? ["pull"] : []),
+    ...(installation ? ["scope", "installationId"] : ["repositoryId", "pushRef"]),
+    ...(!installation && (input as PreparedGitHubUseRequest)?.operation === "create-draft-pull"
+      ? ["pull"]
+      : []),
   ];
   if (
     !input ||
@@ -90,18 +99,20 @@ function useRequest(input: unknown): PreparedGitHubUseRequest {
     ) ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(q.exchangeId) ||
     !/^[0-9a-f]{64}$/.test(q.requestDigestSha256) ||
-    !q.pushRef.startsWith("refs/heads/") ||
+    (installation
+      ? q.scope !== scope || !/^[1-9]\d*$/.test(q.installationId)
+      : !q.pushRef.startsWith("refs/heads/")) ||
     ![
       "advertise-upload-pack",
       "upload-pack",
       "advertise-receive-pack",
       "receive-pack",
-      "create-draft-pull",
+      ...(installation ? ["github-rest", "github-graphql"] : ["create-draft-pull"]),
     ].includes(q.operation)
   ) {
     throw new Error("INVALID_PREPARED_GIT_USE");
   }
-  return q;
+  return Object.freeze({ ...q });
 }
 
 // Kubernetes projects a private 0440 file through a symlink; only the worker mounts it.
@@ -158,12 +169,18 @@ export async function startPreparedGitHubGitOwner(options: Options) {
       const policy = repo?.namespaces.find((p) => p.namespaceId === namespaceId);
       const pushRef = policy?.pushRefAllowlist?.[0];
       const base = policy?.transport === "git-and-draft-pr" ? policy.pullRequestBase : undefined;
+      const installation = profile === "github-installation";
+      const access = registry.installationAccess;
       if (
-        !repo ||
-        !pushRef ||
-        profile !== "git-write" ||
         driver.id !== options.driverId ||
-        driver.implementation !== options.implementation
+        driver.implementation !== options.implementation ||
+        (installation
+          ? !options.protectedGitDriver ||
+            access?.repositoryRef !== repositoryRef ||
+            !access.namespaces.some(
+              (p) => p.namespaceId === namespaceId && p.accessMode === "installation",
+            )
+          : !repo || !pushRef || profile !== "git-write")
       ) {
         return;
       }
@@ -185,20 +202,30 @@ export async function startPreparedGitHubGitOwner(options: Options) {
       if (!isDeepStrictEqual(binding, admitted)) {
         return;
       }
+      const common = { key: { source: { id: "repository-git:" + session.admissionId } }, session };
+      const grant = {
+        id: admitted.grant.grantId,
+        isolationId: session.revisionId,
+        appId: registry.appId,
+        installationId: registry.githubInstallationId,
+      };
+      if (installation) {
+        return {
+          ...common,
+          adoption: installationGitAdoption,
+          grant: { ...grant, profile: "github-installation" },
+        };
+      }
       return {
-        key: { source: { id: "repository-git:" + session.admissionId } },
+        ...common,
         adoption: options.protectedGitDriver ? protectedGitAdoption : "prepared_repository_git",
-        session,
         grant: {
-          id: admitted.grant.grantId,
-          isolationId: session.revisionId,
-          appId: registry.appId,
-          installationId: registry.githubInstallationId,
-          repositoryId: repo.repositoryId,
-          repository: repo.repository,
+          ...grant,
+          repositoryId: repo!.repositoryId,
+          repository: repo!.repository,
           profile: base ? "git-ref-draft-pr" : "git-ref-write",
           ...(base ? { pullRequestBase: base } : {}),
-          pushRef,
+          pushRef: pushRef!,
         },
         ...(base && policy?.draftPullLimit === "none" ? { draftPullLimit: "none" as const } : {}),
       };

@@ -115,6 +115,10 @@ export async function loadConfiguration(
       const registry = (
         prepared ? validateGitHubRepositoryRegistry : validateGitHubAppRepositoryRegistry
       )(JSON.parse(registryBytes.toString("utf8")), string(backendInput.backendId));
+      // This service owns native Git sessions, including its old prepared-only route.
+      if (registry.installationAccess !== undefined) {
+        throw new Error("installation-access-requires-protected-credential-proxy");
+      }
       if (config.sessionPolicy.maximumDurationSeconds > registry.maximumDurationSeconds) {
         throw new Error("invalid-configuration");
       }

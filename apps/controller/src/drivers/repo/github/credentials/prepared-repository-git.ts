@@ -1,5 +1,8 @@
 import type {
   PreparedGitHubUseRequest,
+  PreparedGitHubInstallationUseRequest,
+  ProtectedGitHubInstallationMaterial,
+  GitHubInstallationSendDecision,
   PreparedGitHubPullResult,
   PreparedGitHubPullScope,
   PreparedGitHubPullProjection,
@@ -19,6 +22,9 @@ import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
   protectedGitAdoption,
+  installationGitAdoption,
+  registeredGitProfile,
+  registeredGitSelection,
   openShellGitRecipientEvidence,
   registeredGitRecipientEvidence,
   type RepositoryGitRecipientEvidence,
@@ -74,6 +80,10 @@ const legacyAdoption = "prepared_repository_git";
 type Recipient =
   { evidence: RepositoryGitRecipientEvidence; driver?: DriverRegistrationRef } | undefined;
 
+function installationRecipient(proxy: Recipient) {
+  return !!proxy?.driver && proxy.evidence === registeredGitRecipientEvidence;
+}
+
 const families = "occ.prepared_github_families";
 const attempts = "occ.prepared_github_attempts";
 
@@ -94,6 +104,10 @@ export interface PreparedRepositorySession {
  * The deadline is checked live instead of extending or treating the snapshot as a lease. */
 function sessionQuery(proxy: Recipient): string {
   const driver = proxy?.driver ? `'driver', ${selectedRepositoryGitDriver},` : "";
+  const profile = installationRecipient(proxy) ? registeredGitProfile : "'git-write'";
+  // Installation membership can change at GitHub. Across a scope change on this Agent, require
+  // disposal and settled custody even when the old and new operator selection names differ.
+  const broad = "s.cleanup_context #>> '{binding,profile}' = 'github-installation'";
   const execution = `p.installation#>>'{plan,execution,executionId}'`;
   return `SELECT jsonb_build_object(
   'namespaceId',s.namespace_id, 'agentId',s.agent_id, 'revisionId',s.live_revision_id,
@@ -129,31 +143,34 @@ function sessionQuery(proxy: Recipient): string {
     AND p.installation->'plan'=rev.admitted_spec->'egress_plan'
     AND p.installation#>'{plan,repositoryGit}'=rev.admitted_spec->'repository_credentials'
     AND clock_timestamp() < to_timestamp(s.deadline_wall_ms / 1000.0)
-    AND NOT EXISTS (SELECT FROM occ.repository_session_attempts old
-        WHERE (old.namespace_id,old.agent_id,old.repository_ref)=(s.namespace_id,s.agent_id,s.repository_ref)
-        AND old.admission_id<>s.admission_id AND old.phase<>'disposed')`
+    `
       : `s.broker_protocol=1 AND b.state='active' AND b.generation IS NOT NULL AND b.session_id=s.session_id
     AND clock_timestamp() < to_timestamp(least(b.deadline_wall_ms, s.deadline_wall_ms) / 1000.0)`
   }
-
+  AND NOT EXISTS (
+    SELECT FROM occ.repository_session_attempts old
+    WHERE (old.namespace_id,old.agent_id)=(s.namespace_id,s.agent_id)
+      AND old.admission_id<>s.admission_id AND old.phase<>'disposed'
+      AND (old.cleanup_context #>> '{binding,profile}' = 'github-installation'
+        ${proxy ? `OR ${broad} OR old.repository_ref=s.repository_ref` : ""}))
   AND g.status='active' AND g.desired_runtime_state='running' AND g.execution_mode='dedicated'
-  AND s.cleanup_context #>> '{binding,profile}' = 'git-write'
-  AND g.repository_bindings @> jsonb_build_array(jsonb_build_object('repositoryRef',s.repository_ref,'profile','git-write'))
+  AND s.cleanup_context #>> '{binding,profile}' = ${profile}
+  AND g.repository_bindings @> jsonb_build_array(jsonb_build_object('repositoryRef',s.repository_ref,'profile',s.cleanup_context #>> '{binding,profile}'))
   AND occ.repository_standing_approval_is_current(rev.admitted_spec->'repository_credentials',s.namespace_id,s.agent_id)
   AND NOT EXISTS (SELECT FROM occ.repository_standing_executions e WHERE e.revision_id=s.revision_id AND e.closed)
   AND (s.predecessor_admission_id IS NULL OR occ.repository_standing_execution_is_current(rev.admitted_spec->'repository_credentials',s.namespace_id,s.agent_id,s.revision_id))
-  AND (${proxy ? "false" : "NOT (rev.admitted_spec->'repository_credentials' ? 'standingApprovalId')"} OR NOT EXISTS (
+  AND NOT EXISTS (
     SELECT FROM occ.prepared_github_families prior JOIN occ.prepared_github_attempts attempt ON attempt.source_id=prior.source_id
-    WHERE prior.source->>'adoption' IN ('${legacyAdoption}','${protectedGitAdoption}')
-      AND ${
-        proxy
-          ? `prior.source#>>'{session,namespaceId}'=s.namespace_id
-        AND prior.source#>>'{session,agentId}'=s.agent_id
-        AND prior.source#>>'{session,binding,repositoryRef}'=s.repository_ref`
-          : "prior.source #>> '{session,revisionId}'=s.revision_id"
-      }
-      AND prior.source #>> '{session,admissionId}'<>s.admission_id
-      AND attempt.custody NOT IN ('revoked','expired')))
+    WHERE prior.source#>>'{session,namespaceId}'=s.namespace_id AND prior.source#>>'{session,agentId}'=s.agent_id
+      AND prior.source#>>'{session,admissionId}'<>s.admission_id
+      AND attempt.custody NOT IN ('revoked','expired')
+      AND (prior.source->>'adoption'='${installationGitAdoption}'
+        OR (prior.source->>'adoption' IN ('${legacyAdoption}','${protectedGitAdoption}') AND ${
+          proxy
+            ? `(${broad} OR prior.source#>>'{session,binding,repositoryRef}'=s.repository_ref)`
+            : `(rev.admitted_spec->'repository_credentials' ? 'standingApprovalId'
+            AND prior.source#>>'{session,revisionId}'=s.revision_id)`
+        })))
   AND rev.admitted_spec #> '{repository_credentials,driver}'=s.cleanup_context->'driver'
   AND rev.admitted_spec #> '{repository_credentials,bindings}' @> jsonb_build_array(s.cleanup_context->'binding')`;
 }
@@ -253,13 +270,15 @@ async function lockLiveSession(
 type LockedSession = { session: PreparedRepositorySession; end_ms: string };
 
 export interface PreparedRepositoryGitSource {
-  readonly adoption: typeof legacyAdoption | typeof protectedGitAdoption;
+  readonly adoption:
+    typeof legacyAdoption | typeof protectedGitAdoption | typeof installationGitAdoption;
   readonly key: { source: { id: string } };
   readonly session: PreparedRepositorySession;
-  readonly grant: GitHubPreparationAdmission["grant"] & {
-    profile: "git-ref-write" | "git-ref-draft-pr";
-    pushRef: string;
-  };
+  readonly grant: GitHubPreparationAdmission["grant"] &
+    (
+      | { profile: "git-ref-write" | "git-ref-draft-pr"; pushRef: string }
+      | { profile: "github-installation" }
+    );
   /** The registry's opt-out of the one-draft limit; honored by the protected sender only. */
   readonly draftPullLimit?: "none";
 }
@@ -282,7 +301,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   private readonly authority: string;
   private readonly policy: Policy;
   private readonly proxy: Recipient;
-  private readonly adoption: PreparedRepositoryGitSource["adoption"];
+  private readonly adoption: readonly PreparedRepositoryGitSource["adoption"][];
 
   constructor(
     pool: PostgresPool,
@@ -298,9 +317,18 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       : recipient
         ? { evidence: openShellGitRecipientEvidence }
         : undefined;
-    const adoption = driver ? protectedGitAdoption : legacyAdoption;
+    const adoption: PreparedRepositoryGitSource["adoption"][] = [
+      driver ? protectedGitAdoption : legacyAdoption,
+    ];
+    if (installationRecipient(proxy)) {
+      adoption.push(installationGitAdoption);
+    }
     super(pool, key, authority, {
       active: active(sessionQuery(proxy)),
+      // Fence an issuance intent against a concurrently replaced active revision. After the
+      // Agent lock is acquired, store() checks live authority at a new READ COMMITTED snapshot.
+      lockIssuance: `SELECT FROM occ.agents WHERE (namespace_id,id) =
+        ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`,
       adoption,
       ...(driver ? { driver, owns: repositoryGitOwnerPredicate } : {}),
     });
@@ -325,7 +353,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       const { rows: retired } = await c.query(
         `WITH stopped AS (
         UPDATE ${families} f SET enabled=false
-        WHERE enabled AND source->>'adoption'=$1 AND (source->'session' ? 'credentialProxyExecution')=$3
+        WHERE enabled AND source->>'adoption'=ANY($1::text[]) AND (source->'session' ? 'credentialProxyExecution')=$3
           AND ${
             this.proxy?.driver
               ? `${repositoryGitOwnerPredicate} AND ${repositoryGitAdmissionEnded}`
@@ -407,13 +435,46 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   /** This port exists only on a selected Driver. It carries no issuer, connection or maintenance authority. */
   protectedAuthority(
     stopped: AbortSignal,
-    checkRequest: (input: unknown) => PreparedGitHubUseRequest,
+    checkRequest: {
+      (input: unknown): PreparedGitHubUseRequest;
+      (input: unknown, scope: "github-installation"): PreparedGitHubInstallationUseRequest;
+    },
   ): ProtectedRepositoryGitAuthority | undefined {
     if (!this.proxy?.driver) {
       return;
     }
+    const scope = "github-installation";
     return Object.freeze({
       recipients: this.recipients,
+      ...(installationRecipient(this.proxy) && {
+        githubInstallation: Object.freeze({
+          readMaterial: (route, signal) =>
+            this.readRecipientMaterial(
+              route.revisionId,
+              AbortSignal.any([stopped, signal]),
+              route,
+              scope,
+            ),
+          authorize: async (
+            request,
+            installed,
+            signal,
+          ): Promise<GitHubInstallationSendDecision> => {
+            const q = checkRequest(request, scope);
+            const binding = structuredClone(installed);
+            const decision = await this.authorizeProtectedRequest(
+              q,
+              binding,
+              AbortSignal.any([stopped, signal]),
+            );
+            if (decision.kind === "denied") {
+              return decision;
+            }
+            const { revisionId, fence } = binding.route;
+            return { ...decision, scope, operation: q.operation, revisionId, fence };
+          },
+        } satisfies NonNullable<ProtectedRepositoryGitAuthority["githubInstallation"]>),
+      }),
       readMaterial: (route, signal) =>
         this.readRecipientMaterial(route.revisionId, AbortSignal.any([stopped, signal]), route),
       authorize: (request, installed, signal) =>
@@ -441,7 +502,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           `INSERT INTO ${repositoryGitRecipients} (revision_id, installation)
            SELECT p.revision_id, p.installation FROM occ.egress_installations p
            WHERE ${same} AND p.installation#>>'{enforcement,authorityScope}'='execution'
-           AND ${validRecipient}
+           AND ${validRecipient} AND ${registeredGitSelection}
            ON CONFLICT (revision_id) DO NOTHING`,
           values,
         );
@@ -526,7 +587,24 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     revisionId: string,
     signal: AbortSignal,
     install?: RepositoryGitInstallationFence,
-  ): Promise<ProtectedRepositoryGitMaterial | RepositoryGitMaterialAbsence | undefined> {
+  ): Promise<ProtectedRepositoryGitMaterial | RepositoryGitMaterialAbsence | undefined>;
+  async readRecipientMaterial(
+    revisionId: string,
+    signal: AbortSignal,
+    install: RepositoryGitInstallationFence,
+    scope: "github-installation",
+  ): Promise<ProtectedGitHubInstallationMaterial | RepositoryGitMaterialAbsence | undefined>;
+  async readRecipientMaterial(
+    revisionId: string,
+    signal: AbortSignal,
+    install?: RepositoryGitInstallationFence,
+    scope?: "github-installation",
+  ): Promise<
+    | ProtectedRepositoryGitMaterial
+    | ProtectedGitHubInstallationMaterial
+    | RepositoryGitMaterialAbsence
+    | undefined
+  > {
     let bytes: Buffer | undefined;
     const withdrawn: RepositoryGitMaterialAbsence = Object.freeze({ absent: "withdrawn" });
     const unprepared: RepositoryGitMaterialAbsence = Object.freeze({ absent: "unprepared" });
@@ -559,6 +637,16 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           // The registry no longer admits this binding.
           return withdrawn;
         }
+        // The compatibility material/online paths never receive the installation credential.
+        const wide = scope === "github-installation";
+        const { grant } = source;
+        if (
+          wide !== (source.adoption === installationGitAdoption) ||
+          wide !== (grant.profile === "github-installation") ||
+          (wide && (!install || !installationRecipient(this.proxy)))
+        ) {
+          return unprepared;
+        }
         const material = await this.tokens.readWarm(c, source);
         if (!material) {
           return unprepared;
@@ -574,13 +662,20 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           preparationAttemptId,
           materialVersion,
           sessionId: current.session.sessionId,
-          ...current.session.binding.grant,
-          repository: source.grant.repository,
-          pushRef: source.grant.pushRef,
-          ...(source.grant.pullRequestBase
-            ? { pullRequestBase: source.grant.pullRequestBase }
-            : {}),
           apiOrigin: this.authority.split("#")[0]!,
+          ...(grant.profile === "github-installation"
+            ? {
+                scope: grant.profile,
+                grantId: grant.id,
+                installationId: grant.installationId,
+                providerInstanceId: current.session.binding.grant.providerInstanceId,
+              }
+            : {
+                ...current.session.binding.grant,
+                repository: grant.repository,
+                pushRef: grant.pushRef,
+                ...(grant.pullRequestBase ? { pullRequestBase: grant.pullRequestBase } : {}),
+              }),
         };
       });
       signal.throwIfAborted();
@@ -611,7 +706,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   /** Only a confirmed commit can return a send permit. The authenticated recipient already
    * holds this exact material. The durable receipt records possible use, never delivery. */
   private async authorizeProtectedRequest(
-    q: PreparedGitHubUseRequest,
+    q: PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest,
     installed: InstalledGitMaterial,
     signal: AbortSignal,
   ): Promise<RepositoryGitSendDecision> {
@@ -698,7 +793,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
 
   private async recordUse(
     c: PostgresClient,
-    q: PreparedGitHubUseRequest,
+    q: PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest,
     signal: AbortSignal,
     installed?: InstalledGitMaterial,
   ) {
@@ -719,13 +814,35 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       // The session ended or the registry no longer admits it. Missing recipient evidence just denies.
       throw new SessionClosed();
     }
+    if (!source || !current) {
+      return fail();
+    }
+    const { grant } = source;
+    const installation = "installationId" in q;
+    let repositoryId;
+    if (installation) {
+      if (
+        source.adoption !== installationGitAdoption ||
+        grant.profile !== "github-installation" ||
+        !installed ||
+        !installationRecipient(this.proxy) ||
+        grant.installationId !== q.installationId
+      ) {
+        return fail();
+      }
+      // The admission contract calls this opaque selection identity repositoryId.
+      // The provider request and installation sender port carry the actual installationId.
+      repositoryId = "github-installation:" + grant.installationId;
+    } else {
+      if (grant.profile === "github-installation" || grant.pushRef !== q.pushRef) {
+        return fail();
+      }
+      repositoryId = q.repositoryId;
+    }
     if (
-      !source ||
-      !current ||
-      source.grant.pushRef !== q.pushRef ||
       !isDeepStrictEqual(current.session.binding.grant, {
         providerInstanceId: q.providerInstanceId,
-        repositoryId: q.repositoryId,
+        repositoryId,
         grantId: q.grantId,
       })
     ) {
@@ -749,7 +866,6 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       }
     }
     // Authority and live-session locks above apply equally to reads of an existing receipt.
-    const grant = source.grant;
     // The grant controls how many drafts may be opened. Every new authorized exchange
     // records possible use, independently of whether it also consumes that one-draft allowance.
     const unlimited = installed !== undefined && source.draftPullLimit === "none";
@@ -789,7 +905,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
             !isDeepStrictEqual(row.scope, scope),
         );
       }
-    } else if (q.pull) {
+    } else if ("pull" in q && q.pull) {
       return fail();
     }
     // The same transaction keeps both live authority and the selected version locked until the
@@ -837,8 +953,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     }
     await c.query(
       `INSERT INTO occ.prepared_repository_git_uses
-    (exchange_id,admission_id,attempt_id,material_version,operation,request_digest_sha256,send_start_by)
-    VALUES($1,$2,$3,$4,$5,$6,$7)`,
+    (exchange_id,admission_id,attempt_id,material_version,operation,request_digest_sha256,send_start_by,recipient_fence)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
       [
         exchangeId,
         current.session.admissionId,
@@ -847,6 +963,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         q.operation,
         requestDigestSha256,
         sendStartBy,
+        installation ? installed!.route!.fence : null,
       ],
     );
     if (!valid(until)) {

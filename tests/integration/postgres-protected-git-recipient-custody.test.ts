@@ -2,9 +2,12 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 import type {
+  AdmittedRepositoryBinding,
   AgentRevision,
+  DriverRegistrationRef,
   PreparedGitHubUseRequest,
 } from "../../packages/contracts/src/index.ts";
+import { resolveGitHubRepositoryBinding } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { fixture } from "../fixtures/prepared-repository-git.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
@@ -29,96 +32,12 @@ test(
     const legacy = await f.startOwner({ controlSocket: undefined });
     const mine = owner.protectedGit!;
     const notMine = other.protectedGit!;
-    const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } =
-      f.revision as AgentRevision;
-    const admissionId = randomUUID();
-    const sessionId = randomUUID();
-    const revisionId = "rev_" + randomUUID();
-    const executionId = randomUUID().replaceAll("-", "");
-    const createdAt = new Date().toISOString();
-    const plan = {
-      id: "custody-proof",
-      generation: 1,
+    await disposeNativeSession(f);
+    const { installation, sessionId, admissionId } = await admitProtectedSession(
+      f,
       driver,
-      execution: {
-        namespaceId,
-        agentId,
-        servicePrincipalId,
-        revisionId,
-        executionId,
-        installationId: "test",
-      },
-      sandboxDriverId: driver.id,
-      egressDriverId: driver.id,
-      repositoryGit: repositoryCredentials!,
-      routes: [],
-    };
-    const installation = {
-      plan,
-      sandboxId: "recipient-" + randomUUID(),
-      sender: { id: driver.id, generation: 1 },
-      installedAt: createdAt,
-      enforcement: {
-        instanceId: "one-execution",
-        configurationId: "one-config",
-        policyHash: "one-policy",
-        authorityScope: "execution" as const,
-        peerKeyId: "authenticated-test-peer",
-        repositoryGitRecipient: {
-          providerId: "provider",
-          attachmentEpoch: "epoch",
-          processInstanceId: "process",
-          networkInstanceId: "net",
-        },
-      },
-    };
-    // Close the fixture's protocol-1 session without issuing material. Admit a genuine distinct protected revision.
-    await f.withdraw();
-    await f.state.transact(async (u) => {
-      const sessions = u.repositorySessions;
-      const prior = (await sessions.findBrokerReceipt(f.admissionId))!;
-      const old = { admissionId: f.admissionId, updatedAt: createdAt };
-      await sessions.advanceBrokerReceipt({
-        ...old,
-        generation: prior.generation!,
-        sessionId: f.sessionId,
-        deadlineWallMs: f.deadlineWallMs,
-        revoked: 0,
-        expired: 0,
-        expectedState: "active",
-        state: "disposed",
-      });
-      await sessions.advanceAttempt({ ...old, expectedPhase: "closing", phase: "disposed" });
-      await u.revisions.createRevision({
-        ...(f.revision as AgentRevision),
-        id: revisionId,
-        revision: f.revision.revision + 1,
-        executionAdmission: { version: 4, mode: "protected" },
-        egressPlan: plan,
-      });
-      assert.ok(
-        await u.agents.compareAndSetActiveRevision(namespaceId, agentId, f.revision.id, revisionId),
-      );
-      await sessions.createAttempt({
-        namespaceId,
-        agentId,
-        revisionId,
-        admissionId,
-        repositoryRef: "source",
-        durationSeconds: 3600,
-        deadlineWallMs: f.deadlineWallMs,
-        createdAt,
-        brokerProtocol: 2,
-      });
-      await sessions.advanceAttempt({
-        admissionId,
-        expectedPhase: "opening",
-        phase: "open",
-        sessionId,
-        updatedAt: createdAt,
-      });
-      await u.credentialSources.recordEgressInstallation(installation);
-    });
+      f.binding,
+    );
     const request = () => f.request({ sessionId }) as PreparedGitHubUseRequest;
     const revocations = () => f.gh.trace.filter((call) => call.method === "DELETE").length;
     assert.equal(await notMine.recipients.observe(installation), undefined);
@@ -130,6 +49,12 @@ test(
     assert.ok(
       warm && "value" in warm,
       "the admitted recipient receives committed material, without another issuance",
+    );
+    const installationOnly = mine.githubInstallation!;
+    assert.deepEqual(
+      await installationOnly.readMaterial(route, t.signal),
+      { absent: "unprepared" },
+      "a live repository-scoped credential cannot be installed as installation access",
     );
     assert.equal(f.gh.issuesOfTokens.length, 1);
     const { preparationAttemptId, materialVersion } = warm;
@@ -169,6 +94,21 @@ test(
     );
     const unavailable = { kind: "denied", reason: "unavailable" };
     assert.deepEqual(await notMine.authorize(request(), installed, t.signal), unavailable);
+    const { repositoryId: _repository, pushRef: _ref, ...identity } = request();
+    assert.deepEqual(
+      await installationOnly.authorize(
+        {
+          ...identity,
+          scope: "github-installation",
+          installationId: "4545",
+          operation: "github-graphql",
+        },
+        installed,
+        t.signal,
+      ),
+      unavailable,
+      "the installed repository credential cannot authorize an installation API request",
+    );
     const q = request();
     const permit = await mine.authorize(q, installed, t.signal);
     assert.equal(permit.kind, "permit");
@@ -245,3 +185,249 @@ test(
     assert.equal((await inspect())?.custody, "revoked");
   },
 );
+
+test(
+  "changing between repository and installation scope waits for the previous owner to settle its token",
+  requiresPostgres,
+  async (t) => {
+    const f = await fixture(t, { installationAccess: true });
+    const prior = f.revision as AgentRevision;
+    const { namespaceId, agentId } = prior;
+    const providerWrites = () =>
+      f.gh.trace
+        .filter((r: { method: string }) => r.method === "POST" || r.method === "DELETE")
+        .map((r: { method: string }) => r.method);
+    await f.owner.maintain();
+    assert.deepEqual(providerWrites(), ["POST"]);
+    const repositoryRef = "team-install";
+    const profile = "github-installation";
+    const binding = resolveGitHubRepositoryBinding(f.registry, {
+      namespaceId,
+      repositoryRef,
+      profile,
+    });
+    assert.notEqual(repositoryRef, f.binding.repositoryRef, "the two selection names are distinct");
+    const driver = {
+      id: "scope-successor",
+      implementation: "custody-fixture",
+      configurationId: "a".repeat(64),
+    };
+    const owner = await f.startOwner({ controlSocket: undefined, protectedGitDriver: driver });
+    const host = owner.protectedGit!;
+    const { installation, admissionId, revisionId } = await admitProtectedSession(
+      f,
+      driver,
+      binding,
+    );
+    const route = await host.recipients.observe(installation);
+    assert.ok(route);
+    const onlyNarrowIssued = ["POST"];
+    await owner.maintain();
+    assert.deepEqual(
+      providerWrites(),
+      onlyNarrowIssued,
+      "a different selection cannot bypass an open predecessor",
+    );
+    await disposeNativeSession(f);
+    await owner.maintain();
+    assert.deepEqual(
+      providerWrites(),
+      onlyNarrowIssued,
+      "a disposed narrow session still has a live token; the new owner cannot revoke it or issue",
+    );
+    await f.owner.maintain();
+    assert.deepEqual(
+      providerWrites(),
+      ["POST", "DELETE"],
+      "the narrow owner retires its own token",
+    );
+    await owner.maintain();
+    const wideIssued = ["POST", "DELETE", "POST"];
+    assert.deepEqual(providerWrites(), wideIssued);
+    const read = await host.githubInstallation!.readMaterial(route, t.signal);
+    assert.ok(read && "value" in read);
+    assert.deepEqual(
+      await host.readMaterial(route, t.signal),
+      { absent: "unprepared" },
+      "the narrow sender cannot get the wide token",
+    );
+    // Deliberately lose the installation confirmation. Only provider retirement can settle the token;
+    // changing the Agent's binding and disposing its session cannot adopt or replay that installation.
+    const { preparationAttemptId, materialVersion } = read;
+    assert.ok(await host.recipients.beginInstall(route, { preparationAttemptId, materialVersion }));
+    assert.equal(await host.recipients.observe(installation), undefined);
+    await f.state.transact(async (u) => {
+      await u.agents.updateConfiguration(
+        namespaceId,
+        agentId,
+        prior.configurationId,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        [{ repositoryRef: f.binding.repositoryRef, profile: f.binding.profile }],
+      );
+      assert.ok(
+        await u.agents.compareAndSetActiveRevision(namespaceId, agentId, revisionId, prior.id),
+      );
+      for (const [expectedPhase, phase] of [
+        ["open", "closing"],
+        ["closing", "disposed"],
+      ] as const) {
+        await u.repositorySessions.advanceAttempt({
+          admissionId,
+          expectedPhase,
+          phase,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    });
+    await f.admitReplacement(randomUUID());
+    await f.owner.maintain();
+    assert.deepEqual(
+      providerWrites(),
+      wideIssued,
+      "return to narrow cannot adopt, retire or ignore the installation token",
+    );
+    await owner.maintain();
+    assert.deepEqual(
+      providerWrites(),
+      [...wideIssued, "DELETE"],
+      "the installation owner settles its own provider token",
+    );
+    await f.owner.maintain();
+    assert.deepEqual(
+      providerWrites(),
+      [...wideIssued, "DELETE", "POST"],
+      "only then may the narrow issuer mint again",
+    );
+    assert.deepEqual(
+      f.gh.issuesOfTokens.map((i: { repositoryIds: number[] | "installation" }) => i.repositoryIds),
+      [
+        [Number(f.binding.grant.repositoryId)],
+        "installation",
+        [Number(f.binding.grant.repositoryId)],
+      ],
+    );
+  },
+);
+
+type Fixture = Awaited<ReturnType<typeof fixture>>;
+
+async function disposeNativeSession(f: Fixture) {
+  await f.withdraw();
+  await f.state.transact(async (u) => {
+    const sessions = u.repositorySessions;
+    const prior = (await sessions.findBrokerReceipt(f.admissionId))!;
+    const old = { admissionId: f.admissionId, updatedAt: new Date().toISOString() };
+    await sessions.advanceBrokerReceipt({
+      ...old,
+      generation: prior.generation!,
+      sessionId: f.sessionId,
+      deadlineWallMs: f.deadlineWallMs,
+      revoked: 0,
+      expired: 0,
+      expectedState: "active",
+      state: "disposed",
+    });
+    await sessions.advanceAttempt({ ...old, expectedPhase: "closing", phase: "disposed" });
+  });
+}
+
+async function admitProtectedSession(
+  f: Fixture,
+  driver: DriverRegistrationRef,
+  binding: AdmittedRepositoryBinding,
+) {
+  const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } =
+    f.revision as AgentRevision;
+  const admissionId = randomUUID();
+  const sessionId = randomUUID();
+  const revisionId = "rev_" + randomUUID();
+  const executionId = randomUUID().replaceAll("-", "");
+  const createdAt = new Date().toISOString();
+  const plan = {
+    id: "custody-proof",
+    generation: 1,
+    driver,
+    execution: {
+      namespaceId,
+      agentId,
+      servicePrincipalId,
+      revisionId,
+      executionId,
+      installationId: "test",
+    },
+    sandboxDriverId: driver.id,
+    egressDriverId: driver.id,
+    repositoryGit: { ...repositoryCredentials!, bindings: [binding] },
+    routes: [],
+  };
+  const installation = {
+    plan,
+    sandboxId: "recipient-" + randomUUID(),
+    sender: { id: driver.id, generation: 1 },
+    installedAt: createdAt,
+    enforcement: {
+      instanceId: "one-execution",
+      configurationId: "one-config",
+      policyHash: "one-policy",
+      authorityScope: "execution" as const,
+      peerKeyId: "authenticated-test-peer",
+      repositoryGitRecipient: {
+        providerId: "provider",
+        attachmentEpoch: "epoch",
+        processInstanceId: "process",
+        networkInstanceId: "net",
+        ...(binding.profile === "github-installation" && {
+          deliveryProfile: "github_installation" as const,
+        }),
+      },
+    },
+  };
+  await f.state.transact(async (u) => {
+    const sessions = u.repositorySessions;
+    const { repositoryRef, profile } = binding;
+    await u.agents.updateConfiguration(
+      namespaceId,
+      agentId,
+      f.revision.configurationId,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [{ repositoryRef, profile }],
+    );
+    await u.revisions.createRevision({
+      ...(f.revision as AgentRevision),
+      id: revisionId,
+      revision: f.revision.revision + 1,
+      executionAdmission: { version: 4, mode: "protected" },
+      egressPlan: plan,
+      repositoryCredentials: plan.repositoryGit,
+    });
+    assert.ok(
+      await u.agents.compareAndSetActiveRevision(namespaceId, agentId, f.revision.id, revisionId),
+    );
+    await sessions.createAttempt({
+      namespaceId,
+      agentId,
+      revisionId,
+      admissionId,
+      repositoryRef,
+      durationSeconds: 3600,
+      deadlineWallMs: f.deadlineWallMs,
+      createdAt,
+      brokerProtocol: 2,
+    });
+    await sessions.advanceAttempt({
+      admissionId,
+      expectedPhase: "opening",
+      phase: "open",
+      sessionId,
+      updatedAt: createdAt,
+    });
+    await u.credentialSources.recordEgressInstallation(installation);
+  });
+  return { installation, sessionId, admissionId, revisionId };
+}

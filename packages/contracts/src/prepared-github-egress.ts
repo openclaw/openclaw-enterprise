@@ -92,6 +92,25 @@ export interface PreparedGitHubUseRequest {
   readonly deadlineAt: string;
 }
 
+/** The selected sender binds the actual Git (Basic) or GitHub API (Bearer) request. The
+ * digest covers method, destination, path, forwarded headers and body at its send boundary. */
+export interface PreparedGitHubInstallationUseRequest extends Pick<
+  PreparedGitHubUseRequest,
+  | "providerInstanceId"
+  | "grantId"
+  | "sessionId"
+  | "exchangeId"
+  | "requestDigestSha256"
+  | "deadlineAt"
+> {
+  readonly scope: "github-installation";
+  readonly installationId: string;
+  readonly operation:
+    | Exclude<PreparedGitHubUseRequest["operation"], "create-draft-pull">
+    | "github-rest"
+    | "github-graphql";
+}
+
 /** A possible disclosure, not evidence that GitHub received or performed the operation. */
 export interface PreparedGitHubUseResponse {
   readonly value: string;

@@ -3,6 +3,7 @@ import type {
   CredentialProxyExchange,
   EgressExchangeOwner,
 } from "./credential-proxy-exchange.ts";
+import { isInstallationRepositoryProfile } from "./repo.ts";
 import type { ProtectedRepositoryGitAuthority } from "./protected-repository-git.ts";
 import type {
   CredentialFreeEgressSource,
@@ -141,12 +142,36 @@ export const repositoryGitRecipientFields = Object.freeze([
   "networkInstanceId",
 ] as const);
 export type RepositoryGitRecipient = Readonly<
-  Record<(typeof repositoryGitRecipientFields)[number], string>
+  Record<(typeof repositoryGitRecipientFields)[number], string> & {
+    /** Absent on the original repository Git wire. Installation scope needs positive evidence. */
+    deliveryProfile?: "github_installation";
+  }
 >;
 
-export function validRepositoryGitRecipient(value: RepositoryGitRecipient | undefined): boolean {
+export type RepositoryGitDeliveryProfile = "repository_git" | "github_installation";
+
+export function repositoryGitDeliveryProfile(
+  repository: RepositoryRevisionState | undefined,
+): RepositoryGitDeliveryProfile | undefined {
+  if (repository?.bindings?.length !== 1) {
+    return undefined;
+  }
+  const profile = repository.bindings[0]?.profile;
+  return isInstallationRepositoryProfile(profile)
+    ? "github_installation"
+    : profile === "git-write"
+      ? "repository_git"
+      : undefined;
+}
+
+export function validRepositoryGitRecipient(
+  value: RepositoryGitRecipient | undefined,
+  profile: RepositoryGitDeliveryProfile | undefined,
+): boolean {
   return (
     !!value &&
+    profile !== undefined &&
+    value.deliveryProfile === (profile === "github_installation" ? profile : undefined) &&
     repositoryGitRecipientFields.every(
       (key) => typeof value[key] === "string" && value[key].trim().length > 0,
     )
@@ -277,7 +302,22 @@ export interface CredentialSourceControl {
   readonly resolver: EgressRef;
   readonly providers: readonly CredentialProviderDefinition[];
   /** Capability evidence is obtained from the actual configured counterpart, never inferred. */
-  assertAvailable(signal: AbortSignal, profile?: "repository_git"): Promise<void>;
+  assertAvailable(
+    signal: AbortSignal,
+    profile?: RepositoryGitDeliveryProfile,
+  ): Promise<void | "github_installation">;
+}
+
+/** An older Driver may silently ignore a new profile argument. Only an explicit confirmation
+ * qualifies it to attempt installation-wide Git (Basic) and GitHub API (Bearer) delivery,
+ * with online authorization and the original per-request send cutoff at the trusted sender. */
+export async function repositoryGitProfileAvailable(
+  control: CredentialSourceControl,
+  signal: AbortSignal,
+  profile?: RepositoryGitDeliveryProfile,
+): Promise<boolean> {
+  const confirmed = await control.assertAvailable(signal, profile);
+  return profile !== "github_installation" || confirmed === profile;
 }
 
 export interface ProxyWiring {
@@ -343,11 +383,7 @@ export function assertExecutionAdmission(
   }
   const repository = revision.egressPlan?.repositoryGit;
   if (
-    admission.version === 4
-      ? !repository ||
-        repository.bindings?.length !== 1 ||
-        repository.bindings[0]?.profile !== "git-write"
-      : repository !== undefined
+    admission.version === 4 ? !repositoryGitDeliveryProfile(repository) : repository !== undefined
   ) {
     throw new Error("Repository Credential Proxy requires its own protected execution admission.");
   }

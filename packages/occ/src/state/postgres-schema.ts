@@ -1930,16 +1930,27 @@ export const preparedGitHubFamilies = occSchema.table(
   (source->>'adoption' = 'prepared' AND source #>> '{grant,profile}' = 'metadata-read'
    AND admission->>'familyId' = source_id AND jsonb_typeof(issuer->'backendRef') = 'object')
   OR
-  ((source->>'adoption' = 'prepared_repository_git' OR (
+  (
+   (((source->>'adoption' = 'prepared_repository_git' OR (
        source->>'adoption' = 'credential_proxy_repository_git'
        AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'))
-   AND source_id = 'repository-git:' || (source #>> '{session,admissionId}')
    AND ((source #>> '{grant,profile}' = 'git-ref-write' AND NOT (source->'grant' ? 'pullRequestBase'))
        OR (source #>> '{grant,profile}' = 'git-ref-draft-pr' AND length(source #>> '{grant,pullRequestBase}') > 0))
    AND source #>> '{grant,pushRef}' LIKE 'refs/heads/%'
+   AND source #>> '{grant,repositoryId}' = source #>> '{session,grant,repositoryId}')
+   OR (source->>'adoption' = 'credential_proxy_github_installation'
+       AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'
+       AND source #>> '{session,credentialProxyExecution,enforcement,repositoryGitRecipient,deliveryProfile}' = 'github_installation'
+       AND source #>> '{session,binding,profile}' = 'github-installation'
+       AND source #>> '{grant,profile}' = 'github-installation'
+       AND (source->'grant') - ARRAY['id','isolationId','appId','installationId','profile'] = '{}'::jsonb
+       AND source #>> '{grant,appId}' ~ '^[1-9][0-9]*$'
+       AND source #>> '{grant,installationId}' ~ '^[1-9][0-9]*$'
+       AND source #>> '{session,grant,repositoryId}' = 'github-installation:' || (source #>> '{grant,installationId}'))
+   )
+   AND source_id = 'repository-git:' || (source #>> '{session,admissionId}')
    AND admission->>'familyId' = source_id AND admission->'grant' = source->'grant'
    AND source #>> '{grant,id}' = source #>> '{session,grant,grantId}'
-   AND source #>> '{grant,repositoryId}' = source #>> '{session,grant,repositoryId}'
    AND source #>> '{grant,isolationId}' = source #>> '{session,revisionId}'
    AND issuer = '{"kind":"worker-mounted-github-app-key"}'::jsonb)
 )) IS TRUE`,
@@ -2010,13 +2021,17 @@ export const preparedRepositoryGitUses = occSchema.table(
       .references(() => preparedGitHubAttempts.id),
     materialVersion: uuid("material_version").notNull(),
     operation: text("operation").notNull(),
+    recipientFence: bigint("recipient_fence", { mode: "number" }),
     requestDigestSha256: text("request_digest_sha256").notNull(),
     sendStartBy: timestamp("send_start_by", { withTimezone: true }).notNull(),
   },
   (t) => [
     check(
       "prepared_repository_git_uses_operation_check",
-      sql`${t.operation} IN ('advertise-upload-pack','upload-pack','advertise-receive-pack','receive-pack','create-draft-pull')`,
+      sql`(${t.operation} IN ('advertise-upload-pack','upload-pack','advertise-receive-pack','receive-pack')
+        OR (${t.recipientFence} IS NULL AND ${t.operation} = 'create-draft-pull')
+        OR (${t.recipientFence} IS NOT NULL AND ${t.operation} IN ('github-rest','github-graphql')))
+      AND (${t.recipientFence} IS NULL OR ${t.recipientFence} > 0)`,
     ),
     check(
       "prepared_repository_git_uses_request_digest_sha256_check",

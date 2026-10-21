@@ -27,11 +27,14 @@ type ResponseObservationDependencies = Readonly<{
 }>;
 
 type AcquisitionPolicy = Readonly<{
+  profile?: never;
   repositoryId: string;
   repository: string;
   permissions: Readonly<Record<string, string>>;
   minimumValidityMs: number;
 }>;
+
+type InstallationPolicy = Readonly<{ profile: "github-installation"; minimumValidityMs: number }>;
 
 type OutcomePayload<T> = T extends OriginalOutcome ? Omit<T, keyof OriginalOutcome> : never;
 type AcquisitionDecision = OutcomePayload<AcquireOutcome>;
@@ -133,7 +136,7 @@ export function validateInstallationTokenResponse<Credential>(
   packet: Record<string, unknown> | undefined,
   credential: Credential | undefined,
   observedWallMs: number,
-  { repositoryId, repository, permissions, minimumValidityMs }: AcquisitionPolicy,
+  policy: AcquisitionPolicy | InstallationPolicy,
 ):
   | Readonly<{
       kind: "validated";
@@ -153,24 +156,7 @@ export function validateInstallationTokenResponse<Credential>(
   if (!isGitHubWireCredential(token)) {
     return { kind: "uncertain" };
   }
-  const returned = packet?.permissions;
-  const repositories = packet?.repositories;
-  const validScope =
-    returned &&
-    typeof returned === "object" &&
-    !Array.isArray(returned) &&
-    Object.keys(returned).length === Object.keys(permissions).length &&
-    Object.entries(permissions).every(
-      ([name, value]) => (returned as Record<string, unknown>)[name] === value,
-    ) &&
-    (!Object.hasOwn(packet ?? {}, "repository_selection") ||
-      packet?.repository_selection === "selected") &&
-    Array.isArray(repositories) &&
-    repositories.length === 1 &&
-    repositories[0]?.id === Number(repositoryId) &&
-    typeof repositories[0]?.full_name === "string" &&
-    repositories[0].full_name.toLowerCase() === repository.toLowerCase();
-  if (!validScope) {
+  if (!packet || !validIssuedScope(packet, policy)) {
     return { kind: "rejected", code: "scope-mismatch" };
   }
   if (
@@ -183,7 +169,7 @@ export function validateInstallationTokenResponse<Credential>(
   ) {
     return { kind: "rejected", code: "invalid-response" };
   }
-  if (expiry - observedWallMs - providerClockSkewMs < minimumValidityMs) {
+  if (expiry - observedWallMs - providerClockSkewMs < policy.minimumValidityMs) {
     return { kind: "rejected", code: "insufficient-validity" };
   }
   return {
@@ -192,4 +178,51 @@ export function validateInstallationTokenResponse<Credential>(
     providerExpiresAt: expiry,
     usableUntil: expiry - providerClockSkewMs,
   };
+}
+
+function validIssuedScope(
+  packet: Record<string, unknown>,
+  policy: AcquisitionPolicy | InstallationPolicy,
+): boolean {
+  const { permissions, repositories, repository_selection: selection } = packet;
+  const reported =
+    permissions !== null && typeof permissions === "object" && !Array.isArray(permissions)
+      ? Object.entries(permissions)
+      : undefined;
+  if (policy.profile === "github-installation") {
+    // The empty POST selects inheritance. GitHub's 201 requires only token and expires_at;
+    // any returned permissions, selection or repositories describe the installation, not a local grant.
+    return (
+      (selection === undefined || selection === "all" || selection === "selected") &&
+      (permissions === undefined ||
+        (!!reported?.length &&
+          reported.every(
+            ([name, level]) =>
+              /^[a-z][a-z0-9_]*$/.test(name) &&
+              (level === "read" || level === "write" || level === "admin"),
+          ))) &&
+      (!Object.hasOwn(packet, "repositories") ||
+        (Array.isArray(repositories) &&
+          repositories.every(
+            (repo) =>
+              Number.isSafeInteger(repo?.id) &&
+              repo.id > 0 &&
+              typeof repo.full_name === "string" &&
+              /^[^/\s]+\/[^/\s]+$/.test(repo.full_name),
+          ) &&
+          new Set(repositories.map((r) => r.id)).size === repositories.length &&
+          new Set(repositories.map((r) => r.full_name.toLowerCase())).size === repositories.length))
+    );
+  }
+  const expected = Object.entries(policy.permissions);
+  return (
+    reported?.length === expected.length &&
+    expected.every(([name, level]) => (permissions as Record<string, unknown>)[name] === level) &&
+    (!Object.hasOwn(packet, "repository_selection") || selection === "selected") &&
+    Array.isArray(repositories) &&
+    repositories.length === 1 &&
+    repositories[0]?.id === Number(policy.repositoryId) &&
+    typeof repositories[0].full_name === "string" &&
+    repositories[0].full_name.toLowerCase() === policy.repository.toLowerCase()
+  );
 }

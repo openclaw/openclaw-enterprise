@@ -10,6 +10,9 @@ import {
   assertExecutionAdmission,
   assertExecutionReleaseAllowed,
   credentialFreeMetadataGrant,
+  isInstallationRepositoryProfile,
+  repositoryGitDeliveryProfile,
+  repositoryGitProfileAvailable,
   credentialFreeMetadataType,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
@@ -5483,7 +5486,13 @@ export class OpenClawController {
         harnessCredentialSource = harnessAuth;
       }
     }
+    const installationAccess = isInstallationRepositoryProfile(repositoryGit?.bindings[0]?.profile);
     if (!this.selections.has("credential_proxy")) {
+      if (installationAccess) {
+        throw new DependencyUnavailableError(
+          "Installation-wide repository access requires the protected Credential Proxy.",
+        );
+      }
       if (sources.length > 0) {
         throw new DependencyUnavailableError(
           "Protected sources require the selected egress Driver.",
@@ -5507,10 +5516,20 @@ export class OpenClawController {
         "Repository Credential Proxy does not admit unrelated credential routes.",
       );
     }
-    await driver.sourceControl.assertAvailable(
-      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-      repositoryGit && "repository_git",
-    );
+    if (installationAccess) {
+      owner.requireRepositoryGitTransport();
+    }
+    if (
+      !(await repositoryGitProfileAvailable(
+        driver.sourceControl,
+        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+        repositoryGitDeliveryProfile(repositoryGit),
+      ))
+    ) {
+      throw new DependencyUnavailableError(
+        "The selected Credential Proxy did not confirm installation-wide repository access.",
+      );
+    }
     const selection = asRecord(asRecord(configuration.agents)?.defaults)?.model;
     const model = typeof selection === "string" ? selection : asRecord(selection)?.primary;
     if (
@@ -13018,7 +13037,8 @@ export class OpenClawController {
         const backend = this.backendMap.get(binding.backendId);
         return (
           !requested.has(binding.repositoryRef) ||
-          (requested.get(binding.repositoryRef) !== undefined &&
+          ((requested.get(binding.repositoryRef) !== undefined ||
+            isInstallationRepositoryProfile(binding.profile)) &&
             requested.get(binding.repositoryRef) !== binding.profile) ||
           backend === undefined ||
           !("repo" in backend.drivers) ||
@@ -13060,6 +13080,16 @@ export class OpenClawController {
     const resolved = this.resolveRepositoryBindings(agent.namespaceId, agent.repositoryBindings);
     if (resolved === undefined) {
       return undefined;
+    }
+    if (
+      resolved.resolution.bindings.some((binding) =>
+        isInstallationRepositoryProfile(binding.profile),
+      ) &&
+      resolved.resolution.bindings.length !== 1
+    ) {
+      throw new ScopeViolationError(
+        "Installation-wide repository access requires a single explicit binding.",
+      );
     }
     validateRepositoryTopology(compute, harness, sandboxDriverId);
     const snapshot: RepositoryRevisionState = {

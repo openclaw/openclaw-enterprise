@@ -1,5 +1,8 @@
 import type { EgressInstallation } from "./credential-proxy.ts";
-import type { PreparedGitHubUseRequest } from "./prepared-github-egress.ts";
+import type {
+  PreparedGitHubInstallationUseRequest,
+  PreparedGitHubUseRequest,
+} from "./prepared-github-egress.ts";
 
 /** Exact observation by this Driver of the recipient in the committed installation. */
 export interface RepositoryGitInstallationFence {
@@ -26,6 +29,15 @@ export interface ProtectedRepositoryGitMaterial extends RepositoryGitMaterialVer
   readonly apiOrigin: string;
 }
 
+/** Installed only at the independently observed recipient released for this scope. */
+export interface ProtectedGitHubInstallationMaterial extends Omit<
+  ProtectedRepositoryGitMaterial,
+  "repositoryId" | "repository" | "pushRef" | "pullRequestBase"
+> {
+  readonly scope: "github-installation";
+  readonly installationId: string;
+}
+
 type Route = RepositoryGitInstallationFence;
 type Version = RepositoryGitMaterialVersion;
 
@@ -45,8 +57,34 @@ export type RepositoryGitSendDecision =
       readonly reason: "unavailable" | "draft_already_opened" | "access_withdrawn";
     };
 
+export type GitHubInstallationSendPermit = RepositoryGitSendPermit &
+  Pick<PreparedGitHubInstallationUseRequest, "scope" | "operation"> &
+  Pick<Route, "revisionId" | "fence">;
+
+export type GitHubInstallationSendDecision =
+  GitHubInstallationSendPermit | Extract<RepositoryGitSendDecision, { kind: "denied" }>;
+
+interface GitHubInstallationAuthority {
+  readMaterial(
+    route: Route,
+    signal: AbortSignal,
+  ): Promise<
+    | ProtectedGitHubInstallationMaterial
+    | { readonly absent: "withdrawn" | "unprepared" }
+    | undefined
+  >;
+  /** Consume this permit once, before its original sendStartBy, for this recipient and request. */
+  authorize(
+    request: PreparedGitHubInstallationUseRequest,
+    installed: Version & { readonly route: Route },
+    signal: AbortSignal,
+  ): Promise<GitHubInstallationSendDecision>;
+}
+
 /** Private port for the trusted sender selected at installation. Never pass it to a workload. */
 export interface ProtectedRepositoryGitAuthority {
+  /** Distinct from repository Git. Neither port can read or authorize the other scope. */
+  readonly githubInstallation?: GitHubInstallationAuthority;
   readonly recipients: {
     /** Re-observe this exact released recipient. An unresolved installation is not adopted. */
     observe(installation: EgressInstallation): Promise<Route | undefined>;

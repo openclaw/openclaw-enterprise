@@ -1,5 +1,8 @@
 import { createPublicKey, sign, type KeyObject } from "node:crypto";
-import { validRepositoryGitRecipient } from "@openclaw-enterprise/contracts";
+import {
+  repositoryGitDeliveryProfile,
+  validRepositoryGitRecipient,
+} from "@openclaw-enterprise/contracts";
 import type {
   EgressExecution,
   EgressInstallation,
@@ -61,7 +64,13 @@ export function signComputeExecutionRelease(
   ) {
     throw new Error("Protected execution release requires the exact enrolled installation.");
   }
-  if (plan.repositoryGit && !validRepositoryGitRecipient(enforcement.repositoryGitRecipient)) {
+  if (
+    plan.repositoryGit &&
+    !validRepositoryGitRecipient(
+      enforcement.repositoryGitRecipient,
+      repositoryGitDeliveryProfile(plan.repositoryGit),
+    )
+  ) {
     throw new Error("Repository Git release requires the verified recipient of this installation.");
   }
   const released = plan.repositoryGit

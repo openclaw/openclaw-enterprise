@@ -305,7 +305,8 @@
     {
       "path": "tests/integration/postgres-protected-git-recipient-custody.test.ts",
       "expectedTests": [
-        "only the installed Git recipient owner may use its material or retire its ended admission"
+        "only the installed Git recipient owner may use its material or retire its ended admission",
+        "changing between repository and installation scope waits for the previous owner to settle its token"
       ]
     },
     {
@@ -343,7 +344,8 @@
     {
       "path": "tests/integration/postgres-external-protected-git.test.ts",
       "expectedTests": [
-        "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal"
+        "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
+        "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal"
       ]
     },
     {

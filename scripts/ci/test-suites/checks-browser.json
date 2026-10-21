@@ -17,6 +17,8 @@
     "tests/browser/console-agent-logs.test.mjs",
     "tests/browser/console-agent-repositories.test.mjs",
     "tests/integration/repository-credentials-github-prepared.test.mjs",
+    "tests/integration/github-installation-access-policy.test.ts",
+    "tests/integration/repository-credentials-github-installation-issuer.test.ts",
     "tests/integration/skipper-private-git-origin.test.mjs",
     "tests/integration/repository-credentials-github-token.test.mjs",
     "tests/integration/repository-credentials-client-config.test.mjs",
@@ -77,6 +79,19 @@
     },
     {
       "path": "tests/integration/repository-credentials-github-prepared.test.mjs"
+    },
+    {
+      "path": "tests/integration/github-installation-access-policy.test.ts",
+      "expectedTests": [
+        "only explicit Namespace and Agent selections allow GitHub installation scope",
+        "installation access needs positive sender capability and a profile-bound signed recipient"
+      ]
+    },
+    {
+      "path": "tests/integration/repository-credentials-github-installation-issuer.test.ts",
+      "expectedTests": [
+        "prepared issuer inherits the installation only for its explicit grant; unusable replies stay in custody"
+      ]
     },
     {
       "path": "tests/integration/skipper-private-git-origin.test.mjs"

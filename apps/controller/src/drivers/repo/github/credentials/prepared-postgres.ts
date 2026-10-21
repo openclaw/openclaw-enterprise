@@ -18,7 +18,8 @@ import type {
 
 // The provider expiry is an authenticated issuance result. The same clock-skew allowance
 // subtracted for use is added before we can conclude that the provider lifetime elapsed.
-const standingGitExpiry = `CASE WHEN f.source->>'adoption' IN ('prepared_repository_git','credential_proxy_repository_git')
+const standingGitExpiry = `CASE WHEN f.source->>'adoption' IN ('prepared_repository_git',
+    'credential_proxy_repository_git','credential_proxy_github_installation')
   AND f.source #>> '{session,standingApprovalId}' IS NOT NULL AND NOT f.enabled
   AND a.state='committed' AND a.material_version IS NOT NULL
   AND a.admission=f.admission AND isfinite(a.provider_expires_at)
@@ -58,9 +59,11 @@ const aad = (a: Admission, id: string) =>
 
 type FamilyOwner = Readonly<{
   active: string;
-  adoption: string;
+  adoption: readonly string[];
   /** Predicates over family f, and the installation-selected owner bound to each transaction. */
   owns?: string;
+  /** Lock the authority that can move to a different family before checking active to record an intent. */
+  lockIssuance?: string;
   driver?: import("@openclaw-enterprise/contracts").DriverRegistrationRef;
 }>;
 
@@ -74,7 +77,7 @@ export class PreparedGitHubPostgres {
     pool: PostgresPool,
     custodyKey: Buffer,
     issuerAuthority: string,
-    owner: FamilyOwner = { active, adoption: "prepared" },
+    owner: FamilyOwner = { active, adoption: ["prepared"] },
   ) {
     this.pool = pool;
     this.custodyKey = custodyKey;
@@ -234,7 +237,7 @@ export class PreparedGitHubPostgres {
       const { rows } = await c.query(
         `SELECT a.state,a.custody,a.material_version AS "materialVersion",a.provider_expires_at AS "providerExpiresAt"
          FROM ${families} f JOIN ${attempts} a USING (source_id)
-         WHERE f.source_id=$1 AND a.id=$2 AND a.admission->>'issuerAuthority'=$3 AND f.source->>'adoption'=$4
+         WHERE f.source_id=$1 AND a.id=$2 AND a.admission->>'issuerAuthority'=$3 AND f.source->>'adoption'=ANY($4::text[])
            AND ${this.owner.owns ?? "true"}`,
         [familyId, attemptId, this.issuerAuthority, this.owner.adoption],
       );
@@ -345,6 +348,9 @@ export class PreparedGitHubPostgres {
       this.transaction(async (c) => {
         if (familyId !== key) {
           throw new Error("Family mismatch.");
+        }
+        if (change && this.owner.lockIssuance) {
+          await c.query(this.owner.lockIssuance, [source]);
         }
         const { rows } = await c.query(
           `SELECT admission, enabled, ${this.owner.active} AS live
@@ -483,7 +489,7 @@ export class PreparedGitHubPostgres {
              (x.expires <= statement_timestamp()) IS TRUE AS expired
            FROM ${attempts} a JOIN ${families} f USING (source_id),
              LATERAL (SELECT ${standingGitExpiry} AS expires) x
-           WHERE custody='retire' AND (source_id=$1 OR $1 IS NULL) AND f.source->>'adoption'=$3
+           WHERE custody='retire' AND (source_id=$1 OR $1 IS NULL) AND f.source->>'adoption'=ANY($3::text[])
              AND ${this.owner.owns ?? "true"}
              AND (x.expires IS NULL OR x.expires > statement_timestamp()
                OR x.expires <= statement_timestamp() - $4 * interval '1 millisecond')
@@ -526,7 +532,7 @@ export class PreparedGitHubPostgres {
         `UPDATE ${attempts} a SET custody=CASE WHEN $2 THEN 'revoked' ELSE 'unknown' END,
         sealed=CASE WHEN $2 THEN NULL ELSE sealed END FROM ${families} f
         WHERE a.id=$1 AND a.custody='revoking' AND f.source_id=a.source_id
-          AND a.admission->>'issuerAuthority'=$3 AND f.source->>'adoption'=$4 AND ${this.owner.owns ?? "true"}`,
+          AND a.admission->>'issuerAuthority'=$3 AND f.source->>'adoption'=ANY($4::text[]) AND ${this.owner.owns ?? "true"}`,
         [id, revoked, this.issuerAuthority, this.owner.adoption],
       );
     });

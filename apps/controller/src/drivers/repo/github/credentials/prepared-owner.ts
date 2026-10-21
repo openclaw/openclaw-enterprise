@@ -1,4 +1,4 @@
-import type { AttemptContext, Clock } from "../../credentials/backend-contracts.ts";
+import type { Clock } from "../../credentials/backend-contracts.ts";
 import type { GitHubKeyOwner } from "./types.ts";
 import type { GitHubPreparationAdmission, GitHubPreparationStore } from "./prepared-contracts.ts";
 import { createTokenPreparation } from "../../../../backends/token-service/preparation.ts";
@@ -8,7 +8,7 @@ import {
 } from "./driver/acquisition-response.ts";
 import { preparationIssuerAuthority } from "./grants.ts";
 import { permissionsForProfile } from "./profiles.ts";
-import { createProviderTransport } from "./provider-transport.ts";
+import { createProviderTransport, type ProviderAttempt } from "./provider-transport.ts";
 
 interface PreparationOptions {
   readonly admission: GitHubPreparationAdmission;
@@ -31,8 +31,16 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
   if (admission.issuerAuthority !== preparationIssuerAuthority(options.apiOrigin, options.ca)) {
     throw new Error("prepared-issuer-authority-mismatch");
   }
-  const exchange = createProviderTransport(options.apiOrigin, options.ca, clock, admission.grant);
-  const permissions = permissionsForProfile(admission.grant.profile);
+  const { grant } = admission;
+  const exchange = createProviderTransport(options.apiOrigin, options.ca, clock, grant);
+  const scope =
+    grant.profile === "github-installation"
+      ? { profile: grant.profile }
+      : {
+          repositoryId: grant.repositoryId,
+          repository: grant.repository,
+          permissions: permissionsForProfile(grant.profile),
+        };
 
   return createTokenPreparation({
     admission,
@@ -40,7 +48,7 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
     clock,
     renewBeforeMs,
     minimumValidityMs,
-    async issue({ attemptId, bounds, assertIssuing, capture }) {
+    async issue({ bounds, assertIssuing, capture }) {
       let verified: { providerExpiresAt: number; usableUntil: number } | undefined;
       const key = await getKey(structuredClone(admission));
       const assertAdmitted = () => {
@@ -48,16 +56,8 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
           throw new Error("preparation-expired");
         }
       };
-      const attempt: AttemptContext = {
+      const attempt: ProviderAttempt = {
         ...bounds,
-        id: attemptId,
-        action: "acquire",
-        authority: {
-          sessionId: admission.familyId,
-          providerInstanceId: admission.grant.appId,
-          repositoryId: admission.grant.repositoryId,
-          grantId: admission.grant.id,
-        },
         assertAdmitted,
         observeDispatch: assertAdmitted,
       };
@@ -81,9 +81,7 @@ export function createGitHubPreparationOwner(options: PreparationOptions) {
               candidate,
               clock.wallNow(),
               {
-                repositoryId: admission.grant.repositoryId,
-                repository: admission.grant.repository,
-                permissions,
+                ...scope,
                 minimumValidityMs,
               },
             );

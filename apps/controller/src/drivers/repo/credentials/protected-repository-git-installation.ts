@@ -27,6 +27,7 @@ export const selectedRepositoryGitDriver = "current_setting('occ.repository_git_
 export const repositoryGitOwnerPredicate = `f.source #> '{session,credentialProxyExecution,driver}' = ${selectedRepositoryGitDriver}`;
 
 export const protectedGitAdoption = "credential_proxy_repository_git";
+export const installationGitAdoption = "credential_proxy_github_installation";
 export const repositoryGitRecipients = "occ.protected_repository_git_recipients";
 
 /** Absence of a sender's evidence denies use. Only OCC's positive end of this admission retires it. */
@@ -81,11 +82,21 @@ export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Obj
     AND preparation_attempt_id=$4 AND material_version=$5`,
 });
 
+// A version-four release contains exactly one binding. Both the signed release and the
+// independently observed recipient must explicitly name installation delivery; absence means narrow.
+const recipient = "p.installation#>'{enforcement,repositoryGitRecipient}'";
+export const registeredGitProfile = `CASE
+  WHEN ${recipient}->>'deliveryProfile' = 'github_installation' THEN 'github-installation'
+  WHEN NOT (${recipient} ? 'deliveryProfile') THEN 'git-write'
+  END`;
+export const registeredGitSelection = `p.installation#>>'{plan,repositoryGit,bindings,0,profile}' = ${registeredGitProfile}
+  AND jsonb_array_length(p.installation#>'{plan,repositoryGit,bindings}')=1`;
+
 const registeredObservation = `SELECT FROM ${repositoryGitRecipients} WHERE revision_id=$1 AND fence=$2
     AND installation=$3::jsonb AND state <> 'installing'`;
 export const registeredGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({
   join: `${repositoryGitRecipients} r USING(revision_id)`,
-  released: "p.installation=r.installation AND r.state <> 'installing'",
+  released: `p.installation=r.installation AND r.state <> 'installing' AND ${registeredGitSelection}`,
   observed: registeredObservation,
   installed: `${registeredObservation} AND state='installed' AND attempt_id=$4 AND material_version=$5`,
 });

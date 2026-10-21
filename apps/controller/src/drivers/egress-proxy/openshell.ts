@@ -1,7 +1,11 @@
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
 import { openShellGitMiddleware } from "./openshell-git-runtime.ts";
-import type { CredentialProviderDefinition } from "@openclaw-enterprise/contracts";
+import { repositoryGitDeliveryProfile } from "@openclaw-enterprise/contracts";
+import type {
+  CredentialProviderDefinition,
+  RepositoryGitDeliveryProfile,
+} from "@openclaw-enterprise/contracts";
 import { credentialFreeMetadataProvider } from "./github-metadata.ts";
 import { isDeepStrictEqual } from "node:util";
 import type {
@@ -333,7 +337,12 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         credentialFreeMetadataProvider,
         ...(selection.preparedProviders ?? []),
       ],
-      assertAvailable: async (signal: AbortSignal, profile?: "repository_git") => {
+      assertAvailable: async (signal: AbortSignal, profile?: RepositoryGitDeliveryProfile) => {
+        if (profile === "github_installation") {
+          throw new DependencyUnavailableError(
+            "This OpenShell Driver is not qualified for GitHub installation access.",
+          );
+        }
         const client = this.backend.client.clientForNamespace("");
         if (!client.getGatewayInfo) {
           throw new DependencyUnavailableError(
@@ -371,7 +380,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     this.assertPlan(context);
     await this.sourceControl.assertAvailable(
       context.signal,
-      context.plan.repositoryGit && "repository_git",
+      repositoryGitDeliveryProfile(context.plan.repositoryGit),
     );
     return immutableCopy({
       plan: context.plan,
@@ -477,7 +486,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   private async loadedPolicy(context: ProxyRevisionContext, expectedSandboxId?: string) {
     await this.sourceControl.assertAvailable(
       context.signal,
-      context.plan.repositoryGit && "repository_git",
+      repositoryGitDeliveryProfile(context.plan.repositoryGit),
     );
     const ref = this.sandbox.harnessResource!(context);
     const client = this.backend.client.clientForNamespace(ref.namespaceName);

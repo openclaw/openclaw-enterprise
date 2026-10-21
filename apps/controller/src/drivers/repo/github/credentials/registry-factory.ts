@@ -22,6 +22,7 @@ export function validateGitHubAppRepositoryRegistry(
 ): GitHubRepositoryRegistry {
   const registry = validateGitHubRepositoryRegistry(value, expectedBackendId);
   if (
+    registry.installationAccess !== undefined ||
     registry.repositories.some(({ namespaces }) =>
       namespaces.some(({ transport }) => transport !== undefined),
     )

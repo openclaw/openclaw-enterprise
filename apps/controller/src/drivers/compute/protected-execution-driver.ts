@@ -1,5 +1,9 @@
 import { isDeepStrictEqual } from "node:util";
-import { validRepositoryGitRecipient } from "@openclaw-enterprise/contracts";
+import {
+  repositoryGitDeliveryProfile,
+  repositoryGitProfileAvailable,
+  validRepositoryGitRecipient,
+} from "@openclaw-enterprise/contracts";
 import type {
   AgentRevision,
   ComputeRevisionContext,
@@ -49,6 +53,15 @@ export class ProtectedExecutionDriver {
   async configure(context: ProxyRevisionContext): Promise<ProxyWiring> {
     if (!this.owner.ownsProxyPlan(context.plan)) {
       throw new DependencyUnavailableError("The protected Driver no longer owns this plan.");
+    }
+    const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
+    if (
+      profile === "github_installation" &&
+      !(await repositoryGitProfileAvailable(this.proxy.sourceControl, context.signal, profile))
+    ) {
+      throw new DependencyUnavailableError(
+        "The protected Driver no longer supports GitHub installation access.",
+      );
     }
     const prepared = await this.proxy.configureRevision(context);
     if (!isDeepStrictEqual(prepared.plan, context.plan)) {
@@ -132,7 +145,10 @@ export class ProtectedExecutionDriver {
       !!enforcement.policyHash &&
       !!enforcement.peerKeyId &&
       (!installed.plan.repositoryGit ||
-        validRepositoryGitRecipient(enforcement.repositoryGitRecipient)) &&
+        validRepositoryGitRecipient(
+          enforcement.repositoryGitRecipient,
+          repositoryGitDeliveryProfile(context.plan.repositoryGit),
+        )) &&
       (await this.proxy.verifyInstallation(context, installed))
     );
   }

@@ -17,14 +17,13 @@ import {
   type SecretDriver,
 } from "@openclaw-enterprise/contracts";
 import { postgresPreparedGitHubProof, type PostgresPool } from "@openclaw-enterprise/occ";
-import type { AttemptContext } from "../../credentials/backend-contracts.ts";
 import { createSystemClock } from "../../credentials/clock.ts";
 import { createGitHubKeyOwner } from "./material.ts";
 import { preparationIssuerAuthority } from "./grants.ts";
 import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
 import { createGitHubPreparationOwner } from "./prepared-owner.ts";
 import { createGitHubWarmReader } from "./prepared-reader.ts";
-import { createProviderTransport } from "./provider-transport.ts";
+import { createProviderTransport, type ProviderAttempt } from "./provider-transport.ts";
 
 function grantId({ grant: g }: Source) {
   // Normalize field order using the admission owner's function, including after a jsonb round trip.
@@ -323,22 +322,14 @@ export async function retirePreparedGitHubToken(
   ca: Uint8Array | undefined,
   clock: ReturnType<typeof createSystemClock>,
 ) {
-  const result = await retireToken(repository, familyId, async ({ bytes, admission: a, id }) => {
+  const result = await retireToken(repository, familyId, async ({ bytes, admission: a }) => {
     const signal = AbortSignal.any([outer, AbortSignal.timeout(25_000)]);
     const assertAdmitted = () => signal.throwIfAborted();
-    const attempt: AttemptContext = {
-      id,
+    const attempt: ProviderAttempt = {
       signal,
-      action: "retire",
       deadlineMonoMs: clock.monotonicNow() + 25_000,
       assertAdmitted,
       observeDispatch: assertAdmitted,
-      authority: {
-        sessionId: a.familyId,
-        providerInstanceId: a.grant.appId,
-        repositoryId: a.grant.repositoryId,
-        grantId: a.grant.id,
-      },
     };
     const response = await createProviderTransport(apiOrigin, ca, clock, a.grant).revoke(
       Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),

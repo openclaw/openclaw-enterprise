@@ -4,6 +4,7 @@ import type {
   RepositoryBindingSelection,
   RepositoryRevisionState,
 } from "@openclaw-enterprise/contracts";
+import { isInstallationRepositoryProfile } from "@openclaw-enterprise/contracts";
 import { hasControlCharacter, immutableCopy } from "@openclaw-enterprise/utils";
 import { ScopeViolationError } from "../errors.ts";
 
@@ -83,6 +84,7 @@ export function validRepositoryAccess(value: unknown): value is RepositoryAccess
   if (
     !exactObject(value, ["defaultProfile", "repositories"]) ||
     !boundedToken(value.defaultProfile) ||
+    isInstallationRepositoryProfile(value.defaultProfile) ||
     !Array.isArray(value.repositories) ||
     value.repositories.length > 16
   ) {

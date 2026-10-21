@@ -1971,6 +1971,7 @@ test(
       [64, "preCredentialProxyRepositorySession"],
       [65, "prePreparedRepositoryDraftUses"],
       [66, "preProtectedRepositoryGitRecipients"],
+      [67, "preCredentialProxyGitHubInstallation"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2390,6 +2391,7 @@ test(
       [64, "preCredentialProxyRepositorySession"],
       [65, "prePreparedRepositoryDraftUses"],
       [66, "preProtectedRepositoryGitRecipients"],
+      [67, "preCredentialProxyGitHubInstallation"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2485,6 +2487,7 @@ test(
       [64, "preCredentialProxyRepositorySession"],
       [65, "prePreparedRepositoryDraftUses"],
       [66, "preProtectedRepositoryGitRecipients"],
+      [67, "preCredentialProxyGitHubInstallation"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2507,6 +2510,7 @@ test(
         // trigger, the route table, grants and both new receipts must all roll back together.
         // In 0067, fail a function definition after the recipient table and its grants exist.
         const rollbackTag = [
+          [67, "ALTER TABLE"],
           [66, "CREATE FUNCTION"],
           [62, "ALTER TABLE"],
           [61, "CREATE TRIGGER"],
@@ -2525,11 +2529,13 @@ test(
           [0, "ALTER FUNCTION"],
         ].find(([minimum]) => prefix >= minimum)[1];
         const failAt =
-          prefix === 66
-            ? "IF to_regclass('occ.protected_repository_git_recipients') IS NULL THEN RETURN; END IF;"
-            : prefix >= 58
-              ? "IF NOT EXISTS (SELECT FROM information_schema.columns WHERE table_schema='occ' AND table_name='openshell_git_routes' AND column_name='detached_epoch') THEN RETURN; END IF;"
-              : "";
+          prefix === 67
+            ? "IF NOT EXISTS (SELECT FROM information_schema.columns WHERE table_schema='occ' AND table_name='prepared_repository_git_uses' AND column_name='recipient_fence') THEN RETURN; END IF;"
+            : prefix === 66
+              ? "IF to_regclass('occ.protected_repository_git_recipients') IS NULL THEN RETURN; END IF;"
+              : prefix >= 58
+                ? "IF NOT EXISTS (SELECT FROM information_schema.columns WHERE table_schema='occ' AND table_name='openshell_git_routes' AND column_name='detached_epoch') THEN RETURN; END IF;"
+                : "";
         await historyAdmin(
           db,
           db.name,
