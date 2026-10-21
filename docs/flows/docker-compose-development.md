@@ -103,7 +103,7 @@ graph TD
 
 ### 1. Start and initialize the local stack
 
-`scripts/dev-up`, `apps/controller/src/server.mjs:start`
+`scripts/dev-up`, `apps/controller/src/api-startup.mjs:startApi`
 
 Both shell wrappers locate the checkout with command-local `CDPATH="" cd`,
 so shell search paths cannot change the selected repository or contaminate the
