@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { constants, closeSync, fstatSync, openSync, readFileSync, writeSync } from "node:fs";
+import {
+  constants,
+  closeSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  writeSync,
+} from "node:fs";
+import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
 
 // A BOM in a Git path is filename data, not an encoding marker.
@@ -419,9 +428,16 @@ function main() {
 }
 
 // CI runs this file as a script; tests also import it. Node before 24.2 has no
-// import.meta.main, so only an explicit `false` (imported) skips the CLI; importing
-// it there runs the CLI, so the tests need Node 24.2 or later.
-if (import.meta.main !== false) {
+// import.meta.main: there the CLI runs when the script node started is this file,
+// or when that cannot be told (as it always ran before).
+function startedAsScript() {
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return true;
+  }
+}
+if (import.meta.main ?? startedAsScript()) {
   try {
     main();
   } catch {
