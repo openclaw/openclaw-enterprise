@@ -58,7 +58,16 @@ export async function gitCommandBodies(t, pushRef) {
 // No Kubernetes, real supervisor, credential or model provider is needed for this test.
 export async function gitExpiryGateway(
   t,
-  { model, workspace, sandbox, revisionId, deadline, platformProfile, trackGitExpiry = false },
+  {
+    model,
+    workspace,
+    sandbox,
+    revisionId,
+    deadline,
+    platformProfile,
+    trackGitExpiry = false,
+    onGitInstall = (_value) => {},
+  },
 ) {
   const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
   const grpc = require("@grpc/grpc-js");
@@ -262,6 +271,7 @@ export async function gitExpiryGateway(
         world.gitExpiresAt = Number(seconds) * 1000 + Number(nanos ?? 0) / 1_000_000;
         world.installedDigest = createHash("sha256").update(credentials.GITHUB_TOKEN).digest("hex");
       }
+      onGitInstall?.(credentials.GITHUB_TOKEN);
       world.writes++;
       return { provider };
     },

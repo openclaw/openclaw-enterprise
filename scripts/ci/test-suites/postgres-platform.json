@@ -34,11 +34,13 @@
     "tests/integration/postgres-static-egress.test.mjs",
     "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
+    "tests/integration/postgres-prepared-standing-expiry.test.ts",
     "tests/integration/postgres-prepared-standing-removal.test.ts",
     "tests/integration/postgres-prepared-github-git-use.test.mjs",
     "tests/integration/postgres-openshell-online-git-journey.test.mjs",
     "tests/integration/postgres-openshell-git-routes.test.mjs",
     "tests/integration/postgres-openshell-standing-route.test.ts",
+    "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "tests/integration/postgres-egress-send-receipts.test.mjs",
     "tests/integration/postgres-protected-credential-free.test.mjs",
     "tests/integration/postgres-standing-approval-api.test.ts",
@@ -281,6 +283,17 @@
       "path": "tests/integration/postgres-prepared-repository-git-broker.test.mjs"
     },
     {
+      "path": "tests/integration/postgres-prepared-standing-expiry.test.ts",
+      "expectedTests": [
+        "prepared standing Git retirement preserves the skew boundary",
+        "prepared standing Git retirement preserves the refused boundary",
+        "prepared standing Git retirement preserves the response lost boundary",
+        "prepared standing Git retirement preserves the other issuer boundary",
+        "prepared standing Git retirement preserves the finite boundary",
+        "a lost standing Git issuance remains unresolved without a verified expiry"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-prepared-standing-removal.test.ts",
       "expectedTests": [
         "standing removal orders prepared material and request authorization (removal first)",
@@ -309,6 +322,12 @@
       "path": "tests/integration/postgres-openshell-standing-route.test.ts",
       "expectedTests": [
         "OpenShell observes the same expired standing execution across restart and rechecks authority at installation"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
+      "expectedTests": [
+        "standing OpenShell execution fetches a missing private Git object past both first expiries and then loses only Git"
       ]
     },
     {

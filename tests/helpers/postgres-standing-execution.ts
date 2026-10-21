@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { TestContext } from "node:test";
+import type { GitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type { Pool } from "pg";
@@ -9,7 +10,14 @@ import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revisio
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
 
-export async function standingExecutionFixture(t: TestContext, testUrl: string) {
+export async function standingExecutionFixture(
+  t: TestContext,
+  testUrl: string,
+  setupRepository?: (
+    pool: Pool,
+    namespaceId: string,
+  ) => Promise<{ registry: GitHubRepositoryRegistry; controlSocket: string; backendId: string }>,
+) {
   await ensurePostgresAgentBootstrap(t, {
     label: "standing-execution",
     authSecret: "standing-execution-local-test-secret-32",
@@ -17,50 +25,55 @@ export async function standingExecutionFixture(t: TestContext, testUrl: string) 
   const database = { url: databaseUrl!, pools: new Set<Pool>(), workers: new Set() };
   t.after(async () => {
     for (const pool of database.pools) {
-      await pool.end();
+      if (!("ending" in pool && pool.ending)) {
+        await pool.end();
+      }
     }
   });
   const setupOptions = { database, leaseDurationMs: 30_000 };
   const f = await createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
-  const registry = {
-    version: 1,
-    backendId: "execution-proof",
-    providerInstanceId: "local-provider",
-    appId: "123",
-    githubInstallationId: "456",
-    maximumDurationSeconds: 120,
-    allowStandingApprovals: true,
-    repositories: [
-      {
-        repositoryRef: "source",
-        repositoryId: "789",
-        repository: "example/source",
-        namespaces: [
-          {
-            namespaceId: f.namespace.id,
-            profiles: ["git-write"],
-            allowStandingApproval: true,
-            transport: "git-only",
-            pushRefAllowlist: ["refs/heads/review"],
-          },
-        ],
-      },
-    ],
-  } as const;
+  const external = await setupRepository?.(f.observerPool, f.namespace.id);
+  const registry =
+    external?.registry ??
+    ({
+      version: 1,
+      backendId: "execution-proof",
+      providerInstanceId: "local-provider",
+      appId: "123",
+      githubInstallationId: "456",
+      maximumDurationSeconds: 120,
+      allowStandingApprovals: true,
+      repositories: [
+        {
+          repositoryRef: "source",
+          repositoryId: "789",
+          repository: "example/source",
+          namespaces: [
+            {
+              namespaceId: f.namespace.id,
+              profiles: ["git-write"],
+              allowStandingApproval: true,
+              transport: "git-only",
+              pushRefAllowlist: ["refs/heads/review"],
+            },
+          ],
+        },
+      ],
+    } as const);
   const driver = new GitHubRepoDriver(
     {
-      id: "execution-proof",
+      id: registry.backendId,
       client: new UnixRepositoryCredentialControlClient({
-        controlSocket: "/unused-execution-contract/control.sock",
+        controlSocket: external?.controlSocket ?? "/unused-execution-contract/control.sock",
       }),
-      drivers: { repo: "execution-proof" },
+      drivers: { repo: registry.backendId },
     },
     registry,
     { sessionDurationSeconds: 120 },
   );
   const owner = await f.agent("execution-fence", {
     executionMode: "dedicated",
-    auth: "credential_source",
+    auth: external ? "secret" : "credential_source",
   });
   const [selected] = driver.resolve({
     namespaceId: f.namespace.id,
@@ -101,8 +114,21 @@ export async function standingExecutionFixture(t: TestContext, testUrl: string) 
   const revisionOptions = { actorId: f.actor.id, repositoryCredentials: credentials };
   const revision = (await f.revision(owner, 1, revisionOptions)) as AgentRevision;
   const key = { namespaceId: f.namespace.id, agentId: owner.id, revisionId: revision.id };
-  await f.state.transact((u) =>
-    u.agents.compareAndSetActiveRevision(key.namespaceId, key.agentId, undefined, key.revisionId),
-  );
-  return { f, key, approval, registry, binding, owner, revision, revisionOptions, credentials };
+  if (!external) {
+    await f.state.transact((u) =>
+      u.agents.compareAndSetActiveRevision(key.namespaceId, key.agentId, undefined, key.revisionId),
+    );
+  }
+  return {
+    f,
+    key,
+    approval,
+    registry,
+    binding,
+    owner,
+    revision,
+    revisionOptions,
+    credentials,
+    driver,
+  };
 }
