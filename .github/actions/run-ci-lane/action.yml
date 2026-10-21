@@ -141,6 +141,14 @@ runs:
       if: inputs.lane == 'dev-up-k3d' || inputs.lane == 'openshell' || inputs.lane == 'qa-matrix'
       shell: bash
       run: pnpm cli:build
+    - name: Precompile controller route schemas
+      # Most of these lanes' test files build the API in process. Each build then loads the
+      # route validators and serializers from apps/controller/dist/route-compilers.cjs instead
+      # of compiling every schema (http/route-compilers.ts). Other lanes build too few apps
+      # to repay the 2-4 CPU-s it takes.
+      if: inputs.lane == 'checks-baseline-1' || startsWith(inputs.lane, 'checks-browser') || inputs.lane == 'postgres-auth' || inputs.lane == 'postgres-platform'
+      shell: bash
+      run: node apps/controller/src/precompile-route-schemas.mjs
     - name: Prepare hosted platform disk capacity
       if: (inputs.lane == 'repository-credentials-platform' || startsWith(inputs.lane, 'k3d-observability')) && runner.environment == 'github-hosted'
       shell: bash
