@@ -59,7 +59,7 @@ const productionServer = {
 // process that never exits: every boot here ends in a startup refusal within a second or two
 // on an idle machine, and on a loaded runner the same boot took more than 10 s.
 const limit = concurrencyLimit();
-async function boot(script, env, timeout = 60_000) {
+async function boot(script, env, timeout = 30_000) {
   const { signal, ...result } = await limit(() =>
     captureChild(process.execPath, [script], {
       cwd: process.cwd(),
@@ -94,10 +94,18 @@ before(async () => {
       boot("apps/controller/src/worker.mjs", env),
     ]);
     // A boot that stopped earlier would leave the composition modules uncached.
-    assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "PERSISTENCE_UNAVAILABLE");
+    const warmUp = "compile-cache warm-up";
+    assert.equal(server.status, 1, warmUp);
+    assert.equal(
+      startupDiagnostic(server.stderr, "startup-error").code,
+      "PERSISTENCE_UNAVAILABLE",
+      warmUp,
+    );
+    assert.equal(worker.status, 1, warmUp);
     assert.equal(
       startupDiagnostic(worker.stderr, "worker.startup-error").code,
       "PERSISTENCE_UNAVAILABLE",
+      warmUp,
     );
   } finally {
     await rm(directory, { recursive: true, force: true });
