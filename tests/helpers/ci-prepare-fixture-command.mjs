@@ -1030,7 +1030,7 @@ export function commandShim({ bash, sleep, setsid, port, clientToken, serverToke
   for (const token of [clientToken, serverToken]) {
     assert.match(token, /^[0-9a-f]{64}$/);
   }
-  assert.match(command, /^[a-z]+$/);
+  assert.match(command, /^[a-z0-9]+$/);
   const env = forwardedEnv.map((name) => `"\${${name}+=}\${${name}-}"`).join(" ");
   return `#!${bash}
 LC_ALL=C
