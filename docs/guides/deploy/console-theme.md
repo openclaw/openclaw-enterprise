@@ -8,9 +8,11 @@ owns the manifest, supported colors, image formats, and size limits.
 ## Prepare the directory
 
 Start with `deploy/examples/console-theme/theme.json` and `logo.png`, or create
-your own manifest and images. Keep the directory readable by the API's nonroot
-user. Theme assets and the display name are public before sign-in; keep
-credentials and private information elsewhere.
+your own manifest and images. Mount the directory read-only for the API's nonroot
+user. On the host, only trusted deployment administrators may change the bundle
+or replace any directory in its path. A read-only bind mount still reflects host
+writes. Theme assets and the display name are public before sign-in; keep credentials
+and private information elsewhere.
 
 ## Podman or Docker Compose
 

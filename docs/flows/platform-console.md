@@ -101,21 +101,13 @@ graph TD
 
 ### 1. Compose discovery metadata and serve public assets
 
-`apps/controller/src/api-startup.mjs:startApi` calls
-`apps/controller/src/composition/console-theme.ts:loadConsoleTheme` before
-composition. A configured invalid bundle stops startup; otherwise its bounded
-manifest and referenced images become one process-local snapshot passed to
-`createFastifyApp`. Workers never load it. ConfigMap projection links must resolve
-inside the bundle root.
-
-`apps/controller/src/console-theme.ts:renderConsoleThemeShell` escapes public
-branding metadata, title, and startup text and links generated external CSS.
-`console/shell.mjs:brandContents` uses that metadata with DOM text APIs for
-sign-in, public errors, desktop navigation, and the mobile bar. The stylesheet
-overrides semantic colors after bundled styles. `/console/theme/` serves only
-snapshot assets; misses return plain 404s. Shell/theme responses are uncached;
-file replacement takes effect after an API restart. Compression caches separate
-app snapshots. The [theme reference](../reference/console/theming.md) owns limits.
+`apps/controller/src/api-startup.mjs:startApi` loads an optional
+[theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
+ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
+branding and links the generated stylesheet. `console/shell.mjs:brandContents`
+renders the name as text. `/console/theme/` serves only referenced images and
+generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
+API restart can replace the theme.
 
 `apps/controller/src/composition/production.ts:composeProduction`
 

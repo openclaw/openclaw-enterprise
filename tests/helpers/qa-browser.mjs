@@ -10,8 +10,10 @@ import { prepareQaConsoleTheme } from "./qa-installation.mjs";
 import { unusedPort, waitFor } from "./qa-utils.mjs";
 import { submitChatTurnWithAssistantProof, waitForStockUi } from "./native-ui-chat.mjs";
 
-export async function createQaBrowser(f) {
-  await prepareQaConsoleTheme(f);
+export async function createQaBrowser(f, { themed }) {
+  if (themed) {
+    await prepareQaConsoleTheme(f);
+  }
   const nativeHost = `native.${f.cluster}.oce.localhost`;
   const port = await unusedPort();
   const nativeOrigin = `https://${nativeHost}:${port}`;
@@ -95,7 +97,9 @@ export async function createQaBrowser(f) {
   f.resources.after(() => browser.close());
   const page = await browser.newPage();
   await page.goto(f.consoleUrl + "/console/");
-  assert.equal(await page.title(), "Example Agents");
+  if (themed) {
+    assert.equal(await page.title(), "Example Agents");
+  }
   await page.getByLabel("Email", { exact: true }).fill(f.credentials.email);
   await page.getByLabel("Password").fill(f.credentials.password);
   const signedIn = page.waitForResponse(

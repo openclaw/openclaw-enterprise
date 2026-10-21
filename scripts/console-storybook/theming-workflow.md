@@ -13,7 +13,7 @@ and generated CSS. API, session, credential, and runtime state remain simulated.
 1. Open Sign In and enter disposable credentials. Inspect the title, logo, form,
    and keyboard focus, then navigate to an Agent.
 2. Open Desktop and Mobile. Operate navigation and the mobile drawer; verify the
-   full name remains accessible. Navigation logos render at 32×32 pixels; sign-in
+   full name remains accessible. Navigation logos render at 20×20 pixels; sign-in
    logos render at 40×40. Long Name must wrap without covering controls.
 3. Inspect Empty, Denied, Loading, Missing Credentials, and Public Error for text
    readability, visible status labels, and consistent branding.

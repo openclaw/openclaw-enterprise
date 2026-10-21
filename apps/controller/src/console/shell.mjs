@@ -541,7 +541,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       element(
         "p",
         { className: "brand" },
-        ...brandContents(32),
+        ...brandContents(20),
         debug
           ? element(
               "span",
@@ -657,7 +657,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       "div",
       { className: "topbar" },
       mobileToggle,
-      element("p", { className: "brand brand--bar" }, ...brandContents(32)),
+      element("p", { className: "brand brand--bar" }, ...brandContents(20)),
       session ? accountMenus().top.account : null,
     );
     const wrapper = element("div", {}, topbar, main);

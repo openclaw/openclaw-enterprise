@@ -41,11 +41,14 @@ PNG and WebP; favicons accept PNG and ICO. Extensions must match file signatures
 SVG, custom CSS/JavaScript, external image URLs, custom fonts, and browser uploads
 are unsupported. Unreferenced files are neither loaded nor served. Referenced
 files, including ConfigMap projection symlinks, must resolve inside the directory.
+The bundle is trusted deployment configuration. Only deployment administrators may
+write its files or replace directories in its path; the loader's path checks do
+not isolate files from an untrusted process that can change the mount during startup.
 
 The manifest limit is 64 KiB; each image is limited to 256 KiB. The manifest and
 distinct referenced images together must fit 768 KiB. These bounds support a
 single operator-managed Kubernetes ConfigMap. Supply appropriately sized images:
-the logo renders at 32 pixels in navigation and 40 pixels on sign-in.
+the logo renders at 20 pixels in navigation and 40 pixels on sign-in.
 
 ## Color roles
 

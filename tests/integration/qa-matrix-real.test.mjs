@@ -79,6 +79,9 @@ test(
                 repositoryInputs: selection.repository,
               }),
           );
+          const cells = selection.cells.filter(
+            (cell) => cell.installation === installation && cell.scenarios.length > 0,
+          );
           let browser;
           let repositoryReady;
           if (f && selection.browser) {
@@ -86,7 +89,10 @@ test(
               installationContext,
               installation,
               "authenticated console login",
-              () => createQaBrowser(f),
+              () =>
+                createQaBrowser(f, {
+                  themed: cells.some((cell) => cell.scenarios.includes("model-ui")),
+                }),
             );
           }
           if (f && selection.repository) {
@@ -100,9 +106,7 @@ test(
               },
             );
           }
-          for (const selectedCell of selection.cells.filter(
-            (value) => value.installation === installation && value.scenarios.length > 0,
-          )) {
+          for (const selectedCell of cells) {
             const { preset, cell } = selectedCell;
             await installationContext.test(
               `Standard ${preset}`,

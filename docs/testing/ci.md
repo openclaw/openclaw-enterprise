@@ -184,9 +184,9 @@ Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It doe
 not use existing clusters or change the default kubeconfig. The exact test list
 is in the [QA manifest](../../scripts/ci/test-suites/qa-matrix.json).
 
-Selecting a browser scenario mounts the example console theme on Compose or
-Kubernetes and checks its sign-in page. The `model-ui` scenario also checks the
-product name and logo during the Agent workflow.
+The `model-ui` scenario mounts the example console theme on Compose or Kubernetes
+and checks its branding through sign-in and the Agent workflow. Other scenarios
+do not require the theme or an extra API rollout.
 
 Every push to `main` runs the marked Codex scenarios on Compose and Kubernetes, and the
 complete OpenShell lane. Each push has its own concurrency group so a later

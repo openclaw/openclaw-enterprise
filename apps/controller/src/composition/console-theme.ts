@@ -20,6 +20,8 @@ function object(value: unknown): value is Record<string, unknown> {
 }
 
 async function readBounded(root: string, name: string, limit: number): Promise<Buffer> {
+  // ConfigMap projections use symlinks. The mount and its parents are operator-controlled;
+  // O_NOFOLLOW protects the resolved file, not a parent another writer could replace.
   const path = await realpath(join(root, name));
   const inside = relative(root, path);
   if (inside === ".." || inside.startsWith(`..${sep}`) || isAbsolute(inside)) {
