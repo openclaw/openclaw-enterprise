@@ -266,6 +266,7 @@ export async function createRuntimeLogFixture(options = {}) {
       controller = new OpenClawController(installation, {
         state: new InMemoryPlatformState({ auditSink }),
         recordOperations: false,
+        driverConfigurations: options.driverConfigurations,
       });
       return controller;
     },

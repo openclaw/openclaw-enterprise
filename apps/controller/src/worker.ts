@@ -1,3 +1,8 @@
+import { installationDriverConfigurations } from "./composition/installation-config.ts";
+import {
+  DriverConfigurationRegistry,
+  type DriverConfigurationRegistration,
+} from "@openclaw-enterprise/occ";
 import { reconcileSandboxPolicy, failAbandonedSandboxPolicies } from "./worker/sandbox-policy.ts";
 import { isSecretHarnessAuth, isServiceAccountHarnessAuth } from "@openclaw-enterprise/contracts";
 import { isPositiveSafeInteger } from "@openclaw-enterprise/utils";
@@ -1015,6 +1020,8 @@ export class ControllerWorker {
    */
   private refusalWait: { readonly idempotencyKey: string; readonly refusal: string } | undefined;
   private readonly state: PostgresPlatformState;
+  private readonly driverConfigurations: readonly DriverConfigurationRegistration[];
+  private readonly configurations = new DriverConfigurationRegistry();
   private readonly policyCeiling: readonly import("@openclaw-enterprise/contracts").SandboxNetworkGrant[];
   private readonly queue: PostgresWorkQueue;
   private readonly compute: ComputeDriver;
@@ -1103,6 +1110,10 @@ export class ControllerWorker {
       "Worker convergence timeout",
     );
     const drivers = options.drivers;
+    this.driverConfigurations = installationDriverConfigurations(drivers?.installation);
+    for (const definition of this.driverConfigurations) {
+      this.configurations.register(definition);
+    }
     this.policyCeiling = drivers?.installation.sandboxNetworkPolicyCeiling ?? [];
     this.configuredServiceAccountDriverId = drivers?.installation.drivers.service_account?.id;
     this.nativeWorkerSupport = drivers?.installation.runtime?.nativeWorkerSupport;
@@ -1238,6 +1249,7 @@ export class ControllerWorker {
     const provisioning = new OpenClawController(installation, {
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
+      driverConfigurations: this.driverConfigurations,
       backends: this.backends,
       recordOperations: true,
       channelNetworkRequirements: createBundledChannelCapabilities().channelNetworkRequirements,
@@ -2054,6 +2066,7 @@ export class ControllerWorker {
           iam: this.iam,
           installationId: this.installation!.id,
           ceiling: this.policyCeiling,
+          configurations: this.configurations,
           signal: this.abort.signal,
           maxAttempts: this.maxAttempts,
           deadlineMs: this.convergenceTimeoutMs,

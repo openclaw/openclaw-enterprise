@@ -4,7 +4,7 @@ import test from "node:test";
 import pg from "pg";
 import { createDevelopmentComputeDriver } from "../helpers/development.mjs";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { PostgresWorkQueue } from "../../packages/occ/src/index.ts";
+import { OpenClawController, PostgresWorkQueue } from "../../packages/occ/src/index.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -17,6 +17,12 @@ async function createPolicyApp(t, recordOperations = false) {
     binary: "/usr/bin/python3.11",
     host: "example.org",
     ports: [{ from: 443, to: 443 }],
+  };
+  const providerRefusalGrant = {
+    ...grant,
+    id: "wide-ports",
+    host: "ports.example.org",
+    ports: [{ from: 1, to: 2048 }],
   };
   // The real Driver validates and freezes policy; this case proves HTTP/IAM/PostgreSQL admission,
   // while the OpenShell runtime lane proves enforcement and loaded-version application.
@@ -57,16 +63,28 @@ async function createPolicyApp(t, recordOperations = false) {
     label: "sandbox-policy",
     authSecret: "sandbox-policy-postgres-session-secret-32-characters",
     sandboxDriver,
-    controllerOptions: { sandboxNetworkPolicyCeiling: [grant], recordOperations },
+    controllerOptions: {
+      sandboxNetworkPolicyCeiling: [grant, providerRefusalGrant],
+      recordOperations,
+      driverConfigurations: [
+        {
+          capability: "sandbox",
+          driverId: sandboxDriver.id,
+          implementation: sandboxDriver.implementation,
+          definition: OpenShellSandboxDriver,
+        },
+      ],
+    },
   });
-  return { ...fixture, grant, sandboxDriver };
+  return { ...fixture, grant, providerRefusalGrant, sandboxDriver };
 }
 
 test(
   "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
   requiresPostgres,
   async (t) => {
-    const { pool, state, inject, deployAgent, grant } = await createPolicyApp(t);
+    const { pool, state, inject, deployAgent, grant, providerRefusalGrant } =
+      await createPolicyApp(t);
     const { namespace, agent, revision } = await deployAgent("Sandbox policy");
     const base = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
     const read = await inject("GET", base);
@@ -98,6 +116,74 @@ test(
     assert.equal(disabled.statusCode, 409, disabled.body);
     const enabled = await inject("PATCH", `${base}/editing`, { enabled: true });
     assert.equal(enabled.statusCode, 200, enabled.body);
+    // Discovery returns owner URLs and schema only, with exact-resource authorization.
+    const discoveryPath = `/namespaces/${namespace.id}/agents/${agent.id}/driver-configurations`;
+    const discovery = await inject("GET", discoveryPath);
+    assert.equal(discovery.statusCode, 200, discovery.body);
+    const descriptor = discovery.json().data.configurations[0];
+    assert.equal(descriptor.driverId, "policy-openshell");
+    assert.equal(descriptor.key, "sandbox-network-policy");
+    assert.equal(descriptor.actions.validate.href, `${base}/validate`);
+    assert.equal(descriptor.actions.save.available, true);
+    assert.deepEqual((await inject("GET", base)).json().data.configuration, descriptor);
+    const installationDiscovery = await inject("GET", "/installation/driver-configurations");
+    assert.equal(installationDiscovery.statusCode, 200, installationDiscovery.body);
+    assert.equal(installationDiscovery.json().data.configurations[0].key, "startup");
+    assert.deepEqual(installationDiscovery.json().data.configurations[0].actions, {});
+    assert.equal(
+      Object.hasOwn(installationDiscovery.json().data.configurations[0], "configuration"),
+      false,
+    );
+    const beforePreview = await pool.query(
+      "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+      [namespace.id],
+    );
+    const invalid = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [{ ...grant, ports: [{ from: 70000, to: "bad" }], host: "bad..host" }],
+    });
+    assert.equal(invalid.statusCode, 200, invalid.body);
+    assert.equal(invalid.json().data.success, false);
+    assert.ok(
+      invalid.json().data.error.details.some(({ path }) => path === "/additions/0/ports/0/from"),
+    );
+    assert.ok(
+      invalid.json().data.error.details.some(({ path }) => path === "/additions/0/ports/0/to"),
+    );
+    const invalidEnvelope = await inject("POST", `${base}/validate`, {
+      expectedVersion: "wrong",
+      additions: [],
+    });
+    assert.equal(invalidEnvelope.statusCode, 400, invalidEnvelope.body);
+    const providerRefusal = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [providerRefusalGrant],
+    });
+    assert.equal(providerRefusal.statusCode, 200, providerRefusal.body);
+    assert.equal(providerRefusal.json().data.success, false);
+    assert.equal(providerRefusal.json().data.error.details[0].path, "/additions");
+    const preview = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [grant],
+    });
+    assert.equal(preview.statusCode, 200, preview.body);
+    assert.deepEqual(preview.json().data, { success: true, data: { additions: [grant] } });
+    const range = await inject("POST", `${base}/validate`, {
+      expectedVersion: 1,
+      additions: [{ ...grant, ports: [{ from: 444, to: 443 }] }],
+    });
+    assert.equal(range.json().data.error.details[0].code, "INVALID_RANGE");
+    assert.equal((await inject("GET", base)).json().data.policy.version, 1);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+          [namespace.id],
+        )
+      ).rows,
+      beforePreview.rows,
+    );
+
     const broad = await inject("PUT", base, {
       expectedVersion: 1,
       additions: [{ ...grant, host: "*.example.org" }],
@@ -120,6 +206,11 @@ test(
     assert.deepEqual(changed.json().data.additions, [grant]);
     const stale = await inject("PUT", base, { expectedVersion: 1, additions: [] });
     assert.equal(stale.statusCode, 409, stale.body);
+    assert.equal(
+      (await inject("POST", `${base}/validate`, { expectedVersion: 1, additions: [grant] }))
+        .statusCode,
+      409,
+    );
     assert.deepEqual(
       (await state.read((view) => view.revisions.findRevision(namespace.id, agent.id, revision.id)))
         .sandboxPolicy.additions,
@@ -166,6 +257,21 @@ test(
       "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'update','sandbox_policy',$3,'deny')",
       [restriction, namespace.id, original.id],
     );
+    assert.equal(
+      (await inject("POST", `${base}/validate`, { expectedVersion: 2, additions: [grant] }))
+        .statusCode,
+      403,
+    );
+    const withoutEdit = (await inject("GET", discoveryPath)).json().data.configurations[0];
+    assert.equal(withoutEdit.actions.save.available, false);
+    // Owner read denial filters discovery without weakening the policy read endpoint.
+    const readRestriction = `restriction-${randomUUID()}`;
+    await pool.query(
+      "INSERT INTO occ.iam_restrictions (id,namespace_id,action,resource_kind,resource_id,effect) VALUES ($1,$2,'read','sandbox_policy',$3,'deny')",
+      [readRestriction, namespace.id, original.id],
+    );
+    assert.deepEqual((await inject("GET", discoveryPath)).json().data.configurations, []);
+    assert.equal((await inject("GET", base)).statusCode, 403);
     const refused = await inject("PUT", base, { expectedVersion: 2, additions: [grant] });
     assert.equal(refused.statusCode, 403, refused.body);
     const denial = await pool.query(
@@ -291,5 +397,93 @@ test(
         await worker.stop();
       }
     }
+  },
+);
+
+test(
+  "restarted controller rechecks a reduced ceiling before saving, applying, or deploying",
+  requiresPostgres,
+  async (t) => {
+    const fixture = await createPolicyApp(t);
+    const { state, controller, pool, inject, deployAgent, grant, sandboxDriver } = fixture;
+    const { namespace, agent, revision } = await deployAgent("Ceiling restart");
+    // The fixture activates a real admitted revision; this test proves HTTP admission, not provider effects.
+    await state.transact(async (unit) => {
+      await unit.namespaces.lockNamespace(namespace.id);
+      await unit.agents.compareAndSetActiveRevision(namespace.id, agent.id, undefined, revision.id);
+    });
+    const path = `/namespaces/${namespace.id}/agents/${agent.id}/sandbox-policy/networking`;
+    assert.equal((await inject("PATCH", `${path}/editing`, { enabled: true })).statusCode, 200);
+    const preview = await inject("POST", `${path}/validate`, {
+      expectedVersion: 1,
+      additions: [grant],
+    });
+    assert.equal(preview.json().data.success, true);
+    assert.equal(
+      (await inject("PUT", path, { expectedVersion: 1, additions: [grant] })).statusCode,
+      200,
+    );
+    const previous = (await inject("GET", path)).json().data.policy;
+    const jobs = await pool.query(
+      "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+      [namespace.id],
+    );
+    // Startup is the owner of the ceiling. A new controller uses the same database and real IAM,
+    // with a smaller operator delegation; no mutable test hook changes the running controller.
+    const restarted = new OpenClawController(controller.installation, {
+      state,
+      recordOperations: false,
+      sandboxNetworkPolicyCeiling: [],
+      driverConfigurations: [
+        {
+          capability: "sandbox",
+          driverId: sandboxDriver.id,
+          implementation: sandboxDriver.implementation,
+          definition: OpenShellSandboxDriver,
+        },
+      ],
+    });
+    for (const capability of ["iam", "configuration", "compute", "secret", "sandbox"]) {
+      const driver = controller.selectedDriver(capability);
+      restarted.registerDriver(driver);
+      restarted.selectDriver(capability, driver.id);
+    }
+    const app = fixture.createApp(restarted);
+    const revisions = await state.read((view) =>
+      view.revisions.listRevisions(namespace.id, agent.id),
+    );
+    for (const [method, url, body] of [
+      ["PUT", path, { expectedVersion: 2, additions: [grant] }],
+      ["POST", `${path}/apply`, { expectedVersion: 2, revisionId: revision.id }],
+      ["POST", `/namespaces/${namespace.id}/agents/${agent.id}/deploy`, undefined],
+    ]) {
+      const refused = await inject(method, url, body, app);
+      assert.equal(refused.statusCode, 409, refused.body);
+      assert.equal(
+        refused.json().error.message,
+        "The requested network policy exceeds the Installation delegation ceiling.",
+      );
+      assert.deepEqual(refused.json().error.details, [
+        {
+          path: "/additions/0",
+          code: "OUTSIDE_CEILING",
+          message: "The grant exceeds the Installation delegation ceiling.",
+        },
+      ]);
+    }
+    assert.deepEqual(
+      await state.read((view) => view.revisions.listRevisions(namespace.id, agent.id)),
+      revisions,
+    );
+    assert.deepEqual((await inject("GET", path)).json().data.policy, previous);
+    assert.deepEqual(
+      (
+        await pool.query(
+          "SELECT count(*) AS count FROM occ.controller_work WHERE namespace_id=$1",
+          [namespace.id],
+        )
+      ).rows,
+      jobs.rows,
+    );
   },
 );

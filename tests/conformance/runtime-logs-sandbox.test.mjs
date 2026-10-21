@@ -152,6 +152,18 @@ function openShellSandboxDriver(gatewayClient) {
   );
 }
 
+// Match production composition: policy-capable Drivers require their configuration definition.
+function driverConfigurations(driver) {
+  return [
+    {
+      capability: "sandbox",
+      driverId: driver.id,
+      implementation: driver.implementation,
+      definition: OpenShellSandboxDriver,
+    },
+  ];
+}
+
 /** The shared app's cursor key; tests that forge earlier cursor formats sign with it. */
 const CURSOR_SECRET = "disposable-runtime-log-cursor-secret-32";
 /** The running test's gateway client and Driver identity override. */
@@ -178,6 +190,7 @@ function sandboxApp() {
     return createRuntimeLogFixture({
       computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE }),
       sandboxDriver,
+      driverConfigurations: driverConfigurations(sandboxDriver),
       agentRuntimeLogs: { enabled: true, cursorSecret: CURSOR_SECRET },
     });
   })();
@@ -644,7 +657,11 @@ async function harnessFixture(label, checks) {
     checks,
   });
   const sandboxDriver = openShellSandboxDriver(gateway.client);
-  const fixture = await createRuntimeLogFixture({ computeDriver, sandboxDriver });
+  const fixture = await createRuntimeLogFixture({
+    computeDriver,
+    sandboxDriver,
+    driverConfigurations: driverConfigurations(sandboxDriver),
+  });
   const target = await fixture.deployAgent(label);
   const diagnosticsPath = target.runtimePath.replace(/\/runtime$/, "/diagnostics");
   return { gateway, sandboxDriver, fixture, target, diagnosticsPath };

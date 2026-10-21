@@ -1,3 +1,4 @@
+import { installationDriverConfigurations } from "./installation-config.ts";
 import type { AuditEvent } from "@openclaw-enterprise/contracts";
 import {
   validateAuthAccountPrincipalSeed,
@@ -258,6 +259,7 @@ export async function composeProduction(config: ProductionConfig) {
         : { managedProxyHost: config.controlPlaneOutboundProxyManagedHost }),
     });
     const controller = new OpenClawController(persistedInstallation, {
+      driverConfigurations: installationDriverConfigurations(config.drivers.installation),
       sandboxNetworkPolicyCeiling: config.drivers.installation.sandboxNetworkPolicyCeiling ?? [],
       state,
       recordOperations: true,

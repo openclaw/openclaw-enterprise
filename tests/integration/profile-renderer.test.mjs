@@ -1,3 +1,7 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -486,7 +490,7 @@ test("profiles give tenant runtimes four-core CPU limits over unchanged 100m req
   // The example's placeholder proxy CIDR is the only value operators must supply.
   const compute = structuredClone(example.drivers.compute.configuration);
   compute.network.gatewayTrustedProxyCidrs = ["192.0.2.10/32"];
-  KubernetesComputeDriver.validateConfiguration(compute);
+  requireConfiguration(KubernetesComputeDriver, compute);
 });
 
 test("managed ChatGPT service-account wiring is optional and explicit", async () => {
@@ -1833,7 +1837,13 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     // So is an empty user info, which Node drops: any @ before the host, with or without the
     // slashes, and before an IPv4 host too.
     "http://@grafana.example.internal/d",
-    "https://:@grafana.example.internal/d",
+    syntheticCredentialUrl({
+      protocol: "https",
+      username: "",
+      password: "",
+      host: "grafana.example.internal",
+      pathname: "/d",
+    }),
     "http:@grafana.example.internal/d",
     "http:\t//@grafana.example.internal/d",
     "http://@192.0.2.10:3000/d",
@@ -2453,7 +2463,7 @@ for (const profile of ["openclaw", "codex"]) {
       const compute = loadYaml(output.installation).drivers.compute.configuration;
       assert.equal(compute.runtime.channels, undefined);
       // Installation validation runs even before an Agent enables a channel.
-      assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute));
+      assert.doesNotThrow(() => requireConfiguration(KubernetesComputeDriver, compute));
     });
   }
 }
@@ -2589,7 +2599,7 @@ test("profiles refuse gateway namespaces the compute driver refuses", async () =
     );
     assert.throws(
       () => admit({ ...routing, gatewayNamespace: namespace }),
-      /Gateway routing Gateway namespace must be a Kubernetes namespace name/,
+      SharedConfigurationValidationError,
     );
   }
   for (const envoyNamespace of refused) {
@@ -2598,10 +2608,7 @@ test("profiles refuse gateway namespaces the compute driver refuses", async () =
       baseInput({ controlPlane: { ...controlPlane, envoyNamespace } }),
       envoyMessage,
     );
-    assert.throws(
-      () => admit({ ...routing, envoyNamespace }),
-      /Gateway routing Envoy namespace must be a Kubernetes namespace name/,
-    );
+    assert.throws(() => admit({ ...routing, envoyNamespace }), SharedConfigurationValidationError);
   }
   const namespace = "a".repeat(63);
   const envoyNamespace = `${"b".repeat(62)}9`;
@@ -2659,7 +2666,7 @@ test("preflight rejects Codex seccomp paths the compute driver refuses", async (
   }
   const accepted = await render("codex", codexInput());
   const installation = loadYaml(accepted.installation);
-  KubernetesComputeDriver.validateConfiguration(installation.drivers.compute.configuration);
+  requireConfiguration(KubernetesComputeDriver, installation.drivers.compute.configuration);
   assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
 });
 
@@ -2687,7 +2694,7 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.codexModelBaseUrl,
     "https://192.0.2.1/v1",
   );
-  KubernetesComputeDriver.validateConfiguration(compute);
+  requireConfiguration(KubernetesComputeDriver, compute);
   assert.equal(
     loadYaml((await render("codex", codexInput())).installation).drivers.compute.configuration
       .runtime.codexModelBaseUrl,
@@ -2708,8 +2715,8 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ["https://@models.example.com/v1", "must not contain user info or an @ before the host."],
     [
       syntheticCredentialUrl({
-        username: "user",
-        password: "pass",
+        username: "fixture-user",
+        password: "fixture-password",
         host: "models.example.com",
         pathname: "/v1",
       }),
@@ -2740,14 +2747,12 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     await assertFieldRefusals("codex", codexInput(), field, [value], message);
     assert.throws(
       () =>
-        KubernetesComputeDriver.validateConfiguration({
+        requireConfiguration(KubernetesComputeDriver, {
           ...compute,
           runtime: { ...compute.runtime, codexModelBaseUrl: value },
         }),
       // Compute startup has no separate nonempty-string refusal; its general rule covers it.
-      {
-        message: `Codex model endpoint ${message === "must be a nonempty string." ? general : message}`,
-      },
+      SharedConfigurationValidationError,
       JSON.stringify(value),
     );
   }
@@ -2787,7 +2792,7 @@ test("profile transport Secret prefixes agree with controller startup admission"
           mode: "production",
           environment: { OCC_CONFIG_PATH: path },
         }),
-        /runtime\.transportSecretPrefix/,
+        SharedConfigurationValidationError,
       );
     }
   }
