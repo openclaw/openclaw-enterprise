@@ -472,7 +472,7 @@
       "breakpoints": true
     },
     {
-      "idx": 67,
+      "idx": 68,
       "version": "7",
       "when": 1787000000077,
       "tag": "0068_credential_proxy_github_installation",

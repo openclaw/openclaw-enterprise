@@ -20,18 +20,23 @@ import type {
 export const configurationSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["origin", "certFile", "peerOrigin", "releaseKey"],
+  required: ["origin", "certFile", "peerOrigin", "capabilityOrigin", "releaseKey"],
   properties: Object.fromEntries(
-    ["origin", "certFile", "peerOrigin", "releaseKey", "installationApiOrigin"].map((k) => [
-      k,
-      { type: "string" },
-    ]),
+    [
+      "origin",
+      "certFile",
+      "peerOrigin",
+      "capabilityOrigin",
+      "releaseKey",
+      "installationApiOrigin",
+    ].map((k) => [k, { type: "string" }]),
   ),
 };
 type Config = {
   origin: string;
   certFile: string;
   peerOrigin: string;
+  capabilityOrigin: string;
   releaseKey: string;
   installationApiOrigin?: string;
 };
@@ -39,7 +44,7 @@ export function validateConfiguration({ origin }: Config) {
   const { protocol, hostname, origin: expectedOrigin } = new URL(origin);
   assert.equal(protocol, "https:");
   assert.equal(hostname, "127.0.0.1", "fixture Git must never leave loopback");
-  assert.equal(origin, expectedOrigin, "expected only the private Git origin");
+  assert.equal(origin, expectedOrigin, "expected an origin without a path");
 }
 
 // The test has the workload's credential-free endpoint and can drive ordinary installer work.
@@ -55,8 +60,6 @@ export let peer: {
   clientHeader: string;
   // A nonsecret marker from the workload's host-scoped Git helper; no provider material.
   gitMarker: string;
-  capabilityRequests: number;
-  reportRepositoryOnly?: boolean;
   apiUrl: URL;
   replayLastInstallationExchange?(): Promise<void>;
   decisions: { operation: string; decision: unknown }[];
@@ -91,6 +94,13 @@ export function createDriver(options: {
   const sandboxId = randomUUID();
   let status: EgressInstallation | undefined;
   validateConfiguration({ ...config, origin: config.peerOrigin });
+  validateConfiguration({ ...config, origin: config.capabilityOrigin });
+  assert.notEqual(
+    config.capabilityOrigin,
+    config.peerOrigin,
+    "capability and protected listeners must differ",
+  );
+  const capabilityUrl = new URL("/capability", config.capabilityOrigin);
   const url = new URL(config.peerOrigin);
   const ca = readFileSync(config.certFile);
   const peerKeyId = new X509Certificate(ca).fingerprint256;
@@ -167,19 +177,6 @@ export function createDriver(options: {
       "request",
       async function serveProtectedRepositoryGitRequest(req: IncomingMessage, res: ServerResponse) {
         try {
-          if (req.url === "/capability") {
-            peer.capabilityRequests++;
-            res
-              .writeHead(200)
-              .end(
-                JSON.stringify(
-                  installationApiOrigin && !peer.reportRepositoryOnly
-                    ? "github_installation"
-                    : "repository_git",
-                ),
-              );
-            return;
-          }
           if (req.url === "/installation" && req.headers.authorization === observationSecret) {
             const { preparationAttemptId, materialVersion } = installed ?? {};
             res.writeHead(status ? 200 : 503).end(
@@ -408,7 +405,6 @@ export function createDriver(options: {
       gitMarker,
       clientHeader: "Authorization: " + clientSecret,
       decisions,
-      capabilityRequests: 0,
       async install() {
         const selected = installationApiOrigin ? host.githubInstallation! : host;
         if (installationApiOrigin) {
@@ -531,7 +527,7 @@ export function createDriver(options: {
           assertAvailable: async (signal, profile) => {
             assert.equal(profile, installationApiOrigin ? "github_installation" : "repository_git");
             // The API registration knows only the configured peer and its public TLS certificate.
-            const res = await exchange(new URL("/capability", url), { signal });
+            const res = await exchange(capabilityUrl, { signal });
             assert.equal(res.statusCode, 200);
             checkedCapability = (await json(res)) === profile;
             return checkedCapability && profile === "github_installation" ? profile : undefined;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { get, request } from "node:https";
+import { createServer, get, request, type ServerOptions } from "node:https";
 import { json } from "node:stream/consumers";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
@@ -10,6 +10,7 @@ import type {
   AgentRevision,
   ComputeRevisionContext,
   ComputeDriver,
+  RepositoryGitDeliveryProfile,
   RepositoryGitSendPermit,
 } from "../../packages/contracts/src/index.ts";
 import {
@@ -54,6 +55,22 @@ test(
   externalGitJourney("installation"),
 );
 
+// Public discovery has its own listener. It receives no sender, installation or protected authority.
+function createCapabilityPeer(tls: ServerOptions, profile: RepositoryGitDeliveryProfile) {
+  const capability = { profile, requests: 0 };
+  const server = createServer(tls, (req, res) => {
+    if (req.method !== "GET" || req.url !== "/capability") {
+      res.writeHead(404).end();
+      return;
+    }
+    capability.requests++;
+    res
+      .writeHead(200, { "content-type": "application/json" })
+      .end(JSON.stringify(capability.profile));
+  });
+  return { capability, server };
+}
+
 function externalGitJourney(scope: "repository" | "installation") {
   return async (t: TestContext) => {
     const f = await standingExecutionPlatform(t, import.meta.url);
@@ -74,6 +91,11 @@ function externalGitJourney(scope: "repository" | "installation") {
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const { certFile } = tls;
     const peerOrigin = await listen(t, cedar.createCounterpart(tls));
+    const { capability, server } = createCapabilityPeer(
+      tls,
+      broad ? "github_installation" : "repository_git",
+    );
+    const capabilityOrigin = await listen(t, server);
     const releaseKey = publicKey.export({ format: "pem", type: "spki" }).toString();
     await writeFile(
       path,
@@ -96,6 +118,7 @@ function externalGitJourney(scope: "repository" | "installation") {
             configuration: {
               origin: origin.origin,
               peerOrigin,
+              capabilityOrigin,
               certFile,
               releaseKey,
               installationApiOrigin,
@@ -116,7 +139,7 @@ function externalGitJourney(scope: "repository" | "installation") {
       }),
     );
     // Production loads this package independently in the API and worker processes. Use separate
-    // installed copies here, with the same durable identity and HTTPS peer; only the worker binds.
+    // installed copies here, with the same durable identity and discovery origin; only the worker binds protected authority.
     const load = (packageRoot: string) =>
       loadInstallationConfiguration({
         mode: "production",
@@ -170,7 +193,7 @@ function externalGitJourney(scope: "repository" | "installation") {
         assert.ok(plan?.repositoryGit && custody.currentEgressInstallation);
         const context = { plan, revision, namespace, signal: t.signal };
         if (broad) {
-          peer.reportRepositoryOnly = true;
+          capability.profile = "repository_git";
           await assert.rejects(
             release.configure(context),
             /no longer supports GitHub installation access/,
@@ -180,7 +203,7 @@ function externalGitJourney(scope: "repository" | "installation") {
             0,
             "a repository-only sender cannot prepare a broad token",
           );
-          delete peer.reportRepositoryOnly;
+          capability.profile = "github_installation";
         }
         const wiring = await release.configure(context);
         assert.equal(
@@ -274,14 +297,14 @@ function externalGitJourney(scope: "repository" | "installation") {
     );
     const deploy = () => controller.deployAgent(who, key, resolveApprovedHarness);
     if (broad) {
-      peer.reportRepositoryOnly = true;
+      capability.profile = "repository_git";
       await assert.rejects(deploy, /did not confirm installation-wide repository access/);
       assert.equal(gh.issuesOfTokens.length, 0);
-      delete peer.reportRepositoryOnly;
+      capability.profile = "github_installation";
     }
-    const probes = peer.capabilityRequests;
+    const probes = capability.requests;
     const revision = await deploy();
-    assert.ok(peer.capabilityRequests > probes, "API admission reached the worker's HTTPS peer");
+    assert.ok(capability.requests > probes, "API admission reached the capability-only HTTPS peer");
     assert.deepEqual(revision.executionAdmission, {
       version: 4,
       mode: "protected",
@@ -533,23 +556,28 @@ function externalGitJourney(scope: "repository" | "installation") {
       const upstream = new URL(origin.origin);
       const ca = await readFile(certFile);
       const headers = {
+        host: peer.url.host,
         authorization: broad
           ? "Basic " + Buffer.from("x-access-token:" + peer.gitMarker).toString("base64")
           : peer.clientHeader.slice("Authorization: ".length),
       };
       const prior = { traffic: traffic(), decisions: peer.decisions.length };
-      for (const path of [
-        `//${upstream.host}${discovery}`,
-        peer.url.origin + discovery,
-        "/elsewhere/.." + discovery,
-      ]) {
+      // Cross the listeners with a valid workload marker and the protected Host header.
+      // Neither public discovery on the sender nor a Git operation on discovery may reach authority.
+      for (const [target, path, expectedStatus] of [
+        [capabilityOrigin, discovery, 404],
+        [peer.url, "/capability", 403],
+        [peer.url, `//${upstream.host}${discovery}`, 403],
+        [peer.url, peer.url.origin + discovery, 403],
+        [peer.url, "/elsewhere/.." + discovery, 403],
+      ] as const) {
         const status = await new Promise<number | undefined>((resolve, reject) => {
-          get(peer.url, { path, ca, headers, signal: t.signal }, (res) => {
+          get(target, { path, ca, headers, signal: t.signal }, (res) => {
             res.resume();
             resolve(res.statusCode);
           }).once("error", reject);
         });
-        assert.equal(status, 403, path);
+        assert.equal(status, expectedStatus, path);
         assert.deepEqual({ traffic: traffic(), decisions: peer.decisions.length }, prior, path);
       }
 

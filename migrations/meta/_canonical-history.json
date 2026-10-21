@@ -539,7 +539,7 @@
       "sha256": "2f0c6bd413c15bea392ffe4f8a029762a2816f1443cfd2b312e7f956a926e689"
     },
     {
-      "idx": 67,
+      "idx": 68,
       "version": "7",
       "when": 1787000000077,
       "tag": "0068_credential_proxy_github_installation",
