@@ -1004,8 +1004,10 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
   throw new Error("Unexpected external command: " + command + " " + JSON.stringify(args));
 }
 
-// An ANSI-C quoted bash word holding exactly these bytes.
+// An ANSI-C quoted bash word holding exactly these bytes. Bash strings end at a NUL,
+// so a fake's output may not contain one (none does).
 function bashString(text) {
+  assert.ok(!text.includes("\0"), "a fake command's output must not contain NUL");
   let word = "$'";
   for (const byte of Buffer.from(text)) {
     const plain = byte >= 0x20 && byte < 0x7f && byte !== 0x27 && byte !== 0x5c;
@@ -1105,7 +1107,9 @@ function serveCommand(socket, { store, hungCommandExitMs }) {
     holdPipes: ({ ms, escaped, pidFile, escapedPidFile }) =>
       send(
         escaped
-          ? `"$__setsid" "$__sleep" ${ms / 1000} </dev/null 3>&- & ` +
+          ? // The command ignores SIGTERM only after starting the descendant, which would
+            // otherwise inherit the ignored signal (node's handler was not inherited).
+            `"$__setsid" "$__sleep" ${ms / 1000} </dev/null 3>&- & ` +
               `printf '%s\\n' "$$" >> ${bashString(pidFile)}; ` +
               `printf '%s\\n' "$!" >> ${bashString(escapedPidFile)}; trap '' TERM`
           : `"$__sleep" ${ms / 1000} </dev/null 3>&- & ` +
