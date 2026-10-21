@@ -34,9 +34,10 @@ async function execute(command, args, { timeoutMs, ...options } = {}) {
 }
 const selectedCollectorSmoke = process.env.OCC_TEST_LOGGING_COLLECTOR === "1";
 
-// The Collector's file exporter appends one JSON line per export and can be
-// mid-write when a test polls the file, so only newline-terminated lines are
-// records. A partial last line is left for the next poll instead of failing the
+// The Collector's file exporter appends one JSON line per export through a
+// buffered writer, so a test that polls the file can read a line cut at any byte
+// (or a whole object whose newline is not flushed yet). Only newline-terminated
+// lines are records; the rest waits for the next poll instead of failing the
 // parse ("Unterminated string in JSON" under load).
 function completeJsonLines(text) {
   return text

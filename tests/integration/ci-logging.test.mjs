@@ -340,7 +340,8 @@ test("cleanupLogging does not require Kubernetes when a k3d backend is cleaned",
   await assert.rejects(() => stat(directory), { code: "ENOENT" });
 });
 
-test("readJsonlPayloads returns only complete lines while the exporter is mid-write", async (t) => {
+// The Collector's file exporter can be read mid-write; a cut line waits for its newline.
+test("readJsonlPayloads ignores an unterminated last line until it is complete", async (t) => {
   const root = await fixture(t);
   const path = join(root, "logs.jsonl");
   assert.deepEqual(await readJsonlPayloads(path), []);
