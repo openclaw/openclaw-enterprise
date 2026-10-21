@@ -18,6 +18,7 @@ import {
   waitForIdleFetches,
 } from "./console-agents-browser-helpers.mjs";
 import { agentDeleteRequests, agentStopRequests } from "./console-agents-test-support.mjs";
+import { createReadyConsoleNamespace } from "./console-ready-namespace.mjs";
 
 // A failure's card leads the Agent page and folds Deployment details (finding 2094); a reader
 // opens them for the record's evidence.
@@ -1547,6 +1548,78 @@ test("Agents list row actions stop and delete an Agent through the real API", as
     false,
   );
 });
+
+for (const action of ["Stop", "Delete"]) {
+  test(`Agents list cannot confirm ${action} from a response naming a different Agent`, async (t) => {
+    const { fixture, namespace } = await createReadyConsoleNamespace(t, `Uncertain ${action}`);
+    const target = await fixture.createAgent(
+      namespace.id,
+      "Selected Agent",
+      nativeValues("target"),
+    );
+    await fixture.seedActiveAgentRevision(namespace.id, target.id);
+    const other = await fixture.createAgent(namespace.id, "Other Agent", nativeValues("other"));
+    const { page } = await newPage(t, fixture);
+    await login(page, fixture, listUrl(namespace.id));
+    const requests = apiRequests(page, fixture.origin);
+
+    const stopping = action === "Stop";
+    const agentPath = `/namespaces/${namespace.id}/agents/${target.id}`;
+    const path = agentPath + (stopping ? "/stop" : "");
+    const method = stopping ? "POST" : "DELETE";
+    await page.route(
+      `${fixture.origin}${path}`,
+      async (route) => {
+        // Let the real controller accept this write. Change only which Agent the reply identifies.
+        const response = await route.fetch();
+        assert.equal(response.status(), 202);
+        const json = await response.json();
+        assert.equal(json.data.id, target.id);
+        assert.equal(
+          stopping ? json.data.desiredRuntimeState : json.data.status,
+          stopping ? "stopped" : "deleting",
+        );
+        json.data = { ...json.data, id: other.id, name: other.name };
+        await route.fulfill({ response, json });
+      },
+      { times: 1 },
+    );
+
+    const targetRow = page.getByRole("row").filter({ hasText: target.name });
+    const invoke = targetRow.getByRole("button", { name: `${action} ${target.name}` });
+    await invoke.click();
+    const dialog = page.getByRole("dialog", { name: `${action} ${target.name}?` });
+    await dialog
+      .getByRole("button", { name: stopping ? "Stop Agent" : "Permanently delete Agent" })
+      .click();
+    await dialog.waitFor({ state: "hidden" });
+
+    const badge = stopping ? "Stop requested" : "Deleting";
+    const otherRow = page.getByRole("row").filter({ hasText: other.name });
+    assert.equal(
+      await otherRow.getByText(badge, { exact: true }).count(),
+      0,
+      `the response for ${other.name} must not change that row`,
+    );
+    assert.equal(await invoke.isDisabled(), true);
+    await page
+      .getByRole("alert")
+      .getByText(
+        `Outcome unknown. ${stopping ? "Stop" : "Deletion"} may have been accepted for ${target.name}. Select Refresh before trying again.`,
+        { exact: true },
+      )
+      .waitFor();
+
+    // Refresh recovers the actual outcome with a read, never another Stop or Delete.
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await targetRow.getByText(badge, { exact: true }).waitFor();
+    assert.equal(await otherRow.getByText(badge, { exact: true }).count(), 0);
+    assert.deepEqual(
+      nonAuthWriteRequests(requests).map((r) => [r.method, r.path]),
+      [[method, path]],
+    );
+  });
+}
 
 test("Agents list row actions explain missing access and still report a refused or uncertain write", async (t) => {
   const fixture = await createConsoleAppFixture(t, { provisionedPeople: ["row-reader"] });

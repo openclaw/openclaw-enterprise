@@ -434,8 +434,13 @@ export function renderAgentList(context: AgentListContext) {
     );
   }
 
-  function replaceItem(next: AgentRead) {
-    const index = items.findIndex((item) => item.id === next.id);
+  function replaceItem(expectedId: string, next: AgentRead) {
+    // A write may have succeeded even if its response names a different Agent. Let the caller
+    // report the unknown outcome and require Refresh before another action on the requested row.
+    if (next.id !== expectedId) {
+      throw new Error("The action response identified a different Agent.");
+    }
+    const index = items.findIndex((item) => item.id === expectedId);
     if (index !== -1) {
       items[index] = next;
     }
@@ -526,7 +531,7 @@ export function renderAgentList(context: AgentListContext) {
       ) {
         throw new Error("Invalid Agent stop response");
       }
-      replaceItem(stopped);
+      replaceItem(item.id, stopped);
       showOutcome({
         notice:
           stopped.status === "deleting"
@@ -549,7 +554,7 @@ export function renderAgentList(context: AgentListContext) {
       if (deleting?.status !== "deleting") {
         throw new Error("Invalid deletion response");
       }
-      replaceItem(deleting);
+      replaceItem(item.id, deleting);
       showOutcome({
         notice: `Deletion requested for ${item.name}. It leaves this list once cleanup finishes; select Refresh to check.`,
       });
@@ -848,7 +853,7 @@ export function renderAgentList(context: AgentListContext) {
                   "Stop requested",
                 )
               : null,
-            "configurationReadError" in item
+            "configurationReadError" in item && item.configurationReadError
               ? element(
                   "span",
                   { className: "badge", "data-tone": "danger" },
