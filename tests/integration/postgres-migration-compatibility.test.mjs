@@ -5,7 +5,7 @@ import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
@@ -15,6 +15,8 @@ import {
   initialSchemaState,
   migrationCatalog,
 } from "../../scripts/migration-catalog.mjs";
+import { migrateWithHistory } from "../../scripts/migration-history.mjs";
+import { createPostgresPool } from "../../packages/occ/src/state/postgres-pool.ts";
 
 const repositoryRoot = fileURLToPath(new URL("../..", import.meta.url));
 const migrationsDirectory = join(repositoryRoot, "migrations");
@@ -895,7 +897,46 @@ const requiresHistoryPostgres = {
 // node:test still waits for every subtest and fails the parent if one fails.
 const concurrentHistoryPostgres = { ...requiresHistoryPostgres, concurrency: 4 };
 
-async function migrationHistoryFixture() {
+// Administrator SQL runs over TCP as the container's own superuser: one pool for the
+// `postgres` database (CREATE/DROP DATABASE) and a fresh session per database-local call,
+// like each `psql -c` it replaces. `docker inspect` reads the credential once per file.
+async function historyAdministrator(container, hostname, port) {
+  const { stdout } = await execFileAsync(
+    "docker",
+    ["inspect", "--format", "{{json .Config.Env}}", container],
+    { encoding: "utf8" },
+  );
+  const environment = new Map(
+    JSON.parse(stdout).map((entry) => {
+      const separator = entry.indexOf("=");
+      return [entry.slice(0, separator), entry.slice(separator + 1)];
+    }),
+  );
+  const password = environment.get("POSTGRES_PASSWORD");
+  assert.ok(password, "The PostgreSQL container must define its administrator password.");
+  const url = new URL("postgresql://localhost/postgres");
+  url.hostname = hostname;
+  url.port = String(port);
+  url.username = environment.get("POSTGRES_USER") ?? "postgres";
+  url.password = password;
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 4 });
+  // An idle client's error (server restart) must fail its next query, not the process.
+  pool.on("error", () => {});
+  after(() => pool.end());
+  assert.deepEqual(
+    (await pool.query("SELECT rolsuper FROM pg_roles WHERE rolname=current_user")).rows,
+    [{ rolsuper: true }],
+  );
+  return { adminUrl: url.toString(), admin: pool };
+}
+
+let historyFixture;
+function migrationHistoryFixture() {
+  historyFixture ??= resolveMigrationHistoryFixture();
+  return historyFixture;
+}
+
+async function resolveMigrationHistoryFixture() {
   if (historySelectors.every((value) => value === undefined)) {
     const fixture = await ownedPostgres();
     // Resolve the Compose service's container once: `docker exec` skips the Compose
@@ -906,7 +947,7 @@ async function migrationHistoryFixture() {
     assert.match(container, /^[a-f0-9]{12,64}$/);
     return {
       ...fixture,
-      composeArgs: ["exec", container],
+      ...(await historyAdministrator(container, "127.0.0.1", fixture.port)),
       databasePrefix: "openclaw_ci_canonical",
     };
   }
@@ -934,23 +975,30 @@ async function migrationHistoryFixture() {
       .split("\n")
       .some((line) => line === `127.0.0.1:${port}` || line === `[::1]:${port}`),
   );
-  return { migrationUrl, port, databasePrefix, composeArgs: ["exec", container] };
+  return {
+    migrationUrl,
+    port,
+    databasePrefix,
+    ...(await historyAdministrator(container, url.hostname, port)),
+  };
 }
 
+// One simple-protocol query, so a multi-statement string runs in one implicit
+// transaction exactly as `psql -c` ran it.
 async function historyAdmin(fixture, database, sql) {
-  return runCommand(fixture, "docker", [
-    ...fixture.composeArgs,
-    "psql",
-    "-XAt",
-    "-v",
-    "ON_ERROR_STOP=1",
-    "-U",
-    "postgres",
-    "-d",
-    database,
-    "-c",
-    sql,
-  ]);
+  if (database === "postgres") {
+    await fixture.admin.query(sql);
+    return;
+  }
+  const url = new URL(fixture.adminUrl);
+  url.pathname = `/${database}`;
+  const client = new pg.Client({ connectionString: url.toString() });
+  await client.connect();
+  try {
+    await client.query(sql);
+  } finally {
+    await client.end();
+  }
 }
 
 async function historyDatabase(context, fixture, label, { schemas = true, prefix = 0 } = {}) {
@@ -1046,16 +1094,16 @@ async function installProviderCompletedHistory(db) {
   }
 }
 
-// The history cases start several hundred migration commands on a CPU-bound 2-CPU CI
-// runner, and pnpm's own startup costs about 1 s of CPU per call. Run each package.json
-// script's exact text through `sh` with this Node first on PATH, as pnpm does. The "Drizzle
-// second migration" case still runs both commands through `corepack pnpm`, every prepared CI
-// database is migrated that way, and the Helm migration Job runs the script file directly.
+// The real migration command. pnpm's own startup costs about 1 s of CPU per call, so run each
+// package.json script's exact text through `sh` with this Node first on PATH, as pnpm does.
+// The "Drizzle second migration" case still runs both commands through `corepack pnpm`,
+// every prepared CI database is migrated that way, and the Helm migration Job runs the
+// script file directly. Each refusal code and both scripts keep a command case here.
 const migrationScripts = readFile(join(repositoryRoot, "package.json"), "utf8").then(
   (text) => JSON.parse(text).scripts,
 );
 
-async function runHistoryMigration(db, mode = "development", ...flags) {
+async function runHistoryCommand(db, mode = "development", ...flags) {
   const script = (await migrationScripts)[
     mode === "production" ? "db:migrate:production" : "db:migrate"
   ];
@@ -1098,6 +1146,46 @@ async function runHistoryMigration(db, mode = "development", ...flags) {
     // Subprocess errors can retain connection credentials in stdout or stderr.
     // eslint-disable-next-line preserve-caught-error
     throw new Error(`Migration subprocess failed unexpectedly (code=${error.code ?? "none"}).`);
+  }
+}
+
+// The history cases migrate a few hundred databases. Run them in this process: the same
+// `migrateWithHistory` call on the same pool as `scripts/migrate-production.mjs`, with that
+// command's outcome codes. The mode only selects the script (and its NODE_ENV logging),
+// never the migration; `runHistoryCommand` covers the process contract.
+async function runHistoryMigration(db, mode = "development", ...flags) {
+  assert.ok(["development", "production"].includes(mode));
+  const [option, ...extra] = flags;
+  assert.ok(extra.length === 0 && [undefined, "--check", "--expect-empty"].includes(option));
+  const pool = await createPostgresPool(db.migrationUrl, { max: 1 });
+  try {
+    const history = await migrateWithHistory(pool, {
+      checkOnly: option === "--check",
+      expectEmpty: option === "--expect-empty",
+    });
+    return { ok: true, history };
+  } catch (error) {
+    if (error?.code === "MIGRATION_HISTORY_UNSUPPORTED") {
+      return { ok: false, code: "MIGRATION_HISTORY_UNSUPPORTED" };
+    }
+    if (error?.code === "MIGRATION_HISTORY_NOT_EMPTY") {
+      assert.ok(
+        error.message.includes("use --check to inspect migration history without applying changes"),
+      );
+      return { ok: false, code: "MIGRATION_HISTORY_NOT_EMPTY" };
+    }
+    // The command reports any other failure as MIGRATION_FAILED. Here only a PostgreSQL
+    // error (SQLSTATE, possibly wrapped by Drizzle) counts, so a test bug cannot pass as one.
+    if (
+      [error, error?.cause].some(
+        (value) => typeof value?.severity === "string" && typeof value?.code === "string",
+      )
+    ) {
+      return { ok: false, code: "MIGRATION_FAILED" };
+    }
+    throw error;
+  } finally {
+    await pool.end();
   }
 }
 
@@ -1594,7 +1682,8 @@ test(
   async (context) => {
     const fixture = await migrationHistoryFixture();
     const db = await historyDatabase(context, fixture, "first_install");
-    const firstInstall = () => runHistoryMigration(db, "production", "--expect-empty");
+    // The real production command: its exit code, stdout outcome and refusal message.
+    const firstInstall = () => runHistoryCommand(db, "production", "--expect-empty");
     const refused = { ok: false, code: "MIGRATION_HISTORY_NOT_EMPTY" };
     // Concurrent callers both intend a first installation. Only the lock winner may migrate.
     const results = await Promise.all([firstInstall(), firstInstall()]);
@@ -1607,7 +1696,7 @@ test(
     const before = await historySnapshot(db);
     assert.deepEqual(await firstInstall(), refused);
     assert.deepEqual(await historySnapshot(db), before);
-    assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
+    assert.deepEqual(await runHistoryCommand(db, "production", "--check"), {
       ok: true,
       history: "completed",
     });
@@ -1630,10 +1719,10 @@ test(
             history: "empty",
           });
           assert.deepEqual(await historySnapshot(db), before);
-          const results = await Promise.all([
-            runHistoryMigration(db),
-            runHistoryMigration(db, "production"),
-          ]);
+          // Two real processes (both scripts) race for the migration lock once; the
+          // owner-only case races in-process connections.
+          const migrate = schemas ? runHistoryMigration : runHistoryCommand;
+          const results = await Promise.all([migrate(db), migrate(db, "production")]);
           assert.deepEqual(
             results.map((result) => result.ok),
             [true, true],
@@ -1793,7 +1882,8 @@ test(
     // A preexisting native OAuth binding blocks the new grammar atomically; the
     // migration cannot silently relabel a Secret as a gateway-owned connection.
     const beforeRefusal = await historySnapshot(db);
-    assert.deepEqual(await runHistoryMigration(db), { ok: false, code: "MIGRATION_FAILED" });
+    // The real command reports a failed migration transaction as MIGRATION_FAILED.
+    assert.deepEqual(await runHistoryCommand(db), { ok: false, code: "MIGRATION_FAILED" });
     assert.deepEqual(await historySnapshot(db), beforeRefusal);
     assert.deepEqual(
       (
@@ -2317,7 +2407,8 @@ test(
       const url = new URL(db.migrationUrl);
       url.username = "occ_app";
       url.password = "occ-app-local";
-      assert.deepEqual(await runHistoryMigration({ ...db, migrationUrl: url.toString() }), {
+      // The real command refuses an unsupported history with exit code 1.
+      assert.deepEqual(await runHistoryCommand({ ...db, migrationUrl: url.toString() }), {
         ok: false,
         code: "MIGRATION_HISTORY_UNSUPPORTED",
       });
