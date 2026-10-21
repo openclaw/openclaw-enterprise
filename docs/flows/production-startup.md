@@ -11,7 +11,7 @@ last_updated_session: "authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6"
 Prepare a fresh protected bootstrap PVC; install Helm with approved images,
 PostgreSQL/authentication credentials, trusted Installation YAML and network
 policies. Wait for private API/worker readiness; authenticate `/installation`
-with the service key. Tenant deployment/model-backed TUI proof is separate.
+with the service key.
 
 [Deployment guide](../guides/deploy.md).
 
@@ -177,9 +177,8 @@ IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
 database TLS not pinned to that CA.
 
-API and worker start after initialization. Before readiness, the API
-validates its listener, Better Auth, database, Installation YAML, Drivers,
-Backend membership and Compute preflight. Private routes, `/healthz` and
+After initialization, API readiness requires listener, Better Auth, database,
+Installation YAML, Driver, Backend membership, and Compute preflight validation. Private routes, `/healthz` and
 database-backed `/readyz` use the operator-managed endpoint. The startup probe
 allows 120 one-second failures: two minutes to listen, then readiness within a second.
 
@@ -290,20 +289,18 @@ until tenant deployment/TUI procedures run.
   without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
   inspected; initialization never repairs its ledger.
 - The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
-  `listening` includes `startupMs` since process start and `phasesMs` per phase
-  to identify slow startup.
+  `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
   A stopping API emits `shutdown.started` and then `shutdown.completed`.
 - `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
   Kubernetes to 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
-  `KUBERNETES_API_UNAVAILABLE` means Compute cannot reach the Kubernetes API at
-  the logged `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
+  `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
+  `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
 - Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
-- `DRIVER_CONFIGURATION_INVALID`: correct the field identified by `details`
-  (JSON Pointer, code, message). For `/runtime/gatewayStorageClassName`, use a
-  Kubernetes DNS-subdomain name.
-  `apps/controller/src/api-startup.mjs:startupFailureFields` preserves these shared
-  diagnostics before `server.mjs` emits the process startup error.
+- `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
+  `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
+  `apps/controller/src/api-startup.mjs:startupFailureFields` passes these diagnostics
+  to `server.mjs`.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
