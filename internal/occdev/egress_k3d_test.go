@@ -349,16 +349,26 @@ func checkWorkerAccess(t *testing.T, dir, namespace string) {
 func parseGeneratedInstallation(t *testing.T, realNode string, state *developmentState) {
 	t.Helper()
 	program := `import assert from 'node:assert/strict';
-import {loadInstallationConfiguration} from './apps/controller/src/composition/installation-config.ts';
-const loaded = await loadInstallationConfiguration({mode:'production', environment:{OCC_CONFIG_PATH:process.argv[1]}});
-assert.equal(loaded.installation.backend[0].configuration.auth.mode,'mtls');
-assert.equal(loaded.egressAuthority.keyId,'test-kid');
-assert.equal(loaded.egressAuthority.issuer,'openshell-gateway:openshell-gateway');
-assert.equal(loaded.installation.backend[0].drivers.credential_proxy,loaded.proxyDriver.id);
+import { loadInstallationConfiguration, loadStartupConfigurationSnapshot } from './apps/controller/src/composition/installation-config.ts';
+const options = { mode: 'production', environment: { OCC_CONFIG_PATH: process.argv[1] } };
+const startupConfiguration = await loadStartupConfigurationSnapshot(options);
+// Check the Gateway identity in the generated input. Composition keeps the authority inside the Driver.
+const { keyId, issuer } = startupConfiguration.configuration.drivers.credential_proxy.configuration.authority;
+assert.equal(keyId, 'test-kid');
+assert.equal(issuer, 'openshell-gateway:openshell-gateway');
+
+const { installation, protectedDriver, sandboxDriver, proxyDriver } =
+  await loadInstallationConfiguration({ ...options, startupConfiguration });
+const backend = installation.backend[0];
+assert.equal(backend.configuration.auth.mode, 'mtls');
+assert.equal(backend.drivers.credential_proxy, proxyDriver.id);
+assert.ok(protectedDriver.require('sandbox') === sandboxDriver, 'expected the installed Sandbox');
+assert.ok(protectedDriver.require('credential_proxy') === proxyDriver, 'expected the installed Credential Proxy');
+assert.equal(typeof proxyDriver.bindExchange, 'function');
 `
 	parse := exec.Command(realNode, "--input-type=module", "-e", program, filepath.Join(state.directory, "installation.yaml"))
 	parse.Dir = state.Repository
 	if out, err := parse.CombinedOutput(); err != nil {
-		t.Fatalf("real startup rejected generated profile: %v\n%s", err, out)
+		t.Fatalf("generated Installation contract failed: %v\n%s", err, out)
 	}
 }

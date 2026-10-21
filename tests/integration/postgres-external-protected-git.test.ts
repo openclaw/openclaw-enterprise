@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
+import { get } from "node:https";
 import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -285,6 +286,28 @@ test(
         assert.equal((await git(["cat-file", "-t", oid])).stdout.trim(), "commit");
       };
       await transfer(await origin.ref("main"));
+
+      // Send raw request targets through the working sender. Even targets resolving to the
+      // allowed URL must be refused before authorization or any connection to the private origin.
+      const discovery = `/${origin.repository}.git/info/refs?service=git-upload-pack`;
+      const upstream = new URL(origin.origin);
+      const ca = await readFile(certFile);
+      const headers = { authorization: peer.clientHeader.slice("Authorization: ".length) };
+      const prior = { traffic: traffic(), decisions: peer.decisions.length };
+      for (const path of [
+        `//${upstream.host}${discovery}`,
+        peer.url.origin + discovery,
+        "/elsewhere/.." + discovery,
+      ]) {
+        const status = await new Promise<number | undefined>((resolve, reject) => {
+          get(peer.url, { path, ca, headers, signal: t.signal }, (res) => {
+            res.resume();
+            resolve(res.statusCode);
+          }).once("error", reject);
+        });
+        assert.equal(status, 403, path);
+        assert.deepEqual({ traffic: traffic(), decisions: peer.decisions.length }, prior, path);
+      }
 
       // The same working sender now holds a committed positive until its actual send cutoff,
       // while the original request is still in time. Never ask for a second authorization.

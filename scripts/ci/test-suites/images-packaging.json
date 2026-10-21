@@ -85,7 +85,8 @@
         "private Envoy Gateway routing preserves explicit hostnames and external CA trust",
         "production peer matchLabels keep the native Kubernetes map contract",
         "Collector exporter ports preserve decimal meaning in Kubernetes YAML",
-        "OpenShell Git packaging exposes only the worker to selected supervisors"
+        "protected OpenShell Git installs without a repository broker and preserves an explicit broker trial",
+        "Helm supplies protected Git custody for a separately installed Credential Proxy"
       ]
     },
     {

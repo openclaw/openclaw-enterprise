@@ -28,9 +28,10 @@ export const configurationSchema = {
 };
 type Config = { origin: string; certFile: string; keyFile: string; releaseKey: string };
 export function validateConfiguration({ origin }: Config) {
-  const { protocol, hostname } = new URL(origin);
+  const { protocol, hostname, origin: expectedOrigin } = new URL(origin);
   assert.equal(protocol, "https:");
   assert.equal(hostname, "127.0.0.1", "fixture Git must never leave loopback");
+  assert.equal(origin, expectedOrigin, "expected only the private Git origin");
 }
 
 // The test has the workload's credential-free endpoint and can drive ordinary installer work.
@@ -53,9 +54,11 @@ export function createDriver(options: {
   configuration: Config;
 }): DriverRegistration {
   const config = options.configuration;
+  validateConfiguration(config);
+  const { origin } = config;
   const base = releaseDriver({
     ...options,
-    configuration: { endpoint: config.origin, ca: "unused" },
+    configuration: { endpoint: origin, ca: "unused" },
   });
   const { sandbox, credential_proxy: proxy } = base.capabilities;
   assert.ok(sandbox && proxy);
@@ -131,22 +134,23 @@ export function createDriver(options: {
             return;
           }
           const m = installed;
-          const path = req.url!;
-          const method = req.method!;
-          const base = "/" + m?.repository + ".git/";
-          const upload = method === "POST" && path === base + "git-upload-pack";
-          if (
-            !route ||
-            !m ||
-            req.headers.authorization !== clientSecret ||
-            !(upload || (method === "GET" && path === base + "info/refs?service=git-upload-pack"))
-          ) {
+          if (!route || !m || req.headers.authorization !== clientSecret) {
+            res.writeHead(403).end();
+            return;
+          }
+          // Construct the outbound request from the installed repository and a closed operation.
+          // Compare the raw inbound target exactly; never resolve it against the credentialed origin.
+          const upload = req.method === "POST";
+          const method = upload ? "POST" : "GET";
+          const service = upload ? "git-upload-pack" : "info/refs?service=git-upload-pack";
+          const path = `/${m.repository}.git/${service}`;
+          if (req.method !== method || req.url !== path) {
             res.writeHead(403).end();
             return;
           }
           const operation = upload ? "upload-pack" : "advertise-upload-pack";
           const body = await buffer(req);
-          const headers = req.headers;
+          const contentType = upload ? req.headers["content-type"] : undefined;
           const {
             sessionId,
             grantId,
@@ -157,10 +161,7 @@ export function createDriver(options: {
             materialVersion,
           } = m;
           const requestDigestSha256 = hash(
-            Buffer.concat([
-              Buffer.from(JSON.stringify([method, path, headers["content-type"]])),
-              body,
-            ]),
+            Buffer.concat([Buffer.from(JSON.stringify([method, origin, path, contentType])), body]),
           );
           const exchangeId = randomUUID();
           const deadlineAt = new Date(Date.now() + 20_000).toISOString();
@@ -207,9 +208,10 @@ export function createDriver(options: {
           }
           const upstream = await new Promise<IncomingMessage | undefined>((resolve, reject) => {
             const out = request(
-              new URL(path, config.origin),
+              origin,
               {
                 method,
+                path,
                 ca,
                 agent: false,
                 signal: AbortSignal.timeout(15_000),
@@ -217,7 +219,7 @@ export function createDriver(options: {
                   authorization:
                     "Basic " + Buffer.from("x-access-token:" + m.value).toString("base64"),
                   ...(upload && {
-                    "content-type": headers["content-type"],
+                    "content-type": contentType,
                     "content-length": String(body.length),
                   }),
                 },
