@@ -28,6 +28,7 @@ import {
   NAMESPACE_RECHECK_MS,
   namespaceCreation,
   namespacePath,
+  neutralDeploymentOutcome,
   preAdmissionRefusal,
   rejectionMessage,
 } from "./list.mjs";
@@ -158,6 +159,10 @@ function provisioningStatusText(status) {
       return "Provisioning finished. Opening Agent details…";
     case "failed":
       return "Provisioning failed.";
+    case "superseded":
+      return "Deployment superseded.";
+    case "stopped":
+      return "Provisioning stopped.";
     case "cancelled":
       return "Provisioning was cancelled.";
     default:
@@ -330,19 +335,18 @@ async function waitForProvisioning({ request, status, first, namespaceId, isCurr
     current?.status === "failed" && current.error?.code === "PROVISIONING_CANCELLED"
       ? await cancelledAgentState(request, namespaceId, current.agentId)
       : null;
-  const stopped =
-    current?.status === "failed" &&
-    (current.error?.code === "REVISION_STOPPED" || cancelledAgent === "kept");
-  status.textContent = stopped ? "Provisioning stopped." : provisioningStatusText(current?.status);
+  const neutralOutcome = cancelledAgent === "kept" ? "stopped" : neutralDeploymentOutcome(current);
+  status.textContent = provisioningStatusText(neutralOutcome ?? current?.status);
   if (current?.status !== "succeeded") {
     const error = new Error(current?.error?.message ?? "Provisioning did not complete.");
     error.provisioningAgentId = current?.agentId;
     error.provisioningRevisionId = current?.revisionId;
-    error.provisioningStopped = stopped;
+    error.provisioningOutcome = neutralOutcome;
     error.provisioningAgentUnknown = cancelledAgent === "unknown";
     error.provisioningTerminal = true;
     error.provisioningFailed = current?.status === "failed";
-    error.canRetryProvisioning = error.provisioningFailed && canRetryFailedProvisioning(current);
+    error.canRetryProvisioning =
+      !neutralOutcome && error.provisioningFailed && canRetryFailedProvisioning(current);
     error.provisioningUrl = current?.url ?? jobUrl;
     throw error;
   }
@@ -2509,7 +2513,9 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
         detail = `${reason ?? "Outcome unknown."} Retry resubmits the same request ID and saved references.`;
       } else if (error.provisioningTerminal && error.canRetryProvisioning) {
         detail = `${error.message} Retry uses the accepted provisioning job.`;
-      } else if (error.provisioningStopped) {
+      } else if (error.provisioningOutcome === "superseded") {
+        detail = "A newer deployment took over before this one was ready.";
+      } else if (error.provisioningOutcome === "stopped") {
         // A stopped Agent keeps its name and needs a deployment, not a repair or a new Agent.
         detail = `${error.message} Open this Agent and deploy ${error.provisioningRevisionId ? "a new version" : "a version"} when you want it running.`;
       } else if (error.provisioningAgentUnknown) {
@@ -2541,15 +2547,20 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           savedStatus.textContent = "";
         }
       }
-      if (error.provisioningStopped) {
+      if (error.provisioningOutcome) {
         // Not an error: keep the guidance out of the error colour. Later messages replace the span.
         feedback.replaceChildren(
-          element("span", { className: "provisioning-stopped" }, feedbackText),
+          element("span", { className: "provisioning-neutral" }, feedbackText),
         );
       } else {
         feedback.textContent = feedbackText;
       }
-      if (error.provisioningRevisionId && error.provisioningAgentId) {
+      // A superseded job names the deployment that ended, not the one that took over.
+      if (
+        error.provisioningOutcome !== "superseded" &&
+        error.provisioningRevisionId &&
+        error.provisioningAgentId
+      ) {
         feedback.append(
           link(
             " Open Agent and deployment details",
@@ -2558,7 +2569,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           ),
         );
       } else if (
-        (error.provisioningStopped || error.provisioningAgentUnknown) &&
+        (error.provisioningOutcome === "stopped" || error.provisioningAgentUnknown) &&
         error.provisioningAgentId
       ) {
         feedback.append(link(" Open Agent", `agents/${error.provisioningAgentId}`, context));

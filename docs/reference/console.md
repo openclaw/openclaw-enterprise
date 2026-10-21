@@ -82,9 +82,12 @@ Kubernetes differences, inspection scope, and unavailable states.
 
 ## Agent creation and deployment
 
-Dedicated provisioning waits for first activation; failure links the original
-request’s existing Agent and version. Otherwise, creation
-saves a draft: provide model and channel credentials when prompted, then select
+Dedicated provisioning follows the first deployment. If a newer deployment takes
+over before this one is ready, Create reports **Deployment superseded**. It offers
+no repair or retry and links to neither deployment because it cannot identify the
+replacement. For a deployment failure, Create links to the existing Agent and version.
+
+Ordinary creation saves a draft: provide model and channel credentials when prompted, then select
 **Deploy new version**. If the Compute Driver requires them, OCC generates
 missing connection credentials during that first deployment.
 See [Create and deploy Agents](console/create-and-deploy.md) for the full

@@ -22,6 +22,7 @@ import {
   secretOptionLabel,
   secretPostRequests,
   selectSecret,
+  settlePageRequests,
   settledFetches,
   takeLayoutShifts,
   trackSettledFetches,
@@ -447,8 +448,7 @@ test("Dedicated Agent creation shows the API's named reason when a provisioning 
   assert.equal(jobs, 2);
 });
 
-// The stopped guidance is not an error, so neither its text nor its block's stripe takes the
-// error colour.
+// Neither the neutral guidance nor its status stripe should use the error colour.
 async function assertNotErrorColour(locator) {
   const [colour, stripe, errorColour] = await locator.evaluate((node) => {
     const view = node.ownerDocument.defaultView;
@@ -472,7 +472,7 @@ async function assertNotErrorColour(locator) {
 // Agent and its name, so "create a new Agent" would be refused as a duplicate. The create page
 // names the stop without a cause to correct and links the kept Agent (finding 1376); it reads the
 // Agent a cancelled job names to tell a Stop from a deletion.
-test("Dedicated Agent creation reports a stop during or before the first deployment and links the kept Agent", async (t) => {
+test("Dedicated Agent creation distinguishes superseded, stopped and failed provisioning", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Provision stopped", { ready: true });
@@ -525,26 +525,46 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   // Each submit returns the same job; each case changes which Agent it names, how it ended and
   // how that Agent reads. `href` is the Open Agent link, null when there is none. The retryable
   // failure stays last: the page keeps its accepted job, so the next Create Agent would retry it.
+  const revisionId = "rev_00000000-0000-4000-8000-00000000c0de";
+  const superseded = "A newer deployment took over before this one was ready.";
   const cases = [
+    ...["REVISION_SUPERSEDED", "REPOSITORY_REVISION_SUPERSEDED"].map((code) => ({
+      job: {
+        agentId: kept.id,
+        revisionId,
+        phase: "handoff",
+        error: persistedDeploymentError(code),
+      },
+      text: superseded,
+      outcome: "Deployment superseded.",
+      href: null,
+    })),
+    // An unrecognized or absent code stays a failure, even if its message says superseded.
+    ...["REVISION_SUPERSEDED_UNKNOWN", undefined].map((code) => ({
+      job: { agentId: kept.id, revisionId, error: { code, message: "Deployment was superseded." } },
+      text: "Deployment was superseded. Open this Agent, correct the cause and deploy a new version.",
+      link: "Open Agent and deployment details",
+      href: `/console/agents/${kept.id}?revision=${revisionId}&namespace=${namespace.id}`,
+    })),
     {
       // Someone stopped the Agent while its first deployment was rolling out.
       job: {
         agentId: "agt_00000000-0000-4000-8000-00000000c0de",
-        revisionId: "rev_00000000-0000-4000-8000-00000000c0de",
+        revisionId,
         error: {
           code: "REVISION_STOPPED",
           message: "The Agent was stopped before its first deployment finished.",
         },
       },
       text: "The Agent was stopped before its first deployment finished. Open this Agent and deploy a new version when you want it running.",
-      stopped: true,
+      outcome: "Provisioning stopped.",
       link: "Open Agent and deployment details",
       href: `/console/agents/agt_00000000-0000-4000-8000-00000000c0de?revision=rev_00000000-0000-4000-8000-00000000c0de&namespace=${namespace.id}`,
     },
     {
       job: cancelled(kept.id, "stopped"),
       text: "Provisioning was cancelled because the Agent was stopped. Open this Agent and deploy a version when you want it running.",
-      stopped: true,
+      outcome: "Provisioning stopped.",
       href: keptHref,
     },
     {
@@ -618,26 +638,42 @@ test("Dedicated Agent creation reports a stop during or before the first deploym
   await page.getByLabel("Authentication method").selectOption("codex_pat");
   await createModelCredentialSecret(page, "model-secret-value");
   await page.getByLabel("Model", { exact: true }).selectOption("gpt-6-sol");
+  const requests = apiRequests(page, fixture.origin);
   for (const c of cases) {
     current = c;
+    requests.length = 0;
     await page.getByRole("button", { name: "Create Agent" }).click();
     await page.getByText(c.text).waitFor();
-    if (c.stopped) {
-      await page.getByText("Provisioning stopped.", { exact: true }).waitFor();
+    if (c.outcome) {
+      await page.getByText(c.outcome, { exact: true }).waitFor();
       assert.equal(
         await page.getByText(/Provisioning failed|Create a new Agent|correct the cause/i).count(),
         0,
       );
-      await assertNotErrorColour(page.locator(".provisioning-stopped"));
+      await assertNotErrorColour(page.getByText(c.text));
       assert.equal(
         await page.getByRole("button", { name: "Retry provisioning request" }).isVisible(),
         false,
       );
     } else {
       await page.getByText("Provisioning failed.", { exact: true }).waitFor();
-      assert.equal(await page.locator(".provisioning-stopped").count(), 0);
+      assert.equal(await page.getByText(superseded).count(), 0);
     }
     const open = page.getByRole("link", { name: c.link ?? "Open Agent", exact: true });
+    if (c.text === superseded) {
+      assert.equal(await page.getByRole("link", { name: /open agent|deployment/i }).count(), 0);
+      assert.match(page.url(), /\/console\/agents\/new\?/);
+      await settlePageRequests(page);
+      // Plugin catalog discovery is a read sent as POST. Only Create should write.
+      const agents = `/namespaces/${namespace.id}/agents`;
+      const writes = nonAuthWriteRequests(requests).filter(
+        ({ path, method }) => !(method === "POST" && path === `${agents}/plugins`),
+      );
+      assert.deepEqual(
+        writes.map(({ method, path }) => `${method} ${path}`),
+        [`POST ${agents}/provision`],
+      );
+    }
     if (c.href) {
       assert.equal(await open.getAttribute("href"), c.href);
     } else {

@@ -1,7 +1,7 @@
 ---
 created: "2026-09-23"
-updated: 2026-10-16
-last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
+updated: 2026-10-20
+last_updated_session: session/01a15b6e-1878-7471-a330-8bd91f4b811c
 ---
 
 # Agent provisioning flow
@@ -10,7 +10,7 @@ last_updated_session: Codex/01a13654-be66-7741-b54f-f8ae80f2d496
 
 Console saves Slack and model Secrets, submits inline Configuration and credential references, and retains Preset bindings. OCC queues setup without placeholder resources. The worker creates Configuration and Agent, grants exact Secret or source access, provisions trusted-proxy credentials, and admits the first deployment.
 
-The original provisioning handle follows the first deployment to activation or failure. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own runtime reconciliation; later deployments use separate handles.
+The provisioning handle follows only the first deployment. The [controller worker](controller-worker.md) and [Harness execution topology](harness-execution-topology.md) own reconciliation.
 
 ## Entry Points
 
@@ -33,6 +33,7 @@ graph TD
   Deploy --> Observe["<b>Same provisioning handle</b><br/>Observe saved version"]
   Observe -->|Pending| Observe
   Observe -->|Activated| UI["<b>Agent deployment view</b><br/>Open existing version"]
+  Observe -->|Superseded| Superseded["<b>Newer deployment took over</b><br/>Replacement revision unknown"]
   Observe -->|Failed| Terminal["<b>Creation failed</b><br/>Keep Agent and version"]
   Claim -->|Failure| Failed["<b>Retain outputs</b><br/>Retry known failures"]
   Failed -->|Uncertain write| Recovery["<b>Recovery required</b><br/>Do not repeat blindly"]
@@ -42,7 +43,7 @@ graph TD
   classDef condition fill:#F7F1E5,stroke:#B3A078,color:#514532,stroke-width:1px
   class Console,Secrets,API,Queue state
   class Claim,Config,Agent,Transport,Deploy,Observe,UI operation
-  class Failed,Recovery,Terminal condition
+  class Failed,Recovery,Terminal,Superseded condition
 ```
 
 ## Execution Trace
@@ -111,17 +112,17 @@ freeing the serial worker.
 
 `packages/occ/src/index.ts:OpenClawController.deployAgent`
 
-The job records its first Agent revision ID. `packages/occ/src/index.ts:observeProvisioningDeployment`
-defers work without consuming retries until that version activates or fails. The same handle reports
-success or the deployment’s safe error; meanwhile `progress` names its wait. Stop during rollout yields `REVISION_STOPPED`; Stop or deletion
-before handoff yields `PROVISIONING_CANCELLED` and says which happened. Status retains the Agent ID; both IDs survive restart.
+The job records the first Agent revision ID. `packages/occ/src/index.ts:observeProvisioningDeployment`
+defers work without consuming retries. The handle reports `progress`, then activation or a safe error.
+Stop during rollout yields `REVISION_STOPPED`. Stop or deletion before handoff yields `PROVISIONING_CANCELLED`
+and names the action. Status retains the Agent ID; both IDs survive restart.
 
-Create Agent (`apps/controller/src/console/agents/create.mjs:waitForProvisioning`) shows the job's named
-wait and waits one second between status reads, spending it on details such as a full Pod quota, cancelling unfinished reads
-at the next poll. Leaving the page stops polling, not provisioning.
-If the first deployment fails, open the existing Agent, correct the cause and deploy a new version.
-After an intentional Stop, deploy when ready. Reconciliation owns startup and activation;
-subsequent deployments use Deploy.
+`apps/controller/src/console/agents/create.mjs:waitForProvisioning` polls every second. Between polls,
+Create shows details such as a full Pod quota, and cancels unfinished reads. Leaving stops polling, not provisioning.
+If a newer deployment took over, status identifies only the superseded revision.
+Create offers no repair, retry or link to either deployment.
+After failure, open the Agent, correct the cause and deploy again. After Stop, deploy when ready.
+Reconciliation owns startup and activation; later deployments use separate handles.
 
 Dedicated OpenClaw admission requires native worker support and a Sandbox Driver
 with all required containment facets. The pinned runtime declares native support;
@@ -169,6 +170,7 @@ No API deletes a provisioning request. Agent deletion removes the Agent's reques
 
 ## Changelog
 
+- 2026-10-20 22:31: Explain supersession without offering recovery. (session/01a15b6e-1878-7471-a330-8bd91f4b811c - 9071a680a5cba575c77fb1d905ce5045acca98ee)
 - 2026-10-17: Bound optional deployment details to the provisioning poll interval. (PR #2685)
 
 - 2026-10-14: Merge current contracts with native provisioning and retained-workspace preparation. (Codex/01a13654-be66-7741-b54f-f8ae80f2d496)

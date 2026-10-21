@@ -51,3 +51,7 @@ at 390.
     full width and at least 44 px tall. Any status block's actions stack this
     way under 520 px. In **New version failed, viewer cannot edit**, Open v7
     Logs is the only action and the filled one.
+16. Open **Pages / Create Agent / A newer deployment took over**. Click Create
+    Agent. The final message explains that a newer deployment took over before
+    this one was ready. It has the same neutral tone as a stopped deployment,
+    with no repair, retry or link to an unidentified replacement.

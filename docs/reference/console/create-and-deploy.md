@@ -71,11 +71,13 @@ block direct Secret-backed model and environment projection.
    [initial contents](../agents.md#initial-contents-at-creation) for limits.
 8. Select **Create Agent** to submit Configuration, Secret references, Agent inputs,
    repositories, and workspace files for supported Dedicated provisioning.
-   Provisioning waits for deployment activation or failure, naming the deployment's current wait
-   when you can read the deployment.
-   Success opens Agent details. Failure links to the same Agent and version;
-   correct its cause and deploy again through **Deployment activity**. If the
-   first deployment was stopped, no repair is needed before deploying again.
+   Create follows the first deployment and, if you can read it, shows what it is waiting for.
+   When it is ready, Create opens Agent details.
+   **Deployment superseded** means a newer deployment took over before this one was ready.
+   Create offers no repair or retry. It omits the link to the original deployment and does not
+   know which version replaced it, so it cannot link to that version either.
+   If the deployment failed, open the linked Agent and version, correct the cause, and deploy
+   again through **Deployment activity**. After an intentional Stop, deploy again when ready.
    Ordinary creation saves Configuration first and opens a draft on **Create new version**,
    without a workload. After deployment, use the
    [workspace editor](../console.md#edit-workspace-files). Pending inputs have no
@@ -171,9 +173,10 @@ existing Namespace Secrets before starting again.
 `registering`/`deleting`, requiring source `delete`. Retry removal after the gateway's
 registration safety window if needed. See the [provisioning flow](../../flows/agent-provisioning.md) for the API sequence.
 
-A failed or stopped first deployment, or a Stop before it
-(`PROVISIONING_CANCELLED`), keeps the Agent and its name; provisioning cannot
-retry. Open that Agent and deploy. If it failed for another reason, correct that cause first.
+If the first deployment failed or you stopped it, open the existing Agent to deploy again.
+Correct a failure first. A Stop before deployment (`PROVISIONING_CANCELLED`) also keeps the Agent
+and its name. In each case, you deploy from the Agent rather than retry provisioning.
+If Create says **Deployment superseded**, a newer deployment already took over.
 
 If Agent creation is rejected after Configuration saves, correct the ordinary
 zero-binding Agent's editable fields and retry. The retry reuses Configuration

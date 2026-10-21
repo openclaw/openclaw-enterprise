@@ -1195,10 +1195,10 @@ export function installFixture(scenario, evidence) {
                       code: "REVISION_STOPPED",
                       message: "Deployment ended because the Agent was stopped.",
                     }
-                  : {
+                  : (scenario.provisionedDeploymentError ?? {
                       code: "DEPENDENCY_UNAVAILABLE",
                       message: "Deployment reconciliation failed.",
-                    },
+                    }),
             warnings: [],
           });
         }
@@ -1284,7 +1284,7 @@ export function installFixture(scenario, evidence) {
                             code: "REVISION_STOPPED",
                             message: "The Agent was stopped before its first deployment finished.",
                           }
-                        : {
+                        : (scenario.provisionedDeploymentError ?? {
                             code:
                               scenario.provisionedDeploymentStatus === "failed"
                                 ? "HARNESS_CREDENTIAL_BOOTSTRAP_FAILED"
@@ -1293,7 +1293,7 @@ export function installFixture(scenario, evidence) {
                               scenario.provisionedDeploymentStatus === "failed"
                                 ? "Harness credential initialization failed. Correct the cause and deploy again."
                                 : "The worker could not finish provisioning.",
-                          },
+                          }),
                   }
                 : {}),
               ...(current.status === "succeeded" || current.reads > 1
