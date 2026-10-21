@@ -1962,6 +1962,94 @@ test("a Secret created before the picker's Secret list arrives stays staged and 
   await page.getByRole("option", { name: secretOptionLabel(created), exact: true }).waitFor();
 });
 
+test("a different Secret in a create response cannot stage a binding or repeat the write", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unconfirmed Secret", { ready: true });
+  const original = await fixture.createSecret(namespace.id, "Original picker Secret", "synthetic");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Unconfirmed picker Agent",
+    nativeValues("unconfirmed-picker", { harnessId: "codex" }),
+    { harnessAuth: { method: "api_key", source: original.ref }, executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  const picker = page.getByLabel("API key Secret", { exact: true });
+  await waitForInputValue(picker, original.name);
+  const path = `/namespaces/${namespace.id}/secrets`;
+  const name = "New picker Secret";
+  await page.route(`**${path}`, async (route, request) => {
+    if (request.method() !== "POST") {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 201);
+    const body = await response.json();
+    assert.equal(body.data.name, name);
+    // The create succeeded. Substitute valid metadata for a different Secret in its reply.
+    await route.fulfill({ response, json: { ...body, data: original } });
+  });
+  await picker.fill("no matching Secret");
+  const create = page.getByRole("option", { name: "Create new Secret...", exact: true });
+  await create.click();
+  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+  await dialog.getByLabel("Name", { exact: true }).fill(name);
+  const value = dialog.getByLabel("Value", { exact: true });
+  await value.fill("synthetic-new-value");
+  const submit = dialog.getByRole("button", { name: "Create Secret", exact: true });
+  await submit.click();
+  await dialog
+    .getByText("Secret creation outcome could not be confirmed.", { exact: false })
+    .waitFor({ timeout: 5_000 });
+  assert.equal(await value.inputValue(), "");
+  assert.equal(await submit.isDisabled(), true);
+  await submit.evaluate((button) => button.form.requestSubmit());
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await waitForInputValue(picker, original.name);
+  assert.equal(secretPostRequests(requests, namespace.id).length, 1);
+});
+
+test("session expiry clears the unsent value in the Secret picker dialog", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret picker session expiry", { ready: true });
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Expiring picker Agent",
+    nativeValues("expiring-picker", { harnessId: "codex" }),
+    { executionMode: "dedicated" },
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  // Let the picker open before its list read discovers the session has expired.
+  const path = `/namespaces/${namespace.id}/secrets`;
+  const release = Promise.withResolvers();
+  t.after(() => release.resolve());
+  await page.route(`**${path}`, async (route) => {
+    await release.promise;
+    await route.continue();
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await page.getByLabel("API key Secret", { exact: true }).fill("no matching Secret");
+  await page.getByRole("option", { name: "Create new Secret...", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create harness authentication Secret" });
+  const field = dialog.getByLabel("Value", { exact: true });
+  await field.fill("synthetic-unsent-value");
+  const input = await field.evaluateHandle((node) => node);
+  for (const session of fixture.memoryDatabase.session) {
+    session.expiresAt = new Date(Date.now() - 1000);
+  }
+  const refused = page.waitForResponse((response) => new URL(response.url()).pathname === path);
+  release.resolve();
+  assert.equal((await refused).status(), 401);
+  await page.getByText("Your session has expired").waitFor();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(await input.evaluate((node) => node.value === ""), true);
+  assert.equal(secretPostRequests(requests, namespace.id).length, 0);
+});
+
 test("Agent credential Secret picker searches, validates, and preserves duplicate create input", async (t) => {
   const secretDriver = createTestSecretDriver();
   const fixture = await createConsoleAppFixture(t, { secretDriver });

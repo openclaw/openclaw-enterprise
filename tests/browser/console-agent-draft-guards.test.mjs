@@ -1828,6 +1828,51 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   assert.equal(saved.data.values.channels.slack.enabled, false);
 });
 
+test("Channel Secrets withholds access grants when the save response contains other bindings", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Unconfirmed channel bindings", { ready: true });
+  const agent = await createSlackBoundAgent(fixture, namespace, "Unconfirmed Agent", "unconfirmed");
+  const replacement = await fixture.createSecret(
+    namespace.id,
+    "Replacement app token",
+    "synthetic",
+  );
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  const path = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
+  const original = await fixture.request("GET", path);
+  assert.equal(original.status, 200);
+  await page.route(`**${path}`, async (route, request) => {
+    if (request.method() !== "PATCH") {
+      return route.continue();
+    }
+    const response = await route.fetch();
+    assert.equal(response.status(), 200);
+    const body = await response.json();
+    const bindings = body.data.secretBindings;
+    assert.equal(bindings.SLACK_APP_TOKEN.source.id, replacement.id);
+    // Keep the new generation but replace the returned bindings with those from before the save.
+    body.data.secretBindings = original.data.secretBindings;
+    await route.fulfill({ response, json: body });
+  });
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "credentials"));
+  await selectSecret(page, "Slack app token", replacement);
+  const save = page.getByRole("button", { name: "Save channel Secrets" });
+  await save.click();
+  await page
+    .getByText("Outcome unknown. Reload this Agent to confirm the saved Secret bindings.", {
+      exact: true,
+    })
+    .waitFor({ timeout: 5_000 });
+  assert.equal(await save.isDisabled(), true);
+  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), true);
+  await page.getByRole("button", { name: "Reload draft" }).click();
+  await waitForInputValue(page.getByLabel("Slack app token"), replacement.name);
+  assert.equal(pathRequests(requests, "PATCH", path).length, 1);
+  assert.equal(accessBindingPostRequests(requests, namespace.id).length, 0);
+});
+
 test("Agent credentials block tab changes until Slack Secret grants finish", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
