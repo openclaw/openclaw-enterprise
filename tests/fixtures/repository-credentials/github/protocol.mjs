@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { sharedRsaKeyPair } from "../shared-keys.mjs";
 import { fixtureInstallationId, fixtureRepository, fixtureRepositoryId } from "./metadata.mjs";
 import { createTokenAuthority } from "./token-authority.mjs";
 import { createRepositoryResources } from "./repository-resources.mjs";
@@ -16,7 +16,7 @@ export function createGitHubProtocol({
   repository = fixtureRepository,
   repositoryId = fixtureRepositoryId,
   description = null,
-  keyPair = generateKeyPairSync("rsa", { modulusLength: 2048 }),
+  keyPair = sharedRsaKeyPair("github-app"),
   tokenLifetimeMs = 3600000,
   tokenResponse = (packet) => packet,
   beforeIssueResponse,
