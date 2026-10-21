@@ -325,12 +325,14 @@ export function renderSecrets(context) {
     // A textarea preserves multiline credential material. Browsers without masking support use
     // a native password field and explicitly refuse line-break pastes rather than changing them.
     const multiline = CSS.supports("-webkit-text-security", "disc");
+    const valueNoticeId = "secret-value-notice";
     const value = element(multiline ? "textarea" : "input", {
       id: "secret-value",
       required: true,
       autocomplete: "off",
       spellcheck: "false",
       className: "secret-value secret-value--masked",
+      "aria-describedby": valueNoticeId,
       "data-secret-value": "",
       ...(multiline ? { rows: "3" } : { type: "password" }),
     });
@@ -391,7 +393,7 @@ export function renderSecrets(context) {
           ? REPLACEMENT_NOTICE
           : "You can replace this value later, but you cannot read it back.",
         [],
-        { role: null },
+        { id: valueNoticeId, role: null },
       ),
     );
     const submit = element(
