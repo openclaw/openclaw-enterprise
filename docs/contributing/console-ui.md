@@ -27,8 +27,11 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
   `type="button"`. To submit, use a `type="submit"` button associated with the
   form and handle the form’s `submit` event so Enter and clicking take the same path.
 - **Feedback.** `statusBlock(tone, label, body)` uses `info`, `success`, `warning`,
-  or `danger`. Say what happened and what the person can do next. When the
-  outcome is unknown, offer a way to check it before anyone repeats the action.
+  or `danger`. Say what happened and what the person can do next. Before reporting
+  success or granting access that depends on a write, verify that the response identifies
+  the intended resource and confirms the expected saved state. If the write may have
+  committed but you cannot confirm it, say the outcome is unknown and read that same
+  resource again. Do not repeat the write to find out.
 
 ## Extend the shared styles
 
