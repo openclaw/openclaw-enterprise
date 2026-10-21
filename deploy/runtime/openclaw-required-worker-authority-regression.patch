@@ -1,8 +1,8 @@
 diff --git a/src/gateway/server.required-placement-scopes.test.ts b/src/gateway/server.required-placement-scopes.test.ts
-index 38fc452..52902aa 100644
+index 38fc452..aa728a2 100644
 --- a/src/gateway/server.required-placement-scopes.test.ts
 +++ b/src/gateway/server.required-placement-scopes.test.ts
-@@ -115,196 +115,282 @@ test.each([false, true])(
+@@ -115,196 +115,289 @@ test.each([false, true])(
    },
  );
  
@@ -215,6 +215,13 @@ index 38fc452..52902aa 100644
 -        setupCalls.push("prepareProjectIntent");
 -        return prepareProjectIntent(...args);
 +      const adminWs = await connect(admin, ["operator.admin"]);
++      // Measure the ordering of disconnect and placement, without charging the first RPC's
++      // response deadline for loading the lazy sessions.create handler in the test runner.
++      const [{ coreGatewayHandlers }, { prepareGatewayRequestHandler }] = await Promise.all([
++        import("./server-methods/core-handlers.js"),
++        import("./server-methods/lazy-core-handlers.js"),
++      ]);
++      await prepareGatewayRequestHandler(coreGatewayHandlers["sessions.create"]!);
 +      const commitConfigPatch = async (patch: Record<string, unknown>) => {
 +        const current = await rpcReq<{ hash: string }>(adminWs, "config.get", {});
 +        expect(current.ok, JSON.stringify(current.error)).toBe(true);

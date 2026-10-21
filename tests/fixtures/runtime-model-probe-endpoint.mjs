@@ -14,7 +14,7 @@ import { connect } from "node:net";
 // (scripts/ci/first-agent-smoke.mjs) runs it without observation on an address
 // the cluster resolves api.openai.com to. Every line it prints is one JSON event
 // with an epoch timestamp.
-const mode = process.env.PROBE_ENDPOINT_MODE; // "answer" | "reject" | "hang"
+const mode = process.env.PROBE_ENDPOINT_MODE; // "answer" | "reject" | "hang" | "inconclusive-preflight"
 const delayMs = Number(process.env.PROBE_ENDPOINT_DELAY_MS ?? 0);
 const listenHost = process.env.PROBE_ENDPOINT_HOST ?? "127.0.0.1";
 // When set, a turn answers with the last match of this pattern in its request
@@ -273,6 +273,20 @@ const server = createServer(
       // model: the wrapper's upfront credential check sends exactly that.
       if (model === undefined && mode !== "reject") {
         emit({ event: "request", method: request.method, path, turn: false });
+        if (mode === "inconclusive-preflight") {
+          // The guided OpenShell run saw this shape on the empty request. Its
+          // header names do not establish whether the model request can authenticate.
+          response.writeHead(401, {
+            "content-type": "application/json",
+            "x-request-id": "fixture",
+            "openai-version": "fixture",
+          });
+          response.end(
+            JSON.stringify({ error: { code: "unclassified", type: "invalid_request_error" } }),
+          );
+          emit({ event: "preflight-answered", status: 401 });
+          return;
+        }
         response.writeHead(400, { "content-type": "application/json" });
         response.end(
           JSON.stringify({

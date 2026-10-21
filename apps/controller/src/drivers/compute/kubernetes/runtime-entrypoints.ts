@@ -2072,13 +2072,12 @@ function probeOpenClawAuthenticationFailure() {
 // The full probe needs 10-20 s of local work before its model request. A
 // rejected credential is found first with one empty request to the default
 // endpoint, sent with the credential exactly as OpenClaw sends it: the provider
-// authenticates before validating, so only 401 means rejection. Anything else
-// (400, an error, the 10 s limit) proves nothing and the full probe decides,
-// so acceptance still needs a real model turn. A configured endpoint, API,
-// headers or request option other than allowPrivateNetwork, a model whose API or
-// endpoint differs from the provider's, or an Anthropic setup token, skips this
-// request. The request goes to the
-// path of the configured API: a key may be scoped to one endpoint, and OpenAI
+// normally authenticates before validating. A 401 rejects a direct credential.
+// With a provider-managed credential, an unclassified 401 to this model-less request
+// is inconclusive; a recognized credential rejection or policy-marked 401 still stops startup.
+// Skip preflight for custom headers or request options (except allowPrivateNetwork),
+// a model that overrides the provider endpoint or API, or an Anthropic setup token.
+// Use the configured API path: a key may be scoped to one endpoint, and OpenAI
 // answers 401 for a missing scope. A 401 is classified from the provider's error
 // code and a few fixed OpenAI and Anthropic phrases into a closed vocabulary (the
 // body itself is never kept): "missing_api_key" means the request arrived without
@@ -2157,7 +2156,14 @@ function runOpenClawAuthenticationProbe(fs, capMs) {
     const configuration = JSON.parse(process.env.OPENCLAW_HARNESS_PROBE_CONFIG);
     if (configuration.agents?.defaults?.model !== model) return "UNAVAILABLE";
     const rejected = credentialRejectedUpfront(provider, configuration.models?.providers?.[provider], process.env[credentialEnvironment], stage);
-    if (rejected !== false) return { code: "AUTHENTICATION_FAILED", ...rejected };
+    if (rejected) {
+      const { providerCode, providerErrorCode, responseHeaderMarker } = rejected;
+      if (process.env.OCE_OPENCLAW_CREDENTIAL_SOURCE !== "1" ||
+        providerCode || (providerErrorCode && providerErrorCode !== "other") ||
+        responseHeaderMarker === "openshell-policy" || responseHeaderMarker === "mixed") {
+        return { code: "AUTHENTICATION_FAILED", ...rejected };
+      }
+    }
     configuration.agents.defaults.workspace = directory + "/workspace";
     fs.mkdirSync(directory + "/workspace", { mode: 0o700 });
     const configPath = directory + "/openclaw.json";

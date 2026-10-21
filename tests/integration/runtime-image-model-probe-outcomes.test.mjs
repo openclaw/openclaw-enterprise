@@ -18,14 +18,14 @@ import { recordModelProbeMeasurement } from "../helpers/runtime-model-probe-obse
 // contention case runs in the runtime image model probe file, in its own lane.
 
 // The Gateway at a 500m CPU limit, with a model turn a real provider can take,
-// passes its probe and becomes ready.
+// passes its probe and becomes ready even when the empty preflight got an unclassified 401.
 test(
   "runtime image embedded Gateway passes its model probe at a 500m CPU limit",
   { ...imageTestOptions, timeout: 900_000 },
   async (t) => {
     const delayMs = 5_000;
     const run = await runEmbeddedGatewayProbe(t, {
-      mode: "answer",
+      mode: "inconclusive-preflight",
       delayMs,
       cpus: constrainedGatewayCpuLimit,
       memory: productionGatewayMemoryLimit,
@@ -39,9 +39,14 @@ test(
     recordModelProbeMeasurement(t, "gateway-500m-answer", run);
     assert.equal(runtimeFailure(events), undefined, `startup failed${detail}`);
     assert.equal(phaseAt(phases, "model-probe")?.outcome, "ok", detail);
+    const preflight = events.findIndex(
+      (event) => event.event === "preflight-answered" && event.status === 401,
+    );
+    assert.notEqual(preflight, -1, detail);
     assert.ok(
-      events.some((event) => event.event === "turn-answered"),
-      detail,
+      events.findIndex((event) => event.event === "turn-answered" && event.status === 200) >
+        preflight,
+      "the real model turn, not the empty preflight, must establish success" + detail,
     );
     const probe = jsonLines(output).find(({ event }) => event === "openclaw.model_probe");
     t.diagnostic(

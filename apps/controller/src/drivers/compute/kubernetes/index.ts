@@ -1026,6 +1026,8 @@ function prepareHarnessAuth(
       if (resolvedAuth.loginMode === "codex_pat") {
         environment.push({ name: "OCE_CODEX_CREDENTIAL_SOURCE", value: "1" });
       }
+    } else {
+      environment.push({ name: "OCE_OPENCLAW_CREDENTIAL_SOURCE", value: "1" });
     }
     return {
       loginMode: resolvedAuth.loginMode,

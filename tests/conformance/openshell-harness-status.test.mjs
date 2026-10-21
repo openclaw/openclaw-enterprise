@@ -1172,8 +1172,11 @@ test("a provider-owned native OpenClaw worker serves its held model-check failur
 
 test("a provider-owned native OpenClaw worker serves a full-probe failure with its closed-vocabulary cause only", () => {
   const { servers, diagnostics, events, connectStarts } = runNativeWorkerEntrypoint({
-    env: nativeProviderEnv,
-    upfrontStatus: 0,
+    // The empty request got an unclassified 401; the real model probe, not that
+    // preflight or the mere presence of a credential source, decides the outcome.
+    env: { ...nativeProviderEnv, OCE_OPENCLAW_CREDENTIAL_SOURCE: "1" },
+    upfrontStatus: 13,
+    upfrontStdout: '["json-error-code","other","invalid_request_error"]',
     probeStatus: "rate_limit",
   });
   assert.equal(connectStarts, 0);

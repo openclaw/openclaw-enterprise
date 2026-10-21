@@ -192,6 +192,10 @@ export async function runEmbeddedGatewayProbe(
 ) {
   const scenarioStartedAt = Date.now();
   const gateway = embeddedGateway();
+  if (mode === "inconclusive-preflight") {
+    // Exercise the same startup model check with provider-managed credential delivery.
+    gateway.environment.push("OCE_OPENCLAW_CREDENTIAL_SOURCE=1");
+  }
   const material = await createProbeMaterial(t, gateway.configuration);
   const suffix = randomBytes(6).toString("hex");
   const sidecar = `oce-runtime-model-probe-endpoint-${suffix}`;
