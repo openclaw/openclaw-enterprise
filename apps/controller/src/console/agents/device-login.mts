@@ -9,18 +9,22 @@ import type { AgentAccessContext } from "./credential-access.mjs";
 import { message, namespacePath } from "./list.mjs";
 
 // The Console retains the public challenge and reference, never the provider's private state.
-export type DeviceLogin = Pick<
+type DeviceChallenge = Pick<
   CredentialSourceDeviceAuthorization,
   "verificationUrl" | "userCode" | "expiresAt" | "intervalSeconds"
 > & { session: SecretReference } & (
     { status: "pending" } | { status: "ready"; source: CredentialSourceReference }
   );
 
+// Without a confirmed session reference, the Console can neither poll nor cancel that start.
+// Keep this outcome in the form draft so restoring it does not offer a duplicate sign-in.
+export type DeviceLogin = DeviceChallenge | { status: "start_unconfirmed" };
+
 function readLogin(
   value: unknown,
   namespaceId: string,
   expectedSessionId: string | undefined,
-): DeviceLogin {
+): DeviceChallenge {
   const { status, userCode, intervalSeconds, expiresAt, verificationUrl, session, source } =
     responseFields(value);
   const { kind, id, namespaceId: sessionNamespace } = responseFields(session);
@@ -113,37 +117,42 @@ export function createDeviceLogin({
 
   function update() {
     clearTimeout(timer);
+    const challenge = login && "session" in login ? login : null;
+    const unconfirmed = login?.status === "start_unconfirmed";
     section.hidden = !active;
-    instructions.hidden = login?.status !== "pending";
-    code.textContent = login?.userCode ?? "";
+    instructions.hidden = challenge?.status !== "pending";
+    code.textContent = challenge?.userCode ?? "";
     // The selected provider returns its fixed device authorization URL, never a tokenized link.
-    if (login?.verificationUrl === "https://auth.openai.com/codex/device") {
-      signIn.href = login.verificationUrl;
+    if (challenge?.verificationUrl === "https://auth.openai.com/codex/device") {
+      signIn.href = challenge.verificationUrl;
     } else {
       signIn.removeAttribute("href");
     }
-    start.hidden = Boolean(login);
-    cancel.hidden = !login;
-    cancel.textContent = login?.status === "ready" ? "Clear selection" : "Cancel login";
+    start.hidden = Boolean(challenge);
+    cancel.hidden = !challenge;
+    cancel.textContent = challenge?.status === "ready" ? "Clear selection" : "Cancel login";
     for (const control of [start, cancel]) {
-      control.disabled = disabled || busy;
+      control.disabled = disabled || busy || unconfirmed;
     }
     status.textContent =
       error ||
       (busy
         ? "Checking Codex login…"
-        : login?.status === "ready"
-          ? "ChatGPT login ready. Clearing this selection leaves the saved credential source available."
-          : login
-            ? "Waiting for you to complete sign-in in the other tab…"
-            : "Sign in to connect your ChatGPT account.");
+        : unconfirmed
+          ? "Sign-in may have started, but the Console could not confirm it. Ask an administrator to check this Namespace’s credential sources before starting another sign-in."
+          : challenge?.status === "ready"
+            ? "ChatGPT login ready. Clearing this selection leaves the saved credential source available."
+            : challenge
+              ? "Waiting for you to complete sign-in in the other tab…"
+              : "Sign in to connect your ChatGPT account.");
     if (active && !disabled && !busy && !error && login?.status === "pending") {
       timer = window.setTimeout(() => void poll(), login.intervalSeconds * 1_000);
     }
   }
 
   function accept(result: unknown) {
-    login = readLogin(result, context.namespaceId, login?.session.id);
+    const sessionId = login?.status === "pending" ? login.session.id : undefined;
+    login = readLogin(result, context.namespaceId, sessionId);
     error = "";
     onChange?.(login.status === "ready" ? login.source : null);
   }
@@ -181,7 +190,14 @@ export function createDeviceLogin({
       }
     } catch (failure) {
       if (context.isCurrent()) {
-        fail(failure);
+        const { status } = requestFailure(failure);
+        if (status === undefined || (status >= 200 && status < 300)) {
+          // A lost or unusable successful reply can follow a committed start. Never repeat it.
+          login = { status: "start_unconfirmed" };
+          onChange?.(null);
+        } else {
+          fail(failure);
+        }
       }
     } finally {
       busy = false;
@@ -228,7 +244,7 @@ export function createDeviceLogin({
   }
 
   async function discard() {
-    if (busy || disabled || !login) {
+    if (busy || disabled || !login || login.status === "start_unconfirmed") {
       return;
     }
     // Withdraw the source before the request so a concurrent save cannot submit it.
