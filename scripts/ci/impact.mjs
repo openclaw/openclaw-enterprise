@@ -104,19 +104,20 @@ function parseJsonBlob(bytes) {
   }
 }
 
+// The largest blob taken from a batch. The output limit counts standard error as
+// well as the content, so a blob near it is read alone, where it meets the limit
+// exactly as it did before.
+const batchedBlobLimit = outputLimit / 2;
+
 // The contents of `ids` (blob ids) from one `git cat-file --batch`, by id. An id
-// whose content is missing from the result (absent, too large for one command's
-// output limit, or the batch failed) is left out; its reader then runs
-// `git cat-file blob` alone, so it fails exactly as that command does.
+// whose content is missing from the result (absent, larger than batchedBlobLimit,
+// or the batch failed or exceeded the output limit) is left out; its reader then
+// runs `git cat-file blob` alone, so it fails exactly as that command does.
 function batchContents(ids) {
   const contents = new Map();
   let output;
   try {
-    output = gitWith(
-      ids.map((id) => `${id}\n`).join(""),
-      ["cat-file", "--batch"],
-      ids.length * (outputLimit + 128),
-    );
+    output = gitWith(ids.map((id) => `${id}\n`).join(""), ["cat-file", "--batch"]);
   } catch {
     return contents;
   }
@@ -137,7 +138,7 @@ function batchContents(ids) {
     if (!match || match[1] !== id || stop >= output.length || output[stop] !== 0x0a) {
       return new Map();
     }
-    if (stop - end - 1 <= outputLimit) {
+    if (stop - end - 1 <= batchedBlobLimit) {
       contents.set(id, output.subarray(end + 1, stop));
     }
     offset = stop + 1;
@@ -354,11 +355,20 @@ export function classify() {
     if (![base, head, tested].every((value) => typeof value === "string" && oid.test(value))) {
       throw new InspectionError("missing or invalid commit identifiers", "invalid_identity");
     }
-    // The checkout's commit and its parents, from one process.
-    const [actual, ...parents] = git("show", "-s", "--format=%H %P", "HEAD^{commit}", "--")
-      .toString("ascii")
-      .trim()
-      .split(" ");
+    // The checkout's commit and its parents, from one process. If that fails, HEAD's
+    // commit alone tells a mismatched checkout from a failed inspection, as it did
+    // when the commit and its parents each had their own process.
+    let shown;
+    try {
+      shown = git("show", "-s", "--format=%H %P", "HEAD^{commit}", "--");
+    } catch (error) {
+      const actual = git("rev-parse", "--verify", "HEAD^{commit}").toString("ascii").trim();
+      if (actual !== tested) {
+        throw new InspectionError("checkout does not match tested commit", "checkout_mismatch");
+      }
+      throw error;
+    }
+    const [actual, ...parents] = shown.toString("ascii").trim().split(" ");
     if (actual !== tested) {
       throw new InspectionError("checkout does not match tested commit", "checkout_mismatch");
     }
