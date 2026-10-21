@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { promisify } from "node:util";
 import { brotliCompress, constants as zlib, gzip } from "node:zlib";
 
@@ -74,15 +75,17 @@ const CONSOLE_ASSETS = new Map([
       "agents.mjs",
       "carry.mjs",
       "drafts.mjs",
-      "dom.mjs",
+      "dom.mts",
       "console.mjs",
     ],
     "font/woff2": ["fonts/instrument-sans-latin.woff2"],
     "text/css; charset=utf-8": ["console.css", "channels.css"],
   }).flatMap(([contentType, paths]) =>
-    paths.map(
-      (path) => [`/console/${path}`, { path: new URL(path, CONSOLE_ROOT), contentType }] as const,
-    ),
+    paths.map((path) => {
+      // Browser imports use JavaScript extensions. Source paths never come from the request.
+      const url = `/console/${path.replace(/\.mts$/, ".mjs")}`;
+      return [url, { path: new URL(path, CONSOLE_ROOT), contentType }] as const;
+    }),
   ),
   [
     "/console/workspace-defaults.mjs",
@@ -122,6 +125,25 @@ export const CONSOLE_CONTENT_SECURITY_POLICY = [
   "script-src 'self'",
   "style-src 'self'",
 ].join("; ");
+
+/** The public files Storybook gets from the same reader as the controller. */
+export function consoleAssetPaths(): Iterable<string> {
+  return CONSOLE_ASSETS.keys();
+}
+
+const browserModules = new Map<string, { source: Buffer; javascript: Buffer }>();
+
+// Node 24 erases types without moving source lines. Reuse that result until the file changes;
+// the Console TypeScript project checks types and rejects syntax that would require a transform.
+function browserJavaScript(pathname: string, source: Buffer): Buffer {
+  const previous = browserModules.get(pathname);
+  if (previous?.source.equals(source)) {
+    return previous.javascript;
+  }
+  const javascript = Buffer.from(stripTypeScriptTypes(source.toString("utf8")));
+  browserModules.set(pathname, { source, javascript });
+  return javascript;
+}
 
 /**
  * Reads a console asset. Pass the request's Accept-Encoding to receive a brotli or gzip body for
@@ -169,10 +191,13 @@ export async function readConsoleAsset(
   }
   const asset = CONSOLE_ASSETS.get(pathname);
   if (asset !== undefined) {
-    const body = await readFile(asset.path);
+    const source = await readFile(asset.path);
     if (!asset.contentType.startsWith("text/")) {
-      return { body, contentType: asset.contentType, statusCode: 200 };
+      return { body: source, contentType: asset.contentType, statusCode: 200 };
     }
+    const body = asset.path.pathname.endsWith(".mts")
+      ? browserJavaScript(pathname, source)
+      : source;
     return encodedAsset(pathname, body, asset.contentType, acceptEncoding);
   }
   const shell = await readFile(CONSOLE_SHELL);

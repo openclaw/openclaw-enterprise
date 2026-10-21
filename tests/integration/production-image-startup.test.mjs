@@ -489,6 +489,13 @@ test("production image includes console shell and public assets", imageTestOptio
     assert.match(script.contentType, /javascript/);
     assert.match(script.body.toString("utf8"), /api\/auth\/session/);
 
+    // A browser cannot strip types or follow a source-only re-export.
+    const dom = await readConsoleAsset("/console/dom.mjs");
+    assert.equal(dom.statusCode, 200);
+    assert.match(dom.contentType, /javascript/);
+    const { element } = await import("data:text/javascript;base64," + dom.body.toString("base64"));
+    assert.equal(typeof element, "function");
+
     const unknown = await readConsoleAsset("/console/index.ts");
     assert.equal(unknown.statusCode, 404);
     assert.match(unknown.contentType, /text\/html/);

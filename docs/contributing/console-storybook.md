@@ -28,6 +28,19 @@ Serve at the origin root for absolute `/console/` URLs. Build fingerprints keep
 cached fixture pages and module imports current. CI uploads a static artifact
 without publishing the documentation site.
 
+## Write Console modules in TypeScript
+
+Put browser code in `.mts` files and import the public `.mjs` path. TypeScript
+resolves that import to the source file. `pnpm typecheck` checks it against browser
+APIs and rejects syntax that needs more than type erasure.
+
+Add the source path to the controller's allowlist in
+`apps/controller/src/console-assets.ts`. The controller and Storybook both use
+Node 24 to remove types, preserve line numbers, and serve JavaScript at the same
+URL as before. During migration, an old `.mjs` file may re-export the `.mts`
+source for tests that still import Console modules directly in Node. Remove it
+when those consumers migrate. The browser never loads that forwarding file.
+
 ## Appearance review
 
 Use **Pages/Agents → Populated** to review the shared shell and controls at

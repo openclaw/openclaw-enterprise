@@ -130,7 +130,7 @@ channel snapshots include controls and staged Secret metadata. Reload draft reap
 only the reader's edits, naming overlaps and skipped choices. Save and Cancel
 clear captures; pending saves retain recovery guards.
 
-`dom.mjs:dismissOnBackdrop` requires press and click outside the topmost editor.
+`dom.mts:dismissOnBackdrop` requires press and click outside the topmost editor.
 Like Escape, cancellation discards channel drafts, clears Secret inputs, and
 retains plugin selections. Pending channel saves and Secret creation prevent dismissal.
 

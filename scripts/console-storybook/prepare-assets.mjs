@@ -3,22 +3,23 @@ import { cp, mkdir, copyFile, rm, readFile, writeFile, readdir } from "node:fs/p
 import { fileURLToPath } from "node:url";
 
 import { loadConsoleTheme } from "../../apps/controller/src/composition/console-theme.ts";
+import { consoleAssetPaths, readConsoleAsset } from "../../apps/controller/src/console-assets.ts";
 import { renderConsoleThemeShell } from "../../apps/controller/src/console-theme.ts";
 
 const assets = new URL("./dist/assets/console/", import.meta.url);
 await rm(assets, { recursive: true, force: true });
 await mkdir(assets, { recursive: true });
-await cp(new URL("../../apps/controller/src/console/", import.meta.url), assets, {
-  recursive: true,
-});
-// The controller serves these shared contract modules as console assets.
+await writeFile(new URL("index.html", assets), (await readConsoleAsset("/console/")).body);
+for (const path of consoleAssetPaths()) {
+  const file = new URL(path.slice("/console/".length), assets);
+  await mkdir(new URL(".", file), { recursive: true });
+  await writeFile(file, (await readConsoleAsset(path)).body);
+}
+// Keep the font license alongside the font when distributing this static preview.
+const license = "fonts/instrument-sans-OFL.txt";
 await copyFile(
-  new URL("../../packages/contracts/src/workspace-defaults.mjs", import.meta.url),
-  new URL("workspace-defaults.mjs", assets),
-);
-await copyFile(
-  new URL("../../packages/contracts/src/preset-variables.mjs", import.meta.url),
-  new URL("preset-variables.mjs", assets),
+  new URL(`../../apps/controller/src/console/${license}`, import.meta.url),
+  new URL(license, assets),
 );
 
 await copyFile(
@@ -55,8 +56,9 @@ const theme = await loadConsoleTheme(
 );
 const frame = await readFile(new URL("frame.html", fixtureAssets), "utf8");
 await mkdir(new URL("theme/", assets), { recursive: true });
-for (const [path, asset] of theme.assets) {
-  await writeFile(new URL(path.replace("/console/", ""), assets), asset.body);
+for (const path of theme.assets.keys()) {
+  const file = new URL(path.slice("/console/".length), assets);
+  await writeFile(file, (await readConsoleAsset(path, undefined, theme)).body);
 }
 await writeFile(new URL("frame-themed.html", fixtureAssets), renderConsoleThemeShell(frame, theme));
 await writeFile(

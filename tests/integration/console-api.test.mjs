@@ -317,7 +317,12 @@ test("console static routes expose only public assets and preserve API JSON fail
     assert.equal(result.response.headers.get("x-content-type-options"), "nosniff");
   }
 
-  for (const path of ["/console/index.ts", "/console/%2e%2e/index.ts", "/console/missing.css"]) {
+  for (const path of [
+    "/console/dom.mts",
+    "/console/index.ts",
+    "/console/%2e%2e/index.ts",
+    "/console/missing.css",
+  ]) {
     const result = await fixture.rawRequest("GET", path);
     assert.equal(result.response.status, 404, path);
     assert.doesNotMatch(result.text, /createFastifyApp|OCC_AUTH_SECRET|apiKeyPath/, path);
