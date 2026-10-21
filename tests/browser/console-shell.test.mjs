@@ -63,20 +63,17 @@ test("the desktop shell shows the sidebar surface, the current-page bar and the 
 
   const current = page.locator('.nav a[aria-current="page"]');
   assert.equal(await current.textContent(), "◇Agents");
-  assert.deepEqual(
-    await style(current, "backgroundColor", "color", "borderInlineStart", "height"),
-    {
-      backgroundColor: selected,
-      color: text,
-      borderInlineStart: `3px solid ${marker}`,
-      height: "36px",
-    },
-  );
-  const other = page.locator(".nav a", { hasText: "Namespaces" });
-  assert.deepEqual(await style(other, "backgroundColor", "borderInlineStartWidth"), {
-    backgroundColor: "rgba(0, 0, 0, 0)",
-    borderInlineStartWidth: "0px",
+  assert.deepEqual(await style(current, "backgroundColor", "color", "height"), {
+    backgroundColor: selected,
+    color: text,
+    height: "36px",
   });
+  const pageMarker = (link) =>
+    link.evaluate((node) => globalThis.getComputedStyle(node, "::before").borderInlineStart);
+  assert.equal(await pageMarker(current), `3px solid ${marker}`);
+  const other = page.locator(".nav a", { hasText: "Namespaces" });
+  assert.equal((await style(other, "backgroundColor")).backgroundColor, "rgba(0, 0, 0, 0)");
+  assert.match(await pageMarker(other), /^0px none/);
 
   // The account row: initials, name and email; its menu offers Settings and Sign out.
   const account = page.getByRole("button", { name: `${name} ${email}`, exact: true });

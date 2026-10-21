@@ -694,17 +694,23 @@ p {
   color: var(--color-on-inverse);
   background: var(--color-inverse-hover);
 }
-/* A leading border also marks the current page when forced colours remove its fill. */
+/* The marker sits inside the link, so labels stay aligned even in forced colours. */
 .nav a[aria-current="page"] {
+  position: relative;
   background: var(--color-inverse-selected);
   color: var(--color-on-inverse);
   font-weight: var(--weight-semibold);
-  border-inline-start: 3px solid var(--color-inverse-marker);
-  padding-inline-start: calc(var(--space-3) - 3px);
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
+.nav a[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inset-inline-start: 0;
+  border-inline-start: 3px solid var(--color-inverse-marker);
+}
 @media (forced-colors: active) {
-  .nav a[aria-current="page"] {
+  .nav a[aria-current="page"]::before {
     border-color: Highlight;
   }
 }
@@ -2628,6 +2634,9 @@ select:not([multiple])[size="1"] {
   width: min(72rem, calc(100% - 2 * var(--space-4)));
   height: min(52rem, calc(100% - 2 * var(--space-4)));
 }
+.dialog--framed {
+  width: min(38rem, calc(100% - 2 * var(--space-4)));
+}
 .dialog--drawer {
   --dialog-open-from: translateX(var(--space-6));
   width: min(42rem, calc(100% - 2 * var(--space-4)));
@@ -2759,11 +2768,6 @@ select:not([multiple])[size="1"] {
 /* A framed dialog keeps its destination in the header and its actions together in the footer. */
 .dialog--framed {
   padding: 0;
-}
-@media (min-width: 761px) {
-  .dialog--framed {
-    width: min(38rem, calc(100% - 2 * var(--space-4)));
-  }
 }
 .dialog-header,
 .dialog-body,

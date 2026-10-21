@@ -856,7 +856,7 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
         pageFits: view.scrollWidth <= view.clientWidth,
         tableFits: scroll.scrollWidth <= scroll.clientWidth,
         headerShown: node.tHead.getBoundingClientRect().height > 1,
-        text: globalThis.getComputedStyle(document.querySelector("h1")).color,
+        linkColor: globalThis.getComputedStyle(node.querySelector("tbody a")).color,
         rows,
       };
     });
@@ -921,12 +921,15 @@ test("On a phone the Agents list stacks each row, fits the screen and still open
       if (width === 360) {
         assert.ok(row.breaks.length > 0, `${width}: row ${index} ID fits one line`);
       }
-      // A current version reads as its number, not its revision ID (finding 2093), in the text
-      // colour.
+      // The current version is a link like the Agent name, labelled by version rather than revision ID.
       if (index % 2 === 1) {
         assert.equal(row.revision.text, "v1", `${width}: row ${index} revision`);
         assert.doesNotMatch(row.revision.fontFamily, /monospace/, `${width}: row ${index} font`);
-        assert.equal(row.revision.color, layout.text, `${width}: row ${index} revision colour`);
+        assert.equal(
+          row.revision.color,
+          layout.linkColor,
+          `${width}: row ${index} revision colour`,
+        );
       }
       assert.equal(row.display, desktop ? "table-row" : "grid", `${width}: row display`);
     }
