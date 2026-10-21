@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -22,6 +23,7 @@ import {
   parseProductionChart as resources,
   productionValues as values,
   productionCollectorValues,
+  goToolEnvironment,
 } from "../helpers/production-chart.mjs";
 
 const execute = promisify(execFile);
@@ -154,7 +156,7 @@ const render = (overrides = {}, options = {}) =>
 
 let tooling;
 try {
-  await execute(helm, ["version", "--short"], { cwd: repository });
+  await execute(helm, ["version", "--short"], { cwd: repository, env: goToolEnvironment() });
   await execute("yq", ["--version"], { cwd: repository });
   tooling = { skip: false };
 } catch {
@@ -216,7 +218,7 @@ test(
                 "routing.controlPlaneCidrs[0]=198.51.100.0/24",
                 ...dnsArguments,
               ],
-              { cwd: repository, maxBuffer: 2_000_000 },
+              { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
             )
           ).stdout,
         ),
@@ -241,7 +243,7 @@ test(
                 "grafana.adminSecretName=grafana-admin",
                 ...dnsArguments,
               ],
-              { cwd: repository, maxBuffer: 2_000_000 },
+              { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
             )
           ).stdout,
         ),
@@ -538,10 +540,25 @@ test(
     };
     // tenantGatewayPort must equal Compute's network.gatewayPort, so Helm refuses exactly
     // what controller startup refuses instead of installing a controller that cannot start.
-    for (const [gatewayPort, sandbox, refused] of [
-      [PLUGIN_RUNTIME_STATUS_PORT, false, true],
-      [PLUGIN_RUNTIME_STATUS_PORT, true, true],
-      [PLUGIN_RUNTIME_STATUS_PORT - 1, true, true],
+    for (const [gatewayPort, sandbox, refused, message] of [
+      [
+        PLUGIN_RUNTIME_STATUS_PORT,
+        false,
+        true,
+        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      ],
+      [
+        PLUGIN_RUNTIME_STATUS_PORT,
+        true,
+        true,
+        `Gateway port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      ],
+      [
+        PLUGIN_RUNTIME_STATUS_PORT - 1,
+        true,
+        true,
+        `Gateway sandbox port cannot use the reserved runtime status port ${PLUGIN_RUNTIME_STATUS_PORT}.`,
+      ],
       [PLUGIN_RUNTIME_STATUS_PORT - 1, false, false],
       [PLUGIN_RUNTIME_STATUS_PORT + 1, true, false],
       [8080, true, false],
@@ -552,7 +569,17 @@ test(
         "gatewayRouting.tenantGatewayPort": String(gatewayPort),
       };
       if (refused) {
-        assert.throws(() => compute(gatewayPort, sandbox), /reserved runtime status port/, row);
+        assert.throws(
+          () => compute(gatewayPort, sandbox),
+          (error) => {
+            assert.ok(error instanceof ConfigurationValidationError);
+            assert.deepEqual(error.error.details, [
+              { path: "/network/gatewayPort", code: "INVALID_VALUE", message },
+            ]);
+            return true;
+          },
+          row,
+        );
         await assert.rejects(
           render(chartValues),
           ({ code, stderr }) =>
@@ -907,7 +934,17 @@ test("production native examples satisfy the current Helm, Installation, and PVC
       mode: "production",
       environment: { OCC_CONFIG_PATH: unquotedPath },
     }),
-    /drivers\.compute\.configuration does not match its Driver configuration schema at \/resources\/gateway\/limits\/cpu: must be string/,
+    (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.deepEqual(error.error.details, [
+        {
+          path: "/resources/gateway/limits/cpu",
+          code: "INVALID_TYPE",
+          message: "Configuration does not satisfy type.",
+        },
+      ]);
+      return true;
+    },
   );
   // Trusted Installation startup must reject a validly spelled request that
   // Kubernetes refuses against its smaller limit, before any cluster operation.
@@ -920,7 +957,16 @@ test("production native examples satisfy the current Helm, Installation, and PVC
       mode: "production",
       environment: { OCC_CONFIG_PATH: impossiblePath },
     }),
-    /Gateway CPU request \(resources\.gateway\.requests\.cpu\) cannot exceed its limit/,
+    (error) => {
+      assert.ok(error instanceof ConfigurationValidationError);
+      assert.equal(error.error.details[0].path, "/resources/gateway/requests/cpu");
+      assert.equal(error.error.details[0].code, "INVALID_RANGE");
+      assert.match(
+        error.error.details[0].message,
+        /Gateway CPU request .* cannot exceed its limit/,
+      );
+      return true;
+    },
   );
   const values = loadYaml(await readFile(new URL("values.yaml", productionExamples), "utf8"));
   assert.equal(values.gatewayRouting.enabled, true);
@@ -1015,12 +1061,19 @@ test(
           ? render(helmValues, { strings: { "gatewayRouting.hostname": hostname } })
           : render(helmValues);
       if (invalid.includes(hostname)) {
-        await assert.rejects(
-          load(),
-          hostname === "api.123"
-            ? /Gateway routing hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/
-            : /Gateway routing hostname must be a DNS hostname without a port or path/,
-        );
+        await assert.rejects(load(), (error) => {
+          assert.ok(error instanceof ConfigurationValidationError);
+          assert.equal(error.error.details[0].path, "/gatewayRouting/hostname");
+          assert.equal(error.error.details[0].code, "INVALID_FORMAT");
+          assert.match(
+            error.error.details[0].message,
+            hostname === "api.123"
+              ? /Gateway routing hostname must be .*numeric or 0x last label parses as IPv4; use a DNS name resolving to the gateway that its TLS certificate covers/
+              : /Gateway routing hostname must be a DNS hostname without a port or path/,
+          );
+          assert.doesNotMatch(JSON.stringify(error.error.details), /Bad_Host/);
+          return true;
+        });
         await assert.rejects(
           renderHostname(),
           ({ stderr }) =>
@@ -1073,7 +1126,16 @@ test(
         });
       const rendered = () => render({ ...sandboxValues, "gatewayRouting.sandbox.domain": domain });
       if (domain === "192.0.2.1") {
-        await assert.rejects(load(), /Sandbox domain must be a DNS hostname.*Agent label/);
+        await assert.rejects(load(), (error) => {
+          assert.ok(error instanceof ConfigurationValidationError);
+          assert.equal(error.error.details[0].path, "/gatewayRouting/sandbox/domain");
+          assert.equal(error.error.details[0].code, "INVALID_FORMAT");
+          assert.match(
+            error.error.details[0].message,
+            /Sandbox domain must be a DNS hostname.*Agent label/,
+          );
+          return true;
+        });
         await assert.rejects(
           rendered(),
           /gatewayRouting\.sandbox\.domain must be a DNS hostname.*Agent label/,
@@ -1101,7 +1163,7 @@ test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
         "--set",
         "gatewayRouting.gatewayName=Bad_Name",
       ],
-      { cwd: repository },
+      { cwd: repository, env: goToolEnvironment() },
     ),
     /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
   );
@@ -1119,7 +1181,7 @@ test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
         "--set-string",
         "gatewayRouting.gatewayName= oce-agent-gateways ",
       ],
-      { cwd: repository },
+      { cwd: repository, env: goToolEnvironment() },
     ),
     /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
   );
@@ -1138,7 +1200,7 @@ test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
         "--set-string",
         `gatewayRouting.gatewayName=${sixtyFour}`,
       ],
-      { cwd: repository },
+      { cwd: repository, env: goToolEnvironment() },
     ),
     /gatewayRouting\.gatewayName must be a DNS-safe Kubernetes resource name/,
   );
@@ -1156,7 +1218,7 @@ test("Helm refuses a Gateway name Compute refuses", tooling, async () => {
       "--set-string",
       `gatewayRouting.gatewayName=${sixtyThree}`,
     ],
-    { cwd: repository, maxBuffer: 2_000_000 },
+    { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
   );
   const gateway = (await resources(stdout)).find((object) => object.kind === "Gateway");
   assert.equal(gateway?.metadata.name, sixtyThree);
@@ -1184,7 +1246,7 @@ test(
           "--set-string",
           `routing.${field}=${value}`,
         ],
-        { cwd: repository, maxBuffer: 2_000_000 },
+        { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
       );
     // Compute validateGatewayName: a DNS subdomain, at most 63 characters (a label value).
     for (const gatewayName of ["Bad_Name", "-gateways", "gateways-", "a..b", "a".repeat(64)]) {
@@ -1227,7 +1289,7 @@ test("production Helm values example renders the backendless default chart", too
       "--values",
       "deploy/examples/production/values.yaml",
     ],
-    { cwd: repository, maxBuffer: 2_000_000 },
+    { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
   );
   const objects = await resources(stdout);
   const selected = (kind, component) =>
@@ -1386,10 +1448,12 @@ test(
         ["package", "deploy/helm/openclaw-enterprise", "--destination", directory],
         {
           cwd: repository,
+          env: goToolEnvironment(),
         },
       );
       const { stdout: metadata } = await execute(helm, ["show", "chart", archive], {
         cwd: repository,
+        env: goToolEnvironment(),
       });
       const chart = loadYaml(metadata);
       assert.equal(chart.name, "openclaw-enterprise");
@@ -1406,10 +1470,11 @@ test(
       const source = await execute(
         helm,
         ["template", "oce", "deploy/helm/openclaw-enterprise", ...args],
-        { cwd: repository, maxBuffer: 2_000_000 },
+        { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
       );
       const packaged = await execute(helm, ["template", "oce", archive, ...args], {
         cwd: repository,
+        env: goToolEnvironment(),
         maxBuffer: 2_000_000,
       });
       assert.equal(packaged.stdout, source.stdout);
@@ -1568,7 +1633,13 @@ test(
       "routing.controlPlaneCidrs[0]=198.51.100.0/24",
     ];
     const execution = await resources(
-      (await execute(helm, executionArgs, { cwd: repository, maxBuffer: 2_000_000 })).stdout,
+      (
+        await execute(helm, executionArgs, {
+          cwd: repository,
+          env: goToolEnvironment(),
+          maxBuffer: 2_000_000,
+        })
+      ).stdout,
     );
     const executionPodReads = [
       { apiGroups: ["apps"], resources: ["deployments"], verbs: ["list"] },
@@ -1603,6 +1674,7 @@ test(
       (
         await execute(helm, [...executionArgs, "--set", "agentRuntimeLogs.enabled=false"], {
           cwd: repository,
+          env: goToolEnvironment(),
           maxBuffer: 2_000_000,
         })
       ).stdout,
@@ -2529,7 +2601,10 @@ test(
     assert.deepEqual(pod.nodeSelector, { "oce-role": "control" });
     assert.equal(pod.securityContext.fsGroupChangePolicy, "OnRootMismatch");
     assert.equal(pod.initContainers[0].name, "migration");
-    assert.deepEqual(pod.initContainers[0].args, ["scripts/migrate-production.mjs"]);
+    assert.deepEqual(pod.initContainers[0].args, [
+      "scripts/migrate-production.mjs",
+      "--expect-empty",
+    ]);
     assert.equal(pod.containers[0].name, "bootstrap");
     assert.deepEqual(pod.containers[0].args, ["scripts/bootstrap-installation.mjs"]);
     assert.ok(pod.initContainers[0].env.some(({ name }) => name === "OCC_MIGRATION_DATABASE_URL"));
@@ -4637,7 +4712,7 @@ test(
             "--set-string",
             "dns.namespace=true",
           ],
-          { cwd: repository, maxBuffer: 2_000_000 },
+          { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
         )
       ).stdout,
     );
@@ -5483,7 +5558,7 @@ test("execution chart refuses a harness hostname Compute refuses", tooling, asyn
         'routing.controlPlaneCidrs=["198.51.100.0/24"]',
         ...values,
       ],
-      { cwd: repository, maxBuffer: 2_000_000 },
+      { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
     );
   await assert.rejects(
     template("--set", "routing.hostname=Bad_Host"),
@@ -5542,7 +5617,7 @@ test(
           'routing.controlPlaneCidrs=["198.51.100.0/24"]',
           ...values,
         ],
-        { cwd: repository, maxBuffer: 2_000_000 },
+        { cwd: repository, env: goToolEnvironment(), maxBuffer: 2_000_000 },
       );
     const proxyPolicy = async (stdout) =>
       (await resources(stdout)).find(

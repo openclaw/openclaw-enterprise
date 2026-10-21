@@ -140,12 +140,28 @@ func TestSandboxPolicyCeilingStaysSeparateFromDefaultGrants(t *testing.T) {
 		}
 	}
 	// Invalid ceiling input is rejected by the shared contract before infrastructure changes.
-	for _, invalid := range []string{strings.Replace(input, "example.org", "**.example.org", 1), strings.Replace(input, "to: 443", "to: 442", 1), input + "unknown: true\n"} {
-		if err := os.WriteFile(path, []byte(invalid), 0600); err != nil {
+	for _, invalid := range []struct {
+		input string
+		path  string
+		code  string
+	}{
+		// Quote the invalid wildcard so YAML does not treat it as an alias before Driver validation.
+		{strings.Replace(input, "example.org", `"**.example.org"`, 1), "/grants/0/host", "INVALID_FORMAT"},
+		{strings.Replace(input, "to: 443", "to: 442", 1), "/grants/0/ports/0/to", "INVALID_RANGE"},
+		{input + "unknown: true\n", "", ""},
+	} {
+		if err := os.WriteFile(path, []byte(invalid.input), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := r.loadSandboxNetworkPolicyCeiling(context.Background(), "openshell"); err == nil {
+		_, err := r.loadSandboxNetworkPolicyCeiling(context.Background(), "openshell")
+		if err == nil {
 			t.Fatal("invalid delegation ceiling accepted")
+		}
+		if invalid.path != "" && (!strings.Contains(err.Error(), `"path":"`+invalid.path+`"`) || !strings.Contains(err.Error(), `"code":"`+invalid.code+`"`)) {
+			t.Fatalf("ceiling diagnostic did not identify its grants field: %v", err)
+		}
+		if strings.Contains(err.Error(), "/additions") {
+			t.Fatalf("ceiling diagnostic exposed the Agent wrapper: %v", err)
 		}
 	}
 }

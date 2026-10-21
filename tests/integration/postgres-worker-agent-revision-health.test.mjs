@@ -171,6 +171,11 @@ ${body}`,
   return output;
 }
 
+// The fixture's 2 s exit grace and 60 s backstop leave a real file's runner time to report. The
+// one-test files below take a shorter grace (and backstop) so their own waits stay short; each
+// wait they race stays longer than the grace, as the defaults are.
+const exitGraceMs = 500;
+
 // Finding 1223: a teardown step left running past its limit can hold its process open (a pool's
 // socket, a child), so the file sat idle after its last test until the runner's file timeout
 // killed it. A file that abandoned a step now exits once its own teardown is done. Runs the
@@ -180,7 +185,7 @@ test("an abandoned teardown step that holds its process open does not keep the f
     t,
     `// A root after hook registered after cleanup, slower than the exit grace, still finishes.
 after(async () => {
-  await new Promise((resolve) => setTimeout(resolve, 3_000));
+  await new Promise((resolve) => setTimeout(resolve, ${exitGraceMs * 2}));
   console.log("later after hook finished");
 });
 test("a stuck step is abandoned at its limit", async () => {
@@ -188,6 +193,7 @@ test("a stuck step is abandoned at its limit", async () => {
   await abandonStep();
 });
 `,
+    { fixtureOptions: { exitGraceMs } },
   );
   // Finding 1246: the exit grace starts once every root after hook has run, not at cleanup.
   assert.match(output, /later after hook finished/);
@@ -200,6 +206,7 @@ test("a teardown step abandoned by a later root after hook does not keep the fil
     `after(abandonStep);
 test("nothing is abandoned during the tests", () => {});
 `,
+    { fixtureOptions: { exitGraceMs } },
   );
 });
 
@@ -214,7 +221,7 @@ test("a later root after hook that fails after an abandoned step does not keep t
 });
 test("a stuck step is abandoned at its limit", abandonStep);
 `,
-    { fixtureOptions: { exitBackstopMs: 4_000 }, status: 1 },
+    { fixtureOptions: { exitGraceMs, exitBackstopMs: exitGraceMs * 2 }, status: 1 },
   );
   assert.match(output, /later after hook failed/);
 });
@@ -229,7 +236,7 @@ test("a later root after hook that abandons a step and fails does not keep the f
 });
 test("nothing is abandoned during the tests", () => {});
 `,
-    { fixtureOptions: { exitBackstopMs: 4_000 }, status: 1 },
+    { fixtureOptions: { exitGraceMs, exitBackstopMs: exitGraceMs * 2 }, status: 1 },
   );
   assert.match(output, /later after hook failed/);
 });

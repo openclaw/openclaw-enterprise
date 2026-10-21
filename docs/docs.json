@@ -95,6 +95,10 @@
                     "label": "Harness"
                   },
                   {
+                    "page": "guides/topics/remote-harness",
+                    "label": "Remote Harness"
+                  },
+                  {
                     "page": "guides/topics/workspace-files",
                     "label": "Workspace Files"
                   },
@@ -121,6 +125,10 @@
                   {
                     "page": "guides/console/channels-and-credentials",
                     "label": "Channels and Credentials"
+                  },
+                  {
+                    "page": "guides/console/secrets",
+                    "label": "Manage Secrets"
                   },
                   {
                     "page": "guides/console/agent-sharing",

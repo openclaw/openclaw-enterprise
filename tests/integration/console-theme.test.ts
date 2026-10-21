@@ -2,24 +2,20 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 
-async function createConsoleAppFixture(...args) {
-  const fixture = await import("../helpers/console-app.mjs");
-  return fixture.createConsoleAppFixture(...args);
-}
+import {
+  ConsoleThemeError,
+  loadConsoleTheme,
+} from "../../apps/controller/src/composition/console-theme.ts";
+import { startApi, startupFailureFields } from "../../apps/controller/src/api-startup.mjs";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 
-async function bundle(t, manifest = { schemaVersion: 1 }) {
+async function bundle(t: TestContext, manifest: object = { schemaVersion: 1 }) {
   const directory = await mkdtemp(join(tmpdir(), "occ-theme-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await writeFile(join(directory, "theme.json"), JSON.stringify(manifest));
   return directory;
-}
-
-async function load(directory) {
-  const { loadConsoleTheme } =
-    await import("../../apps/controller/src/composition/console-theme.ts");
-  return loadConsoleTheme(directory);
 }
 
 test("mounted console themes serve public branding without changing API failures", async (t) => {
@@ -37,7 +33,7 @@ test("mounted console themes serve public branding without changing API failures
   await writeFile(join(directory, "logo.png"), image);
   await writeFile(join(directory, "icon.png"), image);
   // The real startup loader feeds the same app option used by production composition.
-  const theme = await load(directory);
+  const theme = await loadConsoleTheme(directory);
   const fixture = await createConsoleAppFixture(t, { consoleTheme: theme });
   const shell = await fixture.rawRequest("GET", "/console/login");
   assert.equal(shell.response.status, 200);
@@ -48,7 +44,9 @@ test("mounted console themes serve public branding without changing API failures
   assert.match(shell.text, /href="\/console\/theme\/colors.css"/);
   assert.match(shell.text, /href="\/console\/theme\/icon.png"/);
   assert.equal(shell.response.headers.get("cache-control"), "no-store");
-  assert.doesNotMatch(shell.response.headers.get("content-security-policy"), /unsafe-inline/);
+  const policy = shell.response.headers.get("content-security-policy");
+  assert.ok(policy);
+  assert.doesNotMatch(policy, /unsafe-inline/);
   const css = await fixture.rawRequest("GET", "/console/theme/colors.css");
   assert.equal(css.response.status, 200);
   assert.match(css.text, /--color-accent: #2457C5/);
@@ -79,17 +77,21 @@ test("theme snapshots stay fixed until startup reload and remain isolated betwee
     displayName: "First",
     colors: { accent: "#112233" },
   });
-  const first = await createConsoleAppFixture(t, { consoleTheme: await load(directory) });
+  const first = await createConsoleAppFixture(t, {
+    consoleTheme: await loadConsoleTheme(directory),
+  });
   await writeFile(
     join(directory, "theme.json"),
     JSON.stringify({ schemaVersion: 1, displayName: "Second", colors: { accent: "#445566" } }),
   );
-  const second = await createConsoleAppFixture(t, { consoleTheme: await load(directory) });
+  const second = await createConsoleAppFixture(t, {
+    consoleTheme: await loadConsoleTheme(directory),
+  });
   for (const [fixture, name, accent] of [
     [first, "First", "#112233"],
     [second, "Second", "#445566"],
     [first, "First", "#112233"],
-  ]) {
+  ] as const) {
     const html = await fixture.rawRequest("GET", "/console/");
     assert.match(html.text, new RegExp(`<title>${name}</title>`));
     const response = await fetch(`${fixture.origin}/console/theme/colors.css`, {
@@ -101,8 +103,8 @@ test("theme snapshots stay fixed until startup reload and remain isolated betwee
 });
 
 test("minimal themes inherit bundled branding and absent configuration keeps the shell", async (t) => {
-  assert.equal(await load(undefined), undefined);
-  const theme = await load(await bundle(t));
+  assert.equal(await loadConsoleTheme(undefined), undefined);
+  const theme = await loadConsoleTheme(await bundle(t));
   const fixture = await createConsoleAppFixture(t, { consoleTheme: theme });
   const response = await fixture.rawRequest("GET", "/console/");
   assert.match(response.text, /<title>OpenClaw Enterprise<\/title>/);
@@ -129,23 +131,38 @@ test("invalid theme manifests fail configuration rather than falling back", asyn
       "missing.png",
     ].map((logo) => ({ schemaVersion: 1, logo })),
   ]) {
-    await assert.rejects(load(await bundle(t, manifest)), /Console theme/);
+    await assert.rejects(loadConsoleTheme(await bundle(t, manifest)), ConsoleThemeError);
   }
   const malformed = await bundle(t);
   await writeFile(join(malformed, "theme.json"), "{");
-  await assert.rejects(load(malformed), /Console theme/);
+  await assert.rejects(loadConsoleTheme(malformed), ConsoleThemeError);
   await writeFile(join(malformed, "theme.json"), " ".repeat(65537));
-  await assert.rejects(load(malformed), /Console theme/);
-  await assert.rejects(load(""), /Console theme/);
-  await assert.rejects(load("relative"), /Console theme/);
+  await assert.rejects(loadConsoleTheme(malformed), ConsoleThemeError);
+  await assert.rejects(loadConsoleTheme(""), ConsoleThemeError);
+  await assert.rejects(loadConsoleTheme("relative"), ConsoleThemeError);
+});
+
+test("API startup refuses an invalid mounted theme before listening", async (t) => {
+  const directory = await bundle(t, { schemaVersion: 2 });
+  await assert.rejects(
+    startApi({
+      NODE_ENV: "development",
+      OCC_HOST: "127.0.0.1",
+      OCC_PORT: "3000",
+      OCC_CONSOLE_THEME_DIR: directory,
+    }),
+    (error: unknown) =>
+      error instanceof ConsoleThemeError &&
+      startupFailureFields(error).code === "CONSOLE_THEME_INVALID",
+  );
 });
 
 test("image formats, size limits and resolved paths are enforced, including ConfigMap projections", async (t) => {
   const directory = await bundle(t, { schemaVersion: 1, logo: "logo.png" });
   await writeFile(join(directory, "logo.png"), "not an image");
-  await assert.rejects(load(directory), /Console theme/);
+  await assert.rejects(loadConsoleTheme(directory), ConsoleThemeError);
   await writeFile(join(directory, "logo.png"), Buffer.alloc(256 * 1024 + 1));
-  await assert.rejects(load(directory), /Console theme/);
+  await assert.rejects(loadConsoleTheme(directory), ConsoleThemeError);
   const external = await bundle(t);
   const image = await readFile(
     new URL("../../apps/controller/src/console/favicon-32.png", import.meta.url),
@@ -153,12 +170,12 @@ test("image formats, size limits and resolved paths are enforced, including Conf
   await writeFile(join(external, "outside.png"), image);
   await rm(join(directory, "logo.png"));
   await symlink(join(external, "outside.png"), join(directory, "logo.png"));
-  await assert.rejects(load(directory), /Console theme/);
+  await assert.rejects(loadConsoleTheme(directory), ConsoleThemeError);
   // Kubernetes projects ConfigMap keys through a generation directory and ..data link.
   await rm(join(directory, "logo.png"));
   await mkdir(join(directory, "..generation"));
   await writeFile(join(directory, "..generation", "logo.png"), image);
   await symlink("..generation", join(directory, "..data"));
   await symlink("..data/logo.png", join(directory, "logo.png"));
-  assert.ok(await load(directory));
+  assert.ok(await loadConsoleTheme(directory));
 });

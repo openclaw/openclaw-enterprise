@@ -179,7 +179,12 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
       { cell: "kubernetes/Codex", scenarios: ["model-ui", "calendar"] },
     ],
   );
-  assert.deepEqual(selected.cells[1].unselected, ["git-full", "git-read", "slack"]);
+  assert.deepEqual(selected.cells[1].unselected, [
+    "console-secrets",
+    "git-full",
+    "git-read",
+    "slack",
+  ]);
   assert.deepEqual(selected.cells[0].notApplicable, ["calendar", "git-read", "slack"]);
   assert.throws(() => validateQaInputs(selected, {}), /OPENAI_KEY_FILE is required/);
   assert.throws(
@@ -198,8 +203,29 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   assert.ok(!calendar.requiredEnv.includes("OCC_TEST_QA_OPENAI_KEY_FILE"));
   assert.deepEqual(calendar.cells[0].scenarios, []);
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
-  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "git-full"]);
+  assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "console-secrets", "git-full"]);
   assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
+  const secrets = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "console-secrets",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "compose",
+  });
+  assert.equal(secrets.browser, true);
+  assert.deepEqual(secrets.requiredEnv, ["OCC_TEST_QA_CODEX_TOKEN_FILE"]);
+  const sandbox = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "sandbox-policy",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.equal(sandbox.sandboxPolicy, true);
+  assert.deepEqual(sandbox.requiredEnv, [
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+    "OCC_TEST_QA_SANDBOX_ENV",
+  ]);
+  assert.ok(
+    sandbox.cells.every((cell) => cell.scenarios.length === 0),
+    "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
+  );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
   assert.ok(full.repository);
@@ -530,6 +556,229 @@ test("QA waits report the last observation when they time out", async () => {
   assert.equal(
     await waitFor("ready", async () => "value", 10, { describe: () => "unused" }),
     "value",
+  );
+});
+
+// Finding 2106: six QA cells failed "Timed out: Agent deployment" at 600 s with no status.
+test("a QA Agent deployment timeout names its last status, attempt and Pods", async (t) => {
+  const { deployQaAgentAndWait } = await import("../helpers/qa-installation.mjs");
+  const { createQaReport } = await import("../helpers/qa-report.mjs");
+  const { registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  // An invented 48-character registered value. Runtime text that OCC shortened could keep
+  // part of it, which whole-value redaction cannot match.
+  const privateValue = "qa-deploy-fixture-private-0123456789abcdefghijkl";
+  assert.equal(privateValue.length, 48);
+  registerQaSecret(privateValue);
+  const base = "/namespaces/namespace-1/agents/agent-1";
+  function fixture({ runtime, finalStatus = "running" } = {}) {
+    let clock = 0;
+    const calls = [];
+    const records = [];
+    const lastAttempt = {
+      at: "2026-10-19T19:40:00.000Z",
+      code: "RUNTIME_NOT_READY",
+      message: "The Agent runtime is not ready yet.",
+    };
+    const f = {
+      async api(method, path) {
+        calls.push(`${method} ${path}`);
+        if (method === "POST" && path === `${base}/deploy`) {
+          return { id: "rev-1" };
+        }
+        if (path === `${base}/deployments/rev-1`) {
+          clock += 100;
+          // Queued for the first observations, then running until the wait ends.
+          const status = clock <= 200 ? "queued" : finalStatus;
+          return {
+            status,
+            progress: status === "succeeded" ? null : { lastAttempt, nextAttemptAt: null },
+            error: null,
+            cleanup: null,
+            warnings: [],
+          };
+        }
+        if (path === `${base}/deployments/rev-1/runtime`) {
+          if (!runtime) {
+            throw new Error(`OCC GET ${path}: HTTP 404`);
+          }
+          return runtime;
+        }
+        throw new Error(`unexpected ${method} ${path}`);
+      },
+      async record(name, value) {
+        records.push({ name, value });
+      },
+    };
+    const agent = { id: "agent-1", namespaceId: "namespace-1", preset: "Codex" };
+    return { f, agent, calls, records, options: { timeout: 1_000, interval: 0, now: () => clock } };
+  }
+
+  const runtime = {
+    revisionId: "rev-1",
+    observedAt: "2026-10-19T19:46:00.000Z",
+    sources: [],
+    pods: [
+      {
+        role: "gateway",
+        cluster: "control",
+        name: "gateway-0",
+        uid: "uid-1",
+        phase: "Pending",
+        ready: false,
+        createdAt: "2026-10-19T19:36:10.000Z",
+        containers: [
+          {
+            name: "gateway",
+            state: "waiting",
+            reason: "ContainerCreating",
+            ready: false,
+            restartCount: 0,
+            startedAt: null,
+            lastTermination: null,
+          },
+          {
+            name: "setup",
+            state: "terminated",
+            // Cut at the API's 128 characters, inside the registered value.
+            reason: ("r".repeat(100) + privateValue).slice(0, 128),
+            ready: false,
+            restartCount: 1,
+            startedAt: null,
+            lastTermination: null,
+          },
+        ],
+        // Newest first, as the API lists them.
+        events: [
+          {
+            type: "Warning",
+            container: null,
+            reason: "Unhealthy",
+            // Probe output can reach an event message; the value starts at character 176.
+            message: "Readiness probe failed: " + "x".repeat(152) + privateValue,
+            count: 4,
+            lastObservedAt: "2026-10-19T19:45:00Z",
+          },
+          {
+            type: "Normal",
+            container: null,
+            reason: "Pulled",
+            message: "Container image already present",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:44:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            // A long reason from a legacy Event producer, cut inside the registered value.
+            reason: ("e".repeat(100) + privateValue).slice(0, 128),
+            message: "Back-off pulling image",
+            count: 2,
+            lastObservedAt: "2026-10-19T19:43:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedScheduling",
+            message: "0/1 nodes are available",
+            count: 3,
+            lastObservedAt: "2026-10-19T19:38:00Z",
+          },
+          {
+            type: "Warning",
+            container: null,
+            reason: "FailedCreatePodSandBox",
+            message: "Failed to create pod sandbox",
+            count: 1,
+            lastObservedAt: "2026-10-19T19:37:00Z",
+          },
+        ],
+      },
+    ],
+  };
+  // Through the real report stage, which redacts before it saves the reason.
+  const directory = await mkdtemp(join(tmpdir(), "qa-deploy-timeout-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const reportPath = join(directory, "matrix.json");
+  const report = createQaReport(reportPath, {});
+  const parent = { test: async (_name, _options, run) => run() };
+  const timedOut = fixture({ runtime });
+  await assert.rejects(
+    report.stage(parent, "compose/Codex", "deploy", () =>
+      deployQaAgentAndWait(timedOut.f, timedOut.agent, timedOut.options),
+    ),
+    (error) => {
+      // No runtime text that could hold part of a secret reaches the error.
+      assert.doesNotMatch(error.message, /qa-deploy-fixture|Readiness probe failed|rrrr|eeee/);
+      const [observation, pods] = error.message
+        .replace(/^Timed out: Agent deployment; last observation: /, "")
+        .split("; runtime: ");
+      assert.deepEqual(JSON.parse(observation), {
+        status: "running",
+        // Running since the third observation (clock 300) until the last one (clock 1,000).
+        statusForMs: 700,
+        lastAttempt: {
+          at: "2026-10-19T19:40:00.000Z",
+          code: "RUNTIME_NOT_READY",
+          message: "The Agent runtime is not ready yet.",
+        },
+        nextAttemptAt: null,
+        error: null,
+      });
+      assert.deepEqual(JSON.parse(pods), {
+        pods: [
+          {
+            role: "gateway",
+            phase: "Pending",
+            ready: false,
+            containers: [
+              { name: "gateway", state: "waiting", reason: "ContainerCreating", restartCount: 0 },
+              { name: "setup", state: "terminated", reason: "other", restartCount: 1 },
+            ],
+            // The three newest Warnings, by familiar reason and count only.
+            warnings: [
+              { reason: "Unhealthy", count: 4 },
+              { reason: "other", count: 2 },
+              { reason: "FailedScheduling", count: 3 },
+            ],
+          },
+        ],
+      });
+      return true;
+    },
+  );
+  assert.equal(timedOut.calls.at(-1), `GET ${base}/deployments/rev-1/runtime`);
+  assert.deepEqual(timedOut.records, []);
+  const saved = await readFile(reportPath, "utf8");
+  const [outcome] = JSON.parse(saved).outcomes;
+  assert.equal(outcome.outcome, "failed");
+  assert.match(outcome.reason, /^Timed out: Agent deployment; last observation: /);
+  assert.doesNotMatch(saved, new RegExp(privateValue.slice(0, 8)));
+
+  // Runtime details are best effort: the timeout keeps its status when they are unavailable.
+  const noRuntime = fixture();
+  await assert.rejects(
+    deployQaAgentAndWait(noRuntime.f, noRuntime.agent, noRuntime.options),
+    (error) =>
+      error.message.startsWith(
+        'Timed out: Agent deployment; last observation: {"status":"running","statusForMs":700,',
+      ) &&
+      error.message.endsWith(
+        `; runtime unavailable (OCC GET ${base}/deployments/rev-1/runtime: HTTP 404)`,
+      ),
+  );
+
+  // A deployment that succeeds is recorded and returned, with no runtime request.
+  const succeeded = fixture({ finalStatus: "succeeded" });
+  const result = await deployQaAgentAndWait(succeeded.f, succeeded.agent, succeeded.options);
+  assert.equal(result.status.status, "succeeded");
+  assert.deepEqual(result.revision, { id: "rev-1" });
+  assert.deepEqual(
+    succeeded.records.map(({ name }) => name),
+    ["Codex-agent-1-rev-1-deployment"],
+  );
+  assert.equal(
+    succeeded.calls.some((call) => call.endsWith("/runtime")),
+    false,
   );
 });
 

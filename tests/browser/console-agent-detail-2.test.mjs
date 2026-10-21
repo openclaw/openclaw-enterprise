@@ -11,7 +11,7 @@ import { createOpenShellBackend } from "../../apps/controller/src/backends/opens
 import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
 import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
 import { WORKSPACE_DEFAULTS } from "../../packages/contracts/src/workspace-defaults.mjs";
-import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createConsoleAppFixture, fileConsoleApp } from "../helpers/console-app.mjs";
 import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import {
@@ -49,13 +49,16 @@ import {
   waitForLiveControls,
 } from "./console-agents-test-support.mjs";
 
-// The second half of console-agent-detail.test.mjs: deletion, Agent links, native admin access,
-// Slack channel edits, refocus and session checks, tabs, sharing, credential grants and workspace
-// drafts. The file was split so the two halves run side by side in the Console Browser lane.
+// The Console Browser lane runs the two Agent detail test files in parallel.
+
+// Tests that need no app of their own share one (fileConsoleApp); each makes its own Namespace.
+// Tests that open an Agent link without a Namespace (which reads every Namespace), expire every
+// session, register a Driver, use the bootstrap result, or pass fixture options keep an app of
+// their own.
+const detailApp = fileConsoleApp();
 
 test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Delete cancellation", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Cancel Candidate", nativeValues("keep"));
   const { page } = await newPage(t, fixture);
@@ -118,8 +121,7 @@ test("Agent delete confirmation can be canceled without sending a write request"
 });
 
 test("Agent delete confirmation sends the real delete API and leaves visible queued state", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Delete success", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Success Candidate", nativeValues("go"));
   const { page } = await newPage(t, fixture);
@@ -290,8 +292,7 @@ async function checkScopedDeletionEnd(t, { moveFocusDuringPoll }) {
 }
 
 test("Agent delete uncertainty requires refresh before another destructive request", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Delete uncertainty", { ready: true });
   const agent = await fixture.createAgent(
     namespace.id,
@@ -347,8 +348,7 @@ test("Agent delete uncertainty requires refresh before another destructive reque
 });
 
 test("An already deleting Agent permits only a confirmed manual repeat DELETE", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Deletion repeat", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Repeat cleanup", nativeValues("repeat"));
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -394,8 +394,7 @@ test("An already deleting Agent permits only a confirmed manual repeat DELETE", 
 });
 
 test("Repeat deletion preserves bounded retry ownership feedback and ordinary denial guidance", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Retry refusal feedback", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Owned cleanup", nativeValues("repeat"));
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -463,9 +462,10 @@ test("failed repeat deletion preserves feedback when a poll was rearmed during i
     [429, "Too many requests. Wait before trying again.", false],
   ]) {
     await t.test(`HTTP ${status}`, async (t) => {
-      const fixture = await createConsoleAppFixture(t);
-      await fixture.bootstrap();
-      const namespace = await fixture.createNamespace("Pending repeat poll", { ready: true });
+      const fixture = await detailApp(t);
+      const namespace = await fixture.createNamespace(`Pending repeat poll ${status}`, {
+        ready: true,
+      });
       const agent = await fixture.createAgent(
         namespace.id,
         "Failed repeat",
@@ -541,9 +541,11 @@ test("a deletion status read that fails still sends a repeat confirmed while it 
   checkRepeatDuringRead(t, { endsAccess: false, readFails: true }));
 
 async function checkRepeatDuringRead(t, { endsAccess, readFails = false }) {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
-  const namespace = await fixture.createNamespace("Read before repeat", { ready: true });
+  const fixture = await detailApp(t);
+  const namespace = await fixture.createNamespace(
+    `Read before repeat${endsAccess ? " ending access" : ""}${readFails ? " failing" : ""}`,
+    { ready: true },
+  );
   const agent = await fixture.createAgent(
     namespace.id,
     "Read guarded repeat",
@@ -658,8 +660,7 @@ async function checkRepeatDuringRead(t, { endsAccess, readFails = false }) {
 }
 
 test("An uncertain repeat deletion stays blocked until a successful deleting readback", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Repeat deletion uncertainty", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Uncertain repeat", nativeValues("repeat"));
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
@@ -723,8 +724,7 @@ test("An uncertain repeat deletion stays blocked until a successful deleting rea
 });
 
 test("Agent deletion recovery returns a missing Agent detail to its Namespace list", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Deleted detail", { ready: true });
   const agentId = `agt_${randomUUID()}`;
   const { page } = await newPage(t, fixture);
@@ -828,8 +828,7 @@ test("Agent link without a Namespace offers switching when the lookup is uncerta
 });
 
 test("Agent delete denial keeps the Agent visible with permission feedback", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Delete denial", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Denied Candidate", nativeValues("stay"));
   const limited = await fixture.createAccountWithPolicy("agent-delete-denied", (principal) => {
@@ -884,8 +883,7 @@ test("Agent delete denial keeps the Agent visible with permission feedback", asy
 });
 
 test("Agent detail opens native admin UI only after real API access checks pass", async (t) => {
-  const disabledFixture = await createConsoleAppFixture(t);
-  await disabledFixture.bootstrap();
+  const disabledFixture = await detailApp(t);
   const disabledNamespace = await disabledFixture.createNamespace("Native admin disabled", {
     ready: true,
   });
@@ -1251,9 +1249,11 @@ for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
   ["disabled", "allowlist", true],
 ]) {
   test(`Slack channel editing preserves ${dmPolicy ?? "omitted"} DM and ${groupPolicy ?? "omitted"} group policies${enterpriseOrgInstall ? " on an organization-wide install" : ""}`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Slack policy editing", { ready: true });
+    const fixture = await detailApp(t);
+    const namespace = await fixture.createNamespace(
+      `Slack policy editing ${dmPolicy ?? "omitted"} ${groupPolicy ?? "omitted"}${enterpriseOrgInstall ? " organization" : ""}`,
+      { ready: true },
+    );
     const slack = {
       enabled: true,
       mode: "socket",
@@ -1339,8 +1339,7 @@ for (const [dmPolicy, groupPolicy, enterpriseOrgInstall] of [
 }
 
 test("Agent detail refocus checks access once without reloading an unfinished revision edit", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Revision refocus", { ready: true });
   const agent = await fixture.createAgent(
     namespace.id,
@@ -1475,9 +1474,10 @@ test("Agent detail refocus checks access once without reloading an unfinished re
 
 for (const kind of ["agent", "configuration", "namespace"]) {
   test(`Agent detail refocus removes a revision when ${kind} access is revoked`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Revision access revoked", { ready: true });
+    const fixture = await detailApp(t);
+    const namespace = await fixture.createNamespace(`Revision access revoked ${kind}`, {
+      ready: true,
+    });
     const agent = await fixture.createAgent(namespace.id, "Revoked revision Agent");
     const { page } = await newPage(t, fixture);
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
@@ -1606,8 +1606,7 @@ test("Agent detail history navigation rechecks session during refocus", async (t
 });
 
 test("Agent tabs replace only their content and preserve surrounding panels and history", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Tab navigation", { ready: true });
   const agent = await fixture.createAgent(
     namespace.id,
@@ -1683,8 +1682,7 @@ test("Agent tabs replace only their content and preserve surrounding panels and 
 });
 
 test("Agent tab switches ignore late configuration reads and keep direct workspace access independent", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Slow tabs", { ready: true });
   const agent = await fixture.createAgent(
     namespace.id,
@@ -1754,8 +1752,7 @@ test("Agent tab switches ignore late configuration reads and keep direct workspa
 // and Shift+Tab returns to the selected tab, and aria-selected follows the URL's tab=, Back
 // included. On a phone an edge with more tabs past it fades.
 test("Agent tabs are a tablist with arrow keys, one Tab stop and the URL's selection", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Tab keyboard", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Tab keyboard Agent", nativeValues("keys"));
   const { page } = await newPage(t, fixture);
@@ -2280,8 +2277,7 @@ test("a read-only viewer is denied saved settings and native admin once per tab,
 });
 
 test("a failed native admin status read keeps the card, its error and Refresh access", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Native admin outage", { ready: true });
   const agent = await fixture.createAgent(namespace.id, "Outage Agent", nativeValues("outage"));
   const { page } = await newPage(t, fixture);
@@ -2327,8 +2323,7 @@ test("a failed native admin status read keeps the card, its error and Refresh ac
 });
 
 test("Agent sharing rejects emails locally and names an unknown Principal ID", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Sharing subject checks");
   const agent = await fixture.createAgent(namespace.id, "Subject Agent", nativeValues("subject"));
   const { page } = await newPage(t, fixture);
@@ -2417,9 +2412,8 @@ test("Agent sharing creates exact Roles instead of reusing strict superset Roles
 
 for (const method of ["api_key", "codex_pat"]) {
   test(`Credentials grants exact Agent access when rebinding ${method}`, async (t) => {
-    const fixture = await createConsoleAppFixture(t);
-    await fixture.bootstrap();
-    const namespace = await fixture.createNamespace("Model credential replacement", {
+    const fixture = await detailApp(t);
+    const namespace = await fixture.createNamespace(`Model credential replacement ${method}`, {
       ready: true,
     });
     const agent = await fixture.createAgent(
@@ -2575,8 +2569,7 @@ test("Credentials retries denied and interrupted grants without repeating the au
 });
 
 test("Credentials blocks repeat saves after losing an authentication PATCH response", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Unknown credential save", { ready: true });
   const agent = await fixture.createAgent(
     namespace.id,
@@ -3485,8 +3478,7 @@ test("explicit missing-file readback settles an uncertain workspace create witho
 });
 
 test("authentication drafts retain Secret references and their original save baseline", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Authentication navigation", { ready: true });
   const agent = await fixture.createAgent(
     namespace.id,
@@ -3530,8 +3522,7 @@ test("authentication drafts retain Secret references and their original save bas
 });
 
 test("Secret summaries retain revision bindings and distinguish unreadable metadata from absent bindings", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Bound Secret summaries", { ready: true });
   const app = await fixture.createSecret(namespace.id, "Revision Slack app", "hidden-app-value");
   const bot = await fixture.createSecret(namespace.id, "Revision Slack bot", "hidden-bot-value");
@@ -3645,8 +3636,7 @@ test("Secret summaries retain revision bindings and distinguish unreadable metad
 });
 
 test("Slack directory selections show names and save exact channel IDs", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Slack directory picker", { ready: true });
   const appSecret = await fixture.createSecret(namespace.id, "Slack app token", "xapp-test-secret");
   const botSecret = await fixture.createSecret(namespace.id, "Slack bot token", "xoxb-test-secret");
@@ -3895,8 +3885,7 @@ test("Slack directory selections show names and save exact channel IDs", async (
 });
 
 test("Slack editor preserves existing qualified channel and user targets", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Qualified Slack targets", { ready: true });
   const appSecret = await fixture.createSecret(
     namespace.id,
@@ -4050,8 +4039,7 @@ test("Slack editor preserves existing qualified channel and user targets", async
 });
 
 test("Credentials saves an issued service account as a PAT source without granting Secret access", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
-  await fixture.bootstrap();
+  const fixture = await detailApp(t);
   const namespace = await fixture.createNamespace("Managed PAT source", { ready: true });
   // Issuance is outside this Console test. Seed its realistic result through State;
   // the browser still lists, selects and saves it through production API/IAM paths.

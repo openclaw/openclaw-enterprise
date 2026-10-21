@@ -1,3 +1,5 @@
+import { type ErrorDetail } from "@openclaw-enterprise/contracts";
+import { requireConfiguration, ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 /// <reference lib="es2024.string" />
 
 import {
@@ -160,20 +162,28 @@ function timeoutFailure(action: string): Error {
 export class KubernetesSecretDriver implements SecretDriver {
   static readonly configurationSchema: JSONSchema = createKubernetesAuthenticationOptionsSchema();
 
-  static validateConfiguration(configuration: unknown): void {
-    const value = asRecord(configuration);
-    if (value === undefined) {
-      throw new SecretValidationError("Kubernetes Secret options are required.");
-    }
-    if ("clients" in value || Object.keys(value).some((key) => key !== "authentication")) {
-      throw new SecretValidationError(
-        "Injected clients and unknown Kubernetes Secret options are not supported.",
+  static validateConfiguration(
+    configuration: Readonly<KubernetesSecretDriverOptions>,
+  ): readonly ErrorDetail[] {
+    try {
+      validateKubernetesAuthentication(
+        configuration.authentication,
+        (message, path) =>
+          new ConfigurationValidationError([{ path, code: "INVALID_FORMAT", message }]),
       );
+
+      return [];
+    } catch (error) {
+      return error instanceof ConfigurationValidationError
+        ? error.error.details
+        : [
+            {
+              path: "",
+              code: "INVALID_VALUE",
+              message: "Configuration violates the Driver's constraints.",
+            },
+          ];
     }
-    validateKubernetesAuthentication(
-      value.authentication,
-      (message) => new SecretValidationError(message),
-    );
   }
 
   readonly id: string;
@@ -186,7 +196,7 @@ export class KubernetesSecretDriver implements SecretDriver {
     options: KubernetesSecretDriverOptions,
     selection: KubernetesSecretDriverSelection = {},
   ) {
-    KubernetesSecretDriver.validateConfiguration(options);
+    options = requireConfiguration(KubernetesSecretDriver, options);
     this.id = required(selection.id ?? "secret-kubernetes", "Secret Driver ID");
     this.implementation = selection.implementation ?? IMPLEMENTATION;
     if (this.implementation !== IMPLEMENTATION) {

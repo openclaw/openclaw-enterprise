@@ -1,3 +1,7 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 // Runs the real Driver and host helper. SSH and systemd are replaced by fixtures;
 // only tests/integration/ssh-compute-real.test.mjs provides opt-in host proof.
 import assert from "node:assert/strict";
@@ -300,7 +304,11 @@ async function fixture(t, selection = {}) {
         child.kill("SIGKILL");
       }
     }
-    await rm(base, { recursive: true, force: true });
+    // A cancelled helper's flock(1) waiter outlives it and keeps logging attempts into
+    // the fixture state until the lock frees. Retry when one lands mid-removal: a failing
+    // hook skips later after hooks, such as the one that ends a test's lock holder, whose
+    // pipes then keep this file running until its runner timeout.
+    await rm(base, { recursive: true, force: true, maxRetries: 10 });
   });
   const nsDir = join(root, "namespaces", digest(tenant.id).slice(0, 12));
   return {
@@ -477,14 +485,22 @@ test("SSH closed schema and semantic validation reject every invalid option", ()
       setOption(candidate, keys, value);
     }
     assert.equal(Check(schema, candidate), false, keys.join("."));
-    assert.throws(() => SshComputeDriver.validateConfiguration(candidate), refusal, keys.join("."));
-    assert.throws(() => new SshComputeDriver(candidate), refusal, keys.join("."));
+    assert.throws(
+      () => requireConfiguration(SshComputeDriver, candidate),
+      SharedConfigurationValidationError,
+      keys.join("."),
+    );
+    assert.throws(
+      () => new SshComputeDriver(candidate),
+      SharedConfigurationValidationError,
+      `${keys.join(".")}: ${refusal}`,
+    );
   }
   const reversed = options();
   reversed.network.gatewayPortRange = { start: 2000, end: 1999 };
   assert.throws(
-    () => SshComputeDriver.validateConfiguration(reversed),
-    /start must not exceed end/,
+    () => requireConfiguration(SshComputeDriver, reversed),
+    SharedConfigurationValidationError,
   );
   const optional = options();
   optional.ssh.connectTimeoutSeconds = 2;
@@ -1291,10 +1307,14 @@ test("system SSH executor sends exact argv and stdin and bounds cancellation and
   await mkdir(bin);
   // Transport-only stand-in records argv and runs the unchanged stdin program with Node.
   // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
+  // It installs its SIGTERM forwarder before spawning the helper. Installed after spawn(),
+  // a SIGTERM that lands while spawn() runs (the 100 ms timeout below, on a busy runner)
+  // killed the stand-in by default and orphaned the helper, which kept the executor's
+  // stdio pipes open, so the execution never settled and the file hit its runner timeout.
   const ssh = join(bin, "ssh");
   await writeFile(
     ssh,
-    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nconst child = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nprocess.on('SIGTERM', () => child.kill('SIGTERM'));\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
+    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nfs.writeFileSync(${JSON.stringify(join(f.base, "argv.json"))}, JSON.stringify(process.argv.slice(2)));\nlet child;\nprocess.on('SIGTERM', () => (child ? child.kill('SIGTERM') : process.exit(143)));\nchild = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
   );
   await chmod(ssh, 0o755);
   const previousPath = process.env.PATH;
@@ -1380,4 +1400,70 @@ test("system SSH executor sends exact argv and stdin and bounds cancellation and
     5_000,
   );
   await assert.rejects(executor.execute({ ...waiting, timeoutMs: 100 }), /cancelled or timed out/);
+});
+
+test("system SSH executor settles when a descendant of ssh keeps its stderr open", async (t) => {
+  const base = await mkdtemp(join(tmpdir(), "occ-ssh-stdio-"));
+  const bin = join(base, "bin");
+  await mkdir(bin);
+  const orphans = join(base, "orphans");
+  // Like an operator ProxyCommand, the stand-in starts a detached descendant that inherits
+  // ssh's stderr and outlives ssh. The executor's stderr pipe stays open after ssh exits,
+  // so an executor that settles only on "close" never settles, whatever timeoutMs says.
+  const ssh = join(bin, "ssh");
+  await writeFile(
+    ssh,
+    `#!${process.execPath}\nconst fs = process.getBuiltinModule('node:fs');\nconst { spawn } = process.getBuiltinModule('node:child_process');\nconst orphan = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120_000)'], { detached: true, stdio: ['ignore', 'ignore', 'inherit'] });\nfs.appendFileSync(${JSON.stringify(orphans)}, orphan.pid + '\\n');\norphan.unref();\nlet child;\nprocess.on('SIGTERM', () => (child ? child.kill('SIGTERM') : process.exit(143)));\nchild = spawn(process.execPath, ['-'], { stdio: 'inherit' });\nchild.on('exit', (code) => process.exit(code ?? 1));\n`,
+  );
+  await chmod(ssh, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${bin}:${previousPath}`;
+  t.after(async () => {
+    process.env.PATH = previousPath;
+    const pids = (await readFile(orphans, "utf8").catch(() => "")).split("\n").filter(Boolean);
+    for (const pid of pids) {
+      try {
+        process.kill(Number(pid), "SIGKILL");
+      } catch (error) {
+        assert.equal(error.code, "ESRCH");
+      }
+    }
+    await rm(base, { recursive: true, force: true });
+  });
+  // Generous for a busy runner, yet far below the descendant's 120 s lifetime, which is
+  // how long an executor waiting for "close" would stay pending.
+  const settled = (promise) => {
+    let timer;
+    const deadline = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("execute() did not settle within 20 s")), 20_000);
+    });
+    return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+  };
+  const executor = new SystemSshCommandExecutor();
+  const command = {
+    address: "127.0.0.1",
+    port: 2222,
+    user: "root",
+    nodePath: "/usr/bin/node",
+    identityFile: "/keys/id",
+    knownHostsFile: "/keys/known_hosts",
+    connectTimeoutSeconds: 7,
+    helper: 'process.stdout.write(JSON.stringify({value: SSH_OPERATION}) + "\\n");',
+    operation: "e30=",
+    timeoutMs: 5000,
+  };
+  // ssh exits normally: the result keeps everything ssh wrote before it exited.
+  assert.deepEqual(await settled(executor.execute(command)), {
+    code: 0,
+    stdout: '{"value":"e30="}\n',
+    stderr: "",
+  });
+  // The operation times out: the executor terminates ssh and rejects instead of waiting
+  // for the descendant to release stderr.
+  await assert.rejects(
+    settled(
+      executor.execute({ ...command, helper: "setInterval(() => {}, 1000);", timeoutMs: 200 }),
+    ),
+    /cancelled or timed out/,
+  );
 });

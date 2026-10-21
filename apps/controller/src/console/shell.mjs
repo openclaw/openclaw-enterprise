@@ -1,6 +1,17 @@
-import { brandContents } from "./branding.mjs";
 import { displayDate } from "./agents/list.mjs";
 import { element, button } from "./dom.mjs";
+
+export function brandContents(size) {
+  const displayName =
+    document.querySelector('meta[name="occ-console-display-name"]')?.content ??
+    "OpenClaw Enterprise";
+  const src =
+    document.querySelector('meta[name="occ-console-logo"]')?.content ?? "/console/oce-mascot.png";
+  return [
+    element("img", { src, alt: "", width: String(size), height: String(size) }),
+    element("span", { className: "brand-name", title: displayName }, displayName),
+  ];
+}
 
 export function panel(target, title, description, actionLabel, action, requestId) {
   target.replaceChildren(
@@ -414,7 +425,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       return;
     }
     const scope = app.querySelector(".content .scope");
-    if (scope && route().feature === "agents") {
+    if (scope && ["agents", "secrets"].includes(route().feature)) {
       scope.textContent = `Namespace · ${readable.find((item) => item.id === namespaceId)?.name ?? "No available selection"}`;
     }
   }
@@ -458,8 +469,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       menuControls = null;
     }
     const nav = element("nav", { className: "nav", "aria-label": "Main navigation" });
-    const icons = { agents: "◇", namespaces: "▤" };
-    for (const name of ["agents", "namespaces"]) {
+    const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
+    for (const name of ["agents", "secrets", "namespaces"]) {
       const link = element(
         "a",
         {
@@ -548,14 +559,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
-    const scope =
-      feature === "agents"
-        ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
-        : feature === "settings"
-          ? "Your account"
-          : feature === "backends"
-            ? "Installation-wide · Experimental"
-            : "Installation-wide";
+    const scope = ["agents", "secrets"].includes(feature)
+      ? `Namespace · ${selected?.name ?? (session && !namespaceAdmissionPending ? "No available selection" : "Checking access")}`
+      : feature === "settings"
+        ? "Your account"
+        : feature === "backends"
+          ? "Installation-wide · Experimental"
+          : "Installation-wide";
     // Settings is about the account, and Namespaces lists them: neither has a Namespace scope.
     const scopeSelector =
       feature === "namespaces" || feature === "settings"
@@ -607,7 +617,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         );
     const view = element("div", { "aria-live": "polite", "aria-busy": "true" });
     main.append(header);
-    if (recovery && session && feature !== "agents" && namespaceId !== null && !selected) {
+    if (
+      recovery &&
+      session &&
+      !["agents", "secrets"].includes(feature) &&
+      namespaceId !== null &&
+      !selected
+    ) {
       if (feature === "namespaces" && namespaces.length) {
         main.append(
           element(

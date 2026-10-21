@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-18"
-last_updated_session: "authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d"
+updated: "2026-10-21"
+last_updated_session: "authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6"
 ---
 
 # Production Startup Flow
@@ -11,9 +11,9 @@ last_updated_session: "authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d"
 Prepare a fresh protected bootstrap PVC; install Helm with approved images,
 PostgreSQL/authentication credentials, trusted Installation YAML and network
 policies. Wait for private API/worker readiness; authenticate `/installation`
-with the service key. Tenant deployment/model-backed TUI proof remains separate.
+with the service key.
 
-Commands: [deployment guide](../guides/deploy.md).
+[Deployment guide](../guides/deploy.md).
 
 ## Entry Points
 
@@ -24,10 +24,12 @@ Commands: [deployment guide](../guides/deploy.md).
   `apps/controller/src/composition/production.ts:28`.
 - Assumptions: Explicit kubeconfig/context, enforcing NetworkPolicies, external
   PostgreSQL, approved immutable images, protected operator files, fresh
-  bootstrap PVC, exact API/client selectors, explicit `/32` egress hosts,
+  bootstrap PVC, exact API/client selectors, `/32` egress hosts,
   reviewed control-plane node labels, and an approved private OCC URL.
 
 ## Flow
+
+First install requires [empty OCE history](../reference/settings/operations.md#migration-history).
 
 ```mermaid
 graph TD
@@ -65,40 +67,39 @@ graph TD
 Migration, bootstrap, API and worker use
 [`createPostgresPool`](../../packages/occ/src/state/postgres-pool.ts) with
 [password or Azure workload-identity authentication](../reference/settings/operations.md#postgresql-connection-authentication).
-A failover, maintenance restart, `idle_session_timeout` or proxy reset discards
-the idle client and logs `database.idle-client-error` with only its code to stderr.
+Failover, maintenance restart, `idle_session_timeout` or proxy reset discards the
+idle client and logs only its error code to stderr as `database.idle-client-error`.
 The process continues; the next query opens a new connection.
 
 ### 1. Prepare native production inputs
 
 `deploy/helm/openclaw-enterprise/values.yaml:1`
 
-The operator prepares values, Installation YAML and bootstrap PVC outside the
-checkout. Helm selects controller images, API endpoint, Secrets, claim,
+Prepare values, Installation YAML and bootstrap PVC outside the checkout. Helm
+selects controller images, API endpoint, Secrets, claim,
 client/node selectors and egress. `openclaw.validate` requires a DNS-1123
-release Namespace label of at most 63 characters. Installation YAML selects IAM,
+release Namespace label up to 63 characters. Installation YAML selects IAM,
 Configuration, Compute, optional Backends, gateway/Agent images, projected
 workload identity and runtime networking/storage.
 
 File-backed Kubernetes Secrets supply Installation startup, database URLs/optional
 CA, Better Auth signing, and optional ChatGPT administrator credentials. These
-prepared inputs are not synchronization targets. Helm neither rewrites Driver
+inputs are not synchronization targets. Helm neither rewrites Driver
 configuration nor infers gateway/Agent images.
 
 ### 2. Prepare the fresh bootstrap volume
 
 `scripts/prepare-bootstrap-volume:124`
 
-Before the first install, the operator creates the `bootstrap.password.claimName`
-PVC and runs the helper with explicit kubeconfig, context, namespace, claim,
+Create the `bootstrap.password.claimName` PVC and run the helper with explicit
+kubeconfig, context, namespace, claim,
 approved Node-capable image, and optional `--node-selector KEY=VALUE` labels.
-The preparation Pod preserves string namespaces and selector keys, applying selectors
-before WaitForFirstConsumer binding. The helper requires a fresh
-root except for filesystem-owned `lost+found`, sets UID/GID `1000` with mode
-`0700`, and refuses other entries.
+The Pod preserves string namespaces and selector keys; selectors precede
+WaitForFirstConsumer binding. The helper requires an empty root except
+for filesystem-owned `lost+found`, and sets UID/GID `1000` with mode `0700`.
 
-If policy forbids this Pod, storage administration prepares the claim through an
-approved workflow, then hands it to Helm. The helper neither creates PVCs nor
+If the Pod is forbidden, storage administration prepares the claim through an
+approved workflow for Helm. The helper neither creates PVCs nor
 repairs used claims, retrieves credentials, or changes controller configuration.
 
 ### 3. Run Helm initialization
@@ -106,62 +107,67 @@ repairs used claims, retrieves credentials, or changes controller configuration.
 `deploy/helm/openclaw-enterprise/templates/jobs.yaml:8`
 
 `deploy/helm/openclaw-enterprise/templates/bootstrap-networkpolicies.yaml:1`
-installs initialization isolation before the Job. It and later workload policies
-grant configured DNS peers UDP/TCP `53` and `5353`
+installs isolation before the Job; it and later policies grant configured
+DNS peers UDP/TCP `53` and `5353`
 ([Helm DNS contract](../reference/settings/production.md#required-production-controller-environment)).
+
+Server-connected first installs check the named Job; if present or unreadable,
+stop; preserve it; reconcile. Offline `helm template` cannot check it.
+This is no lock or freshness proof for database, identity or storage; upgrades
+are unchanged.
 
 `deploy/helm/openclaw-enterprise/templates/_helpers.tpl:openclaw.validate` matches Compute routing validation. `database.port`,
 `cluster.port`, and `executionCluster.apiPort` must be 1–65535 without leading zeros.
 Empty hosts retain Service DNS for listeners and Certificate SANs.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:validateDnsHostname`
-refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persistence
-opens. Helm also refuses rendering. IPv4 admission does not establish TLS;
+refuses rewritten/parser-invalid IPv4 with `ConfigurationFailure` before persistence;
+Helm also refuses rendering. IPv4 admission does not establish TLS.
 `validateSandboxDomain` refuses numeric/hex suffixes, including canonical IPv4.
-Correct Helm values and Installation YAML per the
-[hostname correction procedure](../guides/deploy/breaking-changes.md#2026-10-14-gateway-hostnames-must-not-be-rewritten-ipv4),
-then upgrade/restart.
+Correct Helm values and Installation YAML with the
+[hostname correction procedure](../guides/deploy/breaking-changes.md#2026-10-14-gateway-hostnames-must-not-be-rewritten-ipv4)
+before upgrade/restart.
 
 `deploy/helm/openclaw-enterprise/templates/_network-policies.tpl:openclaw.networkPolicy.matchLabels`
-refuses peer maps Kubernetes rejects, preserving null/empty semantics and accepted labels.
+rejects invalid Kubernetes peer maps, preserving null/empty semantics and accepted labels.
 
-On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` first
-loads the Installation as API startup does, without database or Kubernetes access;
-a refusal fails the hook before migration and API replacement.
+On upgrades, `deploy/helm/openclaw-enterprise/files/check-installation.mjs` validates
+Installation without database/Kubernetes access; refusal stops migration and API
+replacement. The check uses `apps/controller/src/startup-failure.ts:formatStartupConfigurationFailure`
+and the API/worker filter `apps/controller/src/logging.ts:configurationLogDetails`: at most 32 field
+diagnostics, without submitted values.
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 database containers optionally mount the CA. Helm validates distinct application and
 migration Secret keys against Kubernetes syntax before use. `installation.key`
 and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
 not `.` or a `..` prefix.
-Bootstrap receives auth, administrator, Installation and output settings.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 
-Migration verifies the complete SQL source manifest, checks the
-dedicated role and canonical receipt/catalog state, and holds one advisory lock
-on the connection used by Drizzle's normal transaction. It accepts fresh
-databases, canonical history through migration 0023, or the completed history
-through 0025. Unsupported or mixed development histories fail before migration
-DDL, preventing bootstrap from running. See [migration history and recovery](../reference/settings/operations.md#migration-history).
+Migration verifies the complete SQL source manifest, dedicated role and canonical
+receipt/catalog state, and holds an advisory lock on Drizzle's transaction
+connection. It accepts fresh databases, canonical history through 0023, or completed
+history through 0025; unsupported or mixed development histories fail before
+migration DDL and bootstrap. See [migration history and recovery](../reference/settings/operations.md#migration-history).
 
-`scripts/bootstrap-installation.mjs:authBaseURL` checks an HTTP(S) origin before
-database access. Production requires HTTPS except for HTTP loopback verification
+`scripts/lib/bootstrap-configuration.mjs:authBaseURL` checks HTTP(S) origin before
+database access. Production requires HTTPS except HTTP loopback verification
 (`127.0.0.1`, `localhost`, `[::1]`).
 
 `scripts/bootstrap-installation.mjs` creates or verifies Installation,
 human/service administrators, IAM seed, audit evidence, and initial service key.
-Fresh bootstrap creates `default` through `OpenClawController.createNamespace`,
-authorized as the bootstrap Principal. Its queued reconciliation commits
-with Installation/IAM state and audit. Existing Installations add no Namespace;
-this name does not select Kubernetes' `default` namespace. The worker provisions
-Driver-owned infrastructure; operators provide the guide's tenant RoleBindings. The bootstrap container alone writes protected PVC password/service-key files.
+Fresh bootstrap creates `default` via `OpenClawController.createNamespace`
+as the bootstrap Principal. Queued reconciliation commits with Installation/IAM
+state and audit. Existing Installations add no Namespace; this is not Kubernetes'
+`default`. The worker provisions Driver-owned infrastructure; operators provide
+tenant RoleBindings. The bootstrap container alone writes protected PVC password/service-key files.
 Existing output, unsafe permissions, or inconsistent accounts/IAM identity fail
 the Job. Helm failure does not imply database-hook rollback.
 
 ### 4. Start private API and worker Deployments
 
-`apps/controller/src/server.mjs:138`, `apps/controller/src/worker.ts:312`
+`apps/controller/src/api-startup.mjs:configuration`, `apps/controller/src/worker.ts:312`
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 
@@ -169,11 +175,10 @@ With [OIDC CA settings](../reference/settings/oidc.md), the API init container
 `deploy/helm/openclaw-enterprise/files/assemble-api-ca.mjs` validates and combines
 IdP and Gateway roots for `NODE_EXTRA_CA_CERTS`;
 `deploy/helm/openclaw-enterprise/files/check-api-database-ca.mjs` preloads to refuse
-database TLS not pinned to the database CA.
+database TLS not pinned to that CA.
 
-API/worker Deployments start after initialization. Before readiness, the API
-validates its listener, Better Auth, database, Installation YAML, Drivers,
-Backend membership and Compute preflight. Private routes, `/healthz` and
+After initialization, API readiness requires listener, Better Auth, database,
+Installation YAML, Driver, Backend membership, and Compute preflight validation. Private routes, `/healthz` and
 database-backed `/readyz` use the operator-managed endpoint. The startup probe
 allows 120 one-second failures: two minutes to listen, then readiness within a second.
 
@@ -256,16 +261,18 @@ independent high availability. Repository runtime reconciliation continues in th
 
 ### 5. Retrieve the key and prove authenticated access
 
+Fresh bootstrap [checks both output paths](../reference/authentication/service-api-keys.md#recover-an-incomplete-bootstrap) before creating credentials.
+
 `internal/occclient/client.go:Client.GetInstallation`
 
-After Helm readiness, the operator retrieves
+After Helm readiness, retrieve
 `initial-admin-service-key.json` from protected bootstrap storage through an
-approved reader path and stores it in an owner-readable file. A completed Job is
+approved reader path into an owner-readable file. A completed Job is
 not an exec endpoint, and the API and worker cannot retrieve this file for the
 operator.
 
 From an approved client, `occ installation get` reads the protected key file
-and displays the Installation. Startup proof requires its `ID` to match the key
+and displays the Installation. Its `ID` must match the key
 response's `meta.installationId`. The operator records that ID in the Installation
 startup Secret's `openclaw.dev/installation-id` annotation; coordinated upgrades
 use this marker to bind their OCC endpoint to the selected Installation.
@@ -281,18 +288,19 @@ until tenant deployment/TUI procedures run.
 - `pnpm db:migrate:production --check` reports the accepted database history
   without applying SQL. `MIGRATION_HISTORY_UNSUPPORTED` needs the database
   inspected; initialization never repairs its ledger.
-- The API should emit `listening`; the worker should emit `worker.started`
-  followed by `worker.health`. `listening` carries `startupMs` since process
-  start and `phasesMs` per startup phase, so a slow boot names its slow phase.
+- The API emits `listening`; the worker emits `worker.started`, then `worker.health`.
+  `listening` reports `startupMs` (since process start) and per-phase `phasesMs`.
   A stopping API emits `shutdown.started` and then `shutdown.completed`.
 - `compute.preflight-warning` code `KUBERNETES_VERSION_BELOW_MINIMUM`: upgrade
   Kubernetes to 1.35 or later for support.
 - `startup-error` or `worker.startup-error` with code
-  `KUBERNETES_API_UNAVAILABLE` means Compute cannot reach the Kubernetes API at
-  the logged `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
+  `KUBERNETES_API_UNAVAILABLE`: Compute cannot reach Kubernetes at the logged
+  `host` and `port`. Check `cluster.cidrs`; restarted clusters can move it.
 - Code `PRESET_FILE_INVALID`: an invalid `presets.files` entry or file.
-- Code `GATEWAY_STORAGE_CLASS_INVALID`: correct `runtime.gatewayStorageClassName`
-  to a Kubernetes DNS-subdomain resource name before restarting.
+- `DRIVER_CONFIGURATION_INVALID`: inspect `details` (JSON Pointer, code, message).
+  `/runtime/gatewayStorageClassName` requires a Kubernetes DNS-subdomain name.
+  `apps/controller/src/api-startup.mjs:startupFailureFields` passes these diagnostics
+  to `server.mjs`.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
@@ -321,6 +329,10 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21 19:06: Preserve shared configuration diagnostics through the rebased API startup entry point. (authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6 - d4e78cadca361efaf089a31972f084a91ff307e1)
+
+- 2026-10-20 01:48: Trace safe typed startup refusals. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
 
 - 2026-10-18 14:40: Compare database CA mount destinations before rendering. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
 

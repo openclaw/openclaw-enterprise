@@ -22,7 +22,8 @@
     "tests/browser/console-agent-plugin-approvers.test.mjs",
     "tests/browser/console-agent-plugin-refusals.test.mjs",
     "tests/browser/docs-compute-matrix.test.mjs",
-    "tests/browser/console-namespace-not-ready.test.mjs"
+    "tests/browser/console-namespace-not-ready.test.mjs",
+    "tests/browser/console-secrets.test.mjs"
   ],
   "files": [
     {
@@ -81,6 +82,9 @@
     },
     {
       "path": "tests/browser/console-agent-overview.test.mjs"
+    },
+    {
+      "path": "tests/browser/console-secrets.test.mjs"
     }
   ]
 }

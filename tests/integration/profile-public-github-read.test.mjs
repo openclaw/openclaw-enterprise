@@ -1,12 +1,13 @@
+import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -82,7 +83,7 @@ function codexInput(overrides = {}) {
 function render(
   profile,
   input,
-  directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`)),
+  directory = fileTemporaryDirectory(`oce-profile-${profile}-`),
   root = repository,
   dnsServer,
 ) {
@@ -151,7 +152,7 @@ function helmTemplate(output, extraValueFiles = [], releaseName = "oce", extraAr
 test(
   "Codex profile pairs tokenless public GitHub reader and the revision's exact network peer",
   { skip: helmSkip },
-  (t) => {
+  () => {
     const clusterIP = "10.43.0.19";
     const output = render(
       "codex",
@@ -159,12 +160,11 @@ test(
         publicGithubRead: { enabled: true, clusterIP, upstreamCidrs: ["192.0.2.20/32"] },
       }),
     );
-    t.after(() => rmSync(output.directory, { recursive: true, force: true }));
     const compute = loadYaml(output.installation).drivers.compute.configuration;
     assert.equal(compute.network.publicGithubRead.address, clusterIP);
     assert.match(output.values, /publicGithubRead:\n {2}enabled: true/);
     assert.doesNotMatch(output.installation, /repositoryCredentials:|registryPath:|controlSocket:/);
-    KubernetesComputeDriver.validateConfiguration(compute);
+    requireConfiguration(KubernetesComputeDriver, compute);
     const name = "openclaw-enterprise-public-github-read";
     const objects = helmTemplate(output)
       .split(/\n---\n/)

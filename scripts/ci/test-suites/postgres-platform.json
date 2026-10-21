@@ -49,8 +49,9 @@
     {
       "path": "tests/integration/postgres-bootstrap-failures.test.mjs",
       "expectedTests": [
-        "concurrent development bootstrap subprocesses reject the loser and reload the committed winner",
+        "concurrent development bootstraps reject the loser and reload the committed winner",
         "production bootstrap preserves committed credentials when COMMIT acknowledgement is lost",
+        "fresh production bootstrap refuses either retained credential output before creating credentials",
         "known bootstrap failures preserve created artifacts and report safe diagnostics",
         "production and development bootstrap refuse an Installation name outside the Name rule before creating anything",
         "API and worker startup refuse a stored Installation name outside the Name rule",

@@ -4,6 +4,7 @@
   },
   "requiredEnv": [],
   "optionalEnv": [
+    "OCC_TEST_QA_SANDBOX_ENV",
     "OCC_TEST_QA_OPENAI_KEY_FILE",
     "OCC_TEST_QA_CODEX_TOKEN_FILE",
     "OCC_TEST_QA_REPOSITORY_AUTHORIZED",

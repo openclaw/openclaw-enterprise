@@ -89,6 +89,8 @@ const reviewedImports = {
     "node:fs/promises": ["lstat", "open"],
   },
   "composition/repository-credentials/platform.ts": {
+    // Shared, synchronous JSON validation has no credential or I/O access.
+    "@openclaw-enterprise/contracts": ["requireConfiguration"],
     "node:fs": ["constants"],
     "node:fs/promises": ["open", "stat"],
     "node:tls": ["createSecureContext"],

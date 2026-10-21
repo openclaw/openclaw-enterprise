@@ -15,6 +15,7 @@ import {
   apiRequests,
   expectNoText,
   login,
+  loginThroughForm,
   newPage,
   settledFetches,
   settlePageRequests,
@@ -358,7 +359,8 @@ test("console browser flow keeps Namespace URL state across global pages and log
   const requests = apiRequests(page, fixture.origin);
   page.on("dialog", (dialog) => assert.fail(`Unexpected browser dialog: ${dialog.message()}`));
 
-  await login(page, fixture, `/console/?namespace=${beta.id}`);
+  // Through the sign-in form: a cold deep link keeps its Namespace across password sign-in.
+  await loginThroughForm(page, fixture, `/console/?namespace=${beta.id}`);
   await page.getByRole("heading", { name: "Agents" }).waitFor();
   await page.getByText("Beta agent").waitFor();
   assert.equal(
@@ -2129,7 +2131,10 @@ test("console clears private content after session expiry, access revocation, an
   for (const session of fixture.memoryDatabase.session) {
     session.expiresAt = new Date(Date.now() - 1000);
   }
-  await page.reload();
+  // The list may still be reading its Agent rows. A row read refused after expiry shows the
+  // expired sign-in itself and moves to /console/login, where a reload is an ordinary sign-in.
+  // Load the private page again, so either way the console must find the expired session.
+  await page.goto(`${fixture.origin}/console/agents?namespace=${namespace.id}`);
   await page.getByText("Your session has expired").waitFor();
   await page.getByRole("button", { name: "Sign in" }).waitFor();
   await expectNoText(page, /Revoked agent/);
@@ -2499,8 +2504,13 @@ test("a naturally expired session returns to the requested page after sign-in", 
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Expired session", { ready: true });
   const { page } = await newPage(t, fixture);
+  await trackSettledFetches(page);
   await login(page, fixture, `/console/agents/new?namespace=${namespace.id}`);
   await page.getByRole("button", { name: "Start with default Preset", exact: true }).waitFor();
+  // The button shows before the Namespace's Preset read returns. If that read reached the API
+  // after the expiry below, its 401 would show the expired sign-in on this page before the click,
+  // and the Namespaces link would be gone. Expire only once the page has no read in flight.
+  await waitForIdleFetches(page);
   // Expire the actual session: the controller must reject it before returning to login.
   for (const session of fixture.memoryDatabase.session) {
     session.expiresAt = new Date(Date.now() - 1000);

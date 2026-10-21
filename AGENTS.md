@@ -388,8 +388,11 @@ Use `tests/fixtures/synthetic-credential-url.mjs` to construct synthetic credent
 
 ## Running integration tests
 
-Run all integration tests with `pnpm test:integration`, or target one case with
-`node --test tests/integration/<name>.test.mjs`. Real-runtime coverage uses the
+Write new integration tests as `*.test.ts` with types Node.js can erase. Register
+the file in the CI lane that runs it; the existing typecheck includes these tests.
+Keep existing JavaScript tests in place unless the change calls for migration.
+Run all integration tests with `pnpm test:integration`, or target one file with
+`node --test tests/integration/<name>.test.ts`. Real-runtime coverage uses the
 Docker Compose or Kubernetes integrations with explicitly selected runtime
 images and existing authorized model credentials. Follow the
 [testing guide](docs/testing/README.md) and
@@ -457,8 +460,9 @@ controls:
   behavior; do not invent additional acceptance criteria.
 - Do not commit PR evidence, including screenshots, recordings, or generated
   evidence reports, to the repository. Keep local captures outside the checkout.
-  Upload screenshots and a short video as native GitHub attachments in the
-  PR's Verification section. Both are required before merging UI changes.
+  Upload screenshots and a short video to GitHub, as native attachments or as
+  files in a gist, and show them in the PR's Verification section. Before and
+  after views are preferred. Both are required before merging UI changes.
 - Include the screenshots, video, and Storybook story names or links in the task
   conversation. Include the story names or links and uploaded media in the
   PR's Verification section. Embed media where supported; otherwise provide

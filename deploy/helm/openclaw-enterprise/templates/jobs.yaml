@@ -1,7 +1,15 @@
+{{- $jobName := printf "%s-initialization" .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- /* On install, preserve evidence from an earlier attempt before Helm runs any hooks.
+      This is a point-in-time lookup, not a lock or proof the installation is new. */ -}}
+{{- if .Release.IsInstall -}}
+{{- if lookup "batch/v1" "Job" .Release.Namespace $jobName -}}
+{{- fail (printf "initialization Job %s/%s already exists; preserve it and reconcile the original installation attempt before another install. Its presence does not establish whether migration or bootstrap completed." .Release.Namespace $jobName) -}}
+{{- end -}}
+{{- end -}}
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: {{ printf "%s-initialization" .Release.Name | trunc 63 | trimSuffix "-" | quote }}
+  name: {{ $jobName | quote }}
   labels:
     {{- include "openclaw.labels" (dict "root" . "component" "initialization") | nindent 4 }}
   annotations:
@@ -95,7 +103,11 @@ spec:
         {{- end }}
         - name: migration
           image: {{ .Values.images.controller | quote }}
-          args: [scripts/migrate-production.mjs]
+          args:
+            - scripts/migrate-production.mjs
+            {{- if .Release.IsInstall }}
+            - --expect-empty
+            {{- end }}
           securityContext:
             {{- include "openclaw.containerSecurity" . | nindent 12 }}
           resources:

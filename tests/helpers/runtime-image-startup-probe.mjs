@@ -8,6 +8,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { availableParallelism, freemem, loadavg, tmpdir } from "node:os";
 import { join } from "node:path";
 import { imageSmokeTimeoutMultiplier } from "./image-smoke-timeout.mjs";
+import { changeSignal, followContainer } from "./docker-follow.mjs";
 import {
   AGENT_RUNTIME_ENTRYPOINT,
   GATEWAY_RUNTIME_ENTRYPOINT as KUBERNETES_GATEWAY_RUNTIME_ENTRYPOINT,
@@ -20,6 +21,7 @@ import {
   execute,
   image,
   runtimeImageModel,
+  docker,
   runDocker,
   waitForDockerLog,
   createAdmittedRuntimeImageConfiguration,
@@ -261,7 +263,8 @@ async function startupProbeEvidence(scenario, snapshot, loop) {
     phases: snapshot.phases.map(({ phase, outcome, sinceStartMs }) =>
       [phase, outcome, sinceStartMs].filter((value) => value !== undefined).join(" "),
     ),
-    poll: {
+    // Checks of the followed output (no docker CLI per check).
+    checks: {
       count: loop.polls,
       slowestMs: loop.slowestMs,
       elapsedMs: Date.now() - loop.startedAt,
@@ -386,18 +389,18 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
   const startedAt = containerStartedAt(
     (await runDocker(["inspect", containerName, "--format", "{{.State.StartedAt}}"])).stdout,
   );
+  // Both containers' logs and the wrapper's exit stream in; each check reads
+  // what arrived, and the loop sleeps until the next write.
+  const changes = changeSignal();
+  const endpointLogs = followContainer(t, sidecar, { docker, exit: false, changes });
+  const wrapperLogs = followContainer(t, containerName, {
+    docker,
+    changes,
+    inspectTimeoutMs: 20_000 * imageSmokeTimeoutMultiplier,
+  });
   const collect = async () => {
-    const [endpoint, native, state] = await Promise.all([
-      runDocker(["logs", sidecar]),
-      runDocker(["logs", containerName]),
-      runDocker([
-        "inspect",
-        containerName,
-        "--format",
-        "{{.State.Running}} {{.State.ExitCode}} {{.State.FinishedAt}}",
-      ]),
-    ]);
-    const [running, exitCode, ...finished] = state.stdout.trim().split(/\s+/);
+    const endpoint = endpointLogs.read();
+    const native = wrapperLogs.read();
     const events = jsonLogEntries(endpoint.stdout).map((event) => ({
       ...event,
       ms: event.at - startedAt,
@@ -412,10 +415,34 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
       probe: entries.find(({ event }) => event === "openclaw.model_probe"),
       probeStage: entries.filter(({ event }) => event === "openclaw.model_probe_stage").at(-1)
         ?.stage,
-      running: running === "true",
-      exitCode: Number(exitCode),
-      finishedAt: running === "true" ? undefined : containerStartedAt(finished.join(" ")),
+      running: native.running,
+      exitCode: native.exitCode,
     };
+  };
+  // Resolves with when the wrapper exited (epoch ms: when `docker wait` returned,
+  // or Docker's FinishedAt when an inspect found the exit),
+  // once its output is complete, or with undefined at `deadline`. At the
+  // deadline Docker is asked once more, so a slow `docker wait` cannot turn an
+  // exit into a timeout; that exit counts from Docker's FinishedAt.
+  const exited = async (deadline) => {
+    let inspected = false;
+    for (;;) {
+      const seen = changes.version;
+      const { exitedAt, running } = wrapperLogs.read();
+      if (exitedAt !== undefined && !running) {
+        return exitedAt;
+      }
+      if (exitedAt === undefined && Date.now() >= deadline) {
+        if (!inspected) {
+          inspected = true;
+          await wrapperLogs.inspect();
+          continue;
+        }
+        return undefined;
+      }
+      // After the exit, the follower ends `running` within 10 s.
+      await changes.wait(seen, exitedAt === undefined ? deadline - Date.now() : 1_000);
+    }
   };
   const deadline = Date.now() + 300_000 * imageSmokeTimeoutMultiplier;
   const scenario = {
@@ -424,11 +451,13 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
     setupMs: startedAt - scenarioStartedAt,
     wrapper,
     collect,
+    exited,
     first: (events, predicate) => events.find(predicate),
   };
   const loop = { polls: 0, slowestMs: 0, startedAt: Date.now() };
   for (;;) {
     const pollStartedAt = Date.now();
+    const seen = changes.version;
     const snapshot = await collect();
     loop.polls += 1;
     loop.slowestMs = Math.max(loop.slowestMs, Date.now() - pollStartedAt);
@@ -456,7 +485,12 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
         snapshot,
       );
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    // Check again on the next write or exit (at least 5 s apart without one,
+    // at most every 250 ms with them).
+    await changes.wait(seen, Math.min(5_000, deadline + 1 - Date.now()));
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.max(0, pollStartedAt + 250 - Date.now())),
+    );
   }
 }
 

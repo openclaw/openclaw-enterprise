@@ -28,14 +28,14 @@ The controller already owns console presentation and public asset serving. Exten
 that boundary; do not introduce an OCC resource, Driver, Backend, or persistence
 model for presentation configuration.
 
-| Owner                | Current source and planned responsibility                                                                                                                                 |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Public assets        | `apps/controller/src/console-assets.ts` allowlists assets, supplies the HTML shell, compresses scripts/styles, and defines CSP. Add a per-app theme snapshot.             |
-| Composition          | `apps/controller/src/server.mjs`, `composition/production.ts`, and `composition/development-postgres.ts` assemble the serving app. Load the bundle once before listening. |
-| HTTP integration     | `apps/controller/src/index.ts` owns `ControllerAppOptions` and `serveConsole`. Pass the snapshot explicitly, preserving existing routes and headers.                      |
-| Browser presentation | `console/index.html`, `console/shell.mjs`, and `console/console.mjs` hardcode the name and mascot in several locations. Share normalized branding.                        |
-| Color roles          | `console/console.css` defines `--color-*` tokens and legacy aliases. `console/channels.css` and browser modules also need an inventory of literal presentation colors.    |
-| Packaging            | `deploy/helm/openclaw-enterprise/` owns API deployment mounts; root `compose.yaml` owns the development stack. The upstream `Dockerfile` already includes console assets. |
+| Owner                | Current source and planned responsibility                                                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Public assets        | `apps/controller/src/console-assets.ts` allowlists assets, supplies the HTML shell, compresses scripts/styles, and defines CSP. Add a per-app theme snapshot.                  |
+| Composition          | `apps/controller/src/api-startup.mjs`, `composition/production.ts`, and `composition/development-postgres.ts` assemble the serving app. Load the bundle once before listening. |
+| HTTP integration     | `apps/controller/src/index.ts` owns `ControllerAppOptions` and `serveConsole`. Pass the snapshot explicitly, preserving existing routes and headers.                           |
+| Browser presentation | `console/index.html`, `console/shell.mjs`, and `console/console.mjs` hardcode the name and mascot in several locations. Share normalized branding.                             |
+| Color roles          | `console/console.css` defines `--color-*` tokens and legacy aliases. `console/channels.css` and browser modules also need an inventory of literal presentation colors.         |
+| Packaging            | `deploy/helm/openclaw-enterprise/` owns API deployment mounts; root `compose.yaml` owns the development stack. The upstream `Dockerfile` already includes console assets.      |
 
 Controller paths above are relative to `apps/controller/src/` where abbreviated.
 No separate architecture RFC is proposed: the design extends the console's
@@ -121,15 +121,15 @@ the setting and restart to restore bundled branding. Do not hot-reload.
 
 ### 2. Apply branding across the supported console
 
-- [x] Add `console/branding.mjs` to read the normalized shell metadata and create
-      branded DOM elements with text APIs. Use it from `shell.mjs` and `console.mjs`
+- [x] Read the normalized shell metadata in `console/shell.mjs` and create
+      branded DOM elements with text APIs. Reuse them from `shell.mjs` and `console.mjs`
       for sidebar, mobile, sign-in, expired-session, and public failure views. Keep
       logo sizing, keyboard navigation, and accessible names consistent.
 - [x] Map the documented roles to `--color-*` in generated CSS. Audit hardcoded
       presentation colors in console styles/modules and route affected surfaces
       through semantic tokens. Preserve provider and plugin artwork identities.
       Verify buttons, links, fields, hover, focus, overlays, and status messages.
-- [x] Extend `tests/integration/console-api.test.mjs` through actual Fastify routes
+- [x] Exercise `tests/integration/console-theme.test.ts` through actual Fastify routes
       and `tests/browser/console.test.mjs` through real sign-in and Agent navigation.
       Use filesystem bundles and the production loader, not mocked theme responses.
 

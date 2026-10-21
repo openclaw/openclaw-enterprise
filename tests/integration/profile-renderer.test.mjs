@@ -1,3 +1,7 @@
+import {
+  requireConfiguration,
+  ConfigurationValidationError as SharedConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -26,6 +30,11 @@ import {
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { conformanceKubernetesOptions } from "../helpers/kubernetes-compute.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
+import { fileTemporaryDirectory } from "../helpers/temporary-directory.mjs";
+import {
+  RenderRefusal,
+  renderInstallationProfile,
+} from "../../scripts/render-installation-profile.mjs";
 
 const digestA = "a".repeat(64);
 const digestB = "b".repeat(64);
@@ -130,10 +139,13 @@ function repositoryConfiguration(upstreamCidrs = ["192.0.2.30/32"]) {
   };
 }
 
-function render(
+// Runs the renderer CLI as its own process. Cases about argv, the exit status, the
+// stdout summary, a checkout copied elsewhere (`root`) or process-wide DNS settings
+// (`dnsServer`) use it; the rest render in-process with `render` below.
+function renderCli(
   profile,
   input,
-  directory = mkdtempSync(join(tmpdir(), `oce-profile-${profile}-`)),
+  directory = fileTemporaryDirectory(`oce-profile-${profile}-`),
   root = repository,
   dnsServer,
 ) {
@@ -170,6 +182,44 @@ function render(
   return {
     directory,
     summary: JSON.parse(summary),
+    values: readFileSync(join(directory, "values.yaml"), "utf8"),
+    installation: readFileSync(join(directory, "installation.yaml"), "utf8"),
+    preflight: JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8")),
+  };
+}
+
+// Renders through the same entry point the CLI calls, without a Node start per case.
+// A refusal throws like renderCli: profileRendererOutput is the preflight summary the
+// CLI prints on stdout (the CLI writes nothing to stderr for a preflight refusal).
+async function render(
+  profile,
+  input,
+  directory = fileTemporaryDirectory(`oce-profile-${profile}-`),
+) {
+  const inputPath = join(directory, "input.json");
+  writeFileSync(inputPath, `${JSON.stringify(input, null, 2)}\n`);
+  let summary;
+  try {
+    summary = await renderInstallationProfile({ profile, input: inputPath, outDir: directory });
+  } catch (error) {
+    // Only a refusal carries renderer output; a renderer crash propagates without it.
+    if (!(error instanceof RenderRefusal)) {
+      throw error;
+    }
+    error.profileRendererOutput = `render-installation-profile: ${error.message}\n`;
+    error.profileRendererDirectory = directory;
+    throw error;
+  }
+  if (!summary.ok) {
+    const output = `${JSON.stringify(summary, null, 2)}\n`;
+    const error = new Error(`profile renderer refused the input\n${output}`);
+    error.profileRendererOutput = output;
+    error.profileRendererDirectory = directory;
+    throw error;
+  }
+  return {
+    directory,
+    summary,
     values: readFileSync(join(directory, "values.yaml"), "utf8"),
     installation: readFileSync(join(directory, "installation.yaml"), "utf8"),
     preflight: JSON.parse(readFileSync(join(directory, "preflight.json"), "utf8")),
@@ -278,17 +328,17 @@ function deploymentChecksum(manifests, component) {
   return match[1];
 }
 
-function renderError(callback) {
+async function renderError(callback) {
   try {
-    callback();
+    await callback();
   } catch (error) {
     return error;
   }
   assert.fail("expected the profile renderer to reject the input");
 }
 
-function assertPreflightFailure(profile, input, expected) {
-  const error = renderError(() => render(profile, input));
+async function assertPreflightFailure(profile, input, expected) {
+  const error = await renderError(() => render(profile, input));
   assert.match(error.profileRendererOutput, expected);
   const directory = error.profileRendererDirectory;
   assert.equal(existsSync(join(directory, "preflight.json")), true);
@@ -306,7 +356,7 @@ function escapeRegExp(text) {
 // Sets `field`, a dotted path into a copy of `input`, to each value in turn and expects
 // assertPreflightFailure to pass. A string message is the refusal text after the field name.
 // A failure names the field and the value.
-function assertFieldRefusals(profile, input, field, values, message) {
+async function assertFieldRefusals(profile, input, field, values, message) {
   const expected =
     typeof message === "string" ? new RegExp(escapeRegExp(`${field} ${message}`)) : message;
   const keys = field.split(".");
@@ -315,7 +365,7 @@ function assertFieldRefusals(profile, input, field, values, message) {
     const parent = keys.slice(0, -1).reduce((object, key) => (object[key] ??= {}), changed);
     parent[keys.at(-1)] = value;
     try {
-      assertPreflightFailure(profile, changed, expected);
+      await assertPreflightFailure(profile, changed, expected);
     } catch (error) {
       // The reporter prints error.stack, captured with the old message, so prefix both.
       const label = `${profile} ${field} = ${JSON.stringify(value)}: `;
@@ -327,7 +377,8 @@ function assertFieldRefusals(profile, input, field, values, message) {
 }
 
 test("renderer supports exactly the openclaw and codex profiles", () => {
-  const openclaw = render("openclaw", baseInput());
+  // A real process: the stdout summary and the files it writes.
+  const openclaw = renderCli("openclaw", baseInput());
   assert.equal(openclaw.summary.ok, true);
   assert.equal(openclaw.preflight.profile, "openclaw");
   assert.match(openclaw.installation, /id: occ-plugin/);
@@ -345,7 +396,7 @@ test("renderer supports exactly the openclaw and codex profiles", () => {
   );
   assert.match(openclaw.installation, /app\.kubernetes\.io\/component: slack-proxy/);
 
-  const codex = render("codex", codexInput());
+  const codex = renderCli("codex", codexInput());
   assert.equal(codex.summary.ok, true);
   assert.equal(codex.preflight.profile, "codex");
   assert.match(codex.installation, /id: codex-plugin/);
@@ -378,7 +429,7 @@ const harnessResources = {
   limits: { cpu: "4", memory: "6Gi" },
 };
 
-test("preflight rejects noncanonical SHA-256 image digests", (t) => {
+test("preflight rejects noncanonical SHA-256 image digests", async (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
     input.repository = repositoryConfiguration();
@@ -397,10 +448,10 @@ test("preflight rejects noncanonical SHA-256 image digests", (t) => {
         `${image}0`,
       ]) {
         // A failed rerender must revoke the previously successful artifacts.
-        assert.equal(render(profile, input, directory).preflight.ok, true);
+        assert.equal((await render(profile, input, directory)).preflight.ok, true);
         const changed = structuredClone(input);
         changed[section][key] = invalid;
-        const error = renderError(() => render(profile, changed, directory));
+        const error = await renderError(() => render(profile, changed, directory));
         assert.match(
           error.profileRendererOutput,
           /immutable image reference with a SHA-256 digest/,
@@ -415,7 +466,7 @@ test("preflight rejects noncanonical SHA-256 image digests", (t) => {
   }
 });
 
-test("profiles give tenant runtimes four-core CPU limits over unchanged 100m requests", () => {
+test("profiles give tenant runtimes four-core CPU limits over unchanged 100m requests", async () => {
   const example = loadYaml(
     readFileSync(
       new URL("../../deploy/examples/production/installation.yaml", import.meta.url),
@@ -423,8 +474,8 @@ test("profiles give tenant runtimes four-core CPU limits over unchanged 100m req
     ),
   );
   for (const [name, installation] of [
-    ["openclaw", loadYaml(render("openclaw", baseInput()).installation)],
-    ["codex", loadYaml(render("codex", codexInput()).installation)],
+    ["openclaw", loadYaml((await render("openclaw", baseInput())).installation)],
+    ["codex", loadYaml((await render("codex", codexInput())).installation)],
     ["production example", example],
   ]) {
     const { resources } = installation.drivers.compute.configuration;
@@ -440,28 +491,29 @@ test("profiles give tenant runtimes four-core CPU limits over unchanged 100m req
   // The example's placeholder proxy CIDR is the only value operators must supply.
   const compute = structuredClone(example.drivers.compute.configuration);
   compute.network.gatewayTrustedProxyCidrs = ["192.0.2.10/32"];
-  KubernetesComputeDriver.validateConfiguration(compute);
+  requireConfiguration(KubernetesComputeDriver, compute);
 });
 
-test("managed ChatGPT service-account wiring is optional and explicit", () => {
-  const codex = render("codex", managedCodexInput());
+test("managed ChatGPT service-account wiring is optional and explicit", async () => {
+  const codex = await render("codex", managedCodexInput());
   assert.equal(codex.summary.ok, true);
   assert.match(codex.values, /backend:\n {2}chatgpt:\n {4}enabled: true/);
   assert.match(codex.installation, /service_account: chatgpt-service-accounts/);
   assert.match(codex.preflight.warnings.join("\n"), /issuance is wired but remains unverified/);
 });
 
-test("profiles reject invalid Helm release names before emitting deployment files", (t) => {
+test("profiles reject invalid Helm release names before emitting deployment files", async (t) => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
     const directory = mkdtempSync(join(tmpdir(), `oce-release-name-${profile}-`));
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     for (const releaseName of ["r".repeat(54), "Oce", "oce-", "oce..example", "oce example"]) {
       // A failed rerender must also remove files from a previously valid release.
-      render(profile, input, directory);
+      await render(profile, input, directory);
+      // A real process, so the refusal's exit status is checked.
       assert.throws(
         () =>
-          render(
+          renderCli(
             profile,
             { ...input, controlPlane: { ...input.controlPlane, releaseName } },
             directory,
@@ -481,14 +533,14 @@ test("profiles reject invalid Helm release names before emitting deployment file
 test(
   "long release names keep Installation routing attached to the rendered Gateway",
   { skip: helmSkip },
-  () => {
+  async () => {
     for (const profile of ["openclaw", "codex"]) {
       // Exercise the DNS-name boundary and Helm's maximum supported release length.
       for (const length of [48, 49, 53]) {
         const input = profile === "codex" ? codexInput() : baseInput();
         const releaseName = "r".repeat(length);
         input.controlPlane.releaseName = releaseName;
-        const output = render(profile, input);
+        const output = await render(profile, input);
         const gateway = helmTemplate(output, [], releaseName)
           .split(/\n---\n/)
           .find((document) => /\nkind: Gateway\n/.test(document));
@@ -502,17 +554,17 @@ test(
   },
 );
 
-test("failed rerenders remove stale deployable artifacts from a reused directory", () => {
+test("failed rerenders remove stale deployable artifacts from a reused directory", async () => {
   for (const profile of ["openclaw", "codex"]) {
     const input = profile === "codex" ? codexInput() : baseInput();
-    const output = render(profile, input);
+    const output = await render(profile, input);
     const notes = join(output.directory, "operator-notes.txt");
     writeFileSync(notes, "Retain operator-owned files.\n");
 
     // A failed second run must not leave the first run's configuration deployable.
     const invalid = structuredClone(input);
     invalid.controlPlane.databaseCidrs = ["invalid-cidr"];
-    const error = renderError(() => render(profile, invalid, output.directory));
+    const error = await renderError(() => render(profile, invalid, output.directory));
     assert.match(error.profileRendererOutput, /must be an IPv4 \/32 CIDR/);
     for (const name of ["values.yaml", "installation.yaml"]) {
       assert.equal(existsSync(join(output.directory, name)), false);
@@ -523,7 +575,7 @@ test("failed rerenders remove stale deployable artifacts from a reused directory
     assert.equal(readFileSync(notes, "utf8"), "Retain operator-owned files.\n");
 
     // Recovery regenerates both artifacts; malformed JSON must also invalidate that success.
-    assert.equal(render(profile, input, output.directory).preflight.ok, true);
+    assert.equal((await render(profile, input, output.directory)).preflight.ok, true);
     writeFileSync(join(output.directory, "input.json"), "{");
     assert.throws(
       () =>
@@ -563,7 +615,7 @@ test(
       input.repository = repositoryConfiguration(["140.82.112.0/20", "192.30.252.0/22"]);
       const directory = mkdtempSync(join(tmpdir(), `oce-profile-egress-${profile}-`));
       t.after(() => rmSync(directory, { recursive: true, force: true }));
-      const output = render(profile, input, directory, repository, dns.server);
+      const output = renderCli(profile, input, directory, repository, dns.server);
       const manifests = helmTemplate(output);
       assert.match(manifests, /repository-credentials/);
       assert.match(manifests, /cidr: "140\.82\.112\.0\/20"/);
@@ -586,7 +638,7 @@ test(
 
     // Explicit [] leaves networking to an external FQDN policy. Neither explicit
     // form may need working DNS or silently grant additional destinations.
-    const external = render(
+    const external = renderCli(
       "codex",
       codexInput({ codex: { modelDiscoveryCidrs: [] } }),
       dns.directory,
@@ -600,7 +652,7 @@ test(
     );
     assert.equal(readFileSync(dns.queriesPath, "utf8"), "");
 
-    const discovered = render(
+    const discovered = renderCli(
       "codex",
       codexInput({ codex: { modelDiscoveryCidrs: undefined } }),
       dns.directory,
@@ -643,11 +695,11 @@ test("hosted discovery DNS failures revoke stale deployment artifacts", async (t
   const dns = await startDnsFixture(t, { "auth.openai.com": ["192.0.2.40"] });
   // Explicit policy input stays usable with an unavailable hosted DNS name.
   assert.equal(
-    render("codex", codexInput(), dns.directory, repository, dns.server).preflight.ok,
+    renderCli("codex", codexInput(), dns.directory, repository, dns.server).preflight.ok,
     true,
   );
-  const error = renderError(() =>
-    render(
+  const error = await renderError(() =>
+    renderCli(
       "codex",
       codexInput({ codex: { modelDiscoveryCidrs: undefined } }),
       dns.directory,
@@ -670,9 +722,9 @@ test("hosted discovery DNS failures revoke stale deployment artifacts", async (t
 test(
   "startup-only installation changes roll API and worker pod templates",
   { skip: helmSkip },
-  () => {
-    const original = render("codex", codexInput());
-    const changed = render(
+  async () => {
+    const original = await render("codex", codexInput());
+    const changed = await render(
       "codex",
       codexInput({
         runtime: {
@@ -700,9 +752,9 @@ test(
 test(
   "profile preset files reach startup YAML and roll both controllers",
   { skip: helmSkip },
-  () => {
-    const original = render("codex", codexInput());
-    const changed = render(
+  async () => {
+    const original = await render("codex", codexInput());
+    const changed = await render(
       "codex",
       codexInput({ presets: { files: ["/app/deploy/presets/swe-preset.json"] } }),
     );
@@ -721,8 +773,8 @@ test(
   },
 );
 
-test("Helm catches generated profile Secret collisions", { skip: helmSkip }, () => {
-  const repositoryOutput = render(
+test("Helm catches generated profile Secret collisions", { skip: helmSkip }, async () => {
+  const repositoryOutput = await render(
     "codex",
     managedCodexInput({
       repository: repositoryConfiguration(),
@@ -734,7 +786,7 @@ test("Helm catches generated profile Secret collisions", { skip: helmSkip }, () 
     "repositoryCredentials:\n  serviceConfigSecretName: occ-chatgpt-admin\n",
   );
 
-  const error = renderError(() => helmTemplate(repositoryOutput, [collision]));
+  const error = await renderError(() => helmTemplate(repositoryOutput, [collision]));
   assert.match(
     `${error.stdout ?? ""}${error.stderr ?? ""}`,
     /repositoryCredentials\.serviceConfigSecretName must name a dedicated Secret; occ-chatgpt-admin is also backend\.chatgpt\.secretName/,
@@ -767,20 +819,20 @@ function generatedGatewaySecrets(releaseName, namespace = "openclaw-system") {
 test(
   "preflight refuses the gateway API key Secret names the chart generates, as Helm does",
   { skip: helmSkip },
-  () => {
+  async () => {
     // 47 is the only release length where the TLS name ends in "-" after truncation.
     for (const releaseName of ["oce", "r".repeat(47), "r".repeat(53)]) {
       const input = baseInput();
       input.controlPlane.releaseName = releaseName;
-      const accepted = render("openclaw", input);
+      const accepted = await render("openclaw", input);
       const manifests = helmTemplate(accepted, [], releaseName);
       for (const { name, role, helm: refusal } of generatedGatewaySecrets(releaseName)) {
         assert.match(manifests, new RegExp(`\\n {2}secretName: "${name}"\\n`), name);
         const override = join(accepted.directory, "gateway-key-collision.yaml");
         writeFileSync(override, `gatewayRouting:\n  apiKeySecretName: ${name}\n`);
-        const error = renderError(() => helmTemplate(accepted, [override], releaseName));
+        const error = await renderError(() => helmTemplate(accepted, [override], releaseName));
         assert.match(`${error.stdout ?? ""}${error.stderr ?? ""}`, refusal);
-        assertPreflightFailure(
+        await assertPreflightFailure(
           "openclaw",
           { ...input, controlPlane: { ...input.controlPlane, gatewayApiKeySecretName: name } },
           new RegExp(`the chart generates ${name} for the ${role}\\.`),
@@ -823,9 +875,9 @@ function withGitHubSignIn(input, github) {
 test(
   "preflight refuses sign-in Secrets that ChatGPT or repository credentials use, as Helm does",
   { skip: helmSkip },
-  () => {
+  async () => {
     const input = managedCodexInput({ repository: repositoryConfiguration() });
-    const accepted = render("codex", withGitHubSignIn(input, {}));
+    const accepted = await render("codex", withGitHubSignIn(input, {}));
     assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
     helmTemplate(accepted);
     for (const secretName of [
@@ -837,7 +889,7 @@ test(
     ]) {
       // The ChatGPT admin Secret comes before sign-in and the repository Secrets after it, in
       // the chart's order, so either setting can be the one refused.
-      assertPreflightFailure(
+      await assertPreflightFailure(
         "codex",
         withGitHubSignIn(input, { secretName }),
         /controlPlane\.github\.secretName must name a dedicated Secret|must name a dedicated Secret; \S+ is also controlPlane\.github\.secretName\./,
@@ -845,14 +897,14 @@ test(
       // The same name placed over the accepted values makes the chart refuse it too.
       const override = join(accepted.directory, `github-${secretName}.json`);
       writeFileSync(override, JSON.stringify({ auth: { github: { secretName } } }));
-      const error = renderError(() => helmTemplate(accepted, [override]));
+      const error = await renderError(() => helmTemplate(accepted, [override]));
       assert.match(
         `${error.stdout ?? ""}${error.stderr ?? ""}`,
         /auth\.github\.secretName must name a dedicated Secret|must name a dedicated Secret; \S+ is also auth\.github\.secretName/,
       );
     }
     // Without managed ChatGPT accounts the chart does not reserve that Secret name.
-    const unmanaged = render(
+    const unmanaged = await render(
       "codex",
       withGitHubSignIn(codexInput(), { secretName: "occ-chatgpt-admin" }),
     );
@@ -864,9 +916,9 @@ test(
 test(
   "preflight refuses ChatGPT admin and repository Secret collisions, as Helm does",
   { skip: helmSkip },
-  () => {
+  async () => {
     const input = managedCodexInput({ repository: repositoryConfiguration() });
-    const accepted = render("codex", input);
+    const accepted = await render("codex", input);
     assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
     helmTemplate(accepted);
     const [tls, root] = generatedGatewaySecrets("oce").map(({ name }) => name);
@@ -920,10 +972,10 @@ test(
         ),
       ]),
     ]) {
-      assertFieldRefusals("codex", input, field, [name], preflight);
+      await assertFieldRefusals("codex", input, field, [name], preflight);
       const override = join(accepted.directory, "secret-collision.json");
       writeFileSync(override, JSON.stringify(chartValues));
-      const error = renderError(() => helmTemplate(accepted, [override]));
+      const error = await renderError(() => helmTemplate(accepted, [override]));
       assert.match(`${error.stdout ?? ""}${error.stderr ?? ""}`, refusal, `${field} = ${name}`);
     }
   },
@@ -932,10 +984,10 @@ test(
 test(
   "preflight refuses credential Secrets named like the log collector's, as Helm does",
   { skip: helmSkip },
-  () => {
+  async () => {
     const input = managedCodexInput({ repository: repositoryConfiguration() });
     input.controlPlane.loggingCollector = { enabled: true, exporter: { cidr: "192.0.2.40/32" } };
-    const accepted = render("codex", input);
+    const accepted = await render("codex", input);
     assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
     helmTemplate(accepted);
     const override = join(accepted.directory, "secret-collision.json");
@@ -943,12 +995,12 @@ test(
       override,
       JSON.stringify({ gatewayRouting: { apiKeySecretName: "occ-otel-collector-config" } }),
     );
-    const error = renderError(() => helmTemplate(accepted, [override]));
+    const error = await renderError(() => helmTemplate(accepted, [override]));
     assert.match(
       `${error.stdout ?? ""}${error.stderr ?? ""}`,
       /logging\.collector\.configSecretName must name a dedicated Secret; occ-otel-collector-config is also gatewayRouting\.apiKeySecretName/,
     );
-    assertFieldRefusals(
+    await assertFieldRefusals(
       "codex",
       input,
       "controlPlane.gatewayApiKeySecretName",
@@ -963,7 +1015,7 @@ test(
 test(
   "profile log collector exporters render values Helm accepts, and preflight requires one",
   { skip: helmSkip },
-  () => {
+  async () => {
     const egress = (output, extra) => {
       const manifests = helmTemplate(output, extra);
       const policy = manifests
@@ -991,7 +1043,7 @@ test(
     ]) {
       const input = baseInput();
       input.controlPlane.loggingCollector = { enabled: true, exporter };
-      const output = render("openclaw", input);
+      const output = await render("openclaw", input);
       assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
       const rule = egress(output);
       assert.deepEqual(rule.to, [peer], JSON.stringify(exporter));
@@ -999,7 +1051,7 @@ test(
     }
     const input = baseInput();
     input.controlPlane.loggingCollector = { enabled: true };
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       input,
       /controlPlane\.loggingCollector\.exporter is required with enabled: true; set cidr to the one approved exporter or proxy IPv4 host as a \/32, or namespaceLabels and podLabels/,
@@ -1293,14 +1345,14 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     ],
   },
 ]) {
-  test(name, () => {
+  test(name, async () => {
     for (const [field, values, message] of cases) {
-      assertFieldRefusals(profile, input(), field, values, message);
+      await assertFieldRefusals(profile, input(), field, values, message);
     }
   });
 }
 
-test("label values that YAML 1.1 would retype stay strings", () => {
+test("label values that YAML 1.1 would retype stay strings", async () => {
   const labels = {
     spot: "no",
     enabled: "on",
@@ -1314,7 +1366,7 @@ test("label values that YAML 1.1 would retype stay strings", () => {
   };
   const input = baseInput();
   input.controlPlane.nodeSelector = labels;
-  const output = render("openclaw", input);
+  const output = await render("openclaw", input);
   for (const [key, value] of Object.entries(labels)) {
     const quotedValue = JSON.stringify(value);
     const expected = key === "yes" ? '"yes": keep' : `${key}: ${quotedValue}`;
@@ -1325,17 +1377,17 @@ test("label values that YAML 1.1 would retype stay strings", () => {
   }
 });
 
-test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip }, () => {
+test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip }, async () => {
   const input = baseInput();
   input.controlPlane.nodeSelector = { spot: "no", scale: "1e3", hex: "0x1f" };
-  const manifests = helmTemplate(render("openclaw", input));
+  const manifests = helmTemplate(await render("openclaw", input));
   assert.match(manifests, /spot: ["']no["']/);
   assert.match(manifests, /scale: ["']1e3["']/);
   assert.match(manifests, /hex: ["']0x1f["']/);
   assert.doesNotMatch(manifests, /spot: false/);
   const rejected = baseInput();
   rejected.controlPlane.nodeSelector = { team: "@platform" };
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     rejected,
     /controlPlane\.nodeSelector values must be Kubernetes label values/,
@@ -1343,11 +1395,14 @@ test("Helm renders YAML 1.1 lookalike label values as strings", { skip: helmSkip
 });
 
 test("renderer rejects the removed default profile", () => {
-  assert.throws(() => render("default", baseInput()), /--profile must be one of: openclaw, codex/);
+  assert.throws(
+    () => renderCli("default", baseInput()),
+    /--profile must be one of: openclaw, codex/,
+  );
 });
 
-test("repository opt-in is explicit and keeps the two-stage placeholders separate", () => {
-  const output = render(
+test("repository opt-in is explicit and keeps the two-stage placeholders separate", async () => {
+  const output = await render(
     "codex",
     codexInput({
       repository: repositoryConfiguration(),
@@ -1367,20 +1422,20 @@ test("repository opt-in is explicit and keeps the two-stage placeholders separat
   );
 });
 
-test("repository serviceName is left to the chart so its upgrade guard applies", () => {
+test("repository serviceName is left to the chart so its upgrade guard applies", async () => {
   const repositoryInput = repositoryConfiguration();
-  const omitted = render("codex", codexInput({ repository: repositoryInput }));
+  const omitted = await render("codex", codexInput({ repository: repositoryInput }));
   assert.doesNotMatch(omitted.values, /serviceName: git/);
   if (!helmSkip) {
     assert.match(helmTemplate(omitted), /name: "git"\n/);
-    const error = renderError(() => helmTemplate(omitted, [], "oce", ["--is-upgrade"]));
+    const error = await renderError(() => helmTemplate(omitted, [], "oce", ["--is-upgrade"]));
     assert.match(
       `${error.stdout ?? ""}${error.stderr ?? ""}`,
       /repositoryCredentials\.serviceName must be explicit during upgrades/,
     );
   }
 
-  const kept = render(
+  const kept = await render(
     "codex",
     codexInput({ repository: { ...repositoryInput, serviceName: "oce-git" } }),
   );
@@ -1390,15 +1445,15 @@ test("repository serviceName is left to the chart so its upgrade guard applies",
   }
 });
 
-test("preflight rejects inputs that the selected profile does not consume", () => {
-  assertFieldRefusals(
+test("preflight rejects inputs that the selected profile does not consume", async () => {
+  await assertFieldRefusals(
     "openclaw",
     baseInput(),
     "runtime.codexSeccompProfile",
     ["profiles/codex.json"],
     "is only consumed by the codex profile",
   );
-  assertFieldRefusals(
+  await assertFieldRefusals(
     "codex",
     codexInput(),
     "repository",
@@ -1407,43 +1462,43 @@ test("preflight rejects inputs that the selected profile does not consume", () =
   );
 });
 
-test("preflight rejects inputs that Helm would reject", () => {
-  assertFieldRefusals(
+test("preflight rejects inputs that Helm would reject", async () => {
+  await assertFieldRefusals(
     "openclaw",
     baseInput(),
     "controlPlane.gatewayApiKeySecretName",
     ["occ-installation-startup", "occ-database", "occ-auth"],
     "must name a dedicated Secret",
   );
-  assertFieldRefusals(
+  await assertFieldRefusals(
     "openclaw",
     baseInput(),
     "controlPlane.gatewayApiKeySecretName",
     generatedGatewaySecrets("oce").map(({ name }) => name),
     "must name a dedicated Secret; the chart generates",
   );
-  assertFieldRefusals(
+  await assertFieldRefusals(
     "codex",
     codexInput(),
     "controlPlane.metrics",
     [{ scraperNamespaceLabels: { name: "monitoring" } }],
     "requires both scraperNamespaceLabels and scraperPodLabels, or neither",
   );
-  assertFieldRefusals(
+  await assertFieldRefusals(
     "codex",
     codexInput(),
     "controlPlane.agentNativeAdminDomain",
     ["https://agents.oce.example.internal"],
     "must be a DNS hostname without a wildcard, port, scheme, or path",
   );
-  assertFieldRefusals(
+  await assertFieldRefusals(
     "codex",
     codexInput(),
     "controlPlane.agentNativeAdminDomain",
     ["agents.other.example.internal"],
     "must be inside controlPlane.sharedCookieDomain",
   );
-  assertFieldRefusals(
+  await assertFieldRefusals(
     "codex",
     codexInput(),
     "controlPlane.authBaseUrl",
@@ -1463,17 +1518,17 @@ test("preflight rejects inputs that Helm would reject", () => {
       },
     });
   for (const sharedCookieDomain of ["co.uk", "github.io", "CO.UK", "192.0.2.1"]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "codex",
       nativeAdminUnder(sharedCookieDomain),
       /controlPlane.sharedCookieDomain must not be a public suffix/,
     );
   }
   for (const sharedCookieDomain of ["example.co.uk", "oce.github.io"]) {
-    assert.equal(render("codex", nativeAdminUnder(sharedCookieDomain)).summary.ok, true);
+    assert.equal((await render("codex", nativeAdminUnder(sharedCookieDomain))).summary.ok, true);
   }
 
-  assertFieldRefusals(
+  await assertFieldRefusals(
     "codex",
     codexInput(),
     "controlPlane.authBaseUrl",
@@ -1529,7 +1584,7 @@ test("preflight rejects inputs that Helm would reject", () => {
       "\u00ad",
     ].map((space) => `https://console${space}.oce.example.internal`),
   ];
-  assertFieldRefusals(
+  await assertFieldRefusals(
     "codex",
     codexInput(),
     "controlPlane.authBaseUrl",
@@ -1545,14 +1600,14 @@ test("preflight rejects inputs that Helm would reject", () => {
     "https://\u0646\u0627\u0645\u0647\u200c\u0627\u06cc.oce.example.internal",
     "https://\u0915\u094d\u200d\u0937.oce.example.internal",
   ]) {
-    const output = render(
+    const output = await render(
       "codex",
       codexInput({ controlPlane: { ...baseInput().controlPlane, authBaseUrl } }),
     );
     assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
   }
   // An unparsable value is reported once, not again by the native admin checks.
-  const error = renderError(() =>
+  const error = await renderError(() =>
     render(
       "codex",
       codexInput({
@@ -1571,7 +1626,7 @@ test("preflight rejects inputs that Helm would reject", () => {
   );
 });
 
-test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte", () => {
+test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte", async () => {
   const asciiEncoded = (authBaseUrl) =>
     codexInput({
       controlPlane: {
@@ -1584,7 +1639,8 @@ test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte"
   const asciiRefusal =
     "controlPlane.authBaseUrl host must not percent-encode an ASCII byte; the chart's URL parser rejects it.";
   for (const authBaseUrl of ["https://ex%61mple.com", "https://example.com%2e"]) {
-    const error = renderError(() => render("codex", asciiEncoded(authBaseUrl)));
+    // A real process, so the refusal's exit status is checked.
+    const error = await renderError(() => renderCli("codex", asciiEncoded(authBaseUrl)));
     assert.equal(error.status, 1);
     assert.match(error.profileRendererOutput, new RegExp(escapeRegExp(asciiRefusal)));
     assert.doesNotMatch(
@@ -1603,7 +1659,7 @@ test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte"
   }
 
   // A % that decodes to an IPv4 address stays on ipv4HostKept's existing origin refusal.
-  const rewrittenIpv4 = renderError(() =>
+  const rewrittenIpv4 = await renderError(() =>
     render(
       "codex",
       codexInput({
@@ -1620,7 +1676,7 @@ test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte"
   );
   assert.doesNotMatch(rewrittenIpv4.profileRendererOutput, /percent-encode an ASCII byte/);
 
-  const nonAscii = render(
+  const nonAscii = await render(
     "openclaw",
     externalSignInInput({
       trustedProxy: { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] },
@@ -1635,7 +1691,7 @@ test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte"
 });
 
 // Node accepts both and writes a deployable file; the chart then refuses it.
-test("preflight rejects IPv4-mapped auth base URL hosts and encoded invisible characters", () => {
+test("preflight rejects IPv4-mapped auth base URL hosts and encoded invisible characters", async () => {
   const refusals = [
     [
       "host must not be an IPv4-mapped IPv6 address, which Helm 3.19.2's URL parser rejects; write the IPv4 address instead.",
@@ -1652,7 +1708,9 @@ test("preflight rejects IPv4-mapped auth base URL hosts and encoded invisible ch
   ];
   for (const [refusal, urls] of refusals) {
     for (const authBaseUrl of urls) {
-      const error = renderError(() => render("openclaw", externalSignInInput({ authBaseUrl })));
+      const error = await renderError(() =>
+        render("openclaw", externalSignInInput({ authBaseUrl })),
+      );
       assert.equal(existsSync(join(error.profileRendererDirectory, "values.yaml")), false);
       const preflight = JSON.parse(
         readFileSync(join(error.profileRendererDirectory, "preflight.json"), "utf8"),
@@ -1665,13 +1723,13 @@ test("preflight rejects IPv4-mapped auth base URL hosts and encoded invisible ch
     }
   }
   for (const authBaseUrl of ["https://[::192.0.2.1]", "https://[::ffff:1:2:3]:8443"]) {
-    const output = render("openclaw", externalSignInInput({ authBaseUrl }));
+    const output = await render("openclaw", externalSignInInput({ authBaseUrl }));
     assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
   }
 });
 
 // The chart lowercases the header before its checks and before OCC_AUTH_CLIENT_IP_HEADER.
-test("trusted proxy client address headers render lowercase", () => {
+test("trusted proxy client address headers render lowercase", async () => {
   const trustedProxy = (preset, clientAddressHeader) =>
     baseInput({
       controlPlane: {
@@ -1683,14 +1741,14 @@ test("trusted proxy client address headers render lowercase", () => {
     ["generic", "X-Real-IP"],
     ["ingress-nginx", "X-Forwarded-For"],
   ]) {
-    const output = render("openclaw", trustedProxy(preset, header));
+    const output = await render("openclaw", trustedProxy(preset, header));
     assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
     assert.equal(
       loadYaml(output.values).api.trustedProxy.clientAddressHeader,
       header.toLowerCase(),
     );
   }
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     trustedProxy("generic", "Cookie"),
     /controlPlane\.trustedProxy\.clientAddressHeader cannot be cookie;/,
@@ -1698,8 +1756,8 @@ test("trusted proxy client address headers render lowercase", () => {
 });
 
 // The API lowercases both domains at startup, and the chart accepts only lowercase.
-test("native admin domains render lowercase for the chart", () => {
-  const output = render(
+test("native admin domains render lowercase for the chart", async () => {
+  const output = await render(
     "codex",
     codexInput({
       controlPlane: {
@@ -1727,10 +1785,10 @@ test("native admin domains render lowercase for the chart", () => {
 
 test("profiles pass an optional observability URL to Installation startup YAML", async () => {
   const url = "https://grafana.oce.example.internal/d/occ-observability";
-  const withoutUrl = render("openclaw", baseInput());
+  const withoutUrl = await render("openclaw", baseInput());
   assert.doesNotMatch(withoutUrl.installation, /observability:/);
 
-  const output = render(
+  const output = await render(
     "codex",
     codexInput({ controlPlane: { ...baseInput().controlPlane, observabilityUrl: url } }),
   );
@@ -1746,8 +1804,8 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     /controlPlane.observabilityUrl must be an absolute HTTP or HTTPS URL/;
   const rewrittenIpv4ObservabilityUrl =
     /controlPlane\.observabilityUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address\./;
-  const assertObservabilityPreflight = (observabilityUrl, expected, absent) => {
-    const failure = renderError(() =>
+  const assertObservabilityPreflight = async (observabilityUrl, expected, absent) => {
+    const failure = await renderError(() =>
       render(
         "openclaw",
         baseInput({ controlPlane: { ...baseInput().controlPlane, observabilityUrl } }),
@@ -1781,12 +1839,22 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     // So is an empty user info, which Node drops: any @ before the host, with or without the
     // slashes, and before an IPv4 host too.
     "http://@grafana.example.internal/d",
-    "https://:@grafana.example.internal/d",
+    syntheticCredentialUrl({
+      protocol: "https",
+      username: "",
+      password: "",
+      host: "grafana.example.internal",
+      pathname: "/d",
+    }),
     "http:@grafana.example.internal/d",
     "http:\t//@grafana.example.internal/d",
     "http://@192.0.2.10:3000/d",
   ]) {
-    assertObservabilityPreflight(invalid, genericObservabilityUrl, rewrittenIpv4ObservabilityUrl);
+    await assertObservabilityPreflight(
+      invalid,
+      genericObservabilityUrl,
+      rewrittenIpv4ObservabilityUrl,
+    );
   }
   for (const shorthand of [
     "http://192.168.1",
@@ -1794,7 +1862,11 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     "http://127.1",
     "http://0177.0.0.1",
   ]) {
-    assertObservabilityPreflight(shorthand, rewrittenIpv4ObservabilityUrl, genericObservabilityUrl);
+    await assertObservabilityPreflight(
+      shorthand,
+      rewrittenIpv4ObservabilityUrl,
+      genericObservabilityUrl,
+    );
   }
   const rewrittenHostChars =
     /controlPlane\.observabilityUrl must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host\./;
@@ -1804,9 +1876,9 @@ test("profiles pass an optional observability URL to Installation startup YAML",
     "http://good.example\nevil.com/x",
     "http://good.example\revil.com/x",
   ]) {
-    assertObservabilityPreflight(raw, rewrittenHostChars, genericObservabilityUrl);
+    await assertObservabilityPreflight(raw, rewrittenHostChars, genericObservabilityUrl);
   }
-  const queryBackslash = render(
+  const queryBackslash = await render(
     "openclaw",
     baseInput({
       controlPlane: {
@@ -1819,7 +1891,7 @@ test("profiles pass an optional observability URL to Installation startup YAML",
 
   // URL parsing trims C0 controls and spaces and lowercases the scheme, so this is the
   // written address 192.0.2.10. Preflight and the startup parser must both accept it.
-  const spaced = render(
+  const spaced = await render(
     "openclaw",
     baseInput({
       controlPlane: { ...baseInput().controlPlane, observabilityUrl: " HTTP://192.0.2.10 " },
@@ -1849,9 +1921,9 @@ function externalSignInInput(signIn = {}) {
 test(
   "profiles carry external sign-in and trusted proxy settings through rerenders",
   { skip: helmSkip },
-  () => {
+  async () => {
     const trustedProxy = { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] };
-    const github = render("openclaw", externalSignInInput({ trustedProxy }));
+    const github = await render("openclaw", externalSignInInput({ trustedProxy }));
     assert.equal(github.summary.ok, true);
     // GitHub and Google sign-in support host-only cookies only, so native admin stays off.
     assert.match(github.values, /agentNativeAdmin:\n {2}enabled: false\n/);
@@ -1869,7 +1941,7 @@ test(
     assert.match(manifests, /name: OCC_AUTH_TRUSTED_PROXY_CIDRS\n\s+value: "10\.42\.0\.0\/16"/);
     assert.doesNotMatch(manifests, /OCC_AUTH_GITHUB_ALLOWED_/);
     // The API reads the scheme as URL parsing does, so an uppercase HTTPS origin is valid.
-    const uppercase = render(
+    const uppercase = await render(
       "openclaw",
       externalSignInInput({ trustedProxy, authBaseUrl: "HTTPS://Console.OCE.example.internal" }),
     );
@@ -1878,7 +1950,7 @@ test(
       helmTemplate(uppercase),
       /name: OCC_AUTH_BASE_URL\n\s+value: "HTTPS:\/\/Console\.OCE\.example\.internal"/,
     );
-    const allowlisted = render(
+    const allowlisted = await render(
       "openclaw",
       externalSignInInput({
         trustedProxy,
@@ -1900,7 +1972,7 @@ test(
     assert.doesNotMatch(github.values, /passwordSignIn/);
     assert.doesNotMatch(manifests, /OCC_AUTH_PASSWORD_SIGN_IN/);
     assert.doesNotMatch(github.preflight.prerequisites.join("\n"), /identity attached/);
-    const recoveryOnly = render(
+    const recoveryOnly = await render(
       "openclaw",
       externalSignInInput({ trustedProxy, passwordSignIn: "recovery-only" }),
     );
@@ -1915,7 +1987,7 @@ test(
       /name: OCC_AUTH_PASSWORD_SIGN_IN\n\s+value: recovery-only/,
     );
 
-    const google = render(
+    const google = await render(
       "codex",
       codexInput({
         controlPlane: externalSignInInput({
@@ -1932,7 +2004,7 @@ test(
     assert.doesNotMatch(google.values, /github:/);
     assert.match(helmTemplate(google), /name: OCC_AUTH_GOOGLE_ALLOWED_DOMAINS/);
 
-    const oidc = render(
+    const oidc = await render(
       "openclaw",
       externalSignInInput({
         github: undefined,
@@ -1961,7 +2033,7 @@ test(
     assert.match(oidcManifests, /name: openclaw-enterprise-api-oidc-login-egress/);
     // The API trims each OIDC URL with JavaScript's trim before its checks, and so do the chart
     // and the renderer, which keep the value as written.
-    const padded = render(
+    const padded = await render(
       "openclaw",
       externalSignInInput({
         github: undefined,
@@ -1980,7 +2052,7 @@ test(
     );
 
     // Password-only installs behind ingress-nginx keep native admin and still trust the proxy.
-    const nativeAdmin = render(
+    const nativeAdmin = await render(
       "openclaw",
       baseInput({ controlPlane: { ...baseInput().controlPlane, trustedProxy } }),
     );
@@ -2014,7 +2086,7 @@ function checkoutWithoutDependencies() {
   return root;
 }
 
-test("profiles render without installed dependencies unless native admin is on", (t) => {
+test("profiles render without installed dependencies unless native admin is on", async (t) => {
   const root = checkoutWithoutDependencies();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const [profile, input] of [
@@ -2025,7 +2097,7 @@ test("profiles render without installed dependencies unless native admin is on",
     t.after(() => rmSync(directory, { recursive: true, force: true }));
     let output;
     try {
-      output = render(profile, input, directory, root);
+      output = renderCli(profile, input, directory, root);
     } catch (error) {
       assert.fail(`${profile} render failed without node_modules:\n${error.profileRendererOutput}`);
     }
@@ -2036,7 +2108,7 @@ test("profiles render without installed dependencies unless native admin is on",
   // Native admin needs the API's public suffix list, so it asks for the install, with a preflight.
   const directory = mkdtempSync(join(tmpdir(), "oce-profile-native-admin-"));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  const error = renderError(() => render("openclaw", baseInput(), directory, root));
+  const error = await renderError(() => renderCli("openclaw", baseInput(), directory, root));
   assert.match(
     error.profileRendererOutput,
     /controlPlane\.sharedCookieDomain needs the public suffix list: run pnpm install first\./,
@@ -2046,8 +2118,8 @@ test("profiles render without installed dependencies unless native admin is on",
   assert.equal(existsSync(join(directory, "values.yaml")), false);
 });
 
-test("preflight warns, without failing, when no trusted proxy is set", () => {
-  const github = render("openclaw", externalSignInInput());
+test("preflight warns, without failing, when no trusted proxy is set", async () => {
+  const github = await render("openclaw", externalSignInInput());
   assert.equal(github.summary.ok, true);
   assert.match(
     github.preflight.warnings.join("\n"),
@@ -2058,7 +2130,7 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
     /trustedProxy is not set: .*Behind an HTTP proxy, API calls fail with 403 until it is set\./,
   );
   assert.doesNotMatch(github.values, /trustedProxy:/);
-  const password = render("openclaw", baseInput());
+  const password = await render("openclaw", baseInput());
   assert.equal(password.summary.ok, true);
   assert.match(
     password.preflight.warnings.join("\n"),
@@ -2070,7 +2142,7 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
   );
 });
 
-test("preflight rejects external sign-in Secret names Kubernetes refuses", () => {
+test("preflight rejects external sign-in Secret names Kubernetes refuses", async () => {
   const oidc = {
     issuer: "https://tenant.idp.example.test/",
     authorizationUrl: "https://tenant.idp.example.test/authorize",
@@ -2082,7 +2154,7 @@ test("preflight rejects external sign-in Secret names Kubernetes refuses", () =>
     ["google", { github: undefined, google: { secretName: "Bad_Name" } }],
     ["oidc", { github: undefined, oidc: { ...oidc, secretName: "Bad_Name" } }],
   ]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       externalSignInInput(signIn),
       new RegExp(`controlPlane\\.${provider}\\.secretName must be a Kubernetes resource name`),
@@ -2093,54 +2165,54 @@ test("preflight rejects external sign-in Secret names Kubernetes refuses", () =>
     { github: undefined, google: { secretName: "google.login-v2" } },
     { github: undefined, oidc: { ...oidc, secretName: "oidc.login-v2" } },
   ]) {
-    assert.equal(render("openclaw", externalSignInInput(signIn)).summary.ok, true);
+    assert.equal((await render("openclaw", externalSignInInput(signIn))).summary.ok, true);
   }
 });
 
-test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", () => {
-  assertPreflightFailure(
+test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", async () => {
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ github: { allowedTeams: ["platform"] } }),
     /controlPlane.github.allowedTeams\[0\] must be a lowercase org\/team-slug entry/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({
       github: { allowedOrgs: Array.from({ length: 11 }, (_, index) => `org${index}`) },
     }),
     /allowedOrgs and allowedTeams list at most 10 entries together/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ recoveryUserId: undefined }),
     /controlPlane.recoveryUserId is required with controlPlane.github, controlPlane.google or controlPlane.oidc/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     baseInput({ controlPlane: { ...baseInput().controlPlane, recoveryUserId: "admin" } }),
     /controlPlane.recoveryUserId requires controlPlane.github, controlPlane.google or controlPlane.oidc/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     baseInput({ controlPlane: { ...baseInput().controlPlane, passwordSignIn: "recovery-only" } }),
     /controlPlane.passwordSignIn requires controlPlane.github, controlPlane.google or controlPlane.oidc/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ passwordSignIn: "none" }),
     /controlPlane.passwordSignIn must be all or recovery-only/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ agentNativeAdminDomain: "agents.oce.example.internal" }),
     /controlPlane.agentNativeAdminDomain is not consumed with external sign-in/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ authBaseUrl: "http://console.oce.example.internal" }),
     /controlPlane.authBaseUrl must use HTTPS with external sign-in/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ github: { clientSecret: "inline" } }),
     /controlPlane.github.clientSecret is not supported/,
@@ -2153,7 +2225,7 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     ["oidc", "clientIdKey", "bad/key"],
     ["oidc", "clientSecretKey", "..client-secret"],
   ]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       externalSignInInput({
         github: undefined,
@@ -2175,7 +2247,7 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     { github: { clientIdKey: ".hidden" } },
     { github: undefined, google: { clientSecretKey: "a".repeat(253) } },
   ]) {
-    assert.equal(render("openclaw", externalSignInInput(signIn)).summary.ok, true);
+    assert.equal((await render("openclaw", externalSignInInput(signIn))).summary.ok, true);
   }
   const oidc = {
     issuer: "https://tenant.idp.example.test/",
@@ -2229,31 +2301,31 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     [{ displayName: "x".repeat(41) }, /controlPlane.oidc.displayName must be 1 to 40/],
     [{ discoveryUrl: "https://tenant.idp.example.test/" }, /controlPlane.oidc.discoveryUrl/],
   ]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       externalSignInInput({ github: undefined, oidc: { ...oidc, ...override } }),
       message,
     );
   }
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ github: undefined, oidc: { ...oidc, jwksUrl: undefined } }),
     /controlPlane.oidc.jwksUrl must be a nonempty string/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ trustedProxy: { preset: "generic", cidrs: ["10.42.0.0/16"] } }),
     /controlPlane.trustedProxy.clientAddressHeader is required for the generic preset/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     externalSignInInput({ trustedProxy: { preset: "ingress-nginx", cidrs: ["0.0.0.0/0"] } }),
     /controlPlane.trustedProxy.cidrs\[0\] must be/,
   );
 });
 
-test("profiles refuse installation names the chart and the bootstrap Job refuse", () => {
-  const accepted = render(
+test("profiles refuse installation names the chart and the bootstrap Job refuse", async () => {
+  const accepted = await render(
     "openclaw",
     baseInput({
       controlPlane: { ...baseInput().controlPlane, clusterName: "n".repeat(200) },
@@ -2262,7 +2334,7 @@ test("profiles refuse installation names the chart and the bootstrap Job refuse"
   assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
   assert.match(accepted.values, /name: n{200}\n/);
   for (const clusterName of [" profile", `${"n".repeat(201)}`, "bad\nname", "\uD800"]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       baseInput({ controlPlane: { ...baseInput().controlPlane, clusterName } }),
       /controlPlane.clusterName must be 1 to 200 characters/,
@@ -2270,23 +2342,23 @@ test("profiles refuse installation names the chart and the bootstrap Job refuse"
   }
 });
 
-test("preflight rejects CIDR prefixes with a leading zero", () => {
+test("preflight rejects CIDR prefixes with a leading zero", async () => {
   const controlPlane = baseInput().controlPlane;
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     baseInput({
       controlPlane: { ...controlPlane, databaseCidrs: ["192.0.2.10/032"] },
     }),
     /controlPlane\.databaseCidrs\[0\] must be an IPv4 \/32 CIDR/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     baseInput({
       controlPlane: { ...controlPlane, gatewayTrustedProxyCidrs: ["192.0.2.12/08"] },
     }),
     /controlPlane\.gatewayTrustedProxyCidrs\[0\] must be an IPv4 CIDR/,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     baseInput({
       controlPlane: {
@@ -2296,7 +2368,7 @@ test("preflight rejects CIDR prefixes with a leading zero", () => {
     }),
     /controlPlane\.trustedProxy\.cidrs\[0\] must be an IPv4 or IPv6 CIDR/,
   );
-  const accepted = render(
+  const accepted = await render(
     "openclaw",
     baseInput({
       controlPlane: { ...controlPlane, gatewayTrustedProxyCidrs: ["192.0.2.12/8"] },
@@ -2307,16 +2379,16 @@ test("preflight rejects CIDR prefixes with a leading zero", () => {
 
 // Compute refuses a source range that covers every address (scopedCidr) in the same words;
 // a status proxy source wider than one address only warns there and here (bughunt F2).
-test("preflight refuses source CIDRs that cover every address and warns about wide status sources", () => {
+test("preflight refuses source CIDRs that cover every address and warns about wide status sources", async () => {
   const controlPlane = baseInput().controlPlane;
   for (const key of ["gatewayTrustedProxyCidrs", "pluginStatusProxySourceCidrs"]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       baseInput({ controlPlane: { ...controlPlane, [key]: ["192.0.2.12/32", "0.0.0.0/0"] } }),
       new RegExp(`controlPlane\\.${key}\\[1\\] cannot cover every address\\.`),
     );
   }
-  const wide = render(
+  const wide = await render(
     "openclaw",
     baseInput({
       controlPlane: { ...controlPlane, pluginStatusProxySourceCidrs: ["10.42.0.0/16"] },
@@ -2326,30 +2398,30 @@ test("preflight refuses source CIDRs that cover every address and warns about wi
     wide.preflight.warnings.join("\n"),
     /controlPlane\.pluginStatusProxySourceCidrs\[0\] covers more than one address/,
   );
-  const exact = render("openclaw", baseInput());
+  const exact = await render("openclaw", baseInput());
   assert.doesNotMatch(exact.preflight.warnings.join("\n"), /covers more than one address/);
-  const widerTrust = render(
+  const widerTrust = await render(
     "openclaw",
     baseInput({ controlPlane: { ...controlPlane, gatewayTrustedProxyCidrs: ["10.42.0.0/16"] } }),
   );
   assert.doesNotMatch(widerTrust.preflight.warnings.join("\n"), /covers more than one address/);
 });
 
-test("preflight rejects channel proxy URLs with an invalid octet or port", () => {
+test("preflight rejects channel proxy URLs with an invalid octet or port", async () => {
   const message = /must be an HTTP\(S\) literal IPv4 endpoint with an explicit port/;
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     baseInput({ channels: { directoryProxyUrl: "http://192.0.2.999:8080" } }),
     message,
   );
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "openclaw",
     baseInput({ channels: { runtimeProxyUrl: "http://192.0.2.10:99999" } }),
     message,
   );
   // Compute and the API's Slack directory refuse an unspecified proxy host, which names no proxy.
   for (const field of ["runtimeProxyUrl", "directoryProxyUrl"]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       baseInput({ channels: { [field]: "http://0.0.0.0:3128" } }),
       new RegExp(
@@ -2357,7 +2429,7 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
       ),
     );
   }
-  const accepted = render(
+  const accepted = await render(
     "openclaw",
     baseInput({
       channels: {
@@ -2368,35 +2440,36 @@ test("preflight rejects channel proxy URLs with an invalid octet or port", () =>
   );
   assert.match(accepted.values, /channelDirectoryProxyUrl: http:\/\/192\.0\.2\.10:8080/);
   assert.match(accepted.installation, /proxyUrl: http:\/\/192\.0\.2\.10:8080/);
-  KubernetesComputeDriver.validateConfiguration(
+  requireConfiguration(
+    KubernetesComputeDriver,
     loadYaml(accepted.installation).drivers.compute.configuration,
   );
 });
 
 for (const profile of ["openclaw", "codex"]) {
   for (const proxyUrl of ["http://192.0.2.10:80", "https://192.0.2.10:443"]) {
-    test(`${profile} preserves explicit default channel proxy port in ${proxyUrl}`, (t) => {
+    test(`${profile} preserves explicit default channel proxy port in ${proxyUrl}`, async (t) => {
       const input = profile === "codex" ? codexInput() : baseInput();
       input.channels = { directoryProxyUrl: proxyUrl, runtimeProxyUrl: proxyUrl };
-      const output = render(profile, input);
+      const output = await render(profile, input);
       t.after(() => rmSync(output.directory, { recursive: true, force: true }));
       assert.equal(output.preflight.ok, true);
       assert.equal(loadYaml(output.values).api.channelDirectoryProxyUrl, proxyUrl);
       const compute = loadYaml(output.installation).drivers.compute.configuration;
       assert.equal(compute.runtime.channels.proxyUrl, proxyUrl);
       // Installation validation runs even before an Agent enables a channel.
-      assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute));
+      assert.doesNotThrow(() => requireConfiguration(KubernetesComputeDriver, compute));
     });
   }
 }
 
-test("channel proxy validation preserves explicit ports and exact managed peers", (t) => {
-  const output = render("openclaw", baseInput());
+test("channel proxy validation preserves explicit ports and exact managed peers", async (t) => {
+  const output = await render("openclaw", baseInput());
   t.after(() => rmSync(output.directory, { recursive: true, force: true }));
   const compute = loadYaml(output.installation).drivers.compute.configuration;
   const managed = structuredClone(compute.runtime.channels);
   assert.equal(managed.managedProxy.port, 3128);
-  KubernetesComputeDriver.validateConfiguration(compute);
+  requireConfiguration(KubernetesComputeDriver, compute);
 
   // IPv6 is supported by Compute directly; profile input intentionally remains IPv4-only.
   for (const proxyUrl of [
@@ -2407,7 +2480,7 @@ test("channel proxy validation preserves explicit ports and exact managed peers"
     "https://192.0.2.10:80/",
   ]) {
     compute.runtime.channels = { proxyUrl };
-    assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute), proxyUrl);
+    assert.doesNotThrow(() => requireConfiguration(KubernetesComputeDriver, compute), proxyUrl);
   }
   for (const [scheme, port] of [
     ["http", 80],
@@ -2418,7 +2491,7 @@ test("channel proxy validation preserves explicit ports and exact managed peers"
       proxyUrl: `${scheme}://${managed.managedProxy.hostname}:${port}/`,
       managedProxy: { ...managed.managedProxy, port },
     };
-    assert.doesNotThrow(() => KubernetesComputeDriver.validateConfiguration(compute));
+    assert.doesNotThrow(() => requireConfiguration(KubernetesComputeDriver, compute));
   }
 
   for (const proxyUrl of [
@@ -2440,7 +2513,10 @@ test("channel proxy validation preserves explicit ports and exact managed peers"
     "http://proxy.example.invalid:80",
   ]) {
     compute.runtime.channels = { proxyUrl };
-    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), /Channel proxy/i);
+    assert.throws(
+      () => requireConfiguration(KubernetesComputeDriver, compute),
+      SharedConfigurationValidationError,
+    );
   }
   // A valid peer grant never authorizes a different Service, port, or URL credentials.
   for (const proxyUrl of [
@@ -2460,12 +2536,15 @@ test("channel proxy validation preserves explicit ports and exact managed peers"
       proxyUrl,
       managedProxy: { ...managed.managedProxy, port: 80 },
     };
-    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), /channel proxy/i);
+    assert.throws(
+      () => requireConfiguration(KubernetesComputeDriver, compute),
+      SharedConfigurationValidationError,
+    );
   }
 });
 
-test("channel proxy validation preserves omitted-port endpoint diagnostics", (t) => {
-  const output = render("openclaw", baseInput());
+test("channel proxy validation preserves omitted-port endpoint diagnostics", async (t) => {
+  const output = await render("openclaw", baseInput());
   t.after(() => rmSync(output.directory, { recursive: true, force: true }));
   const compute = loadYaml(output.installation).drivers.compute.configuration;
   const managed = structuredClone(compute.runtime.channels);
@@ -2477,9 +2556,10 @@ test("channel proxy validation preserves omitted-port endpoint diagnostics", (t)
     "http://192.0.2.10:8080/path",
   ]) {
     compute.runtime.channels = { proxyUrl };
-    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), {
-      message: "Channel proxy URL must identify one credential-free HTTP(S) IP endpoint.",
-    });
+    assert.throws(
+      () => requireConfiguration(KubernetesComputeDriver, compute),
+      SharedConfigurationValidationError,
+    );
   }
   for (const proxyUrl of [
     `http://${managed.managedProxy.hostname}`,
@@ -2487,13 +2567,14 @@ test("channel proxy validation preserves omitted-port endpoint diagnostics", (t)
     "http://other.openclaw-system.svc:3128",
   ]) {
     compute.runtime.channels = { ...managed, proxyUrl };
-    assert.throws(() => KubernetesComputeDriver.validateConfiguration(compute), {
-      message: "Managed channel proxy URL must match the exact configured Service host and port.",
-    });
+    assert.throws(
+      () => requireConfiguration(KubernetesComputeDriver, compute),
+      SharedConfigurationValidationError,
+    );
   }
 });
 
-test("profiles refuse database CA keys the chart refuses", () => {
+test("profiles refuse database CA keys the chart refuses", async () => {
   const withCa = (key) =>
     baseInput({
       controlPlane: {
@@ -2501,18 +2582,18 @@ test("profiles refuse database CA keys the chart refuses", () => {
         databaseCa: { secretName: "occ-db-ca", ...(key === undefined ? {} : { key }) },
       },
     });
-  const accepted = render("openclaw", withCa("db_ca.pem"));
+  const accepted = await render("openclaw", withCa("db_ca.pem"));
   assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
   assert.match(accepted.values, /caKey: db_ca.pem/);
-  const omitted = render("openclaw", withCa(undefined));
+  const omitted = await render("openclaw", withCa(undefined));
   assert.equal(omitted.summary.ok, true, omitted.preflight.errors.join("\n"));
   assert.match(omitted.values, /caKey: ca.pem/);
   const maxKey = "a".repeat(253);
-  const acceptedMax = render("openclaw", withCa(maxKey));
+  const acceptedMax = await render("openclaw", withCa(maxKey));
   assert.equal(acceptedMax.summary.ok, true, acceptedMax.preflight.errors.join("\n"));
   assert.match(acceptedMax.values, new RegExp(`caKey: ${maxKey}`));
   for (const key of [".", "..", "..ca.pem", "ca/pem", "ca pem", "a".repeat(254)]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       withCa(key),
       /controlPlane\.databaseCa\.key must be a Kubernetes Secret key of at most 253 characters/,
@@ -2520,14 +2601,14 @@ test("profiles refuse database CA keys the chart refuses", () => {
   }
 });
 
-test("profiles refuse ChatGPT credential lifetimes the API refuses", () => {
+test("profiles refuse ChatGPT credential lifetimes the API refuses", async () => {
   const accounts = {
     workspaceId: "11111111-1111-4111-8111-111111111111",
     adminSecretName: "occ-chatgpt-admin",
     adminSecretKey: "admin-key",
     providerCidr: "192.0.2.21/32",
   };
-  const accepted = render(
+  const accepted = await render(
     "codex",
     managedCodexInput({
       codex: { managedServiceAccounts: { ...accounts, credentialTtlSeconds: 2_592_000 } },
@@ -2535,7 +2616,7 @@ test("profiles refuse ChatGPT credential lifetimes the API refuses", () => {
   );
   assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
   assert.match(accepted.installation, /credentialTtlSeconds: 2592000/);
-  assertPreflightFailure(
+  await assertPreflightFailure(
     "codex",
     managedCodexInput({
       codex: { managedServiceAccounts: { ...accounts, credentialTtlSeconds: 2_592_001 } },
@@ -2544,8 +2625,8 @@ test("profiles refuse ChatGPT credential lifetimes the API refuses", () => {
   );
 });
 
-test("profiles refuse administrator emails the bootstrap Job refuses", () => {
-  const accepted = render(
+test("profiles refuse administrator emails the bootstrap Job refuses", async () => {
+  const accepted = await render(
     "openclaw",
     baseInput({
       controlPlane: { ...baseInput().controlPlane, adminEmail: " Admin@Example.invalid " },
@@ -2554,7 +2635,7 @@ test("profiles refuse administrator emails the bootstrap Job refuses", () => {
   assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
   assert.match(accepted.values, /adminEmail: " Admin@Example.invalid "/);
   for (const adminEmail of ["not-an-email", "admin@example", "a @b.c"]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       baseInput({ controlPlane: { ...baseInput().controlPlane, adminEmail } }),
       /controlPlane.adminEmail must be a valid administrator email/,
@@ -2562,7 +2643,7 @@ test("profiles refuse administrator emails the bootstrap Job refuses", () => {
   }
 });
 
-test("preflight rejects a Google hosted domain the chart and API refuse", () => {
+test("preflight rejects a Google hosted domain the chart and API refuse", async () => {
   const label63 = `a${"b".repeat(61)}c`;
   const domain254 = [label63, label63, label63, `d${"e".repeat(60)}f`].join(".");
   const domain253 = [label63, label63, label63, `d${"e".repeat(59)}f`].join(".");
@@ -2574,18 +2655,18 @@ test("preflight rejects a Google hosted domain the chart and API refuse", () => 
       google: { allowedDomains },
     });
   for (const allowedDomains of [["example.123"], ["example.1"], [domain254]]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       googleInput(allowedDomains),
       /controlPlane\.google\.allowedDomains\[0\] must be a lowercase DNS domain name of at most 253 characters whose last label starts with a letter, such as example\.com/,
     );
   }
-  const accepted = render("openclaw", googleInput([domain253]));
+  const accepted = await render("openclaw", googleInput([domain253]));
   assert.equal(accepted.summary.ok, true, accepted.preflight.errors.join("\n"));
   assert.match(accepted.values, new RegExp(domain253));
 });
 
-test("profiles refuse gateway namespaces the compute driver refuses", () => {
+test("profiles refuse gateway namespaces the compute driver refuses", async () => {
   const configured = conformanceKubernetesOptions({
     gatewayTrustedProxyCidrs: ["10.42.0.0/16"],
   });
@@ -2617,30 +2698,27 @@ test("profiles refuse gateway namespaces the compute driver refuses", () => {
     "openclaw-system ",
   ];
   for (const namespace of refused) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       baseInput({ controlPlane: { ...controlPlane, namespace } }),
       namespaceMessage,
     );
     assert.throws(
       () => admit({ ...routing, gatewayNamespace: namespace }),
-      /Gateway routing Gateway namespace must be a Kubernetes namespace name/,
+      SharedConfigurationValidationError,
     );
   }
   for (const envoyNamespace of refused) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       baseInput({ controlPlane: { ...controlPlane, envoyNamespace } }),
       envoyMessage,
     );
-    assert.throws(
-      () => admit({ ...routing, envoyNamespace }),
-      /Gateway routing Envoy namespace must be a Kubernetes namespace name/,
-    );
+    assert.throws(() => admit({ ...routing, envoyNamespace }), SharedConfigurationValidationError);
   }
   const namespace = "a".repeat(63);
   const envoyNamespace = `${"b".repeat(62)}9`;
-  const output = render(
+  const output = await render(
     "openclaw",
     baseInput({ controlPlane: { ...controlPlane, namespace, envoyNamespace } }),
   );
@@ -2650,7 +2728,7 @@ test("profiles refuse gateway namespaces the compute driver refuses", () => {
   assert.doesNotThrow(() => admit({ ...routing, gatewayNamespace: namespace, envoyNamespace }));
 });
 
-test("profiles refuse gateway storage class names the compute driver refuses", () => {
+test("profiles refuse gateway storage class names the compute driver refuses", async () => {
   const runtime = baseInput().runtime;
   for (const gatewayStorageClassName of [
     "Bad_Class",
@@ -2658,14 +2736,14 @@ test("profiles refuse gateway storage class names the compute driver refuses", (
     "-local-path",
     "a".repeat(254),
   ]) {
-    assertPreflightFailure(
+    await assertPreflightFailure(
       "openclaw",
       baseInput({ runtime: { ...runtime, gatewayStorageClassName } }),
       /runtime\.gatewayStorageClassName must be a Kubernetes resource name of at most 253 characters/,
     );
   }
   for (const gatewayStorageClassName of ["a".repeat(253), "gp3.encrypted"]) {
-    const output = render(
+    const output = await render(
       "openclaw",
       baseInput({ runtime: { ...runtime, gatewayStorageClassName } }),
     );
@@ -2674,7 +2752,7 @@ test("profiles refuse gateway storage class names the compute driver refuses", (
   }
 });
 
-test("preflight rejects Codex seccomp paths the compute driver refuses", () => {
+test("preflight rejects Codex seccomp paths the compute driver refuses", async () => {
   const message =
     /runtime\.codexSeccompProfile must be a relative localhost profile path without traversal or unconfined mode/;
   for (const codexSeccompProfile of [
@@ -2686,31 +2764,35 @@ test("preflight rejects Codex seccomp paths the compute driver refuses", () => {
     "profiles/unconfined",
     "profiles\\codex.json",
   ]) {
-    assertPreflightFailure("codex", codexInput({ runtime: { codexSeccompProfile } }), message);
+    await assertPreflightFailure(
+      "codex",
+      codexInput({ runtime: { codexSeccompProfile } }),
+      message,
+    );
   }
-  const accepted = render("codex", codexInput());
+  const accepted = await render("codex", codexInput());
   const installation = loadYaml(accepted.installation);
-  KubernetesComputeDriver.validateConfiguration(installation.drivers.compute.configuration);
+  requireConfiguration(KubernetesComputeDriver, installation.drivers.compute.configuration);
   assert.match(accepted.installation, /codexSeccompProfile: profiles\/codex\.json/);
 });
 
-test("the codex profile carries a Codex model endpoint under Compute startup's rule", () => {
+test("the codex profile carries a Codex model endpoint under Compute startup's rule", async () => {
   const field = "runtime.codexModelBaseUrl";
-  assertFieldRefusals(
+  await assertFieldRefusals(
     "openclaw",
     baseInput(),
     field,
     ["https://models.example.com/v1"],
     "is only consumed by the codex profile",
   );
-  const accepted = render(
+  const accepted = await render(
     "codex",
     codexInput({ runtime: { codexModelBaseUrl: "https://Models.Example.com:443/v1/" } }),
   );
   const compute = loadYaml(accepted.installation).drivers.compute.configuration;
   // Written as Compute normalizes it, and accepted by Compute startup.
   assert.equal(compute.runtime.codexModelBaseUrl, "https://models.example.com/v1");
-  const backslashScheme = render(
+  const backslashScheme = await render(
     "codex",
     codexInput({ runtime: { codexModelBaseUrl: "https:\\\\192.0.2.1/v1" } }),
   );
@@ -2718,10 +2800,10 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     loadYaml(backslashScheme.installation).drivers.compute.configuration.runtime.codexModelBaseUrl,
     "https://192.0.2.1/v1",
   );
-  KubernetesComputeDriver.validateConfiguration(compute);
+  requireConfiguration(KubernetesComputeDriver, compute);
   assert.equal(
-    loadYaml(render("codex", codexInput()).installation).drivers.compute.configuration.runtime
-      .codexModelBaseUrl,
+    loadYaml((await render("codex", codexInput())).installation).drivers.compute.configuration
+      .runtime.codexModelBaseUrl,
     undefined,
   );
   // Each refusal is Compute startup's (finding 1292 spellings included), with its own message.
@@ -2738,7 +2820,12 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     ],
     ["https://@models.example.com/v1", "must not contain user info or an @ before the host."],
     [
-      "https://user:pass@models.example.com/v1",
+      syntheticCredentialUrl({
+        username: "fixture-user",
+        password: "fixture-password",
+        host: "models.example.com",
+        pathname: "/v1",
+      }),
       "must not contain user info or an @ before the host.",
     ],
     ["http://models.example.com/v1", general],
@@ -2763,24 +2850,22 @@ test("the codex profile carries a Codex model endpoint under Compute startup's r
     // A spelling refusal comes first, whatever host the parser would read.
     ["https:/192.168.1/v1", "must start with https:// (the // after the scheme is missing)."],
   ]) {
-    assertFieldRefusals("codex", codexInput(), field, [value], message);
+    await assertFieldRefusals("codex", codexInput(), field, [value], message);
     assert.throws(
       () =>
-        KubernetesComputeDriver.validateConfiguration({
+        requireConfiguration(KubernetesComputeDriver, {
           ...compute,
           runtime: { ...compute.runtime, codexModelBaseUrl: value },
         }),
       // Compute startup has no separate nonempty-string refusal; its general rule covers it.
-      {
-        message: `Codex model endpoint ${message === "must be a nonempty string." ? general : message}`,
-      },
+      SharedConfigurationValidationError,
       JSON.stringify(value),
     );
   }
 });
 
 test("profile transport Secret prefixes agree with controller startup admission", async (t) => {
-  const baseline = render("openclaw", baseInput());
+  const baseline = await render("openclaw", baseInput());
   t.after(() => rmSync(baseline.directory, { recursive: true, force: true }));
   const prefixes = [
     ["transport", true],
@@ -2796,14 +2881,14 @@ test("profile transport Secret prefixes agree with controller startup admission"
     const input = baseInput();
     input.runtime.transportSecretPrefix = prefix;
     if (accepted) {
-      const output = render("openclaw", input);
+      const output = await render("openclaw", input);
       t.after(() => rmSync(output.directory, { recursive: true, force: true }));
       await loadInstallationConfiguration({
         mode: "production",
         environment: { OCC_CONFIG_PATH: join(output.directory, "installation.yaml") },
       });
     } else {
-      assertPreflightFailure("openclaw", input, /runtime\.transportSecretPrefix/);
+      await assertPreflightFailure("openclaw", input, /runtime\.transportSecretPrefix/);
       const installation = loadYaml(baseline.installation);
       installation.drivers.compute.configuration.runtime.transportSecretPrefix = prefix;
       const path = join(baseline.directory, "invalid-installation.json");
@@ -2813,7 +2898,7 @@ test("profile transport Secret prefixes agree with controller startup admission"
           mode: "production",
           environment: { OCC_CONFIG_PATH: path },
         }),
-        /runtime\.transportSecretPrefix/,
+        SharedConfigurationValidationError,
       );
     }
   }

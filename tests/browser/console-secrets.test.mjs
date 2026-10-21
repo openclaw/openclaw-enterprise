@@ -1,0 +1,400 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { InMemoryAuditSink } from "../../packages/audit/src/index.ts";
+import { createConsoleAppFixture } from "../helpers/console-app.mjs";
+import { createTestSecretDriver } from "../helpers/secret-driver.mjs";
+import {
+  apiRequests,
+  consoleStorage,
+  fileBrowser,
+  holdRequests,
+  login,
+  newPage,
+  settledView,
+} from "./console-agents-browser-helpers.mjs";
+
+const browser = fileBrowser();
+const secretsUrl = (namespace) => `/console/secrets?namespace=${namespace.id}`;
+const secretPath = (namespace) => `/namespaces/${namespace.id}/secrets`;
+const dialog = (page, name) => page.getByRole("dialog", { name, exact: true });
+
+async function createFromConsole(page, name, value) {
+  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const form = dialog(page, "Create Secret");
+  await form.getByLabel("Secret name", { exact: true }).fill(name);
+  await form.getByLabel("Value", { exact: true }).fill(value);
+  await form.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await dialog(page, "Secret created").getByRole("button", { name: "Close" }).click();
+}
+
+test("console Secret creation, replacement, Agent consumers and cleanup use real API and IAM", async (t) => {
+  const audit = new InMemoryAuditSink();
+  const storage = createTestSecretDriver();
+  const fixture = await createConsoleAppFixture(t, { auditSink: audit, secretDriver: storage });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Secret editors", { ready: true });
+  const other = await fixture.createNamespace("Other tenant", { ready: true });
+  await fixture.createSecret(other.id, "Other tenant credential", "synthetic-other-value");
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace));
+  await page.locator(settledView).getByRole("heading", { name: "No Secrets yet" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Other tenant credential" }).count(), 0);
+
+  // New material is opaque: spaces, Unicode and newlines must reach storage unchanged.
+  const original = "  synthetic-console-credential\nsecond line π  ";
+  await createFromConsole(page, "Shared model", original);
+  const secret = (await fixture.request("GET", secretPath(namespace))).data.find(
+    (item) => item.name === "Shared model",
+  );
+  assert.equal(storage.valueFor(secret), original);
+  assert.doesNotMatch(
+    JSON.stringify(await fixture.request("GET", `${secretPath(namespace)}/${secret.id}`)),
+    /synthetic-console-credential/,
+  );
+  assert.deepEqual(await consoleStorage(page), { local: {}, session: {} });
+
+  await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  await dialog(page, "Shared model")
+    .getByRole("button", { name: "Replace value", exact: true })
+    .click();
+  const replacement = dialog(page, "Replace Secret value");
+  assert.equal(await replacement.getByLabel("Value", { exact: true }).inputValue(), "");
+  await replacement.getByLabel("Value", { exact: true }).fill("synthetic-console-replacement");
+  await replacement.getByRole("button", { name: "Replace value", exact: true }).click();
+  await dialog(page, "Secret value replaced").getByRole("button", { name: "Close" }).click();
+  assert.equal(storage.valueFor(secret), "synthetic-console-replacement");
+
+  // Bind the UI-created Secret through ordinary Agent admission. Its real reference blocks
+  // deletion; this is not a fixture-invented consumer or deletion response.
+  const agent = await fixture.createAgent(
+    namespace.id,
+    "Shared model consumer",
+    {},
+    { harnessAuth: { method: "api_key", source: secret.ref } },
+  );
+  await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  const detail = dialog(page, "Shared model");
+  await detail.getByRole("link", { name: agent.id, exact: true }).waitFor();
+  assert.equal(
+    await detail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
+    true,
+  );
+  await detail.getByRole("link", { name: agent.id, exact: true }).click();
+  await page.waitForURL(new RegExp(`/console/agents/${agent.id}`));
+  await page.getByRole("heading", { name: "Shared model consumer", exact: true }).waitFor();
+
+  // Clear the Agent draft reference through its supported API before deleting the Secret.
+  const unbound = await fixture.request("PATCH", `/namespaces/${namespace.id}/agents/${agent.id}`, {
+    body: { configurationId: agent.configurationId, harnessAuth: null },
+  });
+  assert.equal(unbound.status, 200);
+  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  await page.getByRole("button", { name: "Shared model", exact: true }).click();
+  await dialog(page, "Shared model")
+    .getByRole("button", { name: "Delete Secret", exact: true })
+    .click();
+  await dialog(page, "Delete Secret")
+    .getByRole("button", { name: "Permanently delete Secret", exact: true })
+    .click();
+  await dialog(page, "Secret deleted").getByRole("button", { name: "Close" }).click();
+  assert.equal((await fixture.request("GET", `${secretPath(namespace)}/${secret.id}`)).status, 404);
+  assert.equal(storage.has(secret), false);
+  for (const action of ["create", "update", "delete"]) {
+    assert.ok(
+      audit
+        .list()
+        .some(
+          (event) =>
+            event.action === `openclaw.secrets.${action}` &&
+            event.resource.id === secret.id &&
+            event.actorId,
+        ),
+    );
+  }
+  assert.doesNotMatch(JSON.stringify(audit.list()), /synthetic-console-(credential|replacement)/);
+});
+
+test("unknown console Secret writes erase entered material and never replay mutations", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Interrupted writes", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, secretsUrl(namespace));
+  let interrupt = "POST";
+  await page.route(`${fixture.origin}${secretPath(namespace)}**`, async (route) => {
+    if (route.request().method() !== interrupt) {
+      return route.continue();
+    }
+    interrupt = null;
+    // The real server commits before its reply is lost. Retrying would create a second write.
+    await route.fetch();
+    await route.abort("failed");
+  });
+  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const create = dialog(page, "Create Secret");
+  await create.getByLabel("Secret name").fill("Uncertain Secret");
+  await create.getByLabel("Value", { exact: true }).fill("synthetic-interrupted-value");
+  await create.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await create.getByText(/Outcome unknown/).waitFor();
+  assert.equal(await create.getByLabel("Value", { exact: true }).inputValue(), "");
+  assert.equal(
+    await create.getByRole("button", { name: "Create Secret", exact: true }).isDisabled(),
+    true,
+  );
+  await create.locator("form").evaluate((form) => {
+    form.requestSubmit();
+  });
+  assert.equal(
+    requests.filter((item) => item.method === "POST" && item.path === secretPath(namespace)).length,
+    1,
+  );
+  await create.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Uncertain Secret", exact: true }).click();
+  await dialog(page, "Uncertain Secret")
+    .getByRole("button", { name: "Replace value", exact: true })
+    .click();
+  interrupt = "PATCH";
+  const replace = dialog(page, "Replace Secret value");
+  await replace.getByLabel("Value", { exact: true }).fill("synthetic-interrupted-replacement");
+  await replace.getByRole("button", { name: "Replace value", exact: true }).click();
+  await replace.getByText(/Outcome unknown/).waitFor();
+  assert.equal(await replace.getByLabel("Value", { exact: true }).inputValue(), "");
+  assert.equal(
+    await replace.getByRole("button", { name: "Replace value", exact: true }).isDisabled(),
+    true,
+  );
+  await replace.locator("form").evaluate((form) => {
+    form.requestSubmit();
+  });
+  assert.equal(
+    requests.filter(
+      (item) => item.method === "PATCH" && item.path.startsWith(secretPath(namespace)),
+    ).length,
+    1,
+  );
+  await replace.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Uncertain Secret", exact: true }).click();
+  await dialog(page, "Uncertain Secret")
+    .getByRole("button", { name: "Delete Secret", exact: true })
+    .click();
+  interrupt = "DELETE";
+  const remove = dialog(page, "Delete Secret");
+  await remove.getByRole("button", { name: "Permanently delete Secret", exact: true }).click();
+  await remove.getByText(/Outcome unknown/).waitFor();
+  await remove.getByRole("button", { name: "Check deletion status" }).click();
+  await remove.getByText(/Secret is no longer available/).waitFor();
+  assert.equal(
+    requests.filter(
+      (item) => item.method === "DELETE" && item.path.startsWith(secretPath(namespace)),
+    ).length,
+    1,
+  );
+});
+
+test("console Secret writes honor read-only access, revocation and a new Agent reference", async (t) => {
+  const audit = new InMemoryAuditSink();
+  const storage = createTestSecretDriver();
+  const fixture = await createConsoleAppFixture(t, {
+    auditSink: audit,
+    secretDriver: storage,
+    provisionedPeople: ["secret-reader"],
+  });
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Restricted operations", { ready: true });
+  const original = "synthetic-restricted-value";
+  const secret = await fixture.createSecret(namespace.id, "Shared credential", original);
+  const privateSecret = await fixture.createSecret(
+    namespace.id,
+    "Private consumers",
+    "synthetic-private-value",
+  );
+  const privateAgent = await fixture.createAgent(
+    namespace.id,
+    "Private Agent",
+    {},
+    { harnessAuth: { method: "api_key", source: privateSecret.ref } },
+  );
+  const [member] = fixture.provisionedAccounts;
+  const iam = `/namespaces/${namespace.id}/iam`;
+  async function grant(action, resourceKind, resourceId) {
+    const role = await fixture.request("POST", `${iam}/roles`, {
+      body: { permissions: [{ action, resourceKind }] },
+    });
+    assert.equal(role.status, 201, JSON.stringify(role.body));
+    const bindings = `${iam}/access-bindings`;
+    const binding = await fixture.request("POST", bindings, {
+      body: {
+        subjectKind: "identity",
+        subjectId: member.principal.id,
+        roleId: role.data.id,
+        resourceKind,
+        resourceId,
+      },
+    });
+    assert.equal(binding.status, 201, JSON.stringify(binding.body));
+    return `${bindings}/${binding.data.id}`;
+  }
+  await grant("read", "namespace", namespace.id);
+  await grant("read", "secret", privateSecret.id);
+  await grant("read", "secret", secret.id);
+  const { page } = await newPage(t, fixture, { browser });
+  await login(page, fixture, secretsUrl(namespace), member.credentials);
+  await page.getByRole("button", { name: privateSecret.name, exact: true }).click();
+  const privateDetail = dialog(page, privateSecret.name);
+  await privateDetail.getByText(/1 additional consumer/).waitFor();
+  assert.equal(await privateDetail.getByText(privateAgent.id, { exact: true }).count(), 0);
+  assert.equal(
+    await privateDetail.getByRole("button", { name: "Delete Secret", exact: true }).isDisabled(),
+    true,
+  );
+  await privateDetail.getByRole("button", { name: "Close" }).click();
+
+  // Match the browser's 403 to the exact IAM denial. A denial returned after a storage
+  // side effect would still look correct in the dialog, even if the write were then undone.
+  const form = page.getByRole("dialog");
+  const value = form.getByLabel("Value", { exact: true });
+  const collection = fixture.origin + secretPath(namespace);
+  async function expectDenied(name, method, action, storedValue = original) {
+    const creating = action === "create";
+    const url = creating ? collection : `${collection}/${secret.id}`;
+    const callCount = storage.calls.length;
+    const response = page.waitForResponse(
+      (result) => result.url() === url && result.request().method() === method,
+    );
+    const submit = form.getByRole("button", { name, exact: true });
+    await submit.click();
+    const refused = await response;
+    assert.equal(refused.status(), 403);
+    const { error, meta } = await refused.json();
+    assert.equal(error.code, "FORBIDDEN");
+    const denial = audit
+      .list()
+      .find((event) => event.requestId === meta.requestId && event.outcome === "denied");
+    assert.deepEqual(denial?.authorization, {
+      principalId: member.principal.id,
+      action,
+      resource: {
+        kind: "secret",
+        id: creating ? namespace.id : secret.id,
+        namespaceId: namespace.id,
+      },
+    });
+    assert.equal(
+      storage.calls.length,
+      callCount,
+      "a denied write must not reach the Secret Driver",
+    );
+    assert.equal(storage.valueFor(secret), storedValue);
+    await form.getByText(/Your access does not include/).waitFor();
+    assert.equal(await submit.isDisabled(), true);
+    if (method !== "DELETE") {
+      assert.equal(await value.inputValue(), "");
+    }
+    await form.getByRole("button", { name: "Close" }).click();
+  }
+  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await form.getByLabel("Secret name").fill("Reader cannot create this");
+  await value.fill("synthetic-denied-create");
+  await expectDenied("Create Secret", "POST", "create");
+
+  async function openAction(name) {
+    await page.getByRole("button", { name: secret.name, exact: true }).click();
+    await dialog(page, secret.name).getByRole("button", { name, exact: true }).click();
+  }
+  await openAction("Replace value");
+  await value.fill("synthetic-denied-replacement");
+  await expectDenied("Replace value", "PATCH", "update");
+  await openAction("Delete Secret");
+  await expectDenied("Permanently delete Secret", "DELETE", "delete");
+
+  // This member can now replace this Secret. Remove just that grant while the next edit is
+  // open: the same session and Secret must use the permission in effect when Save is pressed.
+  const updateGrant = await grant("update", "secret", secret.id);
+  const allowed = "synthetic-authorized-replacement";
+  await openAction("Replace value");
+  await value.fill(allowed);
+  await form.getByRole("button", { name: "Replace value", exact: true }).click();
+  await dialog(page, "Secret value replaced").getByRole("button", { name: "Close" }).click();
+  assert.equal(storage.valueFor(secret), allowed);
+
+  await openAction("Replace value");
+  await value.fill("synthetic-revoked-replacement");
+  assert.equal((await fixture.request("DELETE", updateGrant)).status, 204);
+  await expectDenied("Replace value", "PATCH", "update", allowed);
+
+  // Return to an administrator and read an unreferenced Secret, then race a valid Agent
+  // binding against its confirmation. The DELETE route must recheck dependencies.
+  await page.context().clearCookies();
+  await page.goto(fixture.origin + "/console/login");
+  await login(page, fixture, secretsUrl(namespace));
+  await page.getByRole("button", { name: secret.name, exact: true }).click();
+  await dialog(page, secret.name)
+    .getByRole("button", { name: "Delete Secret", exact: true })
+    .click();
+  await fixture.createAgent(
+    namespace.id,
+    "Concurrent consumer",
+    {},
+    { harnessAuth: { method: "api_key", source: secret.ref } },
+  );
+  await dialog(page, "Delete Secret")
+    .getByRole("button", { name: "Permanently delete Secret", exact: true })
+    .click();
+  await dialog(page, "Delete Secret")
+    .getByText(/Deletion is blocked/)
+    .waitFor();
+  assert.equal((await fixture.request("GET", `${secretPath(namespace)}/${secret.id}`)).status, 200);
+});
+
+test("pending Secret creation blocks navigation and replay, then session loss clears material", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Pending writes", { ready: true });
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, `/console/agents?namespace=${namespace.id}`);
+  await page.getByRole("link", { name: "Secrets", exact: true }).click();
+  const held = await holdRequests(t, page, `${fixture.origin}${secretPath(namespace)}`, {
+    method: "POST",
+    afterServer: true,
+    once: true,
+  });
+  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const create = dialog(page, "Create Secret");
+  await create.getByLabel("Secret name").fill("Pending credential");
+  await create.getByLabel("Value", { exact: true }).fill("synthetic-pending-value");
+  await create.getByRole("button", { name: "Create Secret", exact: true }).click();
+  await held.requested;
+  await page.keyboard.press("Escape");
+  assert.equal(await create.isVisible(), true);
+  assert.equal(await create.getByRole("button", { name: "Close" }).isDisabled(), true);
+  await create.locator("form").evaluate((form) => {
+    form.requestSubmit();
+  });
+  await page.goBack();
+  await page.waitForURL(new RegExp(`/console/secrets\\?namespace=${namespace.id}`));
+  await create.getByText(/Wait for the current request/).waitFor();
+  assert.equal(
+    requests.filter((item) => item.method === "POST" && item.path === secretPath(namespace)).length,
+    1,
+  );
+  held.release();
+  await dialog(page, "Secret created").getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { name: "Create Secret", exact: true }).click();
+  const value = dialog(page, "Create Secret").getByLabel("Value", { exact: true });
+  await value.fill("synthetic-unsaved-material");
+  // Revoke the actual browser session, then recheck. Neither a retained view nor storage
+  // may keep the new material after authentication ends.
+  await page.evaluate(async () => {
+    await fetch("/api/auth/sign-out", { method: "POST" });
+  });
+  await page.keyboard.press("Escape");
+  assert.equal(await value.count(), 0);
+  await page.getByRole("button", { name: "Refresh", exact: true }).click();
+  await page.getByRole("button", { name: "Sign in", exact: true }).waitFor();
+  assert.equal(await page.locator("[data-secret-value]").count(), 0);
+  assert.deepEqual(await consoleStorage(page), { local: {}, session: {} });
+});

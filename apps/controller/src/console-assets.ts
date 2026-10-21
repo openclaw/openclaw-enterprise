@@ -34,11 +34,13 @@ const CONSOLE_ASSETS = new Map([
     "image/vnd.microsoft.icon": ["favicon.ico"],
     "text/javascript; charset=utf-8": [
       "api-client.mjs",
+      "configuration-fields.mjs",
+      "driver-configurations.mjs",
       "view-lifetime.mjs",
       "navigation.mjs",
       "shell.mjs",
-      "branding.mjs",
       "namespaces.mjs",
+      "secrets.mjs",
       "runtime-images.mjs",
       "agents/list.mjs",
       "agents/collection.mjs",
@@ -104,6 +106,7 @@ const CONSOLE_SHELL_ROUTES = new Set([
   "/console/agents",
   "/console/backends",
   "/console/namespaces",
+  "/console/secrets",
   "/console/settings",
 ]);
 
@@ -133,7 +136,7 @@ export async function readConsoleAsset(
 ): Promise<ConsoleAsset> {
   if (pathname.startsWith("/console/theme/")) {
     const asset = theme?.assets.get(pathname);
-    if (asset === undefined) {
+    if (theme === undefined || asset === undefined) {
       return {
         body: Buffer.from("Theme asset not found.\n"),
         contentType: "text/plain; charset=utf-8",
@@ -143,10 +146,10 @@ export async function readConsoleAsset(
     if (!asset.contentType.startsWith("text/")) {
       return { ...asset, statusCode: 200 };
     }
-    let cache = encodedThemes.get(theme!);
+    let cache = encodedThemes.get(theme);
     if (cache === undefined) {
       cache = new Map();
-      encodedThemes.set(theme!, cache);
+      encodedThemes.set(theme, cache);
     }
     return encodedAsset(pathname, asset.body, asset.contentType, acceptEncoding, cache);
   }

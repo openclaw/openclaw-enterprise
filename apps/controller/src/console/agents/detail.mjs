@@ -1,4 +1,4 @@
-import { renderAgentSandboxPolicy } from "./sandbox-policy.mjs";
+import { renderAgentDriverConfigurations } from "../driver-configurations.mjs";
 import {
   button,
   element,
@@ -231,7 +231,7 @@ const PROBE_STATUS_DETAIL_TEXT = {
     "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
 };
 
-// A Codex check retried once, after a timeout or a transient failure, holds its second
+// A Codex check retried once, after a timeout or a reliability failure, holds its second
 // attempt's detail with this suffix; the advice is the same as for the bare token.
 const RETRIED_DETAIL_SUFFIX = "-attempt2";
 
@@ -3880,7 +3880,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     }
     if (tab === "policy") {
       state.reusable = false;
-      content.append(renderAgentSandboxPolicy(tabContext, { agent, revisionId: selected }));
+      content.append(renderAgentDriverConfigurations(tabContext, { agent, revisionId: selected }));
       state.loading = false;
       content.style.minHeight = "";
       return;

@@ -71,6 +71,8 @@ const disposeLimitsMs = {
 // wait for exits on its own first. The file must run under `node --test`, whose parent process
 // counts the file's results (node:test sets a failing exit code only once the event loop drains).
 const abandonedExitGraceMs = 2_000;
+// Set by `createWorkerRevisionFixtures`; the fixture's own exit tests pass a shorter grace.
+let exitGraceMs = abandonedExitGraceMs;
 let abandonedSteps = 0;
 let exitTimer;
 let exitHookAdded = false;
@@ -78,7 +80,7 @@ let exitHookAdded = false;
 function exitIfAbandoned() {
   if (abandonedSteps > 0) {
     // process.exit() keeps the exit code; the test runner reads results from its reports.
-    exitTimer ??= setTimeout(() => process.exit(), abandonedExitGraceMs).unref();
+    exitTimer ??= setTimeout(() => process.exit(), exitGraceMs).unref();
   }
 }
 
@@ -135,11 +137,16 @@ export async function disposeStep(step, limitMs, work) {
 }
 
 // Importing this helper registers no tests or hooks.
-// `exitBackstopMs` replaces the abandoned-step backstop for the fixture's own exit tests.
+// `exitGraceMs` and `exitBackstopMs` replace the abandoned-step grace and backstop for the
+// fixture's own exit tests.
 export function createWorkerRevisionFixtures(
   testFile,
-  { exitBackstopMs: backstopMs = abandonedExitBackstopMs } = {},
+  {
+    exitGraceMs: graceMs = abandonedExitGraceMs,
+    exitBackstopMs: backstopMs = abandonedExitBackstopMs,
+  } = {},
 ) {
+  exitGraceMs = graceMs;
   // The owning file registers this as a root after hook: `after(cleanup)`.
   function cleanup(context) {
     exitBackstopMs ??= backstopMs;
@@ -158,8 +165,9 @@ export function createWorkerRevisionFixtures(
     // that database: PostgreSQL refuses to copy a database that has sessions, and a write to it
     // would reach every later copy. Whoever prepared it drops it after the file. A copy holds the
     // CI state lock briefly, but a file's first test still waits for that lock while the runner
-    // migrates the files that start with it. Before, each file migrated a template of its own
-    // under the lock as well, and a 4 s first test took 10-30 s on CI (findings 1209, 1270).
+    // prepares the files that start with it. Those are copies of one migrated lane template
+    // since finding 2178; a migration per file there made a 4 s first test take 10-26 s on CI.
+    // Before that, each file also migrated a template of its own (findings 1209, 1270).
     assert.ok(
       process.env.OCC_TEST_DATABASE_URL,
       "Worker tests copy the database prepared for their file; see docs/testing/postgresql.md.",

@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test, { after } from "node:test";
+import test, { after, before } from "node:test";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
@@ -16,7 +16,10 @@ import {
 import { DEVELOPMENT_HARNESS_DESCRIPTOR } from "../../apps/controller/src/composition/production-harness.ts";
 import { kubernetesNamespaceName } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { createControllerWorker } from "../../apps/controller/src/worker.ts";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  ConfigurationValidationError,
+} from "../../packages/contracts/src/index.ts";
 import { captureChild, concurrencyLimit, settled } from "../helpers/child-processes.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { createInstallationDriverConfiguration as installation } from "../helpers/installation-driver-configuration.mjs";
@@ -55,9 +58,11 @@ const productionServer = {
 };
 
 // Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
-// the signal instead of reading as a wrong exit status.
+// the signal instead of reading as a wrong exit status. The timeout only guards against a
+// process that never exits: every boot here ends in a startup refusal within a second or two
+// on an idle machine, and on a loaded runner the same boot took more than 10 s.
 const limit = concurrencyLimit();
-async function boot(script, env, timeout = 10_000) {
+async function boot(script, env, timeout = 30_000) {
   const { signal, ...result } = await limit(() =>
     captureChild(process.execPath, [script], {
       cwd: process.cwd(),
@@ -70,6 +75,45 @@ async function boot(script, env, timeout = 10_000) {
   }
   return result;
 }
+
+// Warm the compile cache with one API and one worker boot through production startup to the
+// database connection, the furthest any case here goes. Node writes a cold cache when a process
+// exits, and the first test starts all its boots at once: each one compiled the whole graph and
+// spent seconds writing the same cache at exit, so on a loaded runner the valid case's API had
+// logged its startup error but had not exited within its 15 s budget.
+before(async () => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-installation-warm-"));
+  try {
+    const path = join(directory, "installation.yaml");
+    await writeFile(path, JSON.stringify(installation()), "utf8");
+    const env = {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: path,
+      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+    };
+    const [server, worker] = await settled([
+      boot("apps/controller/src/server.mjs", { ...env, ...productionServer }),
+      boot("apps/controller/src/worker.mjs", env),
+    ]);
+    // A boot that stopped earlier would leave the composition modules uncached.
+    const warmUp = "compile-cache warm-up";
+    assert.equal(server.status, 1, warmUp);
+    assert.equal(
+      startupDiagnostic(server.stderr, "startup-error").code,
+      "PERSISTENCE_UNAVAILABLE",
+      warmUp,
+    );
+    assert.equal(worker.status, 1, warmUp);
+    assert.equal(
+      startupDiagnostic(worker.stderr, "worker.startup-error").code,
+      "PERSISTENCE_UNAVAILABLE",
+      warmUp,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 async function fixture(t, configuration = installation()) {
   const directory = await mkdtemp(join(tmpdir(), "occ-installation-startup-"));
@@ -194,6 +238,116 @@ test("Installation startup validates the optional external observability URL", a
   );
 });
 
+test("API, worker, and Helm hook report safe field diagnostics before persistence", async (t) => {
+  for (const [mutate, details] of [
+    [
+      (configuration) => {
+        configuration.drivers.compute.configuration.authentication = {
+          mode: "kubeconfig",
+          kubeconfigPath: "/etc/kube/config",
+        };
+      },
+      [
+        {
+          path: "/authentication/context",
+          code: "REQUIRED",
+          message: "Explicit Kubernetes context must be explicitly configured.",
+        },
+      ],
+    ],
+    [
+      (configuration) => {
+        configuration.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+      },
+      [
+        {
+          path: "/runtime/gatewayStorageClassName",
+          code: "INVALID_FORMAT",
+          message:
+            "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+        },
+      ],
+    ],
+    [
+      (configuration) => {
+        configuration.sandboxNetworkPolicyCeiling = {};
+      },
+      [
+        {
+          path: "/sandboxNetworkPolicyCeiling",
+          code: "INVALID_TYPE",
+          message: "Configuration does not satisfy type.",
+        },
+      ],
+    ],
+    [
+      (configuration) => {
+        configuration.sandboxNetworkPolicyCeiling = [
+          {
+            id: "ceiling-control",
+            binary: "/usr/bin/python3.11",
+            host: "ceiling.example.test",
+            ports: [{ from: 444, to: 443 }],
+          },
+        ];
+      },
+      [
+        {
+          path: "/sandboxNetworkPolicyCeiling/0/ports/0/to",
+          code: "INVALID_RANGE",
+          message: "The end port must be at least the start port.",
+        },
+      ],
+    ],
+  ]) {
+    const configuration = installation();
+    configuration.occ.cluster = "production-west";
+    mutate(configuration);
+    const path = await fixture(t, configuration);
+    const environment = {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: path,
+      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+      OCC_HOST: "192.0.2.10",
+      OCC_PORT: "8080",
+      OCC_AUTH_SECRET: "production-auth-secret-with-at-least-32-characters",
+      OCC_AUTH_BASE_URL: "https://console.example.test",
+    };
+    // All three entrypoints reject before persistence. Ceiling errors must name
+    // the Installation input, including its array index, rather than the Agent wrapper.
+    await settled(
+      [
+        ["apps/controller/src/server.mjs", "startup-error"],
+        ["apps/controller/src/worker.mjs", "worker.startup-error"],
+        ["deploy/helm/openclaw-enterprise/files/check-installation.mjs", null],
+      ].map(async ([script, event]) => {
+        const result = await boot(script, environment, 15_000);
+        assert.equal(result.status, 1);
+        if (event === null) {
+          assert.match(result.stderr, /^installation-check:.*DRIVER_CONFIGURATION_INVALID: /);
+        }
+        const diagnostic =
+          event === null
+            ? {
+                code: "DRIVER_CONFIGURATION_INVALID",
+                details: JSON.parse(
+                  result.stderr.trim().split("DRIVER_CONFIGURATION_INVALID: ")[1],
+                ),
+              }
+            : startupDiagnostic(result.stderr, event);
+        assert.equal(diagnostic.code, "DRIVER_CONFIGURATION_INVALID");
+        assert.deepEqual(diagnostic.details, details);
+        assert.ok(!result.stderr.includes(path));
+        assert.doesNotMatch(
+          result.stderr,
+          /Bad_Class|ceiling\.example\.test|\/additions|PERSISTENCE_UNAVAILABLE/,
+        );
+      }),
+    );
+  }
+});
+
 test("API and worker refuse a bad observability host or runtime image before opening PostgreSQL", async (t) => {
   const configuration = installation();
   configuration.occ.cluster = "production-west";
@@ -218,11 +372,11 @@ test("API and worker refuse a bad observability host or runtime image before ope
     ],
     ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
   ];
-  // Each case boots both processes on its own copy of the file, concurrently.
+  // Each real case boots both processes on its own copy of the file, concurrently.
   const refuses = async (file, code, label) =>
     settled(
       processes.map(async ([script, event, env]) => {
-        const result = await boot(script, { ...env, OCC_CONFIG_PATH: file }, 15_000);
+        const result = await boot(script, { ...env, OCC_CONFIG_PATH: file });
         assert.equal(result.status, 1, script);
         assert.ok(!result.stderr.includes(file), result.stderr);
         const diagnostic = startupDiagnostic(result.stderr, event);
@@ -230,49 +384,125 @@ test("API and worker refuse a bad observability host or runtime image before ope
         return diagnostic;
       }),
     );
+  // One real pair per refusal message the startup code mappings tell apart: the first input
+  // of each family. Its other inputs go through the loader both processes call with the file
+  // (production mode) before they open PostgreSQL; the message is what maps to the code.
   const cases = [];
-  for (const shorthand of [
-    "http://192.168.1",
-    "http://2130706433",
-    "http://@192.168.1.1",
-    "http://@grafana.example.internal/d",
-    syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
-    "javascript:alert(1)",
-    "http://good.example\tevil.com/x",
-    "http://evil.com\\.good.example/path",
-    "http://good.example\nevil.com/x",
-  ]) {
-    configuration.observability = { url: shorthand };
-    cases.push(
-      fixture(t, structuredClone(configuration)).then(async (copy) => {
-        for (const diagnostic of await refuses(copy, "OBSERVABILITY_URL_INVALID", shorthand)) {
-          assert.equal(diagnostic.message, undefined, shorthand);
-        }
-      }),
-    );
-  }
-  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
-  // other reference its parser refuses, such as one with .. in the path.
-  configuration.observability = { url: "http://192.168.1.1" };
-  const images = configuration.drivers.compute.configuration.images;
-  for (const role of ["gateway", "agent"]) {
-    const original = images[role];
-    for (const refused of [
-      original.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase()),
-      original.replace(/^([^/]*\/)/, "$1re..po/"),
-    ]) {
-      assert.notEqual(refused, original);
-      images[role] = refused;
+  const check = (code, inputs) => {
+    for (const [index, [label, message, apply]] of inputs.entries()) {
+      apply();
       cases.push(
         fixture(t, structuredClone(configuration)).then(async (copy) => {
-          for (const diagnostic of await refuses(copy, "RUNTIME_IMAGE_INVALID", refused)) {
-            assert.equal(diagnostic.message, undefined, refused);
+          if (index > 0) {
+            await assert.rejects(
+              loadInstallationConfiguration({
+                mode: "production",
+                environment: { OCC_CONFIG_PATH: copy },
+              }),
+              Array.isArray(message)
+                ? (error) => {
+                    assert.ok(error instanceof ConfigurationValidationError, label);
+                    assert.deepEqual(error.error.details, message, label);
+                    return true;
+                  }
+                : message,
+              label,
+            );
+            return;
+          }
+          for (const diagnostic of await refuses(copy, code, label)) {
+            assert.equal(diagnostic.message, undefined, label);
+            if (Array.isArray(message)) {
+              assert.deepEqual(diagnostic.details, message, label);
+            }
           }
         }),
       );
     }
-    images[role] = original;
+  };
+  for (const [message, urls] of [
+    [
+      /observability\.url IPv4 host must be four decimal octets/,
+      ["http://192.168.1", "http://2130706433"],
+    ],
+    [
+      /observability\.url must not contain user info/,
+      ["http://@grafana.example.internal/d", "http://@192.168.1.1"],
+    ],
+    [
+      /observability\.url must be an absolute HTTP/,
+      [
+        "javascript:alert(1)",
+        syntheticCredentialUrl({
+          username: "user",
+          password: "",
+          host: "grafana.example.internal",
+        }),
+      ],
+    ],
+    [
+      /observability\.url must not contain a tab/,
+      [
+        "http://good.example\tevil.com/x",
+        "http://evil.com\\.good.example/path",
+        "http://good.example\nevil.com/x",
+      ],
+    ],
+  ]) {
+    check(
+      "OBSERVABILITY_URL_INVALID",
+      urls.map((url) => [
+        url,
+        message,
+        () => {
+          configuration.observability = { url };
+        },
+      ]),
+    );
   }
+  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
+  // other reference its parser refuses, such as one with .. in the path. The real pairs take
+  // a Gateway image for one message and an Agent image for the other.
+  configuration.observability = { url: "http://192.168.1.1" };
+  const images = configuration.drivers.compute.configuration.images;
+  const original = { ...images };
+  const uppercase = (image) =>
+    image.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase());
+  const dotted = (image) => image.replace(/^([^/]*\/)/, "$1re..po/");
+  const refusedImage = (role, refuse, message) => [
+    `${role} ${refuse(original[role])}`,
+    [{ path: `/images/${role}`, code: "INVALID_FORMAT", message }],
+    () => {
+      Object.assign(images, original);
+      images[role] = refuse(original[role]);
+      assert.notEqual(images[role], original[role]);
+    },
+  ];
+  check("DRIVER_CONFIGURATION_INVALID", [
+    refusedImage(
+      "gateway",
+      uppercase,
+      "Gateway image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.",
+    ),
+    refusedImage(
+      "agent",
+      uppercase,
+      "Agent image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.",
+    ),
+  ]);
+  check("DRIVER_CONFIGURATION_INVALID", [
+    refusedImage(
+      "agent",
+      dotted,
+      "Agent image must be a container image reference Kubernetes can pull.",
+    ),
+    refusedImage(
+      "gateway",
+      dotted,
+      "Gateway image must be a container image reference Kubernetes can pull.",
+    ),
+  ]);
+  Object.assign(images, original);
   configuration.observability = { url: "http://192.168.1.1" };
   cases.push(
     writeFile(path, JSON.stringify(configuration), "utf8").then(() =>
@@ -1201,6 +1431,9 @@ test("startup rejects caller-selected Installation IDs and obsolete Driver selec
 });
 
 test("startup rejects plaintext secrets, caller-authored identities, and unsupported schema options", async (t) => {
+  const refusal = (path, code, message) => [{ path, code, message }];
+  const structural = (path, keyword, code = "INVALID_VALUE") =>
+    refusal(path, code, `Configuration does not satisfy ${keyword}.`);
   for (const [mutate, expected] of [
     [(value) => (value.drivers.compute.configuration.apiKey = "plaintext"), /plaintext credential/],
     [
@@ -1210,12 +1443,24 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
     [
       (value) =>
         (value.drivers.configuration.configuration.authentication = { mode: "kubeconfig" }),
-      /schema|authentication/,
+      [
+        ...structural("/authentication/mode", "const"),
+        ...refusal(
+          "/authentication/kubeconfigPath",
+          "REQUIRED",
+          "This configuration field is required.",
+        ),
+        ...refusal("/authentication/context", "REQUIRED", "This configuration field is required."),
+        ...structural("/authentication", "oneOf"),
+      ],
     ],
-    [(value) => (value.drivers.iam.configuration.unexpected = true), /schema|unsupported option/],
+    [
+      (value) => (value.drivers.iam.configuration.unexpected = true),
+      structural("", "additionalProperties", "UNKNOWN_FIELD"),
+    ],
     [
       (value) => (value.drivers.compute.configuration.resources.gateway.unexpected = true),
-      /schema|unsupported option/,
+      structural("/resources/gateway", "additionalProperties", "UNKNOWN_FIELD"),
     ],
     [
       (value) => (value.drivers.compute.configuration.images.requireImmutableDigest = false),
@@ -1224,17 +1469,25 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
     [
       (value) =>
         (value.drivers.compute.configuration.network.gatewayPort = Number.MAX_SAFE_INTEGER + 1),
-      /schema|integer|port/,
+      /network\.gatewayPort must be a safe integer\.$/,
     ],
     [
       (value) =>
         (value.drivers.compute.configuration.images.gateway = "registry.example/gateway:latest"),
-      /immutable SHA-256 digest/,
+      refusal(
+        "/images/gateway",
+        "INVALID_FORMAT",
+        "Gateway image must use an immutable SHA-256 digest.",
+      ),
     ],
     [
       (value) =>
         (value.drivers.compute.configuration.images.agent = "registry.example/agent:latest"),
-      /immutable SHA-256 digest/,
+      refusal(
+        "/images/agent",
+        "INVALID_FORMAT",
+        "Agent image must use an immutable SHA-256 digest.",
+      ),
     ],
     [
       (value) => delete value.drivers.compute.configuration.runtime,
@@ -1244,7 +1497,7 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
       (value) =>
         (value.drivers.compute.configuration.runtime.modelSecretPrefix =
           value.drivers.compute.configuration.runtime.transportSecretPrefix),
-      /schema|unsupported option/,
+      structural("/runtime", "additionalProperties", "UNKNOWN_FIELD"),
     ],
     // The reader refuses these anywhere in the file, before any Driver schema runs.
     [
@@ -1267,7 +1520,15 @@ test("startup rejects plaintext secrets, caller-authored identities, and unsuppo
         mode: "production",
         environment: { OCC_CONFIG_PATH: await fixture(t, configuration) },
       }),
-      expected,
+      (error) => {
+        if (expected instanceof RegExp) {
+          assert.match(error.message, expected);
+        } else {
+          assert.ok(error instanceof ConfigurationValidationError);
+          assert.deepEqual(error.error.details, expected);
+        }
+        return true;
+      },
     );
   }
 });

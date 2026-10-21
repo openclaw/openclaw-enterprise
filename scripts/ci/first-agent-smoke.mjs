@@ -38,7 +38,41 @@ const workDirectory = resolve(
   process.env.OCC_FIRST_AGENT_SMOKE_DIRECTORY ??
     join(process.env.RUNNER_TEMP ?? "/tmp", "first-agent-smoke"),
 );
-const registry = "127.0.0.1:5000";
+// OCC_FIRST_AGENT_SMOKE_SLOT (0-31, default 0) picks this run's host-wide names,
+// port and subnet, so concurrent smokes on one Docker host do not collide.
+// Unset, empty and 0 keep the names CI uses.
+export function smokeSlotNames(value) {
+  value ||= "0";
+  if (!/^(?:0|[1-9][0-9]?)$/.test(value) || Number(value) > 31) {
+    throw new Error(
+      `OCC_FIRST_AGENT_SMOKE_SLOT must be an integer from 0 to 31, got ${JSON.stringify(value)}`,
+    );
+  }
+  const slot = Number(value);
+  if (slot === 0) {
+    return {
+      cluster: "occ-dev-first-agent-smoke",
+      registryContainer: "oce-first-agent-smoke-registry",
+      registry: "127.0.0.1:5000",
+      model: "oce-first-agent-smoke-model",
+      subnet: "11.111.0.0/29",
+      modelAddress: "11.111.0.2",
+      nodeModelAddress: "11.111.0.3",
+    };
+  }
+  const base = 8 * slot;
+  return {
+    cluster: `occ-dev-smoke-s${slot}`,
+    registryContainer: `oce-smoke-s${slot}-registry`,
+    registry: `127.0.0.1:${15000 + slot}`,
+    model: `oce-smoke-s${slot}-model`,
+    subnet: `11.111.0.${base}/29`,
+    modelAddress: `11.111.0.${base + 2}`,
+    nodeModelAddress: `11.111.0.${base + 3}`,
+  };
+}
+const slotNames = smokeSlotNames(process.env.OCC_FIRST_AGENT_SMOKE_SLOT);
+const registry = slotNames.registry;
 // Pinned like tests/integration/container-registry-real.test.mjs.
 const registryImage =
   "docker.io/library/registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373";
@@ -48,10 +82,10 @@ const nodeBaseImage =
 // and OpenClaw refuses provider addresses in private or special-use ranges. The
 // stand-in provider therefore uses a globally routable address, reachable only
 // on this host's Docker network; nothing outside the runner is contacted.
-const modelNetwork = { name: "oce-first-agent-smoke-model", subnet: "11.111.0.0/29" };
-const modelAddress = "11.111.0.2";
-const nodeModelAddress = "11.111.0.3";
-const modelContainer = "oce-first-agent-smoke-model";
+const modelNetwork = { name: slotNames.model, subnet: slotNames.subnet };
+const modelAddress = slotNames.modelAddress;
+const nodeModelAddress = slotNames.nodeModelAddress;
+const modelContainer = slotNames.model;
 const noncePattern = "OCE_SMOKE_[A-Za-z0-9-]+|FIRST_AGENT_[A-Za-z0-9-]+";
 const minute = 60_000;
 // Both stop requests share one serial worker. Per Agent, allow the selected
@@ -297,7 +331,7 @@ async function buildImages() {
       "run",
       "--detach",
       "--name",
-      "oce-first-agent-smoke-registry",
+      slotNames.registryContainer,
       "--publish",
       `${registry}:5000`,
       registryImage,
@@ -419,7 +453,7 @@ function createApi(origin, key) {
   };
 }
 
-const clusterName = "occ-dev-first-agent-smoke";
+const clusterName = slotNames.cluster;
 const watchLog = join(workDirectory, "cluster-watch.log");
 
 // `occ dev up` deletes its cluster when a step fails, so record what the
@@ -559,7 +593,7 @@ function kubectl(stack, args, options = {}) {
 // Answer api.openai.com inside the cluster with the stand-in provider. Agent
 // Pods reach it through their ordinary model egress NetworkPolicy and verify
 // its certificate against the CA added to the runtime image.
-async function routeModelProvider(stack, modelDirectory, runtimeImage) {
+async function routeModelProvider(stack, modelDirectory, runtimeImage, credentialDigests) {
   await run("docker", ["network", "create", "--subnet", modelNetwork.subnet, modelNetwork.name]);
   // Fixed addresses: Docker would otherwise give the node the provider's address.
   await run("docker", [
@@ -570,7 +604,7 @@ async function routeModelProvider(stack, modelDirectory, runtimeImage) {
     modelNetwork.name,
     `k3d-${stack.state.cluster}-server-0`,
   ]);
-  await run("docker", [
+  const providerArgs = [
     "run",
     "--detach",
     "--name",
@@ -590,12 +624,17 @@ async function routeModelProvider(stack, modelDirectory, runtimeImage) {
     "--env",
     `PROBE_ENDPOINT_ECHO_PATTERN=${noncePattern}`,
     "--env",
+    "PROBE_ENDPOINT_CREDENTIAL_DIGESTS",
+    "--env",
     "PROBE_PUBLIC_READ_JOURNEY=1",
     "--entrypoint",
     "node",
     runtimeImage,
     "/fixture/endpoint.mjs",
-  ]);
+  ];
+  await run("docker", providerArgs, {
+    env: { ...process.env, PROBE_ENDPOINT_CREDENTIAL_DIGESTS: JSON.stringify(credentialDigests) },
+  });
   await waitFor(
     "the stand-in provider to listen",
     async () => ({ done: (await modelEvents()).some(({ event }) => event === "listening") }),
@@ -685,12 +724,15 @@ async function modelEvents() {
 
 async function assertModelAnswered(nonce, label) {
   const events = await modelEvents();
-  const answered = events.filter(({ event, text }) => event === "turn-answered" && text === nonce);
-  assert.ok(
-    answered.length > 0,
-    `${label}: the stand-in provider never answered ${nonce}; the reply did not come from a model turn`,
+  const answered = events.find(
+    ({ event, status, text, caller }) =>
+      event === "turn-answered" && status === 200 && text === nonce && caller === label,
   );
-  return answered[0].transport;
+  assert.ok(
+    answered,
+    `${label}: the stand-in provider never answered ${nonce} with this Agent's credential`,
+  );
+  return answered.transport;
 }
 
 function cli(stack, args, options = {}) {
@@ -874,7 +916,7 @@ async function deployAgent(stack, agent) {
   return revision.id;
 }
 
-async function runFirstAgent(stack) {
+async function runFirstAgent(stack, modelCredential) {
   const { stdout } = await run(
     process.execPath,
     [join(root, "scripts/first-agent.mjs"), "smoke-embedded"],
@@ -884,7 +926,7 @@ async function runFirstAgent(stack) {
         OCC_DEVELOPMENT_STATE_DIRECTORY: stack.directory,
         OCC_SERVICE_KEY_FILE: stack.keyPath,
         OCC_URL: stack.origin,
-        OPENAI_API_KEY: `sk-oce-smoke-${randomUUID()}`,
+        OPENAI_API_KEY: modelCredential,
       },
       timeout: 15 * minute,
       label: "first-agent",
@@ -907,11 +949,11 @@ async function runFirstAgent(stack) {
 // The dedicated Codex Agent follows the console's API path: a Namespace Secret
 // for the model key, an exact operate grant for the Agent's service principal,
 // transport credentials, then deployment.
-async function createCodexAgent(stack, reader, label = "codex") {
+async function createCodexAgent(stack, reader, label, modelCredential) {
   const base = `/namespaces/${stack.namespaceId}`;
   const secret = await stack.api("POST", `${base}/secrets`, {
     name: `smoke-codex-${randomUUID()}`,
-    value: `sk-oce-smoke-${randomUUID()}`,
+    value: modelCredential,
   });
   const values = createHarnessConfiguration("codex", defaultAgentModel);
   if (reader) {
@@ -1540,6 +1582,15 @@ async function smoke() {
     OCC_DEVELOPMENT_STARTUP_TIMEOUT_SECONDS: "900",
   };
   delete environment.OPENAI_API_KEY;
+  const modelCredentials = Object.fromEntries(
+    ["embedded", "codex", "reader-control"].map((label) => [label, `sk-oce-smoke-${randomUUID()}`]),
+  );
+  const credentialDigests = Object.fromEntries(
+    Object.entries(modelCredentials).map(([label, value]) => [
+      label,
+      createHash("sha256").update(value).digest("hex"),
+    ]),
+  );
   let stack;
   try {
     stack = await step("Local Setup (occ dev up)", () => startLocalSetup(environment));
@@ -1551,14 +1602,23 @@ async function smoke() {
       enablePublicReader(stack),
     );
     await step("route api.openai.com to the stand-in provider", () =>
-      routeModelProvider(stack, modelDirectory, process.env.OCC_KUBERNETES_RUNTIME_IMAGE),
+      routeModelProvider(
+        stack,
+        modelDirectory,
+        process.env.OCC_KUBERNETES_RUNTIME_IMAGE,
+        credentialDigests,
+      ),
     );
     // The two Agents are independent; deploy them together to bound CI time.
     const [embedded, codex, control] = await Promise.all([
-      step("embedded OpenClaw Agent via scripts/first-agent.mjs", () => runFirstAgent(stack)),
-      step("dedicated Codex Agent via the API", () => createCodexAgent(stack, reader)),
+      step("embedded OpenClaw Agent via scripts/first-agent.mjs", () =>
+        runFirstAgent(stack, modelCredentials.embedded),
+      ),
+      step("dedicated Codex Agent via the API", () =>
+        createCodexAgent(stack, reader, "codex", modelCredentials.codex),
+      ),
       step("selected reader control via the API", () =>
-        createCodexAgent(stack, reader, "reader-control"),
+        createCodexAgent(stack, reader, "reader-control", modelCredentials["reader-control"]),
       ),
     ]);
     await step("dedicated Codex chat turn", () => chatTurn(stack, codex.agent, codex.revisionId));

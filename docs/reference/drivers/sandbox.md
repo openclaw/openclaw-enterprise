@@ -114,7 +114,12 @@ retirement must find the provider resource even if that Pod is already gone.
 
 ## Optional network policy operations
 
-`networkPolicy` declares `wildcards`, `portRanges`, and `live` support.
+`networkPolicy` declares `wildcards`, `portRanges`, and `live` support. An
+implementation advertising it must declare the configuration contribution
+`{ scope: "agent", key: "sandbox-network-policy" }` for `{ additions }`, using the
+[shared definition contract](selection.md#configuration-definitions-and-discovery).
+OCC resolves it through the registry before admission. Expected provider refusals
+throw the shared `ConfigurationValidationError` with safe `error.details`.
 `admitNetworkPolicy(additions, version, defaults?)` validates every requested
 constraint and returns a detached snapshot of Driver identity, version, defaults,
 and additions. The snapshot is consumed by provisioning; changed startup defaults

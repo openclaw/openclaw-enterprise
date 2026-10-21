@@ -1,5 +1,6 @@
 export const pages = Object.freeze({
   agents: "Agents",
+  secrets: "Secrets",
   backends: "Backends",
   namespaces: "Namespaces",
   settings: "Settings",

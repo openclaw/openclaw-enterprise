@@ -14,8 +14,8 @@ export const DELETION_POLL_MS = 3000;
 export const DELETE_CONFIRMATION =
   "This permanently deletes the Agent, its version history, and its workspace data. This cannot be undone.";
 
-// Agent deletion keeps the Configuration and model credential Secret, even ones Create Agent made
-// for this Agent, and the console cannot list or delete them, so name them and the commands.
+// Agent deletion keeps Namespace-owned Configuration and Secret records, including ones created
+// with this Agent. Keep their exact IDs and CLI cleanup commands beside the destructive action.
 export function keptResourcesText(agent) {
   const source = agent.harnessAuth?.source;
   if (source?.kind !== "secret") {

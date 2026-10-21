@@ -322,7 +322,7 @@ async function discoverUnder(root, relativeRoot, files) {
     const relativePath = relative(root, absolutePath).split(sep).join("/");
     if (entry.isDirectory()) {
       await discoverUnder(root, relativePath, files);
-    } else if (entry.isFile() && entry.name.endsWith(".test.mjs")) {
+    } else if (entry.isFile() && /\.test\.(?:mjs|ts)$/.test(entry.name)) {
       files.push(relativePath);
     }
   }

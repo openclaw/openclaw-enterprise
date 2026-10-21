@@ -218,8 +218,9 @@ version. See [Stop and resume](../../reference/agents/deployment.md#stop-and-res
 **Permanently delete Agent** irreversibly removes the Agent, version history,
 and workspace data; Namespace Configurations and Secrets remain. The dialog
 gives the commands that delete the Agent's Configuration and, if it has one, its
-model credential Secret: both are kept even when Create Agent made them, and the
-console cannot list or delete them. Exact Agent
+model credential Secret: both are kept even when Create Agent made them.
+Secrets can also be inspected and deleted from the [Secrets page](secrets.md)
+once their references are cleared; Configuration cleanup uses the CLI. Exact Agent
 `delete` permission is required. Accepted deletion starts asynchronous cleanup;
 the page checks it every few seconds and returns to Agents once the Agent is gone.
 **Refresh deletion status** checks it immediately. **Request deletion again**

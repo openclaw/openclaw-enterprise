@@ -7,6 +7,7 @@
     "tests/integration/ci-prepare-k3d.test.mjs",
     "tests/integration/ci-prepare.test.mjs",
     "tests/conformance/repository-credentials-source-boundary.test.mjs",
+    "tests/conformance/startup-environment-boundary.test.mjs",
     "tests/integration/repository-credentials-admission.test.mjs",
     "tests/conformance/ssh-compute.test.mjs",
     "tests/conformance/module-boundaries.test.mjs",
@@ -23,6 +24,7 @@
     "tests/integration/container-release.test.mjs",
     "tests/integration/password-sign-in-audit.test.mjs",
     "tests/integration/ci-impact-gate.test.mjs",
+    "tests/integration/console-theme.test.ts",
     "tests/integration/workspace-setup-api.test.mjs",
     "tests/integration/agent-create-validate-api.test.mjs",
     "tests/integration/repository-credentials-service-loss.test.mjs",
@@ -298,6 +300,9 @@
       ]
     },
     {
+      "path": "tests/integration/console-theme.test.ts"
+    },
+    {
       "path": "tests/integration/workspace-setup-api.test.mjs"
     },
     {
@@ -305,6 +310,9 @@
     },
     {
       "path": "tests/conformance/repository-credentials-source-boundary.test.mjs"
+    },
+    {
+      "path": "tests/conformance/startup-environment-boundary.test.mjs"
     },
     {
       "path": "tests/conformance/repository-credentials-contracts.test.mjs"

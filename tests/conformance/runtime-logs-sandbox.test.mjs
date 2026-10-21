@@ -152,6 +152,18 @@ function openShellSandboxDriver(gatewayClient) {
   );
 }
 
+// Match production composition: policy-capable Drivers require their configuration definition.
+function driverConfigurations(driver) {
+  return [
+    {
+      capability: "sandbox",
+      driverId: driver.id,
+      implementation: driver.implementation,
+      definition: OpenShellSandboxDriver,
+    },
+  ];
+}
+
 /** The shared app's cursor key; tests that forge earlier cursor formats sign with it. */
 const CURSOR_SECRET = "disposable-runtime-log-cursor-secret-32";
 /** The running test's gateway client and Driver identity override. */
@@ -178,6 +190,7 @@ function sandboxApp() {
     return createRuntimeLogFixture({
       computeDriver: createRuntimeLogComputeDriver({ sandboxNamespace: SANDBOX_NAMESPACE }),
       sandboxDriver,
+      driverConfigurations: driverConfigurations(sandboxDriver),
       agentRuntimeLogs: { enabled: true, cursorSecret: CURSOR_SECRET },
     });
   })();
@@ -644,7 +657,11 @@ async function harnessFixture(label, checks) {
     checks,
   });
   const sandboxDriver = openShellSandboxDriver(gateway.client);
-  const fixture = await createRuntimeLogFixture({ computeDriver, sandboxDriver });
+  const fixture = await createRuntimeLogFixture({
+    computeDriver,
+    sandboxDriver,
+    driverConfigurations: driverConfigurations(sandboxDriver),
+  });
   const target = await fixture.deployAgent(label);
   const diagnosticsPath = target.runtimePath.replace(/\/runtime$/, "/diagnostics");
   return { gateway, sandboxDriver, fixture, target, diagnosticsPath };
@@ -1183,8 +1200,11 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
   assert.equal(page.truncated, true);
   assert.ok(delivered > 300 && delivered < 1000, `${delivered} lines delivered`);
   assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
+  // Policy decisions sanitize cheaply, so the cut's fixed per-line work (validation,
+  // line hashes, serialization) is about one more sanitization: a cut costs 2-3x one.
+  // Sanitizing again for each binary-search candidate costs about 9x.
   assert.ok(
-    cut < 2.5 * once,
+    cut < 4 * once,
     `the cut page took ${cut.toFixed(0)} ms of CPU; one sanitization takes ${once.toFixed(0)} ms`,
   );
 });

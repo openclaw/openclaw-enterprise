@@ -45,6 +45,7 @@
 
 ### Installation
 
+- [`discoverInstallationConfigurations`](../api.md#get-installationdriverconfigurations): Inspect selected Driver startup configuration schemas.
 - [`getInstallation`](../api.md#get-installation): Get the singleton Installation.
 - [`getInstallationDeploymentInventory`](../api.md#get-installationdeploymentinventory): Get the complete authorized Agent deployment inventory.
 - [`getObservability`](../api.md#get-observability): Get the configured external observability destination.
@@ -63,6 +64,7 @@
 - [`listAgentRepositoryOptions`](../api.md#get-namespacesnamespaceidagentsagentidrepositoryoptions): List approved repository choices for updating one Agent.
 - [`listAgents`](../api.md#get-namespacesnamespaceidagents): List authorized Agents in one exact Namespace.
 - [`listRepositoryOptions`](../api.md#get-namespacesnamespaceidagentsrepositoryoptions): List approved repository choices for Agent creation in one Namespace.
+- [`discoverAgentConfigurations`](../api.md#get-namespacesnamespaceidagentsagentiddriverconfigurations): Discover authorized Agent Driver configuration contributions.
 - [`getAgent`](../api.md#get-namespacesnamespaceidagentsagentid): Get an exact Namespace-owned Agent.
 - [`getAgentCallerPermissions`](../api.md#get-namespacesnamespaceidagentsagentidpermissions): Report advisory primary IAM permissions on a readable Agent, not authorization for a later operation.
 - [`getAgentCredentialWithdrawal`](../api.md#get-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdrawal): Get the withdrawal state of a credential source for an Agent.
@@ -92,6 +94,7 @@
 - [`startSavedAgentDeviceAuthorization`](../api.md#post-namespacesnamespaceidagentsagentiddeviceauthorizations): Experimental: Start a private device login for Agent configuration.
 - [`stopAgent`](../api.md#post-namespacesnamespaceidagentsagentidstop): Stop one Agent and keep its saved Agent revision and persistent state.
 - [`validateAgentCreate`](../api.md#post-namespacesnamespaceidagentsvalidate): Check an unsaved Agent Configuration, plugin selections and initial workspace files as Configuration and Agent create would, without saving anything.
+- [`validateAgentSandboxPolicy`](../api.md#post-namespacesnamespaceidagentsagentidsandboxpolicyfacetvalidate): Preview Agent network policy admission without saving or applying.
 - [`withdrawAgentCredentialSource`](../api.md#post-namespacesnamespaceidagentsagentidcredentialsourcescredentialsourceidwithdraw): Revoke one credential source from the selected Agent revision.
 - [`getAgentNativeAdmin`](../api.md#get-namespacesnamespaceidagentsagentidnativeadmin): Resolve native admin UI launch availability for one Agent.
 - [`cancelAgentDeviceAuthorization`](../api.md#delete-namespacesnamespaceidagentsdeviceauthorizationssecretid): Experimental: Discard a local device login without upstream revocation.
