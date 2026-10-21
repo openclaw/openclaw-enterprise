@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
@@ -12,8 +13,13 @@ import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare
 // killed. scripts/ci/prepare.mjs and cleanup.mjs still start every command as a real
 // process and own its timeouts, signals and pipes; only the scenario logic below runs in
 // the test process, so a command costs a bash start instead of a node start.
+//
+// Any local user can connect to a loopback port, so the two sides authenticate each
+// other with per-server random tokens that only the fixture's private (0700) shims hold:
+// the server runs nothing for a client that does not open with its client token, and a
+// shim evaluates nothing from a listener that does not answer with the server token.
+// The fixture directory the scenarios write to is the server's, never the client's.
 const forwardedEnv = [
-  "CI_FIXTURE_ROOT",
   "CI_FIXTURE_SCENARIO",
   "CI_FIXTURE_LANE",
   "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -29,15 +35,19 @@ function createStateStore() {
   return { json: "{}" };
 }
 
-async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, io }) {
+async function fakeCommand({ command, args, env, cwd, root, store, hungCommandExitMs, io }) {
   const { stdout, stderr, exit, exitAfter, closeStdout, lateStderr, readInput, holdPipes } = io;
-  const root = env.CI_FIXTURE_ROOT;
   const scenario = env.CI_FIXTURE_SCENARIO;
   const initialState = store.json;
   const state = JSON.parse(initialState);
   const equals = (actual, expected) => JSON.stringify(actual) === JSON.stringify(expected);
   const configId = "sha256:" + "b".repeat(64);
   const manifestDigest = "sha256:" + "c".repeat(64);
+  // The node of this fixture's cluster that a container name refers to, as one of the
+  // fixed keys "server-0" and "agent-0" (undefined for any other name). Per-node state
+  // is keyed by it, never by the command's own argument.
+  const clusterNode = (name) =>
+    ["server-0", "agent-0"].find((node) => name === "k3d-" + state.cluster + "-" + node);
   appendFileSync(
     join(root, "commands.jsonl"),
     JSON.stringify({
@@ -449,11 +459,8 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
     if (state.controller && equals(args, ["image", "rm", "-f", state.controller])) {
       return finish();
     }
-    if (
-      equals(args.slice(0, 2), ["exec", "-i"]) &&
-      ["server-0", "agent-0"].some((suffix) => args[2] === "k3d-" + state.cluster + "-" + suffix)
-    ) {
-      const node = args[2];
+    if (equals(args.slice(0, 2), ["exec", "-i"]) && clusterNode(args[2])) {
+      const node = clusterNode(args[2]);
       assert.deepEqual(args.slice(3), [
         "ctr",
         "-n",
@@ -469,7 +476,7 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
       state["imports:" + node] = imports;
       const socket = "/run/k3s/containerd/containerd.sock: connect: ";
       let refusal;
-      if (node.endsWith("-agent-0")) {
+      if (node === "agent-0") {
         if (scenario === "containerd-refuses-imports") {
           refusal = socket + "connection refused";
         }
@@ -495,7 +502,7 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
         return exit(1);
       }
       // The worker fails before reading, which stops the export early.
-      if (scenario === "nonzero-worker-import" && node.endsWith("-agent-0")) {
+      if (scenario === "nonzero-worker-import" && node === "agent-0") {
         stderr("synthetic import command failure\n");
         return exit(17);
       }
@@ -514,14 +521,11 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
       }
       return finish();
     }
-    if (
-      args[0] === "exec" &&
-      ["server-0", "agent-0"].some((suffix) => args[1] === "k3d-" + state.cluster + "-" + suffix)
-    ) {
-      const node = args[1];
+    if (args[0] === "exec" && clusterNode(args[1])) {
+      const node = clusterNode(args[1]);
       const alias = state.aliases?.[node];
       if (equals(args.slice(2), ["ip", "route", "get", "10.42.7.0"])) {
-        assert.ok(node.endsWith("-server-0"));
+        assert.ok(node === "server-0");
         // Node readiness can precede Flannel's cross-node route. The first lookup
         // then selects the container network, which must never become the allowlist.
         state.routeLookups = (state.routeLookups ?? 0) + 1;
@@ -538,12 +542,12 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
         // A Ready worker whose containerd refuses connections for a while (finding 1006).
         const probes = (state["containerdProbes:" + node] ?? 0) + 1;
         state["containerdProbes:" + node] = probes;
-        if (scenario === "hung-containerd-probe" && node.endsWith("-agent-0")) {
+        if (scenario === "hung-containerd-probe" && node === "agent-0") {
           return hang();
         }
         // In the hung case the server refuses until the worker's hang ends the wait.
         if (
-          (node.endsWith("-agent-0") &&
+          (node === "agent-0" &&
             (scenario === "containerd-down" || (scenario === "late-worker" && probes <= 2))) ||
           scenario === "hung-containerd-probe"
         ) {
@@ -558,11 +562,11 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
       }
       const ctr = ["ctr", "-n", "k8s.io", "images"];
       if (equals(args.slice(2), [...ctr, "list"])) {
-        if (scenario === "hung-ctr-list" && node.endsWith("-agent-0")) {
+        if (scenario === "hung-ctr-list" && node === "agent-0") {
           return hang();
         }
         // The first list on the server is the digest lookup after the import.
-        if (scenario === "hung-server-list" && node.endsWith("-server-0")) {
+        if (scenario === "hung-server-list" && node === "server-0") {
           return hang();
         }
         const references = [state.importedNodes?.[node] && state.tag, alias].filter(Boolean);
@@ -580,7 +584,7 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
         );
       }
       if (equals(args.slice(2, 8), [...ctr, "tag", state.tag]) && args.length === 9) {
-        if (scenario === "hung-ctr-tag" && node.endsWith("-agent-0")) {
+        if (scenario === "hung-ctr-tag" && node === "agent-0") {
           return hang();
         }
         if (scenario !== "missing-alias") {
@@ -597,14 +601,14 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
         return finish();
       }
       if (equals(args.slice(2), ["crictl", "inspecti", alias]) && alias) {
-        if (scenario === "hung-worker-cri" && node.endsWith("-agent-0")) {
+        if (scenario === "hung-worker-cri" && node === "agent-0") {
           // A cache-miss answer before the hang: a timeout must still not be retried as one.
           stderr('time="2026-10-06T11:05:15Z" level=fatal msg="no such image"\n');
           return hang();
         }
         if (
           scenario === "missing-cri" ||
-          (scenario === "missing-worker-cri" && node.endsWith("-agent-0"))
+          (scenario === "missing-worker-cri" && node === "agent-0")
         ) {
           stderr("synthetic CRI image not found\n");
           return exit(19);
@@ -614,7 +618,7 @@ async function fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, 
         state.criLookups ??= {};
         state.criLookups[node] = (state.criLookups[node] ?? 0) + 1;
         if (
-          node.endsWith("-agent-0") &&
+          node === "agent-0" &&
           (scenario === "absent-worker-cri" ||
             (scenario === "lagging-worker-cri" && state.criLookups[node] <= 2))
         ) {
@@ -1018,9 +1022,14 @@ function bashString(text) {
 
 // The fake command: bash builtins only, so it is a single process that prepare.mjs's
 // signals reach directly, and its output pipes close when it exits (except where a
-// reply makes it start a descendant on purpose). It sends NUL-terminated fields, then
-// evaluates the server's reply lines. A command whose server is gone fails.
-export function commandShim({ bash, sleep, setsid, port, command }) {
+// reply makes it start a descendant on purpose). It sends its client token and then
+// NUL-terminated fields, and evaluates the reply lines that follow the server token.
+// A command whose server is gone, or does not authenticate, fails. It holds both
+// tokens: write it with mode 0700 in a private directory.
+export function commandShim({ bash, sleep, setsid, port, clientToken, serverToken, command }) {
+  for (const token of [clientToken, serverToken]) {
+    assert.match(token, /^[0-9a-f]{64}$/);
+  }
   const env = forwardedEnv.map((name) => `"\${${name}+=}\${${name}-}"`).join(" ");
   return `#!${bash}
 LC_ALL=C
@@ -1029,14 +1038,18 @@ __sleep=${bashString(sleep)}
 __setsid=${bashString(setsid)}
 exec 3<>/dev/tcp/127.0.0.1/${port} || exit 125
 __stdin() { local data; IFS= read -r -d '' data; printf '%s\\0' "$data" >&3; }
-printf '%s\\0' ${command} "$PWD" "$#" "$@" ${env} >&3
+printf '%s\\0' ${clientToken} ${command} "$PWD" "$#" "$@" ${env} >&3
+if ! IFS= read -r -u 3 __line || [[ "$__line" != ${serverToken} ]]; then
+  echo "fixture command server did not authenticate" >&2
+  exit 125
+fi
 while IFS= read -r -u 3 __line; do eval "$__line"; done
 echo "fixture command server closed the connection" >&2
 exit 125
 `;
 }
 
-function serveCommand(socket, { store, hungCommandExitMs }) {
+function serveCommand(socket, { tokens, root, store, hungCommandExitMs }) {
   const timers = new Set();
   const fields = [];
   let buffered = Buffer.alloc(0);
@@ -1117,6 +1130,13 @@ function serveCommand(socket, { store, hungCommandExitMs }) {
       ),
   };
   (async () => {
+    // Nothing a client sends is used before its first field matches the client token.
+    const token = Buffer.from(await nextField());
+    if (token.length !== tokens.client.length || !timingSafeEqual(token, tokens.client)) {
+      socket.destroy();
+      return;
+    }
+    send(tokens.server.toString());
     const command = await nextField();
     const cwd = await nextField();
     const argc = Number(await nextField());
@@ -1132,7 +1152,7 @@ function serveCommand(socket, { store, hungCommandExitMs }) {
       }
     }
     try {
-      await fakeCommand({ command, args, env, cwd, store, hungCommandExitMs, io });
+      await fakeCommand({ command, args, env, cwd, root, store, hungCommandExitMs, io });
     } catch (error) {
       // As an uncaught error in a command process: its stack on stderr, status 1.
       io.stderr(`${error?.stack ?? error}\n`);
@@ -1146,14 +1166,20 @@ function serveCommand(socket, { store, hungCommandExitMs }) {
   };
 }
 
-// One server per fixture, on loopback. Closing it ends every command still connected:
-// a command that was hanging exits at once instead of at its own bound.
-export async function startFixtureCommandServer({ hungCommandExitMs }) {
+// One server per fixture, on loopback, writing to the fixture directory root. Closing it
+// ends every command still connected: a command that was hanging exits at once instead
+// of at its own bound. Its clientToken and serverToken go to commandShim.
+export async function startFixtureCommandServer({ root, hungCommandExitMs }) {
   assert.ok(Number.isSafeInteger(hungCommandExitMs));
+  assert.ok(typeof root === "string" && root.length > 0);
+  const tokens = {
+    client: Buffer.from(randomBytes(32).toString("hex")),
+    server: Buffer.from(randomBytes(32).toString("hex")),
+  };
   const store = createStateStore();
   const connections = new Set();
   const server = createServer((socket) => {
-    const connection = serveCommand(socket, { store, hungCommandExitMs });
+    const connection = serveCommand(socket, { tokens, root, store, hungCommandExitMs });
     connections.add(connection);
     socket.once("close", () => connections.delete(connection));
   });
@@ -1163,6 +1189,8 @@ export async function startFixtureCommandServer({ hungCommandExitMs }) {
   });
   return {
     port: server.address().port,
+    clientToken: tokens.client.toString(),
+    serverToken: tokens.server.toString(),
     close: () => {
       for (const connection of connections) {
         connection.close();

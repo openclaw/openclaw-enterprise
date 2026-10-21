@@ -100,6 +100,26 @@ function hostProgram(name) {
   throw new Error(`the CI preparation fixture needs ${name} on PATH`);
 }
 
+// The command server of one fixture directory, closed after the test.
+export async function fixtureCommandServer(t, root) {
+  const server = await startFixtureCommandServer({ root, hungCommandExitMs });
+  t.after(() => server.close());
+  return server;
+}
+
+// A fake command answered by server (or by whatever listens on port), private to this
+// user: the script holds the server's tokens.
+export async function writeFixtureCommand(path, command, server, port = server.port) {
+  shimPrograms ??= {
+    bash: hostProgram("bash"),
+    sleep: hostProgram("sleep"),
+    setsid: hostProgram("setsid"),
+  };
+  const { clientToken, serverToken } = server;
+  const source = commandShim({ ...shimPrograms, port, clientToken, serverToken, command });
+  await writeFile(path, source, { mode: 0o700 });
+}
+
 export async function fixtureImageCommands(
   t,
   scenario,
@@ -113,17 +133,9 @@ export async function fixtureImageCommands(
   await mkdir(home);
   // Each fake is a bash script answered by this test's command server
   // (ci-prepare-fixture-command.mjs), which runs the scenario's logic in this process.
-  const server = await startFixtureCommandServer({ hungCommandExitMs });
-  t.after(() => server.close());
-  shimPrograms ??= {
-    bash: hostProgram("bash"),
-    sleep: hostProgram("sleep"),
-    setsid: hostProgram("setsid"),
-  };
+  const server = await fixtureCommandServer(t, root);
   for (const file of ["docker.mjs", "k3d.mjs", "kubectl.mjs", "podman", "corepack", "helm", "yq"]) {
-    const command = file.replace(/\.mjs$/, "");
-    const source = commandShim({ ...shimPrograms, port: server.port, command });
-    await writeFile(join(bin, file), source, { mode: 0o700 });
+    await writeFixtureCommand(join(bin, file), file.replace(/\.mjs$/, ""), server);
   }
   const statePath = join(root, "state.json");
   const githubEnv = join(root, "github.env");
@@ -135,7 +147,6 @@ export async function fixtureImageCommands(
     TMP: root,
     TEMP: root,
     RUNNER_TEMP: root,
-    CI_FIXTURE_ROOT: root,
     CI_FIXTURE_SCENARIO: scenario,
     CI_FIXTURE_LANE: lane,
     OCC_DOCKER_BIN: join(

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { connect, createServer } from "node:net";
 import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,12 +18,14 @@ import { nodeTestSummary } from "../helpers/node-test-summary.mjs";
 import {
   assertStderrMatch,
   fixture,
+  fixtureCommandServer,
   fixtureImageCommands,
   fixturePreparationMetrics,
   immutableImage,
   mutableImage,
   nodeBaseImage,
   spawnResult,
+  writeFixtureCommand,
 } from "../helpers/ci-prepare-fixture.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../../", import.meta.url)));
@@ -309,6 +312,68 @@ describe("CI preparation", { concurrency }, () => {
       );
     });
   }
+
+  // The fakes' command server listens on loopback, where any local user can connect. It
+  // must run nothing for a client without its token (the shim's own request, unchanged,
+  // would write the metadata file), and a shim must run nothing from another listener.
+  test("the fake command server and its shims run nothing for each other's impostors", async (t) => {
+    const root = await fixture(t);
+    const server = await fixtureCommandServer(t, root);
+    const metadata = join(root, "metadata.json");
+    const args = [
+      "buildx",
+      "build",
+      "--output",
+      "type=image,push=false,store=false",
+      "--provenance=false",
+      "--metadata-file",
+      metadata,
+      ".",
+    ];
+    const request = (token) =>
+      new Promise((resolve, reject) => {
+        const fields = [...token, "docker", root, String(args.length), ...args, "=success"];
+        let reply = "";
+        const socket = connect(server.port, "127.0.0.1", () =>
+          socket.write(fields.map((field) => field + "\0").join("")),
+        );
+        socket.setEncoding("utf8");
+        socket.on("data", (chunk) => (reply += chunk));
+        // The server may reset the connection it refuses.
+        socket.on("error", (error) => error.code === "ECONNRESET" || reject(error));
+        socket.on("close", () => resolve(reply));
+      });
+    // The protocol without a token, a wrong token, and the server token sent back.
+    for (const token of [[], ["0".repeat(64)], [server.serverToken]]) {
+      assert.equal(await request(token), "", "an unauthenticated client gets no reply");
+    }
+    await assert.rejects(stat(join(root, "commands.jsonl")), { code: "ENOENT" });
+    await assert.rejects(stat(metadata), { code: "ENOENT" });
+
+    const docker = join(root, "docker");
+    await writeFixtureCommand(docker, "docker", server);
+    const env = { PATH: "/nonexistent", CI_FIXTURE_SCENARIO: "success" };
+    const served = await spawnResult(docker, args, { env });
+    assert.equal(served.status, 0, served.stderr);
+    assert.equal(
+      JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"],
+      "sha256:" + "f".repeat(64),
+    );
+
+    // A listener that is not the fixture's server, as if another user took the port.
+    const impostor = createServer((socket) => {
+      socket.on("error", () => {});
+      socket.once("data", () => socket.end("printf impostor-ran\nexit 0\n"));
+    });
+    await new Promise((resolve) => impostor.listen(0, "127.0.0.1", resolve));
+    t.after(() => new Promise((resolve) => impostor.close(resolve)));
+    const misdirected = join(root, "misdirected-docker");
+    await writeFixtureCommand(misdirected, "docker", server, impostor.address().port);
+    const refused = await spawnResult(misdirected, ["version"], { env });
+    assert.equal(refused.status, 125);
+    assert.equal(refused.stdout, "");
+    assert.match(refused.stderr, /fixture command server did not authenticate/);
+  });
 
   // A hosted image lane's cache inputs; the token must reach no build argument or output.
   const imageCacheEnv = {
