@@ -2158,6 +2158,15 @@ export interface ConfigurationValidationOptions {
 }
 
 export interface ComputeDriver extends Driver {
+  /**
+   * Read only the selected revision's existing Harness. Never prepare, adopt, attach,
+   * repair, release or authorize an execution. Missing support provides no assurance.
+   * Lifecycle observations do not establish repository execution identity or authority.
+   */
+  observeRevision?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<SandboxHarnessObservation>;
   /** Admission capability check, not release authority. Missing support fails closed. */
   validateExecutionAdmission?(
     revision: Pick<AgentRevision, "executionAdmission" | "egressPlan">,

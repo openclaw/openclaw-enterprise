@@ -69,6 +69,7 @@ import type {
 import type {
   AgentDeploymentDiagnostics,
   AgentRevision,
+  SandboxHarnessObservation,
   AgentRuntimeContainerStatus,
   AgentRuntimeDescribeOptions,
   AgentRuntimeDescription,
@@ -5647,6 +5648,35 @@ export class KubernetesComputeDriver implements ComputeDriver {
   async verifyRepositoryExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {
     const owned = await this.repositoryAccessContext(revision, signal);
     return owned?.access.verifyExecution(owned.context);
+  }
+
+  async observeRevision(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<SandboxHarnessObservation> {
+    if (
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      throw new Error("Refusing to observe another Compute Driver's AgentRevision.");
+    }
+    const sandbox = this.sandboxDriverForRevision(revision);
+    if (!sandbox?.observeHarness) {
+      return { state: "unknown" };
+    }
+    return withComputeAbortSignal(signal, async () => {
+      const { name, external } = await this.resolveNamespace(revision.namespaceId);
+      const namespace = await this.getNamespace(name);
+      if (!namespace) {
+        return { state: "unknown" };
+      }
+      this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
+      const context = await this.sandboxNamespaceContext(
+        this.sandboxNamespaceForRevision(revision, name),
+        name,
+      );
+      return sandbox.observeHarness!({ ...context, revision });
+    });
   }
 
   /** Resolve the same selected Sandbox and exact owned Namespace for observation or withdrawal. */

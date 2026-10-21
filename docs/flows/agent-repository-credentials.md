@@ -1,7 +1,7 @@
 ---
 created: "2026-09-18"
-updated: "2026-10-17"
-last_updated_session: authoring-run/f538c999-f9bf-4549-ba36-19dca6101420
+updated: "2026-10-21"
+last_updated_session: authoring-run/5f4d0dab-1a03-4fa9-a469-a8778c8ad3d4
 ---
 
 # Agent repository credential flow
@@ -48,6 +48,8 @@ graph TD
   Version --> Worker["<b>Claimed worker</b><br/>Recheck actor and policy"]
   Worker -->|Denied or expired| Close["<b>Cleanup ownership</b><br/>Close exact attempts"]
   Worker --> Capability["<b>Check capability</b><br/>Fresh admissions only"]
+  Worker -->|Active standing Git evidence missing| Observe["<b>Observe existing Harness</b><br/>No preparation or issuance"]
+  Observe -->|Durable next check within five seconds| Worker
   Capability -->|Available| Attempt["<b>Persist opening</b><br/>Before control request"]
   Capability -->|Unavailable| Blocked["<b>Block new admission</b><br/>Worker stays unready"]
   Attempt --> Service["<b>Private control</b><br/>Check bound registry grant"]
@@ -291,26 +293,19 @@ fresh installation tokens under the same grant until the version deadline.
 
 ### 6. Maintain, recover and retire ownership
 
-`apps/controller/src/worker.ts:ControllerWorker.completeActivatedRevision`
-commits completion and maintenance together, preserving the original actor.
-Repository versions use the Driver's 30-second interval or a shorter Compute
-interval. Restart resumes queued work without inventing actors. A committed terminal
-receipt survives broker restart; a missing known session remains invalidated.
-`REPOSITORY_SESSION_RECOVERY_UNSAFE` permanently fails observation and queues
-runtime retirement; later workers cannot remint for that version. An authorized user can
-deploy a new version without settling old cleanup.
+The worker commits activation and its next maintenance together, preserving the actor.
+Repository maintenance runs at the Driver interval (30 seconds) or a shorter Compute interval.
+A missing known session is invalidated, never reminted after restart. A user may deploy another
+version while cleanup continues.
 
-`apps/controller/src/worker.ts:ControllerWorker.finalizeActiveRevision`
-atomically records failed observations and enqueues successors while the selected version remains authorized. Stop, policy drift, expiry and revoked authority
-cannot use this continuation to reopen sessions.
+If standing Git evidence is missing, the worker keeps Git closed, observes the existing
+Harness without preparing or activating it, and schedules another check within five seconds.
+Each pass rechecks model authority, withdrawal, stop and replacement. Harness readiness is
+not Git authority. See the [standing worker integration test](../../tests/integration/postgres-standing-session-worker.test.ts).
 
-`packages/occ/src/state/postgres-work-queue.ts:PostgresWorkQueue.enqueueRepositoryCleanup`
-and terminal queue transitions persist obligations for this version. Registration checks claim and owner; recovery transfers eligible failures.
-Work coalesces by version and purpose, retaining its creating actor and source failure evidence. Queued or claimed Work keeps its
-schedule and claim; later obligations requeue succeeded Work. Previously queued
-cleanup remains eligible.
-`RepositoryCredentialLifecycle.closeRevision` records session-only cleanup with
-the attempts it marks closing. Cleanup retries at the Driver interval without consuming Work retries.
+Cleanup records the exact owner, attempts and actor. Concurrent obligations preserve an active
+claim; later obligations can requeue completed work. Session cleanup retries without spending
+the foreground retry budget or reopening access.
 
 `ControllerWorker.processRepositoryCleanup` consumes validated owner-bound Work
 without policy resolution, admission or material delivery, even after the actor
@@ -371,6 +366,8 @@ Ready Pods and commands do not prove live writes.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21 22:10: Document standing Git supervision with the accompanying uncommitted worker change. (authoring-run/5f4d0dab-1a03-4fa9-a469-a8778c8ad3d4 - 390a3627b97535f4d21107001efda8af6152355d)
 
 - 2026-10-17 06:00: Keep joiners in words and emoji and the three subdivision flags in repository descriptions. (lows-1017h - 49397a014)
 

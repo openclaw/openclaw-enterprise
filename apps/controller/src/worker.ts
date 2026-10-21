@@ -37,6 +37,7 @@ import type {
   NamespaceEnsureResult,
   BackendDefinition,
   SandboxDriver,
+  SandboxHarnessObservation,
   CredentialGatewayDriver,
   SecretBindings,
   SecretDriver,
@@ -3931,6 +3932,7 @@ export class ControllerWorker {
     let failureLogFields: Readonly<Record<string, string | number>> | undefined;
     let refusalWaitRead = false;
     let claimAgent: Readonly<Agent> | undefined;
+    let supervisedRevision: Readonly<AgentRevision> | undefined;
     try {
       if (
         claim.agentId === undefined ||
@@ -4240,6 +4242,15 @@ export class ControllerWorker {
         }
         return;
       }
+      if (
+        agent.activeRevisionId === revision.id &&
+        revision.repositoryCredentials?.standingApprovalId &&
+        claim.idempotencyKey.startsWith(`agent_revision:${revision.id}:maintenance:`)
+      ) {
+        // Verify Git before any preparation or binding can repair the running execution.
+        supervisedRevision = revision;
+        await this.repositoryCredentials.authorizeStandingMaintenance(claim, revision);
+      }
       if (this.compute.bindAgent !== undefined) {
         try {
           await this.withClaimHeartbeat(claim, async () => {
@@ -4377,6 +4388,14 @@ export class ControllerWorker {
         throw error;
       }
       if (
+        supervisedRevision !== undefined &&
+        error instanceof RepositoryCredentialAuthorityError &&
+        error.code === "REPOSITORY_EXECUTION_UNVERIFIED"
+      ) {
+        await this.superviseUnverifiedRepositoryExecution(claim, supervisedRevision);
+        return;
+      }
+      if (
         error instanceof RepositoryCredentialAuthorityError &&
         (await this.completeStandingRepositoryDenial(claim, error.code))
       ) {
@@ -4432,6 +4451,76 @@ export class ControllerWorker {
       const pending = error.pending();
       await this.finalizeRevision(claim, pending.result, pending.logFields);
     }
+  }
+
+  private async superviseUnverifiedRepositoryExecution(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    const isCurrent = (agent: Readonly<Agent> | undefined): boolean =>
+      agent?.status === "active" &&
+      agent.activeRevisionId === revision.id &&
+      agent.desiredRuntimeState === "running" &&
+      agent.servicePrincipalId === revision.servicePrincipalId;
+    let harnessState: SandboxHarnessObservation["state"] = "unknown";
+    try {
+      if (this.compute.observeRevision) {
+        const observed = await this.withClaimHeartbeat(claim, async (signal) => {
+          const agent = await this.state.read((view) =>
+            view.agents.findAgent(revision.namespaceId, revision.agentId),
+          );
+          if (!isCurrent(agent)) {
+            return undefined;
+          }
+          return this.compute.observeRevision!(
+            revision,
+            AbortSignal.any([signal, AbortSignal.timeout(5_000)]),
+          );
+        });
+        // Driver observations are untrusted; publish only the allowlisted lifecycle state.
+        const state = observed?.state;
+        if (state && ["running", "starting", "lost", "unknown"].includes(state)) {
+          harnessState = state;
+        }
+      }
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      // An unavailable observer provides no assurance and must not end supervision.
+    }
+    const deferred = await this.state.transactWithQueue(async (unit, queue) => {
+      const agent = await this.lockClaimAgent(unit, claim);
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      if (!isCurrent(agent)) {
+        await queue.complete(claim, { code: "REVISION_MAINTENANCE_SUPERSEDED" });
+        return false;
+      }
+      // Defer the durable claim without spending its failure budget or convergence window.
+      // The next pass rechecks stop, replacement, withdrawal and all independent authority.
+      await queue.defer(
+        claim,
+        { code: "REPOSITORY_EXECUTION_UNVERIFIED" },
+        {
+          delayMs: Math.min(5_000, this.maintenanceIntervalMs ?? 5_000),
+        },
+      );
+      return true;
+    }, this.queueOptions);
+    const code = deferred ? "REPOSITORY_EXECUTION_UNVERIFIED" : "REVISION_MAINTENANCE_SUPERSEDED";
+    this.passOutcome = deferred ? "pending" : "success";
+    this.emit({
+      event: "worker.completed",
+      ...workLogFields(claim),
+      namespaceId: claim.namespaceId,
+      agentId: claim.agentId,
+      revisionId: revision.id,
+      outcome: this.passOutcome,
+      code,
+      ...(deferred ? { harnessState } : {}),
+    });
   }
 
   /** Loss of Git approval is not loss of model authority. Close only repository
