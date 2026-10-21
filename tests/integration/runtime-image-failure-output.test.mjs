@@ -52,7 +52,7 @@ await chmod(fakeDocker, 0o700);
 // The helper reads both at import.
 process.env.OCC_DOCKER_BIN = fakeDocker;
 process.env.OCC_TEST_RUNTIME_IMAGE = "localhost/oce/runtime:failure-output-test";
-const { failureTail, listGatewayPlugins, runGatewaySmoke, waitForGatewayReady } =
+const { failureTail, listGatewayPlugins, runGatewaySmoke, waitForDockerLog, waitForGatewayReady } =
   await import("../helpers/runtime-image-startup.mjs");
 
 test("failureTail keeps short output and the end of long output from a line start", () => {
@@ -136,6 +136,26 @@ test("a Gateway smoke failure from a docker command keeps the end of its stderr 
     /^Command failed: .*docker inspect [^\n]*\n[\s\S]*inspect stderr final line\n[\s\S]*wrapper failed: final stderr line/,
   );
   assert.doesNotMatch(reported, /inspect stderr first line/);
+  assert.ok(
+    error.message.length < reporterMessageLimit,
+    `message is ${error.message.length} chars`,
+  );
+});
+
+test("a log wait fails at once when the container stops first, keeping the end of its logs", async () => {
+  // The stand-in's `docker logs --follow` prints the logs and exits, as for a stopped container.
+  const startedAt = Date.now();
+  const error = await waitForDockerLog("fake-container", /never logged/).then(
+    () => assert.fail("the log wait should fail when the logs end without the pattern"),
+    (failure) => failure,
+  );
+  assert.ok(Date.now() - startedAt < 10_000, "the wait does not run out its 20 s deadline");
+  assert.match(
+    error.message,
+    /^fake-container stopped before \/never logged\/ appeared in its logs\.\n/,
+  );
+  assert.match(error.message, /Migrating agent databases\nwrapper failed: final stderr line/);
+  assert.doesNotMatch(error.message, /first doctor line/);
   assert.ok(
     error.message.length < reporterMessageLimit,
     `message is ${error.message.length} chars`,
