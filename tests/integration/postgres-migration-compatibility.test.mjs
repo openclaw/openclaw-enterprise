@@ -207,6 +207,7 @@ test(
       for (const [table, constraint] of [
         ["egress_send_receipts", "egress_send_receipts_check_17"],
         ["repository_standing_approvals", "standing_approvals_binding_check"],
+        ["prepared_github_attempts", "prepared_github_attempts_expired_check"],
         ["agent_revisions", "agent_revisions_admitted_snapshot"],
       ]) {
         const create = `CREATE TABLE "occ"."${table}"`;
@@ -1854,6 +1855,7 @@ test(
       [59, "preStaticEgress"],
       [60, "preOpenShellExpiredGit"],
       [61, "preStandingApproval"],
+      [62, "prePreparedStandingGitExpiry"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2259,6 +2261,7 @@ test(
       [59, "preStaticEgress"],
       [60, "preOpenShellExpiredGit"],
       [61, "preStandingApproval"],
+      [62, "prePreparedStandingGitExpiry"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2349,6 +2352,7 @@ test(
       [59, "preStaticEgress"],
       [60, "preOpenShellExpiredGit"],
       [61, "preStandingApproval"],
+      [62, "prePreparedStandingGitExpiry"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2370,6 +2374,7 @@ test(
         // From 0059, fail the final grant in 0061 so the revision backfill, its immutability
         // trigger, the route table, grants and both new receipts must all roll back together.
         const rollbackTag = [
+          [62, "ALTER TABLE"],
           [61, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],

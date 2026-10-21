@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { providerClockSkewMs } from "./driver/lifetime.ts";
 import type { PreparedGitHubEgressSource, Secret } from "@openclaw-enterprise/contracts";
 import { preparedGitHubLive as live, readPreparedGitHubMetadata } from "@openclaw-enterprise/occ";
 import type { PostgresClient, PostgresPool } from "@openclaw-enterprise/occ";
@@ -9,6 +10,14 @@ import type {
   GitHubPreparationFamily as Family,
   GitHubPreparationStore,
 } from "./prepared-contracts.ts";
+
+// The provider expiry is an authenticated issuance result. The same clock-skew allowance
+// subtracted for use is added before we can conclude that the provider lifetime elapsed.
+const standingGitExpiry = `CASE WHEN f.source->>'adoption'='prepared_repository_git'
+  AND f.source #>> '{session,standingApprovalId}' IS NOT NULL AND NOT f.enabled
+  AND a.state='committed' AND a.material_version IS NOT NULL
+  AND a.admission=f.admission AND isfinite(a.provider_expires_at)
+  AND a.usable_until < a.provider_expires_at THEN a.provider_expires_at END`;
 
 const active = live("'ready'");
 const enrolling = live("'registering','ready'");
@@ -349,20 +358,32 @@ export class PreparedGitHubPostgres {
       // Only a matching claim returns ciphertext; this also works after source withdrawal.
       const { rows } = await c.query(
         `WITH due AS (
-           SELECT id, (a.admission->>'issuerAuthority' = $2) IS TRUE AS authorized
-           FROM ${attempts} a JOIN ${families} f USING (source_id)
+           SELECT id, (a.admission->>'issuerAuthority' = $2) IS TRUE AS authorized,
+             (x.expires <= statement_timestamp()) IS TRUE AS expired
+           FROM ${attempts} a JOIN ${families} f USING (source_id),
+             LATERAL (SELECT ${standingGitExpiry} AS expires) x
            WHERE custody='retire' AND (source_id=$1 OR $1 IS NULL) AND f.source->>'adoption'=$3
-           ORDER BY authorized DESC LIMIT 1 FOR UPDATE SKIP LOCKED
+             AND (x.expires IS NULL OR x.expires > statement_timestamp()
+               OR x.expires <= statement_timestamp() - $4 * interval '1 millisecond')
+           ORDER BY authorized DESC LIMIT 1 FOR UPDATE OF a, f SKIP LOCKED
          ), claimed AS (
-           UPDATE ${attempts} a SET custody='revoking' FROM due d WHERE a.id=d.id AND d.authorized
-           RETURNING a.id, a.admission, a.sealed
+           UPDATE ${attempts} a SET custody=CASE WHEN d.expired THEN 'expired' ELSE 'revoking' END,
+             sealed=CASE WHEN d.expired THEN NULL ELSE a.sealed END
+           FROM due d WHERE a.id=d.id AND d.authorized
+           RETURNING a.id, a.admission, a.sealed, a.custody
          )
-         SELECT d.authorized, c.id, c.admission, c.sealed FROM due d LEFT JOIN claimed c USING (id)`,
-        [key, this.issuerAuthority, this.owner.adoption],
+         SELECT d.authorized, c.id, c.admission, c.sealed, c.custody FROM due d LEFT JOIN claimed c USING (id)`,
+        [key, this.issuerAuthority, this.owner.adoption, providerClockSkewMs],
       );
       const a = rows[0] as (AttemptRow & { authorized: boolean }) | undefined;
       if (!a || !a.authorized) {
         return a && ("issuer-mismatch" as const);
+      }
+      // Only a never-dispatched retirement of verified, committed standing material can
+      // expire locally. In the skew window we wait; after it we erase the sealed value and
+      // make no provider request. A 401, lost response or earlier unknown stays unresolved.
+      if (a.custody === "expired") {
+        return undefined;
       }
       owned = this.open(a.sealed, a.admission, a.id);
       return { id: a.id, admission: a.admission, bytes: owned };

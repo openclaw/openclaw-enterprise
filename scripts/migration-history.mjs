@@ -279,6 +279,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 61) {
     return "preStandingApproval";
   }
+  if (count === 62) {
+    return "prePreparedStandingGitExpiry";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

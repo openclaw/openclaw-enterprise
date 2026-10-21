@@ -1947,7 +1947,13 @@ export const preparedGitHubAttempts = occSchema.table(
     ),
     check(
       "prepared_github_attempts_custody_check",
-      sql`custody IN ('intent', 'current', 'retire', 'revoking', 'revoked', 'unknown')`,
+      sql`custody IN ('intent', 'current', 'retire', 'revoking', 'revoked', 'expired', 'unknown')`,
+    ),
+    check(
+      "prepared_github_attempts_expired_check",
+      sql`custody <> 'expired' OR (state = 'committed' AND material_version IS NOT NULL
+        AND isfinite(usable_until) AND isfinite(provider_expires_at)
+        AND usable_until < provider_expires_at) IS TRUE`,
     ),
     check(
       "prepared_github_attempts_check",

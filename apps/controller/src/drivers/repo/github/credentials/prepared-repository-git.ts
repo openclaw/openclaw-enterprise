@@ -103,7 +103,7 @@ const sessions = `SELECT jsonb_build_object(
     WHERE prior.source->>'adoption'='prepared_repository_git'
       AND prior.source #>> '{session,revisionId}'=s.revision_id
       AND prior.source #>> '{session,admissionId}'<>s.admission_id
-      AND attempt.custody<>'revoked'))
+      AND attempt.custody NOT IN ('revoked','expired')))
   AND rev.admitted_spec #> '{repository_credentials,driver}'=s.cleanup_context->'driver'
   AND rev.admitted_spec #> '{repository_credentials,bindings}' @> jsonb_build_array(s.cleanup_context->'binding')`;
 const live = `EXISTS (SELECT FROM (${sessions}) l WHERE l.session = f.source->'session')`;
