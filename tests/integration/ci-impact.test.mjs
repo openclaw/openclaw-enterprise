@@ -234,6 +234,8 @@ async function commitAndMerge(repo, git, base, change) {
   await command(
     repo,
     "git",
+    // A small import is written as loose objects (fastimport.unpackLimit), which
+    // a merge-evidence case deletes.
     ["fast-import", "--quiet", "--date-format=now", `--export-marks=${marks}`],
     commitStream("refs/heads/feature", 1, "change", [`from ${base}`]) +
       commitStream(branch[1], 2, "merge", [`from ${base}`, "merge :1"]),
@@ -387,6 +389,7 @@ async function fixture(
     const json = JSON.stringify(lanes);
     const bad = [
       ["--verify-mode", "tests"],
+      ["--verify-mode", "tests", "--lanes", ""],
       ["--verify-mode", "docs"],
       ["--verify-mode", "full"],
       ["--verify-mode", "docs", "--lanes", json],
@@ -945,14 +948,13 @@ async function shallowBootstrap(f) {
     assert.equal(selected.status, 0, selected.stderr);
     return selected.output;
   };
-  // `reason`, when given, is the exact reason the selection must report.
+  // `reason`, when given, is the exact reason the selection must report. The
+  // step's tests-mode verification has its own runs in expectTests.
   shallow.expect = async (mode, overrides = {}, reason) => {
-    const lanes = { EXPECTED_LANES: JSON.stringify(["checks-baseline-1"]), ...overrides };
-    const [selected, same, other, tests] = await settled([
+    const [selected, same, other] = await settled([
       shallow.run("select", "", overrides),
       shallow.run("verify", mode, overrides),
       shallow.run("verify", mode === "docs" ? "full" : "docs", overrides),
-      shallow.run("verify", "tests", lanes),
     ]);
     assert.equal(selected.status, 0, selected.stderr);
     assert.match(
@@ -966,7 +968,6 @@ async function shallowBootstrap(f) {
     );
     assert.equal(same.status, 0);
     assert.notEqual(other.status, 0);
-    assert.notEqual(tests.status, 0);
   };
   shallow.expectReason = async (reason, overrides = {}) => {
     const [selected, full, docs] = await settled([

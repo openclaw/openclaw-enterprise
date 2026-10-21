@@ -29,11 +29,14 @@ function gitStatus(...args) {
   return result.error ? null : result.status;
 }
 
+// The output limit of one Git command.
+const outputLimit = 64 * 1024 * 1024;
+
 // `input`, when given, is the command's standard input (for --batch modes).
-function gitWith(input, args) {
+function gitWith(input, args, maxBuffer = outputLimit) {
   const result = spawnSync("git", args, {
     encoding: null,
-    maxBuffer: 64 * 1024 * 1024,
+    maxBuffer,
     ...(input === undefined ? {} : { input }),
   });
   if (result.error || result.status !== 0) {
@@ -101,12 +104,53 @@ function parseJsonBlob(bytes) {
   }
 }
 
+// The contents of `ids` (blob ids) from one `git cat-file --batch`, by id. An id
+// whose content is missing from the result (absent, too large for one command's
+// output limit, or the batch failed) is left out; its reader then runs
+// `git cat-file blob` alone, so it fails exactly as that command does.
+function batchContents(ids) {
+  const contents = new Map();
+  let output;
+  try {
+    output = gitWith(
+      ids.map((id) => `${id}\n`).join(""),
+      ["cat-file", "--batch"],
+      ids.length * (outputLimit + 128),
+    );
+  } catch {
+    return contents;
+  }
+  // Each object is "<oid> blob <size>\n<content>\n", or "<oid> missing\n".
+  let offset = 0;
+  for (const id of ids) {
+    const end = output.indexOf(0x0a, offset);
+    if (end < 0) {
+      return new Map();
+    }
+    const header = output.subarray(offset, end).toString("binary");
+    if (header === `${id} missing`) {
+      offset = end + 1;
+      continue;
+    }
+    const match = /^([0-9a-f]+) blob (\d+)$/.exec(header);
+    const stop = match ? end + 1 + Number(match[2]) : -1;
+    if (!match || match[1] !== id || stop >= output.length || output[stop] !== 0x0a) {
+      return new Map();
+    }
+    if (stop - end - 1 <= outputLimit) {
+      contents.set(id, output.subarray(end + 1, stop));
+    }
+    offset = stop + 1;
+  }
+  return offset === output.length ? contents : new Map();
+}
+
 // Reads JSON files at `commit` with one `git ls-tree` and one `git cat-file --batch`
 // instead of two processes per file. Returns a reader per path that returns its
-// parsed JSON or throws what reading that file alone would: a path that is not a
-// regular non-executable file, or not valid UTF-8 JSON, is unavailable; a failed
-// Git command is an inspection failure. The reader throws only when called, so
-// callers see errors in the order they read.
+// parsed JSON or throws what reading that file alone with ls-tree and cat-file
+// would: a path that is not exactly one regular non-executable file entry, or not
+// valid UTF-8 JSON, is unavailable; a failed Git command is an inspection failure.
+// A reader throws only when called, so callers see errors in the order they read.
 function readJsonBlobs(commit, paths) {
   if (paths.length === 0) {
     return new Map();
@@ -114,75 +158,37 @@ function readJsonBlobs(commit, paths) {
   const fail = (error) => () => {
     throw error;
   };
-  let entries;
+  let listing;
   try {
-    entries = git("ls-tree", "-z", commit, "--", ...paths)
-      .toString("binary")
-      .split("\0");
+    listing = git("ls-tree", "-z", commit, "--", ...paths).toString("binary");
   } catch (error) {
     return new Map(paths.map((path) => [path, fail(error)]));
   }
-  // Only an exact regular-file entry counts: a directory lists its children instead.
+  // A directory lists its children, so only an entry named exactly by a path counts.
+  const entries = new Map();
+  for (const entry of listing.split("\0").slice(0, -1)) {
+    const name = entry.slice(entry.indexOf("\t") + 1);
+    entries.set(name, entries.has(name) ? null : entry);
+  }
   const blobs = new Map();
-  for (const entry of entries) {
-    const match = /^100644 blob ([0-9a-f]{40}|[0-9a-f]{64})\t([^\0]+)$/.exec(entry);
+  for (const path of paths) {
+    const match = /^100644 blob ([0-9a-f]{40}|[0-9a-f]{64})\t/.exec(entries.get(path) ?? "");
     if (match) {
-      blobs.set(match[2], match[1]);
+      blobs.set(path, match[1]);
     }
   }
+  const contents = blobs.size > 0 ? batchContents([...new Set(blobs.values())]) : new Map();
   const unavailable = fail(
     new InspectionError("suite manifest is unavailable", "manifest_unavailable"),
   );
-  const wanted = [
-    ...new Set(paths.filter((path) => blobs.has(path)).map((path) => blobs.get(path))),
-  ];
-  const contents = new Map();
-  let batchError;
-  if (wanted.length > 0) {
-    try {
-      const output = gitWith(wanted.map((id) => `${id}\n`).join(""), ["cat-file", "--batch"]);
-      // Each object is "<oid> blob <size>\n<content>\n", or "<oid> missing\n".
-      let offset = 0;
-      for (const id of wanted) {
-        const end = output.indexOf(0x0a, offset);
-        if (end < 0) {
-          throw new InspectionError("Git inspection failed", "git_inspection_failed");
-        }
-        const header = output.subarray(offset, end).toString("binary");
-        const match = /^([0-9a-f]+) blob (\d+)$/.exec(header);
-        if (!match || match[1] !== id) {
-          if (header !== `${id} missing`) {
-            throw new InspectionError("Git inspection failed", "git_inspection_failed");
-          }
-          offset = end + 1;
-          continue;
-        }
-        const size = Number(match[2]);
-        const stop = end + 1 + size;
-        if (stop >= output.length || output[stop] !== 0x0a) {
-          throw new InspectionError("Git inspection failed", "git_inspection_failed");
-        }
-        contents.set(id, output.subarray(end + 1, stop));
-        offset = stop + 1;
-      }
-      if (offset !== output.length) {
-        throw new InspectionError("Git inspection failed", "git_inspection_failed");
-      }
-    } catch (error) {
-      batchError = error;
-    }
-  }
-  const failed = new InspectionError("Git inspection failed", "git_inspection_failed");
   return new Map(
     paths.map((path) => {
-      if (!blobs.has(path)) {
+      const id = blobs.get(path);
+      if (id === undefined) {
         return [path, unavailable];
       }
-      if (batchError !== undefined) {
-        return [path, fail(batchError)];
-      }
-      const bytes = contents.get(blobs.get(path));
-      return [path, bytes === undefined ? fail(failed) : () => parseJsonBlob(bytes)];
+      const bytes = contents.get(id);
+      return [path, () => parseJsonBlob(bytes ?? git("cat-file", "blob", id))];
     }),
   );
 }
@@ -307,7 +313,7 @@ function selectTestLanes(mergeBase, tested, tests, manifests) {
         // Lint suppressions name test files; Static Checks lints in every mode.
         ":(top,exclude)eslint-suppressions.json",
       ],
-      { encoding: null, maxBuffer: 64 * 1024 * 1024 },
+      { encoding: null, maxBuffer: outputLimit },
     );
     if (grep.error || (grep.status !== 0 && grep.status !== 1)) {
       throw new InspectionError("Git inspection failed", "git_inspection_failed");
@@ -349,7 +355,7 @@ export function classify() {
       throw new InspectionError("missing or invalid commit identifiers", "invalid_identity");
     }
     // The checkout's commit and its parents, from one process.
-    const [actual, ...parents] = git("show", "-s", "--format=%H %P", "HEAD^{commit}")
+    const [actual, ...parents] = git("show", "-s", "--format=%H %P", "HEAD^{commit}", "--")
       .toString("ascii")
       .trim()
       .split(" ");
@@ -367,9 +373,18 @@ export function classify() {
     // merge's first parent is the base of the tested tree. A depth-two
     // checkout lacks an older base.sha; when it is present it must be behind.
     const mergeBase = parents[0];
-    const [mergeBasePresent, headPresent, basePresent] = commitsPresent(
-      base === mergeBase ? [mergeBase, head] : [mergeBase, head, base],
-    );
+    let present;
+    try {
+      present = commitsPresent(base === mergeBase ? [mergeBase, head] : [mergeBase, head, base]);
+    } catch (error) {
+      if (base === mergeBase) {
+        throw error;
+      }
+      // A failed check of the event base alone reads as absent, as it did when
+      // each name had its own process.
+      present = [...commitsPresent([mergeBase, head]), false];
+    }
+    const [mergeBasePresent, headPresent, basePresent] = present;
     if (!mergeBasePresent || !headPresent) {
       throw new InspectionError("Git inspection failed", "git_inspection_failed");
     }
