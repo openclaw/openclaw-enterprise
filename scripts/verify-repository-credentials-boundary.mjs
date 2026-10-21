@@ -9,6 +9,7 @@ const credentialDirectories = [
   "drivers/repo/credentials",
   "drivers/repo/github",
   "backends/repository-credentials",
+  "backends/token-service",
 ];
 const processEntrypoints = ["repository-credentials.ts", "repository-credentials.mjs"];
 const requiredEntrypoints = [
@@ -117,6 +118,8 @@ const reviewedImports = {
     // Compare the complete resolved binding before proposing standing scope; no I/O.
     "node:util": ["isDeepStrictEqual"],
   },
+  // Token Service compares complete admissions. Provider I/O remains in the existing adapter.
+  "backends/token-service/custody.ts": { "node:util": ["isDeepStrictEqual"] },
   // The prepared owner reads only the Installation custody mount. The App issuer comes
   // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
   "drivers/repo/github/credentials/prepared-lifecycle.ts": {

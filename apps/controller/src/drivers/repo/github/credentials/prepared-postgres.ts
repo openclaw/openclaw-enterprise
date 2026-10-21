@@ -10,6 +10,11 @@ import type {
   GitHubPreparationFamily as Family,
   GitHubPreparationStore,
 } from "./prepared-contracts.ts";
+import type {
+  CurrentTokenVersion,
+  InstalledTokenVersion,
+  TokenMaterialReader,
+} from "../../../../backends/token-service/material.ts";
 
 // The provider expiry is an authenticated issuance result. The same clock-skew allowance
 // subtracted for use is added before we can conclude that the provider lifetime elapsed.
@@ -25,6 +30,11 @@ const matching = "f.source_id = $1 AND f.source = $2::jsonb";
 const families = "occ.prepared_github_families";
 const attempts = "occ.prepared_github_attempts";
 type Source = PreparedGitHubEgressSource;
+type TokenSource = {
+  readonly key: { readonly source: { readonly id: string } };
+  readonly grant: Admission["grant"];
+};
+
 type FamilyRow = {
   source: Source;
   issuer: Secret;
@@ -202,6 +212,103 @@ export class PreparedGitHubPostgres {
       return (await readPreparedGitHubMetadata(c, source, this.issuerAuthority)) as
         Omit<AttemptRow, "sealed"> | undefined;
     });
+  }
+
+  /** Recovery remains available after withdrawal. Inspecting an uncertain issue or retirement
+   * neither discloses material nor turns that attempt into permission to try again. */
+  async inspectTokenAttempt(familyId: string, attemptId: string) {
+    return this.transaction(async (c) => {
+      const { rows } = await c.query(
+        `SELECT a.state,a.custody,a.material_version AS "materialVersion",a.provider_expires_at AS "providerExpiresAt"
+         FROM ${families} f JOIN ${attempts} a USING (source_id)
+         WHERE f.source_id=$1 AND a.id=$2 AND a.admission->>'issuerAuthority'=$3 AND f.source->>'adoption'=$4`,
+        [familyId, attemptId, this.issuerAuthority, this.owner.adoption],
+      );
+      return rows[0] as
+        | {
+            state: Attempt["state"];
+            custody:
+              "intent" | "current" | "retire" | "revoking" | "revoked" | "unknown" | "expired";
+            materialVersion: string | null;
+            providerExpiresAt: Date | null;
+          }
+        | undefined;
+    });
+  }
+
+  /** Repo holds the live execution and grant locks in this transaction. Its use record and
+   * draft allowance must commit under these same material locks, not after a separate check. */
+  protected readonly tokens: TokenMaterialReader<PostgresClient, TokenSource> = {
+    readWarm: (c, source) => this.lockMaterial(c, source, null),
+    current: async (c, source, installed) =>
+      installed?.preparationAttemptId && installed.materialVersion
+        ? this.lockMaterial(c, source, installed)
+        : undefined,
+  };
+
+  private lockMaterial(
+    c: PostgresClient,
+    source: TokenSource,
+    installed: null,
+  ): Promise<(CurrentTokenVersion & { open(): Buffer }) | undefined>;
+  private lockMaterial(
+    c: PostgresClient,
+    source: TokenSource,
+    installed: InstalledTokenVersion,
+  ): Promise<CurrentTokenVersion | undefined>;
+  private async lockMaterial(
+    c: PostgresClient,
+    source: TokenSource,
+    installed: InstalledTokenVersion | null,
+  ) {
+    const warm = installed === null;
+    const values = [
+      source.key.source.id,
+      source,
+      this.issuerAuthority,
+      ...(warm ? [] : [installed.preparationAttemptId, installed.materialVersion]),
+    ];
+    const { rows } = await c.query(
+      `SELECT a.id,a.admission,a.material_version,a.usable_until${warm ? ",a.sealed" : ""}
+       FROM ${families} f JOIN ${attempts} a USING (source_id)
+       WHERE ${matching} AND f.enabled AND f.admission->>'issuerAuthority'=$3
+         AND a.custody='current' AND a.state='committed' AND a.admission=f.admission
+         AND a.usable_until BETWEEN clock_timestamp() AND clock_timestamp() + interval '61 minutes'
+         AND a.provider_expires_at >= a.usable_until
+         ${warm ? "" : "AND a.id=$4 AND a.material_version=$5"} FOR SHARE OF f,a`,
+      values,
+    );
+    if (rows.length !== 1) {
+      return;
+    }
+    const row = rows[0] as AttemptRow;
+    const usableUntil = row.usable_until.getTime();
+    if (
+      !(usableUntil > Date.now()) ||
+      !row.material_version ||
+      !isDeepStrictEqual(row.admission.grant, source.grant)
+    ) {
+      return;
+    }
+    const version = {
+      preparationAttemptId: row.id,
+      materialVersion: row.material_version,
+      usableUntil,
+    };
+    if (!warm) {
+      return version;
+    }
+    let opened = false;
+    return {
+      ...version,
+      open: () => {
+        if (opened || !(Date.now() < usableUntil)) {
+          throw new Error("Prepared material unavailable.");
+        }
+        opened = true;
+        return this.open(row.sealed, row.admission, row.id);
+      },
+    };
   }
 
   // Request access pins the selected material and the earlier material/request deadline.

@@ -326,42 +326,20 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           // The registry no longer admits this binding.
           return withdrawn;
         }
-        const { rows: found } = await c.query(
-          `SELECT a.id,a.admission,a.material_version,a.usable_until,a.sealed
-          FROM ${families} f JOIN ${attempts} a USING(source_id)
-          WHERE f.source_id=$1 AND f.source=$2::jsonb AND f.enabled
-          AND f.admission->>'issuerAuthority'=$3
-          AND a.custody='current' AND a.state='committed' AND a.admission=f.admission
-          AND a.usable_until BETWEEN clock_timestamp() AND clock_timestamp() + interval '61 minutes'
-          AND a.provider_expires_at >= a.usable_until FOR SHARE OF f,a`,
-          [source.key.source.id, source, this.authority],
-        );
-        if (found.length !== 1) {
+        const material = await this.tokens.readWarm(c, source);
+        if (!material) {
           return unprepared;
         }
-        const material = found[0] as {
-          id: string;
-          admission: GitHubPreparationAdmission;
-          material_version: string;
-          usable_until: Date;
-          sealed: Buffer;
-        };
-        const until = Math.min(Number(current.end_ms), material.usable_until.getTime());
-        if (
-          !isDeepStrictEqual(material.admission.grant, source.grant) ||
-          !material.sealed ||
-          !material.material_version ||
-          signal.aborted ||
-          !Number.isFinite(until) ||
-          Date.now() >= until
-        ) {
+        const { preparationAttemptId, materialVersion } = material;
+        const until = Math.min(Number(current.end_ms), material.usableUntil);
+        if (signal.aborted || !(Date.now() < until)) {
           return unprepared;
         }
-        bytes = this.open(material.sealed, material.admission, material.id);
+        bytes = material.open();
         return {
           expiresAt: new Date(until).toISOString(),
-          preparationAttemptId: material.id,
-          materialVersion: material.material_version,
+          preparationAttemptId,
+          materialVersion,
           sessionId: current.session.sessionId,
           ...current.session.binding.grant,
           repository: source.grant.repository,
@@ -379,7 +357,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       if (!bytes || Date.now() >= Date.parse(result.expiresAt)) {
         return unprepared;
       }
-      return Object.freeze({ ...result, value: bytes.toString("utf8") });
+      return Object.freeze({
+        ...result,
+        value: bytes.toString("utf8"),
+      });
     } finally {
       bytes?.fill(0);
     }
@@ -432,12 +413,12 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         if ("kind" in decision) {
           return decision;
         }
-        const { admission, sealed, ...receipt } = decision;
-        if (!sealed || signal.aborted || Date.now() >= Date.parse(receipt.sendStartBy)) {
+        const { open, ...receipt } = decision;
+        if (!open || signal.aborted || Date.now() >= Date.parse(receipt.sendStartBy)) {
           throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
         }
         // Under the same material lock, with no await between this check and open.
-        bytes = this.open(sealed, admission, decision.preparationAttemptId);
+        bytes = open();
         return receipt;
       });
       if ("kind" in result) {
@@ -446,7 +427,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       if (!bytes || signal.aborted || Date.now() >= Date.parse(result.sendStartBy)) {
         throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
       }
-      return { ...result, value: bytes.toString("utf8") };
+      return {
+        ...result,
+        value: bytes.toString("utf8"),
+      };
     } finally {
       bytes?.fill(0);
     }
@@ -530,38 +514,21 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     } else if (q.pull) {
       return fail();
     }
-    const { rows: found } = await c.query(
-      `SELECT a.id,a.admission,a.material_version, a.usable_until${installed ? "" : ", a.sealed"}
-      FROM ${families} f JOIN ${attempts} a USING(source_id)
-      WHERE f.source_id=$1 AND f.source=$2::jsonb AND f.enabled AND f.admission->>'issuerAuthority'=$3
-      AND a.custody='current' AND a.state='committed' AND a.admission=f.admission
-      AND a.usable_until BETWEEN clock_timestamp() AND clock_timestamp() + interval '61 minutes'
-      AND a.provider_expires_at >= a.usable_until FOR SHARE OF f,a`,
-      [source.key.source.id, source, this.authority],
-    );
-    const m = found[0] as
-      | {
-          id: string;
-          admission: GitHubPreparationAdmission;
-          material_version: string;
-          usable_until: Date;
-          sealed?: Buffer;
-        }
-      | undefined;
-    if (
-      !m ||
-      !isDeepStrictEqual(m.admission.grant, source.grant) ||
-      (installed &&
-        (m.id !== installed.preparationAttemptId ||
-          m.material_version !== installed.materialVersion))
-    ) {
+    // The same transaction keeps both live authority and the selected version locked until the
+    // use (and, when applicable, the grant's draft allowance) commits. OpenShell already has the
+    // installed material; only the explicitly selected native sender may open it here.
+    const material = installed
+      ? await this.tokens.current(c, source, installed)
+      : await this.tokens.readWarm(c, source);
+    if (!material) {
       return fail();
     }
+    const { preparationAttemptId, materialVersion } = material;
     const until = Math.min(
       Date.now() + 5000,
       deadline,
       Number(current.end_ms),
-      m.usable_until.getTime(),
+      material.usableUntil,
     );
     if (!valid(until)) {
       return fail();
@@ -581,8 +548,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           scope.operationId,
           q.exchangeId,
           current.session.admissionId,
-          m.id,
-          m.material_version,
+          preparationAttemptId,
+          materialVersion,
           q.requestDigestSha256,
           scope,
           sendStartBy,
@@ -599,8 +566,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         [
           q.exchangeId,
           current.session.admissionId,
-          m.id,
-          m.material_version,
+          preparationAttemptId,
+          materialVersion,
           q.operation,
           q.requestDigestSha256,
           sendStartBy,
@@ -613,10 +580,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     return {
       sendStartBy,
       exchangeId: q.exchangeId,
-      preparationAttemptId: m.id,
-      materialVersion: m.material_version,
-      admission: m.admission,
-      sealed: m.sealed,
+      preparationAttemptId,
+      materialVersion,
+      open: material.open,
     };
   }
 

@@ -1,3 +1,4 @@
+import { retireToken } from "../../../../backends/token-service/retirement.ts";
 import { githubProviderOrigin } from "./factory.ts";
 import { createHash, createPrivateKey, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
@@ -343,13 +344,7 @@ export async function retirePreparedGitHubToken(
   ca: Uint8Array | undefined,
   clock: ReturnType<typeof createSystemClock>,
 ) {
-  const candidate = await repository.takeRetirement(familyId);
-  if (!candidate || candidate === "issuer-mismatch") {
-    return candidate ?? "idle";
-  }
-  let revoked = false;
-  const { bytes, admission: a, id } = candidate;
-  try {
+  const result = await retireToken(repository, familyId, async ({ bytes, admission: a, id }) => {
     const signal = AbortSignal.any([outer, AbortSignal.timeout(25_000)]);
     const assertAdmitted = () => signal.throwIfAborted();
     const attempt: AttemptContext = {
@@ -367,18 +362,15 @@ export async function retirePreparedGitHubToken(
       },
     };
     const response = await createProviderTransport(apiOrigin, ca, clock, a.grant).revoke(
-      bytes.toString(),
+      Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(),
       attempt,
       () => {},
     );
-    revoked = response.status === 204;
     response.body.fill(0);
-  } finally {
-    bytes.fill(0);
-    await repository.finishRetirement(id, revoked);
-  }
-  if (!revoked) {
+    return response.status === 204;
+  });
+  if (result === "unknown") {
     throw new Error("Prepared GitHub token revocation is unconfirmed.");
   }
-  return "retired" as const;
+  return result;
 }

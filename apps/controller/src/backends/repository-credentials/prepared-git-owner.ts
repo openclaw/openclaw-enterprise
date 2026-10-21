@@ -273,6 +273,9 @@ export async function startPreparedGitHubGitOwner(options: Options) {
   }
   return {
     use,
+    // Recovery-only observation for the worker, never part of its use socket.
+    inspectTokenAttempt: (familyId: string, attemptId: string) =>
+      store.inspectTokenAttempt(familyId, attemptId),
     // Worker-only custody transfer to the verified OpenShell provider; never a control RPC.
     readOpenShellMaterial(revisionId: string, signal: AbortSignal) {
       return store.readOpenShellMaterial(revisionId, AbortSignal.any([signal, stop.signal]));

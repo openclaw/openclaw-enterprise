@@ -120,12 +120,25 @@ test(
     await f.withdraw();
     await f.owner.maintain();
     const { rows } = await f.pool.query(
-      "select state,custody,provider_expires_at from occ.prepared_github_attempts where source_id=$1",
+      "select id from occ.prepared_github_attempts where source_id=$1",
       [f.familyId],
     );
-    assert.deepEqual(rows, [
-      { state: "quarantined", custody: "intent", provider_expires_at: null },
-    ]);
+    assert.equal(rows.length, 1);
+    const id = rows[0].id as string;
+    // A restarted owner can inspect the exact attempt after withdrawal, with no token, inferred
+    // expiry, or second issue. A different family cannot borrow that recovery observation.
+    const restarted = await f.startOwner();
+    const traceLength = f.gh.trace.length;
+    assert.equal(await restarted.inspectTokenAttempt(f.familyId + "-other", id), undefined);
+    assert.deepEqual(await restarted.inspectTokenAttempt(f.familyId, id), {
+      state: "quarantined",
+      custody: "intent",
+      materialVersion: null,
+      providerExpiresAt: null,
+    });
+    await restarted.maintain();
+    assert.equal(f.gh.trace.length, traceLength);
+    assert.equal(f.gh.issuesOfTokens.length, 1);
     assert.equal(f.gh.trace.filter((x) => x.method === "DELETE").length, 0);
   },
 );
