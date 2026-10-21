@@ -1772,6 +1772,7 @@ async function loadPage({
           }),
         );
       }
+
       markMountedRoute(current);
       return;
     }

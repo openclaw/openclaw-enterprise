@@ -1,7 +1,7 @@
 ---
 created: 2026-08-25
-updated: "2026-10-20"
-last_updated_session: "authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28"
+updated: "2026-10-21"
+last_updated_session: "authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6"
 ---
 
 # Production Startup Flow
@@ -302,6 +302,8 @@ until tenant deployment/TUI procedures run.
 - `DRIVER_CONFIGURATION_INVALID`: correct the field identified by `details`
   (JSON Pointer, code, message). For `/runtime/gatewayStorageClassName`, use a
   Kubernetes DNS-subdomain name.
+  `apps/controller/src/api-startup.mjs:startupFailureFields` preserves these shared
+  diagnostics before `server.mjs` emits the process startup error.
 - `kubectl -n openclaw-system logs job/oce-initialization -c bootstrap` is the
   first check for unsafe output storage, existing outputs, database-role
   failures, auth errors (`AUTH_SECRET_INVALID`, `AUTH_BASE_URL_INVALID`), and
@@ -330,6 +332,8 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21 19:06: Preserve shared configuration diagnostics through the rebased API startup entry point. (authoring-run/445d1431-dae8-461a-8559-e95dfa03b4f6 - d4e78cadca361efaf089a31972f084a91ff307e1)
 
 - 2026-10-20 01:48: Trace safe typed startup refusals. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
 

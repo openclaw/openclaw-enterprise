@@ -399,13 +399,22 @@ test("API and worker refuse a bad observability host or runtime image before ope
                 mode: "production",
                 environment: { OCC_CONFIG_PATH: copy },
               }),
-              message,
+              Array.isArray(message)
+                ? (error) => {
+                    assert.ok(error instanceof ConfigurationValidationError, label);
+                    assert.deepEqual(error.error.details, message, label);
+                    return true;
+                  }
+                : message,
               label,
             );
             return;
           }
           for (const diagnostic of await refuses(copy, code, label)) {
             assert.equal(diagnostic.message, undefined, label);
+            if (Array.isArray(message)) {
+              assert.deepEqual(diagnostic.details, message, label);
+            }
           }
         }),
       );
@@ -462,20 +471,36 @@ test("API and worker refuse a bad observability host or runtime image before ope
   const dotted = (image) => image.replace(/^([^/]*\/)/, "$1re..po/");
   const refusedImage = (role, refuse, message) => [
     `${role} ${refuse(original[role])}`,
-    message,
+    [{ path: `/images/${role}`, code: "INVALID_FORMAT", message }],
     () => {
       Object.assign(images, original);
       images[role] = refuse(original[role]);
       assert.notEqual(images[role], original[role]);
     },
   ];
-  check("RUNTIME_IMAGE_INVALID", [
-    refusedImage("gateway", uppercase, /Gateway image repository path must be lowercase/),
-    refusedImage("agent", uppercase, /Agent image repository path must be lowercase/),
+  check("DRIVER_CONFIGURATION_INVALID", [
+    refusedImage(
+      "gateway",
+      uppercase,
+      "Gateway image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.",
+    ),
+    refusedImage(
+      "agent",
+      uppercase,
+      "Agent image repository path must be lowercase; Kubernetes refuses to pull an uppercase one.",
+    ),
   ]);
-  check("RUNTIME_IMAGE_INVALID", [
-    refusedImage("agent", dotted, /Agent image must be a container image reference/),
-    refusedImage("gateway", dotted, /Gateway image must be a container image reference/),
+  check("DRIVER_CONFIGURATION_INVALID", [
+    refusedImage(
+      "agent",
+      dotted,
+      "Agent image must be a container image reference Kubernetes can pull.",
+    ),
+    refusedImage(
+      "gateway",
+      dotted,
+      "Gateway image must be a container image reference Kubernetes can pull.",
+    ),
   ]);
   Object.assign(images, original);
   configuration.observability = { url: "http://192.168.1.1" };
