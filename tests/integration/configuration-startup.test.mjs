@@ -55,9 +55,11 @@ const productionServer = {
 };
 
 // Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
-// the signal instead of reading as a wrong exit status.
+// the signal instead of reading as a wrong exit status. The timeout only guards against a
+// process that never exits: every boot here ends in a startup refusal within a second or two
+// on an idle machine, and on a loaded runner the same boot took more than 10 s.
 const limit = concurrencyLimit();
-async function boot(script, env, timeout = 10_000) {
+async function boot(script, env, timeout = 60_000) {
   const { signal, ...result } = await limit(() =>
     captureChild(process.execPath, [script], {
       cwd: process.cwd(),
@@ -88,8 +90,8 @@ before(async () => {
       OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
     };
     const [server, worker] = await settled([
-      boot("apps/controller/src/server.mjs", { ...env, ...productionServer }, 60_000),
-      boot("apps/controller/src/worker.mjs", env, 60_000),
+      boot("apps/controller/src/server.mjs", { ...env, ...productionServer }),
+      boot("apps/controller/src/worker.mjs", env),
     ]);
     // A boot that stopped earlier would leave the composition modules uncached.
     assert.equal(startupDiagnostic(server.stderr, "startup-error").code, "PERSISTENCE_UNAVAILABLE");
@@ -253,7 +255,7 @@ test("API and worker refuse a bad observability host or runtime image before ope
   const refuses = async (file, code, label) =>
     settled(
       processes.map(async ([script, event, env]) => {
-        const result = await boot(script, { ...env, OCC_CONFIG_PATH: file }, 15_000);
+        const result = await boot(script, { ...env, OCC_CONFIG_PATH: file });
         assert.equal(result.status, 1, script);
         assert.ok(!result.stderr.includes(file), result.stderr);
         const diagnostic = startupDiagnostic(result.stderr, event);
