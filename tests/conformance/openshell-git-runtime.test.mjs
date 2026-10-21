@@ -149,7 +149,11 @@ function fixture({ store, world } = {}) {
         ...supervisor,
       });
     },
-    rotate: async (binding, token) => {
+    rotate: async (binding, release) => {
+      const token = await release();
+      if (!token) {
+        return;
+      }
       calls.rotate += 1;
       if (faults.rotate) {
         throw faults.rotate;

@@ -224,7 +224,7 @@ test("prepared Git static token and rotation use released fields without returni
     String(Math.floor(Date.parse(first.expiresAt) / 1000)),
   );
   const next = token("successor");
-  const rotated = await binding.rotate(receipt, next, signal());
+  const rotated = await binding.rotate(receipt, async () => next, signal());
   assert.equal(rotated.resourceVersion, "2");
   assert.equal(rotated.supervisor, "unknown");
   assert.equal(JSON.stringify(rotated).includes(next.value), false);
@@ -263,7 +263,7 @@ test("prepared Git refuses foreign, stale, changed-profile and replaced-workspac
     state.workspaceId = scope.workspaceId;
     mutation();
     await assert.rejects(
-      binding.rotate(receipt, token("rejected"), signal()),
+      binding.rotate(receipt, async () => token("rejected"), signal()),
       (error) => error instanceof OpenShellPreparedGitProviderError && error.outcome === "refused",
     );
     assert.equal(
@@ -275,7 +275,10 @@ test("prepared Git refuses foreign, stale, changed-profile and replaced-workspac
     ...scope,
     executionId: "successor",
   });
-  await assert.rejects(replacement.rotate(receipt, token(), signal()), /refused/);
+  await assert.rejects(
+    replacement.rotate(receipt, async () => token(), signal()),
+    /refused/,
+  );
 });
 
 test("prepared Git preserves uncertain write outcomes and redacts private gateway failures", async (t) => {
@@ -284,7 +287,7 @@ test("prepared Git preserves uncertain write outcomes and redacts private gatewa
   state.lost = true;
   const next = token("private_successor");
   await assert.rejects(
-    binding.rotate(receipt, next, signal()),
+    binding.rotate(receipt, async () => next, signal()),
     (error) =>
       error.outcome === "unknown" &&
       !String(error.stack).includes(next.value) &&
@@ -305,7 +308,10 @@ test("prepared Git sends a CAS precondition and fails closed on a concurrent gat
   const { state, binding } = await wire(t);
   const receipt = await binding.prepare(token(), signal());
   state.conflict = true;
-  await assert.rejects(binding.rotate(receipt, token("racing"), signal()), /unknown/);
+  await assert.rejects(
+    binding.rotate(receipt, async () => token("racing"), signal()),
+    /unknown/,
+  );
   assert.equal(state.provider.metadata.resource_version, "1");
   assert.equal(
     state.requests.filter((request) => request.provider?.metadata?.resource_version).length,
@@ -387,7 +393,7 @@ test("prepared Git bootstraps without privilege and distinguishes accepted rotat
     (await binding.observe(bootstrap, "sandbox-id", signal())).credentialState,
     "bootstrap",
   );
-  const active = await binding.rotate(bootstrap, token(), signal());
+  const active = await binding.rotate(bootstrap, async () => token(), signal());
   assert.equal(active.credentialState, "active");
   assert.equal(
     await binding.observe(active, "sandbox-id", signal()),

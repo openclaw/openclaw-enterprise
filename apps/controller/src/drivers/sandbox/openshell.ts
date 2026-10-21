@@ -3001,6 +3001,11 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       `Sandbox ${sandbox.resourceName} cannot be created or adopted`,
     );
     let existing = await refused(() => client.getSandbox(selector, context.signal));
+    if (git?.existingSandboxId && existing?.id !== git.existingSandboxId) {
+      throw new OpenShellSandboxConfigurationFailure(
+        "The standing Git execution is no longer present.",
+      );
+    }
     if (!codex && existing === undefined) {
       await prepareNativeWorkspace(context, this.options, sandbox);
     }
@@ -3185,6 +3190,21 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         return JSON.stringify([namespace, revision.id, identities]);
       },
     };
+  }
+
+  /** The existing launch and Pod identities for a read-only standing execution check. */
+  standingGitExecution(context: SandboxNamespaceContext & { revision: Readonly<AgentRevision> }) {
+    this.requireOperatorWorkspaceMode("observe standing repository execution");
+    const continuity = this.gitContinuity(context);
+    if (continuity) {
+      const sandbox = this.sandboxRef(context);
+      return {
+        continuity,
+        client: this.gatewayClientForNamespace(sandbox.namespaceName),
+        workspace: workspaceName(context.namespace),
+        sandbox: sandbox.resourceName,
+      };
+    }
   }
 
   async retireExpiredRepositoryAccess(

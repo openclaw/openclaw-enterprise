@@ -70,6 +70,13 @@ export interface OpenShellGitRouteStore {
    * answers undefined.
    */
   adopt(revisionId: string, workerInstance: string): Promise<OpenShellGitRouteRecord | undefined>;
+  /** Read a known standing installation under current authority; never take its fence or open it. */
+  standing(
+    revision: Readonly<AgentRevision>,
+  ): Promise<
+    | { route: OpenShellGitRouteRecord; retainedLaunchHash: string; executionFingerprint: string }
+    | undefined
+  >;
   /** Marks a provider write in flight. False when the fence is stale. */
   writing(revisionId: string, fence: number, write: OpenShellGitRouteWrite): Promise<boolean>;
   /** Records the route as verified and clears a pending write. False when the fence is stale. */
@@ -236,6 +243,43 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           )
         ).rows[0] as Row | undefined);
       return row === undefined ? undefined : record(row);
+    });
+  }
+
+  async standing(revision: Readonly<AgentRevision>) {
+    const credentials = revision.repositoryCredentials;
+    if (!credentials?.standingApprovalId) {
+      return;
+    }
+    return this.query(async (c) => {
+      // A cold execution check precedes session renewal and normal route adoption. Require a
+      // previously witnessed installation and the exact live approval and execution. This read
+      // takes no route ownership and cannot turn a pending write or finite admission into renewal.
+      const { rows } = await c.query(
+        `SELECT r.*, e.fingerprint AS execution_fingerprint FROM ${table} r
+         JOIN occ.repository_standing_executions e USING (namespace_id, agent_id, revision_id)
+         JOIN occ.agent_revisions v ON v.id = r.revision_id AND v.agent_id = r.agent_id AND v.namespace_id = r.namespace_id
+         WHERE (r.revision_id, r.namespace_id, r.agent_id) = ($1, $2, $3)
+           AND v.admitted_spec->'repository_credentials' = $4::jsonb
+           AND e.execution_id = r.revision_id
+           AND r.blocked IS NULL AND r.write_pending IS NULL AND r.detach_request_id IS NULL
+           AND r.credential_state = 'active' AND r.material_version IS NOT NULL AND r.preparation_attempt_id IS NOT NULL
+           AND r.retained_launch_hash IS NOT NULL AND r.observed->>'executionId' = r.revision_id
+           AND r.observed->>'credentialState' = 'active' AND r.observed->>'workspace' = r.workspace
+           AND r.observed->>'sandbox' = r.sandbox AND r.observed->>'providerId' = r.provider_id
+           AND r.observed->>'providerResourceVersion' = r.provider_resource_version AND r.observed->>'profileVersion' = r.profile_version
+           AND occ.repository_standing_execution_is_current($4::jsonb, $2, $3, $1)`,
+        [revision.id, revision.namespaceId, revision.agentId, JSON.stringify(credentials)],
+      );
+      const row = rows[0] as
+        (Row & { retained_launch_hash: string; execution_fingerprint: string }) | undefined;
+      return (
+        row && {
+          route: record(row),
+          retainedLaunchHash: row.retained_launch_hash,
+          executionFingerprint: row.execution_fingerprint,
+        }
+      );
     });
   }
 

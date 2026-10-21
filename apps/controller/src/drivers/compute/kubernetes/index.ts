@@ -5646,7 +5646,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   async verifyRepositoryExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {
-    return this.openShellGit?.verifyExecution(revision, signal);
+    return this.openShellGit?.verifyExecution(revision, signal, async () => {
+      const driver = this.sandboxDriverForRevision(revision) as
+        Partial<OpenShellSandboxDriver> | undefined;
+      if (
+        revision.compute.id !== this.id ||
+        revision.compute.implementation !== this.implementation ||
+        driver?.implementation !== "openshell" ||
+        !driver.standingGitExecution
+      ) {
+        return;
+      }
+      const { name, external } = await this.resolveNamespace(revision.namespaceId);
+      const namespace = await this.getNamespace(name);
+      if (!namespace) {
+        return;
+      }
+      this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
+      const context = await this.sandboxNamespaceContext(
+        this.sandboxNamespaceForRevision(revision, name),
+        name,
+      );
+      return driver.standingGitExecution({
+        ...context,
+        revision,
+        signal: AbortSignal.any([context.signal, signal]),
+      });
+    });
   }
 
   async prepareRevision(

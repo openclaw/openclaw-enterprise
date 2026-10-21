@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { observeOpenShellGitPredecessor } from "./openshell-expired-git.ts";
 import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
@@ -348,11 +349,13 @@ export class OpenShellPreparedGitProvider {
    * The binding of a generation this worker's own earlier write left, from the persisted
    * route of a restarted worker (finding 2128). No gateway read and no evidence: observe()
    * verifies these facts against the gateway before the route reopens, and a generation
-   * that does not verify never reopens it. An expired active generation is restored as the
-   * unprivileged one: its token grants nothing, so the route reopens only once the normal
-   * preparation path rotates the provider (a stale generation refuses the conditional write).
+   * that does not verify never reopens it. The last generation can be expired: observe() still refuses it.
+   * Only observePredecessor() may then identify the installation for standing succession.
    */
-  restore(generation: OpenShellPreparedGitGeneration): OpenShellPreparedGitBinding {
+  restore(
+    generation: OpenShellPreparedGitGeneration,
+    standing = false,
+  ): OpenShellPreparedGitBinding {
     const expires = Date.parse(generation.expiresAt);
     if (
       !generation.providerId ||
@@ -364,7 +367,7 @@ export class OpenShellPreparedGitProvider {
     ) {
       refuse();
     }
-    const expired = generation.credentialState !== "active" || expires <= Date.now();
+    const expired = !standing && generation.credentialState === "active" && expires <= Date.now();
     return Object.freeze({
       workspace: this.scope.workspace,
       sandbox: this.scope.sandbox,
@@ -591,15 +594,43 @@ export class OpenShellPreparedGitProvider {
     }
   }
 
+  /** Verify the exact previous installation, even if its credential expired. Never used by lookup. */
+  async observePredecessor(
+    binding: OpenShellPreparedGitBinding,
+    previous: OpenShellPreparedGitInstalled,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (
+      !this.owns(binding) ||
+      binding.credentialState !== "active" ||
+      previous.credentialState !== "active" ||
+      previous.executionId !== binding.executionId ||
+      previous.workspace !== binding.workspace ||
+      previous.sandbox !== binding.sandbox ||
+      previous.provider !== binding.provider ||
+      previous.providerId !== binding.providerId ||
+      previous.providerResourceVersion !== binding.resourceVersion ||
+      previous.profileVersion !== binding.profileVersion
+    ) {
+      return false;
+    }
+    await this.workspace(signal);
+    await this.profileVersion(signal, binding.profileVersion);
+    const current = await this.client.getProvider(this.scope.workspace, this.provider, signal);
+    if (current?.id !== binding.providerId || current.resourceVersion !== binding.resourceVersion) {
+      return false;
+    }
+    this.binding(current, binding.profileVersion, binding.expiresAt);
+    return observeOpenShellGitPredecessor(this.client, previous, signal);
+  }
+
   async rotate(
     previous: OpenShellPreparedGitBinding,
-    token: OpenShellPreparedGitToken,
+    release: () => Promise<OpenShellPreparedGitToken | undefined>,
     signal: AbortSignal,
-  ): Promise<OpenShellPreparedGitBinding> {
+  ): Promise<OpenShellPreparedGitBinding | undefined> {
     previous = Object.freeze({ ...previous });
-    token = Object.freeze({ ...token });
-    this.token(token);
-    let writing = false;
+    let phase: "reading" | "release" | "writing" = "reading";
     try {
       if (!this.owns(previous) || !this.client.updateProviderCredentialsConditionally) {
         refuse();
@@ -615,7 +646,16 @@ export class OpenShellPreparedGitProvider {
         refuse();
       }
       this.binding(current, previous.profileVersion, previous.expiresAt);
-      writing = true;
+      // This is the last await before the conditional write. Release checks the owner's current
+      // approval, execution, session and material. It cannot recall a write already handed off.
+      phase = "release";
+      const token = await release();
+      phase = "reading";
+      if (!token || signal.aborted) {
+        return;
+      }
+      this.token(token);
+      phase = "writing";
       const updated = await this.client.updateProviderCredentialsConditionally(
         {
           workspace: this.scope.workspace,
@@ -638,9 +678,12 @@ export class OpenShellPreparedGitProvider {
     } catch (error) {
       // Refused before the write for a read the gateway did not answer, the rotation is
       // observed again later; an unknown write is never retried (finding 2136).
+      if (phase === "release") {
+        throw error; // The local authority failed before this writer could send anything.
+      }
       throw new OpenShellPreparedGitProviderError(
-        writing ? "unknown" : "refused",
-        writing ? undefined : readFailure(error),
+        phase === "writing" ? "unknown" : "refused",
+        phase === "writing" ? undefined : readFailure(error),
       );
     }
   }

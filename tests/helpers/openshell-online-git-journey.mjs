@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { GrpcOpenShellGatewayClient } from "../../apps/controller/src/drivers/sandbox/openshell-gateway-client.ts";
@@ -57,7 +58,7 @@ export async function gitCommandBodies(t, pushRef) {
 // No Kubernetes, real supervisor, credential or model provider is needed for this test.
 export async function gitExpiryGateway(
   t,
-  { model, workspace, sandbox, revisionId, deadline, platformProfile },
+  { model, workspace, sandbox, revisionId, deadline, platformProfile, trackGitExpiry = false },
 ) {
   const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
   const grpc = require("@grpc/grpc-js");
@@ -75,7 +76,16 @@ export async function gitExpiryGateway(
     oneofs: true,
   });
   const { OpenShell } = grpc.loadPackageDefinition(definition).openshell.v1;
-  const world = { writes: 0, detaches: [], reports: [], version: 13, modelFailed: false };
+  const world = {
+    writes: 0,
+    detaches: [],
+    reports: [],
+    version: 13,
+    modelFailed: false,
+    gitExpiresAt: deadline,
+    installedDigest: "",
+    id: "",
+  };
   const profiles = {
     inference: {
       id: "inference",
@@ -123,7 +133,7 @@ export async function gitExpiryGateway(
     const name = req.provider;
     const git = name === gitName;
     const removed = world.detaches.length !== 0;
-    const expired = git && !removed && Date.now() >= deadline;
+    const expired = git && !removed && Date.now() >= world.gitExpiresAt;
     const absent = git && removed;
     const profileChanged = retainedProfile.resource_version === "2";
     const snapshot = {
@@ -241,11 +251,17 @@ export async function gitExpiryGateway(
       providers[gitName] = provider;
       return { provider };
     },
-    UpdateProvider: ({ provider: { metadata } }) => {
+    UpdateProvider: ({ provider: { metadata, credentials }, credential_expiration_times }) => {
       const provider = providers[gitName];
       assert.equal(metadata.name, gitName);
       assert.equal(metadata.resource_version, provider.metadata.resource_version);
       provider.metadata.resource_version = String(Number(metadata.resource_version) + 1);
+      if (trackGitExpiry) {
+        // Report the expiry of the generation actually received on the stock CAS wire.
+        const { seconds, nanos } = credential_expiration_times.GITHUB_TOKEN;
+        world.gitExpiresAt = Number(seconds) * 1000 + Number(nanos ?? 0) / 1_000_000;
+        world.installedDigest = createHash("sha256").update(credentials.GITHUB_TOKEN).digest("hex");
+      }
       world.writes++;
       return { provider };
     },

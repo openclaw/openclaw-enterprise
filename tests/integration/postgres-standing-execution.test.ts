@@ -1,116 +1,21 @@
 import assert from "node:assert/strict";
 import { randomUUID, createHash } from "node:crypto";
 import test from "node:test";
-import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
-import type { Pool } from "pg";
-import {
-  PostgresPlatformState,
-  repositoryApprovalFingerprint,
-} from "../../packages/occ/src/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
-import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
-import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
-import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
+import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
+import { requiresPostgres } from "../helpers/postgres-database.mjs";
 
 // Durable execution fence only. No claim of a restored OpenShell process or model turn.
 test(
   "standing execution survives a State restart but stop cannot be undone by run intent",
   requiresPostgres,
   async (t) => {
-    await ensurePostgresAgentBootstrap(t, {
-      label: "standing-execution",
-      authSecret: "standing-execution-local-test-secret-32",
-    });
-    const database = { url: databaseUrl!, pools: new Set<Pool>(), workers: new Set() };
-    t.after(async () => {
-      for (const pool of database.pools) {
-        await pool.end();
-      }
-    });
-    const setupOptions = { database, leaseDurationMs: 30_000 };
-    const f = await createWorkerRevisionFixtures(import.meta.url).setup(t, setupOptions);
-    const driver = new GitHubRepoDriver(
-      {
-        id: "execution-proof",
-        client: new UnixRepositoryCredentialControlClient({
-          controlSocket: "/unused-execution-contract/control.sock",
-        }),
-        drivers: { repo: "execution-proof" },
-      },
-      {
-        version: 1,
-        backendId: "execution-proof",
-        providerInstanceId: "local-provider",
-        appId: "123",
-        githubInstallationId: "456",
-        maximumDurationSeconds: 120,
-        allowStandingApprovals: true,
-        repositories: [
-          {
-            repositoryRef: "source",
-            repositoryId: "789",
-            repository: "example/source",
-            namespaces: [
-              {
-                namespaceId: f.namespace.id,
-                profiles: ["git-write"],
-                allowStandingApproval: true,
-                transport: "git-only",
-                pushRefAllowlist: ["refs/heads/review"],
-              },
-            ],
-          },
-        ],
-      },
-      { sessionDurationSeconds: 120 },
-    );
-    const owner = await f.agent("execution-fence");
-    const [selected] = driver.resolve({
-      namespaceId: f.namespace.id,
-      bindings: [{ repositoryRef: "source", profile: "git-write" }],
-    }).bindings;
-    const binding = selected!;
-    await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
-      JSON.stringify([{ repositoryRef: "source", profile: "git-write" }]),
-      owner.id,
-    ]);
-    const scope = driver.standingApprovalScope({ namespaceId: f.namespace.id, binding })!;
-    const fingerprint = repositoryApprovalFingerprint({
-      namespaceId: f.namespace.id,
-      agentId: owner.id,
-      binding,
-      scope,
-    });
-    const approval = await f.state.transact((u) =>
-      u.repositorySessions.approveStanding({
-        id: randomUUID(),
-        namespaceId: f.namespace.id,
-        agentId: owner.id,
-        binding,
-        scope,
-        scopeFingerprint: fingerprint,
-        approvedBy: f.actor.id,
-        createdAt: new Date().toISOString(),
-      }),
-    );
-    const credentials = {
-      driver: { id: driver.id, implementation: driver.implementation },
-      bindings: [binding],
-      deadlineWallMs: Date.now() + 120_000,
-      standingApprovalId: approval.id,
-      standingApprovalGeneration: approval.generation,
-      standingApprovalScopeFingerprint: fingerprint,
-    };
-    const revisionOptions = { actorId: f.actor.id, repositoryCredentials: credentials };
-    const revision = await f.revision(owner, 1, revisionOptions);
-    const key = { namespaceId: f.namespace.id, agentId: owner.id, revisionId: revision.id };
+    const { f, key, owner, revision, revisionOptions, credentials, binding } =
+      await standingExecutionFixture(t, import.meta.url);
     const execution = {
       executionId: randomUUID(),
       fingerprint: createHash("sha256").update(randomUUID()).digest("hex"),
     };
-    await f.state.transact((u) =>
-      u.agents.compareAndSetActiveRevision(key.namespaceId, key.agentId, undefined, key.revisionId),
-    );
     await f.state.transact((u) => u.repositorySessions.recordStandingExecution(key, execution));
     const cold = new PostgresPlatformState(f.observerPool);
     assert.deepEqual(await cold.read((v) => v.repositorySessions.findStandingExecution(key)), {

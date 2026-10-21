@@ -122,7 +122,10 @@ function evidence(
   const desired = r?.desired;
   const old = options?.old === true;
   const kind = options?.receiptId && !options.observe ? "DETACH" : "OBSERVE";
-  const expired = old && reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
+  const expired =
+    old &&
+    state === "PROVIDER_READINESS_STATE_FAILED" &&
+    reason === "PROVIDER_READINESS_REASON_CREDENTIAL_EXPIRED";
   const at = Date.parse(status.observedTime ?? "");
   const evaluated = Date.parse(status.evaluatedTime ?? "");
   requireIdentity(
@@ -176,6 +179,21 @@ function evidence(
       Math.abs(Date.now() - evaluated) < 30_000,
   );
   return desired;
+}
+
+/** Identity of exactly the last installed generation, including stock's explicit expiration.
+ * This is evidence for standing succession, never evidence that a credential may be used. */
+export async function observeOpenShellGitPredecessor(
+  client: Client,
+  git: Git,
+  signal: AbortSignal,
+) {
+  const { workspace, sandbox, provider, providerId, providerResourceVersion } = git;
+  const status = await client.getSandboxProviderStatus(workspace, sandbox, provider, signal);
+  return !!evidence(status, git, git.attachmentEpoch, provider, providerId, {
+    old: true,
+    resourceVersion: providerResourceVersion,
+  });
 }
 
 async function modelProvider(client: Client, git: Git, model: string, signal: AbortSignal) {
