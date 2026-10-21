@@ -121,7 +121,7 @@ stay locked while pending. Snapshot views deploy current settings. Failed reads
 send no bodyless deploy POST; success opens the version. Uncertain POSTs require
 history readback before retry; browser reads are not atomic with admission.
 
-`apps/controller/src/console/drafts.mjs:createDraftStore` holds document-local drafts.
+`apps/controller/src/console/drafts.mts:createDraftStore` holds document-local drafts.
 `console.mjs:resetReads` and `detail.mjs:renderTab` capture fields before teardown,
 excluding passwords. Namespace and Agent keys isolate drafts; session expiry,
 user change, logout, exit, and reload clear them. Nothing enters browser storage

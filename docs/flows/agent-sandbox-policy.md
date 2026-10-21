@@ -144,7 +144,7 @@ that the entire operation was rejected.
 `console/agents/sandbox-policy.mjs:mutate` displays rejected saves as focused
 alerts and scrolls the reason into view after rendering. Ceiling rejection
 preserves the attempted additions for correction without changing saved state.
-`console/navigation.mjs:createNavigation` admits the `policy` tab in login
+`console/navigation.mts:createNavigation` admits the `policy` tab in login
 destinations, preserving an Agent's Policy denials link after sign-in.
 
 The console reads the policy owner even when discovery returns no descriptor. This

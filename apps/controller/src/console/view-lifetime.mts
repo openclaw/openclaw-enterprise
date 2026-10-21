@@ -1,3 +1,5 @@
+export type ViewLifetime = ReturnType<typeof createViewLifetime>;
+
 export function createViewLifetime() {
   let generation = 0;
   let reads = new AbortController();
@@ -6,7 +8,7 @@ export function createViewLifetime() {
     capture() {
       return generation;
     },
-    isCurrent(active) {
+    isCurrent(active: number) {
       return active === generation;
     },
     get signal() {

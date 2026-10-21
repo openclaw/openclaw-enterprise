@@ -1,6 +1,63 @@
-export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = () => null }) {
+import type { ViewLifetime } from "./view-lifetime.mjs";
+
+export interface RequestOptions {
+  method?: string;
+  body?: unknown;
+  signal?: AbortSignal;
+  expectedStatus?: number;
+  includeMeta?: boolean;
+  responseType?: "json" | "text";
+  /** A session-scoped read that a later view joins instead of aborting it. */
+  outlivesView?: boolean;
+}
+
+interface ApiClientOptions {
+  lifetime: Pick<ViewLifetime, "capture" | "isCurrent" | "signal">;
+  hasSession(): boolean;
+  onExpired(): void;
+  sessionKey?(): string | null;
+}
+
+interface ErrorDetail {
+  path: string;
+  code: string;
+  message?: string;
+}
+
+export interface ConsoleApiError extends Error {
+  status: number;
+  code?: string;
+  serverMessage?: string;
+  details: ErrorDetail[];
+  detailPaths?: string[];
+  retryAfterSeconds?: number;
+  requestId?: string;
+}
+
+// Responses are untrusted JSON. Check each field before exposing it on an error.
+function fields(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+}
+
+function validDetail(value: unknown): value is ErrorDetail {
+  const { path, code, message } = fields(value);
+  return (
+    typeof path === "string" &&
+    path.length <= 512 &&
+    /^(?:\/(?:[^~/]|~0|~1)*)*$/.test(path) &&
+    typeof code === "string" &&
+    (message === undefined || (typeof message === "string" && message.length <= 512))
+  );
+}
+
+export function createApiClient({
+  lifetime,
+  hasSession,
+  onExpired,
+  sessionKey = () => null,
+}: ApiClientOptions) {
   async function request(
-    path,
+    path: string,
     {
       method = "GET",
       body,
@@ -8,10 +65,9 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       expectedStatus,
       includeMeta = false,
       responseType = "json",
-      // A session-scoped read that a later view joins instead of aborting it.
       outlivesView = false,
-    } = {},
-  ) {
+    }: RequestOptions = {},
+  ): Promise<unknown> {
     const active = lifetime.capture();
     const pinned = sessionKey();
     // A pinned key lets this tab act only as its own session. If another tab
@@ -40,7 +96,7 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
     if (response.status === 204 && response.ok && expectedStatus === 204) {
       return undefined;
     }
-    let payload;
+    let payload: Record<string, unknown>;
     try {
       // Attachments (runtime log downloads) are text; failures stay JSON error envelopes.
       if (
@@ -50,7 +106,7 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       ) {
         return await response.text();
       }
-      payload = await response.json();
+      payload = fields(await response.json());
     } catch (error) {
       // Body reads can fail after fetch returned headers. Keep cancellation,
       // deadline and socket failures distinct from a complete, malformed JSON body.
@@ -58,22 +114,25 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       if (!(error instanceof SyntaxError)) {
         throw error;
       }
-      payload = null;
+      payload = {};
     }
     if (
       !response.ok ||
       (expectedStatus !== undefined && response.status !== expectedStatus) ||
-      payload === null ||
       !Object.hasOwn(payload, "data")
     ) {
-      const error = new Error("The request could not be completed.");
-      error.status = response.status;
-      const code = payload?.error?.code;
+      const problem = fields(payload.error);
+      const details: unknown[] = Array.isArray(problem.details) ? problem.details : [];
+      const error: ConsoleApiError = Object.assign(
+        new Error("The request could not be completed."),
+        { status: response.status, details: details.slice(0, 32).filter(validDetail) },
+      );
+      const code = problem.code;
       if (typeof code === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(code)) {
         error.code = code;
       }
       // The API's own sentence, for views that show it instead of a generic status text.
-      const serverMessage = payload?.error?.message;
+      const serverMessage = problem.message;
       if (
         typeof serverMessage === "string" &&
         serverMessage.length > 0 &&
@@ -82,24 +141,12 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       ) {
         error.serverMessage = serverMessage;
       }
-      error.details = Array.isArray(payload?.error?.details)
-        ? payload.error.details
-            .slice(0, 32)
-            .filter(
-              (detail) =>
-                typeof detail?.path === "string" &&
-                detail.path.length <= 512 &&
-                /^(?:\/(?:[^~/]|~0|~1)*)*$/.test(detail.path) &&
-                typeof detail.code === "string" &&
-                (detail.message === undefined ||
-                  (typeof detail.message === "string" && detail.message.length <= 512)),
-            )
-        : [];
-      const detailPaths = Array.isArray(payload?.error?.details)
-        ? payload.error.details
-            .map((detail) => detail?.path)
-            .filter((path) => typeof path === "string" && /^\/[A-Za-z0-9_/~-]{0,128}$/.test(path))
-        : [];
+      const detailPaths = details
+        .map((detail) => fields(detail).path)
+        .filter(
+          (path): path is string =>
+            typeof path === "string" && /^\/[A-Za-z0-9_/~-]{0,128}$/.test(path),
+        );
       if (detailPaths.length > 0) {
         error.detailPaths = detailPaths;
       }
@@ -107,7 +154,7 @@ export function createApiClient({ lifetime, hasSession, onExpired, sessionKey = 
       if (retryAfter !== null && /^[1-9][0-9]{0,4}$/.test(retryAfter)) {
         error.retryAfterSeconds = Number(retryAfter);
       }
-      const requestId = payload?.meta?.requestId;
+      const requestId = fields(payload.meta).requestId;
       if (
         typeof requestId === "string" &&
         /^req_[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(requestId)

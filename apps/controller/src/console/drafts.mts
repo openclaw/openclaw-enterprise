@@ -1,11 +1,11 @@
 // Drafts live only in this document. Editors explicitly select non-credential state.
-const captured = (value) => value !== undefined;
+const captured = (value: unknown): boolean => value !== undefined;
 
 export function createDraftStore() {
-  const snapshots = new Map();
-  const captures = new Map();
-  const unsavedChecks = new Map();
-  const isUnsaved = (key, value) => (unsavedChecks.get(key) ?? captured)(value);
+  const snapshots = new Map<string, unknown>();
+  const captures = new Map<string, () => unknown>();
+  const unsavedChecks = new Map<string, typeof captured>();
+  const isUnsaved = (key: string, value: unknown) => (unsavedChecks.get(key) ?? captured)(value);
   return {
     flush() {
       for (const [key, capture] of captures) {
@@ -34,11 +34,12 @@ export function createDraftStore() {
     },
     // Forgets the drafts of every Namespace a successful read no longer lists. Each key's first
     // part names its Namespace (see scope).
-    retainNamespaces(namespaceIds) {
-      const kept = new Set(namespaceIds);
+    retainNamespaces(namespaceIds: Iterable<string>) {
+      const kept = new Set<string | null>(namespaceIds);
       for (const entries of [captures, snapshots, unsavedChecks]) {
         for (const key of entries.keys()) {
-          if (!kept.has(JSON.parse(key)[0])) {
+          const [namespaceId]: [string | null, ...string[]] = JSON.parse(key);
+          if (!kept.has(namespaceId)) {
             entries.delete(key);
           }
         }
@@ -58,18 +59,18 @@ export function createDraftStore() {
       }
       return false;
     },
-    scope(...parts) {
-      const keyFor = (name) => JSON.stringify([...parts, name]);
+    scope(namespaceId: string | null, ...parts: string[]) {
+      const keyFor = (name: string) => JSON.stringify([namespaceId, ...parts, name]);
       return {
-        get: (name) => snapshots.get(keyFor(name)),
-        track(name, capture) {
+        get: (name: string) => snapshots.get(keyFor(name)),
+        track(name: string, capture: () => unknown) {
           captures.set(keyFor(name), capture);
         },
         // Names which captured values hold unsaved work; by default, every captured value.
-        unsavedWhen(name, unsaved) {
+        unsavedWhen(name: string, unsaved: (value: unknown) => boolean) {
           unsavedChecks.set(keyFor(name), unsaved);
         },
-        forget(name) {
+        forget(name: string) {
           captures.delete(keyFor(name));
           snapshots.delete(keyFor(name));
           unsavedChecks.delete(keyFor(name));

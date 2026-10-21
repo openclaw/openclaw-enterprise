@@ -3,8 +3,8 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import test from "node:test";
 import { message } from "../../apps/controller/src/console/agents/list.mjs";
-import { createApiClient } from "../../apps/controller/src/console/api-client.mjs";
-import { createViewLifetime } from "../../apps/controller/src/console/view-lifetime.mjs";
+import { createApiClient } from "../../apps/controller/src/console/api-client.mts";
+import { createViewLifetime } from "../../apps/controller/src/console/view-lifetime.mts";
 
 async function interruptedResponse(t, interrupt, responseType = "json") {
   const controller = new AbortController();

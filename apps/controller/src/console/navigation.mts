@@ -6,11 +6,29 @@ export const pages = Object.freeze({
   settings: "Settings",
 });
 
-export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
+interface LoginIntent {
+  kind: "console";
+  feature: string;
+  namespaceId: string | null;
+  revision: string | null;
+  tab: string | null;
+}
+
+interface NavigationOptions {
+  getNamespaceId(): string | null;
+  isLoggingOut(): boolean;
+  loadPage(options: {
+    fromNavigation: boolean;
+    openingAgent?: boolean;
+    restoreHistory?(url: string): void;
+  }): void;
+}
+
+export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }: NavigationOptions) {
   // The initial entry is position zero. Keep the position on replaceState, including sign-in,
   // so a refused Back or Forward can return to its starting entry without rewriting history.
-  let position = entryPosition() ?? 0;
-  let restoring = null;
+  let position: number | null = entryPosition() ?? 0;
+  let restoring: number | null = null;
   replaceUrl(location.href);
 
   function route() {
@@ -29,7 +47,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     };
   }
 
-  function pageUrl(feature, selection = getNamespaceId()) {
+  function pageUrl(feature: string, selection = getNamespaceId()) {
     const url = new URL(`/console/${feature}`, location.origin);
     if (
       !url.searchParams.has("debug") &&
@@ -61,11 +79,15 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     "access",
   ]);
 
-  function validIntent(intent) {
-    if (intent?.kind === "native") {
+  function validIntent(value: unknown): value is LoginIntent | { kind: "native"; key: string } {
+    if (typeof value !== "object" || value === null) {
+      return false;
+    }
+    const intent = value as Record<string, unknown>;
+    if (intent.kind === "native") {
       return typeof intent.key === "string" && /^[0-9a-f]{32}$/.test(intent.key);
     }
-    if (intent?.kind !== "console" || typeof intent.feature !== "string") {
+    if (intent.kind !== "console" || typeof intent.feature !== "string") {
       return false;
     }
     const detail = intent.feature.startsWith("agents/") && agentId.test(intent.feature.slice(7));
@@ -77,11 +99,12 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
         (detail &&
           typeof intent.revision === "string" &&
           (intent.revision === "draft" || revisionId.test(intent.revision)))) &&
-      (intent.tab === null || (detail && agentTabs.has(intent.tab)))
+      (intent.tab === null ||
+        (detail && typeof intent.tab === "string" && agentTabs.has(intent.tab)))
     );
   }
 
-  function captureIntent(value) {
+  function captureIntent(value: unknown) {
     if (typeof value !== "string" || !value.startsWith("/console/")) {
       return null;
     }
@@ -99,7 +122,7 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     return validIntent(intent) ? intent : null;
   }
 
-  function intentUrl(intent) {
+  function intentUrl(intent: unknown) {
     if (!validIntent(intent) || intent.kind !== "console") {
       return null;
     }
@@ -117,20 +140,20 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
   }
 
   function entryPosition() {
-    const index = history.state?.consolePosition;
-    return Number.isSafeInteger(index) ? index : null;
+    const index: unknown = history.state?.consolePosition;
+    return typeof index === "number" && Number.isSafeInteger(index) ? index : null;
   }
 
-  function replaceUrl(url) {
+  function replaceUrl(url: string) {
     history.replaceState({ consolePosition: position }, "", url);
   }
 
-  function pushUrl(url) {
+  function pushUrl(url: string) {
     position = (position ?? 0) + 1;
     history.pushState({ consolePosition: position }, "", url);
   }
 
-  function navigate(feature, selection = getNamespaceId(), replace = false) {
+  function navigate(feature: string, selection = getNamespaceId(), replace = false) {
     if (isLoggingOut()) {
       return;
     }
@@ -147,7 +170,13 @@ export function createNavigation({ getNamespaceId, isLoggingOut, loadPage }) {
     void loadPage({ fromNavigation: true, openingAgent });
   }
 
-  function traverse({ fromNavigation, mountedUrl }) {
+  function traverse({
+    fromNavigation,
+    mountedUrl,
+  }: {
+    fromNavigation: boolean;
+    mountedUrl: string | null;
+  }) {
     // popstate arrives after the browser has moved. If the page must stay open, go back by the
     // same distance, then consume that popstate without reloading the page we kept mounted.
     const previous = position;

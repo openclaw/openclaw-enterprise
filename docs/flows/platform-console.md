@@ -153,7 +153,7 @@ after one second it says **Still checking…**. The Console retains up to 16 vie
 by route, Namespace, and session owner, excluding passwords and discovery state.
 An interrupted return preserves the view; an interrupted Refresh discards it.
 
-`apps/controller/src/console/api-client.mjs:createApiClient` keeps the abort signal
+`apps/controller/src/console/api-client.mts:createApiClient` keeps the abort signal
 through the response body. Cancellation preserves its reason; a socket failure is an interrupted read,
 not invalid JSON. Neither replays the request.
 
@@ -187,7 +187,7 @@ unavailable; selection never becomes an API query selector.
 Namespace checks, naming a known selection; retained-view reads do not extend this.
 `shell.mjs:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
-Empty lists show access guidance. `navigation.mjs:navigate` returns Agent detail/creation
+Empty lists show access guidance. `navigation.mts:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.
 
 ### 3. Authorize the selected page resource
