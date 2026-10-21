@@ -5,7 +5,9 @@ import test from "node:test";
 
 import {
   maskRuntimeEventText,
+  redactArgvCredentials,
   redactRuntimeLogText,
+  stripRuntimeLogControls,
 } from "../../packages/occ/src/runtime-logs/redact.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
 import {
@@ -946,6 +948,35 @@ test("bounded key and path patterns still mask the shapes they did before", () =
     ["bearer authentication failed", "bearer authentication failed"],
   ]) {
     assert.equal(redactRuntimeLogText(input), expected, input);
+  }
+});
+
+test("rule prefilters skip only text a rule cannot change", () => {
+  for (const [input, expected] of [
+    // Long-token rules run only on a 40-character run of their joint alphabet.
+    [`k=${"Ab1x".repeat(9)}Ab1`, `k=${"Ab1x".repeat(9)}Ab1`],
+    [`k=${"Ab1x".repeat(10)}`, "k=[redacted:long-token]"],
+    // A joint run of 40 that is no single rule's run of 40 stays.
+    [`k=${"Ab1+".repeat(5)}${"Ab1_".repeat(5)}`, `k=${"Ab1+".repeat(5)}${"Ab1_".repeat(5)}`],
+    [`${"A1".repeat(20)}==${"B2".repeat(20)}`, "[redacted:long-token][redacted:long-token]"],
+    [`x${"a1B_".repeat(10)} eyJ, a://b, why?`, "[redacted:long-token] eyJ, a://b, why?"],
+  ]) {
+    assert.equal(redactRuntimeLogText(input), expected, input);
+  }
+  assert.equal(
+    stripRuntimeLogControls(
+      "a\tb\u0000c\u001b[31md\u001b[0m\u007fe\u0085f\u009fg\u00a0h🙂\ud800\u2028",
+    ),
+    "a bcdefg\u00a0h🙂\ud800\u2028",
+  );
+  for (const [input, expected] of [
+    ["/usr/local/bin/redis-cli -a pw1", "/usr/local/bin/redis-cli -a [redacted:argv]"],
+    // A client name inside a longer token names no client.
+    ["redis-cli-wrapper -a pw2", "redis-cli-wrapper -a pw2"],
+    ["echo mysql; ls -pfoo", "echo mysql; ls -pfoo"],
+    ["sudo mysql -uroot -ppw3", "sudo mysql -uroot -p[redacted:argv]"],
+  ]) {
+    assert.equal(redactArgvCredentials(input), expected, input);
   }
 });
 
