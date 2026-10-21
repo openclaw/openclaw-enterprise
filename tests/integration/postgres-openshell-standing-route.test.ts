@@ -8,6 +8,8 @@ import type { EgressAuthorityConfiguration } from "../../apps/controller/src/com
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
+import type { PostgresPool } from "../../packages/occ/src/index.ts";
 
 // Real standing approval, persisted route, runtime, provider and stock gRPC client. The
 // supervisor, Pod identities and material are controlled; no credential or origin is needed.
@@ -281,5 +283,131 @@ test(
       "the unsent rotation was cleared; the previous write was neither relabeled nor replayed",
     );
     assert.equal(await cold.lookup(), undefined);
+  },
+);
+
+test(
+  "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart",
+  { ...requiresPostgres, timeout: 45_000 },
+  async (t) => {
+    let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
+    const { f, registry, revision, credentials } = await standingExecutionFixture(
+      t,
+      import.meta.url,
+      async (pool, namespace) => (peer = await preparedStandingGitPeer(t, pool, namespace)),
+    );
+    const model = "original-model";
+    const workspace = "route-reservation";
+    const sandbox = "reservation-sandbox";
+    const { client, world } = await gitExpiryGateway(t, {
+      model,
+      workspace,
+      sandbox,
+      revisionId: revision.id,
+      deadline: credentials.deadlineWallMs,
+      platformProfile: false,
+    });
+    let lostAcknowledgements = 0;
+    const releases: boolean[] = [];
+    // Keep the real transaction and committed row. Only its reply is lost; a pending
+    // row inserted directly by the fixture would not test the runtime's failed-open path.
+    const connection: PostgresPool = {
+      end: () => f.observerPool.end(),
+      async connect() {
+        const database = await f.observerPool.connect();
+        let initialReservation = false;
+        return {
+          async query(sql: string, values?: readonly unknown[]) {
+            const result = await database.query(
+              sql,
+              values === undefined ? undefined : [...values],
+            );
+            if (sql.includes("INSERT INTO occ.openshell_git_routes")) {
+              initialReservation = true;
+            }
+            if (sql === "COMMIT" && initialReservation && lostAcknowledgements === 0) {
+              lostAcknowledgements++;
+              throw new Error("controlled lost initial reservation acknowledgement");
+            }
+            return result;
+          },
+          release(discard?: boolean) {
+            releases.push(discard === true);
+            database.release(discard);
+          },
+        };
+      },
+    };
+    const routes = new PostgresOpenShellGitRouteStore(connection);
+    const runtime = () => {
+      const value = new OpenShellGitRuntime(
+        { registrationName: peer.registrationName, authority: {} as EgressAuthorityConfiguration },
+        registry,
+      );
+      value["routes"] = routes;
+      value["owner"] = peer.prepared;
+      t.after(() => value.close());
+      return value;
+    };
+    const first = runtime();
+    const prepare = (value: OpenShellGitRuntime) =>
+      value.prepare(revision, client, workspace, sandbox, t.signal, [model]);
+    await assert.rejects(prepare(first), { name: "OpenShellGitObservationError" });
+    assert.equal(lostAcknowledgements, 1);
+    assert.ok(releases.includes(true), "the uncertain connection is discarded");
+    const {
+      rows: [reserved],
+    } = await f.observerPool.query(
+      "SELECT binding_id, write_pending, blocked, material_version FROM occ.openshell_git_routes WHERE revision_id=$1",
+      [revision.id],
+    );
+    assert.ok(reserved);
+    assert.equal(reserved.write_pending, "bootstrap");
+    assert.equal(reserved.blocked, null);
+    assert.equal(reserved.material_version, null);
+
+    // Neither the same process nor a cold process may turn uncertainty into a supplier
+    // write. The cold attempt comes first so the failed opener's in-memory state cannot help it.
+    const cold = runtime();
+    await assert.rejects(prepare(cold), {
+      name: "OpenShellGitRouteBlockedError",
+      reason: "write_unknown",
+    });
+    await assert.rejects(prepare(first), {
+      name: "OpenShellGitRouteBlockedError",
+      reason: "write_unknown",
+    });
+    await assert.rejects(prepare(runtime()), {
+      name: "OpenShellGitRouteBlockedError",
+      reason: "write_unknown",
+    });
+    await peer.prepared.maintain();
+    const material = await peer.prepared.readOpenShellMaterial(revision.id, t.signal);
+    assert.ok(!material || "absent" in material);
+    for (const value of [first, cold]) {
+      assert.equal(
+        await value.lookup(
+          {
+            workspace,
+            sandboxId: "uncreated-sandbox",
+            bindingId: reserved.binding_id,
+            requestId: "uncertain-reservation",
+          },
+          t.signal,
+        ),
+        undefined,
+      );
+    }
+    assert.deepEqual(world.profileImports, []);
+    assert.deepEqual(world.providerCreates, []);
+    assert.equal(world.writes, 0);
+    assert.equal(peer.gh.issuesOfTokens.length, 0);
+    assert.equal(peer.originCalls(), 0);
+    assert.equal(lostAcknowledgements, 1);
+    const { rows } = await f.observerPool.query(
+      "SELECT blocked, material_version FROM occ.openshell_git_routes WHERE revision_id=$1",
+      [revision.id],
+    );
+    assert.deepEqual(rows, [{ blocked: "write_unknown", material_version: null }]);
   },
 );

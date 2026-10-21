@@ -23,12 +23,13 @@ export async function standingGitOrigin(
   t: TestContext,
   namespaceId: string,
   tokenLifetimeMs = 135_000,
+  beforeIssue?: () => Promise<void>,
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
   const github: (t: TestContext, options: object) => ReturnType<typeof startGitHubFixture> =
     startGitHubFixture;
-  const gh = await github(t, { clock, tokenLifetimeMs });
+  const gh = await github(t, { clock, tokenLifetimeMs, beforeIssue });
   const tls = gh.tls;
   const pushRef = "refs/heads/review";
   const backendId = "prepared-standing";
@@ -90,7 +91,12 @@ export async function standingGitOrigin(
   };
 }
 
-export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namespaceId: string) {
+export async function preparedStandingGitPeer(
+  t: TestContext,
+  pool: Pool,
+  namespaceId: string,
+  options: { beforeIssue?: () => Promise<void> } = {},
+) {
   const {
     registry,
     backendId,
@@ -102,7 +108,7 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
     registrationName,
     directory,
     controlSocket,
-  } = await standingGitOrigin(t, namespaceId);
+  } = await standingGitOrigin(t, namespaceId, undefined, options.beforeIssue);
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
   // the actual issuance and retirement requests, and the production admission and scope checks.

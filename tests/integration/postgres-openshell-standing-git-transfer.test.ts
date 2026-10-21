@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
+import { Pool } from "pg";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
@@ -19,7 +20,7 @@ import {
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { openShellOnlineGitWire } from "../helpers/openshell-online-git-wire.mjs";
 import { invoke, token } from "../helpers/openshell-online-wire.mjs";
-import { requiresPostgres } from "../helpers/postgres-database.mjs";
+import { databaseUrl, requiresPostgres } from "../helpers/postgres-database.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
@@ -53,10 +54,28 @@ if (conversationRequired) {
   );
 }
 test(
-  "broker-absent protected OpenShell execution fetches a missing private Git object past both first expiries and then loses only Git",
+  "standing OpenShell candidate crosses three claims before material, fetches past both expiries and loses only Git",
   { ...requiresPostgres, timeout: 385_000 },
   async (t) => {
     let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
+    const issuanceReader = new Pool({ connectionString: databaseUrl, max: 1 });
+    t.after(() => issuanceReader.end());
+    const activeAtIssuance: (string | null)[] = [];
+    // Observe each token POST at the supplier boundary, including the interval between
+    // Compute returning ready and activation committing. Never use the worker's transaction.
+    const beforeIssue = async () => {
+      const { rows } = await issuanceReader.query(
+        "SELECT active_revision_id FROM occ.agents WHERE namespace_id=$1 AND id=$2",
+        [revision.namespaceId, revision.agentId],
+      );
+      assert.equal(rows.length, 1);
+      activeAtIssuance.push(rows[0].active_revision_id);
+      assert.equal(
+        rows[0].active_revision_id,
+        revision.id,
+        "issuance requires committed activation",
+      );
+    };
     // Qualifying actual conversation requires the shipped Codex executable. Ordinary database
     // CI exercises the model grant, attachment and withdrawal but cannot claim a model response.
     const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
@@ -75,14 +94,17 @@ test(
         } as never,
       },
     );
-    const { f, key, driver, revision, registry, owner, approval, credentials } =
+    const { f, key, driver, revision, predecessor, registry, owner, approval, credentials } =
       await standingExecutionFixture(t, import.meta.url, async (pool, ns) => ({
-        ...(peer = await preparedStandingGitPeer(t, pool, ns)),
+        ...(peer = await preparedStandingGitPeer(t, pool, ns, { beforeIssue })),
+        activePredecessor: true,
         protectedDriver: protectedGit.owner,
         credentialGateway: gateway,
         ...(modelConfig && { modelConfig }),
       }));
     const { prepared, registrationName, gh, send, input } = peer;
+    assert.ok(predecessor);
+    const preparationClaims: string[] = [];
     let oid = peer.oid;
     const workspace = kubernetesNamespaceName(revision.namespaceId);
     const sandbox = "standing-sandbox";
@@ -95,6 +117,7 @@ test(
     let bindingId = "";
     let stops = 0;
     let withdrawn = 0;
+    let originCallsBeforeActivation = 0;
     const deadline = credentials.deadlineWallMs;
     const cwd = await temporaryDirectory(t, "standing-private-git-destination-");
     const git = (args: string[], pack?: Buffer) =>
@@ -183,6 +206,7 @@ test(
       { message: /require an embedded OpenClaw or dedicated Codex/ },
     );
     let lastCustody: ComputeRevisionContext | undefined;
+    let preparationFailure: unknown;
     let modelEnvironment: Record<string, string> | undefined;
     let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
     const compute = {
@@ -190,77 +214,138 @@ test(
       validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
       validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
       async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
-        kube["validateRevisionExecution"](r, custody);
-        const resolved = custody.harnessAuth!;
-        assert.equal(resolved.method, "credential_source");
-        const source = resolved.source;
-        const attachments = await gateway.attachForRevision({
-          revision: r,
-          sources: [source],
-          namespace: { ...f.namespace, status: "ready", name: workspace },
-          signal: t.signal,
-        });
-        assert.deepEqual(attachments, [{ sourceId: auth.sourceId, ref: model }]);
-        const address = { name: workspace, plane: "execution" } as const;
-        const login = kube["harnessAuthForRevision"](r, custody, address);
-        assert.deepEqual(kube["credentialSourceEnvironment"](r, attachments, source), []);
-        assert.equal(login.credentialSource?.id, auth.sourceId);
-        assert.equal(login.loginMode, "api_key");
-        if (conversation) {
-          assert.equal(login.credentialSource?.config.base_url, conversation.baseUrl);
-          const manifest = pluginRuntimeSpecForRevision(
-            r,
-            undefined,
-            login.credentialSource!.config.base_url,
-          )!;
-          modelEnvironment = {
-            ...Object.fromEntries(
-              login.environment.map(({ name, value }: { name: string; value?: string }) => [
-                name,
-                value!,
-              ]),
-            ),
-            ...pluginRuntimeEnvironment(manifest),
-            OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: r.id,
-            [COMPUTE_RELEASE_PUBLIC_KEY]: protectedGit.publicKey,
-          };
-          lastCustody = custody;
-        }
-        assert.equal(r.id, revision.id);
-        const s = AbortSignal.timeout(15000);
-        const p = await runtime
-          .prepare(r, client, workspace, sandbox, s, [model])
-          .catch((e: Error) => {
-            t.diagnostic("prepare: " + e.message);
-            throw e;
+        try {
+          kube["validateRevisionExecution"](r, custody);
+          const resolved = custody.harnessAuth!;
+          assert.equal(resolved.method, "credential_source");
+          const source = resolved.source;
+          const attachments = await gateway.attachForRevision({
+            revision: r,
+            sources: [source],
+            namespace: { ...f.namespace, status: "ready", name: workspace },
+            signal: t.signal,
           });
-        bindingId = p.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue;
-        if (!world.id) {
-          creates++;
-          world.id = sandboxId;
-        } else if (Date.now() > deadline) {
-          assert.equal(p.existingSandboxId, sandboxId, "cold recovery keeps the original Sandbox");
+          assert.deepEqual(attachments, [{ sourceId: auth.sourceId, ref: model }]);
+          const address = { name: workspace, plane: "execution" } as const;
+          const login = kube["harnessAuthForRevision"](r, custody, address);
+          assert.deepEqual(kube["credentialSourceEnvironment"](r, attachments, source), []);
+          assert.equal(login.credentialSource?.id, auth.sourceId);
+          assert.equal(login.loginMode, "api_key");
+          if (conversation) {
+            assert.equal(login.credentialSource?.config.base_url, conversation.baseUrl);
+            const manifest = pluginRuntimeSpecForRevision(
+              r,
+              undefined,
+              login.credentialSource!.config.base_url,
+            )!;
+            modelEnvironment = {
+              ...Object.fromEntries(
+                login.environment.map(({ name, value }: { name: string; value?: string }) => [
+                  name,
+                  value!,
+                ]),
+              ),
+              ...pluginRuntimeEnvironment(manifest),
+              OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: r.id,
+              [COMPUTE_RELEASE_PUBLIC_KEY]: protectedGit.publicKey,
+            };
+            lastCustody = custody;
+          }
+          assert.equal(r.id, revision.id);
+          const s = AbortSignal.timeout(15000);
+          const p = await runtime
+            .prepare(r, client, workspace, sandbox, s, [model])
+            .catch((e: Error) => {
+              t.diagnostic("prepare: " + e.message);
+              throw e;
+            });
+          bindingId = p.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue;
+          if (!world.id) {
+            creates++;
+            world.id = sandboxId;
+          } else if (Date.now() > deadline) {
+            assert.equal(
+              p.existingSandboxId,
+              sandboxId,
+              "cold recovery keeps the original Sandbox",
+            );
+          }
+          await runtime.bind(
+            r.id,
+            (box) => {
+              assert.equal(box.id, sandboxId);
+            },
+            continuity,
+          );
+          // Drive each background owner at its normal boundary, outside any request.
+          await readiness(r);
+          await protectedGit.enroll(
+            r,
+            custody,
+            p.middlewares,
+            workspace,
+            sandboxId,
+            world.repositoryGitRecipient,
+          );
+          await prepared.maintain();
+          await readiness(r);
+          if ((await f.currentAgent(owner))?.activeRevisionId !== r.id) {
+            // Read the actual queue claim. Two incomplete passes must release it; the next
+            // pass reuses the bootstrap under a different claim without receiving material.
+            const {
+              rows: [claim],
+            } = await f.observerPool.query(
+              "SELECT state, claim_token FROM occ.controller_work WHERE idempotency_key=$1",
+              [`agent_revision:${r.id}:reconcile`],
+            );
+            assert.equal(claim.state, "claimed");
+            assert.equal(typeof claim.claim_token, "string");
+            assert.ok(!preparationClaims.includes(claim.claim_token));
+            preparationClaims.push(claim.claim_token);
+            assert.ok(preparationClaims.length <= 3);
+            assert.equal((await f.currentAgent(owner))?.activeRevisionId, predecessor.id);
+            assert.deepEqual(runtime.route(r.id), {
+              state: "pending",
+              reason: "awaiting_material",
+            });
+            assert.equal(standing().routeReadiness(r.id), "ready");
+            assert.equal(gh.issuesOfTokens.length, 0);
+            assert.equal(peer.originCalls(), originCallsBeforeActivation);
+            assert.equal(world.writes, 0);
+            assert.deepEqual(world.providerCreates, [p.provider]);
+            assert.deepEqual(
+              world.profileImports.filter((id: string) => id !== model),
+              [p.provider],
+            );
+            const {
+              rows: [route],
+            } = await f.observerPool.query(
+              "SELECT fence, credential_state, material_version, preparation_attempt_id FROM occ.openshell_git_routes WHERE revision_id=$1",
+              [r.id],
+            );
+            assert.deepEqual(route, {
+              fence: "1",
+              credential_state: "bootstrap",
+              material_version: null,
+              preparation_attempt_id: null,
+            });
+            const material = await prepared.readOpenShellMaterial(r.id, s);
+            assert.ok(!material || "absent" in material);
+            assert.equal(
+              await runtime.lookup(
+                { bindingId, sandboxId, workspace, requestId: "before-active" },
+                s,
+              ),
+              undefined,
+            );
+            const observed = await f.compute.prepareRevision(r);
+            return { ...observed, ready: preparationClaims.length === 3 };
+          }
+          return f.compute.prepareRevision(r);
+        } catch (error) {
+          preparationFailure ??= error;
+          throw error;
         }
-        await runtime.bind(
-          r.id,
-          (box) => {
-            assert.equal(box.id, sandboxId);
-          },
-          continuity,
-        );
-        // Drive each background owner at its normal boundary, outside any request.
-        await readiness(r);
-        await protectedGit.enroll(
-          r,
-          custody,
-          p.middlewares,
-          workspace,
-          sandboxId,
-          world.repositoryGitRecipient,
-        );
-        await prepared.maintain();
-        await readiness(r);
-        return f.compute.prepareRevision(r);
       },
       verifyRepositoryExecution: kube.verifyRepositoryExecution.bind(kube),
       async retireExpiredRepositoryAccess(r: AgentRevision, signal: AbortSignal) {
@@ -270,8 +355,12 @@ test(
         }
         return result;
       },
-      async stopRevision() {
-        stops++;
+      async stopRevision(r: AgentRevision) {
+        // Replacing the initial revision may stop it; Git withdrawal must not stop
+        // the successor whose independent model authority remains current.
+        if (r.id === revision.id) {
+          stops++;
+        }
       },
     };
     type Event = { event?: string; code?: string; reason?: string };
@@ -345,12 +434,26 @@ test(
       "the private origin requires a credential",
     );
     try {
+      originCallsBeforeActivation = peer.originCalls();
       await start();
-      await f.work(revision, "succeeded");
+      try {
+        await f.work(revision, "succeeded");
+      } catch (error) {
+        throw preparationFailure ?? error;
+      }
+      assert.equal(preparationFailure, undefined);
+      assert.equal(preparationClaims.length, 3);
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
       const execution = await waitFor("admitted standing execution", known, 15_000);
       const first = (await attempts())[0]!;
       assert.equal(first.deadlineWallMs, deadline);
       assert.equal(world.writes, 1);
+      assert.deepEqual(activeAtIssuance, [revision.id]);
+      assert.equal(world.providerCreates.length, 1);
+      assert.deepEqual(
+        world.profileImports.filter((id: string) => id !== model),
+        world.providerCreates,
+      );
       assert.match((await allow(false)).toString(), new RegExp(oid));
       const firstPack = await allow(true);
       assert.equal(git(["index-pack", "--strict", "--stdin"], firstPack.subarray(8)).status, 0);
@@ -466,6 +569,7 @@ test(
       assert.equal(creates, 1);
       const issue2 = gh.issuesOfTokens[1]!;
       assert.equal(gh.issuesOfTokens.length, 2);
+      assert.deepEqual(activeAtIssuance, [revision.id, revision.id]);
       assert.ok(later > Math.max(deadline, issue1.expires + 60_000));
       const custody = () =>
         f.observerPool
@@ -545,6 +649,7 @@ test(
         world.reports.some(([name, state]: string[]) => name !== model && state === "REVOKED"),
       );
       assert.equal(gh.tokenState()[1]!.revoked, true);
+      assert.deepEqual(activeAtIssuance, [revision.id, revision.id]);
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
       if (askModel) {
         await askModel("after");

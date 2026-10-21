@@ -23,6 +23,7 @@ export async function standingExecutionFixture(
     protectedDriver?: import("../../packages/occ/src/index.ts").InstalledDriver;
     credentialGateway?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver;
     modelConfig?: { base_url: string };
+    activePredecessor?: boolean;
   }>,
 ) {
   const f = await standingExecutionPlatform(t, testUrl);
@@ -72,6 +73,30 @@ export async function standingExecutionFixture(
     auth: external && !external.protectedDriver ? "secret" : "credential_source",
     modelConfig: external?.modelConfig,
   });
+  // Start a real predecessor before admitting Git on its successor. The candidate must
+  // remain unable to receive repository material while this pointer is still active.
+  const predecessor = external?.activePredecessor ? await f.revision(owner, 1) : undefined;
+  if (predecessor) {
+    try {
+      await f.start(f.compute, {
+        transformDrivers: (d: { installation: { drivers: object } }) => ({
+          ...d,
+          credentialGatewayDriver: external!.credentialGateway,
+          protectedDriver: external!.protectedDriver,
+          installation: {
+            ...d.installation,
+            drivers: {
+              ...d.installation.drivers,
+              credential_gateway: { id: external!.credentialGateway!.id },
+            },
+          },
+        }),
+      });
+      await f.work(predecessor, "succeeded");
+    } finally {
+      await f.stop();
+    }
+  }
   const [selected] = driver.resolve({
     namespaceId: f.namespace.id,
     bindings: [{ repositoryRef: "source", profile: "git-write" }],
@@ -115,7 +140,7 @@ export async function standingExecutionFixture(
     f.controller.registerDriver(gateway);
     f.controller.selectDriver("credential_gateway", gateway.id);
   }
-  const revision = (await f.revision(owner, 1, {
+  const revision = (await f.revision(owner, predecessor ? 2 : 1, {
     ...revisionOptions,
     ...(external?.protectedDriver && { protectedRepositoryDriver: external.protectedDriver }),
   })) as AgentRevision;
@@ -133,6 +158,7 @@ export async function standingExecutionFixture(
     binding,
     owner,
     revision,
+    predecessor,
     revisionOptions,
     credentials,
     driver,

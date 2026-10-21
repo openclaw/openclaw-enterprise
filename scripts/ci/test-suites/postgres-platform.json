@@ -336,7 +336,8 @@
     {
       "path": "tests/integration/postgres-openshell-standing-route.test.ts",
       "expectedTests": [
-        "OpenShell observes the same expired standing execution across restart and rechecks authority at installation"
+        "OpenShell observes the same expired standing execution across restart and rechecks authority at installation",
+        "lost initial OpenShell route commit acknowledgement prevents bootstrap and replay across restart"
       ]
     },
     {
@@ -348,7 +349,7 @@
     {
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
-        "broker-absent protected OpenShell execution fetches a missing private Git object past both first expiries and then loses only Git"
+        "standing OpenShell candidate crosses three claims before material, fetches past both expiries and loses only Git"
       ]
     },
     {

@@ -97,6 +97,8 @@ export async function gitExpiryGateway(
   const world = {
     repositoryGitRecipient,
     writes: 0,
+    providerCreates: [],
+    profileImports: [],
     detaches: [],
     reports: [],
     version: 13,
@@ -265,10 +267,12 @@ export async function gitExpiryGateway(
       return profiles[id] && { profile: profiles[id] };
     },
     ImportProviderProfiles: ({ profiles: [{ profile }] }) => {
+      world.profileImports.push(profile.id);
       profiles[profile.id] = { ...profile, resource_version: "1" };
       return { imported: true };
     },
     CreateProvider: ({ provider: { metadata, type, profile_workspace } }) => {
+      world.providerCreates.push(metadata.name);
       gitName = metadata.name;
       const provider = {
         metadata: {

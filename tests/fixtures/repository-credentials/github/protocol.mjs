@@ -21,6 +21,7 @@ export function createGitHubProtocol({
   tokenResponse = (packet) => packet,
   additionalPermissions = [],
   encodeIssueResponse = JSON.stringify,
+  beforeIssue,
   beforeIssueResponse,
   beforeMetadataResponse,
   issueResponse = (response) => response,
@@ -82,6 +83,7 @@ export function createGitHubProtocol({
         request.method === "POST" &&
         url.pathname === `/app/installations/${fixtureInstallationId}/access_tokens`
       ) {
+        await beforeIssue?.();
         // The provider owns the token before response gates can delay or lose its delivery.
         const { token, expires, permissions } = authority.issue(
           request.headers.authorization,
