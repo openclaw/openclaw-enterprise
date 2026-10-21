@@ -1279,7 +1279,7 @@ for (const c of [
   ]) {
     const size = `${viewport.width}x${viewport.height}`;
     test(`A failed deployment's ${c.label} link brings ${c.name} into view at ${size}`, async (t) => {
-      const { fixture, namespace } = await readyNamespace(t, `Recovery ${c.name}`);
+      const { fixture, namespace } = await readyNamespace(t, `Recovery ${c.name} ${size}`);
       const agent = await fixture.createAgent(namespace.id, "Recovery Agent", nativeValues("v1"));
       // Never deployed: v1 failed its startup model check. "another version" first deploys v1.
       const active =
