@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { NativeIAMDriver } from "../packages/iam/src/index.ts";
 import {
@@ -183,7 +183,17 @@ export async function authMaintain({
   return status;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Run the command only when this file is the entry point, not when a test imports it.
+// Node before 24.2 lacks import.meta.main; its entry URL is the realpath of argv[1].
+function startedAsEntryPoint() {
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    // No argv[1], or not a file (node --eval with arguments): this module was imported.
+    return false;
+  }
+}
+if (import.meta.main ?? startedAsEntryPoint()) {
   const status = await authMaintain({ environment: process.env, args: process.argv.slice(2) });
   if (status !== 0) {
     process.exitCode = status;
