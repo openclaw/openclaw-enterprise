@@ -1183,8 +1183,11 @@ test("a full Sandbox tail is cut for about the cost of sanitizing it once", asyn
   assert.equal(page.truncated, true);
   assert.ok(delivered > 300 && delivered < 1000, `${delivered} lines delivered`);
   assert.ok(Buffer.byteLength(JSON.stringify(page), "utf8") <= 512 * 1024);
+  // Policy decisions sanitize cheaply, so the cut's fixed per-line work (validation,
+  // line hashes, serialization) is about one more sanitization: a cut costs 2-3x one.
+  // Sanitizing again for each binary-search candidate costs about 9x.
   assert.ok(
-    cut < 2.5 * once,
+    cut < 4 * once,
     `the cut page took ${cut.toFixed(0)} ms of CPU; one sanitization takes ${once.toFixed(0)} ms`,
   );
 });

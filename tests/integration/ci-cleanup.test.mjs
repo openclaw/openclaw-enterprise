@@ -762,7 +762,8 @@ for (const scenario of [
         const body =
           scenario === "fixture-exit"
             ? `import { createWorkerRevisionFixtures, disposeStep } from ${fixtureImport};
-           const { cleanup } = createWorkerRevisionFixtures(import.meta.url);
+           // A shorter exit grace than the fixture's 2 s: this file has one test to report.
+           const { cleanup } = createWorkerRevisionFixtures(import.meta.url, { exitGraceMs: 500 });
            after(cleanup);
            test("abandons cleanup", async () => {
              await assert.rejects(disposeStep("cleanup command", 500, () => cleanupState(${JSON.stringify(statePath)})), /did not finish within 500 ms/);

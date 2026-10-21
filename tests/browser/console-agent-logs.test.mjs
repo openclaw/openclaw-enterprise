@@ -160,6 +160,7 @@ for (const viewport of [
     const { fixture, computeDriver, namespace, agent, revisionId } = await logsFixture(t);
     computeDriver.state.lines = [line(1, "tab click output")];
     const { page } = await newPage(t, fixture, { context: { viewport } });
+    await trackSettledFetches(page);
     await login(
       page,
       fixture,
@@ -167,6 +168,9 @@ for (const viewport of [
     );
     await page.getByRole("heading", { name: "Configuration snapshot", exact: true }).waitFor();
     await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
+    // The overview shows after at most 2 s even if its deployment read is still out; when that
+    // read lands it grows the status above the strip. Measure the strip once the reads are in.
+    await waitForIdleFetches(page);
     const logsTab = page.getByRole("tab", { name: "Logs", exact: true });
     // The strip sits in the middle of the viewport, as after reading the overview.
     await page.evaluate(() => {

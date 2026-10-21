@@ -1,11 +1,6 @@
 import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import {
-  betterAuthIssuer,
-  refuseRewrittenIpv4Host,
-  refuseWrittenUserinfo,
-  validHttpBaseURL,
-} from "../apps/controller/src/auth/configuration.ts";
+import { betterAuthIssuer } from "../apps/controller/src/auth/configuration.ts";
 import {
   BootstrapOutputPreflightError,
   bootstrapOutputPath,
@@ -23,9 +18,13 @@ import {
 import { isName, NAME_RULE } from "../packages/contracts/src/index.ts";
 import { createOccLogger, emitOccLogEvent } from "../apps/controller/src/logging.ts";
 import { loadOperationalLoggingConfiguration } from "../apps/controller/src/composition/installation-config.ts";
+import {
+  bootstrapConfiguration,
+  bootstrapFailureCode,
+  optional,
+  required,
+} from "./lib/bootstrap-configuration.mjs";
 
-const DEFAULT_BETTER_AUTH_BASE_URL = "http://127.0.0.1:3000";
-const DEFAULT_DEV_ADMIN_EMAIL = "admin@openclaw.local";
 const DEFAULT_DEV_ADMIN_PASSWORD = "openclaw-development-password";
 const DEFAULT_DEV_INSTALLATION_NAME = "OpenClaw Local Development";
 
@@ -41,70 +40,12 @@ function parseMode(mode, args) {
   return mode;
 }
 
-function required(name) {
-  const value = process.env[name];
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${name} must be explicitly configured.`);
-  }
-  return value;
-}
-
-function optional(name, fallback) {
-  const value = process.env[name] ?? fallback;
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${name} must be explicitly configured.`);
-  }
-  return value;
-}
-
 // The Installation name skips the API schema, so check its Name rule before anything is created.
 function installationName(value, name) {
   if (!isName(value)) {
     throw new Error(`${name} breaks the Name rule: ${NAME_RULE}.`);
   }
   return value;
-}
-
-function normalizeEmail(raw, name) {
-  const email = raw.trim().toLowerCase();
-  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    throw new Error(`${name} must contain a valid administrator email.`);
-  }
-  return email;
-}
-
-function authBaseURL(raw, mode) {
-  let parsed;
-  try {
-    parsed = new URL(raw);
-  } catch {
-    throw new Error("OCC_AUTH_BASE_URL must contain an absolute URL.");
-  }
-  refuseWrittenUserinfo("OCC_AUTH_BASE_URL", raw);
-  // Before the loopback exception: Node rewrites 127.1, 0177.0.0.1 and
-  // 192.168.010.001, and the rewritten host must not become the published origin.
-  refuseRewrittenIpv4Host("OCC_AUTH_BASE_URL", raw, parsed);
-  if (
-    mode === "production" &&
-    parsed.protocol !== "https:" &&
-    !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsed.hostname)
-  ) {
-    throw new Error("OCC_AUTH_BASE_URL must be HTTPS except for loopback development tests.");
-  }
-  if (
-    mode === "development" &&
-    ((parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-      !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsed.hostname))
-  ) {
-    throw new Error("Development OCC_AUTH_BASE_URL must identify a loopback HTTP(S) URL.");
-  }
-  const baseURL = parsed.toString().replace(/\/$/, "");
-  // The auth stack rejects the same values; check here so the already-bootstrapped path,
-  // which never loads it, still fails the Job on them.
-  if (!validHttpBaseURL(baseURL)) {
-    throw new Error("OCC_AUTH_BASE_URL must be an absolute HTTP origin URL.");
-  }
-  return baseURL;
 }
 
 function passwordOutputPath(raw) {
@@ -128,92 +69,28 @@ function randomPassword() {
   return randomBytes(32).toString("base64url");
 }
 
-function bootstrapFailureCode(error) {
-  const message = error instanceof Error ? error.message : "";
-  if (/installation[ _]name breaks the Name rule/i.test(message)) {
-    return "INSTALLATION_NAME_INVALID";
-  }
-  if (/OCC_AUTH_SECRET/.test(message)) {
-    return "AUTH_SECRET_INVALID";
-  }
-  if (/OCC_AUTH_BASE_URL|loopback host|loopback HTTP\(S\) URL/.test(message)) {
-    return "AUTH_BASE_URL_INVALID";
-  }
-  if (/OCC_DATABASE_URL|PostgreSQL database|PostgreSQL connection URL/.test(message)) {
-    return "DATABASE_CONFIGURATION_INVALID";
-  }
-  if (/commit outcome is unknown/i.test(message)) {
-    return "COMMIT_OUTCOME_UNKNOWN";
-  }
-  if (/platform persistence repository|ECONNREFUSED|ECONNRESET|connect /i.test(message)) {
-    return "PERSISTENCE_UNAVAILABLE";
-  }
-  return "BOOTSTRAP_FAILED";
-}
-
-function modeConfig(mode) {
-  const authConfig = {
-    secret: optional(
-      "OCC_AUTH_SECRET",
-      mode === "development" ? "openclaw-development-auth-secret-minimum-32-bytes" : undefined,
-    ),
-    baseURL: authBaseURL(
-      optional(
-        "OCC_AUTH_BASE_URL",
-        mode === "development" ? DEFAULT_BETTER_AUTH_BASE_URL : undefined,
-      ),
-      mode,
-    ),
-  };
-  if (authConfig.secret.length < 32) {
-    throw new Error("OCC_AUTH_SECRET must be at least 32 characters.");
-  }
-
-  if (mode === "production") {
-    return {
-      mode,
-      databaseUrl: required("OCC_DATABASE_URL"),
-      auth: authConfig,
-      adminEmail: normalizeEmail(
-        required("OCC_BOOTSTRAP_ADMIN_EMAIL"),
-        "OCC_BOOTSTRAP_ADMIN_EMAIL",
-      ),
-    };
-  }
-
-  return {
-    mode,
-    databaseUrl: required("OCC_DATABASE_URL"),
-    auth: authConfig,
-    adminEmail: normalizeEmail(
-      optional("OPENCLAW_DEV_EMAIL", DEFAULT_DEV_ADMIN_EMAIL),
-      "OPENCLAW_DEV_EMAIL",
-    ),
-  };
-}
-
 function freshBootstrapConfig(config) {
   if (config.mode === "production") {
-    const passwordPath = passwordOutputPath(required("OCC_BOOTSTRAP_PASSWORD_FILE"));
+    const passwordPath = passwordOutputPath(required(process.env, "OCC_BOOTSTRAP_PASSWORD_FILE"));
     return {
       installationName: installationName(
-        required("OCC_BOOTSTRAP_INSTALLATION_NAME"),
+        required(process.env, "OCC_BOOTSTRAP_INSTALLATION_NAME"),
         "OCC_BOOTSTRAP_INSTALLATION_NAME",
       ),
       passwordPath,
       serviceKeyPath: serviceKeyOutputPath(
-        required("OCC_BOOTSTRAP_SERVICE_KEY_FILE"),
+        required(process.env, "OCC_BOOTSTRAP_SERVICE_KEY_FILE"),
         passwordPath,
       ),
     };
   }
   return {
-    password: optional("OPENCLAW_DEV_PASSWORD", DEFAULT_DEV_ADMIN_PASSWORD),
+    password: optional(process.env, "OPENCLAW_DEV_PASSWORD", DEFAULT_DEV_ADMIN_PASSWORD),
     installationName: installationName(
-      optional("OPENCLAW_DEV_INSTALLATION_NAME", DEFAULT_DEV_INSTALLATION_NAME),
+      optional(process.env, "OPENCLAW_DEV_INSTALLATION_NAME", DEFAULT_DEV_INSTALLATION_NAME),
       "OPENCLAW_DEV_INSTALLATION_NAME",
     ),
-    serviceKeyPath: serviceKeyOutputPath(required("OCC_BOOTSTRAP_SERVICE_KEY_FILE")),
+    serviceKeyPath: serviceKeyOutputPath(required(process.env, "OCC_BOOTSTRAP_SERVICE_KEY_FILE")),
   };
 }
 
@@ -337,7 +214,7 @@ try {
     level: logging.level,
     destination: "stderr",
   });
-  const config = modeConfig(mode);
+  const config = bootstrapConfiguration(mode, process.env);
   pool = await createPostgresPool(config.databaseUrl);
   const state = new PostgresPlatformState(pool);
   const existing = await state.loadInstallation();

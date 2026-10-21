@@ -26,6 +26,7 @@ import {
   settled,
 } from "../helpers/child-processes.mjs";
 import { expectedFullLanes, passingGateNeeds } from "../helpers/ci-expected-coverage.mjs";
+import { checkArguments, classify, respond } from "../../scripts/ci/impact.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const selector = join(repositoryRoot, "scripts/ci/impact.mjs");
@@ -149,10 +150,59 @@ async function initBase(repo, initial, initialModes) {
   return commit("base");
 }
 
+// The selector's classification of the checkout in `cwd` under `env`, run in
+// this process. classify() reads process.env and runs Git synchronously in the
+// working directory, so both are swapped for the call alone: no other code runs
+// until they are restored. The call blocks the event loop, so concurrent cases'
+// in-process classifications run one at a time.
+function classifyIn(cwd, env) {
+  const saved = { ...process.env };
+  const previous = process.cwd();
+  const replace = (values) => {
+    for (const key of Object.keys(process.env)) {
+      if (values[key] === undefined) {
+        delete process.env[key];
+      }
+    }
+    for (const [key, value] of Object.entries(values)) {
+      if (value !== undefined) {
+        process.env[key] = value;
+      }
+    }
+  };
+  replace(env);
+  try {
+    process.chdir(cwd);
+    return classify();
+  } finally {
+    process.chdir(previous);
+    replace(saved);
+  }
+}
+
+// The selector's exit status for a command line and a classification: main()
+// exits 1 when it refuses the command line or the mode does not verify.
+function verifyStatus(args, result) {
+  try {
+    checkArguments(args);
+  } catch {
+    return 1;
+  }
+  return respond(args, result).verified ? 0 : 1;
+}
+
 // `moveMain`, when given, commits to the base branch after the pull request
 // branched, then merges onto that newer base. The event keeps the older
 // base.sha, as GitHub's pull_request payload does when main moves after a push.
-async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } = {}) {
+// `cliVerify` runs every --verify-mode command line of expect, expectReason and
+// expectTests as its own selector process (see f.verify).
+async function fixture(
+  t,
+  change,
+  initial = {},
+  initialModes = {},
+  { moveMain, cliVerify = false } = {},
+) {
   const dir = tempDir(t, "ci-impact-");
   const repo = join(dir, "repo");
   const template = await baseRepository(initial, initialModes);
@@ -200,36 +250,73 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
     assert.equal(selected.status, 0, selected.stderr);
     return readFileSync(path, "utf8");
   };
+  // Exit statuses of --verify-mode command lines for the current checkout and
+  // event, and the GitHub output the same evidence selects (null with
+  // `cliVerify`). With `cliVerify` each command line is its own selector
+  // process. Otherwise the selector classifies once in this process and answers
+  // each command line with the code its CLI runs (checkArguments, respond), so
+  // a selection's verifications cost one Git inspection instead of one
+  // selector process each; its caller still runs the CLI selection and checks
+  // that the CLI wrote the same output.
+  f.verify = async (commandLines, overrides = {}) => {
+    if (cliVerify) {
+      const results = await settled(commandLines.map((args) => f.run(args, overrides)));
+      return { statuses: results.map((result) => result.status), output: null };
+    }
+    const result = classifyIn(repo, { ...env, ...overrides });
+    return {
+      statuses: commandLines.map((args) => verifyStatus(args, result)),
+      output: respond(["--github-output", "-"], result).output,
+    };
+  };
+  // The CLI selection must match the in-process classification's output.
+  const sameOutput = (verified, selected) =>
+    verified.output === null || assert.equal(selected, verified.output);
   // `reason`, when given, is the exact reason the selection must report.
   f.expect = async (mode, overrides = {}, reason = reasons) => {
     const path = output("prior=value\n");
     const lanes = JSON.stringify(["checks-baseline-1"]);
-    const [selected, same, other, tests] = await settled([
+    const [selected, verified] = await settled([
       f.run(["--github-output", path], overrides),
-      f.run(["--verify-mode", mode], overrides),
-      f.run(["--verify-mode", mode === "docs" ? "full" : "docs"], overrides),
-      f.run(["--verify-mode", "tests", "--lanes", lanes], overrides),
+      f.verify(
+        [
+          ["--verify-mode", mode],
+          ["--verify-mode", mode === "docs" ? "full" : "docs"],
+          ["--verify-mode", "tests", "--lanes", lanes],
+        ],
+        overrides,
+      ),
     ]);
+    const [same, other, tests] = verified.statuses;
     assert.equal(selected.status, 0, selected.stderr);
+    const written = readFileSync(path, "utf8");
     assert.match(
-      readFileSync(path, "utf8"),
+      written,
       new RegExp(`^prior=value\nmode=${mode}\nreason=(?:${reason})\n$`),
       selected.stdout,
     );
-    assert.equal(same.status, 0);
-    assert.notEqual(other.status, 0);
-    assert.notEqual(tests.status, 0);
+    sameOutput(verified, written.slice("prior=value\n".length));
+    assert.equal(same, 0);
+    assert.notEqual(other, 0);
+    assert.notEqual(tests, 0);
   };
   // Full mode with an exact reason, verified as full and not as docs.
   f.expectReason = async (reason, overrides = {}) => {
-    const [selected, full, docs] = await settled([
+    const [selected, verified] = await settled([
       f.select(overrides),
-      f.run(["--verify-mode", "full"], overrides),
-      f.run(["--verify-mode", "docs"], overrides),
+      f.verify(
+        [
+          ["--verify-mode", "full"],
+          ["--verify-mode", "docs"],
+        ],
+        overrides,
+      ),
     ]);
+    const [full, docs] = verified.statuses;
     assert.equal(selected, `mode=full\nreason=${reason}\n`);
-    assert.equal(full.status, 0);
-    assert.notEqual(docs.status, 0);
+    sameOutput(verified, selected);
+    assert.equal(full, 0);
+    assert.notEqual(docs, 0);
   };
   f.expectTests = async (lanes, overrides = {}) => {
     const json = JSON.stringify(lanes);
@@ -245,14 +332,15 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
         ? [["--verify-mode", "tests", "--lanes", JSON.stringify([...lanes].reverse())]]
         : []),
     ];
-    const [selected, verified, ...rejected] = await settled([
+    const [selected, verifications] = await settled([
       f.select(overrides),
-      f.run(["--verify-mode", "tests", "--lanes", json], overrides),
-      ...bad.map((args) => f.run(args, overrides)),
+      f.verify([["--verify-mode", "tests", "--lanes", json], ...bad], overrides),
     ]);
+    const [verified, ...rejected] = verifications.statuses;
     assert.equal(selected, `mode=tests\nreason=tests_only\nlanes=${json}\n`);
-    assert.equal(verified.status, 0);
-    rejected.forEach((result, i) => assert.notEqual(result.status, 0, bad[i].join(" ")));
+    sameOutput(verifications, selected);
+    assert.equal(verified, 0);
+    rejected.forEach((status, i) => assert.notEqual(status, 0, bad[i].join(" ")));
   };
   return f;
 }
@@ -519,6 +607,9 @@ test("verified merge selects documentation and handles unusual names and deletio
       rmSync(join(repo, "docs/deleted.md"));
     },
     { "README.md": "old\n", "docs/deleted.md": "old\n" },
+    {},
+    // Verifies docs, and refuses full and tests, in selector processes.
+    { cliVerify: true },
   );
   await f.expect("docs");
 });
@@ -640,20 +731,27 @@ test("symlinks and executable documentation select full", async (t) => {
 });
 
 test("submodule changes remain visible even when Git configuration ignores them", async (t) => {
-  const f = await fixture(t, async ({ put, git, repo }) => {
-    put("docs/change.md");
-    const vendor = join(repo, "vendor");
-    mkdirSync(vendor);
-    const nested = (...args) => command(vendor, "git", args);
-    await nested("init", "-q");
-    await nested("config", "user.name", "CI test");
-    await nested("config", "user.email", "ci@example.test");
-    await nested("config", "maintenance.auto", "false");
-    writeFileSync(join(vendor, "file"), "content");
-    await nested("add", "file");
-    await nested("commit", "-qm", "nested");
-    await git("config", "diff.ignoreSubmodules", "all");
-  });
+  const f = await fixture(
+    t,
+    async ({ put, git, repo }) => {
+      put("docs/change.md");
+      const vendor = join(repo, "vendor");
+      mkdirSync(vendor);
+      const nested = (...args) => command(vendor, "git", args);
+      await nested("init", "-q");
+      await nested("config", "user.name", "CI test");
+      await nested("config", "user.email", "ci@example.test");
+      await nested("config", "maintenance.auto", "false");
+      writeFileSync(join(vendor, "file"), "content");
+      await nested("add", "file");
+      await nested("commit", "-qm", "nested");
+      await git("config", "diff.ignoreSubmodules", "all");
+    },
+    {},
+    {},
+    // Verifies full, and refuses docs and tests, in selector processes.
+    { cliVerify: true },
+  );
   await f.expect("full");
 });
 
@@ -707,7 +805,11 @@ test("output must be an existing regular file and mode must verify", async (t) =
       ["--github-output", join(f.dir, "link")],
       ["--verify-mode", "invalid"],
     ],
-    async (args) => assert.notEqual((await f.run(args)).status, 0, args.join(" ")),
+    async (args) => {
+      const result = await f.run(args);
+      assert.notEqual(result.status, 0, args.join(" "));
+      assert.match(result.stderr, /CI impact: unable to select or verify mode/, args.join(" "));
+    },
   );
 });
 
@@ -1822,6 +1924,8 @@ test("a test-only change selects the lanes that list its files", async (t) => {
           put("tests/integration/fixture-image.test.mjs", "// edited\n"),
         ),
         ["k3d-fixture-state", "runtime-image-fixture"],
+        // Verifies the lanes, and refuses every other form, in selector processes.
+        { cliVerify: true },
       ],
       // Checks and Conformance 1 runs when it lists the test, and as the matrix
       // lane when only the fixture job would run.
@@ -1869,8 +1973,8 @@ test("a test-only change selects the lanes that list its files", async (t) => {
         ["k3d-fixture-state", "postgres"],
       ],
     ],
-    async ([change, lanes]) => {
-      const [f, shallow] = await suiteFixture(t, change);
+    async ([change, lanes, options]) => {
+      const [f, shallow] = await suiteFixture(t, change, {}, options);
       await settled([f.expectTests(lanes), shallow.expectTests(lanes)]);
     },
   );

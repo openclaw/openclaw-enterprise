@@ -19,6 +19,8 @@ import {
   selectSecret,
   setSlackSelection,
   takeLayoutShifts,
+  trackSettledFetches,
+  waitForIdleFetches,
   waitForInputValue,
   secretOptionLabel,
 } from "./console-agents-browser-helpers.mjs";
@@ -1914,6 +1916,7 @@ test("Edit current Configuration opens the editor of a kept draft it returns to"
     browser,
     context: { viewport: { width: 1440, height: 900 } },
   });
+  await trackSettledFetches(page);
   // A settled deployment record and no polls, so each page is kept as it was left.
   await page.route(
     `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}/deployments/${revision.id}`,
@@ -1950,6 +1953,9 @@ test("Edit current Configuration opens the editor of a kept draft it returns to"
   await page.locator(".agent-version-detail").evaluate((node) => {
     node.dataset.kept = "";
   });
+  // The editor can be in view before the draft's other reads land (its Secret's name, say); a
+  // draft left with one still pending is rebuilt on return, not kept.
+  await waitForIdleFetches(page);
   await page.goBack();
   await page.waitForURL((next) => next.searchParams.get("revision") === revision.id);
   await page.locator('.content [aria-live="polite"][aria-busy="false"]').waitFor();
