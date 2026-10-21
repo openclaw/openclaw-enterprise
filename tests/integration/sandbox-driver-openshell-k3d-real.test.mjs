@@ -4711,7 +4711,11 @@ async function requestGatewayTurns(context, topology, harnessId) {
     assert.equal(body.includes(gatewayPassword), false);
     const failureDiagnostic =
       response.status === 200 ? "" : await gatewayTurnFailureDiagnostic(topology, gatewayPassword);
-    assert.equal(response.status, 200, `${body}${failureDiagnostic}`);
+    assert.equal(
+      response.status,
+      200,
+      `Gateway ${harnessId} turn ${nonces.length}: HTTP ${response.status}, expected 200.${failureDiagnostic}`,
+    );
     assert.match(JSON.parse(body).choices?.[0]?.message?.content ?? "", new RegExp(nonce));
   };
 

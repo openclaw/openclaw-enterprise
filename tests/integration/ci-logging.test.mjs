@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import {
@@ -8,6 +8,7 @@ import {
   collectorImage,
   fixture,
   prepareLogging,
+  readJsonlPayloads,
 } from "../helpers/ci-logging.mjs";
 
 test("prepareLogging registers an owned Collector backend before starting Docker", async (t) => {
@@ -337,4 +338,20 @@ test("cleanupLogging does not require Kubernetes when a k3d backend is cleaned",
 
   assert.deepEqual(calls, [["docker", ["rm", "--force", containerName]]]);
   await assert.rejects(() => stat(directory), { code: "ENOENT" });
+});
+
+// The Collector's file exporter can be read mid-write; a cut line waits for its newline.
+test("readJsonlPayloads ignores an unterminated last line until it is complete", async (t) => {
+  const root = await fixture(t);
+  const path = join(root, "logs.jsonl");
+  assert.deepEqual(await readJsonlPayloads(path), []);
+
+  const first = JSON.stringify({ resourceLogs: [{ id: "first" }] });
+  const second = JSON.stringify({ resourceLogs: [{ id: "second" }] });
+  const cut = second.indexOf("second") + 3;
+  await writeFile(path, `${first}\n${second.slice(0, cut)}`);
+  assert.deepEqual(await readJsonlPayloads(path), [JSON.parse(first)]);
+
+  await appendFile(path, `${second.slice(cut)}\n\n`);
+  assert.deepEqual(await readJsonlPayloads(path), [JSON.parse(first), JSON.parse(second)]);
 });

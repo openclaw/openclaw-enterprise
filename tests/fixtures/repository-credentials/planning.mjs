@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from "node:crypto";
+import { sharedRsaKeyPair } from "./shared-keys.mjs";
 import { appModule } from "./runtime.mjs";
 import { createControlledClock } from "./clock.mjs";
 import { createResourceScope } from "./resources.mjs";
@@ -21,7 +21,7 @@ export async function createGitHubPlanningFixture(t) {
     const clock = createControlledClock(1700000000000);
     const config = validateServiceConfig(serviceConfigurationData());
     const configuration = githubConfigurationData();
-    const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const { privateKey, publicKey } = sharedRsaKeyPair("github-app");
     const key = createGitHubKeyOwner({ privateKey, appId: configuration.appId, clock });
     resources.after(() => key.close());
     const factory = createGitHubDriverFactory({

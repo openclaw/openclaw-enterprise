@@ -1846,7 +1846,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           "Channel settings and selected bindings are not persisted until you create the Agent. Secrets created from the modal are stored immediately in the Namespace.",
         saveLabel: "Apply channel settings",
         readOnlyDescription:
-          "This saved initial Configuration is fixed for this create form. Retrying Agent creation will reuse these channel settings.",
+          "This saved initial Configuration is fixed for this create form." +
+          (credentialGrantRefused
+            ? ""
+            : " Retrying Agent creation will reuse these channel settings."),
         readOnlyCardMessage: "This saved initial Configuration cannot be edited from this form.",
       },
       onSave: async (updatedValues, options = {}) => {
@@ -2346,7 +2349,8 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
           savedCredentialSource ? `Credential Source saved: ${savedCredentialSource.id}.` : "",
           savedConfiguration ? `Configuration saved: ${savedConfiguration.id}.` : "",
           savedAgent ? `Agent saved: ${savedAgent.id}.` : "",
-          "Retries reuse these resources. Saved provider and Configuration settings are fixed.",
+          credentialGrantRefused ? "" : "Retries reuse these resources.",
+          "Saved provider and Configuration settings are fixed.",
         ]
           .filter(Boolean)
           .join(" "),
@@ -2993,6 +2997,10 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
       endCreate();
       if (context.isCurrent()) {
         pending = false;
+        if (credentialGrantRefused) {
+          showSavedStatus();
+          renderChannelEditor();
+        }
         updateControls();
       }
     }
@@ -3007,7 +3015,7 @@ function renderAgentForm(context, rendered, presetOptions = {}, draft = {}) {
     accessStatus,
     form,
     channelEditor,
-    // The outcome leads; the saved-resources line explains what a retry reuses (finding 1862).
+    // The outcome leads; the saved-resources line identifies what was kept (finding 1862).
     feedback,
     savedStatus,
     recovery,

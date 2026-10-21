@@ -1,8 +1,8 @@
-import { generateKeyPairSync } from "node:crypto";
 import { chmod, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureAppId, fixtureInstallationId } from "../github.mjs";
 import { temporaryDirectory } from "../process.mjs";
+import { sharedRsaKeyPair } from "../shared-keys.mjs";
 
 export async function createRegistryMaterial(
   resources,
@@ -12,7 +12,8 @@ export async function createRegistryMaterial(
   await chmod(directory, 0o700);
   const privateKeyFile = join(directory, "app.pem");
   const registryFile = join(directory, "registry.json");
-  const keyPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  // The same App key the GitHub fixture verifies by default (github/protocol.mjs).
+  const keyPair = sharedRsaKeyPair("github-app");
   await writeFile(privateKeyFile, keyPair.privateKey.export({ type: "pkcs8", format: "pem" }), {
     mode: 0o600,
   });

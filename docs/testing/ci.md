@@ -109,12 +109,13 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 
 ### Setting Overrides
 
-These process environment variables are optional. Keep the same directory for
-First Agent `images` and `run`; changing it does not isolate fixed-name containers.
+These process environment variables are optional. Keep the same directory and
+slot for First Agent `images` and `run`; only a distinct slot isolates host-wide names.
 
 | Setting                                     | Default                                                       | Purpose                                                                            |
 | ------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `OCC_FIRST_AGENT_SMOKE_DIRECTORY`           | `$RUNNER_TEMP/first-agent-smoke`, or `/tmp/first-agent-smoke` | Images, certificates, and Local Setup state.                                       |
+| `OCC_FIRST_AGENT_SMOKE_SLOT`                | `0`                                                           | `0`–`31`; other cluster, registry, model names, port, subnet. Also vary dev ports. |
 | `CI_RUNNER_TEST_TIMEOUT_MS`                 | `3600000`                                                     | Per-file test deadline; hosted lane/job deadlines still apply.                     |
 | `CI_RUNNER_CLEANUP_TIMEOUT_MS`              | `120000`                                                      | Per-file cleanup allowance.                                                        |
 | `CI_RUNNER_FILE_CONCURRENCY`                | Lane limit capped by available CPUs                           | `1`–`32` for lanes permitting parallel files; serial-only lanes stay serial.       |

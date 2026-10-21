@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test, { after } from "node:test";
+import test, { after, before } from "node:test";
 import pg from "pg";
 import {
   loadInstallationConfiguration,
@@ -55,9 +55,11 @@ const productionServer = {
 };
 
 // Boots run concurrently, about one per CPU. A boot killed at its timeout rejects with
-// the signal instead of reading as a wrong exit status.
+// the signal instead of reading as a wrong exit status. The timeout only guards against a
+// process that never exits: every boot here ends in a startup refusal within a second or two
+// on an idle machine, and on a loaded runner the same boot took more than 10 s.
 const limit = concurrencyLimit();
-async function boot(script, env, timeout = 10_000) {
+async function boot(script, env, timeout = 30_000) {
   const { signal, ...result } = await limit(() =>
     captureChild(process.execPath, [script], {
       cwd: process.cwd(),
@@ -70,6 +72,45 @@ async function boot(script, env, timeout = 10_000) {
   }
   return result;
 }
+
+// Warm the compile cache with one API and one worker boot through production startup to the
+// database connection, the furthest any case here goes. Node writes a cold cache when a process
+// exits, and the first test starts all its boots at once: each one compiled the whole graph and
+// spent seconds writing the same cache at exit, so on a loaded runner the valid case's API had
+// logged its startup error but had not exited within its 15 s budget.
+before(async () => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-installation-warm-"));
+  try {
+    const path = join(directory, "installation.yaml");
+    await writeFile(path, JSON.stringify(installation()), "utf8");
+    const env = {
+      PATH: process.env.PATH,
+      NODE_ENV: "production",
+      OCC_CONFIG_PATH: path,
+      OCC_DATABASE_URL: "postgresql://127.0.0.1:1/occ",
+    };
+    const [server, worker] = await settled([
+      boot("apps/controller/src/server.mjs", { ...env, ...productionServer }),
+      boot("apps/controller/src/worker.mjs", env),
+    ]);
+    // A boot that stopped earlier would leave the composition modules uncached.
+    const warmUp = "compile-cache warm-up";
+    assert.equal(server.status, 1, warmUp);
+    assert.equal(
+      startupDiagnostic(server.stderr, "startup-error").code,
+      "PERSISTENCE_UNAVAILABLE",
+      warmUp,
+    );
+    assert.equal(worker.status, 1, warmUp);
+    assert.equal(
+      startupDiagnostic(worker.stderr, "worker.startup-error").code,
+      "PERSISTENCE_UNAVAILABLE",
+      warmUp,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 async function fixture(t, configuration = installation()) {
   const directory = await mkdtemp(join(tmpdir(), "occ-installation-startup-"));
@@ -218,11 +259,11 @@ test("API and worker refuse a bad observability host or runtime image before ope
     ],
     ["apps/controller/src/worker.mjs", "worker.startup-error", shared],
   ];
-  // Each case boots both processes on its own copy of the file, concurrently.
+  // Each real case boots both processes on its own copy of the file, concurrently.
   const refuses = async (file, code, label) =>
     settled(
       processes.map(async ([script, event, env]) => {
-        const result = await boot(script, { ...env, OCC_CONFIG_PATH: file }, 15_000);
+        const result = await boot(script, { ...env, OCC_CONFIG_PATH: file });
         assert.equal(result.status, 1, script);
         assert.ok(!result.stderr.includes(file), result.stderr);
         const diagnostic = startupDiagnostic(result.stderr, event);
@@ -230,49 +271,100 @@ test("API and worker refuse a bad observability host or runtime image before ope
         return diagnostic;
       }),
     );
+  // One real pair per refusal message the startup code mappings tell apart: the first input
+  // of each family. Its other inputs go through the loader both processes call with the file
+  // (production mode) before they open PostgreSQL; the message is what maps to the code.
   const cases = [];
-  for (const shorthand of [
-    "http://192.168.1",
-    "http://2130706433",
-    "http://@192.168.1.1",
-    "http://@grafana.example.internal/d",
-    syntheticCredentialUrl({ username: "user", password: "", host: "grafana.example.internal" }),
-    "javascript:alert(1)",
-    "http://good.example\tevil.com/x",
-    "http://evil.com\\.good.example/path",
-    "http://good.example\nevil.com/x",
-  ]) {
-    configuration.observability = { url: shorthand };
-    cases.push(
-      fixture(t, structuredClone(configuration)).then(async (copy) => {
-        for (const diagnostic of await refuses(copy, "OBSERVABILITY_URL_INVALID", shorthand)) {
-          assert.equal(diagnostic.message, undefined, shorthand);
-        }
-      }),
-    );
-  }
-  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
-  // other reference its parser refuses, such as one with .. in the path.
-  configuration.observability = { url: "http://192.168.1.1" };
-  const images = configuration.drivers.compute.configuration.images;
-  for (const role of ["gateway", "agent"]) {
-    const original = images[role];
-    for (const refused of [
-      original.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase()),
-      original.replace(/^([^/]*\/)/, "$1re..po/"),
-    ]) {
-      assert.notEqual(refused, original);
-      images[role] = refused;
+  const check = (code, inputs) => {
+    for (const [index, [label, message, apply]] of inputs.entries()) {
+      apply();
       cases.push(
         fixture(t, structuredClone(configuration)).then(async (copy) => {
-          for (const diagnostic of await refuses(copy, "RUNTIME_IMAGE_INVALID", refused)) {
-            assert.equal(diagnostic.message, undefined, refused);
+          if (index > 0) {
+            await assert.rejects(
+              loadInstallationConfiguration({
+                mode: "production",
+                environment: { OCC_CONFIG_PATH: copy },
+              }),
+              message,
+              label,
+            );
+            return;
+          }
+          for (const diagnostic of await refuses(copy, code, label)) {
+            assert.equal(diagnostic.message, undefined, label);
           }
         }),
       );
     }
-    images[role] = original;
+  };
+  for (const [message, urls] of [
+    [
+      /observability\.url IPv4 host must be four decimal octets/,
+      ["http://192.168.1", "http://2130706433"],
+    ],
+    [
+      /observability\.url must not contain user info/,
+      ["http://@grafana.example.internal/d", "http://@192.168.1.1"],
+    ],
+    [
+      /observability\.url must be an absolute HTTP/,
+      [
+        "javascript:alert(1)",
+        syntheticCredentialUrl({
+          username: "user",
+          password: "",
+          host: "grafana.example.internal",
+        }),
+      ],
+    ],
+    [
+      /observability\.url must not contain a tab/,
+      [
+        "http://good.example\tevil.com/x",
+        "http://evil.com\\.good.example/path",
+        "http://good.example\nevil.com/x",
+      ],
+    ],
+  ]) {
+    check(
+      "OBSERVABILITY_URL_INVALID",
+      urls.map((url) => [
+        url,
+        message,
+        () => {
+          configuration.observability = { url };
+        },
+      ]),
+    );
   }
+  // Kubernetes refuses to pull an image whose repository path has an uppercase letter, or any
+  // other reference its parser refuses, such as one with .. in the path. The real pairs take
+  // a Gateway image for one message and an Agent image for the other.
+  configuration.observability = { url: "http://192.168.1.1" };
+  const images = configuration.drivers.compute.configuration.images;
+  const original = { ...images };
+  const uppercase = (image) =>
+    image.replace(/^([^/]*\/)(.)/, (_, host, first) => host + first.toUpperCase());
+  const dotted = (image) => image.replace(/^([^/]*\/)/, "$1re..po/");
+  const refusedImage = (role, refuse, message) => [
+    `${role} ${refuse(original[role])}`,
+    message,
+    () => {
+      Object.assign(images, original);
+      images[role] = refuse(original[role]);
+      assert.notEqual(images[role], original[role]);
+    },
+  ];
+  check("RUNTIME_IMAGE_INVALID", [
+    refusedImage("gateway", uppercase, /Gateway image repository path must be lowercase/),
+    refusedImage("agent", uppercase, /Agent image repository path must be lowercase/),
+  ]);
+  check("RUNTIME_IMAGE_INVALID", [
+    refusedImage("agent", dotted, /Agent image must be a container image reference/),
+    refusedImage("gateway", dotted, /Gateway image must be a container image reference/),
+  ]);
+  Object.assign(images, original);
   configuration.observability = { url: "http://192.168.1.1" };
   cases.push(
     writeFile(path, JSON.stringify(configuration), "utf8").then(() =>

@@ -8,6 +8,7 @@
     "tests/integration/dev-up-compose.test.mjs",
     "tests/integration/occ-api.test.mjs",
     "tests/integration/stored-document-serialization.test.mjs",
+    "tests/integration/precompiled-route-compilers.test.mjs",
     "tests/integration/list-summaries.test.mjs",
     "tests/conformance/plugin-compute.test.mjs",
     "tests/conformance/codex-native-startup.test.mjs",
@@ -28,6 +29,7 @@
     "tests/integration/console-api.test.mjs",
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
+    "tests/conformance/kubernetes-api-read.test.mjs",
     "tests/integration/configuration-controller.test.mjs",
     "tests/integration/configuration-body-limits.test.mjs",
     "tests/integration/json-body-depth.test.mjs",
@@ -52,6 +54,7 @@
     "tests/integration/production-image-upgrade.test.mjs",
     "tests/conformance/test-files.test.mjs",
     "tests/conformance/socket-directory.test.mjs",
+    "tests/conformance/temporary-directory.test.mjs",
     "tests/integration/production-controller-security.test.mjs",
     "tests/conformance/kubernetes-runtime-credentials.test.mjs",
     "tests/conformance/openshell-gateway-wire.test.mjs",
@@ -186,6 +189,9 @@
       "path": "tests/conformance/kubernetes-real-kubectl.test.mjs"
     },
     {
+      "path": "tests/conformance/kubernetes-api-read.test.mjs"
+    },
+    {
       "path": "tests/conformance/k3d-failure-diagnostics.test.mjs"
     },
     {
@@ -256,6 +262,9 @@
     },
     {
       "path": "tests/conformance/socket-directory.test.mjs"
+    },
+    {
+      "path": "tests/conformance/temporary-directory.test.mjs"
     },
     {
       "path": "tests/conformance/utils.test.mjs"
@@ -330,6 +339,9 @@
     },
     {
       "path": "tests/integration/stored-document-serialization.test.mjs"
+    },
+    {
+      "path": "tests/integration/precompiled-route-compilers.test.mjs"
     },
     {
       "path": "tests/integration/list-summaries.test.mjs"

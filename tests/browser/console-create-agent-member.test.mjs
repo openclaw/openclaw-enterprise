@@ -173,6 +173,13 @@ test("a member with Agent create completes the default Preset path without Insta
     [],
   );
   assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+  assert.equal(
+    await page
+      .getByText(/retr(?:y|ies)/i)
+      .filter({ visible: true })
+      .count(),
+    0,
+  );
 });
 
 test("a member without Agent create never sees the form, and Create Agent names why", async (t) => {
@@ -364,11 +371,20 @@ test("a member's unconfirmed credential grant offers a retry until the API refus
   // An outage is not a refusal: the grant is unconfirmed and can be retried (finding 2113).
   await page.getByRole("alert").filter({ hasText: CREDENTIAL_ACCESS_UNCONFIRMED }).waitFor();
   assert.equal(await page.getByText(MEMBER_GRANT_REFUSED).count(), 0);
+  const saved = page.getByRole("status").filter({ hasText: "Agent saved:" });
+  assert.match(await saved.innerText(), /Retries reuse these resources/);
   await page.unroute(rolesPath, unavailable);
   await page.getByRole("button", { name: "Retry credential access", exact: true }).click();
   // The API refuses it as Installation administration: no retry can succeed (finding 2109).
   await page.getByRole("alert").filter({ hasText: MEMBER_GRANT_REFUSED }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Retry credential access" }).count(), 0);
+  assert.equal(
+    await page
+      .getByText(/retr(?:y|ies)/i)
+      .filter({ visible: true })
+      .count(),
+    0,
+  );
   assert.deepEqual(
     answers.filter((answer) => answer.includes("/iam/")),
     [

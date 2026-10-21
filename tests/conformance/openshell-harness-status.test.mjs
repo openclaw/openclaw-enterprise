@@ -501,6 +501,8 @@ test("the OpenShell client reaches a bearer-passthrough service through the gate
 test("a refused OpenShell WebSocket handshake releases an unfinished HTTP response", async () => {
   let socket;
   let closed = false;
+  let markClosed;
+  const closing = new Promise((resolve) => (markClosed = resolve));
   const gateway = createServer();
   gateway.on("upgrade", (_request, peer) => {
     socket = peer;
@@ -508,6 +510,7 @@ test("a refused OpenShell WebSocket handshake releases an unfinished HTTP respon
     peer.once("end", () => peer.end());
     peer.once("close", () => {
       closed = true;
+      markClosed();
     });
     // Headers already prove refusal; the peer never finishes its advertised body.
     peer.write(
@@ -524,8 +527,11 @@ test("a refused OpenShell WebSocket handshake releases an unfinished HTTP respon
       await client.serviceWebSocketHandshake(serviceUrl, TOKEN, AbortSignal.timeout(5_000)),
       false,
     );
-    // Disposal must happen even though send() clears the completed request's timer.
-    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    // Disposal must happen even though send() clears the completed request's timer: the socket
+    // closes within 1.5 s (the wait ends as soon as it does).
+    let timer;
+    await Promise.race([closing, new Promise((resolve) => (timer = setTimeout(resolve, 1_500)))]);
+    clearTimeout(timer);
     assert.equal(closed, true, "a completed refusal must not retain its HTTP socket");
   } finally {
     // Complete the base implementation's held response without manufacturing a reset.

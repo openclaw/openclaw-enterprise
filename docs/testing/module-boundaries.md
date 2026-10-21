@@ -86,7 +86,10 @@ for examples.
 ## Resolution and analysis limits
 
 The analyzer resolves supported static imports and selected Node loader and path
-patterns. Package export targets follow Node's case-insensitive refusal of
+patterns. File URL schemes are case-insensitive, matching Node; local imports
+and loader anchors keep their local edges and repository-relative diagnostic
+identities across scheme casing. Query and fragment handling is unchanged.
+Package export targets follow Node's case-insensitive refusal of
 `node_modules` path segments, including percent-encoded spellings. A query or
 fragment word alone is not a path segment; slash boundaries in the original
 target are still checked without URL normalization. It fails closed on unknown loads and unsupported package import aliases (`#name`). It does not model arbitrary wrappers, computed execution, external
