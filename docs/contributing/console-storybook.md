@@ -180,9 +180,9 @@ Moved to [Agent workflows](console-storybook-agent-workflows.md#delete).
 `scripts/console-storybook/` installs from its own manifest and lockfile under the
 seven-day release-age policy, independently of root dependencies.
 
-- `prepare-assets.mjs` copies current console assets and the controller-served
-  shared contract modules into ignored `dist/assets/`. Rebuild after source
-  edits; the development server does not recopy sources.
+- `prepare-assets.mjs` reads the public Console assets through the controller's
+  asset reader, then versions the preview in `dist/assets/`. Rebuild after source
+  edits so the development server serves the new assets.
 - `public/scenarios.mjs` owns story descriptions, initial data options, failure
   responses, automatic setup actions, and workflow instructions.
 - `public/fixtures.mjs` intercepts API calls inside the preview. Unconfigured

@@ -2,9 +2,13 @@
 
 Start with the closest page in [Console Storybook](console-storybook.md). The
 controller serves [native HTML, CSS, and browser modules](../../apps/controller/src/console/index.html).
-Use the [shared DOM helpers](../../apps/controller/src/console/dom.mjs) for behavior
+Use the [shared DOM helpers](../../apps/controller/src/console/dom.mts) for behavior
 and [`console.css`](../../apps/controller/src/console/console.css) for appearance.
 Keep resource names, permissions, requests, and recovery in the page that owns them.
+
+Write new browser modules in [strict, erasable TypeScript](console-storybook.md#write-console-modules-in-typescript).
+For example, edit `dom.mts` and import it as `./dom.mjs`. The controller serves
+JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
 
 ## Compose a page
 
@@ -37,10 +41,10 @@ cover these scales and the supported breakpoints.
 
 Keep a one-page layout with that page. When another page needs the same
 pattern, move the shared rule next to the component it extends and use it in
-both places. If a change needs a new asset, register it in the
-[controller's asset list](../../apps/controller/src/console-assets.ts):
-[Storybook copies the source directory](../../scripts/console-storybook/prepare-assets.mjs),
-so a working preview alone doesn't prove the controller serves that file.
+both places. Register new assets in the
+[controller's allowlist](../../apps/controller/src/console-assets.ts).
+[Storybook](../../scripts/console-storybook/prepare-assets.mjs) prepares its preview
+with the same list and asset reader, then simulates API responses for each story.
 
 ## Review the result
 
@@ -48,5 +52,6 @@ Rebuild the [affected stories](console-storybook.md#appearance-review), then try
 the task at desktop, tablet, and phone widths. Follow the keyboard through the
 action and back to its result. Include the state where the next action changes,
 such as a refused save or a search with no matches. Use the
-[Console browser tests](../../tests/browser/) for controller behavior and the
+[Console browser tests](../../tests/browser/) to load the page through the controller.
+Check that new assets load and the interaction works with the actual API. Follow the
 [visual review instructions](../../AGENTS.md#console-storybook) for screenshots and video.
