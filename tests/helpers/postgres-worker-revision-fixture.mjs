@@ -319,6 +319,7 @@ export function createWorkerRevisionFixtures(
         grantHarnessSecret = true,
         auth = "secret",
         nonModelSources = 0,
+        modelConfig = {},
       } = {},
     ) {
       const id = `agt_${randomUUID()}`;
@@ -353,7 +354,7 @@ export function createWorkerRevisionFixtures(
           namespaceId: namespace.id,
           name: `${label}-${randomUUID()}`,
           type: "openai",
-          config: {},
+          config: modelConfig,
           secrets: {},
           driverId: CREDENTIAL_GATEWAY_FIXTURE_ID,
           state: "registering",
@@ -547,28 +548,40 @@ export function createWorkerRevisionFixtures(
         createdAt: new Date(Date.now() + controllerSkewMs).toISOString(),
       };
       if (protectedRepositoryDriver) {
-        const driver = protectedRepositoryDriver;
-        const execution = {
-          installationId: "test-installation",
-          namespaceId: candidate.namespaceId,
-          agentId: owner.id,
-          revisionId: candidate.id,
-          servicePrincipalId: candidate.servicePrincipalId,
-          executionId: randomUUID().replaceAll("-", ""),
-        };
-        Object.assign(candidate, {
-          executionAdmission: { version: 4, mode: "protected" },
-          sandboxDriverId: driver.id,
-          egressPlan: {
-            id: randomUUID(),
-            generation: 1,
-            execution,
-            repositoryGit: repositoryCredentials,
-            driver,
-            sandboxDriverId: driver.id,
-            egressDriverId: driver.id,
-            routes: [],
-          },
+        const sandbox = protectedRepositoryDriver.require("sandbox");
+        await state.transact(async (unit) => {
+          const auth = await controller.admitHarnessAuth(unit, actorId, owner);
+          assert.deepEqual(auth, harnessAuth);
+          const sources = await controller.admitCredentialSources(unit, actorId, owner, sandbox);
+          assert.deepEqual(sources, credentialSources);
+          const configuration = { agents: { defaults: { model: "codex/fixture-model" } } };
+          const plan = (chosen) =>
+            controller.admitProxyPlan(
+              unit,
+              owner,
+              candidate.id,
+              configuration,
+              sandbox.id,
+              repositoryCredentials,
+              chosen,
+            );
+          await assert.rejects(
+            plan({ ...auth, sourceId: "unselected" }),
+            /explicitly admitted source/,
+          );
+          const egressPlan = await plan(auth);
+          assert.deepEqual(egressPlan.harnessCredentialSource, auth);
+          assert.deepEqual(
+            egressPlan.routes,
+            [],
+            "no model route or credential was granted to Git",
+          );
+          Object.assign(candidate, {
+            configuration,
+            egressPlan,
+            executionAdmission: { version: 4, mode: "protected" },
+            sandboxDriverId: sandbox.id,
+          });
         });
       }
       const idempotencyKey = `agent_revision:${candidate.id}:reconcile`;

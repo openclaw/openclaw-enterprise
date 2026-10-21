@@ -1095,7 +1095,10 @@ export async function loadInstallationConfiguration(options: {
             sandbox: sandbox.configuration,
             backend: openShellBackend,
             proxy: drivers.credential_proxy,
-            ...(openShellGit && { repository: drivers.repo }),
+            ...(openShellGit && {
+              repository: drivers.repo,
+              modelGateway: drivers.credential_gateway,
+            }),
             namespaceBinding,
           },
         },
@@ -1160,7 +1163,6 @@ export async function loadInstallationConfiguration(options: {
         ...(preparedRepositoryGit === undefined || openShellGit
           ? {}
           : { preparedRepositoryIngress: true }),
-        ...(openShellGit ? { openShellGit } : {}),
         preprovisionedNamespace,
         nodeEnrollment: createGatewayNodeEnrollment(() =>
           readWorkspaceFilesApiKey(

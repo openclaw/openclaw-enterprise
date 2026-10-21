@@ -15,6 +15,7 @@ import type {
   CredentialSourceType,
   Driver,
   DriverRegistrationRef,
+  HarnessAuthSnapshot,
   Namespace,
   RepositoryRevisionState,
   Secret,
@@ -117,6 +118,8 @@ export interface ProxyPlan {
   readonly driver?: DriverRegistrationRef;
   /** v4 only: authorize this exact repository grant through the installed online sender. */
   readonly repositoryGit?: RepositoryRevisionState;
+  /** v4 only: the Harness model attachment independently admitted by the Credential Gateway. */
+  readonly harnessCredentialSource?: Extract<HarnessAuthSnapshot, { method: "credential_source" }>;
   readonly routes: readonly EgressRoute[];
 }
 
@@ -309,6 +312,20 @@ export function assertExecutionAdmission(
       : repository !== undefined
   ) {
     throw new Error("Repository Credential Proxy requires its own protected execution admission.");
+  }
+  const source = revision.egressPlan?.harnessCredentialSource;
+  if (
+    source !== undefined &&
+    (admission.version !== 4 ||
+      source.method !== "credential_source" ||
+      !source.sourceId ||
+      !source.credentialGatewayId ||
+      !source.sourceType ||
+      revision.egressPlan!.routes.length !== 0)
+  ) {
+    throw new Error(
+      "Invalid independent Harness credential source in repository execution admission.",
+    );
   }
   const owner = revision.egressPlan?.driver;
   if (

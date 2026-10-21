@@ -921,7 +921,7 @@ export class SandboxRevisionUnsupportedError extends Error {
 /** The selected Sandbox cannot authenticate the required recipient of repository credentials. */
 export class SandboxRepositoryRecipientUnverifiedError extends SandboxRevisionUnsupportedError {
   static readonly description =
-    "OpenShell cannot verify the recipient required for repository session delivery. Select a Compute-owned Harness to use repository credentials.";
+    "The selected Sandbox cannot verify the recipient required for repository session delivery. Select a Sandbox with repository access or a Compute-owned Harness.";
 
   constructor() {
     super(

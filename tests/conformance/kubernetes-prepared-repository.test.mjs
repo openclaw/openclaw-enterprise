@@ -4,8 +4,11 @@ import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compu
 import { RepositoryCredentialLifecycle } from "../../apps/controller/src/worker/repository-credentials.ts";
 import { routedOptions } from "../helpers/kubernetes-routed-scenarios.mjs";
 
-test("OpenShell repository refusal precedes Worker session lookup, preparation and release", async () => {
-  const sandboxDriver = { id: "selected-sandbox", implementation: "openshell" };
+test("Missing Sandbox repository capability refuses delivery before Worker session lookup, preparation and release", async () => {
+  const sandboxDriver = {
+    id: "selected-sandbox",
+    implementation: "registered-sandbox-without-repository-access",
+  };
   const compute = new KubernetesComputeDriver(
     routedOptions({
       runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
@@ -32,6 +35,7 @@ test("OpenShell repository refusal precedes Worker session lookup, preparation a
     grant: { providerInstanceId: "github", repositoryId: "42", grantId: "write-project" },
   };
   const revision = {
+    executionAdmission: { version: 2, mode: "unprotected" },
     sandboxDriverId: sandboxDriver.id,
     harness: { id: "codex", mode: "dedicated", version: "1" },
     repositoryCredentials: { driver, bindings: [binding], deadlineWallMs: Date.now() + 600_000 },

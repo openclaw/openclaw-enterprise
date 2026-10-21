@@ -238,7 +238,7 @@ function codexToml(
   const endpoint = runtime.modelEndpoint;
   if (
     runtime.providerTools === "none" &&
-    runtime.egressEnrollment?.inference !== false &&
+    runtime.egressEnrollment?.inference === true &&
     endpoint === undefined
   ) {
     throw new Error("Protected inference requires an explicit normalized model endpoint.");

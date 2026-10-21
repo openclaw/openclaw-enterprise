@@ -1,9 +1,3 @@
-import type { OpenShellSandboxDriver } from "../../sandbox/openshell.ts";
-import {
-  OpenShellGitRouteBlockedError,
-  openShellGitRouteReadiness,
-  type OpenShellGitRuntime,
-} from "../../egress-proxy/openshell-git-runtime.ts";
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
@@ -1324,10 +1318,6 @@ const WORKSPACE_NODE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 // The node Secret key naming the revision whose node readiness last saw paired or connected;
 // the device itself is the Agent's (finding 1671).
 const WORKSPACE_NODE_ENROLLED_REVISION_KEY = "enrolledRevisionId";
-// After the OpenShell Git route verifies a credential install, the node is read as connected
-// only once this long has passed: the Sandbox's connection reset must reach the Gateway first
-// (the node reconnects about 1 s after it; finding 2141).
-const OPENSHELL_GIT_RECONNECT_SETTLE_MS = 2_000;
 const GATEWAY_PRIVATE_STATE_CATEGORIES = Object.freeze([
   ["state", "/home/node/.openclaw/state"],
   ["agent", "/home/node/.openclaw/agents/main/agent"],
@@ -3293,7 +3283,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly preparedRepositoryIngress: boolean;
-  private readonly openShellGit: OpenShellGitRuntime | undefined;
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
 
@@ -3673,7 +3662,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly lifecycleDrivers?: readonly Driver[];
       readonly sandboxDriver?: SandboxDriver;
       readonly preparedRepositoryIngress?: true;
-      readonly openShellGit?: OpenShellGitRuntime;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialGatewayDriver?: CredentialGatewayDriver;
       readonly protectedDriver?: InstalledDriver;
@@ -3710,7 +3698,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     this.preparedRepositoryIngress = selection.preparedRepositoryIngress === true;
-    this.openShellGit = selection.openShellGit;
     if (selection.credentialGatewayDriver !== undefined && this.sandboxDriver === undefined) {
       throw new ConfigurationFailure(
         "The Credential Gateway Driver requires a paired Sandbox Driver.",
@@ -3970,22 +3957,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
       );
     }
     if (
-      this.openShellGit &&
-      this.sandboxDriver?.implementation === "openshell" &&
+      this.sandboxDriver?.repositoryAccess &&
       this.options.runtime &&
       (sandboxDriverId === undefined || sandboxDriverId === this.sandboxDriver.id)
     ) {
       return;
     }
-    // Repository authority is admitted before a session can be prepared or delivered.
-    if (this.sandboxDriver?.implementation === "openshell") {
+    if (this.sandboxDriver !== undefined) {
       throw new SandboxRepositoryRecipientUnverifiedError();
     }
     if (
       this.options.runtime === undefined ||
       this.options.network.repositoryCredentials === undefined ||
-      sandboxDriverId !== undefined ||
-      this.sandboxDriver !== undefined
+      sandboxDriverId !== undefined
     ) {
       throw new ConfigurationFailure(
         "Repository credentials require a configured Kubernetes runtime and credential endpoint without a SandboxDriver.",
@@ -4000,7 +3984,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.validateRepositoryCredentialSupport(sandboxDriverId);
     if (!(
       (!this.preparedRepositoryIngress &&
-        !this.openShellGit &&
+        !this.sandboxDriver?.repositoryAccess &&
         harness.id === "openclaw" &&
         harness.mode === "embedded") ||
       (harness.id === "codex" && harness.mode === "dedicated")
@@ -5561,7 +5545,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (plan === undefined && this.proxyDriver === undefined) {
       return;
     }
-    if (this.options.runtime === undefined || !this.protectedExecution?.admits(revision, source)) {
+    if (
+      this.options.runtime === undefined ||
+      !this.protectedExecution?.admits(revision, source) ||
+      (plan?.repositoryGit && !this.protectedExecution.sandbox.repositoryAccess)
+    ) {
       throw new DependencyUnavailableError(
         "Protected execution is unavailable without its exact paired Compute release.",
       );
@@ -5588,6 +5576,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       execution.namespaceId !== revision.namespaceId ||
       execution.servicePrincipalId !== revision.servicePrincipalId ||
       plan.routes.some((route) => !isDeepStrictEqual(route.binding.execution, execution)) ||
+      (plan.harnessCredentialSource &&
+        (!isDeepStrictEqual(plan.harnessCredentialSource, revision.harnessAuth) ||
+          plan.harnessCredentialSource.credentialGatewayId !== this.credentialGatewayDriver?.id)) ||
       (!harnessEgressEnrollment(plan).inference
         ? revision.harnessAuth.method !== "runtime"
         : revision.harnessAuth.method !== "credential_source")
@@ -5650,33 +5641,37 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   async verifyRepositoryExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {
-    return this.openShellGit?.verifyExecution(revision, signal, async () => {
-      const driver = this.sandboxDriverForRevision(revision) as
-        Partial<OpenShellSandboxDriver> | undefined;
-      if (
-        revision.compute.id !== this.id ||
-        revision.compute.implementation !== this.implementation ||
-        driver?.implementation !== "openshell" ||
-        !driver.standingGitExecution
-      ) {
-        return;
-      }
-      const { name, external } = await this.resolveNamespace(revision.namespaceId);
-      const namespace = await this.getNamespace(name);
-      if (!namespace) {
-        return;
-      }
-      this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
-      const context = await this.sandboxNamespaceContext(
-        this.sandboxNamespaceForRevision(revision, name),
-        name,
-      );
-      return driver.standingGitExecution({
-        ...context,
-        revision,
-        signal: AbortSignal.any([context.signal, signal]),
-      });
-    });
+    const owned = await this.repositoryAccessContext(revision, signal);
+    return owned?.access.verifyExecution(owned.context);
+  }
+
+  /** Resolve the same selected Sandbox and exact owned Namespace for observation or withdrawal. */
+  private async repositoryAccessContext(revision: Readonly<AgentRevision>, signal: AbortSignal) {
+    const access = this.sandboxDriverForRevision(revision)?.repositoryAccess;
+    if (
+      !access ||
+      revision.compute.id !== this.id ||
+      revision.compute.implementation !== this.implementation
+    ) {
+      return;
+    }
+    if (revision.egressPlan) {
+      this.validateExecutionAdmission(revision, "stored");
+    }
+    const { name, external } = await this.resolveNamespace(revision.namespaceId);
+    const namespace = await this.getNamespace(name);
+    if (!namespace) {
+      return;
+    }
+    this.verifyNamespaceOwnership(namespace, { namespaceId: revision.namespaceId }, external);
+    const context = await this.sandboxNamespaceContext(
+      this.sandboxNamespaceForRevision(revision, name),
+      name,
+    );
+    return {
+      access,
+      context: { ...context, revision, signal: AbortSignal.any([context.signal, signal]) },
+    };
   }
 
   async prepareRevision(
@@ -6573,7 +6568,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             sandboxDriver.provisionHarness!(harnessContext),
           );
         } catch (error) {
-          if (error instanceof OpenShellGitRouteBlockedError) {
+          if (sandboxDriver.repositoryAccess?.isRouteBlockedError(error)) {
             // The worker closed this revision's prepared Git route for good (a replaced
             // execution or supervisor, an unknown provider write, a withdrawal): no pass can
             // reopen it, so the revision fails with that cause (finding 2136).
@@ -6790,7 +6785,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
             return incomplete();
           }
         }
-        if (this.openShellGit !== undefined && revision.repositoryCredentials !== undefined) {
+        if (sandboxDriver.repositoryAccess && revision.repositoryCredentials !== undefined) {
           // The worker delivers this revision's prepared Git material through the OpenShell
           // middleware route. A Sandbox whose route is not yet verified is not ready, and one
           // whose route is blocked (a replaced execution or supervisor, an unknown provider
@@ -6798,7 +6793,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           // instead of reporting success over a closed route (finding 2136). Material itself
           // is prepared only once this revision is active, so a verified route that waits
           // for material is ready (finding 2139).
-          const route = openShellGitRouteReadiness(this.openShellGit.route(revision.id));
+          const route = sandboxDriver.repositoryAccess.routeReadiness(revision.id);
           if (route === "blocked") {
             const runtimeFailure: RuntimeFailureEvidence = {
               component: "agent",
@@ -7451,16 +7446,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "The exact AgentRevision gateway has not applied its workspace node.",
       );
     }
-    const gitInstalledAt = this.openShellGitMaterialSettled(revision);
+    const gitSettledAt = this.repositoryMaterialSettled(revision);
     if (!(await this.workspaceNodeReady(revision, namespace))) {
       throw new ActivationPendingError(
         "WORKSPACE_NODE_PENDING",
         "The exact AgentRevision Harness node is not ready.",
       );
     }
-    if (gitInstalledAt !== undefined) {
-      const installedAfterRead = this.openShellGit!.materialInstalledAt(revision.id);
-      if (installedAfterRead === undefined) {
+    if (gitSettledAt !== undefined) {
+      const settledAfterRead = this.sandboxDriver!.repositoryAccess!.materialSettledAt(revision.id);
+      if (settledAfterRead === undefined) {
         // The route closed while the node was read (a failed read, lost material, or a
         // renewal under way): the next pass verifies the install again.
         throw new ActivationPendingError(
@@ -7468,7 +7463,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "The exact AgentRevision Sandbox's repository Git credential install was not verified after its node was read.",
         );
       }
-      if (installedAfterRead !== gitInstalledAt) {
+      if (settledAfterRead !== gitSettledAt) {
         // A new install landed while the node was read: that read may predate its reset.
         throw new ActivationPendingError(
           "WORKSPACE_NODE_RECONNECT_PENDING",
@@ -7484,38 +7479,28 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   /**
-   * The worker issues a version's first prepared Git token only once the version is active
-   * (finding 2139), and OpenShell 0.1.4 answers every credential install with a policy
-   * runtime reload that closes each connection out of the Sandbox, the workspace node's
-   * WebSocket to the Gateway included (finding 2141). Activation therefore completes only
-   * once the route has verified that first install and, a settle margin later, the node has
-   * been read as connected (`workspaceNodeReady`, right after this, and the install must
-   * still be the same one once that read returns): the verifying read can land within the
-   * same second as the reload, before the Gateway sees the drop, so a read inside the
-   * margin proves nothing and the next pass reads again. A version whose material is never
-   * issued (the App key was rejected, finding 2135) waits here until the convergence
-   * deadline instead of succeeding with every Git request denied. Later renewals (about
-   * every 50 minutes) repeat the reset; that is OpenShell's to scope, and the guide says so.
-   * Returns the install time a Git-bound revision must still show after the node read.
+   * A Sandbox may reset the workspace connection when it installs repository material.
+   * Check the node after that boundary, then verify the observation still covers this install.
    */
-  private openShellGitMaterialSettled(revision: AgentRevision): number | undefined {
-    if (this.openShellGit === undefined || revision.repositoryCredentials === undefined) {
+  private repositoryMaterialSettled(revision: AgentRevision): number | undefined {
+    const access = this.sandboxDriver?.repositoryAccess;
+    if (!access || revision.repositoryCredentials === undefined) {
       return undefined;
     }
-    const installedAt = this.openShellGit.materialInstalledAt(revision.id);
-    if (installedAt === undefined) {
+    const settledAt = access.materialSettledAt(revision.id);
+    if (settledAt === undefined) {
       throw new ActivationPendingError(
         "REPOSITORY_GIT_MATERIAL_PENDING",
         "The exact AgentRevision Sandbox has not installed its repository Git credential.",
       );
     }
-    if (this.now() < installedAt + OPENSHELL_GIT_RECONNECT_SETTLE_MS) {
+    if (this.now() < settledAt) {
       throw new ActivationPendingError(
         "WORKSPACE_NODE_RECONNECT_PENDING",
         "The exact AgentRevision Harness node is not read until its repository Git credential install has settled.",
       );
     }
-    return installedAt;
+    return settledAt;
   }
 
   async deactivateRevision(revision: AgentRevision): Promise<void> {
@@ -7832,32 +7817,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   async retireExpiredRepositoryAccess(revision: Readonly<AgentRevision>, signal: AbortSignal) {
-    const driver = this.sandboxDriverForRevision(revision) as
-      Partial<OpenShellSandboxDriver> | undefined;
-    if (
-      !this.openShellGit ||
-      revision.compute.id !== this.id ||
-      revision.compute.implementation !== this.implementation ||
-      driver?.implementation !== "openshell" ||
-      !driver.retireExpiredRepositoryAccess
-    ) {
-      return "retire-runtime" as const;
-    }
-    const { name: namespace, external } = await this.resolveNamespace(revision.namespaceId);
-    const existing = await this.getNamespace(namespace);
-    if (!existing) {
-      return "retire-runtime" as const;
-    }
-    this.verifyNamespaceOwnership(existing, { namespaceId: revision.namespaceId }, external);
-    const context = await this.sandboxNamespaceContext(
-      this.sandboxNamespaceForRevision(revision, namespace),
-      namespace,
-    );
-    return driver.retireExpiredRepositoryAccess({
-      ...context,
+    const owned = await this.repositoryAccessContext(
       revision,
-      signal: AbortSignal.any([signal, context.signal, AbortSignal.timeout(30_000)]),
-    });
+      AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+    );
+    return owned ? owned.access.retireExpired(owned.context) : ("retire-runtime" as const);
   }
 
   async stopRevision(revision: AgentRevision): Promise<void> {
@@ -8606,7 +8570,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     revision: AgentRevision,
     context?: ComputeRevisionContext,
   ): RepositoryMaterialSpec | undefined {
-    if (this.openShellGit && revision.repositoryCredentials !== undefined) {
+    if (this.sandboxDriver?.repositoryAccess && revision.repositoryCredentials !== undefined) {
       this.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
       // The worker transfers prepared material directly to OpenShell. No broker bearer,
       // installation token or App key is projected into this Sandbox.
@@ -14236,7 +14200,8 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       },
     ];
     const repositoryEgress =
-      revision.repositoryCredentials === undefined || this.openShellGit !== undefined
+      revision.repositoryCredentials === undefined ||
+      this.sandboxDriver?.repositoryAccess !== undefined
         ? []
         : [
             {

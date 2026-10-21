@@ -6,7 +6,10 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
-import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
+import {
+  OpenShellGitRuntime,
+  openShellRepositoryAccess,
+} from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
 import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/egress-authority.ts";
 import {
@@ -21,26 +24,73 @@ import { standingExecutionFixture } from "../helpers/postgres-standing-execution
 import { preparedStandingGitPeer } from "../helpers/prepared-standing-git-peer.ts";
 import { waitFor } from "../helpers/wait-for.mjs";
 
+import { standingGitConversation } from "../helpers/standing-git-conversation.ts";
+import { CREDENTIAL_GATEWAY_FIXTURE_ID } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { options } from "../helpers/kubernetes-routed-scenarios.mjs";
+import { openShellProviderName } from "../../apps/controller/src/backends/openshell.ts";
+import { OpenShellCredentialGatewayDriver } from "../../apps/controller/src/drivers/credential-gateway/openshell.ts";
+import {
+  KubernetesComputeDriver,
+  kubernetesNamespaceName,
+} from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
+import {
+  pluginRuntimeEnvironment,
+  pluginRuntimeSpecForRevision,
+} from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
+import { COMPUTE_RELEASE_PUBLIC_KEY } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+
 // Release code owns the sessions, material, per-request authority, route, withdrawal and
 // continued supervision. Compute, the stock-protocol supervisor/sender and HTTPS origin are
 // controlled. The test crosses real deadlines and imports actual private-origin Git objects.
+const conversationRequired = process.env.OCC_TEST_REQUIRE_STANDING_GIT_CONVERSATION === "1";
+if (conversationRequired) {
+  assert.ok(
+    process.env.OCC_TEST_DATABASE_URL,
+    "conversation qualification requires an owned PostgreSQL database",
+  );
+  assert.ok(
+    process.env.OCC_TEST_STANDING_GIT_CODEX,
+    "conversation qualification requires the shipped Codex executable",
+  );
+}
 test(
   "broker-absent protected OpenShell execution fetches a missing private Git object past both first expiries and then loses only Git",
   { ...requiresPostgres, timeout: 385_000 },
   async (t) => {
     let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
-    const protectedGit = protectedRepositoryGitRelease();
+    // Qualifying actual conversation requires the shipped Codex executable. Ordinary database
+    // CI exercises the model grant, attachment and withdrawal but cannot claim a model response.
+    const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
+    const conversation = codex && (await standingGitConversation(t, codex));
+    const modelConfig = conversation ? { base_url: conversation.baseUrl } : undefined;
+    const protectedGit = protectedRepositoryGitRelease(() => standing());
+    const gatewayId = CREDENTIAL_GATEWAY_FIXTURE_ID;
+    const gateway = new OpenShellCredentialGatewayDriver(
+      { binaries: ["/usr/bin/codex"] },
+      {
+        id: gatewayId,
+        backend: {
+          id: "fixture-gateway",
+          drivers: { credential_gateway: gatewayId },
+          client: { placement: () => undefined, clientForNamespace: () => client },
+        } as never,
+      },
+    );
     const { f, key, driver, revision, registry, owner, approval, credentials } =
       await standingExecutionFixture(t, import.meta.url, async (pool, ns) => ({
         ...(peer = await preparedStandingGitPeer(t, pool, ns)),
-        protectedDriver: protectedGit.owner.ref,
+        protectedDriver: protectedGit.owner,
+        credentialGateway: gateway,
+        ...(modelConfig && { modelConfig }),
       }));
     const { prepared, registrationName, gh, send, input } = peer;
     let oid = peer.oid;
-    const workspace = "team-workspace";
+    const workspace = kubernetesNamespaceName(revision.namespaceId);
     const sandbox = "standing-sandbox";
     const sandboxId = "original-sandbox-id";
-    const model = "independent-model";
+    const auth = revision.egressPlan!.harnessCredentialSource!;
+    assert.deepEqual(auth, revision.harnessAuth);
+    const model = openShellProviderName(auth.sourceId);
     let installed: string | undefined;
     let creates = 0;
     let bindingId = "";
@@ -56,6 +106,7 @@ test(
       sandbox,
       deadline,
       platformProfile: false,
+      modelSourceId: auth.sourceId,
       revisionId: revision.id,
       trackGitExpiry: true,
       onGitInstall(value: string) {
@@ -78,20 +129,104 @@ test(
       return r;
     };
     let runtime = newRuntime();
-    const context = async () => ({ client, workspace, sandbox, continuity });
     const readiness = async (r: AgentRevision) => {
       const entry = (await runtime["entries"].get(r.id))!;
       entry.nextRefreshAt = 0;
       await runtime["reconcile"](entry);
     };
+    // Admit, release and observe through Kubernetes and its actual registered repository
+    // capability. Only the platform transports, observations and unrelated workload setup are controlled.
+    const kube = new KubernetesComputeDriver(
+      options({
+        runtime: {
+          transportSecretPrefix: "fixture-transport",
+          gatewayStorageClassName: "local-path",
+        },
+      }) as never,
+      {
+        ...revision.compute,
+        protectedDriver: protectedGit.owner,
+        credentialGatewayDriver: gateway,
+      },
+    );
+    const metadata = {
+      name: workspace,
+      ...kube["ownershipMetadata"]({ namespaceId: revision.namespaceId }),
+    };
+    t.mock.method(kube, "clients" as never, async () => ({
+      core: {
+        listNamespace: async () => ({ items: [{ metadata }] }),
+        readNamespace: async () => ({
+          apiVersion: "v1",
+          kind: "Namespace",
+          metadata,
+          status: { phase: "Active" },
+        }),
+      },
+    }));
+    const standing = () =>
+      openShellRepositoryAccess(runtime, (ctx) => {
+        assert.equal(ctx.namespace.name, workspace);
+        assert.deepEqual(ctx.revision.harnessAuth, auth);
+        return { client, continuity, workspace, sandbox };
+      });
+    kube.validateExecutionAdmission(revision, protectedGit.owner);
+    kube.validateRepositoryCredentials(revision.harness, revision.sandboxDriverId);
+    assert.throws(() => kube.validateRepositoryCredentials(revision.harness, "other-sandbox"), {
+      code: "SANDBOX_REPOSITORY_RECIPIENT_UNVERIFIED",
+    });
+    assert.throws(
+      () =>
+        kube.validateRepositoryCredentials(
+          { id: "openclaw", version: "1", mode: "embedded" },
+          revision.sandboxDriverId,
+        ),
+      { message: /require an embedded OpenClaw or dedicated Codex/ },
+    );
+    let lastCustody: ComputeRevisionContext | undefined;
+    let modelEnvironment: Record<string, string> | undefined;
+    let askModel: ((phase: "before" | "after") => Promise<void>) | undefined;
     const compute = {
       ...f.compute,
-      validateRepositoryCredentials() {},
-      validateExecutionAdmission(r: AgentRevision) {
-        assert.equal(r.executionAdmission.version, 4);
-        assert.deepEqual(r.egressPlan?.driver, protectedGit.owner.ref);
-      },
+      validateRepositoryCredentials: kube.validateRepositoryCredentials.bind(kube),
+      validateExecutionAdmission: kube.validateExecutionAdmission.bind(kube),
       async prepareRevision(r: AgentRevision, custody: ComputeRevisionContext) {
+        kube["validateRevisionExecution"](r, custody);
+        const resolved = custody.harnessAuth!;
+        assert.equal(resolved.method, "credential_source");
+        const source = resolved.source;
+        const attachments = await gateway.attachForRevision({
+          revision: r,
+          sources: [source],
+          namespace: { ...f.namespace, status: "ready", name: workspace },
+          signal: t.signal,
+        });
+        assert.deepEqual(attachments, [{ sourceId: auth.sourceId, ref: model }]);
+        const address = { name: workspace, plane: "execution" } as const;
+        const login = kube["harnessAuthForRevision"](r, custody, address);
+        assert.deepEqual(kube["credentialSourceEnvironment"](r, attachments, source), []);
+        assert.equal(login.credentialSource?.id, auth.sourceId);
+        assert.equal(login.loginMode, "api_key");
+        if (conversation) {
+          assert.equal(login.credentialSource?.config.base_url, conversation.baseUrl);
+          const manifest = pluginRuntimeSpecForRevision(
+            r,
+            undefined,
+            login.credentialSource!.config.base_url,
+          )!;
+          modelEnvironment = {
+            ...Object.fromEntries(
+              login.environment.map(({ name, value }: { name: string; value?: string }) => [
+                name,
+                value!,
+              ]),
+            ),
+            ...pluginRuntimeEnvironment(manifest),
+            OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID: r.id,
+            [COMPUTE_RELEASE_PUBLIC_KEY]: protectedGit.publicKey,
+          };
+          lastCustody = custody;
+        }
         assert.equal(r.id, revision.id);
         const s = AbortSignal.timeout(15000);
         const p = await runtime
@@ -124,17 +259,9 @@ test(
         await readiness(r);
         return f.compute.prepareRevision(r);
       },
-      verifyRepositoryExecution: (r: AgentRevision, signal: AbortSignal) =>
-        runtime.verifyExecution(r, signal, context),
+      verifyRepositoryExecution: kube.verifyRepositoryExecution.bind(kube),
       async retireExpiredRepositoryAccess(r: AgentRevision, signal: AbortSignal) {
-        const result = await runtime.retireExpiredRepositoryAccess(
-          r,
-          client,
-          workspace,
-          sandbox,
-          continuity,
-          signal,
-        );
+        const result = await kube.retireExpiredRepositoryAccess(r, signal);
         if (result === "withdrawn") {
           withdrawn++;
         }
@@ -153,8 +280,13 @@ test(
             events.push(e);
           }
         },
-        transformDrivers: (d: object) => ({
+        transformDrivers: (d: { installation: { drivers: object } }) => ({
           ...d,
+          credentialGatewayDriver: gateway,
+          installation: {
+            ...d.installation,
+            drivers: { ...d.installation.drivers, credential_gateway: { id: gatewayId } },
+          },
           repoDriver: driver,
           protectedDriver: protectedGit.owner,
         }),
@@ -170,7 +302,9 @@ test(
       invoke(
         wire,
         "EvaluateHttpRequest",
-        input(bindingId, sandboxId, upload),
+        {
+          ...input(bindingId, sandboxId, upload, workspace),
+        },
         token(keys, "supervisor", sandboxId),
       );
     const known = () => f.state.read((v) => v.repositorySessions.findStandingExecution(key));
@@ -220,6 +354,25 @@ test(
       const firstPack = await allow(true);
       assert.equal(git(["index-pack", "--strict", "--stdin"], firstPack.subarray(8)).status, 0);
       assert.equal(git(["cat-file", "-t", oid]).stdout.toString().trim(), "commit");
+      if (conversation) {
+        assert.ok(modelEnvironment);
+        askModel = await conversation.launch(
+          modelEnvironment,
+          async (phase) => {
+            const receipt = await client.getSandboxProviderStatus(
+              workspace,
+              sandbox,
+              model,
+              t.signal,
+            );
+            assert.equal(receipt?.state, "PROVIDER_READINESS_STATE_READY");
+            const expected = phase === "after" ? "reduced" : "original";
+            assert.equal(receipt.receipt?.desired?.attachmentEpoch, expected);
+          },
+          (startup) => protectedGit.releaseStartup(startup, lastCustody!),
+        );
+        await askModel("before");
+      }
       const firstOid = oid;
       await peer.noBroker();
       assert.equal(first.brokerProtocol, 2);
@@ -274,7 +427,7 @@ test(
       );
       await runtime.close();
       runtime = newRuntime();
-      const identity = await runtime.verifyExecution(warm, signal, context);
+      const identity = await kube.verifyRepositoryExecution(warm, signal);
       assert.deepEqual(identity, {
         executionId: execution.executionId,
         fingerprint: execution.fingerprint,
@@ -389,6 +542,9 @@ test(
       );
       assert.equal(gh.tokenState()[1]!.revoked, true);
       assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      if (askModel) {
+        await askModel("after");
+      }
       assert.equal(await readFile(join(cwd, "README.md"), "utf8"), "Controlled repository\n");
       t.diagnostic(
         JSON.stringify({
@@ -404,8 +560,9 @@ test(
           gitWrites: world.writes,
           detaches: world.detaches.length,
           withdrawnObservations: withdrawn,
-          evidence:
-            "controlled supervisor, genuine prepared owner, Git origin and continued authorized maintenance; not a model turn",
+          evidence: askModel
+            ? "controlled supervisor and model, real Codex conversation across Git withdrawal"
+            : "controlled supervisor, actual model grant and continued authorized maintenance; no model turn exercised",
         }),
       );
     } catch (error) {

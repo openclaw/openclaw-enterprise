@@ -1678,7 +1678,23 @@ export interface CredentialRefreshDriver extends Driver {
   removeRefresh(context: CredentialSourceContext): Promise<void>;
 }
 
+/** The selected Sandbox owns the repository recipient, including proof after a worker restart. */
+export interface SandboxRepositoryAccess {
+  verifyExecution(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<RepositoryExecutionIdentity | undefined>;
+  /** Remove only repository access when the same independently authorized execution can survive. */
+  retireExpired(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<"withdrawn" | "pending" | "retire-runtime">;
+  routeReadiness(revisionId: string): "ready" | "pending" | "blocked";
+  /** Stable observation time after which Compute may verify the node survived credential installation. */
+  materialSettledAt(revisionId: string): number | undefined;
+  isRouteBlockedError(error: unknown): boolean;
+}
+
 export interface SandboxDriver extends Driver {
+  readonly repositoryAccess?: SandboxRepositoryAccess;
   /** Explicit support; a networking facet alone never grants editable policy. */
   readonly networkPolicy?: {
     readonly wildcards: boolean;

@@ -67,6 +67,7 @@ export async function gitExpiryGateway(
     platformProfile,
     trackGitExpiry = false,
     onGitInstall = (_value) => {},
+    modelSourceId = "",
   },
 ) {
   const require = createRequire(new URL("../../apps/controller/package.json", import.meta.url));
@@ -118,13 +119,19 @@ export async function gitExpiryGateway(
   };
   const providers = {
     [model]: {
-      type: "inference",
+      type: modelSourceId ? model : "inference",
       profile_workspace: workspace,
       metadata: {
         workspace,
         name: model,
         id: "model-id",
         resource_version: "7",
+        ...(modelSourceId && {
+          labels: {
+            "app.kubernetes.io/managed-by": "openclaw-enterprise",
+            "openclaw.dev/credential-source-id": modelSourceId,
+          },
+        }),
       },
     },
   };

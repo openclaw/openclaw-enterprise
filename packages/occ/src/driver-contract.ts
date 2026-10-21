@@ -111,6 +111,14 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     return (
       sandboxFacets(candidate.facets) &&
       sandboxPolicyContract(candidate) &&
+      (candidate.repositoryAccess === undefined ||
+        [
+          "verifyExecution",
+          "retireExpired",
+          "routeReadiness",
+          "materialSettledAt",
+          "isRouteBlockedError",
+        ].every((name) => typeof asRecord(candidate.repositoryAccess)?.[name] === "function")) &&
       (candidate.harnessHome === undefined || absolutePosixPath(candidate.harnessHome)) &&
       (candidate.validateWorkspaceSetup === undefined ||
         typeof candidate.validateWorkspaceSetup === "function") &&
