@@ -184,14 +184,6 @@ allows 120 one-second failures: two minutes to listen, then readiness within a s
 
 `apps/controller/src/index.ts:createFastifyApp`
 
-The image build precompiles the API's request validators and response serializers
-into `apps/controller/dist/route-compilers.cjs`, so the API loads them instead of
-compiling every route schema at start. Only the code generated for exactly the same
-schema, compiler options, Node version and lockfile is used; anything else compiles
-at run time, as before.
-
-`apps/controller/src/precompile-route-schemas.mjs`, `apps/controller/src/http/route-compilers.ts`
-
 On `SIGTERM`, the API stops accepting connections and drains requests with
 `Connection: close`, avoiding the 72-second keep-alive wait. Its single `Recreate`
 replica has no peer or `preStop`; the 30-second grace cuts off unfinished requests.
@@ -336,8 +328,6 @@ until tenant deployment/TUI procedures run.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
-
-- 2026-10-21: Load the route validators and serializers the image build precompiled.
 
 - 2026-10-18 14:40: Compare database CA mount destinations before rendering. (authoring-run/01a10a81-070c-7aa3-97d0-fbce8f285d4d - bcf4fbcf0)
 

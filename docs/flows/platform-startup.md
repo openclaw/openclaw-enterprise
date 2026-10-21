@@ -1,6 +1,6 @@
 ---
 created: 2026-08-20
-updated: 2026-10-18
+updated: 2026-10-21
 last_updated_session: authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f
 ---
 
@@ -166,6 +166,12 @@ It registers IAM, Compute, Configuration, and any selected API-only
 ServiceAccount Driver with OCC before
 [`createFastifyApp`](../../apps/controller/src/index.ts) installs authenticated,
 exact-resource-authorized API routes.
+Route request validators and response serializers come from
+[`route-compilers.ts`](../../apps/controller/src/http/route-compilers.ts). When
+[`precompile-route-schemas.mjs`](../../apps/controller/src/precompile-route-schemas.mjs)
+has written `apps/controller/dist/route-compilers.cjs`, as the image build does, the API
+loads code generated for exactly the same schema, options, Node version and lockfile
+instead of compiling it; anything else compiles at start, as before.
 
 Development with `OCC_DATABASE_URL` instead calls
 [`composePostgresDevelopment`](../../apps/controller/src/composition/development-postgres.ts)
@@ -265,6 +271,8 @@ execution begins in the adjacent
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21: Load the route validators and serializers the image build precompiled.
 
 - 2026-10-18 15:15: Match protected OpenShell transport admission to case-insensitive HTTPS schemes. (authoring-run/2173f820-1bb2-47dd-8d1a-8649183da29f - bcf4fbcf0f082367910d262b1f06732b0bdd80c8)
 
