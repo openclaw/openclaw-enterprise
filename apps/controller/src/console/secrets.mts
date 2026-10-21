@@ -7,9 +7,13 @@ import type { createNavigation } from "./navigation.mjs";
 type SecretSummary = Pick<SecretMetadata, "id" | "name">;
 type SecretDetail = SecretSummary & { consumers: SecretConsumers };
 
-function secretSummary(value: unknown): SecretSummary {
+function secretSummary(value: unknown, expectedId?: string): SecretSummary {
   const { id, name } = responseFields(value);
-  if (typeof id !== "string" || typeof name !== "string") {
+  if (
+    typeof id !== "string" ||
+    typeof name !== "string" ||
+    (expectedId !== undefined && id !== expectedId)
+  ) {
     throw new Error("Invalid Secret metadata");
   }
   return { id, name };
@@ -20,7 +24,7 @@ function secretList(value: unknown): SecretSummary[] {
     throw new Error("Invalid Secret list");
   }
   // Keep only the metadata the page uses. A Secret read never supplies an editable value.
-  return value.map(secretSummary);
+  return value.map((item: unknown) => secretSummary(item));
 }
 
 function isIdList(value: unknown): value is readonly string[] {
@@ -260,10 +264,10 @@ export function renderSecrets(
       if (!isOpen(current) || version !== readVersion) {
         return;
       }
-      const secret = secretSummary(detail);
+      const secret = secretSummary(detail, item.id);
       const { consumers } = responseFields(detail);
       // Incomplete or unrecognized consumer metadata cannot establish that deletion is safe.
-      if (secret.id !== item.id || !hasConsumerDetails(consumers)) {
+      if (!hasConsumerDetails(consumers)) {
         throw new Error("Invalid Secret detail");
       }
       renderDetail(current, { ...secret, consumers });
@@ -640,6 +644,7 @@ export function renderSecrets(
       try {
         const detail = await context.request(exactPath(secret.id));
         if (isOpen(current)) {
+          const { id, name } = secretSummary(detail, secret.id);
           current.feedback.replaceChildren(
             statusBlock(
               "info",
@@ -647,7 +652,6 @@ export function renderSecrets(
               "The Secret still exists. Close and inspect its consumers before deciding to delete again.",
             ),
           );
-          const { id, name } = secretSummary(detail);
           current.body.replaceChildren(element("p", {}, `${name} · ${id}`));
         }
       } catch (cause) {

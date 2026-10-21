@@ -194,6 +194,51 @@ test("unknown console Secret writes erase entered material and never replay muta
   );
 });
 
+test("checking an uncertain deletion cannot mistake another Secret for the deleted one", async (t) => {
+  const fixture = await createConsoleAppFixture(t);
+  await fixture.bootstrap();
+  const namespace = await fixture.createNamespace("Deletion status", { ready: true });
+  const selected = await fixture.createSecret(
+    namespace.id,
+    "Selected Secret",
+    "synthetic-selected",
+  );
+  const other = await fixture.createSecret(namespace.id, "Different Secret", "synthetic-different");
+  const { page } = await newPage(t, fixture, { browser });
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, secretsUrl(namespace));
+  await page.getByRole("button", { name: selected.name, exact: true }).click();
+  await dialog(page, selected.name)
+    .getByRole("button", { name: "Delete Secret", exact: true })
+    .click();
+
+  const path = `${secretPath(namespace)}/${selected.id}`;
+  await page.route(`${fixture.origin}${path}`, async (route) => {
+    const response = await route.fetch();
+    if (route.request().method() === "DELETE") {
+      assert.equal(response.status(), 204);
+      return route.abort("failed");
+    }
+    // The delete committed. Answer its status check with a real, well-formed read of another Secret.
+    assert.equal(response.status(), 404);
+    const url = `${fixture.origin}${secretPath(namespace)}/${other.id}`;
+    const different = await route.fetch({ url });
+    assert.equal(different.status(), 200);
+    assert.equal((await different.json()).data.id, other.id);
+    return route.fulfill({ response: different });
+  });
+  const remove = dialog(page, "Delete Secret");
+  const confirm = remove.getByRole("button", { name: "Permanently delete Secret", exact: true });
+  await confirm.click();
+  await remove.getByText(/Outcome unknown/).waitFor();
+  await remove.getByRole("button", { name: "Check deletion status" }).click();
+  const outcome = remove.getByText(/Could not confirm deletion|The Secret still exists/);
+  assert.match(await outcome.innerText(), /Could not confirm deletion/);
+  assert.equal(await remove.getByText(other.id, { exact: false }).count(), 0);
+  assert.equal(await confirm.count(), 0);
+  assert.equal(requests.filter((item) => item.method === "DELETE" && item.path === path).length, 1);
+});
+
 test("console Secret writes honor read-only access, revocation and a new Agent reference", async (t) => {
   const audit = new InMemoryAuditSink();
   const storage = createTestSecretDriver();
