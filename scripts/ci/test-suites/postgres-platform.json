@@ -32,14 +32,17 @@
     "tests/integration/postgres-transaction-commit.test.mjs",
     "tests/integration/postgres-agent-sandbox-policy.test.mjs",
     "tests/integration/postgres-static-egress.test.mjs",
+    "tests/integration/postgres-prepared-token-service.test.ts",
     "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
     "tests/integration/postgres-prepared-standing-expiry.test.ts",
+    "tests/integration/postgres-protected-git-recipient-custody.test.ts",
     "tests/integration/postgres-prepared-standing-removal.test.ts",
     "tests/integration/postgres-prepared-github-git-use.test.mjs",
     "tests/integration/postgres-openshell-online-git-journey.test.mjs",
     "tests/integration/postgres-openshell-git-routes.test.mjs",
     "tests/integration/postgres-openshell-standing-route.test.ts",
+    "tests/integration/postgres-external-protected-git.test.ts",
     "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
     "tests/integration/postgres-egress-send-receipts.test.mjs",
     "tests/integration/postgres-protected-credential-free.test.mjs",
@@ -266,6 +269,12 @@
       ]
     },
     {
+      "path": "tests/integration/postgres-prepared-token-service.test.ts",
+      "expectedTests": [
+        "independent prepared lease: cold read, replace, exact transaction, withdrawal and lost issue"
+      ]
+    },
+    {
       "path": "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
       "expectedTests": [
         "PostgreSQL prepared custody: source consent, proactive renewal, restart, issuer rotation and withdrawal",
@@ -291,6 +300,12 @@
         "prepared standing Git retirement preserves the other issuer boundary",
         "prepared standing Git retirement preserves the finite boundary",
         "a lost standing Git issuance remains unresolved without a verified expiry"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-protected-git-recipient-custody.test.ts",
+      "expectedTests": [
+        "only the installed Git recipient owner may use its material or retire its ended admission"
       ]
     },
     {
@@ -322,6 +337,12 @@
       "path": "tests/integration/postgres-openshell-standing-route.test.ts",
       "expectedTests": [
         "OpenShell observes the same expired standing execution across restart and rechecks authority at installation"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-external-protected-git.test.ts",
+      "expectedTests": [
+        "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal"
       ]
     },
     {

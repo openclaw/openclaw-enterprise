@@ -1,11 +1,5 @@
-import type { Secret } from "./index.ts";
-import type {
-  CredentialSourceControl,
-  CredentialReadLifetime,
-  EgressRef,
-  EgressRoute,
-  EgressSourceKey,
-} from "./credential-proxy.ts";
+import type { PreparedTokenSource } from "./prepared-token.ts";
+import type { CredentialSourceControl, EgressRoute } from "./credential-proxy.ts";
 
 export const preparedGitHubType = "github-app-metadata";
 export const preparedGitHubProviderRef = { id: preparedGitHubType, generation: 1 } as const;
@@ -22,70 +16,8 @@ export interface GitHubMetadataGrant {
 }
 
 /** Source projection. The GitHub App key and its Secret reference remain with the lifecycle owner. */
-export interface PreparedGitHubEgressSource {
-  readonly key: EgressSourceKey;
-  readonly sender: EgressRef;
-  readonly resolver: EgressRef;
-  readonly origin: string;
+export interface PreparedGitHubEgressSource extends PreparedTokenSource<GitHubMetadataGrant> {
   readonly schemaVersion: 2;
-  readonly adoption: "prepared";
-  readonly retention: "none";
-  readonly grant: GitHubMetadataGrant;
-}
-
-export interface PreparedGitHubSelection {
-  readonly value: string;
-  readonly family: EgressRef;
-  readonly ownerEpoch: number;
-  readonly inputVersion: string;
-  readonly preparationAttemptId: string;
-  readonly materialId: string;
-  readonly materialVersion: string;
-  readonly providerExpiresAt: string;
-  readonly usableUntil: string;
-}
-
-export interface PreparedGitHubMaterialEvidence extends Omit<PreparedGitHubSelection, "value"> {
-  readonly kind: "prepared_github";
-  readonly source: EgressSourceKey;
-  readonly binding: EgressRef;
-  readonly grantHash: string;
-  readonly isolationId: string;
-}
-
-/** Non-secret proof on the caller's active platform transaction. */
-export interface PreparedGitHubCurrentProof {
-  current(
-    source: PreparedGitHubEgressSource,
-    evidence: PreparedGitHubMaterialEvidence,
-    issuerAuthority: string,
-    lifetime: CredentialReadLifetime,
-  ): Promise<boolean>;
-}
-
-/** Private composition of the OCE lifecycle owner, not a new Driver capability.
- * Management methods are deliberately separate from the three read-only observations.
- */
-export interface PreparedGitHubEgressLifecycle {
-  readonly apiOrigin: string;
-  configure(
-    source: PreparedGitHubEgressSource,
-    issuerSecret: Readonly<Secret>,
-    signal: AbortSignal,
-  ): Promise<void>;
-  withdraw(source: PreparedGitHubEgressSource, signal: AbortSignal): Promise<void>;
-  ready(source: PreparedGitHubEgressSource, signal: AbortSignal): Promise<boolean>;
-  /** Material access is bounded by both exchange cancellation and the signed operation deadline. */
-  readWarm(
-    source: PreparedGitHubEgressSource,
-    lifetime: CredentialReadLifetime,
-  ): Promise<PreparedGitHubSelection | undefined>;
-  current(
-    source: PreparedGitHubEgressSource,
-    evidence: PreparedGitHubMaterialEvidence,
-    lifetime: CredentialReadLifetime,
-    proof: PreparedGitHubCurrentProof,
-  ): Promise<boolean>;
 }
 
 /** Used by Compute for readiness; never reads, refreshes or schedules credential material. */

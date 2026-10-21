@@ -49,6 +49,7 @@ test("consented protected repository read uses only exact, already prepared meta
     repository: fixtureRepository,
   };
   const f = await staticEgressFixture(t, {
+    protectedSourceOnly: true,
     preparedGitHub: {
       apiOrigin: gh.origin,
       async configure(source, secret) {

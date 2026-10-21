@@ -455,6 +455,8 @@ export function createExternalDriver(
 export function createExternalProtectedDriver(
   implementation: ExternalDriverModule,
   selection: SelectedDriverConfiguration,
+  // Composition that changes the installed authority must also change its durable identity.
+  protectedRepository?: unknown,
 ): InstalledDriver {
   const { id, configuration } = selection;
   const registration = asRecord(
@@ -465,7 +467,12 @@ export function createExternalProtectedDriver(
       "The selected package must return one Driver registration for Sandbox and Credential Proxy.",
     );
   }
-  const owner = new InstalledDriver(selection, registration as unknown as DriverRegistration);
+  const owner = new InstalledDriver(
+    protectedRepository === undefined
+      ? selection
+      : { ...selection, configuration: { sandbox: configuration, protectedRepository } },
+    registration as unknown as DriverRegistration,
+  );
   owner.require("sandbox");
   owner.require("credential_proxy");
   return owner;

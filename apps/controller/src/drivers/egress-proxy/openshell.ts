@@ -1,6 +1,8 @@
+import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
+import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
 import { openShellGitMiddleware } from "./openshell-git-runtime.ts";
-import type { PreparedGitHubEgressLifecycle } from "@openclaw-enterprise/contracts";
-import { credentialFreeMetadataProvider, githubMetadataProvider } from "./github-metadata.ts";
+import type { CredentialProviderDefinition } from "@openclaw-enterprise/contracts";
+import { credentialFreeMetadataProvider } from "./github-metadata.ts";
 import { isDeepStrictEqual } from "node:util";
 import type {
   Backend,
@@ -263,6 +265,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly implementation = "openshell";
   readonly id: string;
   readonly sourceControl: CredentialSourceControl;
+  readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
+  readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
   private readonly backend: Backend<OpenShellGateway>;
   private readonly sandbox: SandboxDriver;
   private readonly options: OpenShellProxyOptions;
@@ -299,12 +303,22 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       readonly id: string;
       readonly backend: Backend<OpenShellGateway>;
       readonly sandbox: SandboxDriver;
-      readonly preparedGitHub?: PreparedGitHubEgressLifecycle;
+      readonly exchangeAuthority?: EgressAuthorityConfiguration;
+      readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
+      readonly preparedProviders?: readonly CredentialProviderDefinition[];
     },
   ) {
     OpenShellCredentialProxyDriver.validateConfiguration(options);
     if (selection.sandbox.harnessResource === undefined) {
       throw new Error("Invalid protected OpenShell egress configuration.");
+    }
+    if (selection.bindRepositoryGit) {
+      this.bindRepositoryGit = selection.bindRepositoryGit;
+    }
+    const exchange = selection.exchangeAuthority;
+    if (exchange) {
+      this.bindExchange = (createProxy) =>
+        bindOpenShellExchange(exchange, this.sourceControl.sender, createProxy);
     }
     this.id = selection.id;
     this.backend = selection.backend;
@@ -314,10 +328,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       backend: { id: selection.backend.id, generation: 1 },
       sender: { id: `${selection.backend.id}/supervisor`, generation: 1 },
       resolver: { id: `${selection.id}/resolver`, generation: 1 },
-      providers: selection.preparedGitHub
-        ? [openAiStaticProvider, credentialFreeMetadataProvider, githubMetadataProvider]
-        : [openAiStaticProvider, credentialFreeMetadataProvider],
-      ...(selection.preparedGitHub ? { preparedGitHub: selection.preparedGitHub } : {}),
+      providers: [
+        openAiStaticProvider,
+        credentialFreeMetadataProvider,
+        ...(selection.preparedProviders ?? []),
+      ],
       assertAvailable: async (signal: AbortSignal, profile?: "repository_git") => {
         const client = this.backend.client.clientForNamespace("");
         if (!client.getGatewayInfo) {

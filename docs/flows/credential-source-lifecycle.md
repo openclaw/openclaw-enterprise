@@ -128,20 +128,14 @@ traces exchange and cancellation.
 
 `packages/occ/src/index.ts:authorizeHarnessAuthSource`
 
-PATCH authorizes `credential_source:operate` on existing bindings without lookup
-(`authorizeBoundCredentialSources`), allowing removal after gateway changes.
-Create/PATCH authorize requested sources before requiring a selected gateway
-(`CredentialGatewayNotConfiguredError`, `409`). Sources must be ready, in the
-exact Namespace, and owned by that gateway. The
-`agents.harness_auth_credential_source_id` foreign key prevents source deletion.
+PATCH checks `credential_source:operate` on existing bindings without looking them
+up, so callers can remove a binding after its Driver changes. For each requested
+source, OCC checks `operate`, locks the ready source in the Agent's Namespace and
+requires its recorded Gateway or Proxy. Harness authentication requires a Gateway.
 
-`authorizeAgentCredentialSources` applies those checks to every `credentialSources`
-entry. Afterwards `assertHarnessSourceListed` requires a credential-source
-`harnessAuth` to appear in the list (`AgentCredentialSourceBindingError`, `400`);
-a caller lacking `operate` gets `403` first. The list persists in
-`agents.credential_sources`. Constraint `agents_harness_credential_source_listed`
-enforces membership; trigger `agent_credential_sources_are_synchronized` mirrors
-it into `agent_credential_sources`, whose foreign key restricts deletion.
+A missing `operate` grant returns `403` before OCC checks that the list includes
+the Harness source (`400`). PostgreSQL mirrors `agents.credential_sources` into
+`agent_credential_sources` and prevents deletion of a source still referenced.
 
 ### 5. Admit the deployment
 
@@ -158,24 +152,25 @@ requires dedicated Codex or native OpenClaw, paired Drivers, and
 `openai`/`chatgptAuthTokens` from an external-auth Driver. Compute renders no
 model Secret and passes the resolved source to Sandbox provisioning.
 
-`admitCredentialSources` requires a Sandbox (`409`), rechecks caller binding
-grants, authorizes the Agent principal's `operate` on every listed source,
-including the Harness source, checks catalog types, and freezes `{ sourceId,
-credentialGatewayId, sourceType }` in Agent revision `credential_sources`.
+`admitCredentialSources` requires a Sandbox (`409`), rechecks caller grants and
+requires the Agent principal's `operate` on each listed source of an offered type.
+The revision records `sourceId`, `sourceType` and the owner's `credentialGatewayId`
+or `credentialProxyId`. Older sources keep their Gateway owner, even when a Proxy
+with the same Driver ID enforces the revision's egress plan.
 
 ### 6. Resolve the source at dispatch
 
 `apps/controller/src/worker.ts:authorizeRevision`,
 `apps/controller/src/worker.ts:resolveRevisionSecretContext`
 
-The worker rechecks deploying-actor and Agent-principal `credential_source:operate`
-(`AUTHORIZATION_DENIED` on denial). A selected gateway differing from the snapshot
-returns `CREDENTIAL_GATEWAY_MISMATCH`; a missing/deleting source or changed Driver/type
-returns `HARNESS_AUTH_SOURCE_UNAVAILABLE`. Compute rechecks the snapshot and live
-record through `harnessAuthForRevision`. Other listed sources use the same checks,
-skipping the Harness and withdrawn sources; missing/changed records return
-`CREDENTIAL_SOURCE_UNAVAILABLE`. Compute's `credentialSourcesForRevision` validates
-the list before [Sandbox provisioning](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
+The worker rechecks the deploying actor's and Agent principal's
+`credential_source:operate` (`AUTHORIZATION_DENIED` on refusal). It matches
+the selected Gateway or Proxy to the snapshot (`CREDENTIAL_GATEWAY_MISMATCH`),
+then checks the live source, owner and type. Failure returns
+`HARNESS_AUTH_SOURCE_UNAVAILABLE` for the Harness source or
+`CREDENTIAL_SOURCE_UNAVAILABLE` for another source. Withdrawn sources stay
+detached. Compute checks the snapshot again before
+[Sandbox provisioning](openshell-sandbox-provisioning.md#2-derive-the-provider-owned-harness-request).
 
 For `chatgptAuthTokens`, `credentialSourceEnvironment` forwards trusted metadata
 and a placeholder into ephemeral `auth.json`. OpenShell's `sandboxCommand` wraps
@@ -188,21 +183,20 @@ Neither refresh tokens nor legacy bundles reach Codex. See the
 `packages/occ/src/index.ts:deleteCredentialSource`,
 `apps/controller/src/drivers/credential-gateway/openshell.ts:removeSource`
 
-Deletion authorizes `delete`, requires a selected gateway (`409`), and locks
-the source. Draft, selected version or pending-deployment references return `409`;
-withdrawal-only references return `CREDENTIAL_WITHDRAWAL_IN_PROGRESS`; another
-owning Driver returns `503`. It moves `registering` or `ready` to `deleting`;
-triggers forbid leaving that state or returning to `registering`. Outside the
-transaction, OCC removes refresh state through the Refresh Driver, then Gateway
-`removeSource` confirms provider deletion and removes its source-owned profile.
-Unknown types, unverifiable ownership, and gateway read failures never count
-as absence. Cleanup uses source identity even when the endpoint is invalid.
-Failure retains `deleting`: ownership refusal returns `404`, dependency failure `503`.
+OCC authorizes `delete`, locks the source and checks references. An Agent,
+revision or pending deployment can block deletion (`409`), as can unfinished
+withdrawal (`CREDENTIAL_WITHDRAWAL_IN_PROGRESS`). OCC requires the recorded
+owner, then changes `registering` or `ready` to `deleting`. Neither transition is reversible.
 
-Even after removal, OCC retains the record and returns `503` until `CREDENTIAL_REGISTRATION_FENCE_MS`
-(70 seconds after `createdAt`): late registration effects and Backend calls each
-have a 30-second bound. A second transaction deletes the record and audits it
-atomically. Namespace deletion returns `NAMESPACE_NOT_EMPTY` while a record remains.
+For prepared material, OCC calls the issuer's `withdraw`. A credential-free source
+has no material to remove. Otherwise the Refresh Driver removes refresh state,
+then Gateway `removeSource` verifies ownership and removes the provider and profile.
+Unknown ownership or a failed read cannot establish absence. Failure leaves
+`deleting` (`404` for refused ownership, `503` for an unavailable dependency).
+
+OCC returns `503` until 70 seconds after `createdAt`, allowing 30 seconds each for
+late registration and Backend calls. It then deletes the record and commits its audit
+in one transaction. Until then, Namespace deletion returns `NAMESPACE_NOT_EMPTY`.
 
 ### 8. Update a source
 

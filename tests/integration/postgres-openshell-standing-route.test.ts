@@ -3,7 +3,7 @@ import { randomBytes, randomUUID, createHash } from "node:crypto";
 import test from "node:test";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
-import type { OpenShellRepositoryMaterial } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
+import type { ProtectedRepositoryGitMaterial } from "../../packages/contracts/src/index.ts";
 import type { EgressAuthorityConfiguration } from "../../apps/controller/src/composition/egress-authority.ts";
 import { gitExpiryGateway } from "../helpers/openshell-online-git-journey.mjs";
 import { standingExecutionFixture } from "../helpers/postgres-standing-execution.ts";
@@ -56,7 +56,7 @@ test(
         repository: "example/source",
         pushRef: "refs/heads/review",
         apiOrigin: "https://api.github.com",
-      }) satisfies OpenShellRepositoryMaterial;
+      }) satisfies ProtectedRepositoryGitMaterial;
     const materials = [
       undefined,
       material(1, firstDeadline),

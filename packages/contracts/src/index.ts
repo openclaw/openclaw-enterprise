@@ -39,6 +39,8 @@ export type {
   CredentialSourceControl,
   CredentialProxyDriver,
 } from "./credential-proxy.ts";
+export type * from "./credential-proxy-exchange.ts";
+export * from "./prepared-token.ts";
 export * from "./prepared-github-egress.ts";
 export * from "./credential-free-metadata.ts";
 export {
@@ -465,7 +467,10 @@ export interface CredentialSourceType {
 /** `registering` is recorded before the gateway write, so an uncertain outcome stays visible. */
 export type CredentialSourceState = "registering" | "ready" | "deleting";
 
-/** OCC record for a credential held by the selected Credential Gateway; never values. */
+/** Driver IDs are scoped to a capability. Both parts of a source owner are immutable. */
+export type CredentialSourceOwnerCapability = "credential_gateway" | "credential_proxy";
+
+/** OCC source admission, including its owner and Secret references, never credential values. */
 export interface CredentialSource {
   readonly egress?: ProtectedEgressSource;
   readonly id: string;
@@ -474,12 +479,14 @@ export interface CredentialSource {
   readonly type: string;
   readonly config: Readonly<Record<string, string>>;
   readonly secrets: Readonly<Record<string, SecretReference>>;
+  readonly ownerCapability: CredentialSourceOwnerCapability;
   readonly driverId: string;
   readonly state: CredentialSourceState;
   readonly createdAt: string;
 }
 
 export interface CredentialSourceMetadata {
+  readonly ownerCapability: CredentialSourceOwnerCapability;
   readonly egress?: Pick<ProtectedEgressSource, "adoption" | "retention">;
   readonly id: string;
   readonly namespaceId: string;
@@ -529,10 +536,46 @@ export interface AgentCredentialSourceBinding {
 }
 
 /** Private admission metadata for one non-model source frozen into a revision. */
-export interface CredentialSourceSnapshot {
+export type CredentialSourceSnapshot = {
   readonly sourceId: string;
-  readonly credentialGatewayId: string;
   readonly sourceType: string;
+} & (
+  | { readonly credentialGatewayId: string; readonly credentialProxyId?: never }
+  | { readonly credentialProxyId: string; readonly credentialGatewayId?: never }
+);
+
+/** Match the source owner recorded at admission, including for pre-Proxy Gateway snapshots. */
+export function credentialSourceMatchesSnapshot(
+  source: CredentialSource,
+  snapshot: CredentialSourceSnapshot | undefined,
+): boolean {
+  if (!snapshot || source.id !== snapshot.sourceId || source.type !== snapshot.sourceType) {
+    return false;
+  }
+  switch (source.ownerCapability) {
+    case "credential_gateway":
+      return (
+        snapshot.credentialProxyId === undefined && snapshot.credentialGatewayId === source.driverId
+      );
+    case "credential_proxy":
+      return (
+        snapshot.credentialGatewayId === undefined && snapshot.credentialProxyId === source.driverId
+      );
+    default:
+      return false;
+  }
+}
+
+/** Withdrawal also supports revisions whose Harness source predates the separate source list. */
+export function revisionCredentialSourceSnapshot(
+  revision: AgentRevision,
+  sourceId: string,
+): CredentialSourceSnapshot | undefined {
+  const listed = revision.credentialSources?.find((snapshot) => snapshot.sourceId === sourceId);
+  const auth = revision.harnessAuth;
+  return (
+    listed ?? (auth.method === "credential_source" && auth.sourceId === sourceId ? auth : undefined)
+  );
 }
 
 export type HarnessAuthBinding =
@@ -2371,3 +2414,12 @@ export {
   WORKSPACE_DEFAULTS_ID,
   WORKSPACE_DEFAULTS_VERSION,
 } from "./workspace-defaults.mjs";
+
+export type {
+  ProtectedRepositoryGitAuthority,
+  ProtectedRepositoryGitMaterial,
+  RepositoryGitInstallationFence,
+  RepositoryGitMaterialVersion,
+  RepositoryGitSendDecision,
+  RepositoryGitSendPermit,
+} from "./protected-repository-git.ts";

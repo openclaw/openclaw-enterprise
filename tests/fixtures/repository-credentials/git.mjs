@@ -40,7 +40,9 @@ export async function startGitSmartHttpFixture(
   const children = new Set();
   let disconnectPush = false;
   let heldFetch;
+  let requests = 0;
   const server = createServer(tls, (request, response) => {
+    requests++;
     observeRequest?.(request.method, request.url);
     if (!authorize(request.headers.authorization, "git")) {
       response.writeHead(401).end();
@@ -154,6 +156,11 @@ export async function startGitSmartHttpFixture(
       }
     });
   });
+  // Count new transport attempts as well as complete HTTP requests, including rejected ones.
+  let connections = 0;
+  server.on("connection", () => {
+    connections++;
+  });
   const origin = await listen(t, server);
   t.after(() => {
     for (const child of children) {
@@ -166,6 +173,7 @@ export async function startGitSmartHttpFixture(
     repository,
     bare,
     trace,
+    traffic: () => ({ connections, requests }),
     holdNextFetch({ beforeHeaders = false } = {}) {
       let started;
       let release;

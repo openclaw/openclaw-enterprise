@@ -46,13 +46,14 @@ test(
     let issuer;
     let source;
     let registration;
-    const createOwner = (origin = gh.origin) =>
-      new PostgresPreparedGitHubLifecycle(key, secretDriver, origin, gh.tls.ca);
+    const createOwner = (origin = gh.origin, tokenService) =>
+      new PostgresPreparedGitHubLifecycle(key, secretDriver, origin, gh.tls.ca, tokenService);
     const f = await staticEgressFixture(t, {
       secretValue,
+      protectedSourceOnly: true,
       createPreparedGitHub(opts) {
         secretDriver = opts.secretDriver;
-        lifecycle = createOwner();
+        lifecycle = createOwner(gh.origin, opts.tokenService);
         return lifecycle;
       },
       async appFactory(t, opts) {
@@ -102,7 +103,10 @@ test(
     );
 
     // Two workers race over a real family. Only the durable claim holder reaches the issuer.
-    const results = await Promise.all([lifecycle.maintain(signal), lifecycle.maintain(signal)]);
+    const competitor = createOwner();
+    await competitor.connect(f.pool);
+    const results = await Promise.all([lifecycle.maintain(signal), competitor.maintain(signal)]);
+    await competitor.close();
     assert.deepEqual(results.sort(), ["committed", "idle"]);
     const old = await lifecycle.readWarm(source, readWindow());
     assert.equal(old.ownerEpoch, 1);
@@ -114,7 +118,7 @@ test(
     const evidence = JSON.parse(ready.evidence.authority_evidence);
     const proveCurrent = (selected) =>
       f.state.transact((unit) =>
-        lifecycle.current(source, selected, readWindow(), unit.preparedGitHubProof),
+        unit.preparedTokenProof.current(source, selected, lifecycle.issuerAuthority, readWindow()),
       );
     assert.equal(await proveCurrent(evidence), true);
     await t.test(
@@ -166,13 +170,13 @@ test(
               observed = undefined;
               try {
                 assert.equal(
-                  await lifecycle.current(
+                  await unit.preparedTokenProof.current(
                     source,
                     outcome === "wrong material"
                       ? { ...evidence, materialVersion: "different" }
                       : evidence,
+                    lifecycle.issuerAuthority,
                     { signal, deadlineAt: new Date(deadline).toISOString() },
-                    unit.preparedGitHubProof,
                   ),
                   outcome === "current",
                 );
@@ -443,7 +447,7 @@ test(
     );
 
     // A new lifecycle instance has only the custody mount and PostgreSQL; warm access neither reads the root nor issues.
-    const fresh = createOwner();
+    let fresh = createOwner();
     await fresh.connect(f.pool);
     t.after(() => fresh.close());
     const beforeRestartRead = f.secretReads;
@@ -520,6 +524,7 @@ test(
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
           await fresh.close();
+          fresh = createOwner();
           await fresh.connect(f.pool);
           assert.deepEqual(reports, []);
           renewed = await fresh.readWarm(source, readWindow());

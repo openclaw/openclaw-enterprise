@@ -1,8 +1,11 @@
 import { unlink, writeFile } from "node:fs/promises";
 import { createPostgresPool, PostgresPlatformState } from "@openclaw-enterprise/occ";
-import { startPreparedGitHubGitOwner } from "./backends/repository-credentials/prepared-git-owner.ts";
 import { startRepositoryReceiptServer } from "./backends/repository-credentials/receipt-server.ts";
-import { PostgresOpenShellGitRouteStore } from "./drivers/egress-proxy/openshell-git-route-store.ts";
+import { startPreparedGitHubGitOwner } from "./backends/repository-credentials/prepared-git-owner.ts";
+import {
+  bindRepositoryGitTransport,
+  repositoryGitAuthority,
+} from "./composition/repository-credentials/transport.ts";
 import {
   loadInstallationConfiguration,
   loadOperationalLoggingConfiguration,
@@ -99,9 +102,9 @@ let metricsPool;
 let metricsListener;
 let metricsClosing;
 let receiptServer;
+let repositoryGitTransport;
 let preparedRepositoryGit;
 let preparedGitHub;
-let openShellGit;
 async function closeMetrics() {
   metricsClosing ??= (async () => {
     try {
@@ -169,22 +172,18 @@ try {
       ...(issuerCaPath ? { ca: Buffer.from(await readPublicCaBundle(issuerCaPath)) } : {}),
       pool,
       registry: drivers.repositoryRegistry,
+      ...repositoryGitAuthority(drivers),
       report: (code, context) =>
         emitOccLogEvent(logger, { event: "worker.error", code, ...context }),
     });
-  }
-  openShellGit = drivers?.openShellGit;
-  if (openShellGit) {
-    if (!preparedRepositoryGit) {
-      throw new Error("OpenShell Git requires its live prepared GitHub owner.");
-    }
-    // Routes persist so a restarted worker re-adopts them instead of requiring a new
-    // revision (finding 2128).
-    await openShellGit.start(
+    repositoryGitTransport = await bindRepositoryGitTransport(
+      drivers,
       preparedRepositoryGit,
+      pool,
       (event) => emitOccLogEvent(logger, event),
-      new PostgresOpenShellGitRouteStore(pool),
     );
+  } else if (drivers?.repositoryGitDriver || drivers?.openShellGit) {
+    throw new Error("The repository Git transport requires its selected prepared owner.");
   }
   let metrics;
   if (metricsSettings !== undefined) {
@@ -239,8 +238,11 @@ try {
       }
       try {
         try {
-          await openShellGit?.close();
-          await preparedRepositoryGit?.close();
+          try {
+            await repositoryGitTransport?.close();
+          } finally {
+            await preparedRepositoryGit?.close();
+          }
           await receiptServer?.close();
         } finally {
           await closeMetrics();
@@ -259,7 +261,7 @@ try {
   process.once("SIGINT", shutdown);
 } catch (error) {
   await preparedGitHub?.close().catch(() => {});
-  await openShellGit?.close().catch(() => {});
+  await repositoryGitTransport?.close().catch(() => {});
   await preparedRepositoryGit?.close().catch(() => {});
   await receiptServer?.close().catch(() => {});
   await closeMetrics().catch(() => {});

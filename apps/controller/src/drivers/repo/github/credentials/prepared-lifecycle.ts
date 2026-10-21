@@ -1,3 +1,4 @@
+import { TokenService } from "../../../../backends/token-service/service.ts";
 import { retireToken } from "../../../../backends/token-service/retirement.ts";
 import { githubProviderOrigin } from "./factory.ts";
 import { createHash, createPrivateKey, randomUUID } from "node:crypto";
@@ -6,16 +7,16 @@ import { isAbsolute } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import {
   githubMetadataGrant,
-  type PreparedGitHubEgressLifecycle,
-  type PreparedGitHubCurrentProof,
+  preparedGitHubProviderRef,
+  preparedGitHubSourceFromRoute,
+  type PreparedTokenIssuer,
   type CredentialReadLifetime,
   type PreparedGitHubEgressSource as Source,
-  type PreparedGitHubMaterialEvidence as Evidence,
-  type PreparedGitHubSelection,
+  type PreparedTokenSelection,
   type Secret,
   type SecretDriver,
 } from "@openclaw-enterprise/contracts";
-import type { PostgresPool } from "@openclaw-enterprise/occ";
+import { postgresPreparedGitHubProof, type PostgresPool } from "@openclaw-enterprise/occ";
 import type { AttemptContext } from "../../credentials/backend-contracts.ts";
 import { createSystemClock } from "../../credentials/clock.ts";
 import { createGitHubKeyOwner } from "./material.ts";
@@ -42,7 +43,7 @@ function grantId({ grant: g }: Source) {
 }
 type Metadata = NonNullable<Awaited<ReturnType<PreparedGitHubPostgres["metadata"]>>>;
 
-function evidence(m: Metadata): Omit<PreparedGitHubSelection, "value"> {
+function evidence(m: Metadata): Omit<PreparedTokenSelection, "value"> {
   const { admission: a } = m;
   return {
     family: { id: a.familyId, generation: a.generation },
@@ -58,23 +59,38 @@ function evidence(m: Metadata): Omit<PreparedGitHubSelection, "value"> {
 
 /** The API and worker share the same database and a dedicated 32-byte custody key from a private
  * mount. Only the worker starts the preparation loop; a request never invokes or wakes that loop. */
-export class PostgresPreparedGitHubLifecycle implements PreparedGitHubEgressLifecycle {
+export class PostgresPreparedGitHubLifecycle implements PreparedTokenIssuer {
   private repository: PreparedGitHubPostgres | undefined;
   private custodyKey?: Buffer;
   private readonly clock = createSystemClock();
-  private stopWorker?: AbortController;
-  private running?: Promise<void>;
-  private cancelNext?: () => void;
+  private readonly maintenance;
+  private report: (
+    code: "PREPARED_GITHUB_RECOVERY_REQUIRED" | "PREPARED_GITHUB_MAINTENANCE_FAILED",
+    context?: Readonly<Record<string, string>>,
+  ) => void = () => {};
+  readonly provider = preparedGitHubProviderRef;
+  readonly sourceFromRoute = preparedGitHubSourceFromRoute;
+  readonly issuerInput = "private_key";
+
+  admission(config: Readonly<Record<string, string>>) {
+    return {
+      origin: this.apiOrigin,
+      grant: githubMetadataGrant(config),
+      schemaVersion: 2 as const,
+    };
+  }
+
   private readonly custodyKeyPath: string;
   private readonly secretDriver: SecretDriver;
   readonly apiOrigin: string;
-  private readonly issuerAuthority: string;
+  readonly issuerAuthority: string;
   private readonly ca: Uint8Array | undefined;
   constructor(
     custodyKeyPath: string,
     secretDriver: SecretDriver,
     apiOrigin = "https://api.github.com",
     ca?: Uint8Array,
+    tokenService = new TokenService(),
   ) {
     this.custodyKeyPath = custodyKeyPath;
     this.secretDriver = secretDriver;
@@ -86,6 +102,62 @@ export class PostgresPreparedGitHubLifecycle implements PreparedGitHubEgressLife
         "Prepared GitHub requires a custody key mount and authoritative issuer Secret Driver.",
       );
     }
+    tokenService.register(this, postgresPreparedGitHubProof);
+    this.maintenance = tokenService.ownFamilies({
+      retire: async (signal) => {
+        const result = await this.retire(null, signal);
+        if (result === "issuer-mismatch") {
+          this.report("PREPARED_GITHUB_RECOVERY_REQUIRED", { reason: result });
+        }
+        return result;
+      },
+      prepare: async (signal, run) => {
+        const claim = randomUUID();
+        const job = await this.db.claim(claim);
+        if (!job) {
+          return;
+        }
+        const { source, issuer } = job;
+        if (source.origin !== this.apiOrigin) {
+          throw new Error("Prepared GitHub origin changed.");
+        }
+        const input = await this.readIssuer(
+          issuer,
+          AbortSignal.any([signal, AbortSignal.timeout(25_000)]),
+        );
+        const admission = await this.db.observeInput(source, claim, input.version);
+        if (!admission || admission.grant.id !== grantId(source)) {
+          return "fenced";
+        }
+        const clock = this.clock;
+        const key = createGitHubKeyOwner({
+          privateKey: createPrivateKey(input.value),
+          appId: source.grant.appId,
+          clock,
+        });
+        try {
+          const outcome = await run(
+            createGitHubPreparationOwner({
+              admission,
+              store: this.db.store(source, null),
+              clock,
+              getKey: async () => key,
+              apiOrigin: this.apiOrigin,
+              ...(this.ca ? { ca: this.ca } : {}),
+              renewBeforeMs: 600_000,
+              minimumValidityMs: 60_000,
+            }),
+          );
+          if (outcome === "quarantined" || outcome === "blocked") {
+            this.report("PREPARED_GITHUB_RECOVERY_REQUIRED", { reason: outcome });
+          }
+          return outcome;
+        } finally {
+          key.close();
+        }
+      },
+      failed: () => this.report("PREPARED_GITHUB_MAINTENANCE_FAILED"),
+    });
   }
 
   async connect(pool: PostgresPool) {
@@ -174,7 +246,7 @@ export class PostgresPreparedGitHubLifecycle implements PreparedGitHubEgressLife
   async readWarm(
     source: Source,
     lifetime: CredentialReadLifetime,
-  ): Promise<PreparedGitHubSelection | undefined> {
+  ): Promise<PreparedTokenSelection | undefined> {
     const { signal, deadlineAt } = lifetime;
     const deadline = Date.parse(deadlineAt);
     const active = (until = deadline) => !signal.aborted && Date.now() < until;
@@ -221,115 +293,22 @@ export class PostgresPreparedGitHubLifecycle implements PreparedGitHubEgressLife
     }
   }
 
-  async current(
-    source: Source,
-    ev: Evidence,
-    lifetime: CredentialReadLifetime,
-    proof: PreparedGitHubCurrentProof,
-  ) {
-    const { signal } = lifetime;
-    const until = Date.parse(ev.usableUntil);
-    if (
-      signal.aborted ||
-      !(until > Date.now()) ||
-      ev.kind !== "prepared_github" ||
-      !isDeepStrictEqual(ev.source, source.key) ||
-      ev.grantHash !== grantId(source) ||
-      ev.isolationId !== source.grant.isolationId
-    ) {
-      return false;
-    }
-    return proof.current(source, ev, this.issuerAuthority, lifetime);
-  }
-
   private async retire(familyId: string | null, outer: AbortSignal) {
     outer.throwIfAborted();
     return retirePreparedGitHubToken(this.db, familyId, outer, this.apiOrigin, this.ca, this.clock);
   }
 
-  startWorker(
-    report: (
-      code: "PREPARED_GITHUB_RECOVERY_REQUIRED" | "PREPARED_GITHUB_MAINTENANCE_FAILED",
-      context?: Readonly<Record<string, string>>,
-    ) => void,
-  ) {
-    const stop = new AbortController();
-    this.stopWorker = stop;
-    const tick = () => {
-      let delay = 5_000;
-      this.running = this.maintain(stop.signal)
-        .then((outcome) => {
-          // Drain due families promptly; each claim independently moves the family scan forward.
-          if (outcome !== "idle" && outcome !== "issuer-mismatch") {
-            delay = 100;
-          }
-          if (outcome === "quarantined" || outcome === "blocked" || outcome === "issuer-mismatch") {
-            report("PREPARED_GITHUB_RECOVERY_REQUIRED", { reason: outcome });
-          }
-        })
-        .catch(() => {
-          if (!stop.signal.aborted) {
-            report("PREPARED_GITHUB_MAINTENANCE_FAILED");
-          }
-        })
-        .finally(() => {
-          if (!stop.signal.aborted) {
-            this.cancelNext = this.clock.schedule(delay, tick);
-          }
-        });
-    };
-    tick();
+  startWorker(report: typeof this.report) {
+    this.report = report;
+    this.maintenance.start();
   }
 
-  /** One proactive worker pass; duplicates share the durable claim/attempt fence. */
-  async maintain(outer: AbortSignal) {
-    const retirement = await this.retire(null, outer);
-    const claim = randomUUID();
-    const job = await this.db.claim(claim);
-    if (!job) {
-      return retirement;
-    }
-    const signal = AbortSignal.any([outer, AbortSignal.timeout(25_000)]);
-    const { source, issuer } = job;
-    if (source.origin !== this.apiOrigin) {
-      throw new Error("Prepared GitHub origin changed.");
-    }
-    const id = grantId(source);
-    const input = await this.readIssuer(issuer, signal);
-    const admission = await this.db.observeInput(source, claim, input.version);
-    if (!admission || admission.grant.id !== id) {
-      return "fenced";
-    }
-    const clock = this.clock;
-    const key = createGitHubKeyOwner({
-      privateKey: createPrivateKey(input.value),
-      appId: source.grant.appId,
-      clock,
-    });
-    try {
-      const owner = createGitHubPreparationOwner({
-        admission,
-        store: this.db.store(source, null),
-        clock,
-        getKey: async () => key,
-        apiOrigin: this.apiOrigin,
-        ...(this.ca ? { ca: this.ca } : {}),
-        renewBeforeMs: 10 * 60_000,
-        minimumValidityMs: 60_000,
-      });
-      return await owner.run(randomUUID(), {
-        signal,
-        deadlineMonoMs: clock.monotonicNow() + 25_000,
-      });
-    } finally {
-      key.close();
-    }
+  maintain(signal: AbortSignal) {
+    return this.maintenance.maintain(signal);
   }
 
   async close() {
-    this.stopWorker?.abort();
-    this.cancelNext?.();
-    await this.running;
+    await this.maintenance.close();
     this.custodyKey?.fill(0);
     this.repository = undefined;
   }

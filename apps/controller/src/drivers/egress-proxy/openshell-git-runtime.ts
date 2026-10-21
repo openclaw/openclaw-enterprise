@@ -3,10 +3,16 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import type { AgentRevision, SandboxRepositoryAccess } from "@openclaw-enterprise/contracts";
+import type {
+  AgentRevision,
+  ProtectedRepositoryGitAuthority,
+  ProtectedRepositoryGitMaterial,
+  SandboxRepositoryAccess,
+} from "@openclaw-enterprise/contracts";
 import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
+  type PostgresPool,
   TransientDependencyError,
 } from "@openclaw-enterprise/occ";
 import type { startPreparedGitHubGitOwner } from "../../backends/repository-credentials/prepared-git-owner.ts";
@@ -23,16 +29,17 @@ import {
   type OpenShellGitContinuity,
   type OpenShellGitExpiryResult,
 } from "./openshell-expired-git.ts";
-import type { OpenShellRepositoryMaterial } from "../repo/github/credentials/prepared-repository-git.ts";
+import { openShellOnlineGitDecision } from "../repo/github/credentials/prepared-repository-git.ts";
 import type {
   OpenShellGatewayClient,
   OpenShellSandboxResponse,
 } from "../sandbox/openshell-gateway-client.ts";
-import type {
-  OpenShellGitMaterialReference,
-  OpenShellGitRouteRecord,
-  OpenShellGitRouteSnapshot,
-  OpenShellGitRouteStore,
+import {
+  type OpenShellGitMaterialReference,
+  type OpenShellGitRouteRecord,
+  type OpenShellGitRouteSnapshot,
+  type OpenShellGitRouteStore,
+  PostgresOpenShellGitRouteStore,
 } from "./openshell-git-route-store.ts";
 import {
   OpenShellPreparedGitProvider,
@@ -59,7 +66,7 @@ type Owner = Pick<
   Awaited<ReturnType<typeof startPreparedGitHubGitOwner>>,
   "readOpenShellMaterial" | "authorizeOpenShellRequest"
 >;
-type MaterialIdentity = Omit<OpenShellRepositoryMaterial, "value">;
+type MaterialIdentity = Omit<ProtectedRepositoryGitMaterial, "value">;
 
 /**
  * Why a revision's Git route is closed for good. The entry stays as a tombstone until a new
@@ -1925,6 +1932,38 @@ export class OpenShellGitRuntime {
       ...(denied === undefined ? {} : this.identity(denied)),
     });
     return undefined;
+  }
+
+  /** Composition supplies this Driver's store. Neither the pool nor this store is a sender port. */
+  connectRouteStore(pool: PostgresPool, emit?: OpenShellGitRuntimeEmit): OpenShellGitRouteStore {
+    this.routes = new PostgresOpenShellGitRouteStore(pool);
+    this.emit = emit;
+    return this.routes;
+  }
+
+  /** The protected sender gets committed material and one request decision, never the issuer. */
+  async bindRepositoryGit(authority: ProtectedRepositoryGitAuthority) {
+    if (!this.configuration.protectedExecution || !this.routes) {
+      throw new Error("OpenShell protected repository Git requires its selected route store.");
+    }
+    await this.start(
+      {
+        readOpenShellMaterial: async (revisionId, signal, route) =>
+          route?.revisionId === revisionId ? authority.readMaterial(route, signal) : undefined,
+        authorizeOpenShellRequest: async (request, installed, signal) => {
+          const { route } = installed;
+          if (!route) {
+            return false;
+          }
+          const decision = await authority.authorize(request, { ...installed, route }, signal);
+          // HttpRequestResult conveys an online allow, with no send permit enforced by stock OpenShell.
+          return openShellOnlineGitDecision(decision);
+        },
+      },
+      this.emit,
+      this.routes,
+    );
+    return { close: () => this.close() };
   }
 
   /**

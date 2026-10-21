@@ -18,7 +18,7 @@ import type {
 
 // The provider expiry is an authenticated issuance result. The same clock-skew allowance
 // subtracted for use is added before we can conclude that the provider lifetime elapsed.
-const standingGitExpiry = `CASE WHEN f.source->>'adoption'='prepared_repository_git'
+const standingGitExpiry = `CASE WHEN f.source->>'adoption' IN ('prepared_repository_git','credential_proxy_repository_git')
   AND f.source #>> '{session,standingApprovalId}' IS NOT NULL AND NOT f.enabled
   AND a.state='committed' AND a.material_version IS NOT NULL
   AND a.admission=f.admission AND isfinite(a.provider_expires_at)
@@ -56,17 +56,25 @@ type AttemptRow = {
 const aad = (a: Admission, id: string) =>
   Buffer.from(JSON.stringify(["occ:prepared-github:v2", a.issuerAuthority, a.familyId, id]));
 
+type FamilyOwner = Readonly<{
+  active: string;
+  adoption: string;
+  /** Predicates over family f, and the installation-selected owner bound to each transaction. */
+  owns?: string;
+  driver?: import("@openclaw-enterprise/contracts").DriverRegistrationRef;
+}>;
+
 export class PreparedGitHubPostgres {
   private readonly pool: PostgresPool;
   private readonly custodyKey: Buffer;
   private readonly issuerAuthority: string;
   // The two admission paths share custody, fencing and retirement, never their permissions.
-  private readonly owner: Readonly<{ active: string; adoption: string }>;
+  private readonly owner: FamilyOwner;
   constructor(
     pool: PostgresPool,
     custodyKey: Buffer,
     issuerAuthority: string,
-    owner: Readonly<{ active: string; adoption: string }> = { active, adoption: "prepared" },
+    owner: FamilyOwner = { active, adoption: "prepared" },
   ) {
     this.pool = pool;
     this.custodyKey = custodyKey;
@@ -94,6 +102,11 @@ export class PreparedGitHubPostgres {
       await c.query("BEGIN");
       await c.query("SET LOCAL statement_timeout = '4000ms'");
       await c.query("SET LOCAL lock_timeout = '1000ms'");
+      if (this.owner.driver) {
+        await c.query("SELECT set_config('occ.repository_git_driver', $1, true)", [
+          JSON.stringify(this.owner.driver),
+        ]);
+      }
       const result = await work(c);
       try {
         await c.query("COMMIT");
@@ -221,7 +234,8 @@ export class PreparedGitHubPostgres {
       const { rows } = await c.query(
         `SELECT a.state,a.custody,a.material_version AS "materialVersion",a.provider_expires_at AS "providerExpiresAt"
          FROM ${families} f JOIN ${attempts} a USING (source_id)
-         WHERE f.source_id=$1 AND a.id=$2 AND a.admission->>'issuerAuthority'=$3 AND f.source->>'adoption'=$4`,
+         WHERE f.source_id=$1 AND a.id=$2 AND a.admission->>'issuerAuthority'=$3 AND f.source->>'adoption'=$4
+           AND ${this.owner.owns ?? "true"}`,
         [familyId, attemptId, this.issuerAuthority, this.owner.adoption],
       );
       return rows[0] as
@@ -470,6 +484,7 @@ export class PreparedGitHubPostgres {
            FROM ${attempts} a JOIN ${families} f USING (source_id),
              LATERAL (SELECT ${standingGitExpiry} AS expires) x
            WHERE custody='retire' AND (source_id=$1 OR $1 IS NULL) AND f.source->>'adoption'=$3
+             AND ${this.owner.owns ?? "true"}
              AND (x.expires IS NULL OR x.expires > statement_timestamp()
                OR x.expires <= statement_timestamp() - $4 * interval '1 millisecond')
            ORDER BY authorized DESC LIMIT 1 FOR UPDATE OF a, f SKIP LOCKED
@@ -508,9 +523,11 @@ export class PreparedGitHubPostgres {
   async finishRetirement(id: string, revoked: boolean) {
     await this.transaction(async (c) => {
       await c.query(
-        `UPDATE ${attempts} SET custody=CASE WHEN $2 THEN 'revoked' ELSE 'unknown' END,
-        sealed=CASE WHEN $2 THEN NULL ELSE sealed END WHERE id=$1 AND custody='revoking'`,
-        [id, revoked],
+        `UPDATE ${attempts} a SET custody=CASE WHEN $2 THEN 'revoked' ELSE 'unknown' END,
+        sealed=CASE WHEN $2 THEN NULL ELSE sealed END FROM ${families} f
+        WHERE a.id=$1 AND a.custody='revoking' AND f.source_id=a.source_id
+          AND a.admission->>'issuerAuthority'=$3 AND f.source->>'adoption'=$4 AND ${this.owner.owns ?? "true"}`,
+        [id, revoked, this.issuerAuthority, this.owner.adoption],
       );
     });
   }

@@ -1,8 +1,7 @@
 import { networkPolicySpecToJson } from "../../kubernetes/network-policy.ts";
 import {
   assertExecutionAdmission,
-  preparedGitHubSourceFromRoute,
-  preparedGitHubProviderRef,
+  type PreparedTokenService,
 } from "@openclaw-enterprise/contracts";
 import {
   harnessEgressEnrollment,
@@ -128,6 +127,8 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import {
   admittedLoggingLevel,
+  credentialSourceMatchesSnapshot,
+  revisionCredentialSourceSnapshot,
   isSecretHarnessAuth,
   isServiceAccountHarnessAuth,
   normalizeSecretBindings,
@@ -3283,6 +3284,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
   private readonly sandboxDriver: SandboxDriver | undefined;
   private readonly preprovisionedNamespace: PreprovisionedKubernetesNamespace | undefined;
   private readonly preparedRepositoryIngress: boolean;
+  private readonly preparedTokens: PreparedTokenService | undefined;
   private readonly credentialGatewayDriver: CredentialGatewayDriver | undefined;
   private readonly protectedExecution: ProtectedExecutionDriver | undefined;
 
@@ -3662,6 +3664,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       readonly lifecycleDrivers?: readonly Driver[];
       readonly sandboxDriver?: SandboxDriver;
       readonly preparedRepositoryIngress?: true;
+      readonly preparedTokens?: PreparedTokenService;
       readonly preprovisionedNamespace?: PreprovisionedKubernetesNamespace | undefined;
       readonly credentialGatewayDriver?: CredentialGatewayDriver;
       readonly protectedDriver?: InstalledDriver;
@@ -3692,6 +3695,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
     this.sandboxDriver = this.protectedExecution?.sandbox ?? selection.sandboxDriver;
     this.preprovisionedNamespace = selection.preprovisionedNamespace;
+    this.preparedTokens = selection.preparedTokens;
     if (this.preprovisionedNamespace && options.executionCluster) {
       throw new ConfigurationFailure(
         "A preprovisioned Namespace requires single-cluster Kubernetes execution.",
@@ -7705,6 +7709,19 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Refusing to withdraw from an AgentRevision pinned to another Compute Driver.",
       );
     }
+    const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
+    const owner =
+      source.ownerCapability === "credential_gateway"
+        ? this.credentialGatewayDriver
+        : this.proxyDriver;
+    if (source.driverId !== owner?.id || !credentialSourceMatchesSnapshot(source, snapshot)) {
+      throw new OwnershipFailure(
+        "The credential source does not match the revision's admitted owner.",
+      );
+    }
+    if (source.ownerCapability === "credential_proxy" && (!revision.egressPlan || !source.egress)) {
+      throw new OwnershipFailure("The protected source has no admitted egress owner.");
+    }
     const sandboxDriver = this.sandboxDriverForRevision(revision);
     if (sandboxDriver?.harnessResource === undefined) {
       throw new ConfigurationFailure(
@@ -7730,8 +7747,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
       if (!egress || !this.protectedExecution!.owner.ownsProxyPlan(revision.egressPlan)) {
         throw new DependencyUnavailableError("The protected egress cleanup owner is unavailable.");
       }
-      const binding = revision.egressPlan.routes.find(
-        (route) => route.binding.source.source.id === source.id,
+      const binding = revision.egressPlan.routes.find((route) =>
+        isDeepStrictEqual(route.binding.source, source.egress!.key),
       )?.binding.binding;
       if (!binding) {
         throw new OwnershipFailure("The protected source has no admitted binding.");
@@ -14342,8 +14359,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         snapshot === undefined ||
         seen.has(source.id) ||
         source.namespaceId !== revision.namespaceId ||
-        source.driverId !== snapshot.credentialGatewayId ||
-        source.type !== snapshot.sourceType ||
+        !credentialSourceMatchesSnapshot(source, snapshot) ||
         source.state !== "ready"
       ) {
         throw new OwnershipFailure("A credential source does not match the admitted source.");
@@ -14384,8 +14400,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         !isDeepStrictEqual(snapshot, revision.harnessAuth) ||
         source.id !== snapshot.sourceId ||
         source.namespaceId !== revision.namespaceId ||
-        source.driverId !== snapshot.credentialGatewayId ||
-        source.type !== snapshot.sourceType ||
+        !credentialSourceMatchesSnapshot(source, snapshot) ||
         source.state !== "ready"
       ) {
         throw new OwnershipFailure("Harness credential source does not match the admitted source.");
@@ -14671,19 +14686,18 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   /** Cold/expired is pending for an ordinary later observation, never a request to prepare material. */
   private async preparedEgressReady(egress: ProxyRevisionContext): Promise<boolean> {
     for (const route of egress.plan.routes) {
-      if (route.binding.grant.kind !== "github_repository_metadata") {
+      if (
+        route.binding.grant.kind !== "github_repository_metadata" &&
+        route.binding.grant.kind !== "prepared_scope"
+      ) {
         continue;
       }
       const control = this.proxyDriver!.sourceControl;
-      const lifecycle = control.preparedGitHub;
-      const source = preparedGitHubSourceFromRoute(route, control);
-      if (
-        !source ||
-        !lifecycle ||
-        !isDeepStrictEqual(source.key.provider, preparedGitHubProviderRef)
-      ) {
+      const lifecycle = this.preparedTokens?.issuer(route.binding.source.provider);
+      const source = lifecycle?.sourceFromRoute(route, control);
+      if (!source || !lifecycle || !isDeepStrictEqual(source.key, route.binding.source)) {
         throw new DependencyUnavailableError(
-          "Compute requires the exact prepared GitHub metadata lifecycle owner.",
+          "Compute requires the exact admitted prepared credential owner.",
         );
       }
       // Bound even an owner whose observation ignores cancellation. No retry in this pass.

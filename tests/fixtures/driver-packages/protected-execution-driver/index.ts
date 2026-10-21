@@ -10,6 +10,11 @@ import type {
 } from "../../../../packages/contracts/src/index.ts";
 
 export const calls = { validate: 0, create: 0, lifecycle: 0, close: 0 };
+export const exchangeProbe = {
+  decisions: [] as unknown[],
+  rejectsSecondOwner: undefined as (() => boolean) | undefined,
+  closed: 0,
+};
 export const configurationSchema = {
   type: "object",
   additionalProperties: false,
@@ -105,6 +110,47 @@ export function createDriver({
           assertAvailable: async () => {
             await read();
           },
+        },
+        async bindExchange(connect) {
+          const owner = {
+            verify: async () => undefined,
+            capture: () => undefined,
+            owns: () => false,
+          };
+          const exchange = connect(owner);
+          if (
+            Object.keys(exchange).sort().join(",") !==
+            "authorizeSend,beginResponse,protectResponse,renewResponse,resolve"
+          ) {
+            throw new Error("Expected only the exchange authority");
+          }
+          const result = await exchange.resolve(
+            "",
+            "unverified",
+            {
+              id: "unknown",
+              method: "GET",
+              url: "https://unowned.invalid",
+              headers: [],
+              body: new Uint8Array(),
+              deadlineAt: new Date(Date.now() + 1000).toISOString(),
+            },
+            AbortSignal.timeout(1000),
+          );
+          exchangeProbe.decisions.push(result);
+          exchangeProbe.rejectsSecondOwner = () => {
+            try {
+              connect(owner);
+            } catch {
+              return true;
+            }
+            return false;
+          };
+          return {
+            close() {
+              exchangeProbe.closed++;
+            },
+          };
         },
         async configureRevision({ plan }: ProxyRevisionContext) {
           if (plan.routes.length) {

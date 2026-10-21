@@ -79,7 +79,26 @@
 {{- fail (printf "%s must be a Kubernetes resource name of at most 253 characters" .label) -}}
 {{- end -}}
 {{- end -}}
+{{- /* Shared repository inputs. Only an explicit delivery selection, broker or OpenShell listener activates them. */ -}}
+{{- define "openclaw.repositoryCredentials.gitEnabled" -}}
+{{- $credentials := .Values.repositoryCredentials -}}
+{{- if eq $credentials.delivery "credential-proxy" -}}
+{{- if $credentials.enabled -}}
+{{- fail "repositoryCredentials.delivery credential-proxy requires the repository broker disabled; drain existing broker sessions before switching" -}}
+{{- end -}}
+{{- if ne $credentials.authority "prepared-git" -}}
+{{- fail "repositoryCredentials.delivery credential-proxy requires authority prepared-git" -}}
+{{- end -}}
+true
+{{- else if $credentials.delivery -}}
+{{- fail "repositoryCredentials.delivery must be empty or credential-proxy" -}}
+{{- else if or $credentials.enabled .Values.openshellGit.enabled -}}
+true
+{{- end -}}
+{{- end -}}
 {{- define "openclaw.validate" -}}
+{{- $repositoryBroker := .Values.repositoryCredentials.enabled -}}
+{{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . -}}
 {{- if or (gt (len .Release.Namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Release.Namespace)) -}}
 {{- fail "Helm release namespace must be a DNS-1123 label of at most 63 characters" -}}
 {{- end -}}
@@ -419,8 +438,20 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.executionCluster.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/execution" -}}
 {{- end -}}
-{{- if .Values.repositoryCredentials.enabled -}}
-{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-registry" "/etc/openclaw/repository-ca" "/var/run/secrets/kubernetes.io/serviceaccount" "/run/openclaw/repository-control") -}}
+{{- if $repositoryGit -}}
+{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-registry" "/var/run/secrets/kubernetes.io/serviceaccount") -}}
+{{- if $repositoryBroker -}}
+{{- $reservedCaMounts = concat $reservedCaMounts (list "/etc/openclaw/repository-ca" "/run/openclaw/repository-control") -}}
+{{- end -}}
+{{- if eq .Values.repositoryCredentials.authority "prepared-git" -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/prepared-repository" -}}
+{{- if .Values.repositoryCredentials.preparedProviderCaConfigMapName -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/prepared-repository-ca" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if .Values.openshellGit.enabled -}}
+{{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/openshell-git" -}}
 {{- end -}}
 {{- if .Values.gatewayRouting.enabled -}}
 {{- $reservedCaMounts = append $reservedCaMounts "/etc/openclaw/gateway-api-key" -}}
@@ -483,7 +514,23 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
 {{- end -}}
-{{- if .Values.repositoryCredentials.enabled -}}
+{{- if $repositoryGit -}}
+{{- if .Values.openshellGit.enabled -}}
+{{- if eq .Values.openshellGit.mode "protected" -}}
+{{- if $repositoryBroker -}}
+{{- fail "protected Git requires the repository broker disabled (repositoryCredentials.enabled: false); drain existing broker sessions before switching" -}}
+{{- end -}}
+{{- else if eq .Values.openshellGit.mode "broker-trial" -}}
+{{- if not $repositoryBroker -}}
+{{- fail "openshellGit.mode broker-trial requires repositoryCredentials.enabled: true" -}}
+{{- end -}}
+{{- else -}}
+{{- fail "openshellGit.mode must be protected or broker-trial" -}}
+{{- end -}}
+{{- if ne .Values.repositoryCredentials.authority "prepared-git" -}}
+{{- fail "openshellGit requires repositoryCredentials.authority prepared-git" -}}
+{{- end -}}
+{{- end -}}
 {{- $credentials := .Values.repositoryCredentials -}}
 {{- if not (has $credentials.authority (list "github-app" "prepared-git")) -}}
 {{- fail "repositoryCredentials.authority must be github-app or prepared-git" -}}
@@ -494,6 +541,17 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and (eq $credentials.authority "prepared-git") (not $credentials.preparedCustodySecretName) -}}
 {{- fail "repositoryCredentials.preparedCustodySecretName is required for prepared-git" -}}
 {{- end -}}
+{{- $registryName := required "repositoryCredentials.registryConfigMapName is required when enabled" $credentials.registryConfigMapName -}}
+{{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $registryName) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "repositoryCredentials.registryKey" "value" $credentials.registryKey) -}}
+{{- with $credentials.preparedProviderCaConfigMapName -}}
+{{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.preparedProviderCaConfigMapName" "value" .) -}}
+{{- end -}}
+{{- if not $credentials.upstreamCidrs -}}{{- fail "repositoryCredentials.upstreamCidrs must contain approved provider IPv4 CIDRs" -}}{{- end -}}
+{{- range $cidr := $credentials.upstreamCidrs -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "repositoryCredentials.upstreamCidrs" "cidr" $cidr) -}}
+{{- end -}}
+{{- if $repositoryBroker -}}
 {{- include "openclaw.validateImageReference" (dict "label" "repositoryCredentials.image" "image" $credentials.image) -}}
 {{- $serviceName := include "openclaw.repositoryCredentials.serviceName" . -}}
 {{- if and .Release.IsUpgrade (not $credentials.serviceName) -}}
@@ -525,13 +583,12 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if gt (len $hostname) 253 -}}
 {{- fail "repository credential broker hostname must not exceed 253 characters" -}}
 {{- end -}}
-{{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
+{{- range $name := list "backendId" "serviceConfigSecretName" "serviceConfigKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
 {{- if not (index $credentials $name) -}}{{- fail (printf "repositoryCredentials.%s is required when enabled" $name) -}}{{- end -}}
 {{- end -}}
-{{- range $label, $key := dict "repositoryCredentials.registryKey" $credentials.registryKey "repositoryCredentials.serviceConfigKey" $credentials.serviceConfigKey "repositoryCredentials.publicCaKey" $credentials.publicCaKey -}}
+{{- range $label, $key := dict "repositoryCredentials.serviceConfigKey" $credentials.serviceConfigKey "repositoryCredentials.publicCaKey" $credentials.publicCaKey -}}
 {{- include "openclaw.validateSecretKey" (dict "label" $label "value" $key) -}}
 {{- end -}}
-{{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $credentials.registryConfigMapName) -}}
 {{- /* Installation startup checks a GitHub Backend ID with isBackendId, then refuses one longer than 200 UTF-16 code units because repository bindings store it under that bound. */ -}}
 {{- $backendId := toString $credentials.backendId -}}
 {{- if or (ne $backendId (trim $backendId)) (hasPrefix "\uFEFF" $backendId) (hasSuffix "\uFEFF" $backendId) (not (regexMatch "^[^\\x00-\\x1f\\x7f-\\x9f\\x{2028}\\x{2029}]{1,200}$" $backendId)) -}}
@@ -542,9 +599,6 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if gt $utf16Units 200 -}}
 {{- fail "repositoryCredentials.backendId must fit in 200 UTF-16 code units for a GitHub Backend, because repository bindings store it under that bound" -}}
 {{- end -}}
-{{- if not $credentials.upstreamCidrs -}}{{- fail "repositoryCredentials.upstreamCidrs must contain approved provider IPv4 CIDRs" -}}{{- end -}}
-{{- range $cidr := $credentials.upstreamCidrs -}}
-{{- include "openclaw.requireIpv4Cidr" (dict "label" "repositoryCredentials.upstreamCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
 {{- if and .Values.gatewayRouting.sandbox.enabled (not .Values.gatewayRouting.enabled) -}}{{- fail "gatewayRouting.sandbox requires gatewayRouting.enabled" -}}{{- end -}}
@@ -663,11 +717,14 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.executionCluster.enabled -}}
 {{- range $key := list "apiKubeconfigSecretName" "workerKubeconfigSecretName" -}}{{- $roles = append $roles (list (printf "executionCluster.%s" $key) (index $.Values.executionCluster $key)) -}}{{- end -}}
 {{- end -}}
-{{- if .Values.repositoryCredentials.enabled -}}
+{{- if $repositoryGit -}}
+{{- $roles = append $roles (list "repositoryCredentials.appKeySecretName" .Values.repositoryCredentials.appKeySecretName) -}}
 {{- if eq .Values.repositoryCredentials.authority "prepared-git" -}}
 {{- $roles = append $roles (list "repositoryCredentials.preparedCustodySecretName" .Values.repositoryCredentials.preparedCustodySecretName) -}}
 {{- end -}}
-{{- range $key := list "serviceConfigSecretName" "appKeySecretName" "tlsSecretName" -}}{{- $roles = append $roles (list (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key)) -}}{{- end -}}
+{{- end -}}
+{{- if $repositoryBroker -}}
+{{- range $key := list "serviceConfigSecretName" "tlsSecretName" -}}{{- $roles = append $roles (list (printf "repositoryCredentials.%s" $key) (index $.Values.repositoryCredentials $key)) -}}{{- end -}}
 {{- $roles = append $roles (list "repositoryCredentials.publicCaSecretName" .Values.repositoryCredentials.publicCaSecretName "ca") -}}
 {{- end -}}
 {{- if .Values.logging.collector.enabled -}}

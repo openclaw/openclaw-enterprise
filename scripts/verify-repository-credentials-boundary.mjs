@@ -120,13 +120,23 @@ const reviewedImports = {
   },
   // Token Service compares complete admissions. Provider I/O remains in the existing adapter.
   "backends/token-service/custody.ts": { "node:util": ["isDeepStrictEqual"] },
+  "backends/token-service/service.ts": {
+    "node:crypto": ["randomUUID"],
+    "node:util": ["isDeepStrictEqual"],
+  },
   // The prepared owner reads only the Installation custody mount. The App issuer comes
   // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
   "drivers/repo/github/credentials/prepared-lifecycle.ts": {
     "node:crypto": ["createHash", "createPrivateKey", "randomUUID"],
     "node:fs/promises": ["readFile"],
     "node:util": ["isDeepStrictEqual"],
-    "@openclaw-enterprise/contracts": ["githubMetadataGrant"],
+    "@openclaw-enterprise/contracts": [
+      "githubMetadataGrant",
+      "preparedGitHubProviderRef",
+      "preparedGitHubSourceFromRoute",
+    ],
+    // Bind the admitted source and its exact current version on the send transaction.
+    "@openclaw-enterprise/occ": ["postgresPreparedGitHubProof"],
   },
   // AES-GCM binds encrypted material to family and attempt; readiness selects no sealed bytes.
   "drivers/repo/github/credentials/prepared-postgres.ts": {

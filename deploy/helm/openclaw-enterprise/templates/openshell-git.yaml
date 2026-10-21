@@ -1,8 +1,5 @@
 {{- if .Values.openshellGit.enabled }}
 {{- $git := .Values.openshellGit }}
-{{- if or (not .Values.repositoryCredentials.enabled) (ne .Values.repositoryCredentials.authority "prepared-git") }}
-{{- fail "openshellGit requires repositoryCredentials.enabled and authority prepared-git" }}
-{{- end }}
 {{- if .Values.egressAuthority.enabled }}
 {{- fail "openshellGit cannot be combined with egressAuthority" }}
 {{- end }}

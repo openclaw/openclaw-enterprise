@@ -25,20 +25,7 @@ export async function standingExecutionFixture(
     modelConfig?: { base_url: string };
   }>,
 ) {
-  await ensurePostgresAgentBootstrap(t, {
-    label: "standing-execution",
-    authSecret: "standing-execution-local-test-secret-32",
-  });
-  const database = { url: databaseUrl!, pools: new Set<Pool>(), workers: new Set() };
-  t.after(async () => {
-    for (const pool of database.pools) {
-      if (!("ending" in pool && pool.ending)) {
-        await pool.end();
-      }
-    }
-  });
-  const setupOptions = { database, leaseDurationMs: 30_000 };
-  const f = await createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
+  const f = await standingExecutionPlatform(t, testUrl);
   const external = await setupRepository?.(f.observerPool, f.namespace.id);
   const registry =
     external?.registry ??
@@ -150,4 +137,21 @@ export async function standingExecutionFixture(
     credentials,
     driver,
   };
+}
+
+export async function standingExecutionPlatform(t: TestContext, testUrl: string) {
+  await ensurePostgresAgentBootstrap(t, {
+    label: "standing-execution",
+    authSecret: "standing-execution-local-test-secret-32",
+  });
+  const database = { url: databaseUrl!, pools: new Set<Pool>(), workers: new Set() };
+  t.after(async () => {
+    for (const pool of database.pools) {
+      if (!("ending" in pool && pool.ending)) {
+        await pool.end();
+      }
+    }
+  });
+  const setupOptions = { database, leaseDurationMs: 30_000 };
+  return createWorkerRevisionFixtures(testUrl).setup(t, setupOptions);
 }

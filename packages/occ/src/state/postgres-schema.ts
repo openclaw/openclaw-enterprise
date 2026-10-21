@@ -5,6 +5,7 @@ import type {
   AgentDesiredRuntimeState,
   AgentStatus,
   CredentialSourceState,
+  CredentialSourceOwnerCapability,
   HarnessExecutionMode,
   HarnessAuthBinding,
   AgentCredentialSourceBinding,
@@ -478,6 +479,7 @@ export const credentialSources = occSchema.table(
     config: jsonb("config").$type<Readonly<Record<string, string>>>().notNull(),
     egress: jsonb("egress").$type<ProtectedEgressSource>(),
     driverId: text("driver_id").notNull(),
+    ownerCapability: text("owner_capability").$type<CredentialSourceOwnerCapability>().notNull(),
     state: text("state").$type<CredentialSourceState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   },
@@ -506,6 +508,10 @@ export const credentialSources = occSchema.table(
     check(
       "credential_sources_config_valid",
       sql`occ.credential_source_config_is_valid(${table.config})`,
+    ),
+    check(
+      "credential_sources_owner_capability_valid",
+      sql`${table.ownerCapability} = 'credential_gateway' OR (${table.ownerCapability} = 'credential_proxy' AND ${table.egress} IS NOT NULL)`,
     ),
     check(
       "credential_sources_driver_id_valid",
@@ -1924,7 +1930,10 @@ export const preparedGitHubFamilies = occSchema.table(
   (source->>'adoption' = 'prepared' AND source #>> '{grant,profile}' = 'metadata-read'
    AND admission->>'familyId' = source_id AND jsonb_typeof(issuer->'backendRef') = 'object')
   OR
-  (source->>'adoption' = 'prepared_repository_git' AND source_id = 'repository-git:' || (source #>> '{session,admissionId}')
+  ((source->>'adoption' = 'prepared_repository_git' OR (
+       source->>'adoption' = 'credential_proxy_repository_git'
+       AND jsonb_typeof(source #> '{session,credentialProxyExecution,driver}') = 'object'))
+   AND source_id = 'repository-git:' || (source #>> '{session,admissionId}')
    AND ((source #>> '{grant,profile}' = 'git-ref-write' AND NOT (source->'grant' ? 'pullRequestBase'))
        OR (source #>> '{grant,profile}' = 'git-ref-draft-pr' AND length(source #>> '{grant,pullRequestBase}') > 0))
    AND source #>> '{grant,pushRef}' LIKE 'refs/heads/%'
@@ -1957,6 +1966,7 @@ export const preparedGitHubAttempts = occSchema.table(
     sealed: customType<{ data: Buffer }>({ dataType: () => "bytea" })("sealed"),
   },
   (t) => [
+    unique("prepared_github_attempt_version").on(t.id, t.materialVersion),
     check(
       "prepared_github_attempts_state_check",
       sql`state IN ('issuing', 'committed', 'quarantined')`,
@@ -2154,6 +2164,35 @@ export const openShellGitRoutes = occSchema.table(
       sql`${t.observed} IS NULL OR (jsonb_typeof(${t.observed}) = 'object'
     AND ${t.observed} ?& ${openShellGitObservedKeys}
     AND (${t.observed} - ${openShellGitObservedKeys}) = '{}'::jsonb)`,
+    ),
+  ],
+);
+
+/** A verified protected Git recipient. Material identity and install uncertainty, never its value. */
+export const protectedRepositoryGitRecipients = occSchema.table(
+  "protected_repository_git_recipients",
+  {
+    revisionId: text("revision_id")
+      .primaryKey()
+      .references(() => agentRevisions.id, { onDelete: "cascade" }),
+    installation: jsonb("installation").notNull(),
+    fence: bigint("fence", { mode: "number" }).notNull().default(1),
+    state: text("state").notNull().default("observed"),
+    attemptId: uuid("attempt_id"),
+    materialVersion: uuid("material_version"),
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.attemptId, t.materialVersion],
+      foreignColumns: [preparedGitHubAttempts.id, preparedGitHubAttempts.materialVersion],
+    }),
+    check(
+      "protected_repository_git_recipients_check",
+      sql`
+      fence >= 1 AND state IN ('observed', 'installing', 'installed')
+      AND (state = 'observed') = (attempt_id IS NULL)
+      AND (attempt_id IS NULL) = (material_version IS NULL)
+      AND (installation#>>'{plan,execution,revisionId}' = revision_id) IS TRUE`,
     ),
   ],
 );

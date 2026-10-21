@@ -463,6 +463,13 @@
       "when": 1787000000075,
       "tag": "0066_prepared_repository_draft_uses",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "7",
+      "when": 1787000000076,
+      "tag": "0067_protected_repository_git_recipients",
+      "breakpoints": true
     }
   ]
 }

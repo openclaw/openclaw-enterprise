@@ -155,8 +155,13 @@ backend:
     providerCidr: ""
 
 repositoryCredentials:
+  # Deploy the native repository broker. Leave false for protected Git.
   enabled: false
-  # prepared-git uses the worker-owned socket and does not mount an App key in the broker.
+  # Select credential-proxy to supply the prepared Git issuer, registry and custody to an
+  # independently installed sender. Empty leaves selection to enabled or openshellGit.enabled.
+  # See docs/reference/drivers/selection.md#supply-protected-git-credentials-with-helm.
+  delivery: ""
+  # prepared-git gives the worker the App key and custody. Only a native broker needs its socket.
   authority: github-app
   image: ""
   # Internal HTTPS Service name. Fresh installs default to git. Upgrades must
@@ -343,9 +348,12 @@ egressAuthority:
 
 # Optional request-phase Git middleware listener in the worker.
 # Requires repositoryCredentials.authority: prepared-git and matching Installation
-# drivers.repo.openShell configuration. Only public issuer material is mounted.
+# drivers.repo.openShell configuration. Only the Gateway issuer's public key is mounted.
 openshellGit:
   enabled: false
+  # protected requires repositoryCredentials.enabled: false and a qualified sender.
+  # Select broker-trial with the broker enabled to maintain the earlier trial through its drain.
+  mode: protected
   port: 8445
   tlsSecretName: ""
   issuerPublicKeyConfigMapName: ""

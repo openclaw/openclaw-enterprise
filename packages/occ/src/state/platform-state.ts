@@ -1,4 +1,4 @@
-import type { PreparedGitHubCurrentProof } from "@openclaw-enterprise/contracts";
+import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { memoryEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { EgressSendReceiptRepository, StoredSendReceipt } from "../egress-send-receipts.ts";
@@ -791,9 +791,11 @@ export function validCredentialSourceSnapshots(value: unknown): boolean {
     const keys = Object.keys(entry).sort();
     const snapshot = entry as Record<string, unknown>;
     const valid =
-      keys.join(",") === "credentialGatewayId,sourceId,sourceType" &&
+      ["credentialGatewayId,sourceId,sourceType", "credentialProxyId,sourceId,sourceType"].includes(
+        keys.join(","),
+      ) &&
       isNonEmptyString(snapshot.sourceId) &&
-      isNonEmptyString(snapshot.credentialGatewayId) &&
+      isNonEmptyString(snapshot.credentialGatewayId ?? snapshot.credentialProxyId) &&
       isNonEmptyString(snapshot.sourceType) &&
       !seen.has(snapshot.sourceId);
     seen.add(snapshot.sourceId as string);
@@ -956,7 +958,7 @@ export interface PlatformReadView {
 }
 
 export interface PlatformUnitOfWork extends PlatformReadView {
-  readonly preparedGitHubProof: PreparedGitHubCurrentProof;
+  readonly preparedTokenProof: PreparedTokenCurrentProof;
   readonly egressSendReceipts: EgressSendReceiptRepository;
   readonly sandboxPolicies: SandboxPolicyRepository;
   readonly installations: InstallationRepository;
@@ -995,6 +997,7 @@ export interface PlatformAuditSink {
 }
 
 export interface InMemoryPlatformStateOptions {
+  readonly preparedTokenProof?: PreparedTokenCurrentProof;
   readonly auditSink?: PlatformAuditSink;
   /** Preprovisioned identities copied at construction; later input changes are not observed. */
   readonly iamIdentities?: readonly Identity[];
@@ -1340,6 +1343,32 @@ function assertProtectedEgressSource(
   }
   if (value.adoption === "prepared") {
     const { grant } = value;
+    if (grant.kind === "prepared_scope") {
+      const scope = Object.entries(grant.scope ?? {});
+      if (
+        !common ||
+        value.schemaVersion !== 4 ||
+        key.provider.id === "github-app-metadata" ||
+        value.retention !== "none" ||
+        Object.keys(value).length !== 8 ||
+        Object.keys(grant).length !== 3 ||
+        !/^agt_[0-9a-f-]{36}$/.test(grant.isolationId) ||
+        !/^https:\/\/[a-z0-9.-]+(?::\d+)?$/.test(value.origin) ||
+        !isPlainRecord(grant.scope) ||
+        !scope.length ||
+        scope.length > 16 ||
+        scope.some(
+          ([k, v]) =>
+            !/^[a-z][a-z0-9_]{0,63}$/.test(k) ||
+            typeof v !== "string" ||
+            !v.length ||
+            v.length > 1024,
+        )
+      ) {
+        throw new ScopeViolationError("The prepared credential scope or source schema is invalid.");
+      }
+      return;
+    }
     if (
       !common ||
       key.provider.id !== "github-app-metadata" ||
@@ -1414,6 +1443,8 @@ function assertCredentialSource(source: CredentialSource): void {
         value.length > 2048,
     ) ||
     !isPlainRecord(secretInputs) ||
+    (source.ownerCapability !== "credential_gateway" &&
+      (source.ownerCapability !== "credential_proxy" || source.egress === undefined)) ||
     typeof source.driverId !== "string" ||
     source.driverId.length < 1 ||
     source.driverId.length > 200 ||
@@ -1447,6 +1478,7 @@ function assertCredentialSource(source: CredentialSource): void {
 function repositories(
   snapshot: PlatformSnapshot,
   iamSubjects: IAMSubjectSource,
+  preparedTokenProof: PreparedTokenCurrentProof,
 ): PlatformUnitOfWork {
   const installations: InstallationRepository = {
     findInstallation: async (installationId) =>
@@ -3326,7 +3358,7 @@ function repositories(
     revisions,
     iamPolicy,
     repositorySessions,
-    preparedGitHubProof: { current: async () => false },
+    preparedTokenProof,
     egressSendReceipts: memoryEgressSendReceipts(snapshot.egressSendReceipts),
     provisioning: {
       findByWorkId: provisioningAbsent,
@@ -3628,9 +3660,11 @@ export class InMemoryPlatformState implements PlatformStateStore {
   private pending: Promise<void> = Promise.resolve();
   private readonly auditSink: PlatformAuditSink | undefined;
   private readonly iamSubjects: IAMSubjectSource;
+  private readonly preparedTokenProof: PreparedTokenCurrentProof;
 
   constructor(options: InMemoryPlatformStateOptions = {}) {
     this.auditSink = options.auditSink;
+    this.preparedTokenProof = options.preparedTokenProof ?? { current: async () => false };
     this.iamSubjects = {
       identities: immutableCopy(options.iamIdentities ?? []),
       resolve: options.resolveIAMIdentity,
@@ -3647,7 +3681,7 @@ export class InMemoryPlatformState implements PlatformStateStore {
     try {
       return await work(
         createPlatformReadView(
-          repositories(cloneSnapshot(this.snapshot), this.iamSubjects),
+          repositories(cloneSnapshot(this.snapshot), this.iamSubjects, this.preparedTokenProof),
           lifetime,
         ),
       );
@@ -3658,7 +3692,12 @@ export class InMemoryPlatformState implements PlatformStateStore {
 
   async transact<T>(work: (state: PlatformUnitOfWork) => Promise<T>): Promise<T> {
     return this.commit((working, lifetime) =>
-      work(bindPlatformUnitOfWork(repositories(working, this.iamSubjects), lifetime)),
+      work(
+        bindPlatformUnitOfWork(
+          repositories(working, this.iamSubjects, this.preparedTokenProof),
+          lifetime,
+        ),
+      ),
     );
   }
 

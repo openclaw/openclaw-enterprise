@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { createServer } from "node:https";
-import { stripTypeScriptTypes } from "node:module";
-import { tmpdir } from "node:os";
+import { protectedDriverPackage } from "../helpers/protected-driver-package.ts";
 import { join } from "node:path";
 import test from "node:test";
 import type {
@@ -16,6 +15,7 @@ import type {
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver, OpenClawController } from "../../packages/occ/src/index.ts";
 import { loadInstallationConfiguration } from "../../apps/controller/src/composition/installation-config.ts";
+import { installEgressAuthority } from "../../apps/controller/src/composition/egress-authority.ts";
 import { ProtectedExecutionDriver } from "../../apps/controller/src/drivers/compute/protected-execution-driver.ts";
 import { ComputeLifecycleDispatcher } from "../../apps/controller/src/drivers/compute/lifecycle-hooks.ts";
 import { createInstallationDriverConfiguration } from "../helpers/installation-driver-configuration.mjs";
@@ -23,25 +23,9 @@ import { routedRevision } from "../helpers/kubernetes-routed-scenarios.mjs";
 import { harnessTlsFixture } from "../helpers/harness-tls.mjs";
 
 test("one installed Driver owns both protected capabilities, lifecycle and verified release", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "oce-protected-driver-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const id = "release-fixture";
-  const entry = join(directory, "node_modules", id);
-  await mkdir(entry, { recursive: true });
-  await writeFile(
-    join(directory, "package.json"),
-    JSON.stringify({ dependencies: { [id]: "1.0.0" } }),
-  );
-  await writeFile(
-    join(entry, "package.json"),
-    JSON.stringify({ name: id, version: "1.0.0", exports: "./index.mjs" }),
-  );
-  const fixture = new URL(
-    "../fixtures/driver-packages/protected-execution-driver/index.ts",
-    import.meta.url,
-  );
-  await writeFile(join(entry, "index.mjs"), stripTypeScriptTypes(await readFile(fixture, "utf8")));
-  const { calls } = (await import(
+  const { directory, entry } = await protectedDriverPackage(t, id);
+  const { calls, exchangeProbe } = (await import(
     join(entry, "index.mjs")
   )) as typeof import("../fixtures/driver-packages/protected-execution-driver/index.ts");
 
@@ -87,6 +71,16 @@ test("one installed Driver owns both protected capabilities, lifecycle and verif
   assert.equal(sandbox, api.sandboxDriver);
   assert.equal(proxy, api.proxyDriver);
   assert.equal(sandbox.id, proxy.id);
+  // A package can bind its authenticated exchange to OCC, without acquiring the controller
+  // or the private policy/material ports. This deny-only fixture has no repository sender.
+  assert.throws(() => owner.requireRepositoryGitTransport(), /repository.*transport/i);
+  const boundTransport = await installEgressAuthority(controller, owner);
+  assert.deepEqual(exchangeProbe.decisions, [
+    { kind: "refused", error: { kind: "denied", code: "identity" } },
+  ]);
+  assert.equal(exchangeProbe.rejectsSecondOwner?.(), true);
+  await boundTransport!.close();
+  assert.equal(exchangeProbe.closed, 1);
   await controller.validateBackendConfiguration();
   assert.throws(
     () => controller.installDriver(owner, ["sandbox", "credential_proxy"]),

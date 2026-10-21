@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import type {
-  EgressExecution,
+  AuthorizedSend,
   EgressRef,
   EgressSourceKey,
   EgressMaterialEvidence,
@@ -8,31 +8,7 @@ import type {
 } from "@openclaw-enterprise/contracts";
 import { ResourceStateConflictError } from "./errors.ts";
 
-/** Metadata from trusted acceptance, never from workload headers or a bearer. */
-export interface AcceptedEgressAssociation {
-  readonly execution: EgressExecution;
-  readonly installation: {
-    readonly sandboxId: string;
-    readonly instanceId: string;
-    readonly configurationId: string;
-    readonly peerKeyId?: string;
-    // Absent in historical receipts. Reading one never upgrades its authority.
-    readonly policyHash?: string;
-    readonly authorityScope?: "execution";
-    readonly plan: EgressRef;
-  };
-  readonly exchangeId: string;
-  readonly responseId: string;
-  readonly custodyId: string;
-}
-
-export interface AuthorizedSend {
-  readonly association: AcceptedEgressAssociation;
-  readonly requestDigest: string;
-  readonly injectionDigest: string;
-  readonly authorizedAt: string;
-  readonly sendStartBy: string;
-}
+export type { AcceptedEgressAssociation, AuthorizedSend } from "@openclaw-enterprise/contracts";
 
 export interface SendAttempt {
   readonly sender: EgressRef;
@@ -162,9 +138,9 @@ const selectionFields = { source, binding: ref, grantHash: text, isolationId: te
 
 function material(value: unknown): EgressMaterialEvidence {
   const item = object(value);
-  if (item.kind === "prepared_github") {
+  if (item.kind === "prepared_github" || item.kind === "prepared_token") {
     const result = project(item, {
-      kind: literal("prepared_github"),
+      kind: literal(item.kind),
       ...selectionFields,
       family: ref,
       ownerEpoch: positiveInteger,
@@ -397,20 +373,30 @@ export class EgressSendReceipts {
     value: unknown,
     authorization: AuthorizedSend,
   ): Promise<StoredSendReceipt> {
+    return this.state.transact(({ egressSendReceipts }) =>
+      EgressSendReceipts.authorizeIn(egressSendReceipts, authenticatedSender, value, authorization),
+    );
+  }
+
+  /** Persist possible use in the caller's transaction, while its current-material locks are held. */
+  static async authorizeIn(
+    receipts: EgressSendReceiptRepository,
+    authenticatedSender: EgressRef,
+    value: unknown,
+    authorization: AuthorizedSend,
+  ): Promise<StoredSendReceipt> {
     const input = attempt(value, authenticatedSender);
     const selected = authorizedSend(authorization);
-    return this.state.transact(async (unit) => {
-      const previous = receipt(await unit.egressSendReceipts.find(input), input);
-      if (
-        previous.authorization !== null ||
-        previous.settled ||
-        previous.observation !== null ||
-        !(await unit.egressSendReceipts.authorize(input, selected))
-      ) {
-        return invalid();
-      }
-      return receipt(await unit.egressSendReceipts.find(input), input);
-    });
+    const previous = receipt(await receipts.find(input), input);
+    if (
+      previous.authorization !== null ||
+      previous.settled ||
+      previous.observation !== null ||
+      !(await receipts.authorize(input, selected))
+    ) {
+      return invalid();
+    }
+    return receipt(await receipts.find(input), input);
   }
 
   async recover(

@@ -1,4 +1,4 @@
-import { postgresPreparedGitHubProof } from "./prepared-github-state.ts";
+import type { PreparedTokenCurrentProof } from "@openclaw-enterprise/contracts";
 import { assertExecutionAdmission } from "@openclaw-enterprise/contracts";
 import { postgresEgressSendReceipts } from "./egress-send-receipts.ts";
 import type { ProtectedEgressSource, EgressInstallation } from "@openclaw-enterprise/contracts";
@@ -162,6 +162,9 @@ export interface PersistedNativeIAMState {
 }
 
 export interface PostgresPlatformStateOptions {
+  /** Installed Token Service binds its custody proof to this exact transaction. */
+  readonly preparedTokenProof?:
+    ((transaction: PostgresQueryClient) => PreparedTokenCurrentProof) | undefined;
   readonly bootstrapNativeIAM?: PersistedNativeIAMState;
   readonly workQueue?: PostgresWorkQueueOptions;
 }
@@ -545,7 +548,7 @@ function secretFromRow(row: PostgresRow): Readonly<Secret> {
 }
 
 const CREDENTIAL_SOURCE_COLUMNS = `cs.id, cs.namespace_id, cs.name, cs.type, cs.config,
-  cs.driver_id, cs.state, cs.created_at, cs.egress,
+  cs.driver_id, cs.owner_capability, cs.state, cs.created_at, cs.egress,
   COALESCE((
     SELECT jsonb_object_agg(css.field, css.secret_id)
     FROM occ.credential_source_secrets AS css
@@ -586,7 +589,10 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
   }
   const config = jsonObject(row.config);
   const secretIds = jsonObject(row.secret_ids);
+  const ownerCapability = text(row, "owner_capability");
   if (
+    (ownerCapability !== "credential_gateway" &&
+      (ownerCapability !== "credential_proxy" || row.egress == null)) ||
     Object.values(config).some((value) => typeof value !== "string") ||
     Object.values(secretIds).some((value) => typeof value !== "string")
   ) {
@@ -608,6 +614,7 @@ function credentialSourceFromRow(row: PostgresRow): Readonly<CredentialSource> {
       ]),
     ),
     driverId: text(row, "driver_id"),
+    ownerCapability,
     state,
     createdAt: timestamp(row, "created_at"),
   });
@@ -1189,12 +1196,17 @@ export class PostgresPlatformState implements PlatformStateStore {
   readonly auditSink: PlatformAuditSink;
   private readonly pool: PostgresPool;
   private readonly queueOptions: PostgresWorkQueueOptions;
+  private readonly preparedTokenProof: NonNullable<
+    PostgresPlatformStateOptions["preparedTokenProof"]
+  >;
   private bootstrapNativeIAM: PersistedNativeIAMState | undefined;
   private readonly contexts = new WeakMap<PlatformUnitOfWork, TransactionContext>();
   private readonly currentTransaction = new AsyncLocalStorage<TransactionContext>();
 
   constructor(pool: PostgresPool, options: PostgresPlatformStateOptions = {}) {
     this.pool = pool;
+    this.preparedTokenProof =
+      options.preparedTokenProof ?? (() => ({ current: async () => false }));
     this.queueOptions = Object.freeze({ ...(options.workQueue ?? {}) });
     this.bootstrapNativeIAM = options.bootstrapNativeIAM;
     this.auditSink = {
@@ -2911,8 +2923,8 @@ export class PostgresPlatformState implements PlatformStateStore {
         }
         await client.query(
           `INSERT INTO occ.credential_sources
-           (id, namespace_id, name, type, config, driver_id, state, created_at, egress)
-           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb)`,
+           (id, namespace_id, name, type, config, driver_id, state, created_at, egress, owner_capability)
+           VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::jsonb, $10)`,
           [
             source.id,
             source.namespaceId,
@@ -2923,6 +2935,7 @@ export class PostgresPlatformState implements PlatformStateStore {
             source.state,
             source.createdAt,
             source.egress === undefined ? null : JSON.stringify(source.egress),
+            source.ownerCapability,
           ],
         );
         if (secretInputs.length > 0) {
@@ -4214,7 +4227,7 @@ export class PostgresPlatformState implements PlatformStateStore {
       revisions,
       iamPolicy,
       repositorySessions: postgresRepositorySessions(client),
-      preparedGitHubProof: postgresPreparedGitHubProof(client),
+      preparedTokenProof: this.preparedTokenProof(client),
       egressSendReceipts: postgresEgressSendReceipts(client),
       provisioning: {
         findByWorkId: async (workId) => {

@@ -86,9 +86,7 @@ export async function composeProduction(config: ProductionConfig) {
     sandboxDriver,
     credentialGatewayDriver,
     credentialRefreshDriver,
-    proxyDriver,
     protectedDriver,
-    egressAuthority,
     preparedGitHub,
     pluginDriver,
     repoDriver,
@@ -126,7 +124,9 @@ export async function composeProduction(config: ProductionConfig) {
   });
 
   try {
-    const state = new PostgresPlatformState(pool);
+    const state = new PostgresPlatformState(pool, {
+      preparedTokenProof: config.drivers.tokenService?.postgresCurrentProof,
+    });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
       throw new Error("The singleton Installation must be bootstrapped before production startup.");
@@ -257,6 +257,7 @@ export async function composeProduction(config: ProductionConfig) {
     const controller = new OpenClawController(persistedInstallation, {
       sandboxNetworkPolicyCeiling: config.drivers.installation.sandboxNetworkPolicyCeiling ?? [],
       state,
+      ...(config.drivers.tokenService && { preparedTokens: config.drivers.tokenService }),
       recordOperations: true,
       backends: installation.backend,
       defaultPresets: config.drivers.defaultPresets ?? [],
@@ -373,15 +374,14 @@ export async function composeProduction(config: ProductionConfig) {
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     await preparedGitHub?.connect(pool);
-    if (proxyDriver !== undefined && egressAuthority !== undefined) {
-      await installEgressAuthority(app, controller, proxyDriver, egressAuthority);
-    }
+    const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
       return { status: "ready" };
     });
     app.addHook("onClose", async () => {
+      await exchange?.close();
       await config.drivers.protectedDriver?.close();
       await preparedGitHub?.close();
       await state.close();

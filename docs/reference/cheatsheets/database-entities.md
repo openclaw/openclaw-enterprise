@@ -135,14 +135,15 @@ Stores Secret metadata and backend references; Secret values are kept by the sel
 
 ### `credential_sources`
 
-Stores credential sources registered with the selected Credential Gateway; the gateway holds the values.
+Records which Credential Gateway or Credential Proxy admitted each source. The capability and Driver ID are immutable; the table holds no credential values.
 
 - `id`
 - `namespace_id`
 - `name`
 - `type`
 - `config`
-- `egress` (optional admitted static source and versioned resolver references)
+- `egress` (optional admitted source and versioned resolver references)
+- `owner_capability` (`credential_gateway` or `credential_proxy`)
 - `driver_id`
 - `state`
 - `created_at`
@@ -156,6 +157,15 @@ See [protected inference](../credential-sources/protected-inference.md).
 - `sender_id`, `sandbox_id`
 - `namespace_id`, `agent_id`, `revision_id`
 - `installation`
+
+### `protected_repository_git_recipients`
+
+Records where the selected Driver observed the protected Git recipient and which token version it installed.
+If the installation result is unknown, `state` stays `installing`. The sender must still get permission for each Git request.
+
+- `revision_id`, `installation` (the exact installation OCC recorded for this Agent revision)
+- `fence` (advances before each attempt to install a token), `state` (`observed`, `installing`, or `installed`)
+- `attempt_id`, `material_version` (identify the prepared token without storing its value here)
 
 ### `egress_send_receipts`
 

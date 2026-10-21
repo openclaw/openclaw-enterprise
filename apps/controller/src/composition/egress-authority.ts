@@ -1,13 +1,9 @@
-import { readFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
-import type { FastifyInstance } from "fastify";
-import type { OpenClawController } from "@openclaw-enterprise/occ";
-import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
-import { OpenShellEgressIdentity } from "../drivers/egress-proxy/openshell-identity.ts";
-import {
-  bindOpenShellEgressAuthority,
-  createOpenShellEgressAuthority,
-} from "../drivers/egress-proxy/openshell-authority.ts";
+import type { InstalledDriver, OpenClawController } from "@openclaw-enterprise/occ";
+import type {
+  CredentialProxyBinding,
+  CredentialProxyExchange,
+} from "@openclaw-enterprise/contracts";
 import { asRecord } from "@openclaw-enterprise/utils";
 
 export interface EgressAuthorityConfiguration {
@@ -55,37 +51,44 @@ export function egressAuthorityConfiguration(
   return value as unknown as EgressAuthorityConfiguration;
 }
 
-/** Started with the API and closed before its database; workers never open another listener. */
+/** Give the installed transport one exchange owner, bound before it accepts any request. */
 export async function installEgressAuthority(
-  app: FastifyInstance,
-  controller: OpenClawController,
-  driver: CredentialProxyDriver,
-  configuration: EgressAuthorityConfiguration,
-): Promise<void> {
-  const [certificate, privateKey, publicKey] = await Promise.all([
-    readFile(configuration.certificatePath),
-    readFile(configuration.privateKeyPath),
-    readFile(configuration.issuerPublicKeyPath),
-  ]);
-  const identity = new OpenShellEgressIdentity({
-    issuer: configuration.issuer,
-    audience: configuration.audience,
-    keyId: configuration.keyId,
-    publicKey,
-    sender: driver.sourceControl.sender,
-  });
-  const server = createOpenShellEgressAuthority(identity, controller);
-  try {
-    await bindOpenShellEgressAuthority(
-      server,
-      `${configuration.host.includes(":") ? `[${configuration.host}]` : configuration.host}:${configuration.port}`,
-      certificate,
-      privateKey,
-    );
-  } finally {
-    privateKey.fill(0);
+  controller: Pick<OpenClawController, "selectedDriver" | "createCredentialProxy">,
+  owner: InstalledDriver,
+): Promise<CredentialProxyBinding | undefined> {
+  const driver = owner.require("credential_proxy");
+  if (!driver.bindExchange) {
+    return undefined;
   }
-  app.addHook("onClose", async () => {
-    server.forceShutdown();
-  });
+  if (
+    driver !== controller.selectedDriver("credential_proxy") ||
+    owner.require("sandbox") !== controller.selectedDriver("sandbox")
+  ) {
+    throw new Error("The exchange must belong to the selected protected Driver.");
+  }
+  let canBind = true;
+  try {
+    const binding = await driver.bindExchange((exchangeOwner): CredentialProxyExchange => {
+      if (!canBind) {
+        throw new Error("An exchange owner can be bound only at installation.");
+      }
+      canBind = false;
+      const proxy = controller.createCredentialProxy(exchangeOwner);
+      // Return only the transport contract, not the controller or the proxy's internal ports.
+      return Object.freeze({
+        resolve: proxy.resolve.bind(proxy),
+        authorizeSend: proxy.authorizeSend.bind(proxy),
+        beginResponse: proxy.beginResponse.bind(proxy),
+        renewResponse: proxy.renewResponse.bind(proxy),
+        protectResponse: proxy.protectResponse.bind(proxy),
+      });
+    });
+    if (canBind) {
+      await binding.close();
+      throw new Error("The Credential Proxy transport did not bind its exchange owner.");
+    }
+    return binding;
+  } finally {
+    canBind = false;
+  }
 }

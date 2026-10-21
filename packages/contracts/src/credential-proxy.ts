@@ -1,14 +1,20 @@
 import type {
+  CredentialProxyBinding,
+  CredentialProxyExchange,
+  EgressExchangeOwner,
+} from "./credential-proxy-exchange.ts";
+import type { ProtectedRepositoryGitAuthority } from "./protected-repository-git.ts";
+import type {
   CredentialFreeEgressSource,
   CredentialFreeMetadataGrant,
   NoMaterialSelection,
 } from "./credential-free-metadata.ts";
+import type { GitHubMetadataGrant } from "./prepared-github-egress.ts";
 import type {
-  GitHubMetadataGrant,
-  PreparedGitHubEgressLifecycle,
-  PreparedGitHubEgressSource,
-  PreparedGitHubMaterialEvidence,
-} from "./prepared-github-egress.ts";
+  PreparedTokenGrant,
+  PreparedTokenSource,
+  PreparedTokenEvidence,
+} from "./prepared-token.ts";
 import type {
   AgentRevision,
   CredentialSource,
@@ -51,7 +57,7 @@ export interface StaticEgressSource {
 }
 
 export type ProtectedEgressSource =
-  StaticEgressSource | PreparedGitHubEgressSource | CredentialFreeEgressSource;
+  StaticEgressSource | PreparedTokenSource | CredentialFreeEgressSource;
 
 export interface VersionedSecretValue {
   readonly value: string;
@@ -92,7 +98,8 @@ export interface EgressBinding {
   readonly binding: EgressRef;
   readonly execution: EgressExecution;
   readonly source: EgressSourceKey;
-  readonly grant: InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant;
+  readonly grant:
+    InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant | PreparedTokenGrant;
   readonly grantHash: string;
   readonly isolationId: string;
 }
@@ -185,13 +192,14 @@ export interface InferenceOperation {
 
 export type EgressOperation =
   | InferenceOperation
+  | { readonly kind: "prepared_scope"; readonly action: string }
   | {
       readonly kind: "github_repository_metadata" | "credential_free_repository_metadata";
       readonly repository: string;
       readonly repositoryId: string;
     };
 
-export type EgressMaterialEvidence = StaticMaterialEvidence | PreparedGitHubMaterialEvidence;
+export type EgressMaterialEvidence = StaticMaterialEvidence | PreparedTokenEvidence;
 
 export type EgressSelectionEvidence = EgressMaterialEvidence | NoMaterialSelection;
 
@@ -249,7 +257,7 @@ export interface CredentialProviderDefinition {
   normalizeGrant(
     models: readonly string[],
     config?: Readonly<Record<string, string>>,
-  ): InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant;
+  ): InferenceGrant | GitHubMetadataGrant | CredentialFreeMetadataGrant | PreparedTokenGrant;
   routes(source: Readonly<CredentialSource>, binding: EgressBinding): readonly EgressRoute[];
   classify(route: EgressRoute, request: EgressRequest): EgressOperation | undefined;
   inject(value: string): readonly (readonly [string, string])[];
@@ -264,7 +272,6 @@ export interface CredentialProviderDefinition {
 }
 
 export interface CredentialSourceControl {
-  readonly preparedGitHub?: PreparedGitHubEgressLifecycle;
   readonly backend: EgressRef;
   readonly sender: EgressRef;
   readonly resolver: EgressRef;
@@ -289,6 +296,12 @@ export interface ProxyRevisionContext {
 export interface CredentialProxyDriver extends Driver {
   readonly capability: "credential_proxy";
   readonly sourceControl: CredentialSourceControl;
+  /** API process: bind the installed transport's exchange owner once, before accepting requests. */
+  bindExchange?(
+    createCredentialProxy: (owner: EgressExchangeOwner) => CredentialProxyExchange,
+  ): Promise<CredentialProxyBinding>;
+  /** Worker process: bind this sender to the installation's checked Git delivery authority. */
+  bindRepositoryGit?(authority: ProtectedRepositoryGitAuthority): Promise<CredentialProxyBinding>;
   configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring>;
   wiringStatus(
     context: ProxyRevisionContext,

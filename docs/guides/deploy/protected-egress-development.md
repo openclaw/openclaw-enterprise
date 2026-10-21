@@ -7,18 +7,20 @@ remains closed until the installed pair and its release authority are qualified.
 ## Upgrade an existing development installation
 
 Keep your database. For a developer on public migration `0063`, this is one
-planned control-plane interruption and three forward migrations (`0064`–`0066`).
+planned control-plane interruption and four forward migrations (`0064`–`0067`).
 You do not need to reset volumes or enroll credentials again. The interruption
 includes stopping writers, migrating, and restarting the API and workers together.
 Allow time for locks and validation, especially if upgrading from `0059`, where
 the migration also records that existing Agent revisions ran unprotected.
 
 Stop admitting new work, then finish work you cannot interrupt. If Git is active,
-keep the old worker and receipt owner available to settle outstanding issuance,
+keep the original worker, sender and receipt owner available to settle outstanding issuance,
 withdrawal, or possible use before stopping them. A closed session alone does not
 prove disposal; follow the [repository custody and recovery procedure](../repository-credentials/installation.md#select-composition-and-network-access)
 if the outcome is uncertain. Preserve any spent or possibly spent draft allowance.
-The migration does not move a running Agent onto protected Git, enable protected
+Fence old writers before starting the new ones. Migration records who owns new
+protected Git recipients; it does not adopt an old or unresolved installation,
+move a running Agent onto protected Git, enable protected
 execution, or turn a finite grant into standing approval. An older controller
 cannot read a new [protected Git admission](../../reference/repository-credentials/protected-openshell-git.md).
 A preview Agent whose launch cannot be verified may still need to be retired at
@@ -27,9 +29,10 @@ either requires equivalent recorded authority or explicit approval from an autho
 
 | Database you have                                                         | What to expect                                                                                                                                                                                                                                               |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Public `0063`                                                             | Three migrations add protected Driver registration, repository sessions for the Credential Proxy, and a record of each possible draft use. The initial check reports `preProtectedDriverRegistration`.                                                       |
-| Public `0059`                                                             | Seven migrations, `0060`–`0066`. The initial check reports `preStaticEgress`.                                                                                                                                                                                |
-| Public Credential Proxy preview `0069` or later                           | Keep the original receipts. Preview `0069` corresponds to public `0060` (six migrations remain); preview `0070` corresponds to public `0061` (five remain). The completed history has 75 receipts on this path, 66 on the public path.                       |
+| Public `0066`                                                             | One migration records the protected Git recipient and distinguishes the Credential Proxy from a legacy Gateway source owner. The initial check reports `preProtectedRepositoryGitRecipients`.                                                                |
+| Public `0063`                                                             | Four migrations, `0064`–`0067`: protected Driver registration, Credential Proxy repository sessions, possible draft use, then recipient and source ownership. The initial check reports `preProtectedDriverRegistration`.                                    |
+| Public `0059`                                                             | Eight migrations, `0060`–`0067`. The initial check reports `preStaticEgress`.                                                                                                                                                                                |
+| Public Credential Proxy preview `0069` or later                           | Keep the original receipts. Preview `0069` corresponds to public `0060` (seven migrations remain); preview `0070` corresponds to public `0061` (six remain). The completed history has 76 receipts on this path, 67 on the public path.                      |
 | Partial preview `0060`–`0068`                                             | This release stops before changing the database. With writers stopped, finish through `0070` using [the published preview](https://github.com/openclaw/openclaw-enterprise/commit/78b106f1ddc6aa5f638a49c12954be732ab16982), then migrate with this release. |
 | Private or divergent history, including experimental `0057_static_egress` | Keep that database and its matching release. Use an upgrade supplied by its owner for that exact history, or start this release with a separate, empty database. Never renumber or rewrite applied receipts.                                                 |
 

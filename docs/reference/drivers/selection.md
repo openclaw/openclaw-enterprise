@@ -48,19 +48,20 @@ IAM, and Docker Compute without Installation YAML and does not select a
 SecretDriver. An operator can select installed IAM, Compute, Configuration, or
 Sandbox packages in trusted YAML in either mode.
 
-| Capability           | Shared contract                                                 | Selection boundary                                                                                     |
-| -------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `configuration`      | [ConfigurationDriver](configuration.md)                         | Required in Installation YAML; bundled Kubernetes or installed package.                                |
-| `channel`            | [ChannelDriver](channel.md)                                     | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                     |
-| `iam`                | [IAMDriver](iam.md)                                             | Required in Installation YAML; bundled native IAM or installed package.                                |
-| `compute`            | [ComputeDriver](compute.md)                                     | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                  |
-| `secret`             | [SecretDriver](secret.md)                                       | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                         |
-| `sandbox`            | [SandboxDriver](sandbox.md)                                     | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.   |
-| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only. |
-| `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                        |
-| `service_account`    | [ServiceAccountDriver](service-account.md)                      | Optional bundled ChatGPT Backend member; no installed-package selector.                                |
-| `plugin`             | [PluginDriver](plugin.md)                                       | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                        |
-| `repo`               | [RepoDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; requires bundled Kubernetes Compute without Sandbox.           |
+| Capability           | Shared contract                                                      | Selection boundary                                                                                              |
+| -------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `configuration`      | [ConfigurationDriver](configuration.md)                              | Required in Installation YAML; bundled Kubernetes or installed package.                                         |
+| `channel`            | [ChannelDriver](channel.md)                                          | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                              |
+| `iam`                | [IAMDriver](iam.md)                                                  | Required in Installation YAML; bundled native IAM or installed package.                                         |
+| `compute`            | [ComputeDriver](compute.md)                                          | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                           |
+| `secret`             | [SecretDriver](secret.md)                                            | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                  |
+| `sandbox`            | [SandboxDriver](sandbox.md)                                          | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.            |
+| `credential_proxy`   | [Protected credential flow](../../flows/credential-source-egress.md) | Optional; the selected Sandbox and Credential Proxy must come from one installed Driver.                        |
+| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                     | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.          |
+| `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                     | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                 |
+| `service_account`    | [ServiceAccountDriver](service-account.md)                           | Optional bundled ChatGPT Backend member; no installed-package selector.                                         |
+| `plugin`             | [PluginDriver](plugin.md)                                            | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                                 |
+| `repo`               | [RepoDriver](../repository-credentials.md#repo-driver-contract)      | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below. |
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.
@@ -74,6 +75,52 @@ operator-managed runtime credentials. Kubernetes-only production image, Codex
 runtime, and projected-credential checks apply only to bundled Kubernetes Compute. `drivers.sandbox` with `compute-ssh` fails startup;
 OCC Secret delivery to SSH hosts is unsupported even though the Installation
 contract still requires the Secret selection.
+
+## Select a protected sender
+
+With bundled Kubernetes Compute, select the trusted package under
+`drivers.sandbox.package`, then set `drivers.credential_proxy.id` to the
+same Driver ID and its `configuration` to `{}`. Configure the package once,
+under `drivers.sandbox.configuration`. The API and worker each load one
+registration and compare its identity with the admitted revision.
+
+For protected repository Git, also select the GitHub Repo Driver and
+`drivers.repo.preparedGitHub`. Omit `drivers.repo.openShell`, `controlSocket`,
+and `publicCaPath` for a separately installed sender. The Driver must implement
+both Sandbox repository access and the Credential Proxy's `bindRepositoryGit`.
+At release, Compute checks the installed recipient. For each Git request, the
+sender obtains one permit bound to the exchange, request digest, preparation
+attempt and installed material version. Check its exclusive `sendStartBy` before
+opening the upstream connection and again before writing the request if connection
+setup took time. An expired permit or a lost reply leaves a record of possible
+use. Do not retry that exchange.
+[Bundled OpenShell](../repository-credentials/protected-openshell-git.md) supports
+an online authorization decision and cannot enforce this send deadline.
+
+### Supply protected Git credentials with Helm
+
+After selecting your installed sender in the Installation, add these values to the
+[production chart](../../../deploy/helm/openclaw-enterprise/values.yaml). Use your own
+resource names. Replace the example IP address with an approved issuer destination.
+Keep Secret contents out of Helm values.
+
+```yaml
+repositoryCredentials:
+  delivery: credential-proxy
+  authority: prepared-git
+  registryConfigMapName: repository-registry-v1
+  appKeySecretName: repository-app-key
+  preparedCustodySecretName: git-custody
+  upstreamCidrs: ["198.51.100.23/32"]
+```
+
+Leave `repositoryCredentials.enabled` and `openshellGit.enabled` false. The chart
+mounts `/etc/openclaw/repository-registry/registry.json` for the API, worker and
+upgrade check. Only the worker gets `private-key.pem` and `custody.key` under
+`/etc/openclaw/prepared-repository`, plus an egress rule to the issuer on TCP 443.
+Your sender supplies its own listener, trust and network policy. Before switching from
+a broker, stop admissions and settle existing sessions with their original owner.
+The worker's `Recreate` rollout cannot establish that custody is settled.
 
 ## Backend membership
 

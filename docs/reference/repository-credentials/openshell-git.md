@@ -37,7 +37,8 @@ Start with the [repository installation inputs](../../guides/repository-credenti
 and [prepared Git policy](prepared-native-git.md). Select Kubernetes Compute,
 the OpenShell Sandbox Driver and dedicated Codex. Keep the ordinary OpenShell
 inference configuration for Codex; this integration adds repository access.
-Select `repositoryCredentials.authority: prepared-git` in Helm and merge
+To keep this trial during an upgrade, explicitly select `openshellGit.mode: broker-trial`,
+keep `repositoryCredentials.enabled: true` and `authority: prepared-git`, and merge
 [`openshell.fragment.yaml`](../../../deploy/examples/repository-credentials/openshell.fragment.yaml)
 into the Installation. This earlier trial requires broker session authority.
 
@@ -68,6 +69,7 @@ the middleware. Do not select Agent workload Pods as trusted callers.
 ```yaml
 openshellGit:
   enabled: true
+  mode: broker-trial
   port: 8445
   tlsSecretName: openshell-git-tls
   issuerPublicKeyConfigMapName: openshell-gateway-public
@@ -254,49 +256,35 @@ reconnects, and other open tunnels close with it; the request can be retried.
 Scoping the reset to the changed provider is OpenShell's to do and is being taken
 upstream.
 
-Neither a Gateway restart nor a worker restart requires a new version. A read the
-worker cannot complete only closes the route until the same installation verifies
-again (bounded backoff, nothing rewritten or replayed). A replaced Gateway Pod
-gives each supervisor a new control session, adopted only when the verified
-observation is the same installation (Sandbox, provider generation, supervisor
-process and network instance IDs); a worker restart re-adopts each route from its
-PostgreSQL record (`occ.openshell_git_routes`: identity and custody facts, never a
-token) on the first maintenance pass, after the same full verification, and reads
-the material again from prepared custody instead of replaying it. Git requests are
-denied from the restart until that first verified read, typically well under a
-minute. A route that does not verify, a provider write of unknown outcome, a
-withdrawn route and a Sandbox prepared by a release before the record existed are
-closed for good: the Agent stays active and needs a new version.
-[OpenShell Git route restarts](openshell-git-restarts.md) has the exact adoption
-rules, the multi-worker fence, the stated OpenShell 0.1.4 limit and the worker log
-vocabulary (`worker.error` with `OPENSHELL_GIT_RECONCILIATION_REQUIRED`,
-`worker.openshell-git-route-warning`, `worker.openshell-git-route`); each refused
-request logs one `worker.openshell-git-denied` line with a
-[reason code](openshell-git-refusals.md).
+After a Gateway or worker restart, Git stays closed until the worker verifies
+the same Sandbox, provider generation, supervisor process and network instance.
+A new Gateway control session is expected. On its first maintenance pass the
+worker reads identity and custody (never a token) from
+`occ.openshell_git_routes`, verifies the installation, then reads the prepared
+material. This usually takes less than a minute. A failed read retries with
+bounded backoff; it does not repeat a write.
+
+A replaced installation, an uncertain provider write, withdrawal or a Sandbox
+predating the route record requires a new revision. The Agent stays active.
+[Route recovery](openshell-git-restarts.md) explains adoption, worker fencing
+and the OpenShell 0.1.4 limit. Look for `OPENSHELL_GIT_RECONCILIATION_REQUIRED`,
+`worker.openshell-git-route-warning` or `worker.openshell-git-route`. Each refusal
+logs `worker.openshell-git-denied` with a [reason](openshell-git-refusals.md).
 
 ## GitHub App key rotated or revoked
 
-Known gap: when GitHub rejects the App's private key (rotated at GitHub without
-updating the Secret, or revoked), nothing in Agent status or deployment status
-says so. The active version keeps its status, chat works, and every Git request
-from its Sandbox (reads included) answers 403. A new version's material is
-requested only after it activates, so its deployment waits as
-`REPOSITORY_GIT_MATERIAL_PENDING` (the status points at the worker log) and fails
-at the convergence deadline; it does not report success with Git denied. Naming
-the cause in deployment status is a planned follow-up.
+If GitHub rejects the App key, the active Agent keeps its status and chat still
+works. Already issued material can remain usable until expiry. Once it expires,
+all Git requests, including reads, return 403. A new deployment waits at
+`REPOSITORY_GIT_MATERIAL_PENDING` and fails at its convergence deadline. Neither
+status currently identifies the rejected key.
 
-Detection is in the worker log. Preparation for the active version is
-quarantined, and maintenance logs `worker.error` with
-`PREPARED_GITHUB_RECOVERY_REQUIRED` about once a minute per binding:
-`reason: quarantined` (`blocked` once a later pass finds the quarantined attempt),
-the Namespace, revision and `repositoryRef`. The version's route then reports
-`REPOSITORY_GIT_ROUTE_PENDING` to Compute readiness, each refused request logs
-`worker.openshell-git-denied` with `reason: material_unavailable`, and the first of
-them logs one `worker.openshell-git-route-warning` with
-`reason: material_unavailable`. Alert on the recovery-required and warning lines.
-If the key was rotated at GitHub but the Secret still holds the old one, the
-material already issued stays usable until it expires, so the route lines can lag
-the recovery-required line by up to about ten minutes.
+Alert on the worker's `PREPARED_GITHUB_RECOVERY_REQUIRED` (reason `quarantined`,
+then `blocked`, with Namespace, revision and `repositoryRef`). Expect roughly
+one event per minute per binding. Readiness reports `REPOSITORY_GIT_ROUTE_PENDING`;
+the first refusal logs `worker.openshell-git-route-warning` and each refusal logs
+`worker.openshell-git-denied`, both with `material_unavailable`. These may follow
+the recovery warning by up to about ten minutes.
 
 Recovery: put a key GitHub accepts in the `private-key.pem` entry of the Secret
 named by `repositoryCredentials.appKeySecretName` (the worker re-reads the mounted

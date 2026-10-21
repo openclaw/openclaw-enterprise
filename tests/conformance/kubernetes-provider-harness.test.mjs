@@ -18,7 +18,10 @@ import {
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import test from "node:test";
-import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
+import {
+  admitLoggingConfiguration,
+  preparedGitHubSourceFromRoute,
+} from "../../packages/contracts/src/index.ts";
 import {
   DependencyUnavailableError,
   InstalledDriver,
@@ -616,6 +619,7 @@ for (const scenario of transportScenarios) {
       type: "bearer-token",
       config: {},
       secrets: {},
+      ownerCapability: "credential_gateway",
       driverId: "credential-gateway",
       state: "ready",
       createdAt: "2026-10-08T00:00:00.000Z",
@@ -828,6 +832,7 @@ test("provider Harness protected execution is released only on current signed in
   const source = {
     namespaceId: tenant.id,
     secrets: {},
+    ownerCapability: "credential_gateway",
     driverId: "credential-gateway",
     state: "ready",
     createdAt: tenant.createdAt,
@@ -888,8 +893,10 @@ test("provider Harness protected execution is released only on current signed in
     { id: sandbox.id, implementation: sandbox.implementation, configuration: {} },
     { capabilities: { sandbox, credential_proxy: proxy } },
   );
+  let preparedIssuer;
   const driver = new KubernetesComputeDriver(fixture.driver.options, {
     protectedDriver,
+    preparedTokens: { issuer: () => preparedIssuer },
     nodeEnrollment: fixture.driver.nodeEnrollment,
     credentialGatewayDriver: {
       id: source.driverId,
@@ -1310,10 +1317,7 @@ test("provider Harness protected execution is released only on current signed in
           return warmth === "ignore-abort" ? new Promise(() => {}) : warmth;
         },
       };
-      proxy.sourceControl = {
-        ...proxy.sourceControl,
-        preparedGitHub: lifecycle,
-      };
+      preparedIssuer = { ...lifecycle, sourceFromRoute: preparedGitHubSourceFromRoute };
       observation = receipt;
       let expireDuringRelease = false;
       sandbox.enrollHarness = async (context, current, release) => {

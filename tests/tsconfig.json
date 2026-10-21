@@ -8,7 +8,7 @@
     "rewriteRelativeImportExtensions": false,
     "allowImportingTsExtensions": true
   },
-  "include": ["integration/*.test.ts"],
+  "include": ["integration/*.test.ts", "helpers/credential-source-owner-upgrade.ts"],
   "references": [
     {
       "path": "../packages/utils"

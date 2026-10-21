@@ -81,6 +81,8 @@ import {
 import { OCCPluginDriver, CodexPluginDriver } from "../drivers/plugin/index.ts";
 import { createGatewayNodeEnrollment } from "../gateway/node-enrollment-client.ts";
 import { readWorkspaceFilesApiKey } from "./workspace-files.ts";
+import { TokenService } from "../backends/token-service/service.ts";
+import { githubMetadataProvider } from "../drivers/egress-proxy/github-metadata.ts";
 import { PostgresPreparedGitHubLifecycle } from "../drivers/repo/github/credentials/prepared-lifecycle.ts";
 import { GitHubRepoDriver } from "../drivers/repo/github/driver.ts";
 import { composeRepoDriver } from "./repository-credentials/platform.ts";
@@ -154,7 +156,9 @@ export interface InstallationRuntimeDrivers {
   readonly credentialRefreshDriver?: CredentialRefreshDriver;
   readonly protectedDriver?: InstalledDriver;
   readonly proxyDriver?: CredentialProxyDriver;
-  readonly egressAuthority?: EgressAuthorityConfiguration;
+  /** Present only when this registration owns protected repository delivery. */
+  readonly repositoryGitDriver?: InstalledDriver;
+  readonly tokenService?: TokenService;
   readonly preparedGitHub?: PostgresPreparedGitHubLifecycle;
   readonly pluginDriver?: PluginDriver;
   readonly repoDriver?: RepoDriver;
@@ -813,10 +817,25 @@ export async function loadInstallationConfiguration(options: {
   );
   const sshCompute = computePackage === undefined && computeSelection.id === "compute-ssh";
   const kubernetesCompute = computePackage === undefined && !sshCompute;
+  // Select protected Git only for an explicitly paired package with prepared custody.
+  // Native Git and the existing OpenShell selection keep their distinct admission paths.
+  const packageRepositoryGit =
+    packageProxyId !== undefined &&
+    preparedRepositoryGit !== undefined &&
+    openShellGitConfiguration === undefined;
+  if (
+    packageRepositoryGit &&
+    (repoSelection?.configuration.controlSocket !== undefined ||
+      repoSelection?.configuration.publicCaPath !== undefined)
+  ) {
+    throw new Error("Protected repository Git does not accept native broker configuration.");
+  }
   if (
     repoSelection !== undefined &&
     (!kubernetesCompute ||
-      (sandboxSelection !== undefined && openShellGitConfiguration === undefined))
+      (sandboxSelection !== undefined &&
+        openShellGitConfiguration === undefined &&
+        !packageRepositoryGit))
   ) {
     if (openShellBackend && sandboxSelection && sandboxSelection.package === undefined) {
       throw new SandboxRepositoryRecipientUnverifiedError();
@@ -897,7 +916,11 @@ export async function loadInstallationConfiguration(options: {
       ].filter((resource) => resource.kind === "NetworkPolicy"),
     );
   }
-  if (repoSelection !== undefined && openShellGitConfiguration === undefined) {
+  if (
+    repoSelection !== undefined &&
+    openShellGitConfiguration === undefined &&
+    !packageRepositoryGit
+  ) {
     const kubernetes = compute.configuration as unknown as KubernetesComputeDriverOptions;
     if (kubernetes.network.repositoryCredentials?.port !== 8443) {
       throw new Error(
@@ -995,7 +1018,7 @@ export async function loadInstallationConfiguration(options: {
       : await composeRepoDriver({
           backend: repositoryBackend,
           selection: repoSelection,
-          protectedGit: !!(openShellGitConfiguration && proxySelection),
+          protectedGit: packageRepositoryGit || !!(openShellGitConfiguration && proxySelection),
         });
   if (
     openShellGitConfiguration &&
@@ -1053,6 +1076,7 @@ export async function loadInstallationConfiguration(options: {
     secret.configuration as unknown as KubernetesSecretDriverOptions,
     { id: secret.id, implementation: secret.implementation, preprovisionedNamespace },
   );
+  const tokenService = new TokenService();
   const preparedGitHub =
     preparedGitHubKeyPath === undefined
       ? undefined
@@ -1061,12 +1085,23 @@ export async function loadInstallationConfiguration(options: {
           secretDriver,
           preparedGitHubOrigin,
           preparedGitHubCa,
+          tokenService,
         );
   let protectedDriver: InstalledDriver | undefined;
   let sandboxDriver: SandboxDriver | undefined;
   if (sandbox !== undefined && proxySelection !== undefined) {
     if (sandboxPackage !== undefined) {
-      protectedDriver = createExternalProtectedDriver(sandboxPackage.module, sandbox);
+      protectedDriver = createExternalProtectedDriver(
+        sandboxPackage.module,
+        sandbox,
+        packageRepositoryGit
+          ? {
+              repo: drivers.repo,
+              backend: repositoryBackend,
+              registry: repositoryRuntime!.repositoryRegistry,
+            }
+          : undefined,
+      );
     } else {
       // One configured OpenShell owner, with the original capability IDs retained for v2 revisions.
       const common = {
@@ -1085,7 +1120,11 @@ export async function loadInstallationConfiguration(options: {
           id: proxySelection.id,
           backend: openShell!,
           sandbox: sandboxView,
-          ...(preparedGitHub && { preparedGitHub }),
+          preparedProviders: preparedGitHub ? [githubMetadataProvider] : [],
+          ...(egressAuthority && { exchangeAuthority: egressAuthority }),
+          ...(openShellGit && {
+            bindRepositoryGit: openShellGit.bindRepositoryGit.bind(openShellGit),
+          }),
         },
       );
       protectedDriver = new InstalledDriver(
@@ -1134,6 +1173,13 @@ export async function loadInstallationConfiguration(options: {
           implementation: credentialRefresh.implementation,
           backend: openShell!,
         });
+  const repositoryGitDriver =
+    packageRepositoryGit || openShellGit?.configuration.protectedExecution
+      ? protectedDriver
+      : undefined;
+  // This check admits an implementation to try installation. Compute still verifies its
+  // actual recipient and enforcement before release or the first eligible material read.
+  repositoryGitDriver?.requireRepositoryGitTransport();
   let computeDriver: ComputeDriver;
   if (computePackage !== undefined) {
     computeDriver = createExternalDriver(
@@ -1160,7 +1206,8 @@ export async function loadInstallationConfiguration(options: {
         ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
         ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
         ...(protectedDriver === undefined ? {} : { protectedDriver }),
-        ...(preparedRepositoryGit === undefined || openShellGit
+        preparedTokens: tokenService,
+        ...(preparedRepositoryGit === undefined || openShellGit || repositoryGitDriver
           ? {}
           : { preparedRepositoryIngress: true }),
         preprovisionedNamespace,
@@ -1202,7 +1249,8 @@ export async function loadInstallationConfiguration(options: {
     ...(protectedDriver === undefined
       ? {}
       : { protectedDriver, proxyDriver: protectedDriver.require("credential_proxy") }),
-    ...(egressAuthority === undefined ? {} : { egressAuthority }),
+    ...(repositoryGitDriver && { repositoryGitDriver }),
+    tokenService,
     ...(preparedGitHub === undefined ? {} : { preparedGitHub }),
     createIAMDriver,
     ...(pluginDriver === undefined ? {} : { pluginDriver }),

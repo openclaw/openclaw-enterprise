@@ -20,6 +20,18 @@ the [profile and release cutoff](../reference/credential-sources/protected-infer
 and [supported configuration](../reference/credential-sources/protected-inference.md).
 The bundled legacy supervisor is incompatible.
 
+The API binds the selected Credential Proxy Driver's authenticated exchange
+once, before serving requests. OCC gives it resolve, send authorization and
+response operations; requests cannot choose an exchange owner. Bundled
+OpenShell uses this contract for the flow below.
+
+[Protected repository Git](../reference/drivers/selection.md#select-a-protected-sender)
+uses a separate worker binding. The worker gives the same selected Driver
+recipient observation, a read of committed material for that installation, and
+authorization of the actual Git request. The Token Service retains issuance,
+renewal and retirement. A Driver that cannot prove the installed recipient
+cannot release a protected revision.
+
 ## Entry Points
 
 - Trigger: an installed supervisor sends `HttpCredentialAccess.Resolve`, followed
@@ -256,64 +268,50 @@ to repeat the business request.
 `apps/controller/src/drivers/egress-proxy/openai-provider.ts:protectedResponse`,
 `apps/controller/src/drivers/egress-proxy/openai-responses-stream.ts:protectedResponsesStream`
 
-The registry binds the complete response to the accepted peer, request and
-exchange, then removes headers outside its allowlist. Nothing is streamed to the
-caller before the decision. The original deadline bounds the first response byte;
-`renewResponse` then keeps the permitted operation alive on supervisor progress
-(five-minute idle horizon, fifteen-minute ceiling from creation, current policy
-rechecked on renewal at most every 15 seconds, so withdrawal cuts the stream
-within that window; an unavailable authority leaves the bound unchanged). The lease,
-4 MiB and 16,384-event limits bound this check; an unsupported response is
-refused, not approximated.
+The registry binds the complete response to its peer, request and exchange. It
+removes unlisted headers and releases no bytes before the decision. The request
+deadline bounds the first byte. On progress, `renewResponse` rechecks policy at
+most every 15 seconds. Withdrawal cuts the stream within that window; an
+unavailable authority cannot extend the lease. Limits are five minutes idle,
+fifteen minutes total, 4 MiB and 16,384 events.
 
-For Responses, inspect the text clients actually assemble: SDK output-part
-snapshots; assistant text joined across parts, items or deltas; and Codex's
-completed and streamed Plan views. Ambiguous indexes or parser order fail
-closed. Check supported function arguments as bounded JSON, without recursively
-decoding arbitrary strings. Safe responses keep their original bytes. This
+For Responses, check what the client assembles: SDK output-part snapshots,
+assistant text across parts, items or deltas, and Codex's completed and streamed
+Plan views. Reject ambiguous order or indexes. Inspect function arguments as
+bounded JSON, without recursively decoding strings. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
-protects named client views of one finite response, not secrecy from an origin
-that already received the credential.
+preserves safe response bytes. The origin has already received the credential.
 
-Only the accepted exchange can claim its response. The provider classifier
-requires a structured 401 `invalid_api_key` / `invalid_request_error` error;
-status alone does not fence material. `EgressSendReceipts.observe` commits the
-safe response decision and exact rejection fence atomically before the adapter
-replies. Blocked responses can still establish rejection. Receipts contain no
-bodies, headers, material values or credential-bearing handles. Persistence
-failure withholds bytes, and the deadline/cancellation check repeats after commit.
+Only the accepted exchange can claim the response. A structured 401
+`invalid_api_key` / `invalid_request_error` can fence material; status alone
+cannot. Before replying, `EgressSendReceipts.observe` commits the decision and
+exact rejection fence together, even for a blocked response. Receipts exclude
+bodies, headers, credentials and handles. A failed commit withholds bytes; a
+successful one still requires a deadline and cancellation check.
 
-Returning bytes does not prove downstream delivery. Post-send outcomes remain
-unsettled; recovery reads the exact attempt without retrying. Material is erased
-after response handling or at deadline. A pre-permission refusal can settle as
-undispatched; a possibly issued permission cannot.
+Erase material after response handling or at deadline. Only a refusal before
+permission can settle as undispatched. After possible permission, inspect the
+exact attempt without retrying; returning bytes does not prove delivery.
 
 ### 5. Configure the regular Harness caller
 
 `apps/controller/src/worker.ts:resolveRevisionSecretContext`,
 `apps/controller/src/drivers/compute/plugin-runtime.ts:codexToml`
 
-The worker obtains nonsecret endpoint configuration through the registered
-provider's normalizer. The admitted inference grant disables provider tools in
-protected Codex configuration while retaining local tools and ordinary Harness
-components. HTTP Responses is selected with WebSockets and automatic request/stream
-retries disabled. The runtime manifest preserves that profile; the generated
-`--ignore-user-config` probe passes explicit zero request/stream retries and does
-not repeat a protected probe after timeout. The provider-owned classifier
-recognizes the bounded selected client payload; unknown operations fail before
-credential access.
+The provider normalizes the nonsecret endpoint and classifies the actual request
+before credential access. Protected Codex keeps local tools and ordinary Harness
+components, disables provider tools, and uses HTTP Responses with no WebSockets
+or automatic retries. The runtime manifest preserves this profile. Its
+`--ignore-user-config` probe explicitly sets request and stream retries to zero
+and never repeats a timed-out protected probe.
 
 ## Debugging and Verification
 
-See the [static egress testing guide](../testing/static-egress.md) for commands
-and prerequisites. Authority tests exercise API, IAM, controller and TLS paths;
-PostgreSQL tests exercise persisted plans, currentness, installation and rejection.
-Enrollment tests run the generated entrypoint and Sandbox Driver with a fixture
-CLI, including the manifest and environment from `prepareRevision`.
-
-These tests do not establish an installed model turn, response custody,
-NetworkPolicy, chart or published-image compatibility. Verify those on the
-selected installation, with independent observations at the origin and caller.
+The [testing guide](../testing/static-egress.md) covers API, IAM, TLS,
+PostgreSQL currentness and rejection, and enrollment through the generated
+entrypoint with the manifest and environment from `prepareRevision`. Verify a
+real model turn, response custody, NetworkPolicy, chart and image together on the
+selected installation. Observe the origin and caller independently.
 
 ## Related docs
 

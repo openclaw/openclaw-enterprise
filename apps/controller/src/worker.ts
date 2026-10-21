@@ -1,4 +1,8 @@
-import { assertExecutionReleaseAllowed } from "@openclaw-enterprise/contracts";
+import {
+  assertExecutionReleaseAllowed,
+  credentialSourceMatchesSnapshot,
+  revisionCredentialSourceSnapshot,
+} from "@openclaw-enterprise/contracts";
 import type { CredentialProxyDriver } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { reconcileSandboxPolicy, failAbandonedSandboxPolicies } from "./worker/sandbox-policy.ts";
@@ -1041,6 +1045,8 @@ export class ControllerWorker {
   private readonly credentialGateway: CredentialGatewayDriver | undefined;
   private readonly proxyDriver: CredentialProxyDriver | undefined;
   private readonly protectedDriver: InstalledDriver | undefined;
+  private readonly preparedTokens:
+    import("@openclaw-enterprise/contracts").PreparedTokenService | undefined;
   private readonly backends: readonly BackendDefinition[];
   private readonly backendMap: ReadonlyMap<string, BackendDefinition>;
   private readonly requireComputePreflight: boolean;
@@ -1125,7 +1131,10 @@ export class ControllerWorker {
       leaseDurationMs: this.leaseDurationMs,
       maxAttempts: this.maxAttempts,
     };
-    this.state = new PostgresPlatformState(options.pool, { workQueue: this.queueOptions });
+    this.state = new PostgresPlatformState(options.pool, {
+      workQueue: this.queueOptions,
+      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+    });
     this.queue = new PostgresWorkQueue(options.pool, this.queueOptions);
     this.backends = validateBackendDefinitions(drivers?.installation.backend ?? []);
     this.backendMap = backendDefinitionMap(this.backends);
@@ -1172,6 +1181,7 @@ export class ControllerWorker {
       throw new Error("The selected Configuration Driver exposes invalid lifecycle hooks.");
     }
     this.protectedDriver = drivers?.protectedDriver;
+    this.preparedTokens = drivers?.tokenService;
     this.sandbox =
       this.protectedDriver?.require("sandbox") ?? drivers?.sandboxDriver ?? options.sandboxDriver;
     this.credentialGateway = drivers?.credentialGatewayDriver ?? options.credentialGatewayDriver;
@@ -1261,6 +1271,7 @@ export class ControllerWorker {
     validatePersistedNativeIAMState(await this.loadIAMState());
     this.attachLifecycleDrivers(this.iam);
     const provisioning = new OpenClawController(installation, {
+      preparedTokens: this.preparedTokens,
       state: this.state,
       sandboxNetworkPolicyCeiling: this.policyCeiling,
       backends: this.backends,
@@ -3118,6 +3129,7 @@ export class ControllerWorker {
           return;
         }
         for (const { withdrawal, source } of allowed) {
+          this.assertCredentialWithdrawalOwner(revision, source);
           const status = await this.withClaimHeartbeat(claim, (signal) =>
             withdraw(revision, source, signal),
           );
@@ -3732,8 +3744,21 @@ export class ControllerWorker {
       return revoked;
     });
     for (const source of sources) {
+      this.assertCredentialWithdrawalOwner(revision, source);
       await this.withClaimHeartbeat(claim, (signal) =>
         withdraw(revision, source, signal, { recheck: true }),
+      );
+    }
+  }
+
+  private assertCredentialWithdrawalOwner(revision: AgentRevision, source: CredentialSource): void {
+    const snapshot = revisionCredentialSourceSnapshot(revision, source.id);
+    const owner =
+      source.ownerCapability === "credential_gateway" ? this.credentialGateway : this.proxyDriver;
+    if (source.driverId !== owner?.id || !credentialSourceMatchesSnapshot(source, snapshot)) {
+      throw new CredentialWithdrawalRefusedError(
+        "CREDENTIAL_WITHDRAWAL_OWNERSHIP_CONFLICT",
+        "The source and selected owner must match the revision's credential source admission.",
       );
     }
   }
@@ -4960,8 +4985,7 @@ export class ControllerWorker {
       if (
         source === undefined ||
         source.state !== "ready" ||
-        source.driverId !== auth.credentialGatewayId ||
-        source.type !== auth.sourceType
+        !credentialSourceMatchesSnapshot(source, auth)
       ) {
         return { result: { outcome: "permanent", code: "HARNESS_AUTH_SOURCE_UNAVAILABLE" } };
       }
@@ -4991,9 +5015,12 @@ export class ControllerWorker {
       if (snapshot.sourceId === revisionHarnessSourceId(revision)) {
         continue;
       }
+      const sourceOwner = snapshot.credentialProxyId ?? snapshot.credentialGatewayId;
       if (
-        this.credentialGateway === undefined ||
-        snapshot.credentialGatewayId !== this.credentialGateway.id
+        sourceOwner !==
+        (snapshot.credentialProxyId === undefined
+          ? this.credentialGateway?.id
+          : this.proxyDriver?.id)
       ) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_GATEWAY_MISMATCH" } };
       }
@@ -5015,8 +5042,7 @@ export class ControllerWorker {
       if (
         source === undefined ||
         source.state !== "ready" ||
-        source.driverId !== snapshot.credentialGatewayId ||
-        source.type !== snapshot.sourceType
+        !credentialSourceMatchesSnapshot(source, snapshot)
       ) {
         return { result: { outcome: "permanent", code: "CREDENTIAL_SOURCE_UNAVAILABLE" } };
       }

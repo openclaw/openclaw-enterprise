@@ -1,3 +1,4 @@
+import type { CredentialProxyExchange } from "@openclaw-enterprise/contracts";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { loadSync } from "@grpc/proto-loader";
@@ -13,7 +14,7 @@ import {
   type ServerDuplexStream,
 } from "@grpc/grpc-js";
 import type { EgressMaterialEvidence, EgressRefusal } from "@openclaw-enterprise/contracts";
-import { STREAM_LEASE_IDLE_MS, type OpenClawController } from "@openclaw-enterprise/occ";
+import { STREAM_LEASE_IDLE_MS } from "@openclaw-enterprise/occ";
 import { asRecord } from "@openclaw-enterprise/utils";
 import { OpenShellEgressIdentity } from "./openshell-identity.ts";
 import {
@@ -137,7 +138,9 @@ export function describeOpenShellMiddleware(
 /** Actual gRPC adapter for the supervisor's exclusive static-credential authority. */
 export function createOpenShellEgressAuthority(
   identity: OpenShellEgressIdentity,
-  controller: Pick<OpenClawController, "createCredentialProxy">,
+  controller: {
+    createCredentialProxy: (owner: OpenShellEgressIdentity) => CredentialProxyExchange;
+  },
 ): Server {
   // The verifier owns acceptance on the actual stream. No separate synthetic owner,
   // bearer-only profile or caller-selected response destination can enter this composition.

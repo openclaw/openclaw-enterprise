@@ -14,6 +14,7 @@ function clientCredentialSource(
     namespaceId: source.namespaceId,
     name: source.name,
     type: source.type,
+    ownerCapability: source.ownerCapability,
     config: source.config,
     secrets: source.secrets,
     state: source.state,

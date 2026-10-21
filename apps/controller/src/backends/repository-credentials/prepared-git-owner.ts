@@ -1,11 +1,13 @@
 import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
-import { createHash, createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey } from "node:crypto";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import type {
+  DriverRegistrationRef,
   PreparedGitHubUseRequest,
   PreparedGitHubPullResult,
+  RepositoryGitInstallationFence,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresPool } from "@openclaw-enterprise/occ";
 import { createSystemClock } from "../../drivers/repo/credentials/clock.ts";
@@ -17,7 +19,6 @@ import { retirePreparedGitHubToken } from "../../drivers/repo/github/credentials
 import {
   PreparedRepositoryGitStore,
   type InstalledGitMaterial,
-  type GitInstallationFence,
 } from "../../drivers/repo/github/credentials/prepared-repository-git.ts";
 import {
   validateGitHubRepositoryRegistry,
@@ -25,6 +26,11 @@ import {
   resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
 } from "../../drivers/repo/github/credentials/registry.ts";
+import {
+  protectedGitAdoption,
+  type RepositoryGitRecipientEvidence,
+} from "../../drivers/repo/credentials/protected-repository-git-installation.ts";
+import { TokenService } from "../token-service/service.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
 
 export interface PreparedRepositoryGitConfiguration {
@@ -53,6 +59,11 @@ interface Options extends Omit<PreparedRepositoryGitConfiguration, "issuerCaPath
     context?: Readonly<Record<string, string>>,
   ) => void;
   startWorker?: boolean;
+  /** The installation-selected Sandbox and Credential Proxy, not the repository issuer or a request field. */
+  protectedGitDriver?: DriverRegistrationRef;
+  /** Host-owned durable observer for this selection. A Driver cannot supply these queries. */
+  protectedGitEvidence?: RepositoryGitRecipientEvidence;
+  tokenService?: TokenService;
 }
 
 function useRequest(input: unknown): PreparedGitHubUseRequest {
@@ -176,7 +187,7 @@ export async function startPreparedGitHubGitOwner(options: Options) {
       }
       return {
         key: { source: { id: "repository-git:" + session.admissionId } },
-        adoption: "prepared_repository_git",
+        adoption: options.protectedGitDriver ? protectedGitAdoption : "prepared_repository_git",
         session,
         grant: {
           id: admitted.grant.grantId,
@@ -192,7 +203,8 @@ export async function startPreparedGitHubGitOwner(options: Options) {
         ...(base && policy?.draftPullLimit === "none" ? { draftPullLimit: "none" as const } : {}),
       };
     },
-    options.controlSocket === undefined,
+    options.protectedGitDriver ?? options.controlSocket === undefined,
+    options.protectedGitEvidence,
   );
   const stop = new AbortController();
   const use = (input: unknown, signal = stop.signal) =>
@@ -211,91 +223,84 @@ export async function startPreparedGitHubGitOwner(options: Options) {
                 )
               : use(input, signal),
         );
-  async function maintain() {
-    stop.signal.throwIfAborted();
-    // A replaced version's token from an earlier issuer authority (another App origin or CA) is
-    // retired, but revoking it would send it to this authority: it lives out its hour at the
-    // provider instead, and the operator is told once (finding 2150).
-    const sources = await store.discover(({ providerExpiresAt, ...context }) =>
-      options.report?.("PREPARED_GITHUB_RETIRED_UNREVOKED", {
-        reason: "issuer_authority_changed",
-        ...context,
-        providerExpiresAt,
-      }),
-    );
-    await retirePreparedGitHubToken(store, null, stop.signal, apiOrigin, ca, clock);
-    if (!sources.length) {
-      return;
-    }
-    const bytes = await privateInput(options.privateKeyPath);
-    const keyObject = (() => {
+  let sources: Awaited<ReturnType<typeof store.discover>> = [];
+  const maintenance = (options.tokenService ?? new TokenService()).ownFamilies({
+    async discover() {
+      sources = await store.discover(({ providerExpiresAt, ...context }) =>
+        options.report?.("PREPARED_GITHUB_RETIRED_UNREVOKED", {
+          reason: "issuer_authority_changed",
+          ...context,
+          providerExpiresAt,
+        }),
+      );
+    },
+    retire: (signal) => retirePreparedGitHubToken(store, null, signal, apiOrigin, ca, clock),
+    async prepare(_signal, run) {
+      if (!sources.length) {
+        return;
+      }
+      const bytes = await privateInput(options.privateKeyPath);
+      const keyObject = (() => {
+        try {
+          return createPrivateKey(bytes);
+        } finally {
+          bytes.fill(0);
+        }
+      })();
+      const version = createHash("sha256")
+        .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
+        .digest("hex");
+      const key = createGitHubKeyOwner({ privateKey: keyObject, appId: registry.appId, clock });
       try {
-        return createPrivateKey(bytes);
-      } finally {
-        bytes.fill(0);
-      }
-    })();
-    const version = createHash("sha256")
-      .update(createPublicKey(keyObject).export({ type: "spki", format: "der" }))
-      .digest("hex");
-    const key = createGitHubKeyOwner({ privateKey: keyObject, appId: registry.appId, clock });
-    try {
-      for (const source of sources) {
-        const admission = await store.claimGit(source, version);
-        if (!admission) {
-          continue;
-        }
-        const owner = createGitHubPreparationOwner({
-          admission,
-          store: store.store(source, null),
-          clock,
-          apiOrigin,
-          getKey: async () => key,
-          ...(ca ? { ca } : {}),
-          renewBeforeMs: 600_000,
-          minimumValidityMs: 60_000,
-        });
-        const signal = AbortSignal.any([stop.signal, AbortSignal.timeout(25_000)]);
-        const outcome = await owner.run(randomUUID(), {
-          signal,
-          deadlineMonoMs: clock.monotonicNow() + 25_000,
-        });
-        if (outcome === "quarantined" || outcome === "blocked") {
-          // Say which binding needs recovery (finding 2135); the provider's answer stays out.
-          options.report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
-            reason: outcome,
-            namespaceId: source.session.namespaceId,
-            revisionId: source.session.revisionId,
-            repositoryRef: source.session.binding.repositoryRef,
+        for (const source of sources) {
+          const admission = await store.claimGit(source, version);
+          if (!admission) {
+            continue;
+          }
+          const owner = createGitHubPreparationOwner({
+            admission,
+            store: store.store(source, null),
+            clock,
+            apiOrigin,
+            getKey: async () => key,
+            ...(ca ? { ca } : {}),
+            renewBeforeMs: 600_000,
+            minimumValidityMs: 60_000,
           });
+          const outcome = await run(owner);
+          if (outcome === "quarantined" || outcome === "blocked") {
+            // Say which binding needs recovery (finding 2135); the provider's answer stays out.
+            options.report?.("PREPARED_GITHUB_RECOVERY_REQUIRED", {
+              reason: outcome,
+              namespaceId: source.session.namespaceId,
+              revisionId: source.session.revisionId,
+              repositoryRef: source.session.binding.repositoryRef,
+            });
+          }
         }
+      } finally {
+        key.close();
       }
-    } finally {
-      key.close();
-    }
-  }
-  let timer: NodeJS.Timeout | undefined;
-  let running: Promise<void> | undefined;
-  const tick = () => {
-    running = maintain()
-      .catch(() => options.report?.("PREPARED_GITHUB_MAINTENANCE_FAILED"))
-      .finally(() => {
-        if (!stop.signal.aborted) {
-          timer = setTimeout(tick, 5000);
-        }
-      });
-  };
+    },
+    failed: () => options.report?.("PREPARED_GITHUB_MAINTENANCE_FAILED"),
+  });
   if (options.startWorker !== false) {
-    tick();
+    maintenance.start();
   }
+  const protectedGit = store.protectedAuthority(stop.signal, useRequest);
   return {
+    protectedGit,
     use,
     // Recovery-only observation for the worker, never part of its use socket.
     inspectTokenAttempt: (familyId: string, attemptId: string) =>
       store.inspectTokenAttempt(familyId, attemptId),
     // Worker-only custody transfer to the verified OpenShell provider; never a control RPC.
-    readOpenShellMaterial(revisionId: string, signal: AbortSignal, install?: GitInstallationFence) {
-      return store.readOpenShellMaterial(
+    readOpenShellMaterial(
+      revisionId: string,
+      signal: AbortSignal,
+      install?: RepositoryGitInstallationFence,
+    ) {
+      return store.readRecipientMaterial(
         revisionId,
         AbortSignal.any([signal, stop.signal]),
         install,
@@ -313,14 +318,13 @@ export async function startPreparedGitHubGitOwner(options: Options) {
         AbortSignal.any([signal, stop.signal]),
       );
     },
-    maintain,
+    maintain: () => maintenance.maintain(),
     async close() {
       stop.abort();
-      clearTimeout(timer);
       try {
         await server?.close();
       } finally {
-        await running;
+        await maintenance.close();
         custody.fill(0);
       }
     },

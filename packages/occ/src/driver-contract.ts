@@ -57,10 +57,13 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
   if (driver.capability === "credential_proxy") {
     const control = asRecord(candidate.sourceControl);
     return (
+      (candidate.bindExchange === undefined || typeof candidate.bindExchange === "function") &&
+      (candidate.bindRepositoryGit === undefined ||
+        typeof candidate.bindRepositoryGit === "function") &&
       control !== undefined &&
       typeof control.assertAvailable === "function" &&
       Array.isArray(control.providers) &&
-      control.providers.length > 0 &&
+      (control.providers.length > 0 || typeof candidate.bindRepositoryGit === "function") &&
       control.providers.every((value) => {
         const provider = asRecord(value);
         return (

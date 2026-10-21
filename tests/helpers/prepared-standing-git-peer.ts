@@ -19,12 +19,16 @@ import {
   fixtureInstallationId,
 } from "../fixtures/repository-credentials/github.mjs";
 
-export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namespaceId: string) {
+export async function standingGitOrigin(
+  t: TestContext,
+  namespaceId: string,
+  tokenLifetimeMs = 135_000,
+) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
   const github: (t: TestContext, options: object) => ReturnType<typeof startGitHubFixture> =
     startGitHubFixture;
-  const gh = await github(t, { clock, tokenLifetimeMs: 135_000 });
+  const gh = await github(t, { clock, tokenLifetimeMs });
   const tls = gh.tls;
   const pushRef = "refs/heads/review";
   const backendId = "prepared-standing";
@@ -63,6 +67,42 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
   });
   await writeFile(custodyKeyPath, randomBytes(32), { mode: 0o600 });
 
+  const gitOrigin: (
+    t: TestContext,
+    options: object,
+  ) => ReturnType<typeof startGitSmartHttpFixture> = startGitSmartHttpFixture;
+  const origin = await gitOrigin(t, {
+    repository: fixtureRepository,
+    tls,
+    authorize: gh.authorize,
+  });
+  return {
+    registry,
+    backendId,
+    gh,
+    tls,
+    origin,
+    privateKeyPath,
+    custodyKeyPath,
+    registrationName,
+    directory,
+    controlSocket,
+  };
+}
+
+export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namespaceId: string) {
+  const {
+    registry,
+    backendId,
+    gh,
+    tls,
+    origin,
+    privateKeyPath,
+    custodyKeyPath,
+    registrationName,
+    directory,
+    controlSocket,
+  } = await standingGitOrigin(t, namespaceId);
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
   // the actual issuance and retirement requests, and the production admission and scope checks.
@@ -89,19 +129,6 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
     ca: tls.ca,
     startWorker: false,
   });
-  let calls = 0;
-  const gitOrigin: (
-    t: TestContext,
-    options: object,
-  ) => ReturnType<typeof startGitSmartHttpFixture> = startGitSmartHttpFixture;
-  const origin = await gitOrigin(t, {
-    repository: fixtureRepository,
-    tls,
-    authorize: gh.authorize,
-    observeRequest: () => {
-      calls++;
-    },
-  });
   // The directory is private to this case. No receipt service, broker, session bearer, or
   // prepared-use socket exists before, during, or after either Git transfer.
   const noBroker = async () => {
@@ -119,7 +146,7 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
   const base = "/" + fixtureRepository + ".git/";
   const packet = (s: string) => (s.length + 4).toString(16).padStart(4, "0") + s;
   const body = () => Buffer.from(packet("want " + oid + "\n") + "0000" + packet("done\n"));
-  // This peer stands in for the supervisor and sends exactly once, only after an ALLOW. No
+  // The controlled sender below owns both the decision and the single send opportunity. No
   // redirect, ambient credential, GitHub connection, replay, or alternate object source.
   const send = (value: string | undefined, upload: boolean) =>
     new Promise<{ status: number; bytes: Buffer }>((resolve, reject) => {
@@ -170,13 +197,21 @@ export async function preparedStandingGitPeer(t: TestContext, pool: Pool, namesp
   return {
     registry,
     prepared,
-    originCalls: () => calls,
+    originCalls: () => origin.traffic().requests,
     gh,
     controlSocket,
     oid,
     noBroker,
     nextObject: async () => (oid = await origin.addCommit()),
     send,
+    async exchange(
+      evaluate: () => Promise<{ decision: number; reason_code?: string }>,
+      value: string,
+      upload: boolean,
+    ) {
+      const decision = await evaluate();
+      return decision.decision === 1 ? send(value, upload) : decision;
+    },
     input,
     registrationName,
     backendId,

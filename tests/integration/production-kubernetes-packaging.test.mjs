@@ -51,6 +51,15 @@ const repositoryCredentialValues = {
   "repositoryCredentials.publicCaSecretName": "repository-public-ca",
   "repositoryCredentials.upstreamCidrs[0]": "198.51.100.0/24",
 };
+const protectedRepositoryValues = {
+  "repositoryCredentials.enabled": "false",
+  "repositoryCredentials.registryConfigMapName": "repository-registry-v1",
+  "repositoryCredentials.appKeySecretName": "repository-app-key",
+  "repositoryCredentials.upstreamCidrs[0]": "198.51.100.23/32",
+  "repositoryCredentials.preparedProviderCaConfigMapName": "git-provider-ca",
+  "repositoryCredentials.authority": "prepared-git",
+  "repositoryCredentials.preparedCustodySecretName": "git-custody",
+};
 const gatewayRoutingValues = {
   "gatewayRouting.enabled": "true",
   "gatewayRouting.gatewayClassName": "private-envoy-gateway",
@@ -5772,13 +5781,11 @@ test(
 );
 
 test(
-  "OpenShell Git packaging exposes only the worker to selected supervisors",
+  "protected OpenShell Git installs without a repository broker and preserves an explicit broker trial",
   tooling,
   async () => {
     const selected = {
-      ...repositoryCredentialValues,
-      "repositoryCredentials.authority": "prepared-git",
-      "repositoryCredentials.preparedCustodySecretName": "git-custody",
+      ...protectedRepositoryValues,
       "openshellGit.enabled": "true",
       "openshellGit.tlsSecretName": "openshell-git-tls",
       "openshellGit.issuerPublicKeyConfigMapName": "openshell-gateway-public",
@@ -5788,7 +5795,28 @@ test(
     };
     const defaults = await resources((await render()).stdout);
     assert.ok(!defaults.some(({ metadata }) => metadata?.name?.includes("openshell-git")));
-    const objects = await resources((await render(selected)).stdout);
+    const { stdout } = await render(selected);
+    // Check the entire installation, including Services, probes, ingress and broker-specific RBAC.
+    assert.doesNotMatch(
+      stdout,
+      /8443|repository-credentials|prepared-repository-ingress|repository-(?:public-ca|control|inputs|private)/,
+    );
+    const objects = await resources(stdout);
+    const workerRole = objects.find(
+      ({ kind, metadata }) => kind === "ClusterRole" && metadata.name.endsWith("-tenant-worker"),
+    );
+    assert.ok(
+      !workerRole.rules.some(
+        ({ resources, verbs }) => resources.includes("secrets") && verbs.includes("list"),
+      ),
+      "protected Git does not grant the broker's Secret enumeration privilege",
+    );
+    const issuer = objects.find(({ metadata }) =>
+      metadata.name.endsWith("-repository-provider-egress"),
+    );
+    assert.deepEqual(issuer.spec.egress, [
+      { to: [{ ipBlock: { cidr: "198.51.100.23/32" } }], ports: [{ protocol: "TCP", port: 443 }] },
+    ]);
     const service = objects.find(
       ({ kind, metadata }) =>
         kind === "Service" && metadata.name === "openclaw-enterprise-openshell-git",
@@ -5821,6 +5849,7 @@ test(
       const volume = pod.volumes?.find(({ name }) => name === "openshell-git");
       if (object.metadata.name !== "openclaw-enterprise-worker") {
         assert.equal(volume, undefined);
+        assert.ok(!pod.volumes?.some(({ name }) => name.startsWith("prepared-repository-")));
         continue;
       }
       assert.equal(volume.projected.defaultMode, 0o440);
@@ -5841,7 +5870,28 @@ test(
           },
         },
       ]);
-      const worker = pod.initContainers.find(({ name }) => name === "worker");
+      assert.deepEqual(
+        pod.containers.map(({ name }) => name),
+        ["worker"],
+      );
+      assert.equal(object.spec.strategy.type, "Recreate", "stop the old owner before replacement");
+      const worker = pod.containers[0];
+      assert.deepEqual(
+        pod.volumes
+          .find(({ name }) => name === "prepared-repository-owner")
+          .projected.sources.map(({ secret }) => secret.name),
+        ["repository-app-key", "git-custody"],
+      );
+      for (const name of [
+        "repository-registry",
+        "prepared-repository-owner",
+        "prepared-repository-ca",
+      ]) {
+        assert.ok(
+          worker.volumeMounts.some((mount) => mount.name === name && mount.readOnly),
+          name,
+        );
+      }
       assert.deepEqual(
         worker.volumeMounts.find(({ name }) => name === "openshell-git"),
         { name: "openshell-git", mountPath: "/etc/openclaw/openshell-git", readOnly: true },
@@ -5851,11 +5901,40 @@ test(
           ({ name, containerPort }) => name === "openshell-git" && containerPort === 8445,
         ),
       );
-      // The sidecar must not acquire the middleware TLS private key through this projection.
-      for (const container of pod.containers.filter(({ name }) => name !== "worker")) {
-        assert.ok(!container.volumeMounts?.some(({ name }) => name === "openshell-git"));
-      }
     }
+    const upgrade = await render(selected, { isUpgrade: true });
+    assert.doesNotMatch(upgrade.stdout, /8443|repository-public-ca|repository-control/);
+    const job = (await resources(upgrade.stdout)).find(({ kind }) => kind === "Job");
+    const check = job.spec.template.spec.initContainers.find(
+      ({ name }) => name === "installation-check",
+    );
+    assert.deepEqual(
+      check.volumeMounts.filter(({ name }) => /repository|openshell-git/.test(name)),
+      [
+        {
+          name: "repository-registry",
+          mountPath: "/etc/openclaw/repository-registry",
+          readOnly: true,
+        },
+      ],
+    );
+    // Keep the previous broker, listener and control socket only when the operator selects the trial.
+    const oldTrial = {
+      ...selected,
+      ...repositoryCredentialValues,
+      "repositoryCredentials.serviceName": "git",
+    };
+    await assert.rejects(
+      render(oldTrial, { isUpgrade: true }),
+      /protected Git requires the repository broker disabled/,
+    );
+    const trial = await render(
+      { ...oldTrial, "openshellGit.mode": "broker-trial" },
+      { isUpgrade: true },
+    );
+    assert.match(trial.stdout, /targetPort: 8443/);
+    assert.match(trial.stdout, /targetPort: openshell-git/);
+    assert.match(trial.stdout, /mountPath: \/run\/openclaw\/repository-control/);
     const sealed = await resources(
       (
         await render({
@@ -5877,6 +5956,14 @@ test(
     assert.ok(!sealed.some(({ kind }) => kind === "Job"), "do not bootstrap a sealed installation");
     for (const [override, diagnostic] of [
       [{ "repositoryCredentials.authority": "github-app" }, /authority prepared-git/],
+      [
+        { "openshellGit.mode": "broker-trial" },
+        /broker-trial requires repositoryCredentials.enabled/,
+      ],
+      [
+        { "repositoryCredentials.preparedCustodySecretName": "" },
+        /preparedCustodySecretName is required/,
+      ],
       [{ "openshellGit.tlsSecretName": "" }, /openshellGit.tlsSecretName is required/],
       [
         { "openshellGit.issuerPublicKeyConfigMapName": "" },
@@ -5889,6 +5976,81 @@ test(
       [{ "openshellGit.port": "65536" }, /unprivileged TCP port/],
       [{ "openshellGit.port": "8445.5" }, /positive safe integer/],
       [{ "openshellGit.tlsSecretName": "repository-app-key" }, /must name a dedicated Secret/],
+    ]) {
+      await assert.rejects(render({ ...selected, ...override }), diagnostic);
+    }
+  },
+);
+
+test(
+  "Helm supplies protected Git custody for a separately installed Credential Proxy",
+  tooling,
+  async () => {
+    const delivery = "repositoryCredentials.delivery";
+    const selected = { ...protectedRepositoryValues, [delivery]: "credential-proxy" };
+
+    // Staging the registry, issuer key and custody does not select a protected sender.
+    const inactive = (await render(protectedRepositoryValues)).stdout;
+    assert.equal(inactive, (await render()).stdout);
+
+    for (const isUpgrade of [false, true]) {
+      const { stdout } = await render(selected, { isUpgrade });
+      assert.doesNotMatch(
+        stdout,
+        /844[35]|openshell-git|repository-credentials|prepared-repository-ingress|repository-(?:public-ca|control|inputs|private)/,
+      );
+      const objects = await resources(stdout);
+      const policy = objects.find(({ metadata }) =>
+        metadata.name.endsWith("-repository-provider-egress"),
+      );
+      assert.equal(policy?.spec.podSelector.matchLabels["app.kubernetes.io/component"], "worker");
+      assert.deepEqual(policy.spec.egress, [
+        {
+          to: [{ ipBlock: { cidr: "198.51.100.23/32" } }],
+          ports: [{ protocol: "TCP", port: 443 }],
+        },
+      ]);
+
+      // The API and upgrade check can read the registry. Only the worker gets signing and custody keys.
+      const readers = {};
+      for (const { spec } of objects.filter(({ kind }) => ["Deployment", "Job"].includes(kind))) {
+        const pod = spec.template.spec;
+        for (const container of [...(pod.initContainers ?? []), ...pod.containers]) {
+          const mounts = (container.volumeMounts ?? [])
+            .filter(({ name }) => name.includes("repository"))
+            .map(({ name, readOnly }) => {
+              assert.equal(readOnly, true, name);
+              return name;
+            });
+          if (mounts.length) {
+            readers[container.name] = mounts;
+          }
+        }
+        if (!pod.containers.some(({ name }) => name === "worker")) {
+          continue;
+        }
+        assert.equal(spec.strategy.type, "Recreate");
+        const owner = pod.volumes.find(({ name }) => name === "prepared-repository-owner");
+        assert.deepEqual(
+          owner.projected.sources.map(({ secret }) => secret.name),
+          ["repository-app-key", "git-custody"],
+        );
+      }
+      const registry = ["repository-registry"];
+      assert.deepEqual(readers, {
+        api: registry,
+        worker: [...registry, "prepared-repository-owner", "prepared-repository-ca"],
+        ...(isUpgrade ? { "installation-check": registry } : {}),
+      });
+    }
+    for (const [override, diagnostic] of [
+      [{ [delivery]: "other" }, /delivery must be empty or credential-proxy/],
+      [{ "repositoryCredentials.enabled": true }, /requires the repository broker disabled/],
+      [{ "repositoryCredentials.authority": "github-app" }, /requires authority prepared-git/],
+      [
+        { "repositoryCredentials.upstreamCidrs": "null" },
+        /must contain approved provider IPv4 CIDRs/,
+      ],
     ]) {
       await assert.rejects(render({ ...selected, ...override }), diagnostic);
     }

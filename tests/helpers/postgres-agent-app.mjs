@@ -68,6 +68,7 @@ export async function createPostgresAgentApp(
     createAuditSink = (persisted) => persisted,
     appOptions,
     controllerOptions,
+    stateOptions,
     sandboxDriver,
     transportDatabaseUrl = databaseUrl,
     poolOptions = {},
@@ -76,7 +77,7 @@ export async function createPostgresAgentApp(
   await ensurePostgresAgentBootstrap(t, { label, authSecret });
   const pool = new pg.Pool({ connectionString: transportDatabaseUrl, max: 6, ...poolOptions });
   t.after(() => pool.end());
-  const state = new PostgresPlatformState(pool);
+  const state = new PostgresPlatformState(pool, stateOptions);
   const installation = await state.loadInstallation();
   assert.ok(installation);
   const auth = await createPostgresControllerAuth({

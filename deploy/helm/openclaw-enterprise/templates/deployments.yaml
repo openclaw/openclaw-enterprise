@@ -1,3 +1,5 @@
+{{- $repositoryBroker := .Values.repositoryCredentials.enabled }}
+{{- $repositoryGit := include "openclaw.repositoryCredentials.gitEnabled" . }}
 {{- range $component := list "api" "worker" }}
 {{- $oidcCa := and (eq $component "api") $.Values.auth.oidc $.Values.auth.oidc.enabled $.Values.auth.oidc.caSecretName }}
 {{- $gatewayCa := and $.Values.gatewayRouting.enabled (or (not $.Values.gatewayRouting.issuerRef.name) $.Values.gatewayRouting.caSecretName) }}
@@ -21,7 +23,7 @@ spec:
   {{- end }}
   replicas: {{ $replicas }}
   strategy:
-    {{- if $.Values.repositoryCredentials.enabled }}
+    {{- if $repositoryGit }}
     type: Recreate
     {{- else }}
     type: RollingUpdate
@@ -45,7 +47,7 @@ spec:
       {{- end }}
     spec:
       serviceAccountName: openclaw-enterprise-{{ $component }}
-      {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+      {{- if and (eq $component "worker") $repositoryGit }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 75
       {{- else }}
@@ -116,19 +118,21 @@ spec:
               - key: {{ $.Values.executionCluster.kubeconfigKey | quote }}
                 path: kubeconfig
         {{- end }}
-        {{- if $.Values.repositoryCredentials.enabled }}
+        {{- if $repositoryGit }}
         - name: repository-registry
           configMap:
             name: {{ $.Values.repositoryCredentials.registryConfigMapName | quote }}
             items:
               - key: {{ $.Values.repositoryCredentials.registryKey | quote }}
                 path: registry.json
+        {{- if $repositoryBroker }}
         - name: repository-public-ca
           secret:
             secretName: {{ $.Values.repositoryCredentials.publicCaSecretName | quote }}
             items:
               - key: {{ $.Values.repositoryCredentials.publicCaKey | quote }}
                 path: ca.crt
+        {{- end }}
         {{- if eq $component "worker" }}
         - name: worker-api-access
           projected:
@@ -148,6 +152,7 @@ spec:
                       fieldRef:
                         apiVersion: v1
                         fieldPath: metadata.namespace
+        {{- if $repositoryBroker }}
         - name: repository-inputs
           projected:
             defaultMode: 288 # 0440: root and the Pod filesystem group only.
@@ -171,6 +176,7 @@ spec:
                       path: tls.crt
                     - key: tls.key
                       path: tls.key
+        {{- end }}
         {{- if eq $.Values.repositoryCredentials.authority "prepared-git" }}
         - name: prepared-repository-owner
           projected:
@@ -193,6 +199,7 @@ spec:
               - {key: ca.crt, path: ca.crt}
         {{- end }}
         {{- end }}
+        {{- if $repositoryBroker }}
         - name: repository-private
           emptyDir:
             medium: Memory
@@ -201,6 +208,7 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        {{- end }}
         {{- end }}
         {{- end }}
         {{- if $.Values.preparedGitHub.custodySecretName }}
@@ -313,14 +321,14 @@ spec:
             - name: api-extra-ca
               mountPath: /etc/openclaw/api-extra-ca
       {{- end }}
-      {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+      {{- if and (eq $component "worker") $repositoryBroker }}
       # The receipt server must remain available while the broker drains.
       initContainers:
       {{- else }}
       containers:
       {{- end }}
         - name: {{ $component }}
-          {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+          {{- if and (eq $component "worker") $repositoryBroker }}
           restartPolicy: Always
           {{- end }}
           image: {{ $.Values.images.controller | quote }}
@@ -505,13 +513,15 @@ spec:
               mountPath: /etc/openclaw/execution
               readOnly: true
             {{- end }}
-            {{- if $.Values.repositoryCredentials.enabled }}
+            {{- if $repositoryGit }}
             - name: repository-registry
               mountPath: /etc/openclaw/repository-registry
               readOnly: true
+            {{- if $repositoryBroker }}
             - name: repository-public-ca
               mountPath: /etc/openclaw/repository-ca
               readOnly: true
+            {{- end }}
             {{- if eq $component "worker" }}
             - name: worker-api-access
               mountPath: /var/run/secrets/kubernetes.io/serviceaccount
@@ -526,8 +536,10 @@ spec:
               readOnly: true
             {{- end }}
             {{- end }}
+            {{- if $repositoryBroker }}
             - name: repository-control
               mountPath: /run/openclaw/repository-control
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- if $.Values.preparedGitHub.custodySecretName }}
@@ -614,7 +626,7 @@ spec:
             exec:
               command: [node, scripts/production-healthcheck.mjs, worker]
           {{- end }}
-        {{- if and (eq $component "worker") $.Values.repositoryCredentials.enabled }}
+        {{- if and (eq $component "worker") $repositoryBroker }}
       containers:
         - name: repository-credentials
           image: {{ $.Values.repositoryCredentials.image | quote }}

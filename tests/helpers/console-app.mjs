@@ -250,6 +250,7 @@ export async function createConsoleAppFixture(t, options = {}) {
   const basePlatformState =
     options.state ??
     new ConsolePlatformState({
+      preparedTokenProof: options.preparedTokenProof,
       auditSink,
       // Live lookup, so people enrolled after construction can be bound like in Postgres.
       resolveIAMIdentity: (identityId) =>
@@ -357,6 +358,7 @@ export async function createConsoleAppFixture(t, options = {}) {
     createController(installation) {
       controller = new OpenClawController(installation, {
         state: platformState,
+        preparedTokens: options.preparedTokens,
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
         ...(options.now === undefined ? {} : { now: options.now }),
         recordOperations: options.recordOperations ?? false,

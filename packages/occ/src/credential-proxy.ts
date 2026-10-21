@@ -1,6 +1,7 @@
 import type {
   EgressSendReceipts,
   SendAttempt,
+  StoredSendReceipt,
   SendObservation,
   AcceptedEgressAssociation,
   AuthorizedSend,
@@ -8,50 +9,41 @@ import type {
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
+  CapturedEgressUse,
+  CredentialProxyExchange,
+  EgressExchangeOwner,
+  EgressPeer,
+  EgressResolution,
+  EgressSendDecision,
+  EgressStreamLease,
+  EgressStreamProgress,
   CredentialProviderDefinition,
   CredentialReadLifetime,
   EgressInstallation,
-  EgressRef,
   EgressRefusal,
   EgressRequest,
   EgressResponse,
   EgressRoute,
-  EgressOperation,
   EgressMaterialEvidence,
   EgressSelectionEvidence,
   ProtectedEgressSource,
-  PreparedGitHubEgressLifecycle,
+  PreparedTokenIssuer,
+  PreparedTokenSource,
   StaticEgressSource,
   VersionedSecretValue,
 } from "@openclaw-enterprise/contracts";
 import { immutableCopy } from "@openclaw-enterprise/utils";
 
-export interface EgressPeer {
-  readonly sender: EgressRef;
-  readonly sandboxId: string;
-  readonly instanceId: string;
-  readonly expiresAt: string;
-  readonly exchangeId?: string;
-  /** Public key identifier authenticated by the transport, pinned separately at installation. */
-  readonly peerKeyId?: string;
-}
-
-export interface CapturedEgressUse {
-  readonly id: string;
-  readonly peer: EgressPeer;
-  readonly installation: EgressInstallation;
-  readonly route: EgressRoute;
-  readonly request: EgressRequest;
-  readonly operation: EgressOperation;
-}
-
-/** Installed transport owner authenticates and captures the live request and response destination. */
-export interface EgressExchangeOwner {
-  verify(authorization: string): Promise<EgressPeer | undefined>;
-  capture(use: CapturedEgressUse): AcceptedEgressAssociation | undefined;
-  /** Match the active transport sender and reply custody, not just stored IDs or liveness. */
-  owns(association: AcceptedEgressAssociation, use: CapturedEgressUse): boolean;
-}
+export type {
+  CapturedEgressUse,
+  CredentialProxyExchange,
+  EgressExchangeOwner,
+  EgressPeer,
+  EgressResolution,
+  EgressSendDecision,
+  EgressStreamLease,
+  EgressStreamProgress,
+} from "@openclaw-enterprise/contracts";
 
 export interface EgressAuthorityPorts {
   readonly exchangeOwner: EgressExchangeOwner;
@@ -72,41 +64,15 @@ export interface EgressAuthorityPorts {
     source: StaticEgressSource,
     lifetime: CredentialReadLifetime,
   ): Promise<VersionedSecretValue & { readonly materialId: string }>;
-  readonly readPreparedGitHub?: PreparedGitHubEgressLifecycle["readWarm"];
+  readonly readPrepared?: PreparedTokenIssuer["readWarm"];
+  /** The exact current selection and the possible-send receipt share this transaction. */
+  authorizePrepared?(
+    use: CapturedEgressUse,
+    source: PreparedTokenSource,
+    attempt: SendAttempt,
+    authorization: AuthorizedSend,
+  ): Promise<StoredSendReceipt | EgressRefusal>;
   readonly receipts: Pick<EgressSendReceipts, "begin" | "authorize" | "record" | "observe">;
-}
-
-export type EgressResolution =
-  | { readonly kind: "ready_without_material"; readonly handle: string }
-  | { readonly kind: "refused"; readonly error: EgressRefusal }
-  | {
-      readonly kind: "ready";
-      readonly handle: string;
-      readonly evidence: EgressMaterialEvidence;
-      readonly headers: readonly (readonly [string, string])[];
-      readonly injectionDigest: string;
-    };
-
-export type EgressSendDecision =
-  | { readonly kind: "refused"; readonly error: EgressRefusal }
-  | {
-      readonly kind: "allow";
-      readonly authorization: AuthorizedSend;
-      readonly sendStartBy: string;
-      readonly injectionDigest: string;
-      readonly noMaterialRequired: boolean;
-    };
-
-/** Supervisor-reported progress on the accepted response stream; it carries no bytes. */
-export interface EgressStreamProgress {
-  readonly headReceived: boolean;
-  readonly bodyBytes: number;
-}
-
-/** The permitted operation stays claimable until renewBy, and never past expiresAt. */
-export interface EgressStreamLease {
-  readonly renewBy: string;
-  readonly expiresAt: string;
 }
 
 /**
@@ -186,7 +152,7 @@ export function egressInjectionDigest(headers: readonly (readonly [string, strin
  * Trusted request registry shared by the transport's resolve, send and response phases.
  * Restart loses outstanding handles and fails closed. No permit or material is reusable.
  */
-export class CredentialProxy {
+export class CredentialProxy implements CredentialProxyExchange {
   private readonly records = new Map<string, OperationRecord>();
   private readonly requests = new Map<string, number>();
   private activeOperations = 0;
@@ -459,14 +425,15 @@ export class CredentialProxy {
     };
     if (source.adoption === "prepared") {
       if (
-        use.operation.kind !== "github_repository_metadata" ||
+        use.operation.kind !== source.grant.kind ||
+        source.origin !== route.origin ||
         !isDeepStrictEqual(source.grant, route.binding.grant) ||
         !isDeepStrictEqual(source.key, route.binding.source)
       ) {
         return { kind: "denied", code: "scope_mismatch" };
       }
 
-      const selected = await this.ports.readPreparedGitHub?.(source, lifetime);
+      const selected = await this.ports.readPrepared?.(source, lifetime);
       if (!selected) {
         return { kind: "not_ready", code: "material_missing" };
       }
@@ -489,7 +456,7 @@ export class CredentialProxy {
           materialId: selection.materialId,
           materialVersion: selection.materialVersion,
           providerExpiresAt: selection.providerExpiresAt,
-          kind: "prepared_github",
+          kind: source.schemaVersion === 2 ? "prepared_github" : "prepared_token",
           source: source.key,
           binding: route.binding.binding,
           grantHash: route.binding.grantHash,
@@ -665,7 +632,11 @@ export class CredentialProxy {
       if (!finalPeer || !isDeepStrictEqual(finalPeer, peer)) {
         return deny({ kind: "denied", code: "identity" });
       }
-      decision = await this.ports.check(record.use, record.evidence);
+      // Prepared currentness must stay locked through receipt commit below.
+      decision =
+        record.source.adoption === "prepared"
+          ? record.source
+          : await this.ports.check(record.use, record.evidence);
     } catch {
       return deny({ kind: "unavailable", code: "authority" });
     }
@@ -705,11 +676,18 @@ export class CredentialProxy {
       return deny({ kind: "denied", code: "identity" });
     }
     try {
-      const committed = await this.ports.receipts.authorize(
-        peer.sender,
-        record.attempt,
-        authorized,
-      );
+      const committed =
+        record.source.adoption === "prepared"
+          ? await this.ports.authorizePrepared!(
+              record.use,
+              record.source,
+              record.attempt,
+              authorized,
+            )
+          : await this.ports.receipts.authorize(peer.sender, record.attempt, authorized);
+      if ("kind" in committed) {
+        return deny(committed);
+      }
       // Never repair/replay a lost acknowledgment or extend the bound across this await.
       if (
         !isDeepStrictEqual(committed.authorization, authorized) ||

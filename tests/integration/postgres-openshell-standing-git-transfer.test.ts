@@ -326,9 +326,9 @@ test(
     const allow = async (upload: boolean) => {
       assert.ok(installed);
       const count = (await uses()).length;
-      assert.deepEqual(await evaluate(upload), { decision: 1 });
+      const response = await peer.exchange(() => evaluate(upload), installed, upload);
+      assert.ok("status" in response);
       assert.equal((await uses()).length, count + 1);
-      const response = await send(installed, upload);
       assert.equal(
         response.status,
         200,
@@ -506,7 +506,10 @@ test(
         approvalId: approval.id,
         expectedGeneration: 1,
       });
-      assert.deepEqual(await evaluate(true), { decision: 2, reason_code: "access_withdrawn" });
+      assert.deepEqual(await peer.exchange(() => evaluate(true), installed!, true), {
+        decision: 2,
+        reason_code: "access_withdrawn",
+      });
       assert.ok(Date.now() < Math.min(issue2.expires, second!.deadlineWallMs, world.gitExpiresAt));
       assert.equal(peer.originCalls(), before);
       assert.deepEqual(await uses(), durable);

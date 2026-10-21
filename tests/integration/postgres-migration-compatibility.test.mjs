@@ -9,6 +9,7 @@ import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import pg from "pg";
+import { retainGatewaySourcesAcrossProxyAdmission } from "../helpers/credential-source-owner-upgrade.ts";
 import { repositoryCredentials } from "../fixtures/repository-credentials/session-state.mjs";
 import {
   catalogDigest,
@@ -1969,14 +1970,19 @@ test(
       [63, "preProtectedDriverRegistration"],
       [64, "preCredentialProxyRepositorySession"],
       [65, "prePreparedRepositoryDraftUses"],
+      [66, "preProtectedRepositoryGitRecipients"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
-        await seedCanonicalData(db, {
+        const namespaceId = await seedCanonicalData(db, {
           preset: prefix >= 25,
           computeAdmission: prefix >= 55,
           executionAdmission: prefix >= 60,
         });
+        const assertSourceOwners =
+          prefix === 66
+            ? await retainGatewaySourcesAcrossProxyAdmission(db.app, db.migrator, namespaceId)
+            : undefined;
         const before = await canonicalData(db);
         const receipts = await historyReceipts(db.migrator);
         assert.deepEqual(await runHistoryMigration(db, "production", "--check"), {
@@ -1984,6 +1990,7 @@ test(
           history,
         });
         assert.deepEqual(await runHistoryMigration(db), { ok: true, history });
+        await assertSourceOwners?.();
         await assertCompletedHistory(db, receipts);
         await assertUpgradedRevisionReadable(db);
         assert.deepEqual(await canonicalData(db), upgradedCanonicalData(before));
@@ -2382,6 +2389,7 @@ test(
       [63, "preProtectedDriverRegistration"],
       [64, "preCredentialProxyRepositorySession"],
       [65, "prePreparedRepositoryDraftUses"],
+      [66, "preProtectedRepositoryGitRecipients"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2476,6 +2484,7 @@ test(
       [63, "preProtectedDriverRegistration"],
       [64, "preCredentialProxyRepositorySession"],
       [65, "prePreparedRepositoryDraftUses"],
+      [66, "preProtectedRepositoryGitRecipients"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2496,7 +2505,9 @@ test(
         // 0058 creates the policy table; 0059 has no DDL, so prefix 58 aborts in 0060 too.
         // From 0059, fail the final grant in 0061 so the revision backfill, its immutability
         // trigger, the route table, grants and both new receipts must all roll back together.
+        // In 0067, fail a function definition after the recipient table and its grants exist.
         const rollbackTag = [
+          [66, "CREATE FUNCTION"],
           [62, "ALTER TABLE"],
           [61, "CREATE TRIGGER"],
           [58, "GRANT"],
@@ -2514,9 +2525,11 @@ test(
           [0, "ALTER FUNCTION"],
         ].find(([minimum]) => prefix >= minimum)[1];
         const failAt =
-          prefix >= 58
-            ? "IF NOT EXISTS (SELECT FROM information_schema.columns WHERE table_schema='occ' AND table_name='openshell_git_routes' AND column_name='detached_epoch') THEN RETURN; END IF;"
-            : "";
+          prefix === 66
+            ? "IF to_regclass('occ.protected_repository_git_recipients') IS NULL THEN RETURN; END IF;"
+            : prefix >= 58
+              ? "IF NOT EXISTS (SELECT FROM information_schema.columns WHERE table_schema='occ' AND table_name='openshell_git_routes' AND column_name='detached_epoch') THEN RETURN; END IF;"
+              : "";
         await historyAdmin(
           db,
           db.name,

@@ -1,3 +1,10 @@
+import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
+import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
+import {
+  githubMetadataGrant,
+  preparedGitHubProviderRef,
+  preparedGitHubSourceFromRoute,
+} from "../../packages/contracts/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
 import { assertExecutionAdmission } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
@@ -84,6 +91,8 @@ export async function staticEgressFixture(
   {
     appFactory = createConsoleAppFixture,
     includeLegacy = false,
+    protectedSourceOnly = false,
+    proxyDriverId = "openshell-egress",
     now = () => new Date(),
     physicalPlacement = false,
     recordInstallation = true,
@@ -93,6 +102,7 @@ export async function staticEgressFixture(
     resolutionFinished,
     preparedGitHub,
     createPreparedGitHub,
+    configurePreparedTokens,
     secretValue,
     admitSource,
     providerServer = createHttpsServer,
@@ -386,7 +396,7 @@ export async function staticEgressFixture(
       drivers: {
         sandbox: "openshell-sandbox",
         credential_gateway: "openshell-credentials",
-        credential_proxy: "openshell-egress",
+        credential_proxy: proxyDriverId,
       },
     },
     { gatewayClient },
@@ -419,11 +429,33 @@ export async function staticEgressFixture(
     },
     { id: "openshell-sandbox", backend },
   );
+  const preparedTokens = new TokenService();
+  const owner = createPreparedGitHub
+    ? await createPreparedGitHub({ secretDriver, tokenService: preparedTokens })
+    : preparedGitHub;
+  const preparedProvider = configurePreparedTokens?.(preparedTokens);
+  if (preparedGitHub) {
+    preparedTokens.register({
+      provider: preparedGitHubProviderRef,
+      sourceFromRoute: preparedGitHubSourceFromRoute,
+      issuerInput: "private_key",
+      issuerAuthority: "fixture-github-metadata",
+      admission(config) {
+        return { origin: owner.apiOrigin, grant: githubMetadataGrant(config), schemaVersion: 2 };
+      },
+      configure: (...args) => owner.configure(...args),
+      readWarm: (...args) => owner.readWarm(...args),
+      ready: (...args) => owner.ready(...args),
+      withdraw: (...args) => owner.withdraw(...args),
+    });
+  }
   const egress = new OpenShellCredentialProxyDriver(egressOptions, {
-    id: "openshell-egress",
-    preparedGitHub: createPreparedGitHub
-      ? await createPreparedGitHub({ secretDriver })
-      : preparedGitHub,
+    id: proxyDriverId,
+    preparedProviders: preparedProvider
+      ? [preparedProvider]
+      : owner
+        ? [githubMetadataProvider]
+        : [],
     backend,
     sandbox,
   });
@@ -437,6 +469,8 @@ export async function staticEgressFixture(
   const app = await appFactory(t, {
     now,
     provisionedPeople: [],
+    preparedTokens,
+    preparedTokenProof: preparedGitHub && { current: (...args) => owner.current(...args) },
     secretDriver,
     computeDriver: {
       ...createDevelopmentComputeDriver(),
@@ -448,8 +482,10 @@ export async function staticEgressFixture(
     },
   });
   await app.bootstrap();
-  app.controller.registerDriver(catalog);
-  app.controller.selectDriver(catalog.capability, catalog.id);
+  if (!protectedSourceOnly) {
+    app.controller.registerDriver(catalog);
+    app.controller.selectDriver(catalog.capability, catalog.id);
+  }
   const installedDriver = new InstalledDriver(
     { id: sandbox.id, implementation: sandbox.implementation, configuration: egressOptions },
     { capabilities: { sandbox, credential_proxy: egress } },
@@ -498,12 +534,14 @@ export async function staticEgressFixture(
     });
   }
   app.controller.selectDriver("credential_proxy", egress.id);
-  let source = await post("credential-sources", {
-    name: "inference",
-    type: "openai",
-    config: { base_url: `https://provider.example.test:${providerPort}/v1` },
-    secrets: { api_key: secret.ref },
-  });
+  let source = protectedSourceOnly
+    ? undefined
+    : await post("credential-sources", {
+        name: "inference",
+        type: "openai",
+        config: { base_url: `https://provider.example.test:${providerPort}/v1` },
+        secrets: { api_key: secret.ref },
+      });
   const config = await app.createConfiguration(namespace.id, {
     agents: {
       defaults: {
@@ -516,8 +554,12 @@ export async function staticEgressFixture(
     name: "inference-agent",
     configurationId: config.id,
     executionMode: "dedicated",
-    harnessAuth: { method: "credential_source", sourceId: source.id },
-    credentialSources: [{ sourceId: source.id }],
+    ...(protectedSourceOnly
+      ? { harnessAuth: { method: "runtime" } }
+      : {
+          harnessAuth: { method: "credential_source", sourceId: source.id },
+          credentialSources: [{ sourceId: source.id }],
+        }),
   });
   if (admitSource) {
     // A prepared provider may have a distinct issuer input; never pass it to the inference source.

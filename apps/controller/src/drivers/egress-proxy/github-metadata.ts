@@ -83,6 +83,7 @@ export const githubMetadataProvider: CredentialProviderDefinition =
       const admitted = source.egress;
       if (
         (admitted?.adoption !== "prepared" && admitted?.adoption !== "credential_free") ||
+        admitted.grant.kind === "prepared_scope" ||
         !isDeepStrictEqual(binding.grant, admitted.grant) ||
         binding.execution.agentId !== admitted.grant.isolationId
       ) {
@@ -103,7 +104,9 @@ export const githubMetadataProvider: CredentialProviderDefinition =
     },
     classify(route, request) {
       const { grant } = route.binding;
-      return closedRequest(route, request) && grant.kind !== "inference"
+      return closedRequest(route, request) &&
+        grant.kind !== "inference" &&
+        grant.kind !== "prepared_scope"
         ? { kind: grant.kind, repository: grant.repository, repositoryId: grant.repositoryId }
         : undefined;
     },
@@ -122,6 +125,7 @@ export const githubMetadataProvider: CredentialProviderDefinition =
       const media = headers.filter(([name]) => name.toLowerCase() === "content-type");
       if (
         operation.kind === "inference" ||
+        operation.kind === "prepared_scope" ||
         response.status !== 200 ||
         trailers?.length !== 0 ||
         response.body.byteLength > 64 * 1024 ||

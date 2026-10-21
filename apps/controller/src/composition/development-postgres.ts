@@ -121,7 +121,9 @@ export async function composePostgresDevelopment(
   });
 
   try {
-    const state = new PostgresPlatformState(pool);
+    const state = new PostgresPlatformState(pool, {
+      preparedTokenProof: drivers?.tokenService?.postgresCurrentProof,
+    });
     const persistedInstallation = await state.loadInstallation();
     if (persistedInstallation === undefined) {
       throw new Error("The platform Installation must be bootstrapped before development startup.");
@@ -143,9 +145,7 @@ export async function composePostgresDevelopment(
     }
     const sandboxDriver = drivers?.sandboxDriver;
     const credentialGatewayDriver = drivers?.credentialGatewayDriver;
-    const proxyDriver = drivers?.proxyDriver;
     const protectedDriver = drivers?.protectedDriver;
-    const egressAuthority = drivers?.egressAuthority;
     const credentialRefreshDriver = drivers?.credentialRefreshDriver;
     const configurationDriver =
       options.configurationDriver ??
@@ -239,6 +239,7 @@ export async function composePostgresDevelopment(
     const controller = new OpenClawController(persistedInstallation, {
       sandboxNetworkPolicyCeiling: drivers?.installation.sandboxNetworkPolicyCeiling ?? [],
       state,
+      ...(drivers?.tokenService && { preparedTokens: drivers.tokenService }),
       recordOperations: true,
       defaultPresets: drivers?.defaultPresets ?? [],
       bundledPresetVersions: drivers?.bundledPresetVersions ?? [],
@@ -359,15 +360,14 @@ export async function composePostgresDevelopment(
       ...(workspaceFilesAccess === undefined ? {} : { workspaceFilesAccess }),
     });
     await drivers?.preparedGitHub?.connect(pool);
-    if (proxyDriver !== undefined && egressAuthority !== undefined) {
-      await installEgressAuthority(app, controller, proxyDriver, egressAuthority);
-    }
+    const exchange = protectedDriver && (await installEgressAuthority(controller, protectedDriver));
     app.get("/healthz", async () => ({ status: "ok" }));
     app.get("/readyz", async () => {
       await pool.query("SELECT 1");
       return { status: "ready" };
     });
     app.addHook("onClose", async () => {
+      await exchange?.close();
       await drivers?.protectedDriver?.close();
       await drivers?.preparedGitHub?.close();
       await state.close();

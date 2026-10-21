@@ -614,6 +614,13 @@ export const CredentialSourceSchema = Type.Object(
     namespaceId: NamespaceId,
     name: Name,
     type: CredentialSourceType,
+    ownerCapability: Type.Union(
+      [Type.Literal("credential_gateway"), Type.Literal("credential_proxy")],
+      {
+        description:
+          "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership.",
+      },
+    ),
     config: CredentialSourceConfig,
     egress: Type.Optional(
       Type.Object(

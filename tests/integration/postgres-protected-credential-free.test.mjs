@@ -20,6 +20,8 @@ test(
     let readsBeforeAdmission;
     const repository = { id: 7311, full_name: "fixture/credential-free" };
     const { f, pool, proxy, receipt, assertLostDispatch } = await commitLossScenario(t, {
+      // Gateway and Proxy IDs are in distinct capability namespaces and may legally coincide.
+      proxyDriverId: "openshell-credentials",
       preparedGitHub: new Proxy(
         {},
         {
@@ -49,6 +51,15 @@ test(
           config: { ...config, authority: "execution" },
         });
         assert.equal(status, 201);
+        assert.equal(source.ownerCapability, "credential_proxy");
+        for (const [url, select] of [
+          [path, (data) => data.find(({ id }) => id === source.id)],
+          [path + "/" + source.id, (data) => data],
+        ]) {
+          const response = await app.request("GET", url);
+          assert.equal(response.status, 200);
+          assert.equal(select(response.data).ownerCapability, "credential_proxy");
+        }
         assert.equal(source.egress.adoption, "credential_free");
         assert.deepEqual(source.secrets, {});
         return bindRuntimeSource(app, namespace, agent, source);
@@ -58,6 +69,17 @@ test(
       f.secretReads,
       readsBeforeAdmission,
       "source + Agent + revision admission never read a provider Secret",
+    );
+    assert.deepEqual(
+      f.revision.credentialSources,
+      [
+        {
+          sourceId: f.source.id,
+          sourceType: f.source.type,
+          credentialProxyId: f.controller.selectedDriver("credential_gateway").id,
+        },
+      ],
+      "a new protected source names the Proxy even when the Gateway has the same ID",
     );
     const capture = (changed) => captureMetadata(f, changed);
     const resolve = async (captured, peer) => {

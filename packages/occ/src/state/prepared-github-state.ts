@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import type {
-  PreparedGitHubCurrentProof,
-  PreparedGitHubEgressSource,
+  PreparedTokenCurrentProof,
+  PreparedTokenSource,
 } from "@openclaw-enterprise/contracts";
 import type { PostgresQueryClient } from "./postgres-work-queue.ts";
 
@@ -33,7 +33,7 @@ interface Metadata {
 /** Shared authoritative selection for custody reads and transaction-bound proof. Never projects bytes. */
 export async function readPreparedGitHubMetadata(
   client: PostgresQueryClient,
-  source: PreparedGitHubEgressSource,
+  source: PreparedTokenSource,
   issuerAuthority: string,
 ): Promise<Metadata | undefined> {
   const { rows } = await client.query(
@@ -42,7 +42,7 @@ export async function readPreparedGitHubMetadata(
     WHERE f.source_id=$1 AND f.source=$2::jsonb AND enabled AND ${preparedGitHubLive("'ready'")}
     AND custody='current' AND a.admission=f.admission AND a.admission->>'issuerAuthority'=$3
     AND usable_until > clock_timestamp()
-    AND usable_until < clock_timestamp() + interval '61 minutes'`,
+    AND usable_until < clock_timestamp() + interval '61 minutes' FOR SHARE OF f,a`,
     [source.key.source.id, source, issuerAuthority],
   );
   return rows[0] as Metadata | undefined;
@@ -50,12 +50,16 @@ export async function readPreparedGitHubMetadata(
 
 export function postgresPreparedGitHubProof(
   client: PostgresQueryClient,
-): PreparedGitHubCurrentProof {
+): PreparedTokenCurrentProof {
   return {
     async current(source, evidence, issuerAuthority, lifetime) {
       const until = Math.min(Date.parse(lifetime.deadlineAt), Date.parse(evidence.usableUntil));
       const active = () => !lifetime.signal.aborted && Date.now() < until;
-      if (!active()) {
+      if (
+        source.schemaVersion !== 2 ||
+        source.grant.kind !== "github_repository_metadata" ||
+        !active()
+      ) {
         return false;
       }
       const { rows } = await client.query(

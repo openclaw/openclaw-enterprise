@@ -517,6 +517,13 @@
                 "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                 "type": "string"
               },
+              "ownerCapability": {
+                "anyOf": [
+                  { "const": "credential_gateway", "type": "string" },
+                  { "const": "credential_proxy", "type": "string" }
+                ],
+                "description": "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership."
+              },
               "ref": {
                 "additionalProperties": false,
                 "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
@@ -615,7 +622,17 @@
                 "type": "string"
               }
             },
-            "required": ["id", "namespaceId", "name", "type", "config", "secrets", "state", "ref"],
+            "required": [
+              "id",
+              "namespaceId",
+              "name",
+              "type",
+              "ownerCapability",
+              "config",
+              "secrets",
+              "state",
+              "ref"
+            ],
             "type": "object"
           },
           "meta": {
@@ -25837,6 +25854,13 @@
                             "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
                             "type": "string"
                           },
+                          "ownerCapability": {
+                            "anyOf": [
+                              { "const": "credential_gateway", "type": "string" },
+                              { "const": "credential_proxy", "type": "string" }
+                            ],
+                            "description": "The Driver capability that admitted this source. Changing the selected Driver does not transfer ownership."
+                          },
                           "ref": {
                             "additionalProperties": false,
                             "description": "Exact OCC credential source reference. Shape: `{ \"kind\": \"credential_source\", \"namespaceId\": \"ns_...\", \"id\": \"cs_...\" }`.",
@@ -25940,6 +25964,7 @@
                           "namespaceId",
                           "name",
                           "type",
+                          "ownerCapability",
                           "config",
                           "secrets",
                           "state",

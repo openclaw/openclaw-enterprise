@@ -8,7 +8,7 @@ export function bindPlatformUnitOfWork(
   lifetime: RepositoryTransactionLifetime,
 ): PlatformUnitOfWork {
   return Object.freeze({
-    preparedGitHubProof: bindRepository(repositories.preparedGitHubProof, lifetime, ["current"]),
+    preparedTokenProof: bindRepository(repositories.preparedTokenProof, lifetime, ["current"]),
     egressSendReceipts: bindRepository(repositories.egressSendReceipts, lifetime, [
       "find",
       "insert",

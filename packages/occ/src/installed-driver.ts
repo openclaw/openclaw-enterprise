@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
   ComputeLifecycleHooks,
+  CredentialProxyDriver,
   Driver,
   DriverByCapability,
   DriverCapability,
@@ -98,6 +99,18 @@ export class InstalledDriver {
       );
     }
     return view.driver as DriverByCapability[K];
+  }
+
+  /** Admission needs both operational views; release still requires the observed recipient. */
+  requireRepositoryGitTransport(): NonNullable<CredentialProxyDriver["bindRepositoryGit"]> {
+    const sandbox = this.require("sandbox");
+    const proxy = this.require("credential_proxy");
+    if (!sandbox.repositoryAccess || typeof proxy.bindRepositoryGit !== "function") {
+      throw new DriverSelectionError(
+        "Protected repository Git requires the selected Driver's Sandbox access and Credential Proxy transport.",
+      );
+    }
+    return proxy.bindRepositoryGit.bind(proxy);
   }
 
   /** Match a stored plan, including only the legacy capability IDs explicitly received at installation. */
