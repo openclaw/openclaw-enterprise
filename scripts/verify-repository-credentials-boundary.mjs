@@ -112,7 +112,11 @@ const reviewedImports = {
     "node:fs": ["constants"],
     "node:fs/promises": ["open", "stat"],
   },
-  "drivers/repo/github/credentials/registry.ts": { "node:crypto": ["createHash"] },
+  "drivers/repo/github/credentials/registry.ts": {
+    "node:crypto": ["createHash"],
+    // Compare the complete resolved binding before proposing standing scope; no I/O.
+    "node:util": ["isDeepStrictEqual"],
+  },
   // The prepared owner reads only the Installation custody mount. The App issuer comes
   // through the admitted Secret Driver; grant hashing, comparison, claims and signing-key import stay here.
   "drivers/repo/github/credentials/prepared-lifecycle.ts": {
@@ -134,6 +138,8 @@ const reviewedImports = {
   // Worker only: the Installation's read-only App and custody mounts, public key
   // fingerprint, and preparation attempt ID. The broker has neither key mount.
   "backends/repository-credentials/prepared-git-owner.ts": {
+    // Pure canonical scope hashing shared with admission; no new state or signing authority.
+    "@openclaw-enterprise/occ": ["repositoryApprovalFingerprint"],
     "node:crypto": ["createHash", "createPrivateKey", "createPublicKey", "randomUUID"],
     "node:fs": ["constants"],
     "node:fs/promises": ["open"],

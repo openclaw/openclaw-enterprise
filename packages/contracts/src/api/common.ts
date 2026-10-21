@@ -793,6 +793,29 @@ export const ValidateAgentCreateBody = Type.Object(
 
 export const UpdateAgentBody = Type.Object(
   {
+    repositoryStandingApproval: Type.Optional(
+      Type.Union([
+        Type.Object(
+          {
+            repositoryRef: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+            approvalId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+            approved: Type.Literal(true),
+            duration: Type.Literal("until-removed"),
+            expectedScopeFingerprint: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+          },
+          { additionalProperties: false },
+        ),
+        Type.Object(
+          {
+            repositoryRef: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+            approvalId: Type.String({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" }),
+            approved: Type.Literal(false),
+            expectedGeneration: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+          },
+          { additionalProperties: false },
+        ),
+      ]),
+    ),
     configurationId: ConfigurationId,
     backendId: Type.Optional(Type.Union([BackendId, Type.Null()])),
     harnessAuth: Type.Optional(Type.Union([HarnessAuthBindingSchema, Type.Null()])),

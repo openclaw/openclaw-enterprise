@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { dirname } from "node:path";
@@ -14,6 +14,7 @@ import type { EgressAuthorityConfiguration } from "../../composition/egress-auth
 import { REPOSITORY_CLIENT_BIN } from "../compute/kubernetes/repository-native-configuration.ts";
 import {
   resolveGitHubRepositoryBinding,
+  resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
 } from "../repo/github/credentials/registry.ts";
 import {
@@ -460,7 +461,64 @@ export class OpenShellGitRuntime {
     ) {
       throw new Error("OpenShell prepared Git requires the current exact registry grant.");
     }
+    if (
+      state.standingApprovalId !== undefined &&
+      !resolveGitHubStandingApprovalScope(this.registry, {
+        namespaceId: revision.namespaceId,
+        binding,
+      })
+    ) {
+      throw new Error("OpenShell standing repository policy is unavailable.");
+    }
     return { repository: repository.repository, binding, policy };
+  }
+
+  /** A read of the same running installation. Only normal reconciliation may adopt one. */
+  async verifyExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {
+    const entry = await this.entries.get(revision.id);
+    if (
+      !entry?.opened ||
+      entry.blocked ||
+      entry.unverified ||
+      !isDeepStrictEqual(entry.revision, revision)
+    ) {
+      return;
+    }
+    this.scope(revision);
+    await this.fenced(entry, signal);
+    const observed = await this.observation(entry, signal);
+    if (
+      !observed ||
+      !entry.sandboxId ||
+      !entry.opened ||
+      entry.blocked ||
+      entry.unverified ||
+      signal.aborted ||
+      this.stopped.signal.aborted
+    ) {
+      return;
+    }
+    const identity = [
+      entry.binding.workspace,
+      entry.sandboxId,
+      entry.binding.executionId,
+      observed.processInstanceId,
+      observed.networkInstanceId,
+    ];
+    return {
+      executionId: entry.binding.executionId,
+      fingerprint: createHash("sha256").update(JSON.stringify(identity)).digest("hex"),
+    };
+  }
+
+  /** The prepared owner already caps material at both session and provider expiry. */
+  private materialIsLive(revision: Readonly<AgentRevision>, expiresAt: string) {
+    const snapshot = revision.repositoryCredentials!;
+    const now = Date.now();
+    return (
+      Date.parse(expiresAt) > now &&
+      (snapshot.standingApprovalId !== undefined || snapshot.deadlineWallMs > now)
+    );
   }
 
   async prepare(
@@ -474,7 +532,8 @@ export class OpenShellGitRuntime {
   ) {
     if (
       !revision.repositoryCredentials ||
-      revision.repositoryCredentials.deadlineWallMs <= Date.now()
+      (revision.repositoryCredentials.deadlineWallMs <= Date.now() &&
+        !(revision.repositoryCredentials.standingApprovalId && this.entries.has(revision.id)))
     ) {
       throw new Error("OpenShell prepared Git requires a live git-write binding.");
     }
@@ -1492,7 +1551,7 @@ export class OpenShellGitRuntime {
       }
       // The admission deadline may pass while we read the supervisor and its material. The
       // original registry binding still has to match; time alone is not a changed grant.
-      if (entry.revision.repositoryCredentials!.deadlineWallMs <= Date.now()) {
+      if (!this.materialIsLive(entry.revision, material.expiresAt)) {
         this.pending(entry, "material_unavailable");
         return;
       }
@@ -1653,12 +1712,7 @@ export class OpenShellGitRuntime {
           reason = "installation_changed";
           break;
         }
-        if (
-          Math.min(
-            Date.parse(material.expiresAt),
-            entry.revision.repositoryCredentials!.deadlineWallMs,
-          ) <= Date.now()
-        ) {
+        if (!this.materialIsLive(entry.revision, material.expiresAt)) {
           reason = "material_expired";
           break;
         }

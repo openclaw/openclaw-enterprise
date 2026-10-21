@@ -16767,6 +16767,63 @@
                     },
                     "maxItems": 16,
                     "type": "array"
+                  },
+                  "repositoryStandingApproval": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "approvalId": {
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                            "type": "string"
+                          },
+                          "approved": { "const": true, "type": "boolean" },
+                          "duration": { "const": "until-removed", "type": "string" },
+                          "expectedScopeFingerprint": {
+                            "pattern": "^[a-f0-9]{64}$",
+                            "type": "string"
+                          },
+                          "repositoryRef": {
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "repositoryRef",
+                          "approvalId",
+                          "approved",
+                          "duration",
+                          "expectedScopeFingerprint"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "approvalId": {
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                            "type": "string"
+                          },
+                          "approved": { "const": false, "type": "boolean" },
+                          "expectedGeneration": {
+                            "maximum": 9007199254740991,
+                            "minimum": 1,
+                            "type": "integer"
+                          },
+                          "repositoryRef": {
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "repositoryRef",
+                          "approvalId",
+                          "approved",
+                          "expectedGeneration"
+                        ],
+                        "type": "object"
+                      }
+                    ]
                   }
                 },
                 "required": ["configurationId"],
@@ -21038,6 +21095,326 @@
             "resourceKind": "secret",
             "scope": "requested"
           }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes": {
+      "get": {
+        "description": "Requires administer permission on the requested Agent.",
+        "operationId": "listAgentStandingApprovalScopes",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "properties": {
+                          "binding": { "additionalProperties": {}, "type": "object" },
+                          "repositoryRef": { "type": "string" },
+                          "scope": { "additionalProperties": {}, "type": "object" },
+                          "scopeFingerprint": { "type": "string" }
+                        },
+                        "required": ["repositoryRef", "binding", "scope", "scopeFingerprint"],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Review resolved repository scope before explicitly approving it",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/repository-approvals": {
+      "get": {
+        "description": "Requires administer permission on the requested Agent.",
+        "operationId": "listAgentStandingApprovals",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "data": {
+                      "items": {
+                        "properties": {
+                          "approvedBy": { "type": "string" },
+                          "createdAt": { "type": "string" },
+                          "generation": { "minimum": 1, "type": "integer" },
+                          "id": { "type": "string" },
+                          "profile": { "type": "string" },
+                          "repositoryRef": { "type": "string" },
+                          "revokedAt": { "type": "string" },
+                          "scopeFingerprint": { "type": "string" },
+                          "status": {
+                            "anyOf": [
+                              { "const": "active", "type": "string" },
+                              { "const": "removed", "type": "string" }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "repositoryRef",
+                          "profile",
+                          "generation",
+                          "scopeFingerprint",
+                          "status",
+                          "approvedBy",
+                          "createdAt"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "meta": {
+                      "properties": { "requestId": { "type": "string" } },
+                      "required": ["requestId"],
+                      "type": "object"
+                    }
+                  },
+                  "required": ["data", "meta"],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Default Response"
+          },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Read attributable repository approvals and removed generations for one Agent",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
+        ]
+      }
+    },
+    "/namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove": {
+      "post": {
+        "description": "Requires administer permission on the requested Agent.",
+        "operationId": "removeAgentStandingApproval",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "namespaceId",
+            "required": true,
+            "schema": {
+              "pattern": "^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "agentId",
+            "required": true,
+            "schema": {
+              "pattern": "^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "approvalId",
+            "required": true,
+            "schema": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", "type": "string" }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "expectedGeneration": {
+                    "maximum": 9007199254740991,
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": ["expectedGeneration"],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": { "description": "Default Response" },
+          "400": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "401": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "403": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "404": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "409": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "500": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          },
+          "503": {
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/def-7" } }
+            },
+            "description": "Default Response"
+          }
+        },
+        "summary": "Remove repository approval independently of configuration or runtime cleanup",
+        "tags": ["Agents"],
+        "x-openclaw-permissions": [
+          { "action": "administer", "resourceKind": "agent", "scope": "requested" }
         ]
       }
     },

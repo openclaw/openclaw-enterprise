@@ -119,7 +119,74 @@ export class RepositoryReceiptStore {
         state: "reserved",
         generation,
       });
-      return { kind: "reserved" as const };
+      const revision = await unit.revisions.findRevision(
+        attempt.namespaceId,
+        attempt.agentId,
+        attempt.revisionId,
+      );
+      if (!revision?.repositoryCredentials) {
+        throw new Error("RECEIPT_UNAVAILABLE");
+      }
+      // Distinct wire result: an old broker cannot silently treat a standing grant as finite.
+      return revision.repositoryCredentials.standingApprovalId === undefined
+        ? { kind: "reserved" as const }
+        : { kind: "standing-reserved" as const };
+    });
+  }
+
+  /** Serialize a new use with stop and approval removal. This decision does not
+   * recall a request already authorized or assert an atomic remote provider send. */
+  async authorizeStanding(
+    admissionId: string,
+    input: RepositoryCredentialBoundSessionInput,
+    generation: string,
+    sessionId: string,
+  ): Promise<void> {
+    await this.state.transact(async (unit) => {
+      const repository = unit.repositorySessions;
+      const observed = await repository.findAttempt(admissionId);
+      if (!observed || !this.matches(observed, input)) {
+        throw new Error("RECEIPT_UNAVAILABLE");
+      }
+      const { namespaceId, agentId, revisionId, repositoryRef } = observed;
+      const namespace = await unit.namespaces.lockNamespace(namespaceId);
+      const agent = await unit.agents.lockAgent(namespaceId, agentId);
+      const revision = await unit.revisions.findRevision(namespaceId, agentId, revisionId);
+      const pinned = revision?.repositoryCredentials;
+      const approval = await repository.findStandingApproval(namespaceId, agentId, repositoryRef);
+      const execution = await repository.findStandingExecution({
+        namespaceId,
+        agentId,
+        revisionId,
+      });
+      const attempt = await repository.lockAttempt(admissionId);
+      const receipt = await repository.findBrokerReceipt(admissionId);
+      if (
+        namespace?.status !== "ready" ||
+        agent?.status !== "active" ||
+        agent.desiredRuntimeState !== "running" ||
+        agent.activeRevisionId !== revisionId ||
+        !pinned?.standingApprovalId ||
+        !approval ||
+        approval.revokedAt !== undefined ||
+        approval.id !== pinned.standingApprovalId ||
+        approval.generation !== pinned.standingApprovalGeneration ||
+        approval.scopeFingerprint !== pinned.standingApprovalScopeFingerprint ||
+        !execution ||
+        execution.closed ||
+        !attempt ||
+        attempt.liveRevisionId !== revisionId ||
+        (attempt.executionFingerprint !== undefined &&
+          attempt.executionFingerprint !== execution.fingerprint) ||
+        attempt.phase !== "open" ||
+        attempt.sessionId !== sessionId ||
+        receipt?.state !== "active" ||
+        receipt.generation !== generation ||
+        receipt.sessionId !== sessionId ||
+        !(Math.min(receipt.deadlineWallMs ?? 0, attempt.deadlineWallMs) > Date.now())
+      ) {
+        throw new Error("STANDING_AUTHORITY_UNAVAILABLE");
+      }
     });
   }
 

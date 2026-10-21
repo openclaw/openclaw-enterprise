@@ -143,6 +143,13 @@ export function bindPlatformUnitOfWork(
       "createServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
+      "findStandingExecution",
+      "listStandingApprovals",
+      "findStandingApproval",
+      "recordStandingExecution",
+      "approveStanding",
+      "revokeStanding",
+
       "findAttempt",
       "findBrokerReceipt",
       "findBrokerReceiptBySession",

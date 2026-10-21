@@ -41,6 +41,7 @@ interface Session {
     custody: CustodyOwner;
     lifecycle: LifecycleOwner;
     driver: RepositoryBackend;
+    authorizeStanding?: () => Promise<void>;
   }>;
   readonly prepared?: PreparedRepositoryBackend;
   readonly exchanges: Set<Exchange>;
@@ -193,7 +194,10 @@ export function createCredentialService(
   }
 
   return Object.freeze({
-    open(input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput) {
+    open(
+      input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput,
+      authorizeStanding?: (sessionId: string) => Promise<void>,
+    ) {
       if (shuttingDown) {
         throw new Error("SERVICE_CLOSED");
       }
@@ -289,7 +293,11 @@ export function createCredentialService(
           throw error;
         }
         constructing = false;
+        const authority = authorizeStanding
+          ? { authorizeStanding: () => authorizeStanding(admission.authority.sessionId) }
+          : {};
         const lifecycle = createLifecycle({
+          ...authority,
           clock,
           authority: admission.authority,
           deadlineMonoMs: admission.deadlineMonoMs,
@@ -305,7 +313,7 @@ export function createCredentialService(
             }
           },
         });
-        owned = { custody, driver, lifecycle };
+        owned = { custody, driver, lifecycle, ...authority };
       }
       const openedSession: Session = {
         admission,

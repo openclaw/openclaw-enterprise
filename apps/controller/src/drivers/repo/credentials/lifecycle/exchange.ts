@@ -11,7 +11,11 @@ import { waitWithin } from "../provider-queue.ts";
 
 export interface ExecutingExchange {
   readonly session: Readonly<{
-    owned?: Readonly<{ lifecycle: LifecycleOwner; driver: RepositoryBackend }>;
+    owned?: Readonly<{
+      lifecycle: LifecycleOwner;
+      driver: RepositoryBackend;
+      authorizeStanding?: () => Promise<void>;
+    }>;
     prepared?: PreparedRepositoryBackend;
   }>;
   readonly plan: RequestPlan;
@@ -112,6 +116,10 @@ export async function executeExchange(
       } else {
         record = await owned!.lifecycle.acquire(exchange.deadline, signal);
         const lease = record;
+        // A token may still be valid at the provider after approval was removed or the
+        // execution stopped. Recheck here even when acquisition used a cached token.
+        await owned!.authorizeStanding?.();
+        owned!.lifecycle.assertUse(lease, exchange.deadline);
         assertSendStart = () => owned!.lifecycle.assertUse(lease, exchange.deadline);
         outcome = await owned!.driver.withAuthentication(lease.ref, plan, (request) => {
           if (senderEntered || signal.aborted || request.plan !== plan) {

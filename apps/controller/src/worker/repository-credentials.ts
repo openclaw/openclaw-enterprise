@@ -6,13 +6,16 @@ import type {
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryCredentialSessionStatus,
+  RepositoryExecutionIdentity,
 } from "@openclaw-enterprise/contracts";
 import {
   isRepositoryCleanupWork,
+  repositoryApprovalFingerprint,
   revisionAdmittedBeforeWork,
   WorkClaimLostError,
   type ClaimedWork,
   type PlatformUnitOfWork,
+  type PlatformReadView,
   type PostgresPlatformState,
   type PostgresWorkQueue,
   type PostgresWorkQueueOptions,
@@ -35,10 +38,17 @@ export class RepositoryCredentialAuthorityError extends Error {
   }
 }
 
+/** Authority is closed. The existing cleanup owner still has to confirm disposal. */
+export class StandingRepositorySessionDisposingError extends Error {}
+
 interface Dependencies {
   readonly state: PostgresPlatformState;
   readonly queueOptions: PostgresWorkQueueOptions;
   readonly driver: RepoDriver | undefined;
+  readonly verifyExecution?: (
+    claim: ClaimedWork,
+    revision: Revision,
+  ) => Promise<RepositoryExecutionIdentity | undefined>;
   readonly authorize: (claim: ClaimedWork, revision: Revision) => Promise<void>;
   readonly effect: <T>(
     claim: ClaimedWork,
@@ -137,8 +147,27 @@ export class RepositoryCredentialLifecycle {
       return undefined;
     }
     const driver = this.driver(revision);
-    if (Date.now() >= snapshot.deadlineWallMs) {
+    if (snapshot.standingApprovalId === undefined && Date.now() >= snapshot.deadlineWallMs) {
       throw new RepositoryCredentialAuthorityError("REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED");
+    }
+    if (snapshot.standingApprovalId !== undefined) {
+      const binding = snapshot.bindings[0];
+      const scope =
+        binding && driver.standingApprovalScope?.({ namespaceId: revision.namespaceId, binding });
+      if (
+        !binding ||
+        snapshot.bindings.length !== 1 ||
+        !scope ||
+        snapshot.standingApprovalScopeFingerprint !==
+          repositoryApprovalFingerprint({
+            namespaceId: revision.namespaceId,
+            agentId: revision.agentId,
+            binding,
+            scope,
+          })
+      ) {
+        throw new RepositoryCredentialAuthorityError("REPOSITORY_STANDING_POLICY_CHANGED");
+      }
     }
     let resolved;
     try {
@@ -198,6 +227,9 @@ export class RepositoryCredentialLifecycle {
       );
       for (const attempt of closingAttempts) {
         const closed = await this.closeAttempt(claim, revision, attempt);
+        if (revision.repositoryCredentials.standingApprovalId && closed.disposalPending) {
+          throw new StandingRepositorySessionDisposingError();
+        }
         if (!closed.authorityClosed) {
           throw new Error("REPOSITORY_CLEANUP_PENDING");
         }
@@ -221,7 +253,15 @@ export class RepositoryCredentialLifecycle {
           await this.advance(claim, existing, "invalidated");
         } else {
           this.validateStatus(status, existing, binding);
-          if (status.state === "OPEN" && status.deadlineWallMs > Date.now()) {
+          const duration = this.validate(revision)!;
+          const renewBeforeMs = Math.min(60_000, duration * 200);
+          const renew =
+            revision.repositoryCredentials.standingApprovalId !== undefined &&
+            status.deadlineWallMs - Date.now() <= renewBeforeMs;
+          if (renew) {
+            await this.captureExecution(claim, revision, true);
+          }
+          if (status.state === "OPEN" && status.deadlineWallMs > Date.now() && !renew) {
             await this.authorize(claim, revision);
             prepared.push({
               kind: "retained",
@@ -234,6 +274,9 @@ export class RepositoryCredentialLifecycle {
           }
           const closing = await this.markAttemptClosing(claim, revision, existing);
           const closed = await this.closeAttempt(claim, revision, closing, status);
+          if (renew && closed.disposalPending) {
+            throw new StandingRepositorySessionDisposingError();
+          }
           if (!closed.authorityClosed) {
             throw new Error("REPOSITORY_CLEANUP_PENDING");
           }
@@ -440,9 +483,83 @@ export class RepositoryCredentialLifecycle {
     return driver;
   }
 
+  /** Pins only a fresh observation of the active execution; never creates or repairs Compute. */
+  async captureExecution(
+    claim: ClaimedWork,
+    revision: Revision,
+    required = false,
+  ): Promise<RepositoryExecutionIdentity | undefined> {
+    if (!revision.repositoryCredentials?.standingApprovalId) {
+      return;
+    }
+    const active = await this.dependencies.state.read((v) =>
+      v.agents.findAgent(revision.namespaceId, revision.agentId),
+    );
+    if (active?.activeRevisionId !== revision.id) {
+      if (required) {
+        throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_UNVERIFIED");
+      }
+      return;
+    }
+    const execution = await this.dependencies.verifyExecution?.(claim, revision);
+    if (!execution || !execution.executionId || !/^[a-f0-9]{64}$/.test(execution.fingerprint)) {
+      if (required) {
+        throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_UNVERIFIED");
+      }
+      return;
+    }
+    await this.authorizedTransaction(claim, revision, (u) =>
+      u.repositorySessions.recordStandingExecution(owner(revision), execution),
+    );
+    return execution;
+  }
+
+  private async validateStanding(revision: Revision, unit?: PlatformUnitOfWork): Promise<void> {
+    const snapshot = revision.repositoryCredentials;
+    if (snapshot?.standingApprovalId === undefined) {
+      return;
+    }
+    const read = (view: Pick<PlatformReadView, "repositorySessions">) =>
+      view.repositorySessions.findStandingApproval(
+        revision.namespaceId,
+        revision.agentId,
+        snapshot.bindings[0]!.repositoryRef,
+      );
+    const approval = unit ? await read(unit) : await this.dependencies.state.read(read);
+    if (
+      !approval ||
+      approval.id !== snapshot.standingApprovalId ||
+      approval.generation !== snapshot.standingApprovalGeneration ||
+      approval.scopeFingerprint !== snapshot.standingApprovalScopeFingerprint
+    ) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_STANDING_APPROVAL_REMOVED");
+    }
+  }
+
   private async authorize(claim: ClaimedWork, revision: Revision): Promise<void> {
     this.validate(revision);
     await this.dependencies.authorize(claim, revision);
+    await this.validateStanding(revision);
+    if (revision.repositoryCredentials?.standingApprovalId) {
+      const recorded = await this.dependencies.state.read((v) =>
+        v.repositorySessions.findStandingExecution(owner(revision)),
+      );
+      if (recorded) {
+        if (recorded.closed) {
+          throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_CLOSED");
+        }
+        const observed = await this.dependencies.verifyExecution?.(claim, revision);
+        if (
+          !observed ||
+          observed.executionId !== recorded.executionId ||
+          observed.fingerprint !== recorded.fingerprint
+        ) {
+          throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_UNVERIFIED");
+        }
+      } else if (Date.now() >= revision.repositoryCredentials.deadlineWallMs) {
+        throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_UNVERIFIED");
+      }
+    }
     this.validate(revision);
   }
 
@@ -475,6 +592,7 @@ export class RepositoryCredentialLifecycle {
         }
       }
       this.validate(revision);
+      await this.validateStanding(revision, unit);
       return operation(unit, queue);
     }, this.dependencies.queueOptions);
   }
@@ -490,24 +608,41 @@ export class RepositoryCredentialLifecycle {
         driver.checkAdmissionReady!(AbortSignal.any([signal, AbortSignal.timeout(2000)])),
       );
     }
+    const standing = revision.repositoryCredentials?.standingApprovalId !== undefined;
+    const predecessor = standing
+      ? await this.dependencies.state.read(async (v) =>
+          (await v.repositorySessions.listRevisionAttempts(owner(revision)))
+            .filter((a) => a.repositoryRef === binding.repositoryRef)
+            .at(-1),
+        )
+      : undefined;
+    const execution = predecessor ? await this.captureExecution(claim, revision, true) : undefined;
     const attempt = await this.authorizedTransaction(claim, revision, async (unit) => {
       const attempts = await unit.repositorySessions.listRevisionAttempts(owner(revision));
       assertRepositorySessionCanOpen(attempts, binding.repositoryRef);
-      const deadlineWallMs = revision.repositoryCredentials!.deadlineWallMs;
-      const durationSeconds = Math.min(
-        this.validate(revision)!,
-        Math.floor((deadlineWallMs - Date.now()) / 1000),
-      );
+      const openedAt = Date.now();
+      const deadlineWallMs = predecessor
+        ? openedAt + this.validate(revision)! * 1000
+        : revision.repositoryCredentials!.deadlineWallMs;
+      const durationSeconds = predecessor
+        ? this.validate(revision)!
+        : Math.min(this.validate(revision)!, Math.floor((deadlineWallMs - Date.now()) / 1000));
       if (durationSeconds < 1) {
         throw new RepositoryCredentialAuthorityError("REPOSITORY_CREDENTIAL_DEADLINE_EXCEEDED");
       }
       return unit.repositorySessions.createAttempt({
         ...owner(revision),
+        ...(predecessor
+          ? {
+              predecessorAdmissionId: predecessor.admissionId,
+              executionFingerprint: execution!.fingerprint,
+            }
+          : {}),
         repositoryRef: binding.repositoryRef,
         admissionId: `${Date.now()}-${randomUUID()}`,
         durationSeconds,
         deadlineWallMs,
-        createdAt: new Date().toISOString(),
+        createdAt: new Date(openedAt).toISOString(),
         ...(this.driver(revision).durableBrokerReceipts === true
           ? { brokerProtocol: 1 as const }
           : {}),
@@ -531,6 +666,12 @@ export class RepositoryCredentialLifecycle {
       );
       await this.closeAttempt(claim, revision, closing, opened.status);
       throw new Error("REPOSITORY_ADMISSION_RECOVERED");
+    }
+    if (predecessor) {
+      const current = await this.captureExecution(claim, revision, true);
+      if (current!.fingerprint !== execution!.fingerprint) {
+        throw new RepositoryCredentialAuthorityError("REPOSITORY_EXECUTION_CHANGED");
+      }
     }
     this.validateStatus(opened.session, attempt, binding);
     if (opened.session.state !== "OPEN" || opened.session.deadlineWallMs <= Date.now()) {
@@ -666,7 +807,8 @@ export class RepositoryCredentialLifecycle {
       await this.advance(claim, closing, "disposed");
       return { settled: true, authorityClosed: true };
     }
-    return { settled: false, authorityClosed: status.state === "CLOSED" };
+    const disposalPending = status.state === "CLOSED";
+    return { settled: false, authorityClosed: disposalPending, disposalPending };
   }
 
   private async markAttemptClosing(

@@ -1,0 +1,32 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "composite": false,
+    "noEmit": true,
+    "declaration": false,
+    "rewriteRelativeImportExtensions": false,
+    "allowImportingTsExtensions": true
+  },
+  "include": ["integration/*.test.ts"],
+  "references": [
+    {
+      "path": "../packages/utils"
+    },
+    {
+      "path": "../packages/contracts"
+    },
+    {
+      "path": "../packages/occ"
+    },
+    {
+      "path": "../packages/iam"
+    },
+    {
+      "path": "../packages/audit"
+    },
+    {
+      "path": "../apps/controller"
+    }
+  ]
+}

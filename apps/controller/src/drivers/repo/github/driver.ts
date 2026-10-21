@@ -18,6 +18,7 @@ import {
 } from "../../../backends/repository-credentials/control-client.ts";
 import {
   resolveGitHubRepositoryBinding,
+  resolveGitHubStandingApprovalScope,
   validateGitHubRepositoryRegistry,
   type GitHubRepositoryRegistry,
 } from "./credentials/registry.ts";
@@ -200,6 +201,20 @@ export class GitHubRepoDriver implements RepoDriver {
     } catch {
       return Object.freeze({ options: Object.freeze(options), descriptionsPending: false });
     }
+  }
+
+  standingApprovalScope(input: {
+    namespaceId: string;
+    binding: import("@openclaw-enterprise/contracts").AdmittedRepositoryBinding;
+  }): import("@openclaw-enterprise/contracts").RepositoryApprovalScope | undefined {
+    return resolveGitHubStandingApprovalScope(this.#registry, input);
+  }
+
+  allowsStandingApproval(input: {
+    namespaceId: string;
+    binding: import("@openclaw-enterprise/contracts").AdmittedRepositoryBinding;
+  }): boolean {
+    return this.standingApprovalScope(input) !== undefined;
   }
 
   resolve(input: {

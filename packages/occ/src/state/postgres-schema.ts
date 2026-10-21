@@ -783,6 +783,71 @@ export const agentRevisions = occSchema.table(
   ],
 );
 
+export const repositoryStandingApprovals = occSchema.table(
+  "repository_standing_approvals",
+  {
+    id: text("id").primaryKey(),
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    repositoryRef: text("repository_ref").notNull(),
+    binding: jsonb("binding").notNull(),
+    scope: jsonb("scope").notNull(),
+    scopeFingerprint: text("scope_fingerprint").notNull(),
+    generation: bigint("generation", { mode: "number" }).notNull(),
+    approvedBy: text("approved_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("standing_approvals_id_check", sql`id ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'`),
+    check(
+      "standing_approvals_binding_check",
+      sql`occ.repository_bindings_are_valid(jsonb_build_array(binding),true) AND binding->>'repositoryRef'=repository_ref`,
+    ),
+    check(
+      "standing_approvals_scope_check",
+      sql`jsonb_typeof(scope)='object' AND octet_length(scope::text) BETWEEN 2 AND 65536`,
+    ),
+    check("standing_approvals_scope_fingerprint_check", sql`scope_fingerprint ~ '^[0-9a-f]{64}$'`),
+    check("standing_approvals_generation_check", sql`generation BETWEEN 1 AND 9007199254740991`),
+    check("standing_approvals_approved_by_check", sql`length(approved_by) BETWEEN 1 AND 512`),
+    check("standing_approvals_created_at_check", sql`isfinite(created_at)`),
+    check(
+      "standing_approvals_revoked_at_check",
+      sql`isfinite(revoked_at) AND revoked_at >= created_at`,
+    ),
+    uniqueIndex("repository_standing_approvals_generation").on(
+      t.namespaceId,
+      t.agentId,
+      t.repositoryRef,
+      t.generation,
+    ),
+    uniqueIndex("repository_standing_approvals_current")
+      .on(t.namespaceId, t.agentId, t.repositoryRef)
+      .where(sql`revoked_at IS NULL`),
+  ],
+);
+
+export const repositoryStandingExecutions = occSchema.table(
+  "repository_standing_executions",
+  {
+    namespaceId: text("namespace_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    revisionId: text("revision_id").primaryKey(),
+    approvalId: text("approval_id")
+      .notNull()
+      .references(() => repositoryStandingApprovals.id),
+    approvalGeneration: bigint("approval_generation", { mode: "number" }).notNull(),
+    executionId: text("execution_id").notNull(),
+    fingerprint: text("fingerprint").notNull(),
+    closed: boolean("closed").notNull().default(false),
+  },
+  (t) => [
+    check("repository_standing_execution_id", sql`length(${t.executionId}) BETWEEN 1 AND 512`),
+    check("repository_standing_execution_fingerprint", sql`${t.fingerprint} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
 export const repositorySessionAttempts = occSchema.table(
   "repository_session_attempts",
   {
@@ -797,11 +862,21 @@ export const repositorySessionAttempts = occSchema.table(
     deadlineWallMs: bigint("deadline_wall_ms", { mode: "number" }).notNull(),
     phase: text("phase").notNull(),
     sessionId: text("session_id"),
+    predecessorAdmissionId: text("predecessor_admission_id"),
+    executionFingerprint: text("execution_fingerprint"),
     brokerProtocol: smallint("broker_protocol").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
   (table): PgTableExtraConfigValue[] => [
+    check(
+      "repository_session_succession_fields",
+      sql`(${table.predecessorAdmissionId} IS NULL AND ${table.executionFingerprint} IS NULL) OR
+      (${table.predecessorAdmissionId} IS NOT NULL AND ${table.executionFingerprint} IS NOT NULL AND ${table.executionFingerprint} ~ '^[0-9a-f]{64}$')`,
+    ),
+    uniqueIndex("repository_session_succession_once")
+      .on(table.predecessorAdmissionId)
+      .where(sql`${table.predecessorAdmissionId} IS NOT NULL`),
     foreignKey({
       name: "repository_session_attempts_revision_owner",
       columns: [table.namespaceId, table.agentId, table.liveRevisionId],

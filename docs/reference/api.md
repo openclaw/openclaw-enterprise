@@ -67,7 +67,7 @@ the paths.
 | [Backends](#backends) | 1 operation |
 | [Installation](#installation) | 4 operations |
 | [Namespaces](#namespaces) | 5 operations |
-| [Agents](#agents) | 41 operations |
+| [Agents](#agents) | 44 operations |
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
@@ -1791,6 +1791,9 @@ Report advisory primary IAM permissions on a readable Namespace, not authorizati
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins`](#post-namespacesnamespaceidagentsagentidplugins) | List or search plugins for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/plugins/capabilities`](#get-namespacesnamespaceidagentsagentidpluginscapabilities) | Read selected Plugin Driver policy capabilities for an active Agent with caller Agent read/update permission |
 | [`POST /namespaces/{namespaceId}/agents/{agentId}/plugins/details`](#post-namespacesnamespaceidagentsagentidpluginsdetails) | Read plugin details for an active Agent; caller needs Agent read/update. Curated discovery needs no Secret; hosted discovery needs the Agent's bound Service Accounts Secret with caller and Agent Secret operate grants |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes`](#get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes) | Review resolved repository scope before explicitly approving it |
+| [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-approvals`](#get-namespacesnamespaceidagentsagentidrepositoryapprovals) | Read attributable repository approvals and removed generations for one Agent |
+| [`POST /namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove`](#post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove) | Remove repository approval independently of configuration or runtime cleanup |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/repository-options`](#get-namespacesnamespaceidagentsagentidrepositoryoptions) | List approved repository choices for updating one Agent |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/revisions/{revisionId}/sandbox-policy/{facet}/recommendations`](#get-namespacesnamespaceidagentsagentidrevisionsrevisionidsandboxpolicyfacetrecommendations) | Read policy suggestions for the requested Agent revision |
 | [`GET /namespaces/{namespaceId}/agents/{agentId}/runtime-credentials`](#get-namespacesnamespaceidagentsagentidruntimecredentials) | Get metadata for one Agent's provisioned runtime credentials |
@@ -2824,6 +2827,7 @@ Replace an exact Namespace-owned Agent's editable draft
 | `repositoryBindings` | `array<object>` | No | max items: 16; Requested repository references and optional profiles. Omission means no bindings on create and preserves bindings on update; an empty update clears bindings. Admission requires unique repository references. |
 | `repositoryBindings[].profile` | `string` | No | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
 | `repositoryBindings[].repositoryRef` | `string` | Yes | min length: 1; max length: 128; pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+| `repositoryStandingApproval` | `object or object` | No | — |
 
 ##### Responses
 
@@ -3556,6 +3560,146 @@ Read plugin details for an active Agent; caller needs Agent read/update. Curated
 | `data.websiteUrl` | `string` | No | — |
 | `meta` | `object` | Yes | — |
 | `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/repository-approval-scopes`
+
+<span id="get-namespacesnamespaceidagentsagentidrepositoryapprovalscopes"></span>
+
+Review resolved repository scope before explicitly approving it
+
+**Operation ID:** `listAgentStandingApprovalScopes`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].binding` | `object<string, any>` | Yes | — |
+| `data[].repositoryRef` | `string` | Yes | — |
+| `data[].scope` | `object<string, any>` | Yes | — |
+| `data[].scopeFingerprint` | `string` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `GET /namespaces/{namespaceId}/agents/{agentId}/repository-approvals`
+
+<span id="get-namespacesnamespaceidagentsagentidrepositoryapprovals"></span>
+
+Read attributable repository approvals and removed generations for one Agent
+
+**Operation ID:** `listAgentStandingApprovals`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `array<object>` | Yes | — |
+| `data[].approvedBy` | `string` | Yes | — |
+| `data[].createdAt` | `string` | Yes | — |
+| `data[].generation` | `integer` | Yes | minimum: 1 |
+| `data[].id` | `string` | Yes | — |
+| `data[].profile` | `string` | Yes | — |
+| `data[].repositoryRef` | `string` | Yes | — |
+| `data[].revokedAt` | `string` | No | — |
+| `data[].scopeFingerprint` | `string` | Yes | — |
+| `data[].status` | `"active" or "removed"` | Yes | — |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | — |
+
+#### `POST /namespaces/{namespaceId}/agents/{agentId}/repository-approvals/{approvalId}/remove`
+
+<span id="post-namespacesnamespaceidagentsagentidrepositoryapprovalsapprovalidremove"></span>
+
+Remove repository approval independently of configuration or runtime cleanup
+
+**Operation ID:** `removeAgentStandingApproval`
+
+**Permissions:** Requires administer permission on the requested Agent.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `administer` | `agent` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `agentId` | path | `string` | Yes | pattern: `^agt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `approvalId` | path | `string` | Yes | pattern: `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$` |
+
+##### Request body
+
+**Required:** Yes
+
+**Content type:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `expectedGeneration` | `integer` | Yes | minimum: 1; maximum: 9007199254740991 |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `204` | No Content |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
 
 #### `GET /namespaces/{namespaceId}/agents/{agentId}/repository-options`
 

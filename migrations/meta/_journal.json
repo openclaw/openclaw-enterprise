@@ -428,6 +428,13 @@
       "when": 1787000000070,
       "tag": "0061_openshell_expired_git",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1787000000071,
+      "tag": "0062_repository_standing_approvals",
+      "breakpoints": true
     }
   ]
 }

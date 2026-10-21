@@ -38,7 +38,11 @@
     "tests/integration/postgres-openshell-online-git-journey.test.mjs",
     "tests/integration/postgres-openshell-git-routes.test.mjs",
     "tests/integration/postgres-egress-send-receipts.test.mjs",
-    "tests/integration/postgres-protected-credential-free.test.mjs"
+    "tests/integration/postgres-protected-credential-free.test.mjs",
+    "tests/integration/postgres-standing-approval-api.test.ts",
+    "tests/integration/postgres-standing-repository-boundary.test.ts",
+    "tests/integration/postgres-standing-execution.test.ts",
+    "tests/integration/postgres-standing-session-worker.test.ts"
   ],
   "files": [
     {
@@ -315,6 +319,31 @@
       "expectedTests": [
         "Agent policy HTTP admission persists bounded grants without changing an admitted revision",
         "interrupted terminal policy recovery rolls back queue failure and a restarted worker finalizes it"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-standing-approval-api.test.ts",
+      "expectedTests": [
+        "registered standing approval persists exact scope and fences removed generations"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-standing-repository-boundary.test.ts",
+      "expectedTests": [
+        "expired finite admission cannot become standing through replacement or owner restart"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-standing-execution.test.ts",
+      "expectedTests": [
+        "standing execution survives a State restart but stop cannot be undone by run intent"
+      ]
+    },
+    {
+      "path": "tests/integration/postgres-standing-session-worker.test.ts",
+      "expectedTests": [
+        "stopping the registered execution denies a new provider issuance while cleanup is paused",
+        "registered worker renews the same standing execution across both expired horizons and removal immediately fences use"
       ]
     }
   ]

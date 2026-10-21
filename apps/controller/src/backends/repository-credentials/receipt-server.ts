@@ -110,10 +110,14 @@ export async function startRepositoryReceiptServer(options: {
     const fields =
       parsed.kind === "bind" || parsed.kind === "dispose"
         ? ["kind", "admissionId", "generation", "input", "status"]
-        : ["kind", "admissionId", "generation", "input"];
+        : parsed.kind === "authorize-standing"
+          ? ["kind", "admissionId", "generation", "input", "sessionId"]
+          : ["kind", "admissionId", "generation", "input"];
     const command = object(parsed, fields);
     if (
-      !["reserve", "recover", "bind", "dispose", "fence"].includes(String(command.kind)) ||
+      !["reserve", "recover", "bind", "dispose", "fence", "authorize-standing"].includes(
+        String(command.kind),
+      ) ||
       typeof command.admissionId !== "string" ||
       !admissionPattern.test(command.admissionId) ||
       typeof command.generation !== "string" ||
@@ -136,6 +140,18 @@ export async function startRepositoryReceiptServer(options: {
     if (command.kind === "fence") {
       await store.fence(command.admissionId, input, command.generation);
       return { kind: "acknowledged" };
+    }
+    if (command.kind === "authorize-standing") {
+      if (typeof command.sessionId !== "string" || !sessionPattern.test(command.sessionId)) {
+        throw new Error("INVALID_RECEIPT_REQUEST");
+      }
+      await store.authorizeStanding(
+        command.admissionId,
+        input,
+        command.generation,
+        command.sessionId,
+      );
+      return { kind: "authorized" };
     }
     const observed = status(command.status);
     if (command.kind === "bind") {

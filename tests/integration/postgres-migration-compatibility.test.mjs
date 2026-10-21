@@ -206,6 +206,7 @@ test(
     try {
       for (const [table, constraint] of [
         ["egress_send_receipts", "egress_send_receipts_check_17"],
+        ["repository_standing_approvals", "standing_approvals_binding_check"],
         ["agent_revisions", "agent_revisions_admitted_snapshot"],
       ]) {
         const create = `CREATE TABLE "occ"."${table}"`;
@@ -1852,6 +1853,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preStaticEgress"],
       [60, "preOpenShellExpiredGit"],
+      [61, "preStandingApproval"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2256,6 +2258,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preStaticEgress"],
       [60, "preOpenShellExpiredGit"],
+      [61, "preStandingApproval"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2345,6 +2348,7 @@ test(
       [58, "preSandboxPolicyAdministrator"],
       [59, "preStaticEgress"],
       [60, "preOpenShellExpiredGit"],
+      [61, "preStandingApproval"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });
@@ -2366,6 +2370,7 @@ test(
         // From 0059, fail the final grant in 0061 so the revision backfill, its immutability
         // trigger, the route table, grants and both new receipts must all roll back together.
         const rollbackTag = [
+          [61, "CREATE TRIGGER"],
           [58, "GRANT"],
           [57, "CREATE TABLE"],
           [56, "CREATE FUNCTION"],
@@ -2449,7 +2454,7 @@ test(
       /through 0070 using commit 78b106f1ddc6aa5f638a49c12954be732ab16982/,
     );
 
-    // From 0069, append only the real shared migration. From 0070, append nothing.
+    // From 0069, append the shared migrations; preserve the preview receipts on repeat.
     await append(preview.slice(9), 1787000000069);
     const before = await historyReceipts(db.migrator);
     assert.equal(before.length, 69);

@@ -59,6 +59,10 @@ const families = "occ.prepared_github_families";
 const attempts = "occ.prepared_github_attempts";
 
 export interface PreparedRepositorySession {
+  readonly standingApprovalId?: string;
+  readonly standingApprovalGeneration?: number;
+  readonly standingApprovalScopeFingerprint?: string;
+  readonly agentId: string;
   readonly namespaceId: string;
   readonly revisionId: string;
   readonly admissionId: string;
@@ -73,7 +77,12 @@ const sessions = `SELECT jsonb_build_object(
   'namespaceId',s.namespace_id, 'agentId',s.agent_id, 'revisionId',s.live_revision_id,
   'installationId',i.id, 'admissionId',s.admission_id, 'sessionId',b.session_id,
   'brokerGeneration',b.generation, 'driver',s.cleanup_context->'driver', 'binding',s.cleanup_context->'binding',
-  'grant',s.cleanup_context #> '{binding,grant}') AS session,
+  'grant',s.cleanup_context #> '{binding,grant}') ||
+    CASE WHEN rev.admitted_spec->'repository_credentials' ? 'standingApprovalId' THEN jsonb_build_object(
+      'standingApprovalId',rev.admitted_spec #> '{repository_credentials,standingApprovalId}',
+      'standingApprovalGeneration',rev.admitted_spec #> '{repository_credentials,standingApprovalGeneration}',
+      'standingApprovalScopeFingerprint',rev.admitted_spec #> '{repository_credentials,standingApprovalScopeFingerprint}')
+      ELSE '{}'::jsonb END AS session,
   least(b.deadline_wall_ms, s.deadline_wall_ms) AS end_ms
   FROM occ.repository_session_attempts s
   JOIN occ.repository_broker_receipts b USING(admission_id)
@@ -86,6 +95,15 @@ const sessions = `SELECT jsonb_build_object(
   AND g.status='active' AND g.desired_runtime_state='running' AND g.execution_mode='dedicated'
   AND s.cleanup_context #>> '{binding,profile}' = 'git-write'
   AND g.repository_bindings @> jsonb_build_array(jsonb_build_object('repositoryRef',s.repository_ref,'profile','git-write'))
+  AND occ.repository_standing_approval_is_current(rev.admitted_spec->'repository_credentials',s.namespace_id,s.agent_id)
+  AND NOT EXISTS (SELECT FROM occ.repository_standing_executions e WHERE e.revision_id=s.revision_id AND e.closed)
+  AND (s.predecessor_admission_id IS NULL OR occ.repository_standing_execution_is_current(rev.admitted_spec->'repository_credentials',s.namespace_id,s.agent_id,s.revision_id))
+  AND (NOT (rev.admitted_spec->'repository_credentials' ? 'standingApprovalId') OR NOT EXISTS (
+    SELECT FROM occ.prepared_github_families prior JOIN occ.prepared_github_attempts attempt ON attempt.source_id=prior.source_id
+    WHERE prior.source->>'adoption'='prepared_repository_git'
+      AND prior.source #>> '{session,revisionId}'=s.revision_id
+      AND prior.source #>> '{session,admissionId}'<>s.admission_id
+      AND attempt.custody<>'revoked'))
   AND rev.admitted_spec #> '{repository_credentials,driver}'=s.cleanup_context->'driver'
   AND rev.admitted_spec #> '{repository_credentials,bindings}' @> jsonb_build_array(s.cleanup_context->'binding')`;
 const live = `EXISTS (SELECT FROM (${sessions}) l WHERE l.session = f.source->'session')`;

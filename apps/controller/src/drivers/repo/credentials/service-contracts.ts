@@ -111,6 +111,8 @@ export interface SafeConfigurationSummary {
 export interface SessionControl {
   open(
     input: RepositoryCredentialSessionInput | RepositoryCredentialBoundSessionInput,
+    /** Private receipt owner, never part of the client input. */
+    authorizeStanding?: (sessionId: string) => Promise<void>,
   ): RepositoryCredentialSessionResult;
   status(sessionId: string): SessionStatus | undefined;
   close(sessionId: string): SessionStatus;

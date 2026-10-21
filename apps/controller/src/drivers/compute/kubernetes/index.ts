@@ -5645,6 +5645,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
     return "validated";
   }
 
+  async verifyRepositoryExecution(revision: Readonly<AgentRevision>, signal: AbortSignal) {
+    return this.openShellGit?.verifyExecution(revision, signal);
+  }
+
   async prepareRevision(
     revision: AgentRevision,
     context?: ComputeRevisionContext,

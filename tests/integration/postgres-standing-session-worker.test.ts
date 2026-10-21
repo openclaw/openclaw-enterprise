@@ -1,0 +1,432 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { randomUUID, createHash } from "node:crypto";
+import { request as httpsRequest } from "node:https";
+import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
+import { requiresPostgres, databaseUrl } from "../helpers/postgres-database.mjs";
+import { waitFor } from "../helpers/wait-for.mjs";
+import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
+import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
+import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
+import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
+import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
+import type {
+  ComputeDriver,
+  ComputeRevisionContext,
+  RepositoryCredentialRuntimeBinding,
+} from "../../packages/contracts/src/index.ts";
+import type { ControllerWorker } from "../../apps/controller/src/worker.ts";
+import type { Pool } from "pg";
+import { permissionsForProfile } from "../../apps/controller/src/drivers/repo/github/credentials/profiles.ts";
+import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
+
+// Real queue, worker, State, Repo/Unix receipt protocol and HTTPS provider. Compute is a
+// controlled observation adapter; this does not claim an OpenShell process or actual chat.
+const cases = {
+  stop: "stopping the registered execution denies a new provider issuance while cleanup is paused",
+  remove:
+    "registered worker renews the same standing execution across both expired horizons and removal immediately fences use",
+};
+for (const [action, name] of Object.entries(cases)) {
+  test(name, { ...requiresPostgres, timeout: 240_000 }, async (t) => {
+    await ensurePostgresAgentBootstrap(t, {
+      label: "standing-worker-" + action,
+      authSecret: "standing-worker-fixture-auth-secret-32",
+    });
+    const database = {
+      url: databaseUrl!,
+      pools: new Set<Pool>(),
+      workers: new Set<ControllerWorker>(),
+    };
+    // Close database pools after broker shutdown has persisted its final receipts.
+    t.after(() =>
+      t.after(async () => {
+        for (const worker of database.workers) {
+          await worker.stop();
+        }
+        for (const pool of database.pools) {
+          if (!("ending" in pool && pool.ending)) {
+            await pool.end();
+          }
+        }
+      }),
+    );
+    const setupOptions = { database, leaseDurationMs: 30_000 };
+    const f = await createWorkerRevisionFixtures(import.meta.url).setup(t, setupOptions);
+    try {
+      const credentials = await startRegistryCredentialServiceFixture(t, {
+        namespaceId: f.namespace.id,
+        autoOpen: false,
+        clock: createSystemClock(),
+        tokenLifetimeMs: 80_000,
+        limits: { exchangeMs: 5_000, credentialMarginMs: 1_000 },
+        gateway: { listen: "127.0.0.1:0" },
+      });
+      assert.ok(credentials);
+      const { tls, listeners } = credentials;
+      const registry = structuredClone(credentials.registry);
+      registry.allowStandingApprovals = true;
+      for (const r of registry.repositories) {
+        for (const p of r.namespaces) {
+          p.allowStandingApproval = true;
+        }
+      }
+      const driver = new GitHubRepoDriver(
+        {
+          id: credentials.backendId,
+          client: new UnixRepositoryCredentialControlClient({
+            controlSocket: credentials.config.gateway.controlSocket,
+          }),
+          drivers: { repo: "repository-credentials" },
+        },
+        registry,
+        { sessionDurationSeconds: 90, publicCa: credentials.tls.ca },
+      );
+      const receipt = await startRepositoryReceiptServer({
+        state: f.state,
+        controlSocket: credentials.config.gateway.controlSocket,
+        driverId: driver.id,
+        implementation: driver.implementation,
+        backendId: credentials.backendId,
+      });
+      t.after(() => receipt.close());
+      const owner = await f.agent("standing-runtime");
+      const [selected] = driver.resolve({
+        namespaceId: f.namespace.id,
+        bindings: [{ repositoryRef: "repo-a", profile: "git-write" }],
+      }).bindings;
+      const binding = selected!;
+      await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
+        JSON.stringify([{ repositoryRef: binding.repositoryRef, profile: binding.profile }]),
+        owner.id,
+      ]);
+      const scope = driver.standingApprovalScope({ namespaceId: f.namespace.id, binding })!;
+      const fingerprint = repositoryApprovalFingerprint({
+        namespaceId: f.namespace.id,
+        agentId: owner.id,
+        binding,
+        scope,
+      });
+      const approval = await f.state.transact((u) =>
+        u.repositorySessions.approveStanding({
+          id: randomUUID(),
+          namespaceId: f.namespace.id,
+          agentId: owner.id,
+          binding,
+          scope,
+          scopeFingerprint: fingerprint,
+          approvedBy: f.actor.id,
+          createdAt: new Date().toISOString(),
+        }),
+      );
+      const originalBoundary = Date.now() + 90_000;
+      const revisionOptions = {
+        actorId: f.actor.id,
+        repositoryCredentials: {
+          driver: { id: driver.id, implementation: driver.implementation },
+          bindings: [binding],
+          deadlineWallMs: originalBoundary,
+          standingApprovalId: approval.id,
+          standingApprovalGeneration: approval.generation,
+          standingApprovalScopeFingerprint: fingerprint,
+        },
+      };
+      const revision = await f.revision(owner, 1, revisionOptions);
+      const execution = {
+        executionId: randomUUID(),
+        fingerprint: createHash("sha256").update(randomUUID()).digest("hex"),
+      };
+      type Delivered = Extract<RepositoryCredentialRuntimeBinding, { kind: "new" }>;
+      const deliveries: Delivered[] = [];
+      type WorkerEvent = { event?: string; revisionId?: string; code?: string };
+      const events: WorkerEvent[] = [];
+      let created = false;
+      let executionCreates = 0;
+      let stopped = 0;
+      const compute = {
+        ...f.compute,
+        validateRepositoryCredentials() {},
+        async prepareRevision(
+          r: Parameters<ComputeDriver["prepareRevision"]>[0],
+          context?: ComputeRevisionContext,
+        ) {
+          if (!created) {
+            created = true;
+            executionCreates++;
+          }
+          for (const value of context?.repositoryCredentials ?? []) {
+            if (value.kind === "new") {
+              deliveries.push(value);
+            }
+          }
+          return f.compute.prepareRevision(r);
+        },
+        async verifyRepositoryExecution(r: Parameters<ComputeDriver["prepareRevision"]>[0]) {
+          return created && r.id === revision.id ? execution : undefined;
+        },
+        async stopRevision(r: Parameters<ComputeDriver["stopRevision"]>[0]) {
+          assert.equal(
+            r.id,
+            revision.id,
+            "stopping a different revision cannot change this execution",
+          );
+          stopped++;
+          created = false;
+        },
+      };
+      const start = () =>
+        f.start(compute, {
+          emit: (e?: WorkerEvent) => {
+            if (e) {
+              events.push(e);
+            }
+          },
+          transformDrivers: (d: object) => ({ ...d, repoDriver: driver }),
+        });
+      await start();
+      await f.work(revision, "succeeded");
+      await waitFor(
+        "durable execution observation",
+        () =>
+          f.state.read((v) =>
+            v.repositorySessions.findStandingExecution({
+              namespaceId: f.namespace.id,
+              agentId: owner.id,
+              revisionId: revision.id,
+            }),
+          ),
+        15_000,
+      );
+      const first = await waitFor("first session", async () => deliveries[0]);
+      async function read(material: Delivered) {
+        return new Promise<number | undefined>((resolve, reject) => {
+          const req = httpsRequest(
+            {
+              hostname: "127.0.0.1",
+              port: listeners.address.port,
+              path: "/fixture/repository.git/info/refs?service=git-upload-pack",
+              method: "GET",
+              ca: tls.ca,
+              agent: false,
+              headers: {
+                host: "credentials.example.test",
+                authorization: `Basic ${Buffer.from(`gateway-session:${material.files.bearer}`).toString("base64")}`,
+              },
+            },
+            (res) => {
+              res.resume();
+              res.once("end", () => resolve(res.statusCode));
+              res.once("error", reject);
+            },
+          );
+          req.once("error", reject);
+          req.end();
+        });
+      }
+      const provider = credentials.repositories[0]!.github;
+      if (action === "stop") {
+        await f.stop();
+        // Keep the real receipt service and broker alive; no worker can clean up this session yet.
+        assert.equal(provider.issuesOfTokens.length, 0);
+        await f.controller.stopAgent(f.actor.id, f.namespace.id, owner.id);
+        assert.equal(await read(first), 503);
+        assert.ok(first.deadlineWallMs > Date.now());
+        assert.equal(
+          provider.issuesOfTokens.length,
+          0,
+          "stop prevented even the first provider issuance",
+        );
+        assert.equal(
+          (
+            await f.state.read((v) =>
+              v.repositorySessions.findBrokerReceiptBySession(first.sessionId),
+            )
+          )?.state,
+          "active",
+        );
+        // Finish this revision's pending stop before the next worker can claim it.
+        await start();
+        await waitFor("stopped revision released", async () => {
+          const current = await f.currentAgent(owner);
+          return stopped > 0 && current?.activeRevisionId === undefined ? true : undefined;
+        });
+        await f.stop();
+        return;
+      }
+      assert.equal(await read(first), 200);
+      assert.equal(provider.issuesOfTokens.length, 1);
+      const firstIssue = provider.issuesOfTokens[0]!;
+      assert.deepEqual(firstIssue.permissions, scope.apiPermissions);
+      assert.deepEqual(firstIssue.permissions, permissionsForProfile("git-write"));
+      assert.deepEqual(firstIssue.repositoryIds.map(String), [scope.repositoryId]);
+      // No manufactured DB clock: wait for the shortened, real wall-clock session horizon.
+      await waitFor(
+        "successor delivery",
+        async () => deliveries.find((d) => d.sessionId !== first.sessionId),
+        120_000,
+      );
+      await waitFor(
+        "both first finite horizons",
+        async () =>
+          Date.now() > Math.max(originalBoundary, firstIssue.expires) + 250 ? true : undefined,
+        120_000,
+      );
+      const second = deliveries.at(-1)!;
+      assert.notEqual(second.sessionId, first.sessionId);
+      assert.ok(Date.now() > first.deadlineWallMs);
+      assert.notEqual(await read(first), 200, "old session cannot use the successor");
+      const observedAfter = Date.now();
+      assert.equal(await read(second), 200);
+      assert.equal(provider.issuesOfTokens.length, 2);
+      assert.notEqual(provider.issuesOfTokens.at(-1)!.index, firstIssue.index);
+      assert.ok(Date.now() > firstIssue.expires, "first provider token really expired");
+      const attempts = await f.state.read((v) =>
+        v.repositorySessions.listRevisionAttempts({
+          namespaceId: f.namespace.id,
+          agentId: owner.id,
+          revisionId: revision.id,
+        }),
+      );
+      const old = attempts.find((a) => a.sessionId === first.sessionId)!;
+      const next = attempts.find((a) => a.sessionId === second.sessionId)!;
+      assert.equal(old.deadlineWallMs, originalBoundary);
+      assert.equal(old.phase, "disposed");
+      assert.equal(next.predecessorAdmissionId, old.admissionId);
+      assert.equal(next.executionFingerprint, execution.fingerprint);
+      assert.ok(next.deadlineWallMs > originalBoundary);
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      assert.equal(executionCreates, 1);
+      assert.equal(stopped, 0);
+      const ownerRef = { namespaceId: f.namespace.id, agentId: owner.id, revisionId: revision.id };
+      await assert.rejects(
+        f.observerPool.query(
+          "UPDATE occ.repository_session_attempts SET deadline_wall_ms=deadline_wall_ms+1000 WHERE admission_id=$1",
+          [old.admissionId],
+        ),
+        { code: "42501" },
+      );
+      await assert.rejects(
+        f.state.transact((u) =>
+          u.repositorySessions.recordStandingExecution(ownerRef, {
+            ...execution,
+            fingerprint: "0".repeat(64),
+          }),
+        ),
+        { name: "ScopeViolationError" },
+      );
+      // Pause only reconciliation. The receipt owner, broker, and provider remain live:
+      // denial cannot be explained by a cleanup pass or an expired replacement.
+      await f.stop();
+      const secondIssue = provider.issuesOfTokens.at(-1)!;
+      const beforeRemoval = provider.tokenState();
+      assert.equal(beforeRemoval.length, 2);
+      assert.deepEqual(
+        beforeRemoval.map((t: { index: number; uses: number }) => [t.index, t.uses]),
+        [
+          [firstIssue.index, 1],
+          [secondIssue.index, 1],
+        ],
+      );
+      assert.ok(
+        secondIssue.expires > Date.now(),
+        "second provider token is still within its own lifetime",
+      );
+      await f.controller.removeAgentStandingApproval(f.actor.id, {
+        namespaceId: f.namespace.id,
+        agentId: owner.id,
+        approvalId: approval.id,
+        expectedGeneration: 1,
+      });
+      await assert.rejects(
+        f.state.transact((u) => u.repositorySessions.recordStandingExecution(ownerRef, execution)),
+        { name: "ScopeViolationError" },
+      );
+      const removedRequest = await read(second);
+      assert.equal(removedRequest, 503, "subsequent Git request denied while cleanup is paused");
+      assert.ok(Date.now() < Math.min(secondIssue.expires, second.deadlineWallMs));
+      assert.deepEqual(
+        provider.tokenState(),
+        beforeRemoval,
+        "no provider authentication, issuance, or token use after removal",
+      );
+      await start();
+      await waitFor(
+        "repository-only removal completed",
+        async () =>
+          events.find(
+            (e) =>
+              e.event === "worker.completed" &&
+              e.revisionId === revision.id &&
+              e.code === "REPOSITORY_STANDING_APPROVAL_REMOVED",
+          ),
+        20_000,
+      );
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      assert.equal(executionCreates, 1);
+      assert.equal(stopped, 0, "repository removal does not stop Compute");
+      await waitFor(
+        "replacement session disposed",
+        async () =>
+          (await f.state.read((v) => v.repositorySessions.findAttempt(next.admissionId)))?.phase ===
+          "disposed"
+            ? true
+            : undefined,
+        // The real driver checks a CLOSED receipt again at its normal cleanup interval.
+        driver.maintenanceIntervalMs + 15_000,
+      );
+      const failedWork = await f.observerPool.query(
+        "SELECT reason_code FROM occ.controller_work WHERE revision_id=$1 AND state='failed_permanent'",
+        [revision.id],
+      );
+      assert.deepEqual(
+        failedWork.rows,
+        [],
+        "ordinary turnover must not permanently fail maintenance",
+      );
+      assert.equal(provider.issuesOfTokens.length, 2);
+      assert.equal(provider.tokenState().at(-1)?.revoked, true);
+      await f.stop();
+      assert.equal(
+        await f.state.read((v) =>
+          v.repositorySessions.findStandingApproval(
+            f.namespace.id,
+            owner.id,
+            binding.repositoryRef,
+          ),
+        ),
+        undefined,
+      );
+      t.diagnostic(
+        JSON.stringify({
+          sourceProof: "registered-worker-concrete-repo",
+          sessions: attempts.map((a) => ({
+            admissionId: a.admissionId,
+            sessionId: a.sessionId,
+            phase: a.phase,
+            deadlineWallMs: a.deadlineWallMs,
+            predecessorAdmissionId: a.predecessorAdmissionId,
+          })),
+          approvalId: approval.id,
+          generation: 1,
+          revisionId: revision.id,
+          executionId: execution.executionId,
+          executionCreates,
+          stopped,
+          firstBoundary: originalBoundary,
+          observedAfter,
+          firstProviderExpiry: firstIssue.expires,
+          secondProviderExpiry: secondIssue.expires,
+          removedRequest,
+          cleanupPausedAtDenial: true,
+          providerIssuances: provider.issuesOfTokens.length,
+          limits:
+            "controlled Compute; private broker read; no OpenShell wire, object transfer or chat proof",
+        }),
+      );
+    } catch (error) {
+      t.diagnostic("registered standing session proof stopped before all assertions completed");
+      throw error;
+    }
+  });
+}

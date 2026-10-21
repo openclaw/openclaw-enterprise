@@ -74,6 +74,10 @@ export function createPlatformReadView(
       "getServicePrincipal",
     ]),
     repositorySessions: bindRepository(repositories.repositorySessions, lifetime, [
+      "findStandingExecution",
+      "listStandingApprovals",
+      "findStandingApproval",
+
       "findAttempt",
       "findBrokerReceipt",
       "findBrokerReceiptBySession",

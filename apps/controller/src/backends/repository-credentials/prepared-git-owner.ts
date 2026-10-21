@@ -1,3 +1,4 @@
+import { repositoryApprovalFingerprint } from "@openclaw-enterprise/occ";
 import { createHash, createPrivateKey, createPublicKey, randomUUID } from "node:crypto";
 import { open } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -17,6 +18,7 @@ import { PreparedRepositoryGitStore } from "../../drivers/repo/github/credential
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
+  resolveGitHubStandingApprovalScope,
   type GitHubRepositoryRegistry,
 } from "../../drivers/repo/github/credentials/registry.ts";
 import { servePrivateRepositoryRequest } from "./private-request-server.ts";
@@ -144,6 +146,16 @@ export async function startPreparedGitHubGitOwner(options: Options) {
       driver.implementation !== options.implementation
     ) {
       return;
+    }
+    if (session.standingApprovalId !== undefined) {
+      const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
+      if (
+        !scope ||
+        session.standingApprovalScopeFingerprint !==
+          repositoryApprovalFingerprint({ namespaceId, agentId: session.agentId, binding, scope })
+      ) {
+        return;
+      }
     }
     const admitted = resolveGitHubRepositoryBinding(registry, {
       namespaceId,

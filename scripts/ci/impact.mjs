@@ -44,7 +44,8 @@ function documentationPath(path) {
 
 // Test-only mode: flat test files under the runner's test roots and the lane
 // manifests the suite index names. Helpers, fixtures and the index are not here.
-const testPath = /^tests\/(?:conformance|integration|browser|docs)\/[A-Za-z0-9._-]+\.test\.mjs$/;
+const testPath =
+  /^tests\/(?:conformance|integration|browser|docs)\/[A-Za-z0-9._-]+\.test\.(?:mjs|ts)$/;
 const manifestPath = /^scripts\/ci\/test-suites\/[a-z0-9-]+\.json$/;
 const suiteIndexPath = "scripts/ci/test-suites.json";
 const laneName = /^[a-z0-9-]+$/;

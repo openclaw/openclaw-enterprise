@@ -88,6 +88,7 @@ import {
 import { Check } from "typebox/value";
 import { PluginApproversSchema } from "./api/common.ts";
 import type {
+  RepositoryExecutionIdentity,
   RepositoryAccess,
   RepositoryBindingSelection,
   RepositoryCredentialMaterialRef,
@@ -129,6 +130,7 @@ export {
 } from "./logging.ts";
 
 export type {
+  RepositoryExecutionIdentity,
   RepositoryAccess,
   AdmittedRepositoryBinding,
   OpenRepositorySessionInput,
@@ -138,6 +140,8 @@ export type {
   RepositoryOption,
   RepositoryOptions,
   RepoDriver,
+  RepositoryApprovalScope,
+  RepositoryApprovalValue,
   RepositoryCredentialGrantIdentity,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialResolution,
@@ -2206,6 +2210,11 @@ export interface ComputeDriver extends Driver {
    * number of times and logs the failure code.
    */
   withdrawHarnessExposure?(revision: Readonly<AgentRevision>, signal: AbortSignal): Promise<void>;
+  /** Verify the existing execution without creating, replacing or repairing it. */
+  verifyRepositoryExecution?(
+    revision: Readonly<AgentRevision>,
+    signal: AbortSignal,
+  ): Promise<RepositoryExecutionIdentity | undefined>;
   /**
    * Throws OCC's ComputePreparationFailedError when initialization is terminal.
    * The worker durably fails deployment and schedules stopRevision for cleanup.

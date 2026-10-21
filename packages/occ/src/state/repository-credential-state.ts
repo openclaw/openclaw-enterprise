@@ -140,7 +140,24 @@ export function validAdmittedRepositoryBindings(
 /** Mirrors the database's closed, material-free immutable snapshot shape. */
 export function validRepositoryRevisionState(value: unknown): value is RepositoryRevisionState {
   return (
-    exactObject(value, ["driver", "deadlineWallMs", "bindings"]) &&
+    value !== null &&
+    typeof value === "object" &&
+    exactObject(value, [
+      "driver",
+      "deadlineWallMs",
+      "bindings",
+      ...(Object.hasOwn(value, "standingApprovalId")
+        ? ["standingApprovalId", "standingApprovalGeneration", "standingApprovalScopeFingerprint"]
+        : []),
+    ]) &&
+    (!Object.hasOwn(value, "standingApprovalId") ||
+      (boundedToken(value.standingApprovalId) &&
+        typeof value.standingApprovalScopeFingerprint === "string" &&
+        /^[0-9a-f]{64}$/.test(value.standingApprovalScopeFingerprint) &&
+        Number.isSafeInteger(value.standingApprovalGeneration) &&
+        Number(value.standingApprovalGeneration) > 0 &&
+        Array.isArray(value.bindings) &&
+        value.bindings.length === 1)) &&
     exactObject(value.driver, ["id", "implementation"]) &&
     opaqueIdentity(value.driver.id) &&
     opaqueIdentity(value.driver.implementation) &&

@@ -276,6 +276,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 60) {
     return "preOpenShellExpiredGit";
   }
+  if (count === 61) {
+    return "preStandingApproval";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

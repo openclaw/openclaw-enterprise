@@ -208,7 +208,7 @@ function requireEnv(names, env = process.env) {
 }
 
 function fileStem(file) {
-  return slug(basename(file).replace(/\.test\.mjs$/, ""), "_") || "test_file";
+  return slug(basename(file).replace(/\.test\.(?:mjs|ts)$/, ""), "_") || "test_file";
 }
 
 function normalizeStatePath(statePath) {

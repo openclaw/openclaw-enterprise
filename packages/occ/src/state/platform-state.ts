@@ -16,6 +16,7 @@ import type { SandboxPolicy } from "@openclaw-enterprise/contracts";
 import type {
   RepositorySessionAttempt,
   RepositoryBrokerReceipt,
+  RepositoryStandingApproval,
   RepositorySessionReadRepository,
   RepositorySessionRepository,
 } from "../ports/repository-sessions.ts";
@@ -1028,6 +1029,11 @@ interface PlatformSnapshot {
   readonly roles: Map<string, Readonly<Role>>;
   readonly bindings: Map<string, Readonly<AccessBinding>>;
   readonly servicePrincipals: Map<string, Readonly<ServicePrincipal>>;
+  readonly repositoryStandingExecutions: Map<
+    string,
+    { executionId: string; fingerprint: string; closed: boolean }
+  >;
+  readonly repositoryStandingApprovals: Map<string, Readonly<RepositoryStandingApproval>>;
   readonly repositorySessions: Map<string, Readonly<RepositorySessionAttempt>>;
   readonly repositoryBrokerReceipts: Map<string, Readonly<RepositoryBrokerReceipt>>;
   readonly audit: Readonly<AuditEvent>[];
@@ -1115,6 +1121,8 @@ function cloneSnapshot(snapshot: PlatformSnapshot): PlatformSnapshot {
       Array.from(snapshot.bindings, ([key, binding]) => [key, immutableCopy(binding)]),
     ),
     servicePrincipals: new Map(snapshot.servicePrincipals),
+    repositoryStandingExecutions: new Map(snapshot.repositoryStandingExecutions),
+    repositoryStandingApprovals: new Map(snapshot.repositoryStandingApprovals),
     repositorySessions: new Map(
       Array.from(snapshot.repositorySessions, ([key, attempt]) => [key, immutableCopy(attempt)]),
     ),
@@ -2715,6 +2723,15 @@ function repositories(
       ) {
         return undefined;
       }
+      if (next !== "running" && agent.activeRevisionId) {
+        const execution = snapshot.repositoryStandingExecutions.get(agent.activeRevisionId);
+        if (execution) {
+          snapshot.repositoryStandingExecutions.set(agent.activeRevisionId, {
+            ...execution,
+            closed: true,
+          });
+        }
+      }
       const saved = immutableCopy({ ...agent, desiredRuntimeState: next });
       snapshot.agents.set(key, saved);
       return immutableCopy(saved);
@@ -2840,6 +2857,13 @@ function repositories(
       if (!current || current.activeRevisionId !== expectedRevisionId) {
         return undefined;
       }
+      const execution = snapshot.repositoryStandingExecutions.get(expectedRevisionId);
+      if (execution) {
+        snapshot.repositoryStandingExecutions.set(expectedRevisionId, {
+          ...execution,
+          closed: true,
+        });
+      }
       const { activeRevisionId: _activeRevisionId, ...stopped } = current;
       const updated = immutableCopy(stopped);
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
@@ -2858,6 +2882,15 @@ function repositories(
       const candidate = await revisions.findRevision(namespaceId, agentId, candidateRevisionId);
       if (!candidate) {
         throw new ScopeViolationError("The active AgentRevision belongs to another Agent.");
+      }
+      if (current.activeRevisionId && current.activeRevisionId !== candidateRevisionId) {
+        const execution = snapshot.repositoryStandingExecutions.get(current.activeRevisionId);
+        if (execution) {
+          snapshot.repositoryStandingExecutions.set(current.activeRevisionId, {
+            ...execution,
+            closed: true,
+          });
+        }
       }
       const updated = immutableCopy({ ...current, activeRevisionId: candidateRevisionId });
       snapshot.agents.set(agentKey(namespaceId, agentId), updated);
@@ -3238,6 +3271,8 @@ function repositories(
   };
 
   const repositorySessions = memoryRepositorySessions(
+    snapshot.repositoryStandingExecutions,
+    snapshot.repositoryStandingApprovals,
     snapshot.repositorySessions,
     snapshot.repositoryBrokerReceipts,
     (owner) =>
@@ -3251,6 +3286,16 @@ function repositories(
         namespace?.status === "ready" &&
         agent?.status === "active" &&
         agent.desiredRuntimeState === "running"
+      );
+    },
+    (owner) => {
+      const namespace = snapshot.namespaces.get(owner.namespaceId);
+      const agent = snapshot.agents.get(agentKey(owner.namespaceId, owner.agentId));
+      return (
+        namespace?.status === "ready" &&
+        agent?.status === "active" &&
+        agent.desiredRuntimeState === "running" &&
+        agent.activeRevisionId === owner.revisionId
       );
     },
   );
@@ -3569,6 +3614,8 @@ export class InMemoryPlatformState implements PlatformStateStore {
     roles: new Map(),
     bindings: new Map(),
     servicePrincipals: new Map(),
+    repositoryStandingExecutions: new Map(),
+    repositoryStandingApprovals: new Map(),
     repositorySessions: new Map(),
     repositoryBrokerReceipts: new Map(),
     audit: [],

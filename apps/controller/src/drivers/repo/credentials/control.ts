@@ -267,6 +267,9 @@ export function createControlAdmission(
     let early: SessionStatus | undefined;
     if (isBoundInput(admittedInput)) {
       const lookupOnly = recoverOnly || age >= admissionWindowMs;
+      // Only the durable owner selects standing. Until it answers, the unopened
+      // bearer cannot acquire or use provider material.
+      let standing: boolean | undefined;
       let refused: unknown;
       // Open before reserving. Only bind advances a reserved receipt, so an open
       // refused after reservation (capacity, shutdown) would strand it. Such a
@@ -274,7 +277,14 @@ export function createControlAdmission(
       // keeps the journal-first answer; the unreserved session is never handed out.
       if (!lookupOnly) {
         try {
-          opened = service.open(admittedInput);
+          opened = service.open(admittedInput, async (sessionId) => {
+            if (standing === undefined) {
+              throw new Error("ADMISSION_UNCONFIRMED");
+            }
+            if (standing) {
+              await journal!.authorizeStanding(id, sessionId, admittedInput);
+            }
+          });
         } catch (error) {
           if (!(error instanceof Error && invalidAdmissionErrors.has(error.message))) {
             throw error;
@@ -293,6 +303,9 @@ export function createControlAdmission(
       let result: Awaited<ReturnType<RepositoryReceiptClient["admission"]>>;
       try {
         result = await journal!.admission(id, admittedInput, lookupOnly);
+        if (result.kind === "reserved") {
+          standing = result.standing;
+        }
       } catch (error) {
         discard();
         throw error;

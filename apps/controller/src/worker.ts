@@ -115,6 +115,7 @@ import {
   RepositoryCredentialAuthorityError,
   repositoryCleanupFailureCode,
   RepositoryCredentialLifecycle,
+  StandingRepositorySessionDisposingError,
 } from "./worker/repository-credentials.ts";
 
 /**
@@ -1229,6 +1230,13 @@ export class ControllerWorker {
       state: this.state,
       queueOptions: this.queueOptions,
       driver: this.repoDriver,
+      verifyExecution: (claim, revision) =>
+        this.withClaimHeartbeat(
+          claim,
+          (signal) =>
+            this.compute.verifyRepositoryExecution?.(revision, signal) ??
+            Promise.resolve(undefined),
+        ),
       authorize: (claim, revision) => this.assertRepositoryAuthority(claim, revision),
       effect: (claim, operation) => this.withClaimHeartbeat(claim, operation),
     });
@@ -1626,7 +1634,10 @@ export class ControllerWorker {
       revision.repositoryCredentials === undefined
         ? undefined
         : this.repoDriver?.maintenanceIntervalMs;
-    const intervals = [this.maintenanceIntervalMs, repositoryInterval].filter(
+    const standingInterval = revision.repositoryCredentials?.standingApprovalId
+      ? Math.max(100, Math.min(10_000, (this.repositoryCredentials.validate(revision) ?? 1) * 100))
+      : undefined;
+    const intervals = [this.maintenanceIntervalMs, repositoryInterval, standingInterval].filter(
       (interval): interval is number => interval !== undefined,
     );
     return intervals.length === 0 ? undefined : Math.min(...intervals);
@@ -1859,6 +1870,9 @@ export class ControllerWorker {
     );
     if (!validRevisionObservation(observation, revision)) {
       throw new RepositoryCredentialAuthorityError("INVALID_DRIVER_OBSERVATION");
+    }
+    if (observation.ready) {
+      await this.repositoryCredentials.captureExecution(claim, revision);
     }
     const missing = observation.repositoryCredentialMaterialMissing;
     if (missing !== undefined) {
@@ -4258,6 +4272,29 @@ export class ControllerWorker {
             );
             return;
           }
+          if (error instanceof StandingRepositorySessionDisposingError) {
+            // Ordinary turnover can close access before provider disposal finishes. Keep this
+            // maintenance pending; the next claim must still verify disposal and every authority.
+            const code = "REPOSITORY_SESSION_SUCCESSION_PENDING";
+            await this.queue.defer(
+              claim,
+              { code },
+              {
+                delayMs: Math.min(5_000, this.revisionMaintenanceInterval(revision) ?? 5_000),
+              },
+            );
+            this.passOutcome = "pending";
+            this.emit({
+              event: "worker.completed",
+              ...workLogFields(claim),
+              namespaceId: claim.namespaceId,
+              agentId: claim.agentId,
+              revisionId: revision.id,
+              outcome: "pending",
+              code,
+            });
+            return;
+          }
           const pending = activationPendingResult(error);
           await this.finalizeActiveRevision(claim, revision, pending.code, undefined, {
             ...(pending.dependencyFailure === undefined
@@ -4296,6 +4333,12 @@ export class ControllerWorker {
     } catch (error) {
       if (error instanceof WorkClaimLostError) {
         throw error;
+      }
+      if (
+        error instanceof RepositoryCredentialAuthorityError &&
+        (await this.completeStandingRepositoryDenial(claim, error.code))
+      ) {
+        return;
       }
       if (!refusalWaitRead && !(error instanceof RefusedCandidateStopError)) {
         await this.rereadRefusalWait(claim, claimAgent, error);
@@ -4347,6 +4390,115 @@ export class ControllerWorker {
       const pending = error.pending();
       await this.finalizeRevision(claim, pending.result, pending.logFields);
     }
+  }
+
+  /** Loss of Git approval is not loss of model authority. Close only repository
+   * sessions on an already active execution; ordinary stop/replacement still owns Compute.
+   * The online authorizer denies immediately from the approval/policy before this cleanup. */
+  private async completeStandingRepositoryDenial(
+    claim: ClaimedWork,
+    code: string,
+  ): Promise<boolean> {
+    if (
+      !claim.agentId ||
+      !claim.revisionId ||
+      !["REPOSITORY_STANDING_APPROVAL_REMOVED", "REPOSITORY_STANDING_POLICY_CHANGED"].includes(code)
+    ) {
+      return false;
+    }
+    const completed = await this.state.transactWithQueue(async (unit, queue) => {
+      const agent = await this.lockClaimAgent(unit, claim);
+      const namespace = await unit.namespaces.findNamespace(claim.namespaceId);
+      if ((await queue.heartbeat(claim)) === undefined) {
+        throw new WorkClaimLostError();
+      }
+      const revision = await unit.revisions.findRevision(
+        claim.namespaceId,
+        claim.agentId!,
+        claim.revisionId!,
+      );
+      if (
+        namespace?.status !== "ready" ||
+        !revision?.repositoryCredentials?.standingApprovalId ||
+        agent?.status !== "active" ||
+        agent.activeRevisionId !== revision.id ||
+        agent.desiredRuntimeState !== "running" ||
+        agent.servicePrincipalId !== revision.servicePrincipalId ||
+        (await queue.repositoryExpiryState({
+          namespaceId: revision.namespaceId,
+          agentId: revision.agentId,
+          revisionId: revision.id,
+        })) !== undefined
+      ) {
+        return false;
+      }
+      // A delayed error cannot remove an unrelated generation or a now-valid policy.
+      const snapshot = revision.repositoryCredentials;
+      if (code === "REPOSITORY_STANDING_APPROVAL_REMOVED") {
+        const approval = await unit.repositorySessions.findStandingApproval(
+          revision.namespaceId,
+          revision.agentId,
+          snapshot.bindings[0]!.repositoryRef,
+        );
+        if (
+          approval &&
+          approval.id === snapshot.standingApprovalId &&
+          approval.generation === snapshot.standingApprovalGeneration &&
+          approval.scopeFingerprint === snapshot.standingApprovalScopeFingerprint
+        ) {
+          return false;
+        }
+      } else {
+        try {
+          this.repositoryCredentials.validate(revision);
+          return false;
+        } catch (error) {
+          if (!(error instanceof RepositoryCredentialAuthorityError) || error.code !== code) {
+            throw error;
+          }
+        }
+      }
+      const owner = {
+        namespaceId: revision.namespaceId,
+        agentId: revision.agentId,
+        revisionId: revision.id,
+      };
+      const attempts = await unit.repositorySessions.listRevisionAttempts(owner);
+      for (const attempt of attempts) {
+        if (attempt.phase === "opening" || attempt.phase === "open") {
+          await unit.repositorySessions.advanceAttempt({
+            admissionId: attempt.admissionId,
+            expectedPhase: attempt.phase,
+            phase: "closing",
+            updatedAt: new Date().toISOString(),
+          });
+        }
+      }
+      if (attempts.some((attempt) => attempt.phase !== "disposed")) {
+        // Do not complete the maintenance claim unless its exact sessions cleanup has an owner.
+        // The queue separately rejects withdrawal or unrelated work as a source of this authority.
+        const cleanup = await queue.enqueueRepositoryCleanup(claim, owner, "sessions");
+        if (!cleanup) {
+          throw new Error("REPOSITORY_SESSION_CLEANUP_NOT_REGISTERED");
+        }
+      }
+      await queue.complete(claim, { code });
+      return true;
+    }, this.queueOptions);
+    if (completed) {
+      this.passOutcome = "success";
+      this.emit({
+        event: "worker.completed",
+        ...workLogFields(claim),
+        namespaceId: claim.namespaceId,
+        agentId: claim.agentId,
+        revisionId: claim.revisionId,
+        result: "success",
+        outcome: "success",
+        code,
+      });
+    }
+    return completed;
   }
 
   private async authorizeRevision(
@@ -5963,6 +6115,7 @@ export class ControllerWorker {
         revision.servicePrincipalId !== agent.servicePrincipalId ||
         (maintenance && this.revisionMaintenanceInterval(revision) === undefined) ||
         (revision.repositoryCredentials !== undefined &&
+          revision.repositoryCredentials.standingApprovalId === undefined &&
           Date.now() >= revision.repositoryCredentials.deadlineWallMs)
       ) {
         return;

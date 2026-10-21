@@ -1,6 +1,8 @@
+import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
+  RepositoryApprovalScope,
   RepositoryBindingRequest,
 } from "@openclaw-enterprise/contracts";
 import type { GitHubProfile } from "./types.ts";
@@ -25,6 +27,7 @@ export interface GitHubRepositoryRegistration {
   readonly namespaces: readonly Readonly<{
     namespaceId: string;
     profiles: readonly GitHubProfile[];
+    allowStandingApproval?: true;
     pushRefAllowlist?: readonly string[];
     transport?: "git-only" | "git-and-draft-pr";
     pullRequestBase?: string;
@@ -41,6 +44,7 @@ export interface GitHubRepositoryRegistry {
   readonly appId: string;
   readonly githubInstallationId: string;
   readonly maximumDurationSeconds: number;
+  readonly allowStandingApprovals?: true;
   readonly repositories: readonly GitHubRepositoryRegistration[];
 }
 
@@ -109,6 +113,7 @@ export function validateGitHubRepositoryRegistry(
     "appId",
     "githubInstallationId",
     "maximumDurationSeconds",
+    "allowStandingApprovals",
     "repositories",
   ]);
   const backendId = text(root.backendId, backendPattern);
@@ -124,6 +129,9 @@ export function validateGitHubRepositoryRegistry(
   ) {
     return invalid();
   }
+  if (Object.hasOwn(root, "allowStandingApprovals") && root.allowStandingApprovals !== true) {
+    return invalid();
+  }
   let namespaceRows = 0;
   const repositories = array(root.repositories, 1000).map((candidate) => {
     const entry = object(candidate, ["repositoryRef", "repositoryId", "repository", "namespaces"]);
@@ -131,6 +139,7 @@ export function validateGitHubRepositoryRegistry(
       const policy = object(candidatePolicy, [
         "namespaceId",
         "profiles",
+        "allowStandingApproval",
         "pushRefAllowlist",
         "transport",
         "pullRequestBase",
@@ -138,6 +147,9 @@ export function validateGitHubRepositoryRegistry(
       ]);
       const profiles = array(policy.profiles, 3).map(profile).sort();
       unique(profiles);
+      if (Object.hasOwn(policy, "allowStandingApproval") && policy.allowStandingApproval !== true) {
+        return invalid();
+      }
       let pushRefAllowlist: readonly string[] | undefined;
       if (Object.hasOwn(policy, "pushRefAllowlist")) {
         try {
@@ -188,6 +200,7 @@ export function validateGitHubRepositoryRegistry(
       return Object.freeze({
         namespaceId: text(policy.namespaceId),
         profiles: Object.freeze(profiles),
+        ...(policy.allowStandingApproval === true ? { allowStandingApproval: true as const } : {}),
         ...(pushRefAllowlist === undefined ? {} : { pushRefAllowlist }),
         ...(transport === undefined ? {} : { transport }),
         ...(base === undefined ? {} : { pullRequestBase: base }),
@@ -221,6 +234,7 @@ export function validateGitHubRepositoryRegistry(
     appId: numericId(root.appId),
     githubInstallationId: numericId(root.githubInstallationId),
     maximumDurationSeconds,
+    ...(root.allowStandingApprovals === true ? { allowStandingApprovals: true as const } : {}),
     repositories: Object.freeze(repositories),
   });
 }
@@ -286,5 +300,60 @@ export function resolveGitHubRepositoryBinding(
       repositoryId: repository.repositoryId,
       grantId: `sha256:${fingerprint}`,
     }),
+  });
+}
+
+/** Resolve the policy ceiling independently of provider token material. */
+export function resolveGitHubStandingApprovalScope(
+  registry: GitHubRepositoryRegistry,
+  input: {
+    namespaceId: string;
+    binding: AdmittedRepositoryBinding;
+  },
+): RepositoryApprovalScope | undefined {
+  const repository = registry.repositories.find(
+    (r) => r.repositoryRef === input.binding.repositoryRef,
+  );
+  const policy = repository?.namespaces.find((p) => p.namespaceId === input.namespaceId);
+  if (
+    !repository ||
+    !policy ||
+    registry.allowStandingApprovals !== true ||
+    policy.allowStandingApproval !== true
+  ) {
+    return;
+  }
+  const current = resolveGitHubRepositoryBinding(registry, {
+    namespaceId: input.namespaceId,
+    repositoryRef: input.binding.repositoryRef,
+    profile: input.binding.profile,
+  });
+  if (!isDeepStrictEqual(current, input.binding)) {
+    return;
+  }
+  return Object.freeze({
+    appId: registry.appId,
+    installationId: registry.githubInstallationId,
+    providerInstanceId: registry.providerInstanceId,
+    repositorySelection: "repository",
+    repositoryId: repository.repositoryId,
+    repository: repository.repository,
+    profile: current.profile,
+    allowedProfiles: policy.profiles,
+    pushRefAllowlist: policy.pushRefAllowlist ?? null,
+    transport: policy.transport ?? null,
+    pullRequestBase: policy.pullRequestBase ?? null,
+    draftPullLimit:
+      policy.transport === "git-and-draft-pr" ? (policy.draftPullLimit ?? "one-per-grant") : null,
+    apiPermissions: permissionsForProfile(
+      policy.transport === "git-only"
+        ? "git-ref-write"
+        : policy.transport === "git-and-draft-pr"
+          ? "git-ref-draft-pr"
+          : (current.profile as GitHubProfile),
+    ),
+    maximumSessionDurationSeconds: registry.maximumDurationSeconds,
+    installationPolicyAllowsStanding: true,
+    namespacePolicyAllowsStanding: true,
   });
 }

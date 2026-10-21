@@ -53,9 +53,20 @@ export interface RepositoryCredentialResolution {
   readonly sessionDurationSeconds: number;
 }
 
+/** Nonsecret identity obtained by a read-only verification of the already running execution. */
+export interface RepositoryExecutionIdentity {
+  readonly executionId: string;
+  readonly fingerprint: string;
+}
+
 export interface RepositoryRevisionState {
   /** Nonempty opaque values use the same 512-byte, no-control bound as grant identities. */
   readonly driver: { readonly id: string; readonly implementation: string };
+  /** Present only after an explicit, attributable standing approval. The retained
+   * deadline is the original finite admission boundary, not standing authority. */
+  readonly standingApprovalId?: string;
+  readonly standingApprovalGeneration?: number;
+  readonly standingApprovalScopeFingerprint?: string;
   readonly deadlineWallMs: number;
   readonly bindings: readonly AdmittedRepositoryBinding[];
 }
@@ -79,6 +90,16 @@ export type OpenRepositorySessionResult =
   | { readonly kind: "recovered"; readonly status: RepositoryCredentialSessionStatus }
   | { readonly kind: "missing" };
 
+/** Canonical JSON-compatible provider scope; contains no credentials. */
+export type RepositoryApprovalValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly RepositoryApprovalValue[]
+  | { readonly [key: string]: RepositoryApprovalValue };
+export type RepositoryApprovalScope = Readonly<Record<string, RepositoryApprovalValue>>;
+
 export interface RepoDriver extends Driver {
   readonly capability: "repo";
   readonly maintenanceIntervalMs: number;
@@ -90,6 +111,15 @@ export interface RepoDriver extends Driver {
     readonly namespaceId: string;
     readonly descriptionRefs?: readonly string[];
   }): Promise<RepositoryOptions>;
+  standingApprovalScope?(input: {
+    readonly namespaceId: string;
+    readonly binding: AdmittedRepositoryBinding;
+  }): RepositoryApprovalScope | undefined;
+  /** Current policy permission only; persisted operator approval is checked by OCC. */
+  allowsStandingApproval?(input: {
+    readonly namespaceId: string;
+    readonly binding: AdmittedRepositoryBinding;
+  }): boolean;
   resolve(input: {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
