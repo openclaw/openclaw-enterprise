@@ -8,10 +8,12 @@ last_updated_session: authoring-run/d45560cc-1312-47a3-bc97-9e85137cdea9
 
 ## Overview
 
-`scripts/render-installation-profile.mjs` validates inputs, resolves omitted
-Codex destinations, and writes Helm values, YAML and preflight.
-Operators provision infrastructure and Secrets, apply Helm, configure
-credentials, service accounts, repository registries and Slack.
+An operator passes a profile, JSON inputs, and output directory to
+`scripts/render-installation-profile.mjs`. It validates inputs, resolves omitted
+hosted Codex destinations, and writes paired Helm values, Installation YAML, and
+preflight. This flow ends at those files. Operators still prepare the cluster
+and Secrets, apply Helm, and configure hosted/runtime tokens, optional ChatGPT
+service accounts, the repository registry, and Slack consumers.
 
 ## Entry Points
 
@@ -34,7 +36,7 @@ graph TD
   R --> D["Load selected or bundled profile and input JSON"]
   D -->|Unreadable or invalid| Y["Exit without rendered files or preflight"]
   D -->|Valid| E["Reject unsupported sections and fields"]
-  E --> F["Validate consumed image, CIDR, proxy, label, and Backend inputs"]
+  E --> F["Build objects and validate consumed inputs"]
   F --> G{"Any diagnostics errors?"}
   G -->|Yes| H["Write preflight.json with ok:false"]
   G -->|No| I{"Hosted codex-plugin without a supplied CIDR list?"}
@@ -54,30 +56,21 @@ graph TD
 
 `scripts/render-installation-profile.mjs:parseArgs`
 
-Requires `--profile`, `--input`, and `--out-dir`; accepts
-`--profile-file`. Unknown flags fail before rendering. `--profile` must be
-`openclaw` or `codex`. The release name and namespace come from site inputs and
-feed both Helm instructions and Installation settings.
-
-After valid arguments, the renderer removes prior `values.yaml`,
-`installation.yaml`, and `preflight.json` before loading input. Unreadable or
-malformed JSON cannot leave stale deployment files or success reports; other
-files remain untouched.
+`parseArgs` accepts `--profile`, `--input`, `--out-dir` and optional `--profile-file`.
+`renderInstallationProfile` validates required arguments, then removes prior
+`values.yaml`, `installation.yaml` and `preflight.json` before loading inputs.
+Other files remain. The CLI prints its result and exits nonzero on failure;
+in-process callers receive the result or a refusal exception.
 
 ### 2. Load profile and site input
 
 `scripts/render-installation-profile.mjs:readProfile`
 
-Paths resolve from the working directory; bundled profiles live in `deploy/profiles/`.
-Profiles require matching `name`, descriptive strings and a bundled PluginDriver;
-unknown fields fail. Omitted configuration becomes `{}`; supplied configuration
-must be an object. Startup validates Driver options. Failures never fall back.
-`recommendedPreset` is metadata; [Preset selection](agent-presets.md) is independent.
-Site inputs supply infrastructure. Hosted `codex-plugin` discovery needs a PAT
-under either family; curated discovery does not. Runtime credentials remain per Agent.
-
-Explicit discovery CIDRs keep rendering offline and stable; omitted hosted
-Codex CIDRs make Helm values depend on DNS.
+`readProfile` loads the selected or bundled file and validates its closed schema,
+matching family and bundled PluginDriver. Driver options remain startup-validated;
+[custom profile rules](../guides/deploy/custom-installation-profiles.md) define the inputs.
+Site JSON supplies infrastructure. Hosted `codex-plugin` needs a PAT; curated
+discovery does not. Runtime credentials remain per Agent.
 
 ### 3. Validate every supplied input
 
@@ -86,9 +79,8 @@ Codex CIDRs make Helm values depend on DNS.
 Closed sections reject unknown fields, including unused readiness flags;
 OpenClaw rejects Codex-only inputs.
 
-Catalog and model credentials belong to later Agent setup. Optional
-`codex.managedServiceAccounts` inputs render managed ServiceAccount provisioning;
-preflight identifies its prerequisites without claiming issuance works.
+Credentials belong to Agent setup. `codex.managedServiceAccounts` renders optional
+managed issuance; preflight does not prove it works.
 
 Preflight enforces Helm's lowercase release-name syntax and 53-character limit
 for `controlPlane.releaseName`. `controlPlane.namespace`, optional
@@ -128,13 +120,21 @@ and repository Secrets cannot match `occ-installation-startup`, `occ-database`,
 collector Secrets, or earlier listed Secrets. Only the two public CA Secrets
 may share one; collisions fail preflight.
 
-`scripts/render-installation-profile.mjs:nodeSelector` validates placement labels;
-`peerSelector` applies Compute's peer rule to DNS, API clients and metrics.
-Both accept Kubernetes label keys and values, including empty values. Qualified
-prefixes and bootstrap claim names allow DNS subdomains up to 253 characters;
-Namespace names and unqualified labels retain their 63-character limit. Invalid
-selectors fail before rendering; YAML lookalikes remain strings. Repository
-Backend IDs retain the chart's 200 UTF-16 code-unit limit.
+`scripts/render-installation-profile.mjs:nodeSelector` checks
+`controlPlane.nodeSelector`, `runtime.nodeSelector` and
+`runtime.gatewayNodeSelector` against the chart and bootstrap-volume helper's
+Kubernetes label-key and label-value rules (values may be empty). Compute copies
+the runtime selectors into Pod specs, where Kubernetes applies the same rule.
+Invalid placement labels fail preflight without deployment files; legal YAML
+lookalike values remain strings. `peerSelector` applies Compute's `validatePeer`
+rule to DNS, API client and metrics scraper selectors. Both selector kinds use
+Kubernetes label keys and values, including empty values. Their qualified
+prefixes and bootstrap password claim names are DNS subdomains of at most 253
+characters total, without a per-segment cap. Namespace names and unqualified
+label names/values retain their 63 limit. The chart and
+`scripts/prepare-bootstrap-volume:is_dns_subdomain` share this prefix/claim
+rule; the chart checks peers only for nonempty maps. Repository Backend IDs
+follow their rule within 200 UTF-16 code units, as in the chart.
 
 ### 4. Build Helm values
 
@@ -203,10 +203,9 @@ truncates `<releaseName>-agent-gateways` to 63 characters and removes a trailing
 hyphen. HTTPRoute parent references therefore match the Gateway the chart
 renders.
 
-`presets.includeDefaults` defaults to `true`; `presets.files` adds Preset JSON
-paths independently. Disabling defaults with no files seeds nothing. The
-renderer validates the boolean and path list; controller startup reads and
-validates files. Preset changes alter the Installation checksum.
+`presets.includeDefaults` defaults to `true`; `presets.files` adds JSON paths.
+Disabling defaults without files seeds nothing. Rendering validates options;
+startup reads and validates files. Changes alter the Installation checksum.
 
 `runtime.transportSecretPrefix` must produce the same DNS-safe name that
 Kubernetes Compute startup requires: `<prefix>-<12 hex characters>`, at most
@@ -218,21 +217,19 @@ dot does not, because the suffix would start a new label with a hyphen.
 
 `scripts/render-installation-profile.mjs:resolveHostedDiscoveryCidrs`
 
-After validation, hosted `codex-plugin` with omitted `codex.modelDiscoveryCidrs`
-queries IPv4 addresses for `auth.openai.com` and `chatgpt.com` with a resolver timeout of 1.5 seconds and one try. Sorted unique
-IPv4 `/32` answers populate the existing API-only TCP 443 Helm policy; the driver
-mutates no Kubernetes resources.
-
-Supplied lists bypass DNS unchanged; `[]` requires external HTTPS policy for
-both hosts. Other driver selections bypass resolution. DNS failure records a
-preflight error and revokes both YAML files, including after successful renders.
-This snapshot needs operator verification of API Pod DNS/NAT, authenticated
-Console discovery, and rerender/upgrade after address changes; it never
-refreshes live policy.
+Hosted `codex-plugin` queries IPv4 for `auth.openai.com` and `chatgpt.com` with a
+1.5-second timeout and one try. Sorted unique `/32` answers populate API-only
+TCP 443 Helm policy; the renderer mutates no cluster resources. Only `codex`
+accepts explicit `codex.modelDiscoveryCidrs`: lists bypass DNS, while `[]` needs
+external HTTPS policy. The `openclaw` family with hosted discovery always needs
+DNS. Other Driver selections bypass resolution. Failure records a preflight error
+and revokes both YAML files. Operators verify API Pod DNS/NAT and authenticated
+Console discovery, then rerender and upgrade after address changes; snapshots
+never refresh live policy.
 
 ### 7. Write outputs and preflight
 
-`scripts/render-installation-profile.mjs:writeYaml`
+`scripts/render-installation-profile.mjs:renderInstallationProfile`
 
 On success, the renderer serializes a deterministic `installation.yaml`, hashes
 those exact bytes with SHA-256, and sets `controlPlane.installationChecksum` in

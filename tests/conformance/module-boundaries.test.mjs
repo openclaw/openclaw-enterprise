@@ -4,7 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "
 import { createRequire, stripTypeScriptTypes } from "node:module";
 import { availableParallelism, tmpdir } from "node:os";
 import { dirname, join, relative, win32 } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { describe, test } from "node:test";
 import ts from "typescript-compiler-api";
@@ -1728,6 +1728,49 @@ describe("module boundaries", { concurrency: true }, () => {
     );
     assert.equal(imports.length, 3);
     assert.ok(imports.every((edge) => edge.to === "apps/app/src/target.mjs"));
+  });
+
+  test("keeps case-insensitive file URL loads local with normalized diagnostics", async (t) => {
+    const target = "apps/app/src/private/target.mjs";
+    const { root, write, check, cli, native } = await workspace(t, {
+      boundaries: [noPrivate("apps/app/src/**")],
+    });
+    await write(target, 'export default "LOCAL";');
+    await write("apps/app/src/private/target.cjs", 'module.exports = "LOCAL";');
+    const url = pathToFileURL(join(root, target)).href;
+    for (const [index, scheme] of ["file:", "FILE:", "fIlE:"].entries()) {
+      const prefix = `scheme-${index}`;
+      const selected = url.replace(/^file:/, scheme) + "?view=1#probe";
+      const imports = `apps/app/src/${prefix}-imports.mjs`;
+      await write(imports, `import value from ${JSON.stringify(selected)}; console.log(value);`);
+      assert.equal(await native(imports), "LOCAL");
+      const helpers = `apps/app/src/${prefix}-helpers.mjs`;
+      await write(
+        helpers,
+        `import { createRequire } from "node:module";
+         import { fileURLToPath, pathToFileURL } from "node:url";
+         const load = createRequire(${JSON.stringify(url.replace(/^file:/, scheme))});
+         const value = await import(pathToFileURL(fileURLToPath(${JSON.stringify(selected)})).href);
+         console.log(value.default + load("./target.cjs"));`,
+      );
+      assert.equal(await native(helpers), "LOCALLOCAL");
+    }
+    const report = await check();
+    for (const index of [0, 1, 2]) {
+      const source = `apps/app/src/scheme-${index}-imports.mjs`;
+      assert.ok(reaches(report, source, target), source);
+      assert.equal(violation(report, source, "no-private").specifier, `file:${target}`);
+      assert.ok(reaches(report, `apps/app/src/scheme-${index}-helpers.mjs`, target));
+      assert.ok(
+        reaches(
+          report,
+          `apps/app/src/scheme-${index}-helpers.mjs`,
+          "apps/app/src/private/target.cjs",
+        ),
+      );
+    }
+    const rejected = await failure(cli(["--json"]), 1);
+    assert.equal(JSON.parse(rejected.stdout).ok, false);
   });
 
   test("resolves ESM literal paths with URL semantics and preserves literal CommonJS filenames", async (t) => {

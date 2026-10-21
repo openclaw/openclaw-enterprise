@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import test from "node:test";
 import {
   bootstrapOutputPath,
+  requireAbsentBootstrapOutput,
   writeProtectedBootstrapFile,
 } from "../../apps/controller/src/composition/bootstrap-output.ts";
 
@@ -51,4 +52,24 @@ test("protected bootstrap output rejects oversized basenames", () => {
       ),
     /255 characters/,
   );
+});
+
+test("protected bootstrap output rejects a trailing path separator", () => {
+  const output = join(tmpdir(), "credential");
+  assert.equal(bootstrapOutputPath(output, "CREDENTIAL_FILE"), output);
+  assert.throws(() => bootstrapOutputPath(output + sep, "CREDENTIAL_FILE"), {
+    message: "CREDENTIAL_FILE must identify a file, not a directory path.",
+  });
+});
+
+test("bootstrap distinguishes an absent output, a dangling link, and an unverified parent", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "occ-bootstrap-preflight-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const output = join(directory, "output");
+  await requireAbsentBootstrapOutput(output);
+  await symlink("missing", output);
+  await assert.rejects(requireAbsentBootstrapOutput(output), { code: "BOOTSTRAP_OUTPUT_EXISTS" });
+  await assert.rejects(requireAbsentBootstrapOutput(join(directory, "missing", "output")), {
+    code: "BOOTSTRAP_OUTPUT_UNVERIFIED",
+  });
 });

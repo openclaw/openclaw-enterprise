@@ -143,6 +143,230 @@ export async function runQaCommand(f, command, args, options = {}) {
   }
 }
 
+// Deploys a QA Agent's current configuration and waits for the deployment to succeed.
+export async function deployQaAgentAndWait(
+  f,
+  agent,
+  { timeout = 600_000, interval = 1000, now = () => Date.now() } = {},
+) {
+  const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
+  agent.stopped = false;
+  agent.revision = await f.api("POST", base + "/deploy");
+  // A timeout names the deployment's last status and attempt, and how long it had that status
+  // (finding 2106: six cells timed out at 600 s with no status).
+  let last;
+  let statusSince = now();
+  const observeStatus = (value) => {
+    if (value?.status !== last?.status) {
+      statusSince = now();
+    }
+    last = value;
+  };
+  const status = await waitFor(
+    "Agent deployment",
+    async () => {
+      const value = await f.api("GET", base + `/deployments/${agent.revision.id}`);
+      observeStatus(value);
+      if (value.error?.code === "RUNTIME_AUTHENTICATION_FAILED" && agent.preset === "OpenClaw") {
+        // A failed deployment holds its Pod for diagnosis. Check delivery and
+        // provider rejection there without exporting the Pod's credential.
+        try {
+          const data = JSON.parse(
+            await f.kubectl(
+              "get",
+              "pods",
+              "-A",
+              "-l",
+              `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${agent.revision.id},openclaw.dev/workload-role=gateway`,
+              "-o",
+              "json",
+            ),
+          );
+          const pods = data.items.filter((pod) => !pod.metadata.deletionTimestamp);
+          assert.equal(pods.length, 1);
+          const [pod] = pods;
+          const expected = createHash("sha256")
+            .update(
+              await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential"),
+            )
+            .digest("hex");
+          const script = `
+            const crypto = require('node:crypto');
+            const key = process.env[process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV] ?? '';
+            const matchesInput = crypto.createHash('sha256').update(key).digest('hex') === process.argv[1];
+            const allowed = new Set(['invalid_api_key', 'insufficient_quota', 'model_not_found', 'unsupported_country_region_territory', 'account_deactivated', 'permission_denied', 'missing_required_parameter', 'invalid_organization', 'project_not_found']);
+            fetch('https://api.openai.com/v1/responses', {
+              method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
+              body: '{}', signal: AbortSignal.timeout(15000),
+            }).then(async (response) => {
+              const body = await response.json().catch(() => ({}));
+              const code = body.error?.code;
+              console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, httpStatus: response.status, code: allowed.has(code) ? code : 'other' }));
+            }, () => console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, networkFailure: true })));
+          `;
+          const diagnostic = JSON.parse(
+            await f.kubectl(
+              "-n",
+              pod.metadata.namespace,
+              "exec",
+              pod.metadata.name,
+              "-c",
+              "gateway",
+              "--",
+              "node",
+              "-e",
+              script,
+              expected,
+            ),
+          );
+          await f.record(`${agent.id}-${agent.revision.id}-authentication`, diagnostic);
+        } catch {
+          await f.record(`${agent.id}-${agent.revision.id}-authentication`, {
+            unavailable: true,
+          });
+        }
+      }
+      // A failed startup model check names the provider's HTTP status and known
+      // error code in its sanitized probe log record; CI shows them with the error.
+      let probe = "";
+      const component = value.error?.data?.runtimeFailure?.component;
+      if (value.error?.code === "RUNTIME_MODEL_PROBE_FAILED" && component) {
+        try {
+          const logs = await f.api(
+            "GET",
+            base +
+              `/deployments/${agent.revision.id}/runtime/logs?source=${component}&minLevel=error`,
+          );
+          const record = logs.records.findLast(({ message }) => message?.endsWith(".model_probe"));
+          probe = record ? ` probe log: ${JSON.stringify(record.fields ?? {})}` : "";
+        } catch {
+          probe = " probe log: unavailable";
+        }
+      }
+      assert.ok(
+        !["failed", "cancelled"].includes(value.status),
+        `Agent deployment ${value.status}: ${JSON.stringify(value.error)}${probe}`,
+      );
+      return value.status === "succeeded" && value;
+    },
+    timeout,
+    {
+      describe: () => describeDeploymentObservation(last, now() - statusSince),
+      interval,
+      now,
+    },
+  ).catch(async (error) => {
+    // The deployment's Pods, when it has any, show whether it waited on scheduling, an image
+    // or a container that does not start.
+    if (/^Timed out: /.test(error.message)) {
+      try {
+        const runtime = await f.api("GET", base + `/deployments/${agent.revision.id}/runtime`);
+        error.message += `; runtime: ${describeDeploymentRuntime(runtime)}`;
+      } catch (runtimeError) {
+        error.message += `; runtime unavailable (${runtimeError?.message ?? runtimeError})`;
+      }
+    }
+    throw error;
+  });
+  await f.record(`${agent.preset}-${agent.id}-${agent.revision.id}-deployment`, {
+    agentId: agent.id,
+    revisionId: agent.revision.id,
+    status,
+  });
+  return { revision: agent.revision, status };
+}
+
+// The last deployment observation, without native text: the API returns allowlisted codes and
+// messages only.
+export function describeDeploymentObservation(value, statusForMs) {
+  if (!value) {
+    return "none";
+  }
+  return JSON.stringify({
+    status: value.status,
+    statusForMs,
+    lastAttempt: value.progress?.lastAttempt ?? null,
+    nextAttemptAt: value.progress?.nextAttemptAt ?? null,
+    error: value.error?.code ?? null,
+  });
+}
+
+// Runtime text reaches the API as Kubernetes sent it, and OCC may shorten it there. QA
+// redaction replaces whole registered values, so a shortened string could keep part of one.
+// The timeout therefore names only familiar Kubernetes words and says "other" for the rest;
+// event messages are left out.
+const familiarPodPhases = new Set(["Pending", "Running", "Succeeded", "Failed", "Unknown"]);
+const familiarContainerReasons = new Set([
+  "ContainerCreating",
+  "PodInitializing",
+  "CrashLoopBackOff",
+  "ImagePullBackOff",
+  "ErrImagePull",
+  "ErrImageNeverPull",
+  "InvalidImageName",
+  "CreateContainerConfigError",
+  "CreateContainerError",
+  "RunContainerError",
+  "PreStartHookError",
+  "PostStartHookError",
+  "StartError",
+  "ContainerCannotRun",
+  "ContainerStatusUnknown",
+  "Completed",
+  "Error",
+  "OOMKilled",
+  "DeadlineExceeded",
+]);
+const familiarEventReasons = new Set([
+  "FailedScheduling",
+  "FailedMount",
+  "FailedAttachVolume",
+  "FailedCreatePodSandBox",
+  "FailedKillPod",
+  "FailedPreStopHook",
+  "FailedPostStartHook",
+  "FailedSync",
+  "FailedCreate",
+  "Failed",
+  "BackOff",
+  "Unhealthy",
+  "ProbeWarning",
+  "InspectFailed",
+  "ErrImageNeverPull",
+  "NetworkNotReady",
+  "Evicted",
+  "NodeNotReady",
+  "OutOfmemory",
+  "OutOfcpu",
+]);
+
+function familiar(words, value) {
+  return value === null || value === undefined || words.has(value) ? value : "other";
+}
+
+export function describeDeploymentRuntime(runtime) {
+  const pods = (runtime?.pods ?? []).slice(0, 4).map((pod) => ({
+    role: pod.role,
+    phase: familiar(familiarPodPhases, pod.phase),
+    ready: pod.ready,
+    containers: (pod.containers ?? []).map(({ name, state, reason, restartCount }) => ({
+      name,
+      state,
+      reason: familiar(familiarContainerReasons, reason),
+      restartCount,
+    })),
+    // The API lists events newest first.
+    warnings: (pod.events ?? [])
+      .filter(({ type }) => type === "Warning")
+      .slice(0, 3)
+      .map(({ reason, count }) => ({ reason: familiar(familiarEventReasons, reason), count })),
+  }));
+  return JSON.stringify({
+    pods,
+    ...(runtime?.harness ? { harness: runtime.harness } : {}),
+  });
+}
+
 export async function createQaInstallation(
   context,
   controlPlane,
@@ -439,108 +663,7 @@ export async function createQaInstallation(
       };
     },
     async deployAndWait(agent) {
-      const base = `/namespaces/${agent.namespaceId}/agents/${agent.id}`;
-      agent.stopped = false;
-      agent.revision = await f.api("POST", base + "/deploy");
-      const status = await waitFor(
-        "Agent deployment",
-        async () => {
-          const value = await f.api("GET", base + `/deployments/${agent.revision.id}`);
-          if (
-            value.error?.code === "RUNTIME_AUTHENTICATION_FAILED" &&
-            agent.preset === "OpenClaw"
-          ) {
-            // A failed deployment holds its Pod for diagnosis. Check delivery and
-            // provider rejection there without exporting the Pod's credential.
-            try {
-              const data = JSON.parse(
-                await f.kubectl(
-                  "get",
-                  "pods",
-                  "-A",
-                  "-l",
-                  `openclaw.dev/agent=${agent.id},openclaw.dev/revision=${agent.revision.id},openclaw.dev/workload-role=gateway`,
-                  "-o",
-                  "json",
-                ),
-              );
-              const pods = data.items.filter((pod) => !pod.metadata.deletionTimestamp);
-              assert.equal(pods.length, 1);
-              const [pod] = pods;
-              const expected = createHash("sha256")
-                .update(
-                  await protectedText(process.env.OCC_TEST_QA_OPENAI_KEY_FILE, "model credential"),
-                )
-                .digest("hex");
-              const script = `
-                const crypto = require('node:crypto');
-                const key = process.env[process.env.OPENCLAW_HARNESS_CREDENTIAL_ENV] ?? '';
-                const matchesInput = crypto.createHash('sha256').update(key).digest('hex') === process.argv[1];
-                const allowed = new Set(['invalid_api_key', 'insufficient_quota', 'model_not_found', 'unsupported_country_region_territory', 'account_deactivated', 'permission_denied', 'missing_required_parameter', 'invalid_organization', 'project_not_found']);
-                fetch('https://api.openai.com/v1/responses', {
-                  method: 'POST', headers: { authorization: 'Bearer ' + key, 'content-type': 'application/json' },
-                  body: '{}', signal: AbortSignal.timeout(15000),
-                }).then(async (response) => {
-                  const body = await response.json().catch(() => ({}));
-                  const code = body.error?.code;
-                  console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, httpStatus: response.status, code: allowed.has(code) ? code : 'other' }));
-                }, () => console.log(JSON.stringify({ credentialPresent: key.length > 0, matchesInput, networkFailure: true })));
-              `;
-              const diagnostic = JSON.parse(
-                await f.kubectl(
-                  "-n",
-                  pod.metadata.namespace,
-                  "exec",
-                  pod.metadata.name,
-                  "-c",
-                  "gateway",
-                  "--",
-                  "node",
-                  "-e",
-                  script,
-                  expected,
-                ),
-              );
-              await f.record(`${agent.id}-${agent.revision.id}-authentication`, diagnostic);
-            } catch {
-              await f.record(`${agent.id}-${agent.revision.id}-authentication`, {
-                unavailable: true,
-              });
-            }
-          }
-          // A failed startup model check names the provider's HTTP status and known
-          // error code in its sanitized probe log record; CI shows them with the error.
-          let probe = "";
-          const component = value.error?.data?.runtimeFailure?.component;
-          if (value.error?.code === "RUNTIME_MODEL_PROBE_FAILED" && component) {
-            try {
-              const logs = await f.api(
-                "GET",
-                base +
-                  `/deployments/${agent.revision.id}/runtime/logs?source=${component}&minLevel=error`,
-              );
-              const record = logs.records.findLast(({ message }) =>
-                message?.endsWith(".model_probe"),
-              );
-              probe = record ? ` probe log: ${JSON.stringify(record.fields ?? {})}` : "";
-            } catch {
-              probe = " probe log: unavailable";
-            }
-          }
-          assert.ok(
-            !["failed", "cancelled"].includes(value.status),
-            `Agent deployment ${value.status}: ${JSON.stringify(value.error)}${probe}`,
-          );
-          return value.status === "succeeded" && value;
-        },
-        600_000,
-      );
-      await f.record(`${agent.preset}-${agent.id}-${agent.revision.id}-deployment`, {
-        agentId: agent.id,
-        revisionId: agent.revision.id,
-        status,
-      });
-      return { revision: agent.revision, status };
+      return deployQaAgentAndWait(f, agent);
     },
     async selectPlugin(agentId, policy) {
       const agent = f.agents.find((value) => value.id === agentId);

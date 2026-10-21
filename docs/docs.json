@@ -97,6 +97,10 @@
                     "label": "Harness"
                   },
                   {
+                    "page": "guides/topics/remote-harness",
+                    "label": "Remote Harness"
+                  },
+                  {
                     "page": "guides/topics/workspace-files",
                     "label": "Workspace Files"
                   },
@@ -465,6 +469,10 @@
                   {
                     "page": "guides/deploy/installation-profiles",
                     "label": "Profiles"
+                  },
+                  {
+                    "page": "guides/deploy/custom-installation-profiles",
+                    "label": "Custom Profiles"
                   },
                   {
                     "page": "guides/deploy/breaking-changes",

@@ -218,6 +218,44 @@
       "removeWhen": "Remove this exception when the launcher no longer imports the compiled entrypoint or build-output resolution is represented in the analyzer."
     },
     {
+      "rule": "unresolved-local-import",
+      "from": "apps/controller/src/http/route-compilers.ts",
+      "to": "apps/controller/dist/route-compilers.cjs",
+      "specifier": "file:apps/controller/dist/route-compilers.cjs",
+      "kind": "path",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "API route compilers",
+      "reason": "The precompiled route compilers are build output (precompile-route-schemas.mjs writes them at image build and in the CI lanes that build many apps); generated dist files are intentionally outside the authored-source graph, and a missing file means every schema compiles at run time.",
+      "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or build-output resolution is represented in the analyzer."
+    },
+    {
+      "rule": "unresolved-dynamic-import",
+      "from": "apps/controller/src/http/route-compilers.ts",
+      "to": "",
+      "specifier": "unknown:sha256:f439053fceb98b72892c216b82d1849ee67b054223c17c95d27fcb9d1a837689",
+      "kind": "require",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "API route compilers",
+      "reason": "Precompiled validator and serializer code requires only the runtime helpers of ajv, ajv-formats and fast-json-stringify, resolved from the compiler package that uses them on the run-time path; any other specifier throws.",
+      "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or they are generated as statically resolvable modules.",
+      "loaderIdentity": "loader:sha256:7bbee35ac5fe8e0852cfd2efe7740a7f100420d8e51eec01bccf9e4493b61609"
+    },
+    {
+      "rule": "unresolved-dynamic-import",
+      "from": "apps/controller/src/http/route-compilers.ts",
+      "to": "",
+      "specifier": "unknown:sha256:a0af9f865bf637e6736817f4ce552e4cdf7b8c36ea75bc254c1d1f0af744b5bf",
+      "kind": "require",
+      "typeOnly": false,
+      "bindings": ["*"],
+      "owner": "API route compilers",
+      "reason": "The precompiled route compilers file is loaded only from the fixed build-output path, and only when its fingerprint matches this Node version, lockfile, compiler packages and route-compilers.ts.",
+      "removeWhen": "Remove this exception when the API no longer loads precompiled route compilers or build-output resolution is represented in the analyzer.",
+      "loaderIdentity": "loader:sha256:3b37218639476b2b553131814292a2c6077b8e0a55ac024ffb991a7e11474671"
+    },
+    {
       "rule": "domain-to-implementation",
       "from": "packages/occ/src/agent-provisioning.ts",
       "to": "packages/occ/src/state/agent-provisioning.ts",
