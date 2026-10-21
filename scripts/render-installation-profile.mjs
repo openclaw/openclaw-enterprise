@@ -143,15 +143,7 @@ function parseArgs(argv) {
       fail(`unsupported argument ${arg}.\n\n${usage()}`);
     }
   }
-  if (!allowedProfiles.has(parsed.profile)) {
-    fail("--profile must be one of: openclaw, codex.");
-  }
-  if (parsed.input === undefined) {
-    fail("--input is required.");
-  }
-  if (parsed.outDir === undefined) {
-    fail("--out-dir is required.");
-  }
+  // renderInstallationProfile checks the parsed arguments, for in-process callers too.
   return parsed;
 }
 
@@ -268,10 +260,6 @@ function toYaml(value, indent = 0) {
 
 function renderYaml(value) {
   return `${toYaml(value)}\n`;
-}
-
-async function writeYaml(path, value) {
-  await writeFile(path, renderYaml(value));
 }
 
 function sha256Hex(value) {
@@ -2302,6 +2290,12 @@ export async function renderInstallationProfile(args) {
   if (!allowedProfiles.has(args.profile)) {
     fail("--profile must be one of: openclaw, codex.");
   }
+  if (args.input === undefined) {
+    fail("--input is required.");
+  }
+  if (args.outDir === undefined) {
+    fail("--out-dir is required.");
+  }
   const outDir = resolve(args.outDir);
   await mkdir(outDir, { recursive: true });
   const output = {
@@ -2329,8 +2323,10 @@ export async function renderInstallationProfile(args) {
       ...(values.controlPlane ?? {}),
       installationChecksum: sha256Hex(installationYaml),
     };
+    // Render both before writing either, so a render error leaves neither file behind.
+    const valuesYaml = renderYaml(values);
     await Promise.all([
-      writeYaml(output.values, values),
+      writeFile(output.values, valuesYaml),
       writeFile(output.installation, installationYaml),
     ]);
   }
@@ -2344,10 +2340,15 @@ export async function renderInstallationProfile(args) {
 
 // Run the CLI only when this file is the entry point, not when a test imports it.
 // Node before 24.2 lacks import.meta.main; its entry URL is the realpath of argv[1].
-const isEntryPoint =
-  import.meta.main ??
-  (process.argv[1] !== undefined &&
-    realpathSync(process.argv[1]) === fileURLToPath(import.meta.url));
+function startedAsEntryPoint() {
+  try {
+    return realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    // No argv[1], or not a file (node --eval with arguments): this module was imported.
+    return false;
+  }
+}
+const isEntryPoint = import.meta.main ?? startedAsEntryPoint();
 if (isEntryPoint) {
   try {
     const preflight = await renderInstallationProfile(parseArgs(process.argv.slice(2)));

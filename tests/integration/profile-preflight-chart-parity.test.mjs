@@ -133,12 +133,12 @@ async function each(cases, check) {
 
 // Runs one `helm template`. Each run exits within a fraction of a second, so Go's garbage
 // collector only adds CPU: GOGC=off cuts about a quarter of helm's CPU time for under 10 MB
-// more peak memory per child.
+// more peak memory per child. GOMEMLIMIT still collects if a child nears 512 MiB.
 function run(command, args) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: repository,
-      env: { ...process.env, GOGC: "off" },
+      env: { ...process.env, GOGC: "off", GOMEMLIMIT: "512MiB" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
@@ -152,7 +152,7 @@ function run(command, args) {
   });
 }
 
-// Renders in-process through the CLI's own entry point. `renderer.output` is what the CLI
+// Renders in-process through the function the CLI calls. `renderer.output` is what the CLI
 // prints: the preflight summary on stdout, or its stderr line for a refusal without one.
 // profile-renderer.test.mjs covers the CLI process itself (argv, exit status, stdout).
 async function renderProfile(profileInput, profile = "openclaw") {
