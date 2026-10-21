@@ -34,8 +34,10 @@ async function assertPromptTermination(t, { containerName, collect, exited }, de
   const exitedAt = await exited(signalledAt + budgetMs);
   const elapsedMs = (exitedAt ?? Date.now()) - signalledAt;
   const state = await collect();
+  // An exit the deadline's last inspect found later than the budget is not prompt.
+  const stopped = !state.running && elapsedMs <= budgetMs;
   t.diagnostic(
-    `${description}: ${state.running ? "still running" : `exit ${state.exitCode}`} ` +
+    `${description}: ${stopped || !state.running ? `exit ${state.exitCode}` : "still running"} ` +
       `${elapsedMs} ms after SIGTERM`,
   );
   // Kept in the lane result (files[].measurements) on passing runs too, so flake sweeps can
@@ -44,12 +46,12 @@ async function assertPromptTermination(t, { containerName, collect, exited }, de
     `openclaw-ci-measurement ${JSON.stringify({
       kind: "runtime-sigterm",
       case: phase,
-      stopped: !state.running,
+      stopped,
       elapsedMs,
       budgetMs,
     })}`,
   );
-  if (state.running) {
+  if (!stopped) {
     assert.fail(
       `${description}: SIGTERM did not stop the wrapper in ${elapsedMs} ms.\n${failureTail(state.output)}`,
     );

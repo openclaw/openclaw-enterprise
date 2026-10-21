@@ -117,31 +117,35 @@ export function followContainer(
     state.running = false;
     changes.notify();
   };
-  // One `docker inspect`: { running, exitCode, finishedAt }, or undefined if it failed.
-  const inspect = async () => {
+  // One `docker inspect`, stopped after `timeoutMs`: { running, exitCode,
+  // finishedAt }, or undefined if it failed. finishedAt is Docker's exit time
+  // (the daemon's clock, the same host here), or undefined when Docker has
+  // none after the container's start.
+  const inspect = async ({ timeoutMs = 20_000 } = {}) => {
     const child = start([
       "inspect",
       containerName,
       "--format",
-      "{{.State.Running}} {{.State.ExitCode}} {{.State.FinishedAt}}",
+      "{{.State.Running}} {{.State.ExitCode}} {{.State.StartedAt}} {{.State.FinishedAt}}",
     ]);
     let text = "";
     child.child.stdout.on("data", (chunk) => (text += chunk));
+    const timer = setTimeout(() => child.child.kill(), timeoutMs);
     const { code } = await child.closed;
-    const [running, exitCode, finishedAt] = text.trim().split(/\s+/);
+    clearTimeout(timer);
+    const [running, exitCode, startedAt, finishedAt] = text.trim().split(/\s+/);
     if (code !== 0 || !["true", "false"].includes(running)) {
       return undefined;
     }
+    const started = Date.parse(startedAt);
+    const finished = Date.parse(finishedAt);
     const result = {
       running: running === "true",
       exitCode: Number(exitCode),
-      finishedAt: Date.parse(finishedAt),
+      finishedAt: finished > 0 && !(finished < started) ? finished : undefined,
     };
     if (exit && !result.running && Number.isInteger(result.exitCode)) {
-      void exited(
-        result.exitCode,
-        Number.isFinite(result.finishedAt) ? result.finishedAt : Date.now(),
-      );
+      void exited(result.exitCode, result.finishedAt ?? Date.now());
     }
     return result;
   };
@@ -150,7 +154,7 @@ export function followContainer(
     const output = { stdout: "", stderr: "" };
     wait.child.stdout.on("data", (chunk) => (output.stdout += chunk));
     wait.child.stderr.on("data", (chunk) => (output.stderr += chunk));
-    void wait.closed.then(({ code, signal, error }) => {
+    void wait.closed.then(async ({ code, signal, error }) => {
       const exitCode = Number(output.stdout.trim());
       if (
         error !== undefined ||
@@ -158,6 +162,10 @@ export function followContainer(
         output.stdout.trim() === "" ||
         !Number.isInteger(exitCode)
       ) {
+        // A wait that failed on a busy daemon is not a failed container: ask once.
+        if (!settled && !stopping) {
+          await inspect();
+        }
         if (!settled) {
           fail(
             `docker wait ${containerName} failed (${error?.message ?? code ?? signal}).\n` +

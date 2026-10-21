@@ -30,10 +30,12 @@ if (command === "inspect" && mode === "inspect-fails") {
   process.stderr.write(long("inspect stderr"));
   process.exit(1);
 } else if (command === "inspect" && mode === "wait-hangs") {
-  process.stdout.write("false 0 2026-10-21T08:52:18.75Z\\n");
+  process.stdout.write("false 0 2026-10-21T08:51:50.1Z 2026-10-21T08:52:18.75Z\\n");
+} else if (command === "inspect" && mode === "wait-hangs-no-finish") {
+  process.stdout.write("false 0 2026-10-21T08:51:50.1Z 0001-01-01T00:00:00Z\\n");
 } else if (command === "inspect") {
   process.stdout.write(mode === "exited" ? "false 1\\n" : "true 0\\n");
-} else if (command === "wait" && mode === "wait-hangs") {
+} else if (command === "wait" && mode.startsWith("wait-hangs")) {
   setInterval(() => {}, 1_000);
 } else if (command === "exec" && entry === "/app/openclaw.mjs") {
   process.stdout.write(long("plugin list"));
@@ -184,4 +186,13 @@ test("a follower whose docker wait never returns takes the exit, and its time, f
   assert.equal(state.exitedAt, Date.parse("2026-10-21T08:52:18.75Z"));
   assert.equal(state.exitCode, 0);
   assert.match(state.stderr, /wrapper failed: final stderr line\n$/);
+});
+
+test("an inspect without a real exit time counts the exit from when it was seen", async (t) => {
+  process.env.FAKE_DOCKER_MODE = "wait-hangs-no-finish";
+  t.after(() => delete process.env.FAKE_DOCKER_MODE);
+  const follower = followContainer(t, "fake-container");
+  const before = Date.now();
+  assert.equal((await follower.inspect()).finishedAt, undefined);
+  assert.ok(follower.read().exitedAt >= before, "not Docker's zero time");
 });
