@@ -65,6 +65,7 @@ import {
   type OpenClawController,
 } from "@openclaw-enterprise/occ";
 import { isNonEmptyString } from "@openclaw-enterprise/utils";
+import ValidatorSelector from "@fastify/ajv-compiler";
 import SerializerSelector from "@fastify/fast-json-stringify-compiler";
 import ajvFormats from "ajv-formats";
 import Fastify, {
@@ -278,6 +279,13 @@ function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
 // chart's 500m CPU limit. A serializer depends only on its schema, the shared schemas and
 // the serializer options, so build each distinct combination once.
 //
+// The same holds for request validators (ajv code generation) and across apps: a process that
+// builds several apps with the same routes (the test fixtures build one per test, a few
+// hundred per CI lane) compiled every validator and serializer again for each, about a second
+// of CPU per app. So both caches are process-wide and name each shared schema by its content,
+// since every app holds its own copies of them. Each app still compiles with its own compiler
+// instances; only the compiled functions, which depend on nothing else, are shared.
+//
 // Stored documents (Configuration values, Preset templates, revision snapshots) are
 // SafeJsonValue trees of up to 1 MiB each. fast-json-stringify writes that recursive anyOf by
 // running ajv on every node to pick a branch: about 160 ms per MiB against 3 ms for
@@ -291,22 +299,116 @@ function formatsPlugin(ajv: Parameters<typeof ajvFormats.default>[0]) {
 const SAFE_JSON_VALUE_ID = "SafeJsonValue";
 const SAFE_JSON_VALUE_SOURCE = JSON.stringify(JsonValue);
 
+// Never pruned. That is safe only while every validator and serializer is built at route
+// registration, a fixed set per route table. Compiling per request
+// (reply.compileSerializationSchema, request.compileValidationSchema, or serializeInput with a
+// schema assembled at request time) would grow these Maps without bound; such a route must set
+// its own compiler.
+const responseSerializers = new Map<string, SerializerSelector.Serializer>();
+const requestValidators = new Map<string, unknown>();
+
+// Content ids of shared schemas: one cacheKey per stored schema object, and short keys.
+const schemaSources = new Map<string, number>();
+const schemaContentIds = new WeakMap<object, number | null>();
+function schemaContentId(schema: unknown): number | undefined {
+  if (typeof schema !== "object" || schema === null) {
+    return undefined;
+  }
+  let id = schemaContentIds.get(schema);
+  if (id === undefined) {
+    id = null;
+    const source = cacheKey(schema);
+    if (source !== undefined) {
+      id = schemaSources.get(source) ?? schemaSources.size;
+      schemaSources.set(source, id);
+    }
+    schemaContentIds.set(schema, id);
+  }
+  return id ?? undefined;
+}
+
+// The shared schemas of one encapsulation context, by $id and content, or undefined when one
+// of them has no JSON form.
+function sharedSchemasKey(externalSchemas: unknown): string | undefined {
+  const ids: [string, number][] = [];
+  for (const [id, schema] of Object.entries((externalSchemas ?? {}) as Record<string, unknown>)) {
+    const contentId = schemaContentId(schema);
+    if (contentId === undefined) {
+      return undefined;
+    }
+    ids.push([id, contentId]);
+  }
+  return JSON.stringify(ids);
+}
+
+// A value by its JSON, except that JSON cannot tell functions (an ajv plugin, onCreate, a custom
+// keyword) or other non-plain objects (a RegExp format) apart, so those are named by identity.
+const identityIds = new WeakMap<object, number>();
+let nextIdentityId = 0;
+function cacheKey(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value ?? {}, (_key, entry: unknown) => {
+      if ((typeof entry !== "object" || entry === null) && typeof entry !== "function") {
+        return entry;
+      }
+      const prototype = typeof entry === "function" ? undefined : Object.getPrototypeOf(entry);
+      if (prototype === Object.prototype || prototype === Array.prototype || prototype === null) {
+        return entry;
+      }
+      let id = identityIds.get(entry);
+      if (id === undefined) {
+        id = nextIdentityId++;
+        identityIds.set(entry, id);
+      }
+      return `[identity ${id}]`;
+    });
+  } catch {
+    // A cycle or a BigInt keyword is never cached.
+    return undefined;
+  }
+}
+
+// Returns `compile(route)` from `cache` by `prefix` and the route schema, compiling once.
+function cachedCompile<T>(
+  cache: Map<string, T>,
+  prefix: string | undefined,
+  compile: (route: { schema?: unknown }) => T,
+): (route: { schema?: unknown }) => T {
+  if (prefix === undefined) {
+    return compile;
+  }
+  return (route) => {
+    const schema = cacheKey(route.schema);
+    if (schema === undefined) {
+      return compile(route);
+    }
+    const key = prefix + schema;
+    let compiled = cache.get(key);
+    if (compiled === undefined) {
+      compiled = compile(route);
+      cache.set(key, compiled);
+    }
+    return compiled;
+  };
+}
+
+// Fastify stores a copy of each shared schema, so recognize the contract's SafeJsonValue by
+// content. A different schema registered under that $id keeps its own serializer.
+const contractSafeJsonValue = new WeakMap<object, boolean>();
+function isContractSafeJsonValue(schema: unknown): boolean {
+  if (typeof schema !== "object" || schema === null) {
+    return false;
+  }
+  let known = contractSafeJsonValue.get(schema);
+  if (known === undefined) {
+    known = JSON.stringify(schema) === SAFE_JSON_VALUE_SOURCE;
+    contractSafeJsonValue.set(schema, known);
+  }
+  return known;
+}
+
 export function cachedResponseSerializers(): SerializerSelector.SerializerFactory {
   const buildSerializerCompiler = SerializerSelector();
-  // Fastify stores a copy of each shared schema, so recognize the contract's SafeJsonValue by
-  // content. A different schema registered under that $id keeps its own serializer.
-  const contractSafeJsonValue = new WeakMap<object, boolean>();
-  const isContractSafeJsonValue = (schema: unknown): boolean => {
-    if (typeof schema !== "object" || schema === null) {
-      return false;
-    }
-    let known = contractSafeJsonValue.get(schema);
-    if (known === undefined) {
-      known = JSON.stringify(schema) === SAFE_JSON_VALUE_SOURCE;
-      contractSafeJsonValue.set(schema, known);
-    }
-    return known;
-  };
   const serializedSchemas = (
     externalSchemas: Parameters<SerializerSelector.SerializerFactory>[0],
   ): Parameters<SerializerSelector.SerializerFactory>[0] => {
@@ -319,51 +421,71 @@ export function cachedResponseSerializers(): SerializerSelector.SerializerFactor
       [SAFE_JSON_VALUE_ID]: { $id: SAFE_JSON_VALUE_ID },
     } as typeof externalSchemas;
   };
-  const sharedSchemaIds = new WeakMap<object, number>();
-  // Never pruned. That is safe only while every serializer is built at route registration,
-  // a fixed set. Compiling per request (reply.compileSerializationSchema or serializeInput
-  // with a schema assembled at request time) would grow this Map without bound; such a
-  // route must set its own serializerCompiler.
-  const serializers = new Map<string, SerializerSelector.Serializer>();
-  let nextSharedSchemaId = 0;
-  const sharedSchemaId = (schema: object) => {
-    let id = sharedSchemaIds.get(schema);
-    if (id === undefined) {
-      id = nextSharedSchemaId++;
-      sharedSchemaIds.set(schema, id);
-    }
-    return id;
-  };
   return (externalSchemas, options) => {
     const compile = buildSerializerCompiler(serializedSchemas(externalSchemas), options);
-    const sharedSchemas = Object.entries((externalSchemas ?? {}) as Record<string, unknown>);
-    // Shared schemas are keyed by object identity in a WeakMap; a context with any shared
-    // schema that is not a plain object compiles uncached instead.
-    if (sharedSchemas.some(([, schema]) => typeof schema !== "object" || schema === null)) {
-      return compile;
-    }
-    // Fastify passes the same stored schema objects each time; identity names the set.
-    const shared = sharedSchemas
-      .map(([id, schema]) => `${id}=${sharedSchemaId(schema as object)}`)
-      .join(",");
-    const prefix = `${JSON.stringify(options ?? {})}|${shared}|`;
-    // Route schemas are fixed at registration. A schema JSON cannot express (a cycle or a
-    // BigInt keyword) compiles uncached rather than failing registration here.
-    return (route) => {
-      let key: string;
-      try {
-        key = prefix + JSON.stringify(route.schema);
-      } catch {
-        return compile(route);
-      }
-      let serializer = serializers.get(key);
-      if (serializer === undefined) {
-        serializer = compile(route);
-        serializers.set(key, serializer);
-      }
-      return serializer;
+    const shared = sharedSchemasKey(externalSchemas);
+    const configuration = cacheKey(options);
+    return cachedCompile(
+      responseSerializers,
+      shared === undefined || configuration === undefined
+        ? undefined
+        : `${configuration}|${shared}|`,
+      compile as (route: { schema?: unknown }) => SerializerSelector.Serializer,
+    );
+  };
+}
+
+// Fastify lowercases the property names of a route's headers schema before compiling it, as
+// request header names arrive lowercased, but only with its default validator compiler; with
+// ours it passes the schema unchanged. So refuse a headers schema that names a header in
+// another case rather than let it never match.
+function assertLowercaseHeaders(route: { schema?: unknown; httpPart?: unknown }): void {
+  if (route.httpPart !== "headers" || typeof route.schema !== "object" || route.schema === null) {
+    return;
+  }
+  const { properties, required } = route.schema as { properties?: unknown; required?: unknown };
+  const names = [
+    ...(typeof properties === "object" && properties !== null ? Object.keys(properties) : []),
+    ...(Array.isArray(required)
+      ? required.filter((name): name is string => typeof name === "string")
+      : []),
+  ];
+  const mixed = names.find((name) => name !== name.toLowerCase());
+  if (mixed !== undefined) {
+    throw new Error(`Route headers schemas must name headers in lowercase: ${mixed}`);
+  }
+}
+
+export function cachedRequestValidators(): ValidatorSelector.BuildCompilerFromPool {
+  const buildValidatorCompiler = ValidatorSelector();
+  const factory = (
+    externalSchemas: Parameters<ValidatorSelector.BuildCompilerFromPool>[0],
+    options: Parameters<ValidatorSelector.BuildCompilerFromPool>[1],
+  ) => {
+    // The compiler builds an Ajv instance and adds every shared schema to it, so build it
+    // only when this context compiles a schema no app has compiled yet.
+    let compile: ((route: { schema?: unknown }) => unknown) | undefined;
+    const compileOnce = (route: { schema?: unknown }) => {
+      compile ??= buildValidatorCompiler(externalSchemas, options) as unknown as (route: {
+        schema?: unknown;
+      }) => unknown;
+      return compile(route);
+    };
+    const shared = sharedSchemasKey(externalSchemas);
+    const configuration = cacheKey(options);
+    const cached = cachedCompile(
+      requestValidators,
+      shared === undefined || configuration === undefined
+        ? undefined
+        : `${configuration}|${shared}|`,
+      compileOnce,
+    );
+    return (route: { schema?: unknown; httpPart?: unknown }) => {
+      assertLowercaseHeaders(route);
+      return cached(route);
     };
   };
+  return factory as unknown as ValidatorSelector.BuildCompilerFromPool;
 }
 
 function ipv4(value: string): number | undefined {
@@ -1232,7 +1354,12 @@ export function createFastifyApp(options: ControllerAppOptions): FastifyInstance
       },
       plugins: [formatsPlugin],
     },
-    schemaController: { compilersFactory: { buildSerializer: cachedResponseSerializers() } },
+    schemaController: {
+      compilersFactory: {
+        buildValidator: cachedRequestValidators(),
+        buildSerializer: cachedResponseSerializers(),
+      },
+    },
   }).withTypeProvider<TypeBoxTypeProvider>();
 
   // Shutdown (app.close) drains admitted requests, but Node and Fastify close only the

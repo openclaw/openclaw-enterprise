@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:https";
 import { once } from "node:events";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getCACertificates, setDefaultCACertificates } from "node:tls";
@@ -24,6 +24,7 @@ import {
 import { signInToControllerApp } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 
 const cookieDomain = "oce.example.test";
 const nativeDomain = `agents.${cookieDomain}`;
@@ -97,18 +98,16 @@ async function startNativeHttpsUpstream(t) {
   t.after(async () => rm(directory, { recursive: true, force: true }));
   const keyPath = join(directory, "tls.key");
   const certPath = join(directory, "tls.crt");
+  await writeFile(keyPath, sharedRsaPrivateKeyPem("native-admin-upstream"), { mode: 0o600 });
   const generated = spawnSync(
     "openssl",
     [
       "req",
       "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
+      "-key",
+      keyPath,
       "-days",
       "2",
-      "-keyout",
-      keyPath,
       "-out",
       certPath,
       "-subj",
