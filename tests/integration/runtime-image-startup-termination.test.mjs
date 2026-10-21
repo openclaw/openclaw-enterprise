@@ -25,18 +25,15 @@ import {
 const promptTerminationMs = 15_000;
 
 // Sends SIGTERM as the kubelet does and measures how long the container takes
-// to stop. Container exit ends its PID namespace, so no child outlives it.
-async function assertPromptTermination(t, { containerName, collect }, description, phase) {
+// to stop (the scenario follows its exit with `docker wait`). Container exit
+// ends its PID namespace, so no child outlives it.
+async function assertPromptTermination(t, { containerName, collect, exited }, description, phase) {
   const budgetMs = promptTerminationMs * imageSmokeTimeoutMultiplier;
   const signalledAt = Date.now();
   await runDocker(["kill", "--signal", "TERM", containerName]);
-  const deadline = signalledAt + budgetMs;
-  let state = await collect();
-  while (state.running && Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    state = await collect();
-  }
+  await exited(signalledAt + budgetMs);
   const elapsedMs = Date.now() - signalledAt;
+  const state = await collect();
   t.diagnostic(
     `${description}: ${state.running ? "still running" : `exit ${state.exitCode}`} ` +
       `${elapsedMs} ms after SIGTERM`,
