@@ -159,7 +159,9 @@ export async function withRuntimeImageFixture(docker, directory, run, { receiptP
     }
     // Docker's containerd image store lists `<repository>@<image ID>` for each
     // repository the image is tagged in; those entries follow the tags. Any other
-    // digest records a pull or push, which this fixture never makes.
+    // digest records a pull or push, which this fixture never makes. Inspect cannot
+    // tell such an entry from a record pulled by that exact digest, which would
+    // need this run's own nonce-unique image pulled back under an owned repository.
     const derived = new Set(repoTags.map((tag) => `${tag.slice(0, tag.lastIndexOf(":"))}@${id}`));
     return { repoTags, foreignDigests: repoDigests.filter((digest) => !derived.has(digest)) };
   }

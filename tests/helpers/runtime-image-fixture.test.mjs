@@ -85,7 +85,7 @@ function fakeEngine(options = {}) {
       // The containerd image store lists `<repository>@<image ID>` for every
       // repository the image is tagged in; the classic store lists none for a build.
       const stored = options.containerdStore
-        ? [...new Set(repoTags.map((tag) => `${tag.slice(0, tag.lastIndexOf(":"))}@${id}`))]
+        ? [...new Set(repoTags.map((tag) => `${tag.replace(/:[^/:]+$/, "")}@${id}`))]
         : [];
       return {
         stdout: JSON.stringify([
@@ -171,10 +171,21 @@ test("runtime fixture removes its exact retargeted tags and images", async () =>
 test("runtime fixture removes its images under Docker's containerd image store", async () => {
   await withDirectory(async (directory) => {
     const engine = fakeEngine({ containerdStore: true });
+    // A registry port must not be taken for the tag separator.
+    const tag = "localhost:5000/fixture:first";
     await withRuntimeImageFixture(engine.docker, directory, async (fixture) => {
-      const { second } = await buildPair(fixture, directory);
-      await fixture.create("owned-container", ["fixture:first"]);
-      await fixture.retag(second, "fixture:first");
+      await fixture.build(tag, join(directory, "first.iid"), "first", baseId);
+      const second = await fixture.build(
+        "fixture:second",
+        join(directory, "second.iid"),
+        "second",
+        baseId,
+      );
+      assert.deepEqual((await fixture.inspectImage(tag)).RepoDigests, [
+        `localhost:5000/fixture@${ids[0]}`,
+      ]);
+      await fixture.create("owned-container", [tag]);
+      await fixture.retag(second, tag);
     });
     assert.deepEqual([...engine.images], [baseId]);
     assert.deepEqual([...engine.tags], [["base:fixture", baseId]]);
