@@ -1049,15 +1049,23 @@ export class OpenShellGitRuntime {
     signal: AbortSignal,
   ): Promise<OpenShellGitExpiryResult> {
     const credentials = revision.repositoryCredentials;
-    if (!this.routes || !this.owner || !credentials || credentials.deadlineWallMs > Date.now()) {
+    if (!this.routes || !this.owner || !credentials) {
       return "retire-runtime";
     }
-    try {
-      // A real grant substitution remains a refusal even if first seen after the deadline.
-      this.scope(revision);
-    } catch {
-      return "retire-runtime";
+    if (!credentials.standingApprovalId) {
+      if (credentials.deadlineWallMs > Date.now()) {
+        return "retire-runtime";
+      }
+      try {
+        // A finite grant substitution remains a refusal even if first seen after the deadline.
+        this.scope(revision);
+      } catch {
+        return "retire-runtime";
+      }
     }
+    // Standing withdrawal may precede the first deadline, or be caused by removal of the
+    // policy itself. The store requires the exact durable withdrawal and original installation;
+    // asking for current Git permission here would prevent subtracting that permission.
     const saved = await this.routes.expire(revision, workspace, sandbox);
     if (!saved) {
       return "retire-runtime";

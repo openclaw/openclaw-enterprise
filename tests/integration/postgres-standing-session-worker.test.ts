@@ -144,6 +144,7 @@ for (const [action, name] of Object.entries(cases)) {
       let created = false;
       let executionCreates = 0;
       let stopped = 0;
+      let withdrawalReads = 0;
       const compute = {
         ...f.compute,
         validateRepositoryCredentials() {},
@@ -164,6 +165,12 @@ for (const [action, name] of Object.entries(cases)) {
         },
         async verifyRepositoryExecution(r: Parameters<ComputeDriver["prepareRevision"]>[0]) {
           return created && r.id === revision.id ? execution : undefined;
+        },
+        async retireExpiredRepositoryAccess(r: Parameters<ComputeDriver["prepareRevision"]>[0]) {
+          assert.equal(r.id, revision.id);
+          assert.equal(created, true);
+          withdrawalReads++;
+          return "withdrawn" as const;
         },
         async stopRevision(r: Parameters<ComputeDriver["stopRevision"]>[0]) {
           assert.equal(
@@ -386,7 +393,63 @@ for (const [action, name] of Object.entries(cases)) {
       );
       assert.equal(provider.issuesOfTokens.length, 2);
       assert.equal(provider.tokenState().at(-1)?.revoked, true);
+      await waitFor(
+        "withdrawal and successor maintenance committed",
+        async () =>
+          events.some(
+            (event) =>
+              event.revisionId === revision.id && event.code === "REPOSITORY_ACCESS_WITHDRAWN",
+          ) || undefined,
+      );
       await f.stop();
+      // The receiving worker confirmed withdrawal through Compute and committed a successor.
+      // Lose that maintenance's final lease, then restart the worker after the first deadline.
+      const queue = new f.PostgresWorkQueue(f.observerPool, { maxAttempts: 1 });
+      assert.equal(await queue.repositoryExpiryState(ownerRef), "expiry");
+      const key = (await queue.latestRevisionMaintenanceKey(ownerRef))!;
+      const scheduled = await queue.findWork(key);
+      assert.equal(scheduled?.state, "queued");
+      assert.ok(
+        scheduled!.availableAt.getTime() <= Date.now() + driver.maintenanceIntervalMs + 1000,
+        "switching from renewal to ordinary maintenance did not postpone the next observation",
+      );
+      const beforeRestart = withdrawalReads;
+      assert.ok(beforeRestart >= 1, "Compute observed Git withdrawn on the authorized execution");
+      const deliveredBeforeRestart = deliveries.length;
+      await f.observerPool.query(
+        "UPDATE occ.controller_work SET available_at = clock_timestamp() WHERE idempotency_key=$1",
+        [key],
+      );
+      const interrupted = await queue.claim();
+      assert.equal(interrupted?.idempotencyKey, key);
+      await f.observerPool.query(
+        "UPDATE occ.controller_work SET lease_expires_at=clock_timestamp() WHERE idempotency_key=$1",
+        [key],
+      );
+      await queue.recoverStale();
+      assert.equal((await queue.findWork(key))?.reasonCode, "LEASE_EXPIRED");
+      const resumed = (await queue.latestRevisionMaintenanceKey(ownerRef))!;
+      assert.notEqual(resumed, key, "recovery continued supervision without restoring the grant");
+      await f.observerPool.query(
+        "UPDATE occ.controller_work SET available_at=clock_timestamp() WHERE idempotency_key=$1",
+        [resumed],
+      );
+      await start();
+      await waitFor(
+        "new worker supervised the reduced execution",
+        async () =>
+          (await queue.findWork(resumed))?.reasonCode === "REPOSITORY_ACCESS_WITHDRAWN" ||
+          undefined,
+      );
+      await f.stop();
+      assert.ok(withdrawalReads > beforeRestart);
+      const subsequent = (await queue.latestRevisionMaintenanceKey(ownerRef))!;
+      assert.notEqual(subsequent, resumed);
+      assert.equal((await queue.findWork(subsequent))?.state, "queued");
+      assert.equal((await f.currentAgent(owner))?.activeRevisionId, revision.id);
+      assert.equal(stopped, 0);
+      assert.equal(deliveries.length, deliveredBeforeRestart, "maintenance did not restore Git");
+      assert.equal(provider.issuesOfTokens.length, 2);
       assert.equal(
         await f.state.read((v) =>
           v.repositorySessions.findStandingApproval(

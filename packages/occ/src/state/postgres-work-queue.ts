@@ -197,6 +197,33 @@ function repositoryCleanupWorkKey(
     .digest("hex")}`;
 }
 
+/**
+ * The irrevocable Git-only withdrawal owned by this revision, including a standing approval
+ * removed before its first deadline. Terminal retirement always wins. Both rows keep the
+ * established cleanup key grammar; only an owned transfer can enqueue them.
+ */
+export function repositoryWithdrawalStateSql(revision: string): string {
+  const id = `${revision}.revision_id`;
+  const prefix = `'agent_revision:' || ${id} || ':repository_cleanup:'`;
+  const digest = (input: string) => `encode(sha256(convert_to(${input}, 'UTF8')), 'hex')`;
+  return `(SELECT CASE WHEN cleanup.idempotency_key LIKE '%:retire:%' THEN 'retiring' ELSE 'expiry' END AS withdrawal
+    FROM occ.controller_work cleanup
+    WHERE (cleanup.namespace_id, cleanup.agent_id, cleanup.revision_id) =
+          (${revision}.namespace_id, ${revision}.agent_id, ${id})
+      AND cleanup.agent_target IS NULL AND cleanup.namespace_target IS NULL
+      AND cleanup.idempotency_key IN (
+        ${prefix} || ${digest(`'${REPOSITORY_EXPIRY_KEY_DOMAIN}' || ${id}`)},
+        ${prefix} || 'retire:' || ${digest(id)})
+    ORDER BY withdrawal DESC LIMIT 1)`;
+}
+
+function withdrawnStandingMaintenanceSql(source: string): string {
+  return `((revision.admitted_spec->'repository_credentials') ? 'standingApprovalId'
+    AND ${source}.idempotency_key ~
+      ('^agent_revision:' || revision.id || ':maintenance:(0|[1-9][0-9]*)$')
+    AND ${repositoryWithdrawalStateSql(source)} = 'expiry')`;
+}
+
 export function repositoryCleanupSql(alias: string): string {
   return `(${alias}.namespace_target IS NULL AND ${alias}.agent_target IS NULL
     AND (
@@ -408,7 +435,8 @@ function continuingMaintenanceSql(candidates: string): string {
         AND (revision.admitted_spec->'repository_credentials' IS NULL OR
           occ.repository_standing_execution_is_current(revision.admitted_spec->'repository_credentials',revision.namespace_id,revision.agent_id,revision.id) OR
           (revision.admitted_spec #>> '{repository_credentials,deadlineWallMs}')::bigint >
-            EXTRACT(EPOCH FROM clock_timestamp()) * 1000)
+            EXTRACT(EPOCH FROM clock_timestamp()) * 1000 OR
+          ${withdrawnStandingMaintenanceSql("source")})
     ),`;
 }
 
@@ -913,7 +941,8 @@ export class PostgresWorkQueue {
   async enqueueRepositoryCleanup(
     claim: WorkClaim,
     owner: RepositoryRevisionOwner,
-    purpose: "sessions" | "terminal-runtime" | "failed-preparation" = "sessions",
+    purpose:
+      "sessions" | "terminal-runtime" | "failed-preparation" | "standing-withdrawal" = "sessions",
   ): Promise<ControllerWork | undefined> {
     validateClaim(claim);
     const revisionId = nonempty(owner.revisionId, "Repository cleanup revision ID");
@@ -923,14 +952,16 @@ export class PostgresWorkQueue {
     if (
       purpose !== "sessions" &&
       purpose !== "terminal-runtime" &&
-      purpose !== "failed-preparation"
+      purpose !== "failed-preparation" &&
+      purpose !== "standing-withdrawal"
     ) {
       throw new ScopeViolationError("Repository cleanup requires a supported purpose.");
     }
-    const retireRuntime = purpose !== "sessions";
+    const withdrawStanding = purpose === "standing-withdrawal";
+    const runtimeCleanup = purpose !== "sessions";
     const key = repositoryCleanupWorkKey(
       revisionId,
-      retireRuntime ? "terminal-runtime" : "sessions",
+      withdrawStanding ? "expiry" : runtimeCleanup ? "terminal-runtime" : "sessions",
     );
     const result = await this.client.query(
       `WITH source AS MATERIALIZED (
@@ -961,7 +992,16 @@ export class PostgresWorkQueue {
            -- An expiry cleanup that cannot prove withdrawal transfers to terminal retirement.
            -- No other cleanup can transfer, and retirement can never transfer back.
            AND (NOT ${repositoryCleanupSql("source")} OR
-             ($7::boolean AND NOT $8::boolean AND source.idempotency_key = $9::text))
+             ($7::boolean AND NOT $8::boolean AND NOT $10::boolean AND source.idempotency_key = $9::text))
+           -- The worker revalidated the denial under these Namespace and Agent locks. Only this
+           -- active revision's own work can transfer standing Git to irreversible withdrawal.
+           AND (NOT $10::boolean OR (source.agent_id = agent.id AND source.revision_id = revision.id
+             AND namespace.status = 'ready' AND agent.status = 'active'
+             AND agent.active_revision_id = revision.id AND agent.desired_runtime_state = 'running'
+             AND (revision.admitted_spec->'repository_credentials') ? 'standingApprovalId'
+             AND (source.idempotency_key ~
+               ('^agent_revision:' || revision.id || ':maintenance:(0|[1-9][0-9]*)$')
+               OR source.idempotency_key = 'agent_revision:' || revision.id || ':reconcile')))
            AND (NOT $7::boolean OR (source.revision_id = revision.id
              AND ($8::boolean OR revision.admitted_spec->'repository_credentials' IS NOT NULL)))
            AND (
@@ -1005,9 +1045,10 @@ export class PostgresWorkQueue {
         nonempty(owner.agentId, "Repository cleanup Agent ID"),
         revisionId,
         key,
-        retireRuntime,
+        runtimeCleanup,
         purpose === "failed-preparation",
         repositoryCleanupWorkKey(revisionId, "expiry"),
+        withdrawStanding,
       ],
     );
     const row = result.rows[0] as
@@ -1141,16 +1182,13 @@ export class PostgresWorkQueue {
     owner: RepositoryRevisionOwner,
   ): Promise<"expiry" | "retiring" | undefined> {
     const { namespaceId, agentId, revisionId } = owner;
-    const retiring = repositoryCleanupWorkKey(revisionId, "terminal-runtime");
     const result = await this.client.query(
-      `SELECT idempotency_key FROM occ.controller_work
-       WHERE namespace_id = $1 AND agent_id = $2 AND revision_id = $3
-         AND idempotency_key IN ($4, $5) AND agent_target IS NULL AND namespace_target IS NULL
-       ORDER BY (idempotency_key = $5) DESC LIMIT 1`,
-      [namespaceId, agentId, revisionId, repositoryCleanupWorkKey(revisionId, "expiry"), retiring],
+      `SELECT ${repositoryWithdrawalStateSql("owner")} AS withdrawal
+       FROM (VALUES ($1::text, $2::text, $3::text)) AS owner(namespace_id, agent_id, revision_id)`,
+      [namespaceId, agentId, revisionId],
     );
-    const key = (result.rows[0] as Pick<WorkRow, "idempotency_key"> | undefined)?.idempotency_key;
-    return key === undefined ? undefined : key === retiring ? "retiring" : "expiry";
+    const row = result.rows[0] as { withdrawal: "expiry" | "retiring" | null };
+    return row.withdrawal ?? undefined;
   }
 
   /** Resume the maintenance chain interrupted by Git expiry, even after a clock adjustment. */
@@ -1467,9 +1505,10 @@ export class PostgresWorkQueue {
                  ('^agent_revision:' || revision.id || ':maintenance:(0|[1-9][0-9]*)$')
                  OR source.idempotency_key = 'agent_revision:' || revision.id || ':reconcile')
                AND (revision.admitted_spec->'repository_credentials' IS NULL OR
-          occ.repository_standing_execution_is_current(revision.admitted_spec->'repository_credentials',revision.namespace_id,revision.agent_id,revision.id) OR
+                 occ.repository_standing_execution_is_current(revision.admitted_spec->'repository_credentials',revision.namespace_id,revision.agent_id,revision.id) OR
                  (revision.admitted_spec #>> '{repository_credentials,deadlineWallMs}')::bigint >
-                   EXTRACT(EPOCH FROM clock_timestamp()) * 1000)
+                   EXTRACT(EPOCH FROM clock_timestamp()) * 1000 OR
+                 ${withdrawnStandingMaintenanceSql("source")})
            ))
        ), transitioned AS (
          UPDATE occ.controller_work AS work

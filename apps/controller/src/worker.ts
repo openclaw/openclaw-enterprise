@@ -2064,12 +2064,7 @@ export class ControllerWorker {
       ) {
         cause = "REPOSITORY_ATTEMPT_INVALIDATED";
       }
-      if (
-        complete &&
-        expiryRevision !== undefined &&
-        withdrawal === "withdrawn" &&
-        this.revisionMaintenanceInterval(expiryRevision) !== undefined
-      ) {
+      if (complete && expiryRevision !== undefined && withdrawal === "withdrawn") {
         // Publish withdrawal and resume normal runtime maintenance in this same transaction.
         // A recovered expiry claim may be far older than the interrupted maintenance bucket.
         const previous =
@@ -2080,7 +2075,17 @@ export class ControllerWorker {
                 revisionId: expiryRevision.id,
               })
             : claim.idempotencyKey;
-        await this.enqueueMaintenance(queue, claim, expiryRevision, previous);
+        // Use the ordinary observation cadence. In particular, do not require the removed
+        // standing policy (or its shorter renewal cadence) to supervise the retained runtime.
+        if (expiryRevision.repositoryCredentials?.standingApprovalId) {
+          const interval = Math.min(
+            this.maintenanceIntervalMs ?? Infinity,
+            this.repositoryCleanupRetryMs,
+          );
+          await this.enqueueMaintenance(queue, claim, expiryRevision, previous, interval);
+        } else if (this.revisionMaintenanceInterval(expiryRevision) !== undefined) {
+          await this.enqueueMaintenance(queue, claim, expiryRevision, previous);
+        }
         completionCode = "REPOSITORY_ACCESS_WITHDRAWN";
       }
       if (complete) {
@@ -4393,7 +4398,7 @@ export class ControllerWorker {
   }
 
   /** Loss of Git approval is not loss of model authority. Close only repository
-   * sessions on an already active execution; ordinary stop/replacement still owns Compute.
+   * access on an already active execution; ordinary stop/replacement still owns Compute.
    * The online authorizer denies immediately from the approval/policy before this cleanup. */
   private async completeStandingRepositoryDenial(
     claim: ClaimedWork,
@@ -4474,13 +4479,11 @@ export class ControllerWorker {
           });
         }
       }
-      if (attempts.some((attempt) => attempt.phase !== "disposed")) {
-        // Do not complete the maintenance claim unless its exact sessions cleanup has an owner.
-        // The queue separately rejects withdrawal or unrelated work as a source of this authority.
-        const cleanup = await queue.enqueueRepositoryCleanup(claim, owner, "sessions");
-        if (!cleanup) {
-          throw new Error("REPOSITORY_SESSION_CLEANUP_NOT_REGISTERED");
-        }
+      // Both sides of the handoff commit together, even if the last session was already
+      // disposed. The expiry owner withdraws native Git, checks the independent authority of
+      // the retained runtime and continues its maintenance. It never reopens Git admission.
+      if (!(await queue.enqueueRepositoryCleanup(claim, owner, "standing-withdrawal"))) {
+        throw new Error("REPOSITORY_WITHDRAWAL_NOT_REGISTERED");
       }
       await queue.complete(claim, { code });
       return true;
@@ -6174,8 +6177,9 @@ export class ControllerWorker {
     claim: ClaimedWork,
     revision: Readonly<AgentRevision>,
     previousMaintenanceKey = claim.idempotencyKey,
+    withdrawnInterval?: number,
   ): Promise<void> {
-    const interval = this.revisionMaintenanceInterval(revision)!;
+    const interval = withdrawnInterval ?? this.revisionMaintenanceInterval(revision)!;
     const candidateAvailableAt = new Date(Date.now() + interval);
     let maintenanceBucket = Math.floor(candidateAvailableAt.getTime() / interval);
     const maintenancePrefix = `agent_revision:${revision.id}:maintenance:`;
@@ -6183,14 +6187,20 @@ export class ControllerWorker {
       ? Number(previousMaintenanceKey.slice(maintenancePrefix.length))
       : undefined;
     // Clock skew must not deduplicate the successor against its completed claim.
-    const availableAt =
+    let availableAt = candidateAvailableAt;
+    if (
       currentBucket !== undefined &&
       Number.isSafeInteger(currentBucket) &&
       currentBucket >= 0 &&
       maintenanceBucket <= currentBucket
-        ? new Date((currentBucket + 1) * interval)
-        : candidateAvailableAt;
-    maintenanceBucket = Math.floor(availableAt.getTime() / interval);
+    ) {
+      maintenanceBucket = currentBucket + 1;
+      // After withdrawal the interval may be longer than the standing renewal interval.
+      // Advance the key, but do not reinterpret the old bucket at that slower cadence.
+      if (withdrawnInterval === undefined) {
+        availableAt = new Date(maintenanceBucket * interval);
+      }
+    }
     await queue.enqueue({
       idempotencyKey: `agent_revision:${revision.id}:maintenance:${maintenanceBucket}`,
       namespaceId: revision.namespaceId,

@@ -1,5 +1,9 @@
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
-import type { PostgresClient, PostgresPool } from "@openclaw-enterprise/occ";
+import {
+  repositoryWithdrawalStateSql,
+  type PostgresClient,
+  type PostgresPool,
+} from "@openclaw-enterprise/occ";
 import type { OpenShellGitRouteBlockReason } from "./openshell-git-runtime.ts";
 import type {
   OpenShellPreparedGitGeneration,
@@ -87,7 +91,7 @@ export interface OpenShellGitRouteStore {
   block(revisionId: string, fence: number, reason: OpenShellGitRouteBlockReason): Promise<boolean>;
   /** Tombstones every open route of a withdrawn revision or Namespace, whoever holds it. */
   withdraw(selector: OpenShellGitRouteWithdrawal): Promise<void>;
-  /** Irrevocably fences an expired, previously witnessed Git installation. */
+  /** Irrevocably fences the witnessed Git installation at finite expiry or recorded standing withdrawal. */
   expire(
     revision: Readonly<AgentRevision>,
     workspace: string,
@@ -390,7 +394,9 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           AND a.id = r.agent_id AND a.namespace_id = r.namespace_id
           AND a.status = 'active' AND a.desired_runtime_state = 'running' AND a.active_revision_id = r.revision_id
           AND v.admitted_spec->'repository_credentials' = $6::jsonb
-          AND clock_timestamp() >= to_timestamp($7::double precision / 1000)
+          AND CASE WHEN $6::jsonb ? 'standingApprovalId'
+                THEN ${repositoryWithdrawalStateSql("r")} = 'expiry'
+                ELSE clock_timestamp() >= to_timestamp($7::double precision / 1000) END
           AND r.credential_state = 'active' AND r.write_pending IS NULL AND r.material_version IS NOT NULL
           AND r.retained_launch_hash IS NOT NULL AND r.observed->>'executionId' = v.id
           AND r.observed->>'credentialState' = 'active' AND r.observed->>'workspace' = r.workspace

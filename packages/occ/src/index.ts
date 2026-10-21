@@ -561,6 +561,7 @@ export {
   WorkClaimLostError,
   isRepositoryCleanupWork,
   isRepositoryExpiryCleanupWork,
+  repositoryWithdrawalStateSql,
   repositoryCleanupRevisionId,
   isRepositoryRuntimeRetirementWork,
   type ClaimedWork,

@@ -2128,7 +2128,8 @@ export interface ComputeDriver extends Driver {
     credentialSourceType?: CredentialSourceType,
   ): void;
   /**
-   * Withdraw expired Git access, or observe that withdrawal again after a restart. Never grant
+   * Withdraw expired Git access or a standing grant durably withdrawn before its first deadline.
+   * Observe that withdrawal again after a restart. Never grant
    * access, replace the runtime, or repeat an uncertain detach. Return `withdrawn` only after
    * verifying Git is revoked and the same independently authorized inference runtime is ready.
    * `pending` means Git is fenced but confirmation is outstanding; it asserts no model health.
