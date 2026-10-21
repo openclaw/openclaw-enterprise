@@ -31,8 +31,8 @@ async function assertPromptTermination(t, { containerName, collect, exited }, de
   const budgetMs = promptTerminationMs * imageSmokeTimeoutMultiplier;
   const signalledAt = Date.now();
   await runDocker(["kill", "--signal", "TERM", containerName]);
-  await exited(signalledAt + budgetMs);
-  const elapsedMs = Date.now() - signalledAt;
+  const exitedAt = await exited(signalledAt + budgetMs);
+  const elapsedMs = (exitedAt ?? Date.now()) - signalledAt;
   const state = await collect();
   t.diagnostic(
     `${description}: ${state.running ? "still running" : `exit ${state.exitCode}`} ` +

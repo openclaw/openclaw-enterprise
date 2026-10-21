@@ -46,15 +46,17 @@ export function changeSignal() {
 // (unless `exit` is false) `docker wait`, instead of a `docker logs` and a
 // `docker inspect` per poll. read() returns all the container has written, as
 // `docker logs` prints it, and whether it still runs; it throws if either CLI
-// failed. Every write and the exit notify `changes`. `t`, when given, stops
-// both CLIs after the test.
+// failed. `exitedAt` is when `docker wait` returned; `running` turns false once
+// the log stream has also ended, so a stopped container's output is complete.
+// Every write and the exit notify `changes`. `t`, when given, stops both CLIs
+// after the test.
 export function followContainer(
   t,
   containerName,
   { docker = process.env.OCC_DOCKER_BIN ?? "docker", exit = true, changes = changeSignal() } = {},
 ) {
   const streams = { stdout: "", stderr: "" };
-  const state = { running: true, exitCode: 0, following: true };
+  const state = { running: true, exitCode: 0, exitedAt: undefined, following: true };
   const children = [];
   const closes = [];
   let failure;
@@ -95,24 +97,16 @@ export function followContainer(
     changes.notify();
   });
   if (exit) {
-    const wait = start(["wait", containerName]);
-    const output = { stdout: "", stderr: "" };
-    wait.child.stdout.on("data", (chunk) => (output.stdout += chunk));
-    wait.child.stderr.on("data", (chunk) => (output.stderr += chunk));
-    void wait.closed.then(async ({ code, signal, error }) => {
-      const exitCode = Number(output.stdout.trim());
-      if (
-        error !== undefined ||
-        code !== 0 ||
-        output.stdout.trim() === "" ||
-        !Number.isInteger(exitCode)
-      ) {
-        fail(
-          `docker wait ${containerName} failed (${error?.message ?? code ?? signal}).\n` +
-            tail(`${output.stdout}\n${output.stderr}`),
-        );
+    let settled = false;
+    // The exit as `docker wait` (or the fallback inspect) saw it.
+    const exited = async (exitCode) => {
+      if (settled) {
         return;
       }
+      settled = true;
+      state.exitedAt = Date.now();
+      state.exitCode = exitCode;
+      changes.notify();
       // `docker logs --follow` ends once it has written the container's last output.
       let drained;
       await Promise.race([
@@ -120,9 +114,55 @@ export function followContainer(
         new Promise((resolve) => (drained = setTimeout(resolve, 10_000))),
       ]);
       clearTimeout(drained);
-      state.exitCode = exitCode;
       state.running = false;
       changes.notify();
+    };
+    const wait = start(["wait", containerName]);
+    const output = { stdout: "", stderr: "" };
+    wait.child.stdout.on("data", (chunk) => (output.stdout += chunk));
+    wait.child.stderr.on("data", (chunk) => (output.stderr += chunk));
+    void wait.closed.then(({ code, signal, error }) => {
+      const exitCode = Number(output.stdout.trim());
+      if (
+        error !== undefined ||
+        code !== 0 ||
+        output.stdout.trim() === "" ||
+        !Number.isInteger(exitCode)
+      ) {
+        if (!settled) {
+          fail(
+            `docker wait ${containerName} failed (${error?.message ?? code ?? signal}).\n` +
+              tail(`${output.stdout}\n${output.stderr}`),
+          );
+        }
+        return;
+      }
+      void exited(exitCode);
+    });
+    // If the log stream ends but `docker wait` has not returned 10 s later, ask once.
+    void logsEnded.then(async () => {
+      let timer;
+      await Promise.race([
+        wait.closed,
+        new Promise((resolve) => (timer = setTimeout(resolve, 10_000))),
+      ]);
+      clearTimeout(timer);
+      if (settled || stopping) {
+        return;
+      }
+      const inspect = start([
+        "inspect",
+        containerName,
+        "--format",
+        "{{.State.Running}} {{.State.ExitCode}}",
+      ]);
+      let text = "";
+      inspect.child.stdout.on("data", (chunk) => (text += chunk));
+      const { code } = await inspect.closed;
+      const [running, exitCode] = text.trim().split(/\s+/);
+      if (code === 0 && running === "false" && Number.isInteger(Number(exitCode))) {
+        void exited(Number(exitCode));
+      }
     });
   }
   const stop = async () => {

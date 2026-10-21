@@ -263,7 +263,8 @@ async function startupProbeEvidence(scenario, snapshot, loop) {
     phases: snapshot.phases.map(({ phase, outcome, sinceStartMs }) =>
       [phase, outcome, sinceStartMs].filter((value) => value !== undefined).join(" "),
     ),
-    poll: {
+    // Checks of the followed output (no docker CLI per check).
+    checks: {
       count: loop.polls,
       slowestMs: loop.slowestMs,
       elapsedMs: Date.now() - loop.startedAt,
@@ -414,14 +415,20 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
       exitCode: native.exitCode,
     };
   };
-  // Resolves once the wrapper has exited, or at `deadline` (epoch ms).
+  // Resolves with when the wrapper exited (epoch ms, as `docker wait` returned),
+  // once its output is complete, or with undefined at `deadline`.
   const exited = async (deadline) => {
     for (;;) {
       const seen = changes.version;
-      if (!wrapperLogs.read().running || Date.now() >= deadline) {
-        return;
+      const { exitedAt, running } = wrapperLogs.read();
+      if (exitedAt !== undefined && !running) {
+        return exitedAt;
       }
-      await changes.wait(seen, deadline - Date.now());
+      if (exitedAt === undefined && Date.now() >= deadline) {
+        return undefined;
+      }
+      // After the exit, the follower ends `running` within 10 s.
+      await changes.wait(seen, exitedAt === undefined ? deadline - Date.now() : 1_000);
     }
   };
   const deadline = Date.now() + 300_000 * imageSmokeTimeoutMultiplier;

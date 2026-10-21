@@ -84,7 +84,12 @@ ${failureTail(output)}`);
       if (Date.now() >= deadline) {
         break;
       }
-      await logs.changes.wait(seen, deadline - Date.now());
+      const checkedAt = Date.now();
+      await logs.changes.wait(seen, deadline - checkedAt);
+      // At most one check per 100 ms while the container writes.
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, checkedAt + 100 - Date.now())),
+      );
     }
   } finally {
     await logs.stop();
@@ -185,29 +190,40 @@ const gatewayReadinessProbe = `(async () => {
 })();`;
 
 // Each readiness attempt used to be a `docker inspect` and a `docker exec`
-// 250 ms apart; a second per attempt keeps at least the time that took.
-const readinessAttemptMs = 1_000;
+// 250 ms apart: about 460 ms on an idle runner, longer under load. 1.5 s per
+// attempt keeps at least that time.
+const readinessAttemptMs = 1_500;
 
 export async function waitForGatewayReady(containerName, readinessAttempts = 60) {
-  const budgetMs = readinessAttempts * readinessAttemptMs * imageSmokeTimeoutMultiplier;
-  const ready = await runDocker(
-    ["exec", containerName, "node", "-e", gatewayReadinessProbe, String(budgetMs)],
-    { timeout: budgetMs + 30_000 * imageSmokeTimeoutMultiplier },
-  ).catch((error) => error);
-  if (!(ready instanceof Error)) {
-    return;
+  const deadline =
+    Date.now() + readinessAttempts * readinessAttemptMs * imageSmokeTimeoutMultiplier;
+  for (;;) {
+    const budgetMs = Math.max(0, deadline - Date.now());
+    const ready = await runDocker(
+      ["exec", containerName, "node", "-e", gatewayReadinessProbe, String(budgetMs)],
+      { timeout: budgetMs + 30_000 * imageSmokeTimeoutMultiplier },
+    ).catch((error) => error);
+    if (!(ready instanceof Error)) {
+      return;
+    }
+    const inspect = await runDocker([
+      "inspect",
+      containerName,
+      "--format",
+      "{{.State.Running}} {{.State.ExitCode}}",
+    ]);
+    const [running, exitCode] = inspect.stdout.trim().split(/\s+/);
+    if (running !== "true") {
+      throw new Error(`Gateway container exited before readiness with code ${exitCode}.`);
+    }
+    // The probe ran out its budget, or its exec failed while the container still
+    // ran (a dying PID 1 can end the exec before Docker marks the container
+    // stopped): try again until the deadline, as each attempt used to.
+    if (Date.now() >= deadline) {
+      throw new Error(`Gateway readiness timed out.\n${failureTail(commandOutput(ready), 2048)}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  const inspect = await runDocker([
-    "inspect",
-    containerName,
-    "--format",
-    "{{.State.Running}} {{.State.ExitCode}}",
-  ]);
-  const [running, exitCode] = inspect.stdout.trim().split(/\s+/);
-  if (running !== "true") {
-    throw new Error(`Gateway container exited before readiness with code ${exitCode}.`);
-  }
-  throw new Error(`Gateway readiness timed out.\n${failureTail(commandOutput(ready), 2048)}`);
 }
 
 export async function listGatewayPlugins(containerName) {
