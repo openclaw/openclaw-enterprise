@@ -8,6 +8,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
+import { after } from "node:test";
 
 import { FilesystemConfigurationDriver } from "../../apps/controller/src/drivers/configuration/filesystem/index.ts";
 import { createControllerAuth } from "../../apps/controller/src/auth/index.ts";
@@ -171,6 +172,57 @@ export async function startHttpsIngress({
         ingress.close((error) => (error ? reject(error) : resolve())),
       );
     },
+  };
+}
+
+// One app for every test in a file, for tests that need no fresh database (CI runs each file in
+// its own process). Call it at the top level of a test file: it returns `fileApp(t)`, which
+// creates and bootstraps the app on first use and closes it after the file's last test. Building
+// the app, its administrator account and its two password hashes, and the bootstrap, is about
+// 0.3 CPU-s a test (lane cc4-browser, 10-21).
+//
+// Tests that share the app share its database, so each test must make its own Namespace (under a
+// name no other test in the file uses) and read only what it made. A test that checks first-run
+// or empty state, the Namespace list or the default Namespace selection, signs the
+// administrator out, or needs fixture options of its own keeps createConsoleAppFixture. The
+// administrator's policy (fixture.policy) is restored after each test, so grants, Roles and
+// restrictions a test adds do not reach later tests. Browser pages for the file app close when
+// their test ends (newPage), and login() signs them in with one session shared by the file.
+export function fileConsoleApp(options = {}) {
+  const cleanups = [];
+  let created;
+  after(async () => {
+    await created?.catch(() => {});
+    let cleanupError;
+    for (const cleanup of cleanups) {
+      try {
+        await cleanup();
+      } catch (error) {
+        cleanupError ??= error;
+      }
+    }
+    if (cleanupError) {
+      throw cleanupError;
+    }
+  });
+  return async function fileApp(t) {
+    created ??= (async () => {
+      const fixture = await createConsoleAppFixture(
+        { after: (cleanup) => cleanups.push(cleanup) },
+        options,
+      );
+      await fixture.bootstrap();
+      fixture.sharedByFile = true;
+      return fixture;
+    })();
+    const fixture = await created;
+    const saved = structuredClone(fixture.policy);
+    t.after(() => {
+      for (const [key, value] of Object.entries(structuredClone(saved))) {
+        fixture.policy[key].splice(0, Infinity, ...value);
+      }
+    });
+    return fixture;
   };
 }
 

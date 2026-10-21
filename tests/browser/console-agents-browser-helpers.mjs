@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after } from "node:test";
 
-import { chromium } from "playwright";
+import { chromium, request as playwrightRequest } from "playwright";
 
 import { watchBrowserContext } from "../helpers/browser-failure-diagnostics.mjs";
 import { keepRequestInterceptionEnabled } from "../helpers/browser-request-interception.mjs";
@@ -131,7 +131,11 @@ export async function newPage(t, fixture, options = {}) {
     : await launchBrowser(options);
   let context;
   let diagnostics;
-  fixture.registerCleanupBeforeAppClose(async () => {
+  // A file app (fileConsoleApp) outlives the test, so its pages close when the test ends.
+  const registerCleanup = fixture.sharedByFile
+    ? (cleanup) => t.after(cleanup)
+    : fixture.registerCleanupBeforeAppClose;
+  registerCleanup(async () => {
     let cleanupError;
     try {
       await diagnostics?.capture();
@@ -164,7 +168,9 @@ const signedInPath = /\/console\/(agents|backends|namespaces|settings)/;
 // Signs the page in and opens `path`. A fresh tab (still on about:blank) signs in with the same
 // Better Auth password request the form sends, made in the page's own browser context so the
 // browser stores the session cookie the API set, and then loads `path` already signed in: one
-// page load instead of a sign-in page plus the destination, and no form to fill. A tab that has
+// page load instead of a sign-in page plus the destination, and no form to fill. A fresh tab on
+// a file app (fileConsoleApp) signed in as its administrator loads the file's session cookies
+// instead, so the file makes one password sign-in rather than one a test. A tab that has
 // already loaded a page signs in through the form, so a test that signs in again on the same tab
 // keeps that tab's session storage and history across the sign-in. So does a fixture served
 // over TLS or under another host name, whose cookies are what such a test checks. Tests about
@@ -184,13 +190,45 @@ export async function login(
     await loginThroughForm(page, fixture, path, credentials);
     return;
   }
-  const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
-    data: { email: credentials.email, password: credentials.password },
-    headers: { origin: origin.origin },
-  });
-  assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
+  if (fixture.sharedByFile && credentials === fixture.credentials) {
+    await page.context().addCookies(await fileSessionCookies(fixture));
+  } else {
+    const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
+      data: { email: credentials.email, password: credentials.password },
+      headers: { origin: origin.origin },
+    });
+    assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
+  }
   await page.goto(new URL(path, fixture.origin).href);
   await page.waitForURL(signedInPath);
+}
+
+// The administrator's session cookies for a file app (fileConsoleApp): one password sign-in for
+// the whole file, which each test's fresh tab then loads like a saved sign-in state. The tests
+// that share it must not sign out (see fileConsoleApp).
+const fileSessions = new WeakMap();
+
+function fileSessionCookies(fixture) {
+  let cookies = fileSessions.get(fixture);
+  if (cookies === undefined) {
+    cookies = (async () => {
+      const origin = new URL(fixture.origin).origin;
+      const context = await playwrightRequest.newContext();
+      try {
+        const response = await context.post(new URL("/api/auth/sign-in/email", origin).href, {
+          data: { email: fixture.credentials.email, password: fixture.credentials.password },
+          headers: { origin },
+        });
+        assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
+        return (await context.storageState()).cookies;
+      } finally {
+        await context.dispose();
+      }
+    })();
+    cookies.catch(() => fileSessions.delete(fixture));
+    fileSessions.set(fixture, cookies);
+  }
+  return cookies;
 }
 
 // Signs in through the console's sign-in form, the way a person does: open `path`, which shows
