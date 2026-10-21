@@ -5,7 +5,6 @@ import {
   fieldError,
   focusSaveOutcome,
   jsonObjectProblem,
-  patchChildren,
   revealStatus,
   setHidden,
   setStatusTone,
@@ -23,13 +22,13 @@ import { renderAgentAccess } from "./access.mjs";
 import { renderNativeAdminAccess } from "./native-admin.mjs";
 import { createAgentDeletion } from "./deletion.mjs";
 import { createAgentStop } from "./stop.mjs";
-import { pluginWarningText, renderAgentPlugins } from "./plugins.mjs";
+import { renderAgentPlugins } from "./plugins.mjs";
 import { repositoryProfile, repositoryWriteAccessHelp } from "./repository-profiles.mjs";
 import { createRepositoryFields } from "./repositories.mjs";
 import { renderChannels } from "../channels.mjs";
 import { carryDocument } from "../carry.mjs";
 import { renderWorkspaceFiles } from "./workspace.mjs";
-import { logTextDenied, renderAgentLogs } from "./logs.mjs";
+import { renderAgentLogs } from "./logs.mjs";
 import {
   displayDate,
   shortId,
@@ -45,9 +44,7 @@ import {
   GENERIC_DENIAL,
   NAMESPACE_NOT_READY_MESSAGE,
   NEUTRAL_DEPLOYMENT_NOTES,
-  deploymentOutcome,
   outcomeLabel,
-  neutralDeploymentOutcome,
   preAdmissionRefusal,
 } from "./list.mjs";
 import {
@@ -56,16 +53,13 @@ import {
   channelCredentialBlockReason,
 } from "./credentials.mjs";
 import { ensureCredentialOperateBinding } from "./credential-access.mjs";
-
-// One page of revision summaries, newest first (finding 1323). Summaries carry no saved
-// settings; read the exact revision for those.
-async function readRevisionPage(request, path, cursor = null) {
-  const page = await request(
-    cursor ? `${path}/revisions?cursor=${encodeURIComponent(cursor)}` : `${path}/revisions`,
-    { includeMeta: true },
-  );
-  return { revisions: page.data, nextCursor: page.meta?.nextCursor ?? null };
-}
+import {
+  createDeploymentStatusPanel,
+  createVersionDeploymentEvidence,
+  deploymentPending,
+  readRevisionPage,
+} from "./deployment-evidence.mjs";
+import { createDeploymentRecovery } from "./deployment-recovery.mjs";
 
 // The pending write of each status that announceAfterShown is waiting to fill.
 const pendingAnnouncements = new WeakMap();
@@ -202,249 +196,10 @@ function nativeDocument(values, label) {
 const CONFIGURATION_CHANGED =
   "The saved Configuration changed while you were editing. Reload this draft before saving.";
 
-// The page that holds the setting to change for failure codes whose cause the operator can
-// act on directly. The API's error message already states the next step (finding 1393), so
-// the console adds only the link.
-const DEPLOYMENT_FAILURE_LINKS = {
-  RUNTIME_AUTHENTICATION_FAILED: "credentials",
-  RUNTIME_MODEL_PROBE_FAILED: "configuration",
-  RUNTIME_MODEL_PROBE_TIMEOUT: "configuration",
-  // Kubernetes Compute fails activation at once when the Gateway refuses its own in-Pod
-  // CLI (#1128); the Configuration's gateway password reference is what lets it in.
-  AGENT_GATEWAY_UNAUTHORIZED: "configuration",
-};
-
-// The runtime classifies a failed startup model check into one of these kinds and
-// a fixed detail token such as exit-1, rate_limit or no-reply.
-const RUNTIME_FAILURE_CAUSE_LABELS = {
-  PROCESS_EXIT: "The check process exited with an error",
-  PROBE_STATUS: "The model provider check reported a failure",
-  INVALID_OUTPUT: "The check returned unexpected output",
-  WRAPPER_ERROR: "The runtime could not run the check",
-};
-
-// Provider refusals the operator fixes at the provider account, not in the Configuration.
-const PROBE_STATUS_DETAIL_TEXT = {
-  rate_limit:
-    "The model provider rejected the request: rate or usage limit reached (rate_limit). Wait for the provider's limit to reset or use an account with remaining quota, then deploy a new version.",
-  billing:
-    "The model provider rejected the request: billing or credit problem (billing). Check the provider account's plan and credits, then deploy a new version.",
-};
-
-// A Codex check retried once, after a timeout or a reliability failure, holds its second
-// attempt's detail with this suffix; the advice is the same as for the bare token.
-const RETRIED_DETAIL_SUFFIX = "-attempt2";
-
-function runtimeFailureCauseText(cause) {
-  const retried =
-    typeof cause.detail === "string" &&
-    cause.detail.length > RETRIED_DETAIL_SUFFIX.length &&
-    cause.detail.endsWith(RETRIED_DETAIL_SUFFIX);
-  const detail = retried ? cause.detail.slice(0, -RETRIED_DETAIL_SUFFIX.length) : cause.detail;
-  const retry = retried ? " The check was retried once and failed again." : "";
-  if (cause.kind === "PROBE_STATUS" && Object.hasOwn(PROBE_STATUS_DETAIL_TEXT, detail)) {
-    return PROBE_STATUS_DETAIL_TEXT[detail] + retry;
-  }
-  const label = Object.hasOwn(RUNTIME_FAILURE_CAUSE_LABELS, cause.kind)
-    ? RUNTIME_FAILURE_CAUSE_LABELS[cause.kind]
-    : cause.kind;
-  if (!detail) {
-    return label;
-  }
-  return retried ? `${label} (${detail}).${retry}` : `${label} (${detail})`;
-}
-
-// The API's message for a failure that deploying the same Agent again can clear (an outage
-// that outlasted every attempt, a lost worker claim, an approval or driver that changed since
-// admission) starts a sentence with "Deploy again". The recovery offers Deploy again for those
-// messages only, so it never contradicts the step the message names. A message that names no
-// step at all (a deadline that passed, a Driver that cannot run this Harness) mentions none of
-// deploy, ask or check, and the banner adds the generic advice to it.
-const DEPLOY_AGAIN_STEP = /(?:^|[.;]\s)Deploy again\b/u;
-const NAMED_STEP = /\b(?:deploy|ask|check)\b/iu;
-
-/**
- * The next step a failed deployment's API message names: "deploy-again" when it says to deploy
- * again, "named" for any other step, and null for none.
- */
-export function deploymentFailureStep(message) {
-  if (typeof message !== "string" || message.length === 0) {
-    return null;
-  }
-  if (DEPLOY_AGAIN_STEP.test(message)) {
-    return "deploy-again";
-  }
-  return NAMED_STEP.test(message) ? "named" : null;
-}
-
-const DEPLOYMENT_FAILURE_LINK_LABELS = {
-  credentials: "Open Credentials",
-  configuration: "Open Configuration",
-};
-
-function deploymentFailure(error) {
-  if (!error) {
-    return element("p", { className: "muted" }, "No persisted startup failure.");
-  }
-  const runtimeFailure = error.data?.runtimeFailure;
-  const preparation = error.data?.preparation;
-  return element(
-    "div",
-    {},
-    statusBlock("danger", null, `${error.code}: ${error.message}`),
-    preparation
-      ? element(
-          "div",
-          { className: "bootstrap-failure-evidence" },
-          element("h4", {}, "Credential preparation evidence"),
-          element(
-            "p",
-            {},
-            `${preparation.workload.kind} ${preparation.workload.name} · ${preparation.workload.namespace} · ${preparation.reason}`,
-          ),
-          element(
-            "p",
-            { className: "muted" },
-            `Observed ${displayDate(preparation.observedAt)}. This local file handoff does not verify provider login acceptance.`,
-          ),
-          element("p", { className: "resource-id" }, `Workload UID: ${preparation.workload.uid}`),
-          element(
-            "p",
-            {},
-            `Started: ${preparation.startedAt ? displayDate(preparation.startedAt) : "Unknown"} · Finished: ${preparation.finishedAt ? displayDate(preparation.finishedAt) : "Unknown"}`,
-          ),
-          ...preparation.pods.map((pod) =>
-            element(
-              "div",
-              {},
-              element("strong", {}, `${pod.name} · ${pod.phase} · scheduling ${pod.scheduling}`),
-              element("p", { className: "resource-id" }, `Pod UID: ${pod.uid}`),
-              ...pod.containers.map((container) =>
-                element(
-                  "p",
-                  {},
-                  `${container.kind} container ${container.name}: ${container.state}${container.reason ? ` · ${container.reason}` : ""}${container.exitCode === null ? "" : ` · exit ${container.exitCode}`}${container.startedAt ? ` · started ${displayDate(container.startedAt)}` : ""}${container.finishedAt ? ` · finished ${displayDate(container.finishedAt)}` : ""}`,
-                ),
-              ),
-            ),
-          ),
-          element(
-            "p",
-            { className: "hint" },
-            "For unschedulable Pods, check capacity and placement. For image or volume setup failures, check image access, mounts and private-volume permissions. Correct the cause and deploy a new version of this Agent.",
-          ),
-        )
-      : null,
-    runtimeFailure && typeof runtimeFailure === "object"
-      ? element(
-          "dl",
-          { className: "credential-status-list" },
-          element("dt", {}, "Runtime component"),
-          element("dd", {}, runtimeFailure.component ?? "Unknown"),
-          element("dt", {}, "Check"),
-          element("dd", {}, runtimeFailure.check ?? "Unknown"),
-          element("dt", {}, "Code"),
-          element("dd", {}, runtimeFailure.code ?? "Unknown"),
-          ...(runtimeFailure.cause && typeof runtimeFailure.cause === "object"
-            ? [
-                element("dt", {}, "Cause"),
-                element("dd", {}, runtimeFailureCauseText(runtimeFailure.cause)),
-              ]
-            : []),
-          element("dt", {}, "Checked"),
-          element("dd", {}, displayDate(runtimeFailure.checkedAt)),
-        )
-      : null,
-  );
-}
-
-// A recorded result: the failure, or a neutral note when a newer version superseded this one
-// or the owner stopped the Agent during its deployment.
-function deploymentResult(record) {
-  const neutral = neutralDeploymentOutcome(record);
-  if (neutral === "superseded") {
-    return element(
-      "p",
-      { className: "muted deployment-superseded" },
-      `${NEUTRAL_DEPLOYMENT_NOTES.superseded} before this one became current (${record.error.code}). This version did not fail; no action is needed.`,
-    );
-  }
-  if (neutral === "stopped") {
-    return element(
-      "p",
-      { className: "muted deployment-stopped" },
-      `The Agent was stopped before this deployment finished (${record.error.code}). This version did not fail; deploy a new version when you want it running.`,
-    );
-  }
-  return deploymentFailure(record.error);
-}
-
-function deploymentProgress(record) {
-  const status = deploymentOutcome(record);
-  const progress = record.progress;
-  const workDescriptions = {
-    queued: progress?.lastAttempt
-      ? "Waiting to continue deployment."
-      : "Waiting for a worker claim.",
-    running: "A worker claim is active.",
-    failed: "Deployment work failed; check the recorded error and current version.",
-    superseded: "Deployment work stopped because a newer version superseded this one.",
-    stopped: "Deployment work ended because the Agent was stopped.",
-    succeeded: "Work completed or the version was already active.",
-  };
-  const stages = [
-    ["Admitted", "An immutable version was created.", "complete"],
-    [
-      "Deployment work",
-      workDescriptions[status],
-      status === "queued"
-        ? "waiting"
-        : status === "running"
-          ? "active"
-          : status === "succeeded"
-            ? "complete"
-            : status === "superseded" || status === "stopped"
-              ? status
-              : "failed",
-    ],
-    [
-      "Completion recorded",
-      status === "succeeded"
-        ? "This deployment completed activation or was already active."
-        : status === "superseded"
-          ? "Not needed: this version did not become current."
-          : status === "stopped"
-            ? "Not recorded: the Agent was stopped first. Deploy a new version when you want it running."
-            : status === "failed"
-              ? "Successful completion was not recorded for this deployment."
-              : "Successful completion is not recorded yet.",
-      status === "succeeded"
-        ? "complete"
-        : status === "superseded" || status === "stopped"
-          ? status
-          : "waiting",
-    ],
-  ];
-  return element(
-    "ol",
-    { className: "deployment-progress", "aria-label": "Deployment progress" },
-    ...stages.map(([name, description, state]) =>
-      element(
-        "li",
-        { className: `deployment-step deployment-step-${state}` },
-        element("span", { className: "deployment-step-marker", "aria-hidden": "true" }),
-        element("div", {}, element("strong", {}, name), element("span", {}, description)),
-      ),
-    ),
-  );
-}
-
-export const DEPLOYMENT_POLL_MS = 5000;
 // Longest wait for Deployment activity's first read before the sections below it show. On a
 // slow link that read lands over a second after the page, and a failed version's banner then
 // pushed the shown overview down (finding 1489).
 export const FIRST_ACTIVITY_WAIT_MS = 2000;
-const PENDING_DEPLOYMENT_STATUSES = new Set(["queued", "running"]);
 // The badge tone of a recorded deployment outcome in the Agent summary; superseded and stopped
 // records stay neutral.
 const DEPLOYMENT_OUTCOME_TONES = {
@@ -453,13 +208,6 @@ const DEPLOYMENT_OUTCOME_TONES = {
   succeeded: "success",
   failed: "danger",
 };
-
-// A read failure that a later read can clear: no answer (a network error), a timeout, a rate
-// limit or a server error. A refusal or a missing record is an answer, and polling stops on it.
-function transientReadError(error) {
-  const status = error?.status;
-  return !(status >= 400 && status < 500) || status === 408 || status === 429;
-}
 
 // A recovery link opens a version tab far below the banner it sits in. Only the URL changed and
 // the page stayed at the top, so the link looked dead (finding 1586). The page the link opens,
@@ -484,24 +232,6 @@ function takeLinkedVersionView(key) {
     linkedVersionView = null;
   }
   return linked;
-}
-
-function pendingAttempt(attempt) {
-  const none = "Not recorded yet";
-  return element(
-    "dl",
-    { className: "credential-status-list" },
-    element("dt", {}, "Last recorded result"),
-    element(
-      "dd",
-      attempt ? {} : { className: "muted" },
-      attempt ? attempt.message : "No reconciliation result is available yet.",
-    ),
-    element("dt", {}, "Reason"),
-    element("dd", attempt ? {} : { className: "muted" }, attempt ? attempt.code : none),
-    element("dt", {}, "Since"),
-    element("dd", attempt ? {} : { className: "muted" }, attempt ? displayDate(attempt.at) : none),
-  );
 }
 
 // One Tab stop for a list of version buttons, as in the tab strip (UX plan C7): it sits on the
@@ -548,711 +278,6 @@ function rovingVersions(list, items) {
     });
   });
   return focusItem;
-}
-
-function createDeploymentStatusPanel(
-  context,
-  path,
-  revision,
-  onAgentChange,
-  onStatusChange,
-  // Whether the page already shows; given only to the panel that replaces the page's loading
-  // stand-in (finding 2163).
-  pageShown = () => false,
-) {
-  const refresh = button(
-    "Refresh deployment",
-    () => {
-      state.readerRefresh = true;
-      if (state.loading && state.polling) {
-        // A quiet poll is reading: refresh once it lands.
-        state.refreshQueued = true;
-        refresh.setAttribute("aria-disabled", "true");
-        return;
-      }
-      void loadStatus(true);
-    },
-    { tone: "ghost", size: "sm" },
-  );
-  const content = element("div", { className: "deployment-evidence-content" });
-  const details = element("details", {}, element("summary", {}, "Deployment details"), content);
-  const section = element(
-    "section",
-    { className: "deployment-status deployment-evidence", "aria-label": "Deployment activity" },
-    details,
-    refresh,
-  );
-  let previousEvidence;
-  const state = {
-    loading: false,
-    // A 5 s poll reads quietly: Refresh stays as it is unless pressed (finding 1598).
-    polling: false,
-    refreshQueued: false,
-    // Set by Refresh until its own read (not a poll it waited for) lands.
-    readerRefresh: false,
-    status: null,
-    error: null,
-    overviewError: false,
-  };
-  // Tallest the details have been since a deploy was seen pending; see render().
-  let reservedHeight = null;
-  let pollTimer = null;
-  // The last record read. A transient read failure (a network error, a timeout, a 5xx) does not
-  // end a pending deploy, so polling goes on from it (finding 2085).
-  let lastRecord = null;
-
-  // A poll that fired while the view was retained stopped; restoring the view re-arms it.
-  context.onResume?.(() => {
-    if (section.isConnected) {
-      schedulePoll();
-    }
-  });
-
-  // Queued and running records are reread until they record a result or a read is refused.
-  function schedulePoll() {
-    clearTimeout(pollTimer);
-    pollTimer = null;
-    const record = state.error
-      ? transientReadError(state.error)
-        ? lastRecord
-        : null
-      : state.status;
-    if (
-      !PENDING_DEPLOYMENT_STATUSES.has(record?.status) &&
-      !PENDING_DEPLOYMENT_STATUSES.has(record?.cleanup?.status)
-    ) {
-      return;
-    }
-    pollTimer = setTimeout(() => {
-      pollTimer = null;
-      // A newer deployment replaces this panel; a detached panel stops following.
-      if (context.isCurrent() && section.isConnected) {
-        void loadStatus(false, true);
-      }
-    }, DEPLOYMENT_POLL_MS);
-  }
-
-  async function loadStatus(refreshAgent = false, poll = false) {
-    if (state.loading || !context.isCurrent()) {
-      return;
-    }
-    clearTimeout(pollTimer);
-    pollTimer = null;
-    // After a failed read, the record before it.
-    const previousStatus = lastRecord?.status ?? null;
-    state.loading = true;
-    state.polling = poll;
-    state.error = null;
-    state.overviewError = false;
-    render();
-    try {
-      const [statusResult, agentResult, revisionsResult] = await Promise.allSettled([
-        context.request(`${path}/deployments/${encodeURIComponent(revision.id)}`),
-        refreshAgent ? context.request(path) : Promise.resolve(null),
-        refreshAgent ? readRevisionPage(context.request, path) : Promise.resolve(null),
-      ]);
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (
-        [statusResult, agentResult, revisionsResult].some(
-          (result) => result.status === "rejected" && result.reason.status === 401,
-        )
-      ) {
-        context.onExpired();
-        return;
-      }
-      if (statusResult.status === "fulfilled") {
-        state.status = statusResult.value;
-        lastRecord = statusResult.value;
-      } else {
-        state.status = null;
-        state.error = statusResult.reason;
-      }
-      if (refreshAgent) {
-        if (agentResult.status === "fulfilled" && revisionsResult.status === "fulfilled") {
-          onAgentChange(agentResult.value, revisionsResult.value);
-        } else {
-          state.overviewError = true;
-        }
-      }
-    } catch (error) {
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (error.status === 401) {
-        context.onExpired();
-        return;
-      }
-      state.error = error;
-      state.status = null;
-    } finally {
-      if (context.isCurrent()) {
-        state.loading = false;
-        render();
-        // A Refresh pressed during a poll is answered by the read queued after it.
-        if (!poll) {
-          state.readerRefresh = false;
-        }
-        onStatusChange(
-          state.status ? deploymentOutcome(state.status) : null,
-          state.error !== null,
-          state.status?.error?.code ?? null,
-          state.status,
-          state.overviewError,
-          state.error !== null && transientReadError(state.error),
-        );
-        if (
-          state.refreshQueued ||
-          (poll &&
-            PENDING_DEPLOYMENT_STATUSES.has(previousStatus) &&
-            !state.error &&
-            !PENDING_DEPLOYMENT_STATUSES.has(state.status?.status))
-        ) {
-          // A recorded result can change the current version; reread it once.
-          state.refreshQueued = false;
-          void loadStatus(true);
-        } else {
-          schedulePoll();
-        }
-      }
-    }
-  }
-
-  function renderStatus() {
-    if (state.error) {
-      return statusBlock("danger", null, message(state.error));
-    }
-    if (!state.status) {
-      return element("p", { className: "muted" }, "Deployment status has not loaded.");
-    }
-    return element(
-      "div",
-      {},
-      deploymentProgress(state.status),
-      state.status.cleanup
-        ? element(
-            "p",
-            { role: "status", className: "deployment-cleanup" },
-            {
-              // One retire cleanup per version: OAuth bootstrap or repository credential resources.
-              queued:
-                "Revision cleanup pending. This version's resources have not been confirmed removed; the controller will retry.",
-              running:
-                "Revision cleanup is running. This version's resources have not been confirmed removed.",
-              succeeded: "Revision cleanup completed for this version.",
-              failed:
-                "Revision cleanup failed. Ask an operator to inspect the retained cleanup obligation.",
-            }[state.status.cleanup.status],
-          )
-        : null,
-      state.status.progress
-        ? element(
-            "div",
-            { className: "deployment-pending-progress" },
-            // The list keeps its rows before the first attempt is recorded, so that result
-            // fills them in place instead of pushing the cards below down (finding 1598).
-            pendingAttempt(state.status.progress.lastAttempt),
-            state.status.progress.nextAttemptAt
-              ? element(
-                  "p",
-                  { className: "muted" },
-                  `Eligible for next attempt: ${displayDate(state.status.progress.nextAttemptAt)}. Start time depends on worker availability.`,
-                )
-              : null,
-          )
-        : null,
-      element(
-        "p",
-        { className: "deployment-outcome" },
-        `Recorded status: ${outcomeLabel(deploymentOutcome(state.status))}`,
-      ),
-      state.status.error ? deploymentResult(state.status) : null,
-      state.status.warnings?.length
-        ? statusBlock(
-            "warning",
-            element("h3", {}, "Startup warnings"),
-            element(
-              "ul",
-              {},
-              ...state.status.warnings.map((warning) =>
-                element("li", {}, pluginWarningText(warning)),
-              ),
-            ),
-            [],
-            { role: null },
-          )
-        : null,
-    );
-  }
-
-  function render() {
-    // Keep both controls mounted during reads. Only a routine completed record starts folded;
-    // a new outcome, read error, cleanup or startup warning is visible without opening details,
-    // except a first read that lands after the page showed (below).
-    const busy = String((state.loading && !state.polling) || state.refreshQueued);
-    if (refresh.getAttribute("aria-disabled") !== busy) {
-      refresh.setAttribute("aria-disabled", busy);
-    }
-    if (state.loading) {
-      return;
-    }
-    const outcome = state.status ? deploymentOutcome(state.status) : null;
-    const { cleanup, warnings } = state.status ?? {};
-    const evidence = [outcome, cleanup?.status, warnings?.length, state.overviewError].join("/");
-    if (evidence !== previousEvidence) {
-      // A first read that lands after the bounded reveal showed the page fills the folded panel
-      // without opening it, so the tab strip below does not move: the Agent summary above shows
-      // its outcome or read failure, and a failure's card leads the page. Evidence only these
-      // details show (cleanup, startup warnings, an overview error) still opens them, as does
-      // every later change (finding 2163).
-      const late = previousEvidence === undefined && pageShown();
-      details.open = Boolean(
-        previousEvidence !== undefined ||
-        (outcome !== "succeeded" && !late) ||
-        state.overviewError ||
-        cleanup ||
-        warnings?.length,
-      );
-      previousEvidence = evidence;
-    }
-    const changed = patchChildren(content, [
-      element(
-        "p",
-        { className: "muted" },
-        `Most recent visible deployment · v${revision.revision}`,
-      ),
-      renderStatus(),
-      ...(state.overviewError
-        ? [
-            statusBlock(
-              "danger",
-              null,
-              "Current version and version history could not be refreshed. Use the page Refresh control to retry.",
-            ),
-          ]
-        : []),
-    ]);
-    reserveHeight(changed);
-  }
-
-  // A deploy's details grow when its first attempt is recorded and shrink when it settles, and
-  // each change moved the cards below, Share Agent then among them (finding 1598). Once a deploy is
-  // seen pending, the details keep the tallest height they have shown, until the reader's own
-  // Refresh after the deploy gives the space back.
-  function reserveHeight(changed) {
-    const pending =
-      PENDING_DEPLOYMENT_STATUSES.has(state.status?.status) ||
-      PENDING_DEPLOYMENT_STATUSES.has(state.status?.cleanup?.status);
-    if (pending) {
-      reservedHeight ??= 0;
-    } else if (state.readerRefresh && !state.polling && reservedHeight !== null) {
-      reservedHeight = null;
-      content.style.removeProperty("min-height");
-      return;
-    }
-    if (reservedHeight === null || !changed) {
-      return;
-    }
-    content.style.removeProperty("min-height");
-    reservedHeight = Math.max(reservedHeight, content.getBoundingClientRect().height);
-    content.style.minHeight = `${reservedHeight}px`;
-  }
-
-  void loadStatus();
-  return section;
-}
-
-// With shared, Deployment activity is reading this version's record, so the panel waits for
-// show() instead of reading it again; release() reads here if that read fails (finding 1417).
-function createVersionDeploymentRecord(
-  context,
-  path,
-  revisionId,
-  onChange = () => {},
-  { shared = false } = {},
-) {
-  const section = element("section", { className: "agent-card version-deployment-record" });
-  let status = null;
-  let error = null;
-  let loading = false;
-  let awaitingShared = shared;
-  // A shared read that never settles must not leave this panel loading.
-  let sharedTimer = shared ? setTimeout(() => release(), DEPLOYMENT_POLL_MS) : null;
-  // Bumped whenever a newer record arrives from elsewhere so a slower read cannot overwrite it.
-  let generation = 0;
-
-  async function load() {
-    if (loading || !context.isCurrent()) {
-      return;
-    }
-    awaitingShared = false;
-    clearTimeout(sharedTimer);
-    loading = true;
-    error = null;
-    const started = generation;
-    render();
-    try {
-      const next = await context.request(`${path}/deployments/${encodeURIComponent(revisionId)}`);
-      if (started === generation) {
-        status = next;
-      }
-    } catch (cause) {
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (cause.status === 401) {
-        context.onExpired();
-        return;
-      }
-      if (started === generation) {
-        status = null;
-        error = cause;
-      }
-    } finally {
-      if (context.isCurrent()) {
-        loading = false;
-        render();
-        onChange(status);
-      }
-    }
-  }
-
-  // Deployment activity already read this version's record; show it instead of a stale one.
-  function show(next) {
-    if (!context.isCurrent() || !next) {
-      return;
-    }
-    awaitingShared = false;
-    clearTimeout(sharedTimer);
-    generation += 1;
-    status = next;
-    error = null;
-    render();
-    onChange(status);
-  }
-
-  // Deployment activity hands each 5 s poll's record to show(): rewrite only what changed
-  // (finding 1598).
-  function render() {
-    patchChildren(section, [
-      element(
-        "div",
-        { className: "deployment-heading" },
-        element("h3", {}, "This version’s deployment record"),
-        button(loading ? "Refreshing…" : "Refresh record", () => void load(), {
-          tone: "ghost",
-          size: "sm",
-          disabled: loading,
-        }),
-      ),
-      error
-        ? statusBlock("danger", null, message(error))
-        : status
-          ? element(
-              "div",
-              {},
-              element("p", {}, `Recorded outcome: ${outcomeLabel(deploymentOutcome(status))}`),
-              deploymentResult(status),
-              status.warnings?.length
-                ? element(
-                    "div",
-                    { className: "hint" },
-                    element("p", {}, "Startup warnings:"),
-                    element(
-                      "ul",
-                      {},
-                      ...status.warnings.map((warning) =>
-                        element("li", {}, pluginWarningText(warning)),
-                      ),
-                    ),
-                  )
-                : null,
-            )
-          : // The two rows a recorded outcome fills, so it lands without moving the version's
-            // tab strip below (finding 2163).
-            element(
-              "div",
-              {},
-              element("p", {}, "Recorded outcome: Loading…"),
-              element("p", { className: "muted" }, "Reading this version’s deployment record."),
-            ),
-    ]);
-  }
-
-  function release() {
-    if (awaitingShared) {
-      void load();
-    }
-  }
-
-  render();
-  if (!shared) {
-    void load();
-  }
-  return { section, show, release, current: () => status };
-}
-
-// The console's delay for loading text (console.css .delayed-status): a diagnostics answer within
-// it never shows the waiting line (finding 1714).
-const DIAGNOSTICS_WAITING_DELAY_MS = 250;
-
-function createVersionDiagnosticsPanel(
-  context,
-  path,
-  revisionId,
-  recordedStatus = () => null,
-  operateAllowed = null,
-) {
-  const section = element("section", { className: "agent-card version-diagnostics" });
-  let diagnostics = null;
-  // Set when the caller's permission answer denies Agent operate, which diagnostics need: the
-  // button is disabled with the reason (finding 1992).
-  let operateDenied = false;
-  let error = null;
-  let loading = false;
-  // Set once a run outlasts DIAGNOSTICS_WAITING_DELAY_MS: the waiting line replaces the last
-  // result and the button disables itself.
-  let waitingShown = false;
-  // The id of the result that describes the button after a run. render() sets it on both: a
-  // deployment poll re-renders the panel, and patchChildren drops attributes that render()
-  // does not set (finding 1712).
-  let outcomeId = null;
-
-  async function run() {
-    if (loading || !context.isCurrent()) {
-      return;
-    }
-    loading = true;
-    const runButton = section.querySelector(".deployment-heading button");
-    // Until the delay passes, the last result and the focused button stay as they are, so a fast
-    // answer replaces the result directly: no waiting line is painted or announced, and focus
-    // does not move (finding 1714). A second press meanwhile does nothing.
-    let waitingLine = null;
-    const waitingTimer = setTimeout(() => {
-      if (!loading || !context.isCurrent()) {
-        return;
-      }
-      // Only a reader still on the button follows it to the waiting line; one who moved on, even
-      // to the page itself, stays where they are.
-      const onButton = document.activeElement === runButton;
-      waitingShown = true;
-      error = null;
-      diagnostics = null;
-      outcomeId = null;
-      render();
-      // The button disables itself while it waits: move focus to the waiting line, as Deploy
-      // does, so a keyboard reader is not dropped to the page (finding 1705).
-      waitingLine = section.lastElementChild;
-      if (onButton) {
-        focusSaveOutcome(section, [], waitingLine);
-      }
-    }, DIAGNOSTICS_WAITING_DELAY_MS);
-    let answer = null;
-    let failure = null;
-    try {
-      answer = await context.request(
-        `${path}/deployments/${encodeURIComponent(revisionId)}/diagnostics`,
-        { method: "POST", readOnly: true },
-      );
-    } catch (cause) {
-      if (!context.isCurrent()) {
-        return;
-      }
-      if (cause.status === 401) {
-        context.onExpired();
-        return;
-      }
-      failure = cause;
-    } finally {
-      clearTimeout(waitingTimer);
-      if (context.isCurrent()) {
-        const active = document.activeElement;
-        const waited = active === runButton || (waitingLine !== null && active === waitingLine);
-        if (!waitingShown) {
-          // With no waiting line in between, patching would keep a result identical to the last
-          // one in place, and nothing would be announced: insert it anew instead.
-          for (const node of [section.querySelector('[role="alert"]'), section.lastElementChild]) {
-            node?.remove();
-          }
-        }
-        loading = false;
-        waitingShown = false;
-        diagnostics = answer;
-        error = failure;
-        outcomeId = null;
-        render();
-        // The result replaces the waiting line (or the last result): focus returns to, or stays
-        // on, the button, described by the alert or the "Observed" line (not the whole check
-        // list, which the view's live region already reads), unless the reader has moved on.
-        if (waited) {
-          const outcome = error
-            ? section.querySelector('[role="alert"]')
-            : section.lastElementChild.firstElementChild;
-          focusSaveOutcome(section, [runButton], outcome);
-          outcomeId = runButton.getAttribute("aria-describedby") ? outcome.id : null;
-          // Focus stays on the button; a refusal below it still comes into view (finding 1992).
-          if (error) {
-            outcome?.scrollIntoView({ block: "nearest" });
-          }
-        }
-      }
-    }
-  }
-
-  function renderChecks() {
-    if (waitingShown) {
-      // Focusable here, not only by focusSaveOutcome: a deployment poll re-renders the panel,
-      // and patchChildren drops attributes that render() does not set.
-      return element(
-        "p",
-        { className: "muted", role: "status", tabindex: "-1" },
-        "Waiting for diagnostic results…",
-      );
-    }
-    if (!diagnostics) {
-      return element(
-        "p",
-        { className: "muted" },
-        error
-          ? "No observation was returned from this attempt."
-          : "No current observation has been requested for this version.",
-      );
-    }
-    const checks = element("dl", { className: "credential-status-list" });
-    for (const check of diagnostics.checks) {
-      checks.append(
-        element("dt", {}, `${check.component} / ${check.check}`),
-        element(
-          "dd",
-          {},
-          `${check.state}${check.code ? ` (${check.code})` : ""} · ${check.checkedAt ? displayDate(check.checkedAt) : "No check time"}`,
-        ),
-      );
-    }
-    return element(
-      "div",
-      {},
-      element(
-        "p",
-        { className: "muted", ...describedOutcome() },
-        `Observed ${displayDate(diagnostics.observedAt)}`,
-      ),
-      diagnostics.checks.length
-        ? checks
-        : element("p", { className: "muted" }, "No diagnostic checks were returned."),
-      ...scopeExplanations(),
-    );
-  }
-
-  // The gateway checks cover only the Slack channel. Say what their results do
-  // and do not mean, and keep a recorded deployment failure in view: nothing
-  // here tests model credentials, so no check can confirm or clear it.
-  function scopeExplanations() {
-    const checks = diagnostics.checks;
-    const unreachable =
-      checks.length > 0 &&
-      checks.every((check) => check.state === "unknown" && check.code === "UNAVAILABLE");
-    const slackNotConfigured = checks.some(
-      (check) =>
-        check.component === "gateway" &&
-        check.check === "configuration" &&
-        check.state === "failed" &&
-        check.code === "NOT_CONFIGURED",
-    );
-    const recorded = recordedStatus();
-    const failure =
-      recorded?.status === "failed" && !neutralDeploymentOutcome(recorded) ? recorded.error : null;
-    const hints = [];
-    if (unreachable) {
-      hints.push(
-        "UNAVAILABLE means the runtime did not answer, so these checks could not run. The gateway is usually stopped, still starting, or failed to start.",
-      );
-    }
-    if (slackNotConfigured) {
-      hints.push(
-        "NOT_CONFIGURED means this version has no Slack channel, so Slack authentication and connectivity were not checked. An Agent that does not use Slack always reports this; it is not a model or deployment error.",
-      );
-    }
-    if (failure?.code) {
-      hints.push(
-        `This version's recorded deployment failed with ${failure.code}; resolve that first. These checks do not test model credentials, so they cannot confirm or clear that failure.`,
-      );
-    } else if (unreachable) {
-      hints.push(
-        "Check this version's recorded outcome and its Logs tab for Pod status and container output.",
-      );
-    }
-    return hints.length
-      ? [element("p", { className: "hint", role: "status" }, hints.join(" "))]
-      : [];
-  }
-
-  function describedOutcome() {
-    return outcomeId ? { id: outcomeId } : {};
-  }
-
-  // The version's record calls this on every deployment poll: rewrite only what changed.
-  function render() {
-    patchChildren(section, [
-      element(
-        "div",
-        { className: "deployment-heading" },
-        element("h3", {}, "Current observations"),
-        // The button keeps its label while it waits, as Deploy and Save do: the status line
-        // below is the one announcement, and a changed label inside the Agent view's live
-        // region was announced as well (finding 1698).
-        button("Run diagnostics for this version", () => void run(), {
-          disabled: waitingShown || operateDenied,
-          ...(outcomeId ? { "aria-describedby": outcomeId } : {}),
-        }),
-      ),
-      ...(operateDenied
-        ? [
-            statusBlock(
-              "info",
-              null,
-              "Your access does not include running diagnostics for this Agent.",
-            ),
-          ]
-        : []),
-      element(
-        "p",
-        { className: "muted" },
-        "Checks run on demand against this exact version. Results are timestamped and do not change its recorded deployment outcome.",
-      ),
-      element(
-        "p",
-        { className: "muted" },
-        "For Kubernetes Compute, gateway checks cover only the Slack channel: its configuration, authentication, and connectivity. They do not test model credentials or run a model turn. Pod status, restarts, Events and container output are on this version's Logs tab.",
-      ),
-      ...(error
-        ? [
-            statusBlock(
-              "danger",
-              null,
-              error.status === 403
-                ? "Diagnostics require Agent read and operate access plus read access to this version. Ask a Namespace administrator to confirm those grants."
-                : error.status === 503
-                  ? "Current-runtime diagnostics are unavailable. This Compute Driver may not support them, or the runtime may be unreachable. Check the runtime and try again."
-                  : message(error),
-              [],
-              describedOutcome(),
-            ),
-          ]
-        : []),
-      renderChecks(),
-    ]);
-  }
-
-  render();
-  void operateAllowed?.then((permitted) => {
-    if (permitted === false && context.isCurrent()) {
-      operateDenied = true;
-      render();
-    }
-  });
-  return { section, render };
 }
 
 export async function renderAgentDetail(context, { agent: preloadedAgent = null } = {}) {
@@ -1946,40 +971,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   versionSummary.append(detailHeading, versionEvidence);
   detailPane.append(tabs, content);
   const nativeAdmin = renderNativeAdminAccess(context, path);
-  const recoveryTitle = element("h2");
-  // A danger status block (spec 3.4): the failed version in the label, the code at the end of
-  // the message's first sentence, and one primary action. Each part is its own node, so a poll
-  // that reads back the same failure writes nothing.
-  const recoveryLabel = element("p", { className: "status-label" });
-  const recoveryLead = document.createTextNode("");
-  const recoveryCode = element("code", { hidden: true });
-  const recoveryRest = document.createTextNode("");
-  const recoveryMessage = element(
-    "p",
-    { className: "status-body" },
-    recoveryLead,
-    recoveryCode,
-    recoveryRest,
-  );
-  const recoveryActions = element("div", {
-    className: "status-actions deployment-recovery-actions",
+  const recovery = createDeploymentRecovery(context, {
+    path,
+    selected,
+    isDeleting: () => deleting,
+    refresh: renderLatestDeployment,
+    versionLink,
   });
-  const recovery = element(
-    "section",
-    {
-      className: "status deployment-recovery",
-      "data-tone": "danger",
-      hidden: true,
-      "aria-label": "Deployment needs attention",
-    },
-    recoveryLabel,
-    recoveryTitle,
-    recoveryMessage,
-    recoveryActions,
-  );
-  let recoveryTarget;
-  // The failed version whose Deployment details the card has folded; see renderLatestDeployment.
-  let recoveryFolded = null;
   const overviewStatus = element(
     "div",
     { className: "agent-overview-status" },
@@ -1987,7 +985,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     statusLine,
     deploymentStatus,
   );
-  view.replaceChildren(recovery, nativeAdmin.section, overviewStatus, versionLayout);
+  view.replaceChildren(recovery.section, nativeAdmin.section, overviewStatus, versionLayout);
   // Recovery or native administration can appear above the facts. Keep the Agent heading and
   // controls in place, then reveal the overview once its first deployment reads settle.
   // The bounded wait still exposes loading, refresh and the version controls on a slow read.
@@ -2200,17 +1198,10 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   let activityPanel = deploymentStatus;
   let activityRevisionId;
   let viewedSnapshot = null;
-  // The Configuration ID this page has read successfully, and the one recovery is checking. Deploy
-  // again opens a draft that builds Deploy new version only from a readable Configuration, and
-  // "not yet denied" is not readable (finding 1931).
-  let readableConfigurationId = null;
-  let configurationCheckId = null;
   let detailLoadFinished = false;
   let latestRevisionResult = null;
   let latestDeploymentStatus = null;
-  let latestDeploymentError = false;
-  let latestDeploymentErrorCode = null;
-  let latestDeploymentErrorMessage = null;
+  let latestDeploymentUnavailable = false;
   let latestDeploymentRecord = null;
   // Whether the newest version's panel last failed to refresh the Agent or its versions.
   let latestOverviewUnavailable = false;
@@ -2254,7 +1245,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return latest &&
       latest.id !== currentRevisionId &&
       activityRevisionId === latest.id &&
-      PENDING_DEPLOYMENT_STATUSES.has(latestRecordedStatus)
+      deploymentPending(latestRecordedStatus)
       ? latest
       : null;
   }
@@ -2656,7 +1647,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     markVersionOutcomes();
     const latest = visibleRevisions[0];
     if (!latest) {
-      setHidden(recovery, true);
+      recovery.show(null);
       delete latestDeploymentValue.dataset.outcome;
       if (latestRevisionResult) {
         const rejected = latestRevisionResult.status === "rejected";
@@ -2723,14 +1714,14 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         latestDeploymentNote,
         `You cannot read the current version. v${latest.revision} (${outcomeLabel(latestDeploymentStatus)}) is older.`,
       );
-    } else if (!latestDeploymentStatus && !latestDeploymentError) {
+    } else if (!latestDeploymentStatus && !latestDeploymentUnavailable) {
       setDelayedText(latestDeploymentValue, `v${latest.revision} · `, "Loading…");
       setDelayedText(latestDeploymentNote, "", "Reading recorded deployment status.");
     } else {
       setDeploymentOutcome(
         latestDeploymentValue,
         `v${latest.revision}`,
-        label ?? (latestDeploymentError ? "Unavailable" : "Loading…"),
+        label ?? (latestDeploymentUnavailable ? "Unavailable" : "Loading…"),
         DEPLOYMENT_OUTCOME_TONES[latestDeploymentStatus],
       );
       setText(
@@ -2787,165 +1778,25 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       currentHidden ||
       currentUnknown ||
       !callerPermissionsSettled;
-    // A failure that lands while the page shows (a deploy the reader is watching) leads the
-    // page as it does on a load: below the open Deployment details it sat below the fold and
-    // repeated their error (finding 2094, which reverses 1655's placement). The card now carries
-    // that error and its next step, so the details fold once for each failed version it shows;
-    // the reader can open them again. The card says nothing of a cleanup, startup warnings or a
-    // refresh that could not reread the Agent, so a panel showing any of them stays open, and
-    // evidence the panel records later opens it as it does without a card.
-    if (recovery.hidden && !hideRecovery && recoveryFolded !== latest.id) {
-      recoveryFolded = latest.id;
-      const record =
-        latestDeploymentRecord?.revisionId === latest.id ? latestDeploymentRecord.status : null;
-      const details = activityPanel.querySelector?.(":scope > details");
-      if (
-        details?.open &&
-        !record?.cleanup &&
-        !record?.warnings?.length &&
-        !latestOverviewUnavailable
-      ) {
-        details.open = false;
-      }
-    }
-    setHidden(recovery, hideRecovery);
-    if (!recovery.hidden) {
-      const version = `v${latest.revision}`;
-      const code = latestDeploymentErrorCode;
-      const modelCheck = ["RUNTIME_MODEL_PROBE_FAILED", "RUNTIME_MODEL_PROBE_TIMEOUT"].includes(
-        code,
-      );
-      setText(recoveryLabel, `Deployment failed · ${version}`);
-      setText(
-        recoveryTitle,
-        mayBeOffline ? "This Agent may be offline" : `${version} deployment failed`,
-      );
-      const failure = modelCheck
-        ? `${version} failed its startup model check`
-        : `${version} did not deploy successfully`;
-      // Offer only links the caller's permission answer and this tab's remembered denials
-      // allow; the API still authorizes each page they open (finding 1458).
-      const logsAllowed =
-        !logTextDenied(context, agentId) &&
-        !context.deniedReads?.has(`${path}/revisions/${encodeURIComponent(latest.id)}`);
-      // Agent permissions can support opening a draft; they do not grant Configuration access.
-      const configurationId = currentAgent.configurationId;
-      const configurationAvailable =
-        typeof configurationId === "string" &&
-        configurationId.length > 0 &&
-        !currentAgent.configurationReadError &&
-        !context.deniedReads?.has(
-          `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(configurationId)}`,
-        );
-      // The API's message states this failure's own next step (finding 1393); the banner leads
-      // with it, so that step is in view rather than only in Deployment details below the fold
-      // (finding 1898). The generic advice stays for a record without one.
-      const errorMessage = latestDeploymentErrorMessage;
-      const step = deploymentFailureStep(errorMessage);
-      const generic = logsAllowed
-        ? "Check the failed version’s logs before deploying a new version."
-        : "Ask someone with log access to check the failed version’s logs before deploying a new version.";
-      let impact = errorMessage ? (step ? errorMessage : `${errorMessage} ${generic}`) : generic;
-      if (replacementFailed) {
-        impact = `${currentLabel} is still selected, but its runtime was probably stopped for this deployment.${errorMessage ? ` ${errorMessage}` : ""}`;
-      } else if (selectedFailed) {
-        impact = `${currentLabel} is still selected, but its runtime replaced the previous version before deployment finished.${errorMessage ? ` ${errorMessage}` : ""}`;
-      }
-      if ((replacementFailed || selectedFailed || step) && !logsAllowed) {
-        // Without the Logs link this is the reader's only way to the logs (finding 1484).
-        impact += " Ask someone with log access to check the failed version’s logs.";
-      }
-      // The code ends the first sentence, so the reader can match it to Logs and to occ.
-      setText(recoveryLead, code ? `${failure} (` : `${failure}.`);
-      setText(recoveryCode, code ?? "");
-      setHidden(recoveryCode, !code);
-      setText(recoveryRest, code ? `). ${impact}` : ` ${impact}`);
-      // Deploying again is the whole next step only where the API's message says so. The draft
-      // it opens builds Deploy new version only from a readable Configuration, so the link waits
-      // for a successful read of it (finding 1931).
-      const deployAgainAllowed =
-        step === "deploy-again" && callerPermissions?.deploy === true && configurationAvailable;
-      const deployAgain = deployAgainAllowed && readableConfigurationId === configurationId;
-      const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_LINKS, code)
-        ? DEPLOYMENT_FAILURE_LINKS[code]
-        : null;
-      // Without update, the draft's only step is Deploy new version, which it builds only from a
-      // readable Configuration, so "Open version draft" waits for the same read (finding 1944).
-      const openDraftAllowed =
-        guidance === "configuration" &&
-        configurationAvailable &&
-        callerPermissions?.update !== true &&
-        callerPermissions?.deploy === true;
-      if ((deployAgainAllowed || openDraftAllowed) && readableConfigurationId !== configurationId) {
-        checkConfigurationReadable(configurationId);
-      }
-      const canOpenConfiguration =
-        guidance === "configuration" &&
-        configurationAvailable &&
-        (callerPermissions?.update === true ||
-          (openDraftAllowed && readableConfigurationId === configurationId));
-      const canOpenCredentials =
-        guidance === "credentials" &&
-        callerPermissions?.update === true &&
-        currentAgent.harnessAuth?.method !== "runtime";
-      const tab = canOpenConfiguration || canOpenCredentials ? guidance : null;
-      const nextLabel =
-        canOpenConfiguration && callerPermissions?.update !== true
-          ? "Open version draft"
-          : DEPLOYMENT_FAILURE_LINK_LABELS[tab];
-      const actionsFor = `${latest.id}/${tab}/${nextLabel}/${logsAllowed}/${deployAgain}`;
-      if (recoveryTarget !== actionsFor) {
-        recoveryTarget = actionsFor;
-        const again = deployAgain
-          ? versionLink("Deploy again", "draft", "configuration", { deploy: true })
-          : null;
-        const logs = logsAllowed ? versionLink(`Open ${version} Logs`, latest.id, "logs") : null;
-        const next = tab ? versionLink(nextLabel, "draft", tab) : null;
-        // The first action is the one primary on the page: Deploy again where the message says
-        // to, else the failed version's Logs. The others are secondary buttons.
-        const actions = [again, logs, next].filter(Boolean);
-        actions.forEach((action, index) => {
-          action.className = index === 0 ? "button button--primary" : "button";
-        });
-        recoveryActions.replaceChildren(...actions);
-        recoveryActions.hidden = actions.length === 0;
-      }
-    }
-  }
-
-  // Another version's tabs have no reason to read the Configuration, so recovery reads it once
-  // before offering Deploy again or Open version draft. A denial is remembered like the draft's;
-  // any other failure leaves the links hidden for this page view. The draft's own read decides
-  // there.
-  function checkConfigurationReadable(configurationId) {
-    if (selected === "draft" || configurationCheckId === configurationId) {
-      return;
-    }
-    configurationCheckId = configurationId;
-    const configurationPath = `${namespacePath(namespaceId)}/configurations/${encodeURIComponent(configurationId)}`;
-    void request(configurationPath).then(
-      () => {
-        // A late answer for a Configuration the Agent has since replaced decides nothing.
-        if (!context.isCurrent() || deleting || configurationCheckId !== configurationId) {
-          return;
-        }
-        readableConfigurationId = configurationId;
-        renderLatestDeployment();
-      },
-      (error) => {
-        if (error.status === 403) {
-          context.deniedReads?.remember(configurationPath);
-          if (context.isCurrent() && !deleting) {
-            renderLatestDeployment();
-          }
-        } else if (!context.isCurrent() && configurationCheckId === configurationId) {
-          // Cut short by leaving the page: a view Back restores asks again.
-          configurationCheckId = null;
-        }
-      },
+    recovery.show(
+      hideRecovery
+        ? null
+        : {
+            latest,
+            record: latestDeploymentRecord,
+            agent: currentAgent,
+            permissions: callerPermissions,
+            currentLabel,
+            servingImpact: replacementFailed
+              ? "replacement-failed"
+              : selectedFailed
+                ? "selected-failed"
+                : null,
+            overviewUnavailable: latestOverviewUnavailable,
+            activityPanel,
+          },
     );
   }
-
   // List summaries omit the credential binding a revision was admitted with, so the
   // rejected-credential hint reads the newest revision once.
   async function readLatestRevisionDetail(revision) {
@@ -3037,9 +1888,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
       agentRereadFailed = false;
       latestDeploymentRecord = null;
       latestOverviewUnavailable = false;
-      latestDeploymentError = false;
-      latestDeploymentErrorCode = null;
-      latestDeploymentErrorMessage = null;
+      latestDeploymentUnavailable = false;
       // On first load the newest version's panel replaces the loading placeholder once its
       // first status read settles, in the same frame as the summary and status line, so the
       // page below moves once instead of once for an empty panel and again for the status.
@@ -3067,7 +1916,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
                 { status: "fulfilled", value: freshRevisions },
                 snapshot,
               ),
-            (status, unavailable, errorCode, record, overviewUnavailable, transientFailure) => {
+            ({ outcome: status, readFailed, record, overviewUnavailable, transientFailure }) => {
               if (activityRevisionId !== mostRecent.id) {
                 return;
               }
@@ -3080,16 +1929,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
               if (overviewUnavailable) {
                 agentRereadFailed = true;
               }
-              latestOverviewUnavailable = Boolean(overviewUnavailable);
-              latestDeploymentError = unavailable;
-              latestDeploymentErrorCode = errorCode;
-              latestDeploymentErrorMessage = record?.error?.message || null;
-              if (errorCode === "RUNTIME_AUTHENTICATION_FAILED") {
+              latestOverviewUnavailable = overviewUnavailable;
+              latestDeploymentUnavailable = readFailed;
+              if (record?.error?.code === "RUNTIME_AUTHENTICATION_FAILED") {
                 void readLatestRevisionDetail(mostRecent);
               }
-              latestDeploymentRecord = record
-                ? { revisionId: mostRecent.id, status: record }
-                : null;
+              latestDeploymentRecord = record;
               if (mostRecent.id === selected) {
                 // After a failed read, the version's record panel reads its record itself.
                 if (record) {
@@ -3213,7 +2058,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     let snapshot = results[1].status === "fulfilled" ? results[1].value : null;
     if (selected === "draft") {
       // The draft's own read is the Configuration read; recovery waits for it.
-      readableConfigurationId = snapshot?.id ?? null;
+      recovery.noteDraftRead(snapshot?.id ?? null);
     }
     detailLoadFinished = true;
     viewedSnapshot = snapshot;
@@ -3231,24 +2076,13 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     let values = draft ? snapshot.values : snapshot.configuration;
     const executionMode = draft ? agent.executionMode : snapshot.harness.mode;
     if (!draft) {
-      let diagnosticsPanel = null;
-      versionRecord = createVersionDeploymentRecord(
-        context,
-        path,
-        selected,
-        () => diagnosticsPanel?.render(),
-        { shared: activityRevisionId === selected && !latestDeploymentError },
-      );
-      diagnosticsPanel = createVersionDiagnosticsPanel(
-        context,
-        path,
-        selected,
-        () => versionRecord.current(),
-        callerPermissionsRead.then((permissions) => permissions?.operate),
-      );
-      versionEvidence.append(versionRecord.section, diagnosticsPanel.section);
-      if (latestDeploymentRecord?.revisionId === selected) {
-        versionRecord.show(latestDeploymentRecord.status);
+      versionRecord = createVersionDeploymentEvidence(context, path, selected, {
+        shared: activityRevisionId === selected && !latestDeploymentUnavailable,
+        operateAllowed: callerPermissionsRead.then((permissions) => permissions?.operate),
+      });
+      versionEvidence.append(...versionRecord.panels);
+      if (latestDeploymentRecord?.deploymentId === selected) {
+        versionRecord.show(latestDeploymentRecord);
       }
       return { snapshot, values, draft, executionMode, credentials: null };
     }
@@ -3452,7 +2286,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     // The last deployment's model credential was rejected and the draft still uses it.
     function credentialRejected() {
       return (
-        latestDeploymentErrorCode === "RUNTIME_AUTHENTICATION_FAILED" &&
+        latestDeploymentRecord?.error?.code === "RUNTIME_AUTHENTICATION_FAILED" &&
         latestRevisionDetail !== null &&
         latestRevisionDetail.id === visibleRevisions[0]?.id &&
         JSON.stringify(latestRevisionDetail.harnessAuth) === JSON.stringify(agent.harnessAuth)
@@ -4056,7 +2890,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
           fresh && permissionsReadSettled ? rereadPermissions() : latestPermissionsRead,
         // The failed-version recovery stops offering Logs as soon as they are denied.
         onLogsDenied: () => {
-          if (tabContext.isCurrent() && !recovery.hidden) {
+          if (tabContext.isCurrent() && !recovery.section.hidden) {
             renderLatestDeployment();
           }
         },
@@ -5271,7 +4105,7 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     const linked = takeLinkedVersionView(linkedKey(nextRevision, nextTab));
     selectedTab = nextTab;
     // A Logs visit may have just been denied: the recovery stops offering its Logs link.
-    if (!recovery.hidden) {
+    if (!recovery.section.hidden) {
       renderLatestDeployment();
     }
     void renderTab({ activated: true });

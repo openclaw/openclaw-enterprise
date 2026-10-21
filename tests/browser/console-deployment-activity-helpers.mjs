@@ -1,9 +1,7 @@
 import assert from "node:assert/strict";
 
-// Deployment activity on the Agent page (apps/controller/src/console/agents/detail.mjs): the
-// newest readable deployment's recorded status, inside a "Deployment details" disclosure. The
-// rule for whether those details are open lives here once, so a slow first read is handled in
-// one place rather than at every assertion:
+// agents/deployment-evidence.mts shows the newest readable deployment's recorded status in
+// "Deployment details". These helpers check when that disclosure opens, including a slow first read:
 // - a routine completion starts folded;
 // - a failure's card leads the page and folds them (finding 2094);
 // - the page's first record that lands after the bounded reveal (FIRST_ACTIVITY_WAIT_MS) fills

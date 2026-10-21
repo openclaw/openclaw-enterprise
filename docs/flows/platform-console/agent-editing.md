@@ -70,22 +70,25 @@ and operational reads remain strict. Drafts and versions decode independently.
 The UI preserves navigation and exact-resource permissions, refusing unreadable-draft
 editing/deployment without defaults.
 **Selected version** uses `activeRevisionId`; **View version vN** opens read-only
-details without activating it. **Deployment activity** shows the newest readable
-version's persisted status, not live health. Routine completion folds; pending work,
-read errors, warnings, and cleanup stay visible. A first read that lands after the
-`FIRST_ACTIVITY_WAIT_MS` reveal fills the folded one-row stand-in without opening it (the
-summary shows its outcome); cleanup, warnings, and overview errors still open it, so nothing
-above the version tabs moves. Failed deployments show the API's message
-(logs advice if it names no step) and offer Logs unless log text or version access was
-denied this sign-in. **Open Configuration** needs Agent `update` and no known Configuration
-read error or denial. **Open version draft** (`deploy` only) and **Deploy again** (per the
+details without activating it. **Deployment activity** in `agents/deployment-evidence.mts`
+shows the newest readable version's recorded status. It does not measure live health.
+Routine completion folds. Pending work, read errors, warnings, and cleanup stay visible.
+If the first read finishes after the `FIRST_ACTIVITY_WAIT_MS` reveal, the summary shows its
+outcome and the details stay folded so the version tabs do not move. Cleanup, warnings, or an
+overview error still open the details.
+
+On failure, `agents/deployment-recovery.mts` shows the API's message or suggests checking
+Logs if the message gives no next step. It hides the Logs link if the caller was denied the
+log text or version during this sign-in. **Open Configuration** needs Agent `update` and no
+known Configuration read error or denial. **Open version draft** (`deploy` only) and **Deploy again** (per the
 message) need `deploy` and a successful Configuration read; Deploy again focuses **Deploy new
 version**. Credentials recovery needs `update`. Hidden or unlisted
 current versions suppress recovery; viewed versions show results. Activity polls every
 `DEPLOYMENT_POLL_MS`, through transient read errors, until a result, denial, or missing record; a new result also rereads selection. **Refresh deployment** rereads
 activity and selection, after any poll in flight. Polls patch in place (`patchChildren`), so
 an unchanged poll writes nothing. A pending deploy lists its result rows before the first attempt;
-the details keep their tallest height until Refresh after it settles. **Current observations** requests timestamped
+the details keep their tallest height until Refresh after it settles.
+**Current observations** in `agents/deployment-diagnostics.mts` requests timestamped
 `succeeded`, `failed`, or `unknown` diagnostics without changing deployment status.
 Its bodyless POST requires Agent `read`/`operate` and exact Agent revision `read`.
 **Create new version** opens the saved draft; **Deploy new version** admits its
