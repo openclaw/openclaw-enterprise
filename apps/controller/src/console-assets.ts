@@ -35,8 +35,8 @@ const CONSOLE_ASSETS = new Map([
     "image/vnd.microsoft.icon": ["favicon.ico"],
     "text/javascript; charset=utf-8": [
       "api-client.mts",
-      "configuration-fields.mjs",
-      "driver-configurations.mjs",
+      "configuration-fields.mts",
+      "driver-configurations.mts",
       "view-lifetime.mts",
       "navigation.mts",
       "shell.mjs",
