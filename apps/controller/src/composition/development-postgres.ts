@@ -1,4 +1,5 @@
 import { nativeAdminOriginResolver } from "../gateway/native-admin-origin.ts";
+import { installationDriverConfigurations } from "./installation-config.ts";
 import type { AuditEventFactory } from "@openclaw-enterprise/audit";
 import type {
   AuditEvent,
@@ -234,6 +235,7 @@ export async function composePostgresDevelopment(
 
     const loggingLevel = config.logging?.level ?? drivers?.installation.logging.level;
     const controller = new OpenClawController(persistedInstallation, {
+      driverConfigurations: installationDriverConfigurations(drivers?.installation),
       sandboxNetworkPolicyCeiling: drivers?.installation.sandboxNetworkPolicyCeiling ?? [],
       state,
       recordOperations: true,

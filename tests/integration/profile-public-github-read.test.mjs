@@ -1,3 +1,4 @@
+import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -163,7 +164,7 @@ test(
     assert.equal(compute.network.publicGithubRead.address, clusterIP);
     assert.match(output.values, /publicGithubRead:\n {2}enabled: true/);
     assert.doesNotMatch(output.installation, /repositoryCredentials:|registryPath:|controlSocket:/);
-    KubernetesComputeDriver.validateConfiguration(compute);
+    requireConfiguration(KubernetesComputeDriver, compute);
     const name = "openclaw-enterprise-public-github-read";
     const objects = helmTemplate(output)
       .split(/\n---\n/)

@@ -1,3 +1,4 @@
+import networkPolicySchema from "./network-policy-schema.mjs";
 import defaultCodexPreset from "/console/default-codex-preset.mjs";
 import standardCodexPreset from "/console/standard-codex-preset.mjs";
 import standardOpenclawPreset from "/console/standard-openclaw-preset.mjs";
@@ -632,6 +633,7 @@ export function installFixture(scenario, evidence) {
   };
   let policyEditing = scenario.policyState !== "disabled";
   let policyPolls = 0;
+  let policyReads = 0;
   let sandboxPolicy = {
     id: "sbp_00000000-0000-4000-8000-000000000001",
     namespaceId,
@@ -777,6 +779,28 @@ export function installFixture(scenario, evidence) {
     if (path === "/api/auth/sign-out" && method === "POST") {
       signedIn = false;
       return response({});
+    }
+    if (path === "/installation/driver-configurations" && method === "GET") {
+      return response({
+        configurations: [
+          {
+            capability: "sandbox",
+            driverId: "sandbox-story",
+            implementation: "storybook-driver",
+            scope: "installation",
+            key: "startup",
+            binding: "installation-startup",
+            configurationSchema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                endpoint: { type: "string", description: "Operator-managed endpoint." },
+              },
+            },
+            actions: {},
+          },
+        ],
+      });
     }
     if (path === "/installation" && method === "GET") {
       return response({
@@ -1327,7 +1351,77 @@ export function installFixture(scenario, evidence) {
         if (!saved) {
           return error(404);
         }
+        const policyPath = `/namespaces/${namespaceId}/agents/${id}/sandbox-policy/networking`;
+        const policyDescriptor = {
+          capability: "sandbox",
+          driverId: "sandbox-story",
+          implementation: "storybook-driver",
+          scope: "agent",
+          key: "sandbox-network-policy",
+          binding: "sandbox-policy",
+          configurationSchema: networkPolicySchema,
+          actions: {
+            read: { method: "GET", href: policyPath, available: true },
+            validate: { method: "POST", href: `${policyPath}/validate`, available: policyEditing },
+            save: { method: "PUT", href: policyPath, available: policyEditing },
+            apply: { method: "POST", href: `${policyPath}/apply`, available: policyEditing },
+          },
+        };
+        if (scenario.policyState === "alternate") {
+          policyDescriptor.implementation = "another-sandbox-driver";
+          policyDescriptor.configurationSchema = structuredClone(networkPolicySchema);
+          policyDescriptor.configurationSchema.properties.additions.items.properties.host.enum = [
+            "example.org",
+            "service.example.org",
+          ];
+        }
+        if (scenario.policyState === "json") {
+          policyDescriptor.configurationSchema = structuredClone(networkPolicySchema);
+          policyDescriptor.configurationSchema.properties.additions.items.properties.host = {
+            title: "Destination hostname",
+            anyOf: [{ const: "example.org" }, { const: "service.example.org" }],
+          };
+        }
+        if (suffix === "/driver-configurations" && method === "GET") {
+          return response({
+            configurations:
+              !scenario.policyState || ["unsupported", "ownerDenied"].includes(scenario.policyState)
+                ? []
+                : [policyDescriptor],
+          });
+        }
+        if (suffix === "/sandbox-policy/networking/validate" && method === "POST") {
+          if (scenario.policyState === "editDenied") {
+            return error(403, "FORBIDDEN");
+          }
+          if (scenario.policyState === "conflict") {
+            return error(409, "RESOURCE_CONFLICT", "The policy changed. Reload before editing.");
+          }
+          if (["ceilingDenied", "invalid"].includes(scenario.policyState)) {
+            return response({
+              success: false,
+              error: {
+                details: [
+                  {
+                    path: "/additions/0/host",
+                    code: "OUTSIDE_CEILING",
+                    message: "The grant exceeds the Installation delegation ceiling.",
+                  },
+                ],
+              },
+            });
+          }
+          return response({ success: true, data: { additions: body.additions } });
+        }
         if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "GET") {
+          if (scenario.policyState === "ownerDenied") {
+            return error(403, "FORBIDDEN");
+          }
+          const read = ++policyReads;
+          if (scenario.policyState === "refreshRace" && !sandboxPolicy.application && read <= 3) {
+            // Simulate another operator saving between reads; HTTP workflow coverage uses real saves.
+            sandboxPolicy.version = read;
+          }
           if (sandboxPolicy.application?.state === "pending" && ++policyPolls > 1) {
             sandboxPolicy.application.state = "applied";
             sandboxPolicy.application.providerVersion = "5";
@@ -1338,8 +1432,9 @@ export function installFixture(scenario, evidence) {
               appliedAt: createdAt,
             };
           }
-          return response({
+          const result = response({
             policy: sandboxPolicy,
+            configuration: policyDescriptor,
             editingEnabled: policyEditing,
             ceiling: [policyGrant],
             defaults:
@@ -1362,6 +1457,10 @@ export function installFixture(scenario, evidence) {
                 ? null
                 : { live: true, wildcards: true, portRanges: true },
           });
+          if (scenario.policyState === "refreshRace" && (read === 2 || read === 3)) {
+            await new Promise((resolve) => setTimeout(resolve, read === 2 ? 300 : 1500));
+          }
+          return result;
         }
         if (
           scenario.policyState &&
@@ -1417,6 +1516,9 @@ export function installFixture(scenario, evidence) {
           return response(sandboxPolicy, 202);
         }
         if (scenario.policyState && suffix.endsWith("/sandbox-policy/networking/recommendations")) {
+          if (scenario.policyState === "ownerDenied") {
+            return error(403, "FORBIDDEN");
+          }
           if (scenario.policyState === "suggestionsUnavailable") {
             return error(503, "DEPENDENCY_UNAVAILABLE");
           }

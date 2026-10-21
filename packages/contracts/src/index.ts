@@ -1,3 +1,18 @@
+import type { ConfigurationDefinition } from "./configuration-definition.ts";
+
+export type {
+  ConfigurationDefinition,
+  ConfigurationResult,
+  ConfigurationContribution,
+  DriverConfigurationDescriptor,
+  ConfigurationContext,
+} from "./configuration-definition.ts";
+export {
+  ConfigurationValidationError,
+  assertConfigurationSchema,
+  validateConfiguration,
+  requireConfiguration,
+} from "./configuration-definition.ts";
 export type { SandboxPolicyDecision } from "./sandbox-policy.ts";
 export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandbox-policy.ts";
 import type {
@@ -19,6 +34,7 @@ export type {
 export {
   SandboxNetworkGrantSchema,
   SandboxNetworkGrantsSchema,
+  SandboxNetworkPolicyConfiguration,
   validateSandboxNetworkGrants,
   sandboxNetworkGrantsWithinCeiling,
 } from "./sandbox-policy.ts";
@@ -1238,9 +1254,8 @@ export interface ComputeLifecycleHooks {
 
 export type JSONSchema = Readonly<Record<string, unknown>>;
 
-export interface DriverImplementation {
-  readonly configurationSchema: JSONSchema;
-  validateConfiguration(configuration: unknown): void;
+export interface DriverImplementation<T = unknown> extends ConfigurationDefinition<T> {
+  readonly configurationContributions?: readonly import("./configuration-definition.ts").ConfigurationContribution[];
 }
 
 export interface IAMDriver extends Driver {

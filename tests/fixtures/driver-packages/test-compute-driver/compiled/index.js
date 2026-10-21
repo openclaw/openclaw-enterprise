@@ -10,14 +10,11 @@ export const configurationSchema = Object.freeze({
   },
 });
 
-export function validateConfiguration(configuration) {
-  if (configuration.provisionPath !== "/tmp/local-test") {
-    throw new Error("The test Compute Driver may provision only /tmp/local-test.");
-  }
+export function validateConfiguration() {
+  return [];
 }
 
 export function createDriver({ id, implementation, configuration, getOperationAbortSignal }) {
-  validateConfiguration(configuration);
   if (typeof getOperationAbortSignal !== "function") {
     throw new Error("The Compute Driver requires its controller-owned operation signal getter.");
   }

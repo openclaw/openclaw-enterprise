@@ -1181,3 +1181,35 @@ func TestExplicitEmptyFlagValuesAreRefusedBeforeAnyWork(t *testing.T) {
 		t.Fatalf("--ca-bundle=: error = %v after %d requests, want the server's error after 1", err, requests)
 	}
 }
+
+// The real client must retain policy diagnostics through the ordinary CLI error path.
+func TestPolicyUpdatePrintsConfigurationDetails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPut || request.URL.Path != "/namespaces/"+testNamespaceID+"/agents/"+testAgentID+"/sandbox-policy/networking" {
+			t.Errorf("unexpected policy request: %s %s", request.Method, request.URL.Path)
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		writer.WriteHeader(http.StatusConflict)
+		fmt.Fprint(writer, `{"error":{"code":"RESOURCE_CONFLICT","message":"The requested network policy exceeds the Installation delegation ceiling.","details":[{"path":"/additions/0","code":"OUTSIDE_CEILING","message":"The grant exceeds the Installation delegation ceiling."},{"path":"/additions/1","code":"INVALID_VALUE","message":"invalid \u001b[31mvalue","providerPayload":"must-not-print"},{"path":"/additions/2","code":"INVALID_VALUE","message":"invalid \u007fvalue"},{"path":"/additions/3","code":"INVALID_VALUE","message":"invalid \u009bvalue"}]},"meta":{}}`)
+	}))
+	defer server.Close()
+	key := writeKeyFile(t, `{"data":{"key":"test-key"}}`)
+	file := filepath.Join(t.TempDir(), "policy.json")
+	if err := os.WriteFile(file, []byte(`{"expectedVersion":1,"additions":[]}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	command := New(io.Discard, io.Discard)
+	command.SetArgs([]string{"--url", server.URL, "--service-key-file", key, "--namespace", testNamespaceID, "agent", "policy", "update", testAgentID, "--file", file})
+	err := command.Execute()
+	if err == nil {
+		t.Fatal("policy rejection was not returned")
+	}
+	for _, want := range []string{"The requested network policy exceeds the Installation delegation ceiling.", `"path":"/additions/0"`, `"code":"OUTSIDE_CEILING"`, `"message":"The grant exceeds the Installation delegation ceiling."`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing diagnostic %q in %s", want, err)
+		}
+	}
+	if strings.ContainsAny(err.Error(), "\x1b\x7f\u009b") || strings.Contains(err.Error(), "/additions/1") || strings.Contains(err.Error(), "/additions/2") || strings.Contains(err.Error(), "/additions/3") || strings.Contains(err.Error(), "providerPayload") || strings.Contains(err.Error(), "must-not-print") {
+		t.Fatalf("unsafe error fields were printed: %q", err.Error())
+	}
+}

@@ -9,6 +9,7 @@ import {
   STOP_PHASE_TIMEOUT_MS,
   agentStopDiagnostic,
   observeAgentStop,
+  smokeSlotNames,
   waitFor,
   watchCluster,
 } from "../../scripts/ci/first-agent-smoke.mjs";
@@ -273,5 +274,45 @@ test("a failed setup stops the watcher at once with one final capture", async ()
   const { seconds, calls } = await withRecordedK3d(() => watchCluster()({ finalCapture: true }));
   // The final snapshot keeps diagnostics for the failure without the idle wait.
   assert.ok(seconds < 5, `stop took ${seconds}s`);
-  assert.equal(calls, "kubeconfig get occ-dev-first-agent-smoke\n");
+  const { cluster } = smokeSlotNames(process.env.OCC_FIRST_AGENT_SMOKE_SLOT);
+  assert.equal(calls, `kubeconfig get ${cluster}\n`);
+});
+
+test("smoke slots keep CI's names at slot 0 and give other slots distinct host resources", () => {
+  const ci = {
+    cluster: "occ-dev-first-agent-smoke",
+    registryContainer: "oce-first-agent-smoke-registry",
+    registry: "127.0.0.1:5000",
+    model: "oce-first-agent-smoke-model",
+    subnet: "11.111.0.0/29",
+    modelAddress: "11.111.0.2",
+    nodeModelAddress: "11.111.0.3",
+  };
+  for (const unset of [undefined, "", "0"]) {
+    assert.deepEqual(smokeSlotNames(unset), ci);
+  }
+  assert.deepEqual(smokeSlotNames("2"), {
+    cluster: "occ-dev-smoke-s2",
+    registryContainer: "oce-smoke-s2-registry",
+    registry: "127.0.0.1:15002",
+    model: "oce-smoke-s2-model",
+    subnet: "11.111.0.16/29",
+    modelAddress: "11.111.0.18",
+    nodeModelAddress: "11.111.0.19",
+  });
+  assert.equal(smokeSlotNames("31").subnet, "11.111.0.248/29");
+  const slots = Array.from({ length: 32 }, (_, slot) => smokeSlotNames(String(slot)));
+  for (const field of Object.keys(ci)) {
+    assert.equal(new Set(slots.map((names) => names[field])).size, 32, field);
+  }
+});
+
+test("a malformed or out-of-range smoke slot fails with the setting's name", () => {
+  for (const value of ["-1", "32", "100", "01", "1.5", " 1", "1 ", "0x1", "one"]) {
+    assert.throws(
+      () => smokeSlotNames(value),
+      /^Error: OCC_FIRST_AGENT_SMOKE_SLOT must be an integer from 0 to 31, got /,
+      value,
+    );
+  }
 });

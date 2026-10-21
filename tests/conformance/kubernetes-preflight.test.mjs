@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { ConfigurationValidationError } from "../../packages/contracts/src/index.ts";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -275,8 +276,80 @@ function executionOptions(network = {}) {
   return configured;
 }
 
+test("execution-cluster diagnostics name the operator's original fields", () => {
+  for (const [change, path, message, code = "INVALID_FORMAT"] of [
+    [
+      (c) => {
+        delete c.executionCluster.authentication.context;
+      },
+      "/executionCluster/authentication/context",
+      "Explicit Kubernetes context must be explicitly configured.",
+      "REQUIRED",
+    ],
+    [
+      (c) => {
+        c.gatewayRouting.gatewayName = "Bad_Name";
+      },
+      "/gatewayRouting/gatewayName",
+      "Gateway routing Gateway name must be a DNS-safe Kubernetes resource name.",
+    ],
+    [
+      (c) => {
+        c.network.gatewayTrustedProxyCidrs = ["0.0.0.0/0"];
+      },
+      "/network/gatewayTrustedProxyCidrs/0",
+      "Trusted proxy CIDRs cannot cover every address.",
+    ],
+    [
+      (c) => {
+        c.authentication.kubeconfigPath = "relative";
+      },
+      "/authentication/kubeconfigPath",
+      "Dedicated kubeconfig path must be absolute.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.authentication.kubeconfigPath = "relative";
+      },
+      "/executionCluster/authentication/kubeconfigPath",
+      "Dedicated kubeconfig path must be absolute.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.network.dns = { ...c.executionCluster.network.dns, namespace: "Bad_NS" };
+      },
+      "/executionCluster/network/dns/namespace",
+      "DNS peer namespace must be a Kubernetes namespace name: a DNS label of at most 63 characters.",
+    ],
+    [
+      (c) => {
+        c.executionCluster.harnessRouting.hostname = "Bad_Host";
+      },
+      "/executionCluster/harnessRouting/hostname",
+      "Harness routing hostname must be a DNS hostname without a port or path.",
+    ],
+  ]) {
+    const options = executionOptions();
+    change(options);
+    assert.throws(
+      () => createKubernetesComputeDriver(options),
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.deepEqual(error.error.details, [{ path, code, message }]);
+        assert.doesNotMatch(JSON.stringify(error.error.details), /relative|Bad_NS|Bad_Host/);
+        return true;
+      },
+    );
+  }
+});
+
 // Execution CIDR lists use the trusted proxy rule: no entry may cover every address.
 test("two-cluster CIDR lists refuse ranges that cover every address", () => {
+  const diagnostic = (path, code, message) => (error) => {
+    assert.ok(error instanceof ConfigurationValidationError);
+    assert.deepEqual(error.error.details, [{ path, code, message }]);
+    return true;
+  };
   for (const [key, description] of [
     ["harnessEndpointCidrs", "Harness endpoint CIDR"],
     ["gatewayEndpointCidrs", "Gateway endpoint CIDR"],
@@ -285,19 +358,29 @@ test("two-cluster CIDR lists refuse ranges that cover every address", () => {
     for (const cidr of ["0.0.0.0/0", "::/0", "::ffff:0:0/96"]) {
       assert.throws(
         () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/32", cidr] })),
-        (error) =>
-          error.constructor.name === "ConfigurationFailure" &&
-          error.message === `${description}s cannot cover every address.`,
+        diagnostic(
+          `/executionCluster/network/${key}/1`,
+          "INVALID_FORMAT",
+          `${description}s cannot cover every address.`,
+        ),
         `${key} ${cidr}`,
       );
     }
     assert.throws(
       () => createKubernetesComputeDriver(executionOptions({ [key]: [] })),
-      new RegExp(`${description}s must be explicit and nonempty\\.$`),
+      diagnostic(
+        `/executionCluster/network/${key}`,
+        "INVALID_VALUE",
+        "Configuration does not satisfy minItems.",
+      ),
     );
     assert.throws(
       () => createKubernetesComputeDriver(executionOptions({ [key]: ["192.0.2.9/33"] })),
-      new RegExp(`${description} 0 must be a valid IPv4 or IPv6 CIDR\\.$`),
+      diagnostic(
+        `/executionCluster/network/${key}/0`,
+        "INVALID_FORMAT",
+        `${description} 0 must be a valid IPv4 or IPv6 CIDR.`,
+      ),
     );
     assert.doesNotThrow(() =>
       createKubernetesComputeDriver(executionOptions({ [key]: ["10.42.0.0/16", "::/96"] })),

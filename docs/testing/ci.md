@@ -109,12 +109,13 @@ token is needed. Both fixtures use approved IPv4 `/32` endpoints in
 
 ### Setting Overrides
 
-These process environment variables are optional. Keep the same directory for
-First Agent `images` and `run`; changing it does not isolate fixed-name containers.
+These process environment variables are optional. Keep the same directory and
+slot for First Agent `images` and `run`; only a distinct slot isolates host-wide names.
 
 | Setting                                     | Default                                                       | Purpose                                                                            |
 | ------------------------------------------- | ------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | `OCC_FIRST_AGENT_SMOKE_DIRECTORY`           | `$RUNNER_TEMP/first-agent-smoke`, or `/tmp/first-agent-smoke` | Images, certificates, and Local Setup state.                                       |
+| `OCC_FIRST_AGENT_SMOKE_SLOT`                | `0`                                                           | `0`–`31`; other cluster, registry, model names, port, subnet. Also vary dev ports. |
 | `CI_RUNNER_TEST_TIMEOUT_MS`                 | `3600000`                                                     | Per-file test deadline; hosted lane/job deadlines still apply.                     |
 | `CI_RUNNER_CLEANUP_TIMEOUT_MS`              | `120000`                                                      | Per-file cleanup allowance.                                                        |
 | `CI_RUNNER_FILE_CONCURRENCY`                | Lane limit capped by available CPUs                           | `1`–`32` for lanes permitting parallel files; serial-only lanes stay serial.       |
@@ -171,6 +172,11 @@ explains these jobs; the PR-controlled workflow is not independent trusted enfor
 <a id="qa-matrix-advisory"></a>
 
 ### QA matrix
+
+The explicit `sandbox-policy` selector exercises shared configuration discovery,
+preview, and the real OpenShell network-policy lifecycle. It requires a prepared
+OpenShell file environment; see [policy proof setup](openshell-coverage.md#qa-matrix-selector).
+The OpenShell advisory job covers the same workflow automatically.
 
 The matrix creates disposable Compose and Kubernetes control planes, both with
 Kubernetes compute, and separate OpenClaw/Codex Agents for each scenario. It does

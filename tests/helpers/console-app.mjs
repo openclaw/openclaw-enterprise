@@ -430,6 +430,7 @@ export async function createConsoleAppFixture(t, options = {}) {
       controller = new OpenClawController(installation, {
         state: platformState,
         sandboxNetworkPolicyCeiling: options.sandboxNetworkPolicyCeiling,
+        driverConfigurations: options.driverConfigurations,
         ...(options.now === undefined ? {} : { now: options.now }),
         recordOperations: options.recordOperations ?? false,
         nativeAdminOrigin: nativeAdminOriginResolver(options.nativeAdmin, publicOrigin),
