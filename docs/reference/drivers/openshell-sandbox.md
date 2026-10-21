@@ -67,9 +67,9 @@ bundled Kubernetes Compute Driver; installed Compute Drivers fail startup.
 Select an [`openshell` Backend](../backends.md#openshell-gateway) whose
 `drivers.sandbox` matches this ID and its
 [Credential Gateway](openshell-credential-gateway.md#configure-the-driver) member.
-The Backend owns connections; Sandbox configuration rejects `endpoint`,
-`scheme`, `serviceName`, `port`, `auth`, `requestTimeoutMs`, and
-`rootCertificatePath` in `gateway`.
+The Backend owns connections; Sandbox `gateway` configuration rejects
+`endpoint`, `scheme`, `serviceName`, `port`, `auth`, `requestTimeoutMs`, and
+`rootCertificatePath`.
 
 ```yaml
 drivers:
@@ -121,29 +121,29 @@ The Driver requires `policy.process.runAsUser` and `runAsGroup`, but the pinned
 OpenShell ignores them: every Sandbox process runs as the workload identity,
 default `10001:10001`.
 
-Do not add a policy for the model endpoint: the credential source's provider
-profile allows `api.openai.com` with TLS inspection, and an uninspected rule for
-that host conflicts.
+Do not add a model endpoint policy: the credential source's provider profile
+allows `api.openai.com` with TLS inspection, and an uninspected rule conflicts.
 
 v0.1.4 requires unique network policy names and nonempty executable
 paths. `workspace-node-enrollment` is reserved. Options are `tls: skip|terminate`, `enforcement: enforce|audit`, and
 `access: read_only|read_write|full`; `skip` replaces the rejected `passthrough`
-spelling. `gatewayConfigured` is the only ServiceAccount mode for `v0.1.4`; the
-gateway's configured sandbox ServiceAccount applies to every Sandbox and does
-not satisfy the per-Agent production requirement below.
+spelling. `gatewayConfigured` is the only ServiceAccount mode for `v0.1.4`; that one
+ServiceAccount applies to every Sandbox, so it misses the per-Agent production
+requirement below.
 
-Optional readiness observes a Service and Pods in the OCC namespace; a paired
-Gateway normally uses an explicit Backend `endpoint`. Readiness requires a
-positive `timeoutMs`. Development sets `startupDelayMs` to
-30 seconds because v0.1.4 exposes its service before the process listens.
+Optional readiness observes a Service and Pods in the OCC namespace and
+requires a positive `timeoutMs`; a paired Gateway normally uses an explicit
+Backend `endpoint`. Development sets `startupDelayMs` to
+30 seconds: v0.1.4 exposes its service before the process listens.
+For a dedicated Codex Harness this is an upper bound: the wait ends when the
+Harness answers, serving or holding a startup failure.
 
 Install OpenShell's gateway separately. Required `gateway.workspaceMode`
 accepts `operator` or `managed`; deferred managed mode fails before Kubernetes
 mutations or Gateway calls. Configure the Gateway's Kubernetes driver with `workspaceMode: operator` and a namespace selector
-matching `operatorNamespaceLabels`. In this mode the OpenShell Workspace name
-must equal its pre-provisioned Kubernetes namespace, so OCC uses a stable
-`oce-` name with a 15-character digest within OpenShell v0.1.4's 19-character
-Workspace limit.
+matching `operatorNamespaceLabels`. In this mode the Workspace name must equal
+its pre-provisioned namespace, so OCC uses a stable `oce-` name with a
+15-character digest, within v0.1.4's 19-character Workspace limit.
 
 The [development profile](../../guides/deploy/local-kubernetes-development.md#start-the-openshell-fail-closed-profile)
 installs one Gateway with workspace resources disabled: in `oce-system` for the
@@ -156,7 +156,7 @@ The disposable profile uses unauthenticated development mode. The pinned release
 shares one Gateway port for control-plane RPCs and provider-advertised Harness traffic. NetworkPolicies limit access to trusted OCE,
 OpenShell, and dedicated Agent Gateway Pods, but cannot give Agent Gateways
 service-only authority on that shared listener. Accept this only in an owned
-disposable development cluster; never qualify this topology for production.
+disposable development cluster, never in production.
 
 `gateway.operatorWorkspaceResources` accepts the namespace-scoped
 ServiceAccount, Role, RoleBinding, and NetworkPolicy objects rendered from the
@@ -164,9 +164,9 @@ workspace chart. The Driver injects the Compute-owned namespace and OCC
 ownership metadata before server-side apply. Only `operator` mode applies it;
 never include Secrets or cluster-scoped objects.
 
-`gateway.networkPolicyResources` accepts namespace-scoped Kubernetes objects
-for provider networking, applied during `ensureNamespace`. Secrets are rejected;
-OpenShell credentials must not appear in startup YAML.
+`gateway.networkPolicyResources` accepts namespace-scoped objects for provider
+networking, applied during `ensureNamespace`. It rejects Secrets; keep OpenShell
+credentials out of startup YAML.
 
 `kubernetes.sandboxDataMount` must match exactly one approved dedicated Harness
 workspace mount. It may not mount the PVC root or use `..`, and must mount

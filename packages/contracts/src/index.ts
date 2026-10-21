@@ -1179,6 +1179,12 @@ export interface SandboxHarnessContext extends SandboxNamespaceContext {
    * withdraws it on `provisionHarness` and `withdrawHarnessExposure`, and refuses `harnessStatus`.
    */
   readonly workspaceNodeEnrolled?: boolean;
+  /**
+   * Reads the Agent transport token the Agent Gateway presents to the Harness. A Driver whose
+   * `provisionHarness` waits for a just-created Harness may use it to see the Harness serve
+   * and stop waiting early; without it the Driver keeps its configured wait.
+   */
+  readonly readHarnessTransportToken?: () => Promise<string>;
 }
 
 /**

@@ -287,6 +287,8 @@ const RUNTIME_PROVIDER_REVISION_LABEL = "openclaw.dev/revision-id";
 const MAX_PROVIDER_FILE_BYTES = 65_536;
 const MAX_PROVIDER_FILES_BYTES = 262_144;
 const MAX_SANDBOX_STARTUP_DELAY_MS = 120_000;
+// How often a just-created Codex Harness is asked whether it serves, within startupDelayMs.
+const HARNESS_STARTUP_POLL_MS = 500;
 const OPERATOR_WORKSPACE_RESOURCE_VERSIONS = Object.freeze({
   ServiceAccount: "v1",
   Role: "rbac.authorization.k8s.io/v1",
@@ -2784,8 +2786,8 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         }
         if (this.options.startupDelayMs !== undefined) {
           // TODO(openshell-service-readiness): Replace this bounded compatibility
-          // delay when OpenShell reports that an exposed Sandbox service is ready.
-          await delay(this.options.startupDelayMs, undefined, { signal: context.signal });
+          // wait when OpenShell reports that an exposed Sandbox service is ready.
+          await this.awaitHarnessStartup(context, codex, this.options.startupDelayMs);
         }
         await this.initializeWorkspace(context, sandbox, client);
         return Object.freeze(sandbox);
@@ -2995,6 +2997,54 @@ export class OpenShellSandboxDriver implements SandboxDriver {
       workspaceRoot: this.options.kubernetes.sandboxDataMount.mountPath,
       codexPermissionProfile: ":danger-full-access",
     });
+  }
+
+  /**
+   * Waits, at most `startupDelayMs`, after creating a Sandbox. OpenShell v0.1.4 exposes the
+   * route before the Harness listens, and an Agent Gateway that dials it then starts in
+   * reconnect backoff with a failed provider catalog refresh, so the wait keeps it away. A
+   * Codex Harness that already answers (serving, or holding a startup failure) ends the
+   * wait: the app-server listened 19-25 s into a 30 s wait on a k3d install. Without the
+   * transport token, or for another Harness, it is the plain delay. A read that fails is no
+   * evidence either way and just keeps waiting; only an abort ends it early.
+   */
+  private async awaitHarnessStartup(
+    context: SandboxHarnessContext,
+    codex: boolean,
+    startupDelayMs: number,
+  ): Promise<void> {
+    const deadline = Date.now() + startupDelayMs;
+    const remaining = (): number => Math.max(0, deadline - Date.now());
+    let transportToken: string | undefined;
+    if (codex && context.readHarnessTransportToken !== undefined) {
+      try {
+        transportToken = await context.readHarnessTransportToken();
+      } catch {
+        context.signal.throwIfAborted();
+      }
+    }
+    if (transportToken === undefined) {
+      await delay(remaining(), undefined, { signal: context.signal });
+      return;
+    }
+    while (remaining() > 0) {
+      try {
+        // Each read ends with the bound, so a gateway that does not answer cannot stretch it.
+        const status = await this.harnessStatus({
+          ...context,
+          transportToken,
+          signal: AbortSignal.any([context.signal, AbortSignal.timeout(Math.max(1, remaining()))]),
+        });
+        if (status.state !== "starting") {
+          return;
+        }
+      } catch {
+        context.signal.throwIfAborted();
+      }
+      await delay(Math.min(HARNESS_STARTUP_POLL_MS, remaining()), undefined, {
+        signal: context.signal,
+      });
+    }
   }
 
   /**

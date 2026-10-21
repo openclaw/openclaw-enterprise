@@ -4409,6 +4409,158 @@ test("OpenShell observes the Codex Harness through its exact bearer-passthrough 
   assert.deepEqual(observed, []);
 });
 
+test("OpenShell ends its Sandbox startup wait once a new Codex Harness answers", async () => {
+  // A gateway whose Codex Harness serves after `ready` handshakes; nothing else listens.
+  const harness = ({ ready = 0, failed = false, hidden = 0 } = {}) => {
+    const gatewayClient = workspaceGatewayClient();
+    const observed = { creates: 0, handshakes: 0, documents: 0, services: 0, bearers: new Set() };
+    let storedSandbox;
+    gatewayClient.createSandbox = async (request) => {
+      observed.creates++;
+      storedSandbox = {
+        name: request.name,
+        workspace: request.workspace,
+        labels: structuredClone(request.labels),
+        annotations: structuredClone(request.annotations),
+        spec: structuredClone(request.spec),
+        serviceUrls: {},
+      };
+      return { ...storedSandbox, serviceUrls: { "": "http://codex.example.test" } };
+    };
+    gatewayClient.getSandbox = async () => storedSandbox;
+    gatewayClient.getService = async () =>
+      storedSandbox === undefined || ++observed.services <= hidden
+        ? undefined
+        : {
+            sandbox: storedSandbox.name,
+            name: "",
+            targetPort: 8080,
+            authorizationMode: "SERVICE_AUTHORIZATION_MODE_BEARER_PASSTHROUGH",
+            advertisedUrl: "http://codex.example.test:8080/",
+            url: "http://codex.example.test",
+          };
+    gatewayClient.serviceWebSocketHandshake = async (_url, bearer) => {
+      observed.bearers.add(bearer);
+      return !failed && ++observed.handshakes > ready;
+    };
+    gatewayClient.getServiceDocument = async () => {
+      observed.documents++;
+      return failed
+        ? {
+            status: 200,
+            json: {
+              runtimeFailure: {
+                component: "agent",
+                check: "model-probe",
+                checkedAt: "2026-10-20T19:00:00.000Z",
+                code: "MODEL_PROBE_FAILED",
+              },
+            },
+          }
+        : { status: 502 };
+    };
+    return { gatewayClient, observed };
+  };
+  const provision = async (gatewayClient, startupDelayMs, extra = {}, harnessId = "codex") => {
+    const options = sandboxInstallation().drivers.sandbox.configuration;
+    options.startupDelayMs = startupDelayMs;
+    const driver = openShellDriver(gatewayClient, options);
+    const { context, revision, requirements } = runtimeSandboxFixture(driver, { harnessId });
+    await driver.ensureNamespace(context);
+    const started = Date.now();
+    await driver.provisionHarness({ ...context, revision, requirements, ...extra });
+    return Date.now() - started;
+  };
+  const readHarnessTransportToken = async () => "transport-token";
+
+  // Serving after two refused handshakes: the wait ends within a couple of polls, far
+  // short of the configured bound, using the Agent transport token.
+  {
+    const { gatewayClient, observed } = harness({ ready: 2 });
+    const elapsed = await provision(gatewayClient, 60_000, { readHarnessTransportToken });
+    assert.equal(observed.creates, 1);
+    assert.equal(observed.handshakes, 3);
+    assert.deepEqual([...observed.bearers], ["transport-token"]);
+    assert.ok(elapsed < 10_000, `startup wait took ${elapsed} ms`);
+  }
+
+  // An exposure not yet readable fails that read closed; the wait keeps polling until it serves.
+  {
+    const { gatewayClient, observed } = harness({ hidden: 2 });
+    const elapsed = await provision(gatewayClient, 60_000, { readHarnessTransportToken });
+    assert.equal(observed.services, 3);
+    assert.equal(observed.handshakes, 1);
+    assert.ok(elapsed < 10_000, `startup wait took ${elapsed} ms`);
+  }
+
+  // A Harness holding a startup failure also ends the wait; Compute reads the failure next.
+  {
+    const { gatewayClient, observed } = harness({ failed: true });
+    const elapsed = await provision(gatewayClient, 60_000, { readHarnessTransportToken });
+    assert.equal(observed.documents, 1);
+    assert.ok(elapsed < 10_000, `startup wait took ${elapsed} ms`);
+  }
+
+  // A Harness that never answers keeps the full bound, polling within it.
+  {
+    const { gatewayClient, observed } = harness({ ready: Number.MAX_SAFE_INTEGER });
+    const elapsed = await provision(gatewayClient, 1_200, { readHarnessTransportToken });
+    assert.ok(elapsed >= 1_150, `startup wait ended early after ${elapsed} ms`);
+    assert.ok(observed.handshakes >= 2 && observed.handshakes <= 4, `${observed.handshakes}`);
+  }
+
+  // A token that cannot be read, or none at all, is the plain bounded delay without reads.
+  for (const extra of [
+    {},
+    {
+      readHarnessTransportToken: async () => {
+        throw new Error("Harness transport credential is unavailable.");
+      },
+    },
+  ]) {
+    const { gatewayClient, observed } = harness();
+    const elapsed = await provision(gatewayClient, 600, extra);
+    assert.ok(elapsed >= 550, `startup wait ended early after ${elapsed} ms`);
+    assert.equal(observed.handshakes, 0);
+  }
+
+  // A native OpenClaw Harness keeps the plain delay even with a token: nothing is read.
+  {
+    const { gatewayClient, observed } = harness();
+    const createSandbox = gatewayClient.createSandbox;
+    gatewayClient.createSandbox = async (request) => ({
+      ...(await createSandbox(request)),
+      serviceUrls: {},
+    });
+    const elapsed = await provision(gatewayClient, 600, { readHarnessTransportToken }, "openclaw");
+    assert.equal(observed.creates, 1);
+    assert.ok(elapsed >= 550, `startup wait ended early after ${elapsed} ms`);
+    assert.equal(observed.handshakes, 0);
+  }
+
+  // An abort still ends the wait at once.
+  {
+    const { gatewayClient } = harness({ ready: Number.MAX_SAFE_INTEGER });
+    const options = sandboxInstallation().drivers.sandbox.configuration;
+    options.startupDelayMs = 60_000;
+    const driver = openShellDriver(gatewayClient, options);
+    const { context, revision, requirements } = runtimeSandboxFixture(driver);
+    await driver.ensureNamespace(context);
+    const controller = new AbortController();
+    const started = Date.now();
+    const pending = driver.provisionHarness({
+      ...context,
+      signal: controller.signal,
+      revision,
+      requirements,
+      readHarnessTransportToken,
+    });
+    setTimeout(() => controller.abort(), 700);
+    await assert.rejects(pending, (error) => error.name === "AbortError");
+    assert.ok(Date.now() - started < 10_000);
+  }
+});
+
 test("OpenShell startup admits exactly the endpoints both consumers can parse and dial", async (t) => {
   // Each consumer parses the endpoint once per gateway call: the gRPC path through its
   // service URL normalization, the service transport through its connect target.
