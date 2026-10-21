@@ -188,11 +188,12 @@ export async function startHttpsIngress({
 // (fixture.memoryDatabase); registers or selects controller Drivers; changes fixture.iamDriver;
 // reads the audit sink; uses the bootstrap result; or needs fixture options of its own. The
 // fixture's IAM policy (fixture.policy: identities, Roles, bindings, restrictions) is restored
-// after each test, so what a test adds there does not reach later tests. Browser pages for the
-// file app close when their test ends (newPage), and login() signs them in with one session
-// shared by the file.
+// before and after each test, so what a test adds there does not reach later tests. Browser
+// pages for the file app close when their test ends (newPage), and login() signs them in with one
+// session shared by the file.
 export function fileConsoleApp(options = {}) {
   const cleanups = [];
+  let startPolicy;
   let created;
   after(async () => {
     await created?.catch(() => {});
@@ -217,6 +218,7 @@ export function fileConsoleApp(options = {}) {
         );
         await fixture.bootstrap();
         fixture.sharedByFile = true;
+        startPolicy = structuredClone(fixture.policy);
         return fixture;
       })();
       // A failed start fails only the test that asked for it; the next test starts a new app,
@@ -229,12 +231,16 @@ export function fileConsoleApp(options = {}) {
       created = creating;
     }
     const fixture = await created;
-    const saved = structuredClone(fixture.policy);
-    t.after(() => {
-      for (const [key, value] of Object.entries(saved)) {
+    // The policy as the app started, restored before and after each test: a test body still
+    // running after its end (a timeout, an unawaited promise) cannot carry its changes into the
+    // next test.
+    const restorePolicy = () => {
+      for (const [key, value] of Object.entries(structuredClone(startPolicy))) {
         fixture.policy[key].splice(0, Infinity, ...value);
       }
-    });
+    };
+    restorePolicy();
+    t.after(restorePolicy);
     return fixture;
   };
 }

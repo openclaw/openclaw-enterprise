@@ -192,13 +192,16 @@ export async function login(
   }
   if (fixture.sharedByFile && credentials === fixture.credentials) {
     await page.context().addCookies(await fileSessionCookies(fixture));
-    // An earlier test that ended this session would otherwise leave every later test on the
-    // sign-in page, which waitForURL below cannot tell apart from the console.
+    // An earlier test that ended this session would otherwise leave this test on the sign-in
+    // page, which waitForURL below cannot tell apart from the console. This test fails and says
+    // so; the next one signs in again, so one such test fails at most one other.
     const session = await page.request.get(new URL("/api/auth/session", origin).href);
-    assert.ok(
-      (await session.json().catch(() => null))?.data?.authenticated === true,
-      "the file's shared session has ended; a test that ends sessions needs its own app",
-    );
+    if ((await session.json().catch(() => null))?.data?.authenticated !== true) {
+      fileSessions.delete(fixture);
+      assert.fail(
+        "an earlier test ended the file's shared session; a test that ends sessions needs its own app",
+      );
+    }
   } else {
     const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
       data: { email: credentials.email, password: credentials.password },
