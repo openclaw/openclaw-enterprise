@@ -271,7 +271,8 @@
     {
       "path": "tests/integration/postgres-prepared-token-service.test.ts",
       "expectedTests": [
-        "independent prepared lease: cold read, replace, exact transaction, withdrawal and lost issue"
+        "independent prepared lease: cold read, replace, exact transaction, withdrawal and lost issue",
+        "rejected fresh GitHub material recovers once across separate owners without replay"
       ]
     },
     {

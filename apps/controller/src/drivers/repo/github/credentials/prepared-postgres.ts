@@ -371,10 +371,16 @@ export class PreparedGitHubPostgres {
             `SELECT id,admission,state,custody,material_version,provider_expires_at,
           usable_until,CASE WHEN custody='current' AND admission->>'issuerAuthority'=$2
             AND clock_timestamp() < $3::timestamptz
+            AND NOT EXISTS (
+              SELECT 1 FROM occ.egress_rejected_material r JOIN occ.prepared_github_families f
+                ON f.source_id=a.source_id
+              WHERE r.namespace_id=f.source #>> '{key,namespaceId}'
+                AND r.secret_driver_id=f.source #>> '{key,provider,id}'
+                AND r.material_id=f.source_id AND r.material_version=a.material_version::text)
             AND ($4::uuid IS NULL OR (id=$4 AND material_version=$5 AND state='committed'
               AND admission=$6::jsonb AND usable_until > clock_timestamp()
               AND usable_until < clock_timestamp() + interval '61 minutes'))
-            THEN sealed END AS sealed FROM ${attempts}
+            THEN sealed END AS sealed FROM ${attempts} a
           WHERE source_id=$1`,
             [
               key,
@@ -386,6 +392,8 @@ export class PreparedGitHubPostgres {
             ],
           )
         ).rows as AttemptRow[];
+        // Omit rejected material from readiness, but retain every attempt: uncertain issuance
+        // must still block replacement.
         const current =
           f.enabled && f.live ? list.find((a) => a.custody === "current" && a.sealed) : undefined;
         const family: Family = {

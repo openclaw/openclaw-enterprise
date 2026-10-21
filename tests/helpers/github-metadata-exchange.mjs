@@ -22,7 +22,14 @@ export function captureMetadata(f, changed = {}) {
   return captured;
 }
 
-export async function dispatchMetadata(f, gh, captured, ready, forbiddenTrailer = false) {
+export async function dispatchMetadata(
+  f,
+  gh,
+  captured,
+  ready,
+  forbiddenTrailer = false,
+  expectedStatus = 200,
+) {
   const decision = await f.authorize(f.permitRequest(captured, ready));
   assert.ok(decision.allowed, "specific dispatch must be acknowledged before sending to origin");
   const { target } = captured.request;
@@ -42,8 +49,8 @@ export async function dispatchMetadata(f, gh, captured, ready, forbiddenTrailer 
         }
         assert.equal(
           res.statusCode,
-          200,
-          "synthetic issuer must accept the real prepared credential",
+          expectedStatus,
+          "synthetic issuer must return the expected response for the prepared credential",
         );
         assert.deepEqual(res.rawTrailers, forbiddenTrailer ? ["x-forbidden-last", "last"] : []);
         resolve({

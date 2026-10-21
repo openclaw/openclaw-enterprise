@@ -41,6 +41,10 @@ export async function readPreparedGitHubMetadata(
     FROM occ.prepared_github_families f JOIN occ.prepared_github_attempts a USING(source_id)
     WHERE f.source_id=$1 AND f.source=$2::jsonb AND enabled AND ${preparedGitHubLive("'ready'")}
     AND custody='current' AND a.admission=f.admission AND a.admission->>'issuerAuthority'=$3
+    AND NOT EXISTS (SELECT 1 FROM occ.egress_rejected_material r
+      WHERE r.namespace_id=f.source #>> '{key,namespaceId}'
+        AND r.secret_driver_id=f.source #>> '{key,provider,id}'
+        AND r.material_id=f.source_id AND r.material_version=a.material_version::text)
     AND usable_until > clock_timestamp()
     AND usable_until < clock_timestamp() + interval '61 minutes' FOR SHARE OF f,a`,
     [source.key.source.id, source, issuerAuthority],

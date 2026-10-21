@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
-import { deserialize, serialize } from "node:v8";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import type { IncomingMessage } from "node:http";
+import { request } from "node:https";
+import { join } from "node:path";
+import { buffer } from "node:stream/consumers";
 import test, { type TestContext } from "node:test";
 import { isDeepStrictEqual } from "node:util";
+import { deserialize, serialize } from "node:v8";
 import type {
   Agent,
   Namespace,
@@ -11,6 +16,8 @@ import type {
   PreparedTokenGrant,
   PreparedTokenIssuer,
   PreparedTokenSource,
+  PreparedGitHubEgressSource,
+  SecretDriver,
 } from "../../packages/contracts/src/index.ts";
 import { TokenService } from "../../apps/controller/src/backends/token-service/service.ts";
 import { createTokenPreparation } from "../../apps/controller/src/backends/token-service/preparation.ts";
@@ -22,11 +29,25 @@ import type {
 } from "../../apps/controller/src/backends/token-service/custody.ts";
 import { retireToken } from "../../apps/controller/src/backends/token-service/retirement.ts";
 import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
+import { githubMetadataProvider } from "../../apps/controller/src/drivers/egress-proxy/github-metadata.ts";
+import { PostgresPreparedGitHubLifecycle } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-lifecycle.ts";
+import {
+  EgressSendReceipts,
+  type SendAttempt,
+} from "../../packages/occ/src/egress-send-receipts.ts";
 import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
-import { captureMetadata } from "../helpers/github-metadata-exchange.mjs";
+import { captureMetadata, dispatchMetadata } from "../helpers/github-metadata-exchange.mjs";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
+import { temporaryDirectory } from "../fixtures/repository-credentials/process.mjs";
+import {
+  startGitHubFixture,
+  fixtureAppId,
+  fixtureInstallationId,
+  fixtureRepositoryId,
+  fixtureRepository,
+} from "../fixtures/repository-credentials/github.mjs";
 
 const ref = { id: "fixture-artifact-lease", generation: 1 };
 const origin = "https://artifact.example.test";
@@ -455,5 +476,202 @@ test(
       ["quarantined", undefined],
     ]);
     assert.equal(issues, 3, "withdrawal must not replace a lease or replay the lost issuance");
+  },
+);
+
+// Unlike the synthetic independent issuer above, this case uses the production GitHub
+// lifecycle and encrypted PostgreSQL custody. Only upstream issuance and trusted rejection
+// classification are fixtures; source admission, signed dispatch and receipt commits are real.
+test(
+  "rejected fresh GitHub material recovers once across separate owners without replay",
+  requiresPostgres,
+  async (t) => {
+    const directory = await temporaryDirectory(t, "prepared-rejection-");
+    const key = join(directory, "custody.key");
+    await writeFile(key, randomBytes(32), { mode: 0o600 });
+    // The JavaScript fixture forwards these issuer options to its protocol implementation.
+    const startIssuer: (
+      context: TestContext,
+      options: object,
+    ) => ReturnType<typeof startGitHubFixture> = startGitHubFixture;
+    const gh = await startIssuer(t, {
+      tokenLifetimeMs: 45 * 60_000,
+    });
+    let lifecycle!: PostgresPreparedGitHubLifecycle;
+    let secretDriver!: SecretDriver;
+    let source!: PreparedGitHubEgressSource;
+    let app!: Awaited<ReturnType<typeof postgresApp>>;
+    let trustedRejection = false;
+    const createOwner = (tokens?: TokenService) =>
+      new PostgresPreparedGitHubLifecycle(key, secretDriver, gh.origin, gh.tls.ca, tokens);
+    const options = {
+      secretValue: gh.privateKey.export({ format: "pem", type: "pkcs8" }),
+      protectedSourceOnly: true,
+      // Substitute only the independent trusted classification, never infer it from a 401.
+      configurePreparedTokens: () => ({
+        ...githubMetadataProvider,
+        credentialRejected: () => trustedRejection,
+      }),
+      createPreparedGitHub(opts: { secretDriver: SecretDriver; tokenService: TokenService }) {
+        secretDriver = opts.secretDriver;
+        lifecycle = createOwner(opts.tokenService);
+        return lifecycle;
+      },
+      async appFactory(context: TestContext, opts: Record<string, unknown>) {
+        app = await postgresApp(context, opts, undefined);
+        await lifecycle.connect(app.pool);
+        t.after(() => lifecycle.close());
+        return app;
+      },
+      async admitSource({
+        app: platform,
+        agent,
+        namespace,
+        secret,
+        path,
+      }: {
+        app: Awaited<ReturnType<typeof postgresApp>>;
+        agent: Agent;
+        namespace: Namespace;
+        secret: Secret & { ref: unknown };
+        path: string;
+      }) {
+        const created = await platform.request("POST", path, {
+          body: {
+            type: "github-app-metadata",
+            name: "rejected-repository",
+            config: {
+              authority: "execution",
+              app_id: fixtureAppId,
+              installation_id: fixtureInstallationId,
+              repository_id: fixtureRepositoryId,
+              repository: fixtureRepository,
+              agent_id: agent.id,
+            },
+            secrets: { private_key: secret.ref },
+          },
+        });
+        assert.equal(created.status, 201);
+        const saved = await platform.state.read((unit) =>
+          unit.credentialSources.findCredentialSource(namespace.id, created.data.id),
+        );
+        assert(saved?.egress?.adoption === "prepared" && saved.egress.schemaVersion === 2);
+        source = saved.egress as PreparedGitHubEgressSource;
+        return bindRuntimeSource(platform, namespace, agent, created.data);
+      },
+    };
+    const f = await staticEgressFixture(
+      t,
+      options as unknown as Parameters<typeof staticEgressFixture>[1],
+    );
+    assert("resolve" in f);
+    const window = () => ({
+      signal: t.signal,
+      deadlineAt: new Date(Date.now() + 20_000).toISOString(),
+    });
+    const due = () =>
+      app.pool.query(
+        "UPDATE occ.prepared_github_families SET next_check_at=clock_timestamp() WHERE source_id=$1",
+        [source.key.source.id],
+      );
+    assert.equal(await lifecycle.maintain(t.signal), "committed");
+    const old = await lifecycle.readWarm(source, window());
+    assert(old && Date.parse(old.usableUntil) > Date.now() + 40 * 60_000);
+    const dispatched = async (revoke = false) => {
+      const captured = captureMetadata(f);
+      const { ready } = await f.resolve(captured);
+      assert(ready);
+      if (revoke) {
+        // Provider revocation leaves local expiry unchanged.
+        const response = await new Promise<IncomingMessage>((resolve, reject) =>
+          request(
+            new URL("/installation/token", gh.origin),
+            {
+              method: "DELETE",
+              ca: gh.tls.ca,
+              headers: Object.fromEntries(
+                ready.credential_headers.map(({ name, value }: { name: string; value: string }) => [
+                  name,
+                  value,
+                ]),
+              ),
+            },
+            resolve,
+          )
+            .once("error", reject)
+            .end(),
+        );
+        await buffer(response);
+        assert.equal(response.statusCode, 204);
+      }
+      assert.deepEqual(await dispatchMetadata(f, gh, captured, ready, false, 401), {
+        blocked: true,
+      });
+      const { rows } = await app.pool.query(
+        "SELECT binding FROM occ.egress_send_receipts WHERE use_id=$1",
+        [captured.request.context.request_id],
+      );
+      assert.equal(rows.length, 1);
+      return rows[0].binding as SendAttempt;
+    };
+    const late = await dispatched(true);
+    assert.equal(await lifecycle.ready(source, t.signal), true, "a bare 401 cannot fence material");
+    trustedRejection = true;
+    const first = await dispatched();
+    assert.equal(await lifecycle.ready(source, t.signal), false);
+    assert.equal(await lifecycle.readWarm(source, window()), undefined);
+    assert.equal((await f.resolve(captureMetadata(f))).ready, undefined);
+    assert.equal(gh.issuesOfTokens.length, 1, "feedback and reads cannot mint inline");
+
+    const restarted = createOwner();
+    const competitor = createOwner();
+    for (const owner of [restarted, competitor]) {
+      await owner.connect(app.pool);
+      t.after(() => owner.close());
+    }
+    // Advance only the polling schedule, not token validity. Separate owners must coalesce
+    // against the same durable family even though the rejected token is still fresh.
+    await due();
+    const results = await Promise.all([
+      restarted.maintain(t.signal),
+      competitor.maintain(t.signal),
+    ]);
+    assert.deepEqual(results.sort(), ["committed", "idle"]);
+    const replacement = await restarted.readWarm(source, window());
+    assert(replacement);
+    assert.notEqual(replacement.materialVersion, old.materialVersion);
+    assert.equal(gh.issuesOfTokens.length, 2);
+    const restartedReceipts = new EgressSendReceipts(app.state);
+    assert.equal(await restartedReceipts.reject(first.sender, first, first.material), "fenced");
+    assert.equal(await restartedReceipts.reject(late.sender, late, late.material), "fenced");
+    await due();
+    assert.equal(await restarted.maintain(t.signal), "ready");
+    assert.equal(
+      (await restarted.readWarm(source, window()))?.materialVersion,
+      replacement.materialVersion,
+    );
+    assert.equal(
+      gh.issuesOfTokens.length,
+      2,
+      "late predecessor rejection cannot replace the successor",
+    );
+    // Recovery must not dispatch another business request.
+    assert.equal(
+      gh.trace.filter(
+        (call) => call.method === "GET" && call.target === `/repos/${fixtureRepository}`,
+      ).length,
+      2,
+    );
+    const next = await dispatched(true);
+    gh.disconnectAfterMutation("POST", `/app/installations/${fixtureInstallationId}/access_tokens`);
+    await due();
+    assert.equal(await restarted.maintain(t.signal), "quarantined");
+    assert.equal(gh.issuesOfTokens.length, 3, "the provider issued before losing its response");
+    await restartedReceipts.reject(next.sender, next, next.material);
+    await due();
+    assert.equal(await competitor.maintain(t.signal), "blocked");
+    assert.equal(gh.issuesOfTokens.length, 3, "rejection cannot replay uncertain issuance");
+    assert.equal(await competitor.readWarm(source, window()), undefined);
+    assert.deepEqual(gh.errors, []);
   },
 );

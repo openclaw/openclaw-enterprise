@@ -1,7 +1,7 @@
 ---
 created: "2026-10-14"
-updated: "2026-10-16"
-last_updated_session: authoring-run/bf50675b-2b74-4724-aeaf-8daecd2a5a29
+updated: "2026-10-21"
+last_updated_session: authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002
 ---
 
 # Protected credential request flow
@@ -282,12 +282,14 @@ bounded JSON, without recursively decoding strings. The
 [supported profile](../reference/credential-sources/protected-inference.md#static-source-and-response-policy)
 preserves safe response bytes. The origin has already received the credential.
 
-Only the accepted exchange can claim the response. A structured 401
-`invalid_api_key` / `invalid_request_error` can fence material; status alone
-cannot. Before replying, `EgressSendReceipts.observe` commits the decision and
-exact rejection fence together, even for a blocked response. Receipts exclude
-bodies, headers, credentials and handles. A failed commit withholds bytes; a
-successful one still requires a deadline and cancellation check.
+Only this exchange can claim the response. `EgressSendReceipts.observe` atomically records the
+decision and any exact rejection fence, without bodies, headers, credentials or handles. Failure
+withholds bytes; success still requires checking cancellation and deadline.
+
+A structured OpenAI `invalid_api_key` can establish rejection; a bare 401 cannot. The prepared
+owner excludes a positively rejected version at its next scheduled check. Concurrent owners
+coalesce replacement; uncertain issuance blocks it; late feedback cannot invalidate its
+successor. GitHub metadata currently supplies no positive rejection classifier.
 
 Erase material after response handling or at deadline. Only a refusal before
 permission can settle as undispatched. After possible permission, inspect the
@@ -325,6 +327,8 @@ selected installation. Observe the origin and caller independently.
 None.
 
 ## Changelog
+
+- 2026-10-21 22:39: Explain conditional recovery of rejected prepared material and its classification limit in the accompanying change. (authoring-run/8ffbb140-b3c1-48de-ac47-8e2450bae002 - df297cd59e8de130e9eb0599e67f47fa6d85079e)
 
 - 2026-10-16 22:49: Preserve Credential Proxy ownership when deriving Harness authentication environment. (authoring-run/bf50675b-2b74-4724-aeaf-8daecd2a5a29 - 6e302a4851b20191990bcb83d20b045a1462257a)
 
