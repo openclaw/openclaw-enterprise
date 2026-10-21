@@ -105,8 +105,9 @@ export class SystemSshCommandExecutor implements SshCommandExecutor {
         failed ??= new Error("SSH helper input could not be delivered.");
       });
       child.once("exit", () => {
-        // Output ssh wrote before exiting is already in the pipes; after a short drain,
-        // stop waiting for descendants so timeoutMs bounds the operation and "close" fires.
+        // Output ssh wrote before exiting is already in the pipes. After a short drain, stop
+        // waiting for descendants so "close" fires: a timed-out operation then settles within
+        // timeoutMs plus the SIGKILL grace and this drain.
         drain = setTimeout(() => {
           child.stdout.destroy();
           child.stderr.destroy();
