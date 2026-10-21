@@ -668,12 +668,47 @@ async function createAndMigrateDatabase(
     );
   }
   const server = existingServer ?? (await ensurePostgresServer(statePath, state));
-  const source = template === undefined ? undefined : templateDatabase(state, server, template);
+  const source =
+    template === undefined
+      ? await laneTemplateDatabase(statePath, state, server, kind)
+      : templateDatabase(state, server, template);
+  return createDatabase(statePath, state, server, { kind, label, source });
+}
+
+// The server's migrated database (one per kind) that every file's database of that kind copies. Migrating takes a
+// pnpm process and seconds of CPU, and it ran once per file under the CI state lock, where
+// each test's own copy waited behind it: a worker revision file's first test waited for the
+// runner to migrate the files that start with it (finding 2178). A copy is the same database
+// (schemas, their ACLs, every migration); nothing connects to the template, so PostgreSQL
+// can copy it, and lane cleanup drops it with the server's other databases.
+async function laneTemplateDatabase(statePath, state, server, kind) {
+  const existing = state.resources.find(
+    (resource) =>
+      resource.kind === "postgres-database" &&
+      resource.laneTemplate === kind &&
+      resource.owner === state.prefix &&
+      resource.status === "ready" &&
+      resource.composeProject === server.name &&
+      resource.port === server.port,
+  );
+  if (existing) {
+    return existing.name;
+  }
+  const created = await createDatabase(statePath, state, server, {
+    kind,
+    label: "lane_template",
+    laneTemplate: kind,
+  });
+  return created.name;
+}
+
+async function createDatabase(statePath, state, server, { kind, label, source, laneTemplate }) {
   const name = databaseName(kind, label);
   const resource = addResource(state, "postgres-database", {
     name,
     composeProject: server.name,
     port: server.port,
+    ...(laneTemplate === undefined ? {} : { laneTemplate }),
   });
   await writeState(statePath, state);
 
@@ -3187,8 +3222,8 @@ async function prepareK3dModelLane(statePath, state, env, options) {
 
 // `template` (optional) is an OCC_TEST_DATABASE_URL that an earlier prepareFile call
 // returned for this state. The file's database is then a copy of that database
-// (CREATE DATABASE ... TEMPLATE) instead of a freshly migrated one. The worker revision
-// suite copies the database the runner prepared for its file, one copy per test.
+// (CREATE DATABASE ... TEMPLATE) instead of a copy of the lane template. The worker
+// revision suite copies the database the runner prepared for its file, one copy per test.
 async function prepareFile({ lane, file, statePath, template }) {
   const name = assertLane(lane);
   if (!file) {

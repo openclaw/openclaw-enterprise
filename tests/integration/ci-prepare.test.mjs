@@ -1109,11 +1109,12 @@ assert.equal(app.host, migrator.host);
 assert.equal(app.pathname, migrator.pathname);
 assert.equal(app.pathname, "/" + selected.env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE);
 assert.match(app.pathname, /^\\/openclaw_ci_postgres_native_iam_policy_barrier_[a-f0-9]{12}$/);
+const databases = (state) => state.resources.filter((resource) => resource.kind === "postgres-database" && resource.laneTemplate === undefined);
 const prepared = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(prepared.resources.filter((resource) => resource.kind === "postgres-database").length, 1);
+assert.equal(databases(prepared).length, 1);
 await selected.cleanup();
 const settled = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(settled.resources.filter((resource) => resource.kind === "postgres-database").length, 0);
+assert.equal(databases(settled).length, 0);
 const other = await prepareFile({
   lane,
   file: "tests/integration/postgres-worker-agent-revision.test.mjs",
@@ -1124,7 +1125,8 @@ assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_DATABASE, undefined);
 assert.equal(other.env.OCC_TEST_NATIVE_IAM_BARRIER_MIGRATION_DATABASE_URL, undefined);
 await other.cleanup();
 const finalState = JSON.parse(await readFile(statePath, "utf8"));
-assert.equal(finalState.resources.length, 1);
+// The server and its lane template, which lane cleanup drops.
+assert.deepEqual(finalState.resources.map(({ kind, laneTemplate }) => [kind, laneTemplate]), [["compose-postgres", undefined], ["postgres-database", "ci"]]);
 `;
     const fakeEnv = {
       PATH: root,
@@ -1137,10 +1139,13 @@ assert.equal(finalState.resources.length, 1);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout, "");
     const commandLog = (await readFile(logPath, "utf8")).trim().split("\n");
-    assert.equal(commandLog.length, 8);
+    // One migrated lane template, then a copy per file.
+    assert.equal(commandLog.length, 9);
+    assert.equal(commandLog.filter((line) => line.startsWith("migrate\t")).length, 1);
     const createCommands = commandLog.filter((line) => line.includes("CREATE DATABASE"));
     const dropCommands = commandLog.filter((line) => line.includes("DROP DATABASE"));
-    assert.equal(createCommands.length, 2);
+    assert.equal(createCommands.length, 3);
+    assert.equal(createCommands.filter((line) => line.includes(" TEMPLATE ")).length, 2);
     assert.equal(dropCommands.length, 2);
     assert.ok(createCommands.every((line) => line.startsWith("docker-exec\tCREATE DATABASE ")));
     const githubEnv = join(root, "github.env");
@@ -1167,7 +1172,7 @@ assert.equal(finalState.resources.length, 1);
       assert.match(blocked.stderr, /must be prepared within the test runner/);
       await assert.rejects(() => stat(githubEnv), { code: "ENOENT" });
     }
-    assert.equal((await readFile(logPath, "utf8")).trim().split("\n").length, 8);
+    assert.equal((await readFile(logPath, "utf8")).trim().split("\n").length, 9);
   });
 
   test("prepareFile copies a per-test database from a ready template it owns without migrating", async (t) => {
@@ -1250,7 +1255,8 @@ assert.deepEqual(
 );
 await copy.cleanup();
 await template.cleanup();
-console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " " + copied.pathname.slice(1));
+const laneTemplate = prepared.resources.find((resource) => resource.laneTemplate === "ci").name;
+console.error(laneTemplate + " " + new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " " + copied.pathname.slice(1));
 `;
     const result = await runProgram(
       program,
@@ -1265,12 +1271,16 @@ console.error(new URL(template.env.OCC_TEST_DATABASE_URL).pathname.slice(1) + " 
       20_000,
     );
     assert.equal(result.status, 0, result.stderr);
-    const [templateName, copyName] = result.stderr.trim().split(" ");
+    const [laneTemplateName, templateName, copyName] = result.stderr.trim().split(" ");
+    assert.match(laneTemplateName, /^openclaw_ci_lane_template_[a-f0-9]{12}$/);
     assert.deepEqual((await readFile(logPath, "utf8")).trim().split("\n"), [
-      `docker-exec\tpostgres\tCREATE DATABASE "${templateName}"`,
-      `docker-exec\t${templateName}\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
-      `migrate\t/${templateName}`,
-      // The copy keeps the template's schemas and migrations; only the database grant is new.
+      // The lane's one migration, which each file's database copies.
+      `docker-exec\tpostgres\tCREATE DATABASE "${laneTemplateName}"`,
+      `docker-exec\t${laneTemplateName}\tGRANT CREATE ON DATABASE "${laneTemplateName}" TO occ_migrator; CREATE SCHEMA occ AUTHORIZATION occ_migrator; CREATE SCHEMA drizzle AUTHORIZATION occ_migrator; REVOKE CREATE ON SCHEMA public FROM PUBLIC;`,
+      `migrate\t/${laneTemplateName}`,
+      // A copy keeps the template's schemas and migrations; only the database grant is new.
+      `docker-exec\tpostgres\tCREATE DATABASE "${templateName}" TEMPLATE "${laneTemplateName}"`,
+      `docker-exec\t${templateName}\tGRANT CREATE ON DATABASE "${templateName}" TO occ_migrator;`,
       `docker-exec\tpostgres\tCREATE DATABASE "${copyName}" TEMPLATE "${templateName}"`,
       `docker-exec\t${copyName}\tGRANT CREATE ON DATABASE "${copyName}" TO occ_migrator;`,
       `docker-exec\tpostgres\tDROP DATABASE IF EXISTS "${copyName}" WITH (FORCE)`,
@@ -1322,7 +1332,16 @@ await template.cleanup();
       assert.equal(result.status, 0, result.stderr);
     }
     const settled = JSON.parse(await readFile(statePath, "utf8"));
-    assert.deepEqual(settled.resources, [server]);
+    // Both processes copied one lane template, which stays until lane cleanup.
+    assert.deepEqual(settled.resources[0], server);
+    assert.deepEqual(
+      settled.resources.slice(1).map(({ kind, laneTemplate, status }) => ({
+        kind,
+        laneTemplate,
+        status,
+      })),
+      [{ kind: "postgres-database", laneTemplate: "ci", status: "ready" }],
+    );
     assert.deepEqual((await readdir(root)).sort(), [
       "fake-corepack.mjs",
       "fake-docker.mjs",
