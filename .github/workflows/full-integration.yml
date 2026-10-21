@@ -389,7 +389,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: preflight
     if: inputs.lane == 'all' || inputs.lane == 'openshell'
-    timeout-minutes: 120
+    timeout-minutes: 160
     environment: integration-openshell
     env:
       NODE_BASE_IMAGE: ${{ vars.CONTAINER_NODE_BASE_IMAGE }}
@@ -413,7 +413,7 @@ jobs:
           profile: full
           node-version: ${{ env.NODE_VERSION }}
           artifact-prefix: full-results
-          job-timeout-minutes: 120
+          job-timeout-minutes: 160
 
   k3d-otel:
     name: k3d OTEL

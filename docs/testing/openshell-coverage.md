@@ -25,6 +25,29 @@ network, and credential enforcement. Exact workload identity, approved mounts
 and privileges, source withdrawal, replacement, and cleanup remain required.
 Missing prerequisites fail rather than skip.
 
+## Native authority
+
+The native `--harness openclaw` case exercises production provider delivery. Its separate
+`tests/integration/sandbox-driver-openshell-native-k3d-real.test.mjs` entry runs
+in the registered OpenShell lane with `OPENAI_API_KEY`; the Codex entry cannot
+substitute for it. It provisions independent Agents A and B using the same
+model source. Each must read/write its workspace and complete fresh and retained
+model sessions. Compute observes held startup failures through the temporary
+provider exposure and withdraws that exposure once the node enrolls.
+
+A-issued setup and signed-device authority must work at A and fail at B. An
+unused setup expires on the real Gateway clock; a fresh positive control still
+connects. Auth-only probes connect through loopback-forwarded `/node`; they do not
+prove NetworkPolicy enforcement or substitute for the running Harness.
+
+Revoking A's actual Compute-enrolled node must disconnect it, reject workspace
+GET/PUT and stop a previously successful retained model session. B must remain
+functional, with A's Gateway/Harness Pod identities and restart counts unchanged.
+Transport errors and worker-capacity failures cannot stand in for revocation.
+These checks require the selected upstream OpenClaw source to implement setup
+issuance/status, signed device authentication and retained-worker revocation.
+Source inspection and ordinary CI do not establish that this live case ran.
+
 ## Agent network policy
 
 The policy scenario uses the production HTTP admission path, PostgreSQL worker,

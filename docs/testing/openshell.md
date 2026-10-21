@@ -120,8 +120,8 @@ The Codex account must permit `:danger-full-access`; OpenShell supplies the oute
 sandbox. The live probe checks the effective profile before starting inference
 and fails immediately if managed policy selects a restricted sandbox.
 
-The lane includes both setup tests, the Sandbox test, and first-Agent tests for
-both control-plane variants. It fails when selected prerequisites are missing.
+The lane includes both setup tests, separate Codex and native authority Sandbox
+entries, and first-Agent tests for both control-plane variants. It fails when selected prerequisites are missing.
 Run cleanup even if preparation or a test fails:
 
 ```sh
@@ -130,8 +130,8 @@ node scripts/ci/cleanup.mjs --state "$OCC_OPENSHELL_TEST_ROOT/state.json"
 
 The Codex Sandbox case and guided native OpenClaw first-Agent case use production
 Drivers, but neither qualifies a production installation. The separate native
-Sandbox case uses a test-only compatibility bridge. Use the k3d helper below to
-run that case. The [Sandbox Driver reference](../reference/drivers/openshell-sandbox.md#qualification-contract)
+Sandbox case also uses production Driver delivery. Use the k3d helper below to
+run its [authority checks](openshell-coverage.md#native-authority). The [Sandbox Driver reference](../reference/drivers/openshell-sandbox.md#qualification-contract)
 describes the remaining limits.
 
 Codex also exercises Python deny/grant/allow/revoke, loaded-version confirmation
@@ -149,10 +149,14 @@ the native test and builds the sibling `../openclaw` checkout. Set
 ./scripts/k3d demo --harness openclaw
 ```
 
-Both commands use the test-only bridge. `test` requires an authorized
+Both commands use unmodified Compute requirements and production Driver delivery.
+`test` requires an authorized
 `OPENAI_API_KEY`; `demo` prompts for one if it is not set. `demo` leaves the
 proven environment running and opens the Control UI and OCE console on loopback.
 It leaves the dedicated worker slot free for the first browser session.
+The native test reserves two worker slots and 6 GiB per Harness, with a 32 GiB
+Namespace quota for two Agents and provider workloads. Genuine setup expiry
+adds up to ten minutes; the test has a 40-minute cap.
 Run `./scripts/k3d down --harness openclaw` to remove it. Codex and native OpenClaw
 use separate helper-owned state; without `--harness`, `copy` selects the active
 demo and `down` removes both environments.
@@ -179,7 +183,8 @@ directory when finished.
 and Kubernetes-only first-Agent stacks. It first proves Codex with a `codex-pat`
 source, then creates a separate `openai` source from `OPENAI_API_KEY` for guided
 native OpenClaw provisioning. The native case uses the pinned runtime and
-production Drivers without the k3d helper's compatibility bridge.
+production Drivers. The separate k3d Sandbox case covers cross-Agent authority
+and node revocation rather than session continuity across replacement.
 
 The case edits `USER.md` through the workspace API and verifies its marker through
 real model execution and `exec`. That turn writes a unique file in its session

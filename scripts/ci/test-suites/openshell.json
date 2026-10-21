@@ -48,6 +48,10 @@
       "expectedTests": ["OpenShell enforces provider delivery and authenticated Codex exposure"]
     },
     {
+      "path": "tests/integration/sandbox-driver-openshell-native-k3d-real.test.mjs",
+      "expectedTests": ["OpenShell enforces native provider delivery and Gateway authority"]
+    },
+    {
       "path": "tests/integration/local-first-agent-openshell-real.test.mjs",
       "expectedTests": [
         "a local Kubernetes installer can deploy and reuse an Agent but cannot replace its key after external changes",

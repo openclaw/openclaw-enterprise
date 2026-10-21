@@ -346,14 +346,7 @@ export function createOpenShellInstallationConfiguration({
     "limits.cpu": "16",
     "limits.memory": "8Gi",
   };
-  configuration.drivers.compute.configuration.servicePrincipalCredentials =
-    process.env.OCC_TEST_OPENSHELL_HARNESS === "openclaw"
-      ? {
-          mode: "projectedServiceAccountToken",
-          audience: "openclaw-enterprise",
-          expirationSeconds: 3600,
-        }
-      : { mode: "disabled" };
+  configuration.drivers.compute.configuration.servicePrincipalCredentials = { mode: "disabled" };
   // The integration replaces this placeholder transport with each namespace's port-forward.
   configuration.backend = [
     {
@@ -1060,11 +1053,17 @@ export function createOpenShellKubernetesFixture({
     return pod;
   }
 
-  async function assertProviderOwnedHarness(namespace, revision, sandbox, pod) {
+  async function assertProviderOwnedHarness(
+    namespace,
+    revision,
+    sandbox,
+    pod,
+    serviceAccountName = openShellAgentName(revision.agentId),
+  ) {
     assert.equal(sandbox.metadata.namespace, namespace);
     assert.equal(pod.metadata.namespace, namespace);
     assert.ok(sandbox.metadata.name, "Sandbox must have a stable resource name.");
-    assert.equal(pod.spec.serviceAccountName, openShellAgentName(revision.agentId));
+    assert.equal(pod.spec.serviceAccountName, serviceAccountName);
     assert.equal(pod.metadata.labels?.["openclaw.dev/namespace"], revision.namespaceId);
     assert.equal(pod.metadata.labels?.["openclaw.dev/agent"], revision.agentId);
     assert.equal(pod.metadata.labels?.["openclaw.dev/revision"], revision.id);
@@ -1099,7 +1098,7 @@ export function createOpenShellKubernetesFixture({
     assert.match(
       environment.find(({ name }) => name === "APP_TOKEN_SHA")?.value ?? "",
       /^[a-f0-9]{64}$/,
-      "the OpenShell Harness requires only its app-server token verifier.",
+      "the OpenShell Harness requires its transport/status token verifier.",
     );
     return container;
   }
@@ -1225,7 +1224,7 @@ export function createOpenShellKubernetesFixture({
     assert.equal(claims.sub, `system:serviceaccount:${namespace}:${pod.spec.serviceAccountName}`);
   }
 
-  function assertApprovedOpenShellPrivileges(pod, { compatibilityBridge = false } = {}) {
+  function assertApprovedOpenShellPrivileges(pod) {
     assert.equal(
       pod.spec.runtimeClassName,
       openShellRuntimeClass,
@@ -1249,9 +1248,7 @@ export function createOpenShellKubernetesFixture({
       undefined,
       "OpenShell v0.1.4 must keep its network supervisor outside the workload Pod.",
     );
-    const container = compatibilityBridge
-      ? pod.spec.containers.find(({ name }) => name === "agent")
-      : harnessContainer(pod);
+    const container = harnessContainer(pod);
     assert.ok(container, "the provider-owned Pod must contain its Agent container.");
     assert.equal(container.securityContext?.allowPrivilegeEscalation, false);
     assert.deepEqual(container.securityContext?.capabilities?.drop, ["ALL"]);
