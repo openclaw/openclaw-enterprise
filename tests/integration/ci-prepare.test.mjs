@@ -21,6 +21,7 @@ import {
   fixtureCommandServer,
   fixtureImageCommands,
   fixturePreparationMetrics,
+  forwardedEnv,
   immutableImage,
   mutableImage,
   nodeBaseImage,
@@ -314,8 +315,8 @@ describe("CI preparation", { concurrency }, () => {
   }
 
   // The fakes' command server listens on loopback, where any local user can connect. It
-  // must run nothing for a client without its token (the shim's own request, unchanged,
-  // would write the metadata file), and a shim must run nothing from another listener.
+  // must run nothing for a request without its client token (the same request with the
+  // token writes the metadata file), and a shim must run nothing from another listener.
   test("the fake command server and its shims run nothing for each other's impostors", async (t) => {
     const root = await fixture(t);
     const server = await fixtureCommandServer(t, root);
@@ -330,13 +331,19 @@ describe("CI preparation", { concurrency }, () => {
       metadata,
       ".",
     ];
+    // A shim's complete request: its argv, then each forwarded variable ("=" + value if set).
+    const env = forwardedEnv.map((name) => (name === "CI_FIXTURE_SCENARIO" ? "=success" : ""));
     const request = (token) =>
       new Promise((resolve, reject) => {
-        const fields = [...token, "docker", root, String(args.length), ...args, "=success"];
+        const fields = [...token, "docker", root, String(args.length), ...args, ...env];
         let reply = "";
         const socket = connect(server.port, "127.0.0.1", () =>
           socket.write(fields.map((field) => field + "\0").join("")),
         );
+        socket.setTimeout(30_000, () => {
+          socket.destroy();
+          reject(new Error("the command server neither answered nor closed the connection"));
+        });
         socket.setEncoding("utf8");
         socket.on("data", (chunk) => (reply += chunk));
         // The server may reset the connection it refuses.
@@ -349,12 +356,8 @@ describe("CI preparation", { concurrency }, () => {
     }
     await assert.rejects(stat(join(root, "commands.jsonl")), { code: "ENOENT" });
     await assert.rejects(stat(metadata), { code: "ENOENT" });
-
-    const docker = join(root, "docker");
-    await writeFixtureCommand(docker, "docker", server);
-    const env = { PATH: "/nonexistent", CI_FIXTURE_SCENARIO: "success" };
-    const served = await spawnResult(docker, args, { env });
-    assert.equal(served.status, 0, served.stderr);
+    const served = await request([server.clientToken]);
+    assert.match(served, new RegExp(`^${server.serverToken}\n[^]*exit 0\n$`));
     assert.equal(
       JSON.parse(await readFile(metadata, "utf8"))["containerimage.config.digest"],
       "sha256:" + "f".repeat(64),
@@ -369,7 +372,9 @@ describe("CI preparation", { concurrency }, () => {
     t.after(() => new Promise((resolve) => impostor.close(resolve)));
     const misdirected = join(root, "misdirected-docker");
     await writeFixtureCommand(misdirected, "docker", server, impostor.address().port);
-    const refused = await spawnResult(misdirected, ["version"], { env });
+    const refused = await spawnResult(misdirected, ["version"], {
+      env: { PATH: "/nonexistent", CI_FIXTURE_SCENARIO: "success" },
+    });
     assert.equal(refused.status, 125);
     assert.equal(refused.stdout, "");
     assert.match(refused.stderr, /fixture command server did not authenticate/);

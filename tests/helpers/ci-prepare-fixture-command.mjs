@@ -19,7 +19,7 @@ import { defaultK3sImage, lanesWithoutK3sAddons } from "../../scripts/ci/prepare
 // the server runs nothing for a client that does not open with its client token, and a
 // shim evaluates nothing from a listener that does not answer with the server token.
 // The fixture directory the scenarios write to is the server's, never the client's.
-const forwardedEnv = [
+export const forwardedEnv = [
   "CI_FIXTURE_SCENARIO",
   "CI_FIXTURE_LANE",
   "OCC_TEST_KUBERNETES_GATEWAY_IMAGE",
@@ -1030,6 +1030,7 @@ export function commandShim({ bash, sleep, setsid, port, clientToken, serverToke
   for (const token of [clientToken, serverToken]) {
     assert.match(token, /^[0-9a-f]{64}$/);
   }
+  assert.match(command, /^[a-z]+$/);
   const env = forwardedEnv.map((name) => `"\${${name}+=}\${${name}-}"`).join(" ");
   return `#!${bash}
 LC_ALL=C
@@ -1056,6 +1057,7 @@ function serveCommand(socket, { tokens, root, store, hungCommandExitMs }) {
   let waiter;
   let closed = false;
   let ended = false;
+  let tokenReceived = false;
   const nextField = () => {
     if (fields.length > 0) {
       return Promise.resolve(fields.shift());
@@ -1070,6 +1072,13 @@ function serveCommand(socket, { tokens, root, store, hungCommandExitMs }) {
     for (let end = buffered.indexOf(0); end !== -1; end = buffered.indexOf(0)) {
       fields.push(buffered.subarray(0, end).toString());
       buffered = buffered.subarray(end + 1);
+      tokenReceived = true;
+    }
+    // A client gets no more buffer before its token than the token needs (64 bytes).
+    // The token is checked before the next read.
+    if (!tokenReceived && buffered.length > 64) {
+      socket.destroy();
+      return;
     }
     if (waiter && fields.length > 0) {
       const { resolve } = waiter;
