@@ -725,6 +725,31 @@ function procStat(pid) {
   }
 }
 
+// The recorded fixture processes still in group `pgid` that nothing has killed. A process
+// counts as killed once it is gone, a zombie (Z) or dead and being reaped (X), or SIGKILL
+// is pending for its whole thread group. kill(-pgid, "SIGKILL") queues that shared signal
+// before it returns and the kernel clears it only when it releases the process, so this
+// needs no deadline. Waiting for the processes to disappear did: on a busy host a killed
+// multithreaded Node process can take seconds to finish exiting (a zombie leader with
+// another thread still running its exit, or a process still being reaped).
+function unkilled(pids, pgid) {
+  return pids.filter((pid) => {
+    const stat = procStat(pid);
+    if (stat === undefined || stat.pgid !== pgid || stat.state === "Z" || stat.state === "X") {
+      return false;
+    }
+    let status;
+    try {
+      status = readFileSync(`/proc/${pid}/status`, "utf8");
+    } catch {
+      return false;
+    }
+    // Signal masks are hexadecimal with bit (signal number - 1) set; SIGKILL is 9.
+    const sharedPending = /^ShdPnd:\s*([0-9a-f]+)$/mu.exec(status);
+    return sharedPending === null || (BigInt(`0x${sharedPending[1]}`) & (1n << 8n)) === 0n;
+  });
+}
+
 waitingTest(
   "run kills a timed-out file's whole process group after the timeout record",
   { skip: process.platform !== "linux" && "reads /proc" },
@@ -799,17 +824,8 @@ waitingTest(
     assert.equal(record.timeoutMs, 5000);
     assert.deepEqual(record.interruptedTests, [{ name: "outlives its runner", line: 4 }]);
     assert.deepEqual(record.output.lines, ["stdout: waiting with SIGTERM ignored"]);
-    // Killed processes are reaped by their new parent asynchronously; a zombie is gone.
-    const deadline = Date.now() + 5_000;
-    const alive = () =>
-      [pids.file, pids.grandchild].filter((pid) => {
-        const stat = procStat(pid);
-        return stat !== undefined && stat.state !== "Z" && stat.pgid === pids.pgid;
-      });
-    while (alive().length > 0 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.deepEqual(alive(), []);
+    // The runner sent the group SIGKILL before it exited; finishing the exit is the kernel's.
+    assert.deepEqual(unkilled([pids.file, pids.grandchild], pids.pgid), []);
     // The Node test runner leads its own process group, apart from this test's.
     assert(Number.isSafeInteger(pids.runner) && pids.runner > 1, String(pids.runner));
     assert.equal(pids.pgid, pids.runner);
@@ -877,15 +893,7 @@ test(
     assert.equal(result.status, 0, result.stderr);
     pids = JSON.parse(await readFile(recordPath, "utf8"));
     assert.equal(pids.pgid, pids.runner);
-    const deadline = Date.now() + 5_000;
-    const alive = () => {
-      const stat = procStat(pids.grandchild);
-      return stat !== undefined && stat.state !== "Z" && stat.pgid === pids.pgid;
-    };
-    while (alive() && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    assert.equal(alive(), false);
+    assert.deepEqual(unkilled([pids.grandchild], pids.pgid), []);
   },
 );
 
@@ -1024,14 +1032,8 @@ for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
       ]);
       clearTimeout(timer);
       assert.deepEqual(outcome, { code: null, signal }, stderr);
-      // Killed processes are reaped by their new parent asynchronously; a zombie is gone.
-      const alive = () =>
-        [pids.runner, pids.file, pids.grandchild].filter((pid) => {
-          const stat = procStat(pid);
-          return stat !== undefined && stat.state !== "Z" && stat.pgid === pids.pgid;
-        });
-      await waitFor(() => alive().length === 0, 5_000);
-      assert.deepEqual(alive(), []);
+      // The runner sent the group SIGKILL before it exited; finishing the exit is the kernel's.
+      assert.deepEqual(unkilled([pids.runner, pids.file, pids.grandchild], pids.pgid), []);
     },
   );
 }
