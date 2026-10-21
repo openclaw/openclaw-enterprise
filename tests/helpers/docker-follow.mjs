@@ -48,8 +48,9 @@ export function changeSignal() {
 // `docker logs` prints it, and whether it still runs; it throws if either CLI
 // failed. `exitedAt` is when `docker wait` returned; `running` turns false once
 // the log stream has also ended, so a stopped container's output is complete.
-// Every write and the exit notify `changes`. `t`, when given, stops both CLIs
-// after the test.
+// Every write and the exit notify `changes`. inspect() asks Docker directly, as
+// a check on a wait that has not seen the exit; an exit it finds counts from
+// Docker's FinishedAt. `t`, when given, stops both CLIs after the test.
 export function followContainer(
   t,
   containerName,
@@ -96,27 +97,55 @@ export function followContainer(
     }
     changes.notify();
   });
-  if (exit) {
-    let settled = false;
-    // The exit as `docker wait` (or the fallback inspect) saw it.
-    const exited = async (exitCode) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      state.exitedAt = Date.now();
-      state.exitCode = exitCode;
-      changes.notify();
-      // `docker logs --follow` ends once it has written the container's last output.
-      let drained;
-      await Promise.race([
-        logsEnded,
-        new Promise((resolve) => (drained = setTimeout(resolve, 10_000))),
-      ]);
-      clearTimeout(drained);
-      state.running = false;
-      changes.notify();
+  let settled = false;
+  // The exit as `docker wait` (or an inspect) saw it.
+  const exited = async (exitCode, at = Date.now()) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    state.exitedAt = at;
+    state.exitCode = exitCode;
+    changes.notify();
+    // `docker logs --follow` ends once it has written the container's last output.
+    let drained;
+    await Promise.race([
+      logsEnded,
+      new Promise((resolve) => (drained = setTimeout(resolve, 10_000))),
+    ]);
+    clearTimeout(drained);
+    state.running = false;
+    changes.notify();
+  };
+  // One `docker inspect`: { running, exitCode, finishedAt }, or undefined if it failed.
+  const inspect = async () => {
+    const child = start([
+      "inspect",
+      containerName,
+      "--format",
+      "{{.State.Running}} {{.State.ExitCode}} {{.State.FinishedAt}}",
+    ]);
+    let text = "";
+    child.child.stdout.on("data", (chunk) => (text += chunk));
+    const { code } = await child.closed;
+    const [running, exitCode, finishedAt] = text.trim().split(/\s+/);
+    if (code !== 0 || !["true", "false"].includes(running)) {
+      return undefined;
+    }
+    const result = {
+      running: running === "true",
+      exitCode: Number(exitCode),
+      finishedAt: Date.parse(finishedAt),
     };
+    if (exit && !result.running && Number.isInteger(result.exitCode)) {
+      void exited(
+        result.exitCode,
+        Number.isFinite(result.finishedAt) ? result.finishedAt : Date.now(),
+      );
+    }
+    return result;
+  };
+  if (exit) {
     const wait = start(["wait", containerName]);
     const output = { stdout: "", stderr: "" };
     wait.child.stdout.on("data", (chunk) => (output.stdout += chunk));
@@ -147,21 +176,8 @@ export function followContainer(
         new Promise((resolve) => (timer = setTimeout(resolve, 10_000))),
       ]);
       clearTimeout(timer);
-      if (settled || stopping) {
-        return;
-      }
-      const inspect = start([
-        "inspect",
-        containerName,
-        "--format",
-        "{{.State.Running}} {{.State.ExitCode}}",
-      ]);
-      let text = "";
-      inspect.child.stdout.on("data", (chunk) => (text += chunk));
-      const { code } = await inspect.closed;
-      const [running, exitCode] = text.trim().split(/\s+/);
-      if (code === 0 && running === "false" && Number.isInteger(Number(exitCode))) {
-        void exited(Number(exitCode));
+      if (!settled && !stopping) {
+        await inspect();
       }
     });
   }
@@ -178,6 +194,7 @@ export function followContainer(
   return {
     changes,
     stop,
+    inspect,
     read() {
       if (failure !== undefined) {
         throw failure;

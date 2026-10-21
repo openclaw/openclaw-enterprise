@@ -416,8 +416,11 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
     };
   };
   // Resolves with when the wrapper exited (epoch ms, as `docker wait` returned),
-  // once its output is complete, or with undefined at `deadline`.
+  // once its output is complete, or with undefined at `deadline`. At the
+  // deadline Docker is asked once more, so a slow `docker wait` cannot turn an
+  // exit into a timeout; that exit counts from Docker's FinishedAt.
   const exited = async (deadline) => {
+    let inspected = false;
     for (;;) {
       const seen = changes.version;
       const { exitedAt, running } = wrapperLogs.read();
@@ -425,6 +428,11 @@ export async function runStartupProbeScenario(t, { kind, mode, delayMs = 0, unti
         return exitedAt;
       }
       if (exitedAt === undefined && Date.now() >= deadline) {
+        if (!inspected) {
+          inspected = true;
+          await wrapperLogs.inspect();
+          continue;
+        }
         return undefined;
       }
       // After the exit, the follower ends `running` within 10 s.
