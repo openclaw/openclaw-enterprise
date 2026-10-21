@@ -1363,6 +1363,8 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return true;
   };
   context.setLeaveGuard?.(refuseLeave);
+  // The writes that hold Back and the sidebar make a reload or tab close ask first too.
+  context.setWriteInFlight?.(() => sharingWrite || Boolean(draftWriteInFlight()));
   const currentVersionValue = element("strong", { className: "stat-value" });
   const currentVersionNote = element("p", { className: "stat-help" });
   // The summary's loading text follows the 250 ms rule: a read that settles sooner never shows
@@ -1604,6 +1606,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   // The authentication form, whose save holds the page from the Credentials tab.
   let authenticationLeaveAnchor = null;
   function showLeaveNote(anchor, text, place) {
+    // Delete replaces the page with its deletion row, so a hold still in flight says why above
+    // that row instead (finding 2125).
+    if (deleting && !anchor?.isConnected) {
+      anchor = view;
+      place = "start";
+    }
     if (!anchor?.isConnected || !text) {
       return;
     }

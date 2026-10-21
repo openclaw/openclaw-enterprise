@@ -6,6 +6,7 @@ import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.
 import { createConsoleAppFixture as createBaseConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
   apiRequests,
+  asksBeforeUnload,
   detailUrl,
   holdRequests,
   login,
@@ -39,13 +40,6 @@ const standardCodexPreset = JSON.parse(
 const createConsoleAppFixture = (t) =>
   createBaseConsoleAppFixture(t, { defaultPresets: [defaultCodexPreset] });
 
-// Whether a reload or tab close would ask first: the console cancels beforeunload.
-const asksBeforeUnload = (page) =>
-  page.evaluate(() => {
-    const event = new Event("beforeunload", { cancelable: true });
-    globalThis.dispatchEvent(event);
-    return event.defaultPrevented;
-  });
 const sidebarLink = (page, name) =>
   page
     .getByRole("navigation", { name: "Main navigation" })
@@ -406,7 +400,8 @@ test("a pending save holds the sidebar links and Back on the Agent page", async 
 });
 
 // Each write that holds the page names itself beside its control when the sidebar, Back or
-// ← Agents is refused; they refused in silence before (findings 1962, 1965).
+// ← Agents is refused; they refused in silence before (findings 1962, 1965). A reload or tab
+// close asks first while it runs (finding 2125).
 for (const pending of [
   {
     kind: "a deploy",
@@ -492,6 +487,7 @@ for (const pending of [
       await page.waitForURL(pageUrl);
     };
     try {
+      assert.equal(await asksBeforeUnload(page), true);
       await refusedWithReason(() => sidebarLink(page, "Agents").click());
       // Back to the Agents list, past the tab change where one was made.
       await refusedWithReason(() =>
@@ -556,6 +552,7 @@ for (const pending of [
     }
     // The note goes with the hold.
     await reason.waitFor({ state: "detached" });
+    assert.equal(await asksBeforeUnload(page), false);
   });
 }
 

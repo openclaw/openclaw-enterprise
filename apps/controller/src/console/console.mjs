@@ -39,6 +39,8 @@ let loggingOut = false;
 let navigateAgentTab = null;
 // The shown page's refusal to leave through the Namespace selector, while a save is unsettled.
 let leaveGuard = null;
+// Whether the shown page has a write in flight that a reload or tab close would cut short.
+let writeInFlight = null;
 let discardCreationOnExit = null;
 const drafts = createDraftStore();
 let draftUserId = null;
@@ -758,6 +760,7 @@ function resetReads({ retainView = false, returnLink = null } = {}) {
   }
   navigateAgentTab = null;
   leaveGuard = null;
+  writeInFlight = null;
   mountedAgent = null;
   clearPasswordInputs();
   shellUI.reset();
@@ -1648,6 +1651,7 @@ async function loadPage({
       }
       navigateAgentTab = retainedState.tabNavigation;
       leaveGuard = retainedState.leaveGuard ?? null;
+      writeInFlight = retainedState.writeInFlight ?? null;
       mountedAgent = retainedState.agent;
       markMountedRoute(current);
       restoreRefocus = () => restoreFocus?.restore(shell.view);
@@ -1860,6 +1864,14 @@ async function loadPage({
           const refuse = (options) => shownStandIn === null && guard(options);
           viewState.leaveGuard = refuse;
           leaveGuard = refuse;
+        }
+      },
+      // A page whose writes hold it open (an Agent's share, a draft's save) says when one is in
+      // flight, so a reload or tab close asks first too (finding 2125).
+      setWriteInFlight(check) {
+        if (lifetime.isCurrent(viewState.active)) {
+          viewState.writeInFlight = check;
+          writeInFlight = check;
         }
       },
     };
@@ -2539,9 +2551,10 @@ document.addEventListener("visibilitychange", () => {
   resumePage();
 });
 // Drafts live only in this document, so a reload or tab close would lose unsaved editor work
-// (finding 1902).
+// (finding 1902). It would also cut short a write in flight, such as the second of a share's
+// two bindings (finding 2125).
 window.addEventListener("beforeunload", (event) => {
-  if (!loggingOut && drafts.hasUnsaved()) {
+  if (!loggingOut && (drafts.hasUnsaved() || writeInFlight?.())) {
     event.preventDefault();
     event.returnValue = "";
   }

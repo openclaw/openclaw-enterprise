@@ -154,6 +154,7 @@ export const AuthenticationRequiredFields = { ...story("agentAuthenticationRequi
 export const WorkspaceRequiredFields = { ...story("agentWorkspaceRequiredFields") };
 export const SharingGranted = { ...story("agentSharingGranted") };
 export const SharingHoldsNavigation = { ...story("agentSharingHoldsNavigation") };
+export const SharingHoldsAfterDelete = { ...story("agentSharingHoldsAfterDelete") };
 export const SharingRemoved = { ...story("agentSharingRemoved") };
 export const SharingDenied = { ...story("agentSharingDenied") };
 export const SharingUnknown = { ...story("agentSharingUnknown") };

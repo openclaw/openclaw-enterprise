@@ -730,6 +730,15 @@ export function statusTone(locator, { text = false } = {}) {
   );
 }
 
+// Whether a reload or tab close would ask first: the console cancels beforeunload.
+export function asksBeforeUnload(page) {
+  return page.evaluate(() => {
+    const event = new Event("beforeunload", { cancelable: true });
+    globalThis.dispatchEvent(event);
+    return event.defaultPrevented;
+  });
+}
+
 // Whether the locator's element holds focus.
 export function hasFocus(locator) {
   return locator.evaluate((node) => node === globalThis.document.activeElement);

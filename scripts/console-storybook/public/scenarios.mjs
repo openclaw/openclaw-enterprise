@@ -3821,6 +3821,39 @@ export const scenarios = {
       "When the grants are written, the note goes, Direct Agent grants lists the new binding, and navigation is available again. If you tried Back above, Back now reaches the draft and Forward returns through Configuration to Access.",
     ],
   },
+  agentSharingHoldsAfterDelete: {
+    group: "Pages/Agent detail",
+    name: "Sharing holds navigation after Delete",
+    path: `${draft}&tab=access`,
+    deployed: true,
+    rules: [
+      {
+        suffix: "/iam/access-bindings",
+        method: "POST",
+        delayMs: 4000,
+        once: true,
+      },
+      // The deletion status poll never answers, so the Agent stays deleting.
+      {
+        path: "/namespaces/ns_00000000-0000-4000-8000-000000000001/agents/agt_00000000-0000-4000-8000-000000000001",
+        skip: 1,
+        hold: true,
+      },
+    ],
+    actions: [
+      ...shareExistingPerson,
+      click("Delete Agent"),
+      { selector: ".agent-delete-dialog button.danger", click: true },
+      { selector: "a.page-back", click: true },
+    ],
+    description:
+      "The story shares the Agent, deletes it while the first grant is pending, then selects ← Agents. Delete replaces the page with its deletion row; the note above that row says why the page stays until both grants are written, about 4 s later.",
+    steps: [
+      "While the note “This page stays open until sharing finishes.” shows above Danger zone, select ← Agents or Agents in the sidebar: the page stays and the note remains. Select Reset story to replay the hold.",
+      "When the grants are written, the note goes and ← Agents opens the Agents list.",
+    ],
+    gap: "The deletion status check never answers here, so the Agent stays deleting.",
+  },
   agentSharingRemoved: {
     group: "Pages/Agent detail",
     name: "Direct Agent grant removed",

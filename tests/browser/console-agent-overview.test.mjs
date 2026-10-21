@@ -12,6 +12,7 @@ import { fileConsoleApp } from "../helpers/console-app.mjs";
 import { createRuntimeLogComputeDriver } from "../helpers/runtime-logs.mjs";
 import {
   apiRequests,
+  asksBeforeUnload,
   deploymentStatusResponse,
   detailUrl,
   fileBrowser,
@@ -2070,7 +2071,8 @@ test("A share in flight finishes across a tab switch", async (t) => {
 
 // A share writes the Namespace discovery grant, then the Agent grant. Leaving the page between
 // the two cut the share in half and said nothing (finding 2108), so another version, ← Agents and
-// Refresh wait for it, as they do for a draft's writes; the tabs still switch.
+// Refresh wait for it, as they do for a draft's writes; the tabs still switch. A reload or tab
+// close asks first (finding 2125).
 test("A share in flight holds version and page changes until it finishes", async (t) => {
   const { fixture, namespace } = await readyNamespace(t, "Share hold", {
     provisionedPeople: ["hold-recipient"],
@@ -2093,10 +2095,12 @@ test("A share in flight holds version and page changes until it finishes", async
   assert.equal(await version.isEnabled(), true);
   await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
   await panel.getByRole("checkbox").check();
+  assert.equal(await asksBeforeUnload(page), false);
   await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
   await write.requested;
 
   assert.equal(await version.isDisabled(), true);
+  assert.equal(await asksBeforeUnload(page), true);
   const held = page.getByRole("tabpanel").getByText("This page stays open until sharing finishes.");
   await page.getByRole("link", { name: "← Agents" }).click();
   await held.waitFor();
@@ -2116,10 +2120,116 @@ test("A share in flight holds version and page changes until it finishes", async
   await panel.getByText("Agent access is shared.", { exact: false }).waitFor();
   await held.waitFor({ state: "detached" });
   assert.equal(await version.isEnabled(), true);
+  assert.equal(await asksBeforeUnload(page), false);
   const bindings = (
     await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
   ).data.filter((binding) => binding.subjectId === person.principal.id);
   assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
+});
+
+// The page's own reloads of its current address (here a failed read's Retry) rebuild it, so a
+// share waits for them too (finding 2108; untested until finding 2125).
+test("A share in flight holds a Retry that would rebuild the page", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Share retry hold", {
+    provisionedPeople: ["retry-recipient"],
+  });
+  const agent = await fixture.createAgent(namespace.id, "Retry Hold Agent", nativeValues("v1"));
+  const person = fixture.provisionedAccounts[0];
+  const { page } = await newPage(t, fixture, { browser });
+  // The draft's Configuration read fails, so its tab offers Retry.
+  await page.route(
+    `${fixture.origin}/namespaces/${namespace.id}/configurations/${agent.configurationId}`,
+    (route) =>
+      route.request().method() === "GET"
+        ? route.fulfill({
+            status: 503,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: { code: "DEPENDENCY_UNAVAILABLE", message: "Read unavailable" },
+            }),
+          })
+        : route.fallback(),
+  );
+  const write = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+    { method: "POST", once: true },
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "configuration");
+  await login(page, fixture, url);
+  const retry = page.getByRole("tabpanel").getByRole("button", { name: "Retry", exact: true });
+  await retry.waitFor();
+  await page.getByRole("tab", { name: "Access", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await write.requested;
+
+  await page.getByRole("tab", { name: "Configuration", exact: true }).click();
+  await page.waitForURL((current) => current.searchParams.get("tab") === "configuration");
+  const configurationUrl = page.url();
+  const entries = await page.evaluate(() => globalThis.history.length);
+  const shown = await retry.elementHandle();
+  await retry.click();
+  const held = page.getByRole("tabpanel").getByText("This page stays open until sharing finishes.");
+  await held.waitFor();
+  // The page was not rebuilt: the same Retry is still shown and live.
+  assert.equal(page.url(), configurationUrl);
+  assert.equal(await page.evaluate(() => globalThis.history.length), entries);
+  assert.equal(await shown.evaluate((node) => node.isConnected && !node.closest("[inert]")), true);
+
+  write.release();
+  await held.waitFor({ state: "detached" });
+  const bindings = (
+    await fixture.request("GET", `/namespaces/${namespace.id}/iam/access-bindings`)
+  ).data.filter((binding) => binding.subjectId === person.principal.id);
+  assert.deepEqual(bindings.map((binding) => binding.resourceKind).sort(), ["agent", "namespace"]);
+});
+
+// Delete replaces the page with its deletion row. During a share that took the hold's note with
+// it, so ← Agents was refused in silence until the share finished (finding 2125).
+test("Delete during a share in flight keeps saying why the page stays open", async (t) => {
+  const { fixture, namespace } = await readyNamespace(t, "Share delete hold", {
+    provisionedPeople: ["delete-recipient"],
+  });
+  const agent = await fixture.createAgent(namespace.id, "Delete Hold Agent", nativeValues("v1"));
+  const person = fixture.provisionedAccounts[0];
+  const { page } = await newPage(t, fixture, { browser });
+  const write = await holdRequests(
+    t,
+    page,
+    `${fixture.origin}/namespaces/${namespace.id}/iam/access-bindings`,
+    { method: "POST", once: true },
+  );
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "access");
+  await login(page, fixture, url);
+  const panel = page.getByRole("region", { name: "Share Agent", exact: true });
+  await panel.getByText("Current policy loaded.", { exact: true }).waitFor();
+  await panel.getByLabel("Existing person’s Principal ID").fill(person.principal.id);
+  await panel.getByRole("checkbox").check();
+  await panel.getByRole("button", { name: "Share Agent", exact: true }).click();
+  await write.requested;
+
+  await page.getByRole("button", { name: "Delete Agent" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete Delete Hold Agent?" })
+    .getByRole("button", { name: "Permanently delete Agent" })
+    .click();
+  await page.getByRole("status").getByText("Deletion was requested").waitFor();
+  assert.equal(await panel.count(), 0);
+  const held = page.getByText("This page stays open until sharing finishes.", { exact: true });
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await held.waitFor();
+  assert.equal(await held.isVisible(), true);
+  assert.equal(page.url(), url.href);
+
+  write.release();
+  await held.waitFor({ state: "detached" });
+  await page.getByRole("link", { name: "← Agents" }).click();
+  await page.getByRole("heading", { name: "Agents", exact: true }).waitFor();
 });
 
 // The same hold from a version's Access tab: Create new version and Back to another version
