@@ -1,4 +1,5 @@
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import { betterAuthIssuer } from "../apps/controller/src/auth/configuration.ts";
 import {
@@ -69,28 +70,28 @@ function randomPassword() {
   return randomBytes(32).toString("base64url");
 }
 
-function freshBootstrapConfig(config) {
+function freshBootstrapConfig(config, environment) {
   if (config.mode === "production") {
-    const passwordPath = passwordOutputPath(required(process.env, "OCC_BOOTSTRAP_PASSWORD_FILE"));
+    const passwordPath = passwordOutputPath(required(environment, "OCC_BOOTSTRAP_PASSWORD_FILE"));
     return {
       installationName: installationName(
-        required(process.env, "OCC_BOOTSTRAP_INSTALLATION_NAME"),
+        required(environment, "OCC_BOOTSTRAP_INSTALLATION_NAME"),
         "OCC_BOOTSTRAP_INSTALLATION_NAME",
       ),
       passwordPath,
       serviceKeyPath: serviceKeyOutputPath(
-        required(process.env, "OCC_BOOTSTRAP_SERVICE_KEY_FILE"),
+        required(environment, "OCC_BOOTSTRAP_SERVICE_KEY_FILE"),
         passwordPath,
       ),
     };
   }
   return {
-    password: optional(process.env, "OPENCLAW_DEV_PASSWORD", DEFAULT_DEV_ADMIN_PASSWORD),
+    password: optional(environment, "OPENCLAW_DEV_PASSWORD", DEFAULT_DEV_ADMIN_PASSWORD),
     installationName: installationName(
-      optional(process.env, "OPENCLAW_DEV_INSTALLATION_NAME", DEFAULT_DEV_INSTALLATION_NAME),
+      optional(environment, "OPENCLAW_DEV_INSTALLATION_NAME", DEFAULT_DEV_INSTALLATION_NAME),
       "OPENCLAW_DEV_INSTALLATION_NAME",
     ),
-    serviceKeyPath: serviceKeyOutputPath(required(process.env, "OCC_BOOTSTRAP_SERVICE_KEY_FILE")),
+    serviceKeyPath: serviceKeyOutputPath(required(environment, "OCC_BOOTSTRAP_SERVICE_KEY_FILE")),
   };
 }
 
@@ -201,151 +202,187 @@ async function verifiedWithoutAuth(pool, state, installation, email) {
   }
 }
 
-let bootstrapAttempt;
-let pool;
-let logging;
-let logger = createOccLogger({ component: "occ-bootstrap", level: "info", destination: "stderr" });
-
-try {
-  const mode = parseMode(process.env.NODE_ENV, process.argv.slice(2));
-  logging = await loadOperationalLoggingConfiguration({ mode });
-  logger = createOccLogger({
+/**
+ * The initialization Job: create the Installation, or verify the existing one. It reads its
+ * settings from `environment` and its arguments from `args`, never from process.env or argv, so
+ * tests can call it in process with their own settings. It writes its result line to `stdout`,
+ * fixed diagnostics to `stderr` and log events to `logDestination` ("stderr" for the Job), and
+ * returns the exit status: 0, or 1 on any failure.
+ *
+ * Dependencies still read a few process-wide settings themselves, such as OCC_DATABASE_AUTH in
+ * the database pool and NODE_ENV in Better Auth's defaults (OCC sets the options that matter).
+ */
+export async function bootstrapInstallation({
+  environment,
+  args,
+  stdout = process.stdout,
+  stderr = process.stderr,
+  logDestination = "stderr",
+}) {
+  let bootstrapAttempt;
+  let pool;
+  let logging;
+  let logger = createOccLogger({
     component: "occ-bootstrap",
-    level: logging.level,
-    destination: "stderr",
+    level: "info",
+    destination: logDestination,
   });
-  const config = bootstrapConfiguration(mode, process.env);
-  pool = await createPostgresPool(config.databaseUrl);
-  const state = new PostgresPlatformState(pool);
-  const existing = await state.loadInstallation();
-  if (
-    existing !== undefined &&
-    (await verifiedWithoutAuth(pool, state, existing, config.adminEmail))
-  ) {
-    process.stdout.write(`${JSON.stringify({ event: "installation.already-bootstrapped" })}\n`);
-    emitOccLogEvent(logger, {
-      event: "installation.already-bootstrapped",
-      installationId: existing.id,
-      step: "fast-path",
+  let status = 0;
+
+  try {
+    const mode = parseMode(environment.NODE_ENV, args);
+    logging = await loadOperationalLoggingConfiguration({ mode, environment });
+    logger = createOccLogger({
+      component: "occ-bootstrap",
+      level: logging.level,
+      destination: logDestination,
     });
-  } else if (existing !== undefined) {
-    emitOccLogEvent(logger, { event: "installation.fast-path-skipped" });
-    const auth = await createAuth(pool, config, existing.id);
-    const user = await findCredentialUser(auth, config.adminEmail);
-    if (user === null) {
-      throw new Error(
-        "The existing Installation does not contain the configured administrator account.",
-      );
-    }
-    const persisted = await state.loadNativeIAMState(existing.id);
-    const principal = administratorPrincipal(persisted, auth.issuer, user.user.id);
-    if (principal === undefined) {
-      throw new Error(
-        "The existing Installation does not contain the exact configured administrator Principal.",
-      );
-    }
-    process.stdout.write(`${JSON.stringify({ event: "installation.already-bootstrapped" })}\n`);
-    emitOccLogEvent(logger, {
-      event: "installation.already-bootstrapped",
-      installationId: existing.id,
-    });
-  } else {
-    const freshConfig = freshBootstrapConfig(config);
-    if (freshConfig.passwordPath !== undefined) {
-      await requireAbsentBootstrapOutput(freshConfig.passwordPath);
-    }
-    await requireAbsentBootstrapOutput(freshConfig.serviceKeyPath);
-    const password = freshConfig.password ?? randomPassword();
-    const installation = {
-      id: `ins_${randomUUID()}`,
-      name: freshConfig.installationName,
-      createdAt: new Date().toISOString(),
-    };
-    bootstrapAttempt = {
-      installationId: installation.id,
-      ...(freshConfig.passwordPath === undefined ? {} : { passwordFile: freshConfig.passwordPath }),
-      serviceKeyFile: freshConfig.serviceKeyPath,
-    };
-    const auth = await createAuth(pool, config, installation.id);
-    const user = await createCredentialUser(auth, config.adminEmail, password);
-    bootstrapAttempt = { ...bootstrapAttempt, authAccountId: user.id };
-    const authorization = authorizationFor(auth, installation.id, user.id);
-    bootstrapAttempt = {
-      ...bootstrapAttempt,
-      principalId: authorization.principal.id,
-      servicePrincipalId: authorization.servicePrincipal.id,
-    };
-    const serviceKey = await auth.createServiceKey({
-      principal: authorization.servicePrincipal,
-      name: "bootstrap-admin",
-    });
-    bootstrapAttempt = {
-      ...bootstrapAttempt,
-      serviceKeyId: serviceKey.id,
-      serviceKeyExpiresAt: serviceKey.expiresAt,
-    };
-    if (freshConfig.passwordPath !== undefined) {
-      await writeProtectedBootstrapFile(freshConfig.passwordPath, `${password}\n`);
-    }
-    await writeProtectedBootstrapJson(freshConfig.serviceKeyPath, {
-      data: serviceKey,
-      meta: { installationId: installation.id },
-    });
-    state.setBootstrapNativeIAM(authorization.state);
-    const controller = new OpenClawController(installation, {
-      state,
-      recordOperations: true,
-      loggingLevel: logging.level,
-    });
-    const iam = new NativeIAMDriver(state, { id: "native-iam", implementation: "native" });
-    controller.registerDriver(iam);
-    controller.selectDriver("iam", iam.id);
-    await controller.transact(async (unit) => {
-      const defaultNamespace = await controller.createNamespace(authorization.principal.id, {
-        name: BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
+    const config = bootstrapConfiguration(mode, environment);
+    pool = await createPostgresPool(config.databaseUrl);
+    const state = new PostgresPlatformState(pool);
+    const existing = await state.loadInstallation();
+    if (
+      existing !== undefined &&
+      (await verifiedWithoutAuth(pool, state, existing, config.adminEmail))
+    ) {
+      stdout.write(`${JSON.stringify({ event: "installation.already-bootstrapped" })}\n`);
+      emitOccLogEvent(logger, {
+        event: "installation.already-bootstrapped",
+        installationId: existing.id,
+        step: "fast-path",
       });
-      await unit.audit.append({
-        id: `aud_${randomUUID()}`,
+    } else if (existing !== undefined) {
+      emitOccLogEvent(logger, { event: "installation.fast-path-skipped" });
+      const auth = await createAuth(pool, config, existing.id);
+      const user = await findCredentialUser(auth, config.adminEmail);
+      if (user === null) {
+        throw new Error(
+          "The existing Installation does not contain the configured administrator account.",
+        );
+      }
+      const persisted = await state.loadNativeIAMState(existing.id);
+      const principal = administratorPrincipal(persisted, auth.issuer, user.user.id);
+      if (principal === undefined) {
+        throw new Error(
+          "The existing Installation does not contain the exact configured administrator Principal.",
+        );
+      }
+      stdout.write(`${JSON.stringify({ event: "installation.already-bootstrapped" })}\n`);
+      emitOccLogEvent(logger, {
+        event: "installation.already-bootstrapped",
+        installationId: existing.id,
+      });
+    } else {
+      const freshConfig = freshBootstrapConfig(config, environment);
+      if (freshConfig.passwordPath !== undefined) {
+        await requireAbsentBootstrapOutput(freshConfig.passwordPath);
+      }
+      await requireAbsentBootstrapOutput(freshConfig.serviceKeyPath);
+      const password = freshConfig.password ?? randomPassword();
+      const installation = {
+        id: `ins_${randomUUID()}`,
+        name: freshConfig.installationName,
+        createdAt: new Date().toISOString(),
+      };
+      bootstrapAttempt = {
         installationId: installation.id,
-        occurredAt: new Date().toISOString(),
-        kind: "bootstrap",
-        actorId: authorization.principal.id,
-        source: "occ",
-        action: "administer",
-        resource: { kind: "installation", id: installation.id },
-        outcome: "success",
-        details: {
-          kind: "bootstrap",
-          source:
-            config.mode === "production"
-              ? "production-installation-job"
-              : "development-installation-job",
-          servicePrincipalId: authorization.servicePrincipal.id,
-          serviceKeyId: serviceKey.id,
-          defaultNamespaceId: defaultNamespace.id,
-        },
+        ...(freshConfig.passwordPath === undefined
+          ? {}
+          : { passwordFile: freshConfig.passwordPath }),
+        serviceKeyFile: freshConfig.serviceKeyPath,
+      };
+      const auth = await createAuth(pool, config, installation.id);
+      const user = await createCredentialUser(auth, config.adminEmail, password);
+      bootstrapAttempt = { ...bootstrapAttempt, authAccountId: user.id };
+      const authorization = authorizationFor(auth, installation.id, user.id);
+      bootstrapAttempt = {
+        ...bootstrapAttempt,
+        principalId: authorization.principal.id,
+        servicePrincipalId: authorization.servicePrincipal.id,
+      };
+      const serviceKey = await auth.createServiceKey({
+        principal: authorization.servicePrincipal,
+        name: "bootstrap-admin",
       });
-    });
-    process.stdout.write(
-      `${JSON.stringify({ event: "installation.bootstrapped", ...bootstrapAttempt })}\n`,
-    );
+      bootstrapAttempt = {
+        ...bootstrapAttempt,
+        serviceKeyId: serviceKey.id,
+        serviceKeyExpiresAt: serviceKey.expiresAt,
+      };
+      if (freshConfig.passwordPath !== undefined) {
+        await writeProtectedBootstrapFile(freshConfig.passwordPath, `${password}\n`);
+      }
+      await writeProtectedBootstrapJson(freshConfig.serviceKeyPath, {
+        data: serviceKey,
+        meta: { installationId: installation.id },
+      });
+      state.setBootstrapNativeIAM(authorization.state);
+      const controller = new OpenClawController(installation, {
+        state,
+        recordOperations: true,
+        loggingLevel: logging.level,
+      });
+      const iam = new NativeIAMDriver(state, { id: "native-iam", implementation: "native" });
+      controller.registerDriver(iam);
+      controller.selectDriver("iam", iam.id);
+      await controller.transact(async (unit) => {
+        const defaultNamespace = await controller.createNamespace(authorization.principal.id, {
+          name: BOOTSTRAP_DEFAULT_NAMESPACE_NAME,
+        });
+        await unit.audit.append({
+          id: `aud_${randomUUID()}`,
+          installationId: installation.id,
+          occurredAt: new Date().toISOString(),
+          kind: "bootstrap",
+          actorId: authorization.principal.id,
+          source: "occ",
+          action: "administer",
+          resource: { kind: "installation", id: installation.id },
+          outcome: "success",
+          details: {
+            kind: "bootstrap",
+            source:
+              config.mode === "production"
+                ? "production-installation-job"
+                : "development-installation-job",
+            servicePrincipalId: authorization.servicePrincipal.id,
+            serviceKeyId: serviceKey.id,
+            defaultNamespaceId: defaultNamespace.id,
+          },
+        });
+      });
+      stdout.write(
+        `${JSON.stringify({ event: "installation.bootstrapped", ...bootstrapAttempt })}\n`,
+      );
+      emitOccLogEvent(logger, {
+        event: "installation.bootstrapped",
+        installationId: installation.id,
+      });
+    }
+  } catch (error) {
+    const preflightFailure = error instanceof BootstrapOutputPreflightError;
+    if (preflightFailure) {
+      // This message is fixed; filesystem causes may contain private paths.
+      stderr.write(`${error.message}\n`);
+    }
     emitOccLogEvent(logger, {
-      event: "installation.bootstrapped",
-      installationId: installation.id,
+      event: "installation.bootstrap-failed",
+      code: preflightFailure ? error.code : bootstrapFailureCode(error),
+      attempt: bootstrapAttempt,
     });
+    status = 1;
+  } finally {
+    await pool?.end();
   }
-} catch (error) {
-  const preflightFailure = error instanceof BootstrapOutputPreflightError;
-  if (preflightFailure) {
-    // This message is fixed; filesystem causes may contain private paths.
-    process.stderr.write(`${error.message}\n`);
-  }
-  emitOccLogEvent(logger, {
-    event: "installation.bootstrap-failed",
-    code: preflightFailure ? error.code : bootstrapFailureCode(error),
-    attempt: bootstrapAttempt,
+  return status;
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const status = await bootstrapInstallation({
+    environment: process.env,
+    args: process.argv.slice(2),
   });
-  process.exitCode = 1;
-} finally {
-  await pool?.end();
+  if (status !== 0) {
+    process.exitCode = status;
+  }
 }
