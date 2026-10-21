@@ -31,6 +31,8 @@ type PluginAgent = Pick<
   Agent,
   "id" | "configurationId" | "harnessAuth" | "plugins" | "pluginApprovers"
 >;
+type PluginAgentResponse = Record<string, unknown> &
+  Pick<Agent, "id" | "namespaceId" | "configurationId">;
 type PluginCapabilities = PluginDriver["policyCapabilities"] & {
   discoveryCredential: NonNullable<PluginDriver["discoveryCredential"]>;
 };
@@ -63,7 +65,7 @@ interface PluginEditorOptions {
   onState(
     state: Pick<PluginDraft, "dirty" | "outcomeUnknown" | "reloadRequired"> & { saving: boolean },
   ): void;
-  onSaved(agent: Agent): void;
+  onSaved(agent: PluginAgentResponse): void;
   onReload(): void;
   savedNotice?: string;
   updateAllowed?: Promise<boolean | undefined> | null;
@@ -88,7 +90,10 @@ export function pluginWarningText(warning: PluginDeploymentWarning) {
 }
 
 export function renderAgentPlugins(
-  context: PluginDiscoveryContext & { drafts: Pick<DraftScope, "get" | "track" | "forget"> },
+  context: PluginDiscoveryContext & {
+    agentId: string;
+    drafts: Pick<DraftScope, "get" | "track" | "forget">;
+  },
   {
     agent,
     snapshot,
@@ -355,6 +360,11 @@ export function renderAgentPlugins(
     saveError.textContent = "";
     feedback.textContent = "Checking saved plugin selections…";
     updateState();
+    // The route identifies the Agent; a Configuration and its plugin policy can be shared.
+    const matchesAgent = (response: Record<string, unknown>): response is PluginAgentResponse =>
+      response.id === context.agentId &&
+      response.namespaceId === context.namespaceId &&
+      response.configurationId === baseline.configurationId;
     let mutationStarted = false;
     let saved = false;
     try {
@@ -364,7 +374,7 @@ export function renderAgentPlugins(
       }
       assertReadableConfiguration(freshAgent);
       if (
-        freshAgent.configurationId !== baseline.configurationId ||
+        !matchesAgent(freshAgent) ||
         JSON.stringify(freshAgent.plugins ?? {}) !== JSON.stringify(baseline.plugins) ||
         JSON.stringify(freshAgent.pluginApprovers) !== JSON.stringify(baseline.pluginApprovers)
       ) {
@@ -372,18 +382,25 @@ export function renderAgentPlugins(
         return;
       }
       mutationStarted = true;
-      const savedAgent = (await context.request(path, {
-        method: "PATCH",
-        body: {
-          configurationId: baseline.configurationId,
-          plugins,
-          ...(pluginApprovers === undefined
-            ? initialApprovers === undefined
-              ? {}
-              : { pluginApprovers: null }
-            : { pluginApprovers }),
-        },
-      })) as Agent;
+      const savedAgent = responseFields(
+        await context.request(path, {
+          method: "PATCH",
+          body: {
+            configurationId: baseline.configurationId,
+            plugins,
+            ...(pluginApprovers === undefined
+              ? initialApprovers === undefined
+                ? {}
+                : { pluginApprovers: null }
+              : { pluginApprovers }),
+          },
+        }),
+      );
+      // The write may have succeeded even when the response cannot confirm it for this Agent.
+      if (!matchesAgent(savedAgent) || savedAgent.configurationReadError !== undefined) {
+        outcomeUnknown = true;
+        return;
+      }
       saved = true;
       if (context.isCurrent()) {
         // The controls stay disabled until the owner rebuilds this tab from the saved Agent.

@@ -615,7 +615,7 @@ test("Agent deployment shows the API's reason when it rejects the saved model", 
   assert.deepEqual(revisions.data, []);
 });
 
-test("Plugin save shows the API's reason when it rejects the selections, else the plugin text", async (t) => {
+test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed success", async (t) => {
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const driver = new CodexPluginDriver();
@@ -636,7 +636,9 @@ test("Plugin save shows the API's reason when it rejects the selections, else th
   await page
     .getByLabel("Plugin selections JSON", { exact: true })
     .fill(JSON.stringify({ [pluginId]: { enabled: "yes" } }));
-  const agentUrl = `${fixture.origin}/namespaces/${namespace.id}/agents/${agent.id}`;
+  const collection = `/namespaces/${namespace.id}/agents`;
+  const agentPath = `${collection}/${agent.id}`;
+  const agentUrl = `${fixture.origin}${agentPath}`;
   const patched = (response) =>
     response.request().method() === "PATCH" && response.url() === agentUrl;
   const save = page.getByRole("button", { name: "Save plugin selections", exact: true });
@@ -681,8 +683,82 @@ test("Plugin save shows the API's reason when it rejects the selections, else th
     await page.getByText("Plugin selections were rejected.", { exact: false }).count(),
     0,
   );
-  const saved = await fixture.request("GET", `/namespaces/${namespace.id}/agents/${agent.id}`);
+  const saved = await fixture.request("GET", agentPath);
   assert.deepEqual(saved.data.plugins ?? {}, {});
+
+  // Two real Agents can share a Configuration and the same saved selections. Substitute only
+  // the response data: before a write it must stop the save; after one it cannot confirm it.
+  const other = await fixture.request("POST", collection, {
+    body: {
+      name: "Other plugin Agent",
+      configurationId: agent.configurationId,
+      executionMode: "dedicated",
+      harnessAuth: null,
+    },
+  });
+  assert.equal(other.status, 201, JSON.stringify(other.body));
+  assert.notEqual(other.data.id, agent.id);
+  for (const field of ["namespaceId", "configurationId", "plugins", "pluginApprovers"]) {
+    assert.deepEqual(other.data[field], saved.data[field]);
+  }
+  const edits = { [pluginId]: { enabled: true } };
+  const editor = page.getByLabel("Plugin selections JSON", { exact: true });
+  const requests = apiRequests(page, fixture.origin);
+  for (const method of ["GET", "PATCH"]) {
+    const expected = method === "GET" ? {} : edits;
+    const otherAgent =
+      method === "GET"
+        ? other.data
+        : await fixture.updateAgent(namespace.id, other.data.id, {
+            configurationId: agent.configurationId,
+            plugins: edits,
+          });
+    await page.route(agentUrl, async (route) => {
+      if (route.request().method() !== method) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const body = await response.json();
+      assert.equal(body.data.id, agent.id);
+      assert.deepEqual(body.data.plugins ?? {}, expected);
+      assert.deepEqual(body.data.plugins, otherAgent.plugins);
+      await route.fulfill({ response, json: { ...body, data: otherAgent } });
+    });
+    await editor.fill(JSON.stringify(edits));
+    await save.click();
+    const message =
+      method === "GET"
+        ? "Plugin selections changed. Reload this Agent before saving again."
+        : "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.";
+    const outcome = page
+      .getByText(message, { exact: true })
+      .or(page.getByText("Plugin selections saved.", { exact: true }));
+    await outcome.waitFor();
+    assert.equal(await outcome.textContent(), message, `${method} returned the other Agent`);
+    assert.equal(await editor.inputValue(), JSON.stringify(edits));
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(
+      await page.getByRole("heading", { name: agent.name, exact: true }).isVisible(),
+      true,
+    );
+    await page.unroute(agentUrl);
+
+    // Explicit reload reconciles the real result: zero PATCHes for the crossed read, exactly
+    // one successful PATCH for the crossed acknowledgement. Neither path retries the change.
+    await page.getByRole("button", { name: "Reload plugin selections", exact: true }).click();
+    await page.getByText("Plugin selections reloaded.", { exact: true }).waitFor();
+    assert.deepEqual(JSON.parse(await editor.inputValue()), expected);
+    assert.deepEqual((await fixture.request("GET", agentPath)).data.plugins ?? {}, expected);
+    assert.deepEqual(
+      pathRequests(requests, "PATCH", agentPath).map(({ body }) => body.plugins),
+      method === "GET" ? [] : [edits],
+    );
+    if (method === "GET") {
+      await page.getByText("Plugin selections JSON", { exact: true }).click();
+    }
+  }
 });
 
 test("Agent sharing shows a rejected write's reason, but generic text after an accepted write", async (t) => {
