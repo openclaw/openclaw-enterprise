@@ -42,7 +42,7 @@ test("older console custom properties are aliases of design tokens, not separate
 
 test("every custom property console.css and channels.css read is defined", () => {
   const defined = new Set(declarations(consoleCss).keys());
-  // Set at runtime on the log pane (agents/logs-view.mjs).
+  // Set at runtime on the log pane (agents/logs-view.mts).
   defined.add("--log-time-width").add("--log-time-ems");
   // Set on the document element by trackVisualViewport (dom.mjs).
   defined.add("--visual-viewport-top").add("--visual-viewport-bottom");
