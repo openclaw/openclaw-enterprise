@@ -12,7 +12,7 @@ import { draftOperationId, validateDraftProjection } from "./prepared-draft-pull
 import { isDeepStrictEqual } from "node:util";
 import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
-import { protectedRepositoryGitInstallationSql } from "../../../egress-proxy/protected-repository-git-installation.ts";
+import { protectedRepositoryGitInstallationSql } from "../../credentials/protected-repository-git-installation.ts";
 
 const pulls = "occ.prepared_repository_draft_pulls";
 type PullRow = {

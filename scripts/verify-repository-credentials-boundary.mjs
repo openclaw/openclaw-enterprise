@@ -135,6 +135,10 @@ const reviewedImports = {
     "node:crypto": ["createCipheriv", "createDecipheriv", "randomBytes", "randomUUID"],
     "node:util": ["isDeepStrictEqual"],
   },
+  // The prepared Git owner and route observation must compare the same recipient fields. No I/O.
+  "drivers/repo/credentials/protected-repository-git-installation.ts": {
+    "@openclaw-enterprise/contracts": ["repositoryGitRecipientFields"],
+  },
   "drivers/repo/github/credentials/prepared-repository-git.ts": {
     "node:util": ["isDeepStrictEqual"],
   },

@@ -327,7 +327,7 @@
     {
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
-        "standing OpenShell execution fetches a missing private Git object past both first expiries and then loses only Git"
+        "broker-absent protected OpenShell execution fetches a missing private Git object past both first expiries and then loses only Git"
       ]
     },
     {

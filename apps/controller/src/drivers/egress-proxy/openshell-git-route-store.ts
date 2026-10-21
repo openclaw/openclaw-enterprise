@@ -1,4 +1,4 @@
-import { protectedRepositoryGitInstallationSql } from "./protected-repository-git-installation.ts";
+import { protectedRepositoryGitInstallationSql } from "../repo/credentials/protected-repository-git-installation.ts";
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import {
   repositoryWithdrawalStateSql,

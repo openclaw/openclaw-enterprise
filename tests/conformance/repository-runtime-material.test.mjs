@@ -6,7 +6,7 @@ import {
   kubernetesNamespaceName,
 } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { ControllerWorker } from "../../apps/controller/src/worker.ts";
-import { OpenShellCredentialProxyDriver } from "../../apps/controller/src/drivers/egress-proxy/openshell.ts";
+import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import { staticEgressFixture } from "../helpers/static-egress.mjs";
 import { SETUP_WRAPPER_COMMAND } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { pluginRuntimeSpecForRevision } from "../../apps/controller/src/drivers/compute/plugin-runtime.ts";
@@ -1548,29 +1548,31 @@ test("protected execution cannot acquire the anonymous reader or use it as a fal
   assert.equal(f.deployments().length, 0);
 });
 
+function computeAfterProxyCutover(fixture) {
+  const { owner } = protectedRepositoryGitRelease(() =>
+    assert.fail("Reader withdrawal must never use protected repository access"),
+  );
+  const driver = new KubernetesComputeDriver(fixture.driver.options, { protectedDriver: owner });
+  driver.apiClients = Promise.resolve(fixture.clients);
+  return driver;
+}
+
 // Exercise Worker.process and the shipping Drivers. Only state, IAM decisions, the queue and
 // the Kubernetes transport are local fixtures; a successful prepare alone missed this cutover.
 test("the owning active reconcile withdraws its admitted reader across the Credential Proxy cutoff", async () => {
-  const { f, revision, driver, admission } = await publicReaderAdmission();
+  const { f, revision, driver: ordinary, admission } = await publicReaderAdmission();
   revision.compute.admission = admission;
   const context = f.context(undefined);
-  await driver.prepareRevision(revision, context);
+  await ordinary.prepareRevision(revision, context);
   f.markReady();
-  await driver.activateRevision(revision, context);
+  await ordinary.activateRevision(revision, context);
   const deployment = f.consumer();
   const policy = publicReaderPolicies(f)[0];
   assert.ok(policy.metadata.uid && deployment.metadata.uid);
   f.setPods([workloadPod(deployment, f.namespace, "selected-agent")]);
 
-  driver.options.network.publicGithubRead = undefined;
-  driver.proxyDriver = new OpenShellCredentialProxyDriver(
-    { middlewareName: "oce-authority", authorityScope: "execution" },
-    {
-      id: "openshell-egress",
-      backend: { id: "test-gateway" },
-      sandbox: { harnessResource: () => assert.fail("must not use the protected Sandbox") },
-    },
-  );
+  ordinary.options.network.publicGithubRead = undefined;
+  const driver = computeAfterProxyCutover(f);
   assert.throws(() => driver.validateExecutionAdmission(revision), /exact paired Compute release/);
 
   const legacy = structuredClone(revision);
@@ -1747,12 +1749,12 @@ test("API-admitted protected credential-free metadata projects no inference tool
     },
   });
   const r = f.revision;
-  assert.deepEqual(r.executionAdmission, { version: 2, mode: "protected" });
+  assert.deepEqual(r.executionAdmission, { version: 3, mode: "protected" });
+  assert.deepEqual(r.egressPlan.driver, f.installedDriver.ref);
   assert.equal(r.egressPlan.routes[0].binding.grant.kind, "credential_free_repository_metadata");
   const { driver: ordinary, admission } = await publicReaderAdmission();
   const driver = new KubernetesComputeDriver(ordinary.options, {
-    sandboxDriver: f.sandboxDriver,
-    proxyDriver: f.egress,
+    protectedDriver: f.installedDriver,
   });
   // The production Compute release gate and the exact projection prepareRevisionWorkloads uses.
   driver.validateRevisionExecution(r, { currentEgressInstallation: async () => f.installation });
@@ -1803,10 +1805,10 @@ test("withdrawing a selected reader narrows access and stops only its revision",
     assert.equal(publicReaderPolicies(f).length, 1);
     f.driver.options.network.publicGithubRead = replacement;
     // Selecting Credential Proxy cannot convert the old grant, or block withdrawal of its owned workload.
+    const driver = replacement === undefined ? f.driver : computeAfterProxyCutover(f);
     if (replacement !== undefined) {
-      f.driver.proxyDriver = { id: "selected-after-reader-admission" };
       await assert.rejects(
-        f.driver.prepareRevision(successor, context),
+        driver.prepareRevision(successor, context),
         /exact paired Compute release/,
       );
     }
@@ -1852,7 +1854,7 @@ test("withdrawing a selected reader narrows access and stops only its revision",
       );
       f.setPods([successorPod]);
     });
-    const withdrawal = f.driver.prepareRevision(f.revision, context);
+    const withdrawal = driver.prepareRevision(f.revision, context);
     await reached;
     assert.equal(
       observed,
@@ -1863,7 +1865,7 @@ test("withdrawing a selected reader narrows access and stops only its revision",
     await assert.rejects(withdrawal, (error) => {
       assert.match(error.message, /reader peer was withdrawn/);
       assert.equal(
-        f.driver.describePrepareRevisionFailure(error).code,
+        driver.describePrepareRevisionFailure(error).code,
         "KUBERNETES_CONFIGURATION_INVALID",
       );
       return true;
@@ -1886,14 +1888,8 @@ test("withdrawing a selected reader narrows access and stops only its revision",
       }
     }
     assert.equal(removedProjection, 1);
-    await assert.rejects(
-      f.driver.activateRevision(f.revision, context),
-      /reader peer was withdrawn/,
-    );
-    await assert.rejects(
-      f.driver.prepareRevision(f.revision, context),
-      /reader peer was withdrawn/,
-    );
+    await assert.rejects(driver.activateRevision(f.revision, context), /reader peer was withdrawn/);
+    await assert.rejects(driver.prepareRevision(f.revision, context), /reader peer was withdrawn/);
     assert.equal(publicReaderPolicies(f).length, 0);
     assert.ok(!f.deployments().some(({ metadata }) => metadata.name === selected.metadata.name));
     assert.ok(

@@ -62,27 +62,24 @@ supervisor and no-bypass networking separately.
 `packages/occ/src/index.ts:admitStaticEgressSource`,
 `packages/occ/src/index.ts:admitProxyPlan`
 
-New protected sources store a closed live/static descriptor after source/Secret
-permission checks and candidate validation. Existing sources require explicit
-source-update opt-in. For a new protected execution, OCC records version 3 admission
-and the selected Driver ID, implementation and configuration digest in the plan.
-Sandbox and Credential Proxy are separate interfaces of that one registered Driver.
-The API checks the registration object itself. A worker loading the same installation
-compares its durable reference. Neither check establishes that a Sandbox applied the plan.
-The plan also freezes the execution, source generation, grant and routes. Empty routes mean deny all.
+New protected sources store a closed live/static descriptor after source and Secret
+permission checks and candidate validation. Existing sources opt in through an explicit update.
 
-Version 2 remains readable with its original capability IDs. Only the bundled Driver
-recognizes those historical protected plans, and only when releasing a stored revision
-or settling its custody. New unprotected revisions retain version 2.
+Version 3 binds Sandbox and Credential Proxy to one registered Driver. The plan records
+its ID, implementation and configuration digest. The API checks the registration object.
+Workers compare its durable reference.
+Sandbox enforcement needs separate evidence. The plan fixes execution, source generation,
+grant and routes. Empty routes deny all.
+
+Unprotected revisions retain version 2. Only the bundled Driver recognizes historical
+protected plans by their original capability IDs, for stored release or custody settlement.
 
 `packages/contracts/src/credential-proxy.ts:assertExecutionReleaseAllowed`,
 `apps/controller/src/worker.ts:resolveRevisionSecretContext`
 
-OCC calls Compute's validator before admitting the revision. The worker and Compute
-check the admitted decision before launch. PostgreSQL refuses an unknown decision or a
-mix of version 2 and version 3 fields. Older workers refuse the version 3 admission.
-Upgrade all writers before admitting an execution that requires the new contract.
-Qualification must exercise both release and installed deny-all behavior.
+Compute validates admission for OCC, then rechecks it with the worker before launch.
+PostgreSQL rejects unknown decisions and mixed v2/v3 fields. Upgrade all writers before
+admitting v3, which older workers refuse. Qualify both release and installed deny-all behavior.
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:prepareRevision`,
 `apps/controller/src/drivers/egress-proxy/openshell.ts:attachmentStatus`
@@ -114,7 +111,7 @@ configuration. The local fingerprint does not compute a canonical supplier hash
 or attest the supervisor. Request authorization still runs before Secret access
 and before send.
 
-`apps/controller/src/drivers/compute/egress-enrollment.ts:HARNESS_EGRESS_ENROLLMENT_HELPER`,
+`apps/controller/src/drivers/compute/harness-egress-enrollment.ts:HARNESS_EGRESS_ENROLLMENT_HELPER`,
 `apps/controller/src/drivers/sandbox/openshell.ts:enrollHarness`
 
 Compute adds `OPENCLAW_EGRESS_ENROLLMENT_REVISION_ID` from the immutable admitted

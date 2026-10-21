@@ -237,7 +237,8 @@ test(
         command: ["node", script],
         workspaceMounts: [],
         credentialAttachments: [],
-        proxyWiring: f.attachment,
+        // Provision takes the Proxy's wiring. Observation below takes the full installed policy.
+        proxyWiring: await f.egress.configureRevision({ ...f.context, signal }),
         labels: { "openclaw.dev/revision": f.revision.id },
         files: [],
         environment: Object.entries(environment).map(([name, value]) => ({ name, value })),
@@ -250,7 +251,10 @@ test(
         ...enrollmentContext,
         revision: { ...f.revision, harness: { ...f.revision.harness, id: "openclaw" } },
       }),
-      { code: "SANDBOX_HARNESS_UNSUPPORTED" },
+      {
+        code: "SANDBOX_HARNESS_UNSUPPORTED",
+        message: "Protected inference startup enrollment requires the dedicated Codex Harness.",
+      },
     );
     // Consume the same independently verified adapter observation that Compute
     // commits. State is real; this test does not manufacture an installation receipt.

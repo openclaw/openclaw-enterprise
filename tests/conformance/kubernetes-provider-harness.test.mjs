@@ -14,12 +14,14 @@ import { openAiStaticProvider } from "../../apps/controller/src/drivers/egress-p
 import {
   HARNESS_EGRESS_ENROLLMENT_HELPER,
   HARNESS_EGRESS_ENROLLMENT_PATH,
-} from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
+} from "../../apps/controller/src/drivers/compute/harness-egress-enrollment.ts";
+import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { AGENT_RUNTIME_ENTRYPOINT } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import test from "node:test";
 import { admitLoggingConfiguration } from "../../packages/contracts/src/index.ts";
 import {
   DependencyUnavailableError,
+  InstalledDriver,
   TransientDependencyError,
 } from "../../packages/occ/src/index.ts";
 import { providerEndpointFixture } from "../fixtures/kubernetes-provider-endpoint.mjs";
@@ -801,10 +803,8 @@ test("provider Harness verified endpoint trust is projected before rollout and i
 
 test("provider Harness protected execution is released only on current signed installation and warmth", async (t) => {
   const fixture = await preparedEndpoint();
-  const { driver, revision, provisions, objects, save, core } = fixture;
+  const { revision, provisions, objects, save, core } = fixture;
   let harnessAnswer = { state: "serving" };
-  fixture.sandbox.harnessStatus = async () => harnessAnswer;
-  driver.credentialGatewayDriver = { id: "credential-gateway", capability: "credential_gateway" };
   // A separately admitted protected revision waits for the installation commit.
   // These Driver dependencies expose ordering; actual authenticated release and
   // first model-request behavior are covered by the enrollment integration test.
@@ -852,12 +852,59 @@ test("provider Harness protected execution is released only on current signed in
     },
   };
   const grant = openAiStaticProvider.normalizeGrant(["gpt-5"]);
+  const sandbox = {
+    ...fixture.sandbox,
+    capability: "sandbox",
+    facets: ["networking"],
+    cleanup: assert.fail,
+    enrollHarness: assert.fail,
+    harnessStatus: async () => harnessAnswer,
+  };
+  const proxy = {
+    id: sandbox.id,
+    implementation: sandbox.implementation,
+    capability: "credential_proxy",
+    sourceControl: {
+      sender: source.egress.sender,
+      resolver: source.egress.resolver,
+      providers: [openAiStaticProvider],
+      assertAvailable: assert.fail,
+    },
+    async configureRevision({ plan }) {
+      return { plan, configuration: { middleware: "protected-attachment" } };
+    },
+    async wiringStatus() {
+      events.push("observe");
+      return observation;
+    },
+    async verifyInstallation() {
+      events.push("verify-current");
+      return current;
+    },
+    withdrawBinding: assert.fail,
+    removeRevision: assert.fail,
+  };
+  const protectedDriver = new InstalledDriver(
+    { id: sandbox.id, implementation: sandbox.implementation, configuration: {} },
+    { capabilities: { sandbox, credential_proxy: proxy } },
+  );
+  const driver = new KubernetesComputeDriver(fixture.driver.options, {
+    protectedDriver,
+    nodeEnrollment: fixture.driver.nodeEnrollment,
+    credentialGatewayDriver: {
+      id: source.driverId,
+      capability: "credential_gateway",
+      listSourceTypes: async () => [openAiStaticProvider.sourceType],
+    },
+  });
+  driver.apiClients = Promise.resolve(fixture.clients);
   const plan = {
     id: "00000000-0000-4000-8000-000000000548",
     generation: 1,
     execution,
-    sandboxDriverId: fixture.sandbox.id,
-    egressDriverId: "protected-egress",
+    driver: protectedDriver.ref,
+    sandboxDriverId: sandbox.id,
+    egressDriverId: proxy.id,
     routes: openAiStaticProvider.routes(source, {
       binding: { id: "00000000-0000-4000-8000-000000000549", generation: 1 },
       execution,
@@ -877,7 +924,7 @@ test("provider Harness protected execution is released only on current signed in
   const protectedRevision = {
     ...revision,
     id: protectedId,
-    executionAdmission: { version: 2, mode: "protected" },
+    executionAdmission: { version: 3, mode: "protected" },
     revision: revision.revision + 1,
     harnessAuth: protectedAuth,
     egressPlan: plan,
@@ -885,7 +932,6 @@ test("provider Harness protected execution is released only on current signed in
       { sourceId: source.id, credentialGatewayId: source.driverId, sourceType: source.type },
     ],
   };
-  const attachment = { plan, configuration: { middleware: "protected-attachment" } };
   const installed = {
     plan,
     sandboxId: "installed-sandbox",
@@ -895,31 +941,17 @@ test("provider Harness protected execution is released only on current signed in
       instanceId: "current-instance",
       configurationId: "current-configuration",
       peerKeyId: "enrolled-exchange-key",
+      authorityScope: "execution",
+      policyHash: "installed-protected-policy",
     },
   };
   const events = [];
   let observation = installed;
   let current = true;
-  driver.credentialGatewayDriver.listSourceTypes = async () => [openAiStaticProvider.sourceType];
-  driver.proxyDriver = {
-    id: plan.egressDriverId,
-    implementation: "openshell",
-    async configureRevision() {
-      return attachment;
-    },
-    async wiringStatus() {
-      events.push("observe");
-      return observation;
-    },
-    async verifyInstallation() {
-      events.push("verify-current");
-      return current;
-    },
-  };
   let enrollmentRequirements;
   let releaseByCompute;
   const released = new DependencyUnavailableError("stop after authenticated enrollment boundary");
-  fixture.sandbox.enrollHarness = async (context, receipt, release) => {
+  sandbox.enrollHarness = async (context, receipt, release) => {
     releaseByCompute = release;
     assert.equal(context.transportToken, "test-transport");
     assert.equal(context.revision, protectedRevision);
@@ -975,10 +1007,20 @@ test("provider Harness protected execution is released only on current signed in
     }),
     (error) => error === commitFailure,
   );
-  assert.deepEqual(events.splice(0), ["observe", "commit-rejected"]);
+  assert.deepEqual(events.splice(0), ["observe", "verify-current", "commit-rejected"]);
   current = false;
   assert.equal((await driver.prepareRevision(protectedRevision, protectedContext)).ready, false);
-  assert.deepEqual(events.splice(0), ["observe", "commit", "verify-current"]);
+  assert.deepEqual(events.splice(0), ["observe", "verify-current"]);
+  current = true;
+  const changedAtCommit = await driver.prepareRevision(protectedRevision, {
+    ...protectedContext,
+    async recordEgressInstallation() {
+      events.push("commit");
+      current = false;
+    },
+  });
+  assert.equal(changedAtCommit.ready, false);
+  assert.deepEqual(events.splice(0), ["observe", "verify-current", "commit", "verify-current"]);
   current = true;
   const entered = Promise.withResolvers();
   const commit = Promise.withResolvers();
@@ -993,11 +1035,12 @@ test("provider Harness protected execution is released only on current signed in
   });
   // Await both branches so an earlier preparation failure cannot leave the test hanging.
   await Promise.race([entered.promise, preparing]);
-  assert.deepEqual(events, ["observe", "commit-start"]);
+  assert.deepEqual(events, ["observe", "verify-current", "commit-start"]);
   commit.resolve();
   await assert.rejects(preparing, (error) => error === released);
   assert.deepEqual(events.splice(0), [
     "observe",
+    "verify-current",
     "commit-start",
     "commit-finished",
     "verify-current",
@@ -1169,10 +1212,9 @@ test("provider Harness protected execution is released only on current signed in
       seedNode(zero);
       const zeroInstalled = { ...installed, plan: zeroPlan };
       observation = zeroInstalled;
-      driver.proxyDriver.configureRevision = async ({ plan }) => ({ ...attachment, plan });
       let zeroRequirements;
       let authorizeZero;
-      fixture.sandbox.enrollHarness = async ({ requirements }, receipt, release) => {
+      sandbox.enrollHarness = async ({ requirements }, receipt, release) => {
         assert.equal(receipt, zeroInstalled);
         zeroRequirements = requirements;
         authorizeZero = release;
@@ -1268,14 +1310,13 @@ test("provider Harness protected execution is released only on current signed in
           return warmth === "ignore-abort" ? new Promise(() => {}) : warmth;
         },
       };
-      driver.proxyDriver.sourceControl = {
-        sender: installed.sender,
-        resolver: { id: "resolver", generation: 1 },
+      proxy.sourceControl = {
+        ...proxy.sourceControl,
         preparedGitHub: lifecycle,
       };
       observation = receipt;
       let expireDuringRelease = false;
-      fixture.sandbox.enrollHarness = async (context, current, release) => {
+      sandbox.enrollHarness = async (context, current, release) => {
         assert.equal(current, receipt);
         assert.ok(
           context.requirements.environment.some(

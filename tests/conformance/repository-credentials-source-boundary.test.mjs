@@ -191,6 +191,12 @@ test("credential source boundary rejects new raw capabilities in the real source
       "composition/repository-credentials/boundary-regression.ts",
     ],
     [
+      "the shared protected Git installation predicate cannot become a sender",
+      'import { request } from "node:https";',
+      /unreviewed runtime import from node:https/,
+      "drivers/repo/credentials/protected-repository-git-installation.ts",
+    ],
+    [
       "new Backend source is scanned",
       'import { request } from "node:https";',
       /unreviewed runtime import from node:https/,

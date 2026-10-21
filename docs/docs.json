@@ -411,6 +411,10 @@
                         "label": "OpenShell Git"
                       },
                       {
+                        "page": "reference/repository-credentials/protected-openshell-git",
+                        "label": "Protected Git with OpenShell"
+                      },
+                      {
                         "page": "reference/repository-credentials/openshell-git-refusals",
                         "label": "OpenShell Git Refusals"
                       },

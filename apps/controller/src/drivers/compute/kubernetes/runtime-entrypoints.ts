@@ -8,7 +8,7 @@ import {
 
 import { PLUGIN_RUNTIME_TRANSLATOR_SOURCE } from "../../plugin/runtime-translator.ts";
 import { nodeProgramArguments } from "../node-program.ts";
-import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../egress-enrollment.ts";
+import { HARNESS_EGRESS_ENROLLMENT_HELPER } from "../harness-egress-enrollment.ts";
 import { gatewayStateMigrationHelper, startupPhaseHelper } from "../runtime-startup.ts";
 
 // Match the pinned OpenClaw service stop budget: 315s drain, 10s cleanup,
