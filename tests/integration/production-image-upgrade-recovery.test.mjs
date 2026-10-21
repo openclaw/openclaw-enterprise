@@ -270,8 +270,12 @@ async function fakeCommand(root, { command: tool, args, cwd }, io) {
     } else if (args[0] === "get") {
       out(readFileSync(join(root, "live-values"), "utf8"));
     } else if (args[0] === "template" && state.realChart) {
-      const rendered = await execute(realHelm, args, { cwd });
+      // Like the real binary, a failed render shows helm's own stderr and status.
+      const rendered = await spawnResult(realHelm, args, { cwd });
       io.stderr(rendered.stderr);
+      if (rendered.status !== 0) {
+        return fail(rendered.status ?? 1);
+      }
       out(rendered.stdout);
     } else if (args[0] === "template") {
       out(await standInChart(fileArg("--values")));
@@ -814,7 +818,6 @@ async function fixture(
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), "occ-upgrade-recovery-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const bin = join(directory, "bin");
   await mkdir(bin);
   const server = await startCommandServer({
@@ -822,6 +825,8 @@ async function fixture(
     handle: ({ command, args, cwd, io }) => fakeCommand(directory, { command, args, cwd }, io),
   });
   t.after(() => server.close());
+  // Hooks run in order: stop answering commands before the directory goes.
+  t.after(() => rm(directory, { recursive: true, force: true }));
   // Pair cases also answer node, to stand in for the image-pair probe.
   for (const command of ["helm", "kubectl", "occ", ...(simulatePair ? ["node"] : [])]) {
     const { port, clientToken, serverToken } = server;
