@@ -7551,6 +7551,8 @@ for (const [id, state, name] of [
   ["policyDenialsMissingMetadata", "missingMetadata", "Policy denial with unknown metadata"],
   ["policyDenialsFailed", "failed", "Policy application unconfirmed"],
   ["policyDenialsApplyRejected", "applyRejected", "Policy saved but live application rejected"],
+  ["policyIncompletePreview", "incompletePreview", "Policy preview omits the validated rules"],
+  ["policyUnconfirmedSave", "unconfirmedSave", "Policy save returns different rules than reviewed"],
   ["policyDenialsEditDenied", "editDenied", "Independent policy permission denied"],
   ["policyDenialsCeilingDenied", "ceilingDenied", "Policy addition exceeds the delegation ceiling"],
   [
@@ -7628,6 +7630,21 @@ for (const [id, state, name] of [
           steps: [
             "Review a suggestion, then choose Review changes and Save and apply to current revision.",
             "Confirm the alert states the policy was saved but application was not confirmed. The saved version increases and the rule remains saved; do not infer live enforcement.",
+          ],
+        }
+      : {}),
+    ...(state === "incompletePreview"
+      ? {
+          steps: [
+            "Choose Review suggestion, then Review changes. The preview omits the rules; your proposal stays editable and Save is unavailable.",
+          ],
+        }
+      : {}),
+    ...(state === "unconfirmedSave"
+      ? {
+          steps: [
+            "Review a suggestion, then choose Review changes and Save and apply to current revision.",
+            "The save response omits the rule. Confirm that live application was not requested, then choose Refresh policy to see the rule that was saved.",
           ],
         }
       : {}),

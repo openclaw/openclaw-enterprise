@@ -7,17 +7,20 @@ import type { Principal, Restriction } from "../../packages/contracts/src/index.
 
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import {
+  apiRequests,
   detailUrl,
   fileBrowser,
   login,
   nativeValues,
   newPage,
+  pathRequests,
   waitForEnabled,
 } from "./console-agents-browser-helpers.mjs";
 import {
   createRepositoryLaunchFixture,
   openAdvancedSettings,
 } from "./console-agents-test-support.mjs";
+import { createPolicyConsole } from "./console-sandbox-policy-fixture.ts";
 
 // Every test opens its own context in one Chromium per file.
 const browser = fileBrowser();
@@ -402,3 +405,72 @@ test("a refused workspace file save names Agent operate", async (t) => {
     .waitFor();
   assert.equal(await editor.inputValue(), "after");
 });
+
+for (const reply of ["an incomplete preview", "a save with different rules"] as const) {
+  test(`Agent policy does not apply after ${reply}`, async (t) => {
+    const grant = {
+      id: "python-docs",
+      binary: "/usr/bin/python3.11",
+      host: "example.org",
+      ports: [{ from: 443, to: 443 }],
+    };
+    const { fixture, namespace, agent, base } = await createPolicyConsole(t, [grant]);
+    const seeded = await fixture.request("PUT", base, {
+      body: { expectedVersion: 1, additions: [grant] },
+    });
+    assert.equal(seeded.status, 200);
+    const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+    const { page } = await newPage(t, fixture, { browser });
+    const requests = apiRequests(page, fixture.origin);
+    const preview = reply === "an incomplete preview";
+    const url = detailUrl(fixture, namespace.id, agent.id, revision.id, "policy");
+    await login(page, fixture, url.href);
+    await page.getByRole("button", { name: "Remove Network rules 1", exact: true }).click();
+
+    // The operator removes the grant. Let the controller validate or commit that removal, then
+    // deliver an incomplete preview, or a well-formed save response still listing the old grant.
+    await page.route(fixture.origin + base + (preview ? "/validate" : ""), async (route) => {
+      if (route.request().method() !== (preview ? "POST" : "PUT")) {
+        return route.continue();
+      }
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      const { data, meta } = await response.json();
+      const actual = preview ? data.data : data;
+      assert.deepEqual(actual.additions, []);
+      const changed = preview ? { success: true, data: {} } : { ...actual, additions: [grant] };
+      await route.fulfill({ response, json: { data: changed, meta } });
+    });
+    const review = page.getByRole("button", { name: "Review changes", exact: true });
+    await review.click();
+    if (preview) {
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "could not read the validated rules" })
+        .waitFor();
+      assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 0);
+      assert.equal(pathRequests(requests, "PUT", base).length, 0);
+      assert.equal(await review.isEnabled(), true);
+    } else {
+      await page.getByRole("button", { name: "Save and apply to current revision" }).click();
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "could not confirm the saved rules" })
+        .waitFor();
+      assert.equal(pathRequests(requests, "PUT", base).length, 1);
+      assert.equal(await review.count(), 0);
+      assert.equal(
+        await page.getByRole("button", { name: "Apply saved policy to current revision" }).count(),
+        0,
+      );
+      await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+      await page.getByText(/Policy v3 reloaded/).waitFor();
+    }
+
+    const { policy } = (await fixture.request("GET", base)).data;
+    assert.equal(pathRequests(requests, "POST", base + "/apply").length, 0);
+    assert.equal(policy.application, undefined);
+    assert.equal(policy.version, preview ? 2 : 3);
+    assert.deepEqual(policy.additions, preview ? [grant] : []);
+  });
+}

@@ -14,6 +14,7 @@ export {
   requireConfiguration,
 } from "./configuration-definition.ts";
 export type { SandboxPolicyDecision } from "./sandbox-policy.ts";
+export type { SandboxPolicyViewWire } from "./api/sandbox-policy.ts";
 export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandbox-policy.ts";
 import type {
   SandboxNetworkGrant,

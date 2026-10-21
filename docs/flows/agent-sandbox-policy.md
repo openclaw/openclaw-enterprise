@@ -126,22 +126,25 @@ Driver projects representable native chunks into untrusted suggestions. The
 console editor submits canonical additions through the same mutation path;
 native draft approval cannot bypass OCC admission.
 
-`console/driver-configurations.mjs:renderAgentDriverConfigurations` discovers
-sections and selects resource-owner controls. `console/configuration-fields.mjs`
+`console/driver-configurations.mts:renderAgentDriverConfigurations` discovers
+sections and selects resource-owner controls. `console/configuration-fields.mts`
 renders schema fields and JSON fallback, with safe field/root diagnostics.
-`console/agents/sandbox-policy.mjs:renderPolicy` keeps proposed rules local until
-preview, review, and save. Superseded preview/read responses cannot overwrite a
-newer draft. Policy reads use a separate request sequence: an earlier response
+`console/agents/sandbox-policy.mts:renderPolicy` keeps proposed rules local until
+preview. Review shows the rules the controller validated, and Save sends those
+rules with the reviewed policy version. Superseded preview and read responses
+cannot overwrite a newer draft. Policy reads use a separate sequence: an earlier response
 cannot invalidate a newer request. A pending application re-arms polling after
 the latest read, including a response discarded after a draft edit.
-Failed previews retain the draft and do not mark it saved. The combined save-and-apply action waits for a successful save,
-then sends that returned policy version and the exact selected running revision
-to the apply route. Save alone leaves running enforcement unchanged. Applying a
+An unreadable preview retains the draft for another review. Save and apply checks
+that the save response names this policy, Agent, Namespace, next version, and
+the rules shown in review before requesting application to the selected revision.
+An unconfirmed save locks changes until a successful policy refresh.
+Save alone leaves running enforcement unchanged. Applying a
 previously saved policy is disabled while local edits are unsaved. If application
 fails after saving, the alert identifies the saved version rather than implying
 that the entire operation was rejected.
 
-`console/agents/sandbox-policy.mjs:mutate` displays rejected saves as focused
+`console/agents/sandbox-policy.mts:mutate` displays rejected saves as focused
 alerts and scrolls the reason into view after rendering. Ceiling rejection
 preserves the attempted additions for correction without changing saved state.
 `console/navigation.mts:createNavigation` admits the `policy` tab in login

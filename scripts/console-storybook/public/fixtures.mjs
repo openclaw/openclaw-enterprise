@@ -1414,7 +1414,10 @@ export function installFixture(scenario, evidence) {
               },
             });
           }
-          return response({ success: true, data: { additions: body.additions } });
+          return response({
+            success: true,
+            data: scenario.policyState === "incompletePreview" ? {} : { additions: body.additions },
+          });
         }
         if (scenario.policyState && suffix === "/sandbox-policy/networking" && method === "GET") {
           if (scenario.policyState === "ownerDenied") {
@@ -1493,7 +1496,11 @@ export function installFixture(scenario, evidence) {
             additions: body.additions,
           };
           delete sandboxPolicy.application;
-          return response(sandboxPolicy);
+          return response(
+            scenario.policyState === "unconfirmedSave"
+              ? { ...sandboxPolicy, additions: [] }
+              : sandboxPolicy,
+          );
         }
         if (
           scenario.policyState &&

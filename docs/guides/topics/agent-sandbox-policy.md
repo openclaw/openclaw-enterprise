@@ -16,12 +16,15 @@ observed denials. Policy reads and changes have independent permissions; see the
    **Remove Network rules** to edit additions. These changes stay local. Review the executable path, hostname, and complete
    port scope against the **Installation delegation ceiling**, then select
    **Review changes**. The preview shows field errors without saving or applying.
-   Correct errors and review again. **Back to editing** preserves your proposal.
+   Review the rules the controller validated. If the Console cannot read them,
+   your proposal stays editable. **Back to editing** also preserves your proposal.
 4. Choose **Save** to persist the policy without changing the current revision,
    or **Save and apply to current revision** to save and request live application
    to the selected running revision. Wait for `applied` and a provider version
    before retrying the original tool action. A successful tool result provides
    the final execution evidence.
+   If the Console cannot confirm which rules were saved, select **Refresh policy**
+   and inspect the saved version before deciding whether to apply it.
 5. To apply a policy saved earlier, select **Apply saved policy to current
    revision**. This control is unavailable while your proposal has unsaved edits.
    When live application is unsupported, use **Deploy new version** explicitly.

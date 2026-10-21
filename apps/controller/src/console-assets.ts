@@ -47,7 +47,7 @@ const CONSOLE_ASSETS = new Map([
       "agents/collection.mts",
       "agents/lifecycle-confirmation.mts",
       "agents/logs.mts",
-      "agents/sandbox-policy.mjs",
+      "agents/sandbox-policy.mts",
       "agents/logs-view.mts",
       "agents/presets.mjs",
       "agents/create.mjs",
