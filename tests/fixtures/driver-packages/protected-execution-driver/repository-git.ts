@@ -115,6 +115,7 @@ export function createDriver(options: {
   let installed: Material | InstallationMaterial | undefined;
   let apiUrl: URL;
   let checkedCapability = false;
+  let authorization: "online-request" | undefined;
   const gitMarker = "cedar-workload-marker";
   const basic = (v: string) => "Basic " + Buffer.from("x-access-token:" + v).toString("base64");
   const decisions: typeof peer.decisions = [];
@@ -144,6 +145,7 @@ export function createDriver(options: {
       assert.equal(plan.repositoryGit.bindings[0]?.profile, "github-installation");
       assert.equal(checkedCapability, true, "release requires the installation delivery profile");
     }
+    assert.equal(plan.repositoryGitAuthorization, authorization);
     const execution = plan.execution.executionId;
     status ??= {
       plan,
@@ -154,11 +156,12 @@ export function createDriver(options: {
         authorityScope: "execution",
         instanceId: randomUUID(),
         configurationId: plan.id,
-        peerKeyId,
+        ...(authorization ? {} : { peerKeyId }),
         policyHash: hash(JSON.stringify(plan)),
         repositoryGitRecipient: {
           attachmentEpoch: execution,
           providerId: sender.id,
+          ...(authorization && { authorization }),
           processInstanceId: randomUUID(),
           networkInstanceId: url.origin,
           ...(installationApiOrigin && {
@@ -284,7 +287,7 @@ export function createDriver(options: {
           const confirmation = { route, preparationAttemptId, materialVersion };
           const allowInstallation = (operation: InstallationOperation, installationId: string) => {
             const authorize = () =>
-              host.githubInstallation!.authorize(
+              (authorization ? host.online : host).githubInstallation!.authorize(
                 {
                   ...q,
                   scope: "github-installation",
@@ -316,18 +319,22 @@ export function createDriver(options: {
                 signal(),
               );
           decisions.push({ operation, decision });
-          if (decision.kind !== "permit") {
+          if (decision.kind === "denied") {
             res.writeHead(403).end();
             return;
           }
-          const { sendStartBy } = decision;
+          const online = decision.kind === "allow";
+          assert.equal(online, authorization === "online-request");
+          const deadline = online
+            ? { replyBy: decision.replyBy }
+            : { sendStartBy: decision.sendStartBy };
           assert.deepEqual(decision, {
-            kind: "permit",
+            kind: online ? "allow" : "permit",
             exchangeId,
             requestDigestSha256,
             preparationAttemptId,
             materialVersion,
-            sendStartBy,
+            ...deadline,
             ...(broad && {
               scope: "github-installation",
               operation,
@@ -335,14 +342,15 @@ export function createDriver(options: {
               fence: route.fence,
             }),
           });
-          const until = Date.parse(sendStartBy);
-          assert.ok(until <= Date.parse(deadlineAt));
-          // Keep the original send cutoff across scheduling and TLS setup. Never renew or retry it.
+          const until = Date.parse(online ? decision.replyBy : decision.sendStartBy);
+          assert.ok(Date.now() < until && until <= Date.parse(deadlineAt));
+          // An online allow ends at the decision boundary. Only exact dispatch promises a start cutoff.
           const monoUntil = performance.now() + (until - Date.now());
           const current = () =>
-            installed === m && Date.now() < until && performance.now() < monoUntil;
-          const beforeSend = peer.beforeSend;
-          await beforeSend?.("connect", decision, deadlineAt);
+            installed === m && (online || (Date.now() < until && performance.now() < monoUntil));
+          const beforeSend = (stage: "connect" | "request") =>
+            !online && peer.beforeSend?.(stage, decision, deadlineAt);
+          await beforeSend("connect");
           if (!current()) {
             res.writeHead(403).end();
             return;
@@ -371,7 +379,7 @@ export function createDriver(options: {
             // Expiry during the handshake can leave a connection, but sends no credential or request.
             out.once("socket", (socket) =>
               socket.once("secureConnect", () => {
-                void Promise.resolve(beforeSend?.("request", decision, deadlineAt))
+                void Promise.resolve(beforeSend("request"))
                   .then(() => {
                     if (!current()) {
                       resolve(undefined);
@@ -406,8 +414,16 @@ export function createDriver(options: {
       clientHeader: "Authorization: " + clientSecret,
       decisions,
       async install() {
-        const selected = installationApiOrigin ? host.githubInstallation! : host;
+        const sender = authorization ? host.online : host;
+        const selected = installationApiOrigin ? sender.githubInstallation! : sender;
         if (installationApiOrigin) {
+          const wrong = (authorization ? host : host.online).githubInstallation!;
+          assert.deepEqual(
+            await wrong.readMaterial(route!, signal()),
+            { absent: "unprepared" },
+            "the other sender guarantee cannot receive this credential, including online on v4",
+          );
+
           const legacy = await host.readMaterial(route!, signal());
           assert.ok(
             !legacy || !("value" in legacy),
@@ -529,7 +545,21 @@ export function createDriver(options: {
             // The API registration knows only the configured peer and its public TLS certificate.
             const res = await exchange(capabilityUrl, { signal });
             assert.equal(res.statusCode, 200);
-            checkedCapability = (await json(res)) === profile;
+            const confirmed = await json(res);
+            if (
+              typeof confirmed === "object" &&
+              confirmed !== null &&
+              "profile" in confirmed &&
+              confirmed.profile === profile &&
+              "authorization" in confirmed &&
+              confirmed.authorization === "online-request"
+            ) {
+              authorization = "online-request";
+              checkedCapability = true;
+              return { profile, authorization };
+            }
+            authorization = undefined;
+            checkedCapability = confirmed === profile;
             return checkedCapability && profile === "github_installation" ? profile : undefined;
           },
         },

@@ -55,9 +55,19 @@ test(
   externalGitJourney("installation"),
 );
 
+test(
+  "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal",
+  journeyOptions,
+  externalGitJourney("online-installation"),
+);
+
 // Public discovery has its own listener. It receives no sender, installation or protected authority.
-function createCapabilityPeer(tls: ServerOptions, profile: RepositoryGitDeliveryProfile) {
-  const capability = { profile, requests: 0 };
+function createCapabilityPeer(
+  tls: ServerOptions,
+  profile: RepositoryGitDeliveryProfile,
+  online: boolean,
+) {
+  const capability = { profile, online, requests: 0 };
   const server = createServer(tls, (req, res) => {
     if (req.method !== "GET" || req.url !== "/capability") {
       res.writeHead(404).end();
@@ -66,16 +76,23 @@ function createCapabilityPeer(tls: ServerOptions, profile: RepositoryGitDelivery
     capability.requests++;
     res
       .writeHead(200, { "content-type": "application/json" })
-      .end(JSON.stringify(capability.profile));
+      .end(
+        JSON.stringify(
+          capability.online
+            ? { profile: capability.profile, authorization: "online-request" }
+            : capability.profile,
+        ),
+      );
   });
   return { capability, server };
 }
 
-function externalGitJourney(scope: "repository" | "installation") {
+function externalGitJourney(scope: "repository" | "installation" | "online-installation") {
   return async (t: TestContext) => {
     const f = await standingExecutionPlatform(t, import.meta.url);
     const { id: namespaceId } = f.namespace;
-    const broad = scope === "installation" ? await installationOrigin(t, namespaceId) : undefined;
+    const online = scope === "online-installation";
+    const broad = scope !== "repository" ? await installationOrigin(t, namespaceId) : undefined;
     const { registry, backendId, origin, gh, tls, privateKeyPath, custodyKeyPath } =
       broad ?? (await standingGitOrigin(t, namespaceId, 300_000));
     const installationApiOrigin = broad?.gh.origin;
@@ -94,6 +111,7 @@ function externalGitJourney(scope: "repository" | "installation") {
     const { capability, server } = createCapabilityPeer(
       tls,
       broad ? "github_installation" : "repository_git",
+      online,
     );
     const capabilityOrigin = await listen(t, server);
     const releaseKey = publicKey.export({ format: "pem", type: "spki" }).toString();
@@ -204,6 +222,12 @@ function externalGitJourney(scope: "repository" | "installation") {
             "a repository-only sender cannot prepare a broad token",
           );
           capability.profile = "github_installation";
+          if (online) {
+            capability.online = false;
+            await assert.rejects(release.configure(context), /admitted sender guarantee/);
+            assert.equal(gh.issuesOfTokens.length, 0, "cannot downgrade v5 before issuance");
+            capability.online = true;
+          }
         }
         const wiring = await release.configure(context);
         assert.equal(
@@ -306,7 +330,7 @@ function externalGitJourney(scope: "repository" | "installation") {
     const revision = await deploy();
     assert.ok(capability.requests > probes, "API admission reached the capability-only HTTPS peer");
     assert.deepEqual(revision.executionAdmission, {
-      version: 4,
+      version: online ? 5 : 4,
       mode: "protected",
     });
     assert.deepEqual(revision.egressPlan?.driver, owner.ref);
@@ -583,7 +607,11 @@ function externalGitJourney(scope: "repository" | "installation") {
 
       // The same working sender now holds a committed positive until its actual send cutoff,
       // while the original request is still in time. Never ask for a second authorization.
-      for (const holdAt of broad ? (["request"] as const) : (["connect", "request"] as const)) {
+      for (const holdAt of online
+        ? []
+        : broad
+          ? (["request"] as const)
+          : (["connect", "request"] as const)) {
         const before = traffic();
         const decisions = peer.decisions.length;
         const held: {
@@ -679,8 +707,10 @@ function externalGitJourney(scope: "repository" | "installation") {
       if (broad) {
         assert.equal(
           committed,
-          broad.installation.acceptedGitRequests() + broad.installation.apiRequests.length + 1,
-          "one possible use per authenticated Git or API request, plus the permit that expired after TLS",
+          broad.installation.acceptedGitRequests() +
+            broad.installation.apiRequests.length +
+            Number(!online),
+          "possible use per Git or API request and, for exact dispatch, the deliberately expired permit",
         );
       } else {
         assert.equal(committed, 2);

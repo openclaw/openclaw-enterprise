@@ -2,7 +2,9 @@ import type {
   PreparedGitHubUseRequest,
   PreparedGitHubInstallationUseRequest,
   ProtectedGitHubInstallationMaterial,
-  GitHubInstallationSendDecision,
+  RepositoryGitAuthority,
+  RepositoryGitOnlineAllow,
+  RepositoryGitSendPermit,
   PreparedGitHubPullResult,
   PreparedGitHubPullScope,
   PreparedGitHubPullProjection,
@@ -21,14 +23,17 @@ import { isDeepStrictEqual } from "node:util";
 import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
 import {
+  legacyAdoption,
   protectedGitAdoption,
+  unregisteredGitAdmissionEnded,
   installationGitAdoption,
-  registeredGitProfile,
+  releasedGitProfile,
   registeredGitSelection,
   openShellGitRecipientEvidence,
   registeredGitRecipientEvidence,
   type RepositoryGitRecipientEvidence,
   repositoryGitAdmissionEnded,
+  repositoryGitBrokerOwnerPredicate,
   repositoryGitOwnerPredicate,
   repositoryGitRecipients,
   selectedRepositoryGitDriver,
@@ -76,12 +81,15 @@ class SessionClosed extends Error {
   }
 }
 
-const legacyAdoption = "prepared_repository_git";
 type Recipient =
   { evidence: RepositoryGitRecipientEvidence; driver?: DriverRegistrationRef } | undefined;
 
 function installationRecipient(proxy: Recipient) {
-  return !!proxy?.driver && proxy.evidence === registeredGitRecipientEvidence;
+  return (
+    !!proxy?.driver &&
+    (proxy.evidence === registeredGitRecipientEvidence ||
+      proxy.evidence === openShellGitRecipientEvidence)
+  );
 }
 
 const families = "occ.prepared_github_families";
@@ -103,8 +111,13 @@ export interface PreparedRepositorySession {
 /** The session snapshot binds the Agent and the exact installation used for Compute release or the broker generation.
  * The deadline is checked live instead of extending or treating the snapshot as a lease. */
 function sessionQuery(proxy: Recipient): string {
-  const driver = proxy?.driver ? `'driver', ${selectedRepositoryGitDriver},` : "";
-  const profile = installationRecipient(proxy) ? registeredGitProfile : "'git-write'";
+  // An old protected sender without a selected Driver may already hold material or have sent
+  // a request. Without a selected Driver we can neither adopt that custody nor retire it.
+  if (proxy && !proxy.driver) {
+    return "SELECT NULL::jsonb AS session WHERE false";
+  }
+  const driver = proxy ? `'driver', ${selectedRepositoryGitDriver},` : "";
+  const profile = installationRecipient(proxy) ? releasedGitProfile : "'git-write'";
   // Installation membership can change at GitHub. Across a scope change on this Agent, require
   // disposal and settled custody even when the old and new operator selection names differ.
   const broad = "s.cleanup_context #>> '{binding,profile}' = 'github-installation'";
@@ -124,7 +137,8 @@ function sessionQuery(proxy: Recipient): string {
       'standingApprovalGeneration',rev.admitted_spec #> '{repository_credentials,standingApprovalGeneration}',
       'standingApprovalScopeFingerprint',rev.admitted_spec #> '{repository_credentials,standingApprovalScopeFingerprint}')
       ELSE '{}'::jsonb END AS session,
-  ${proxy ? "s.deadline_wall_ms" : "least(b.deadline_wall_ms, s.deadline_wall_ms)"} AS end_ms
+  ${proxy ? "s.deadline_wall_ms" : "least(b.deadline_wall_ms, s.deadline_wall_ms)"} AS end_ms,
+  ${proxy ? "p.installation #>> '{plan,repositoryGitAuthorization}'" : "NULL"} AS authorization
   FROM occ.repository_session_attempts s
   ${
     proxy
@@ -138,8 +152,9 @@ function sessionQuery(proxy: Recipient): string {
   AND ${
     proxy
       ? `s.broker_protocol=2 AND s.session_id IS NOT NULL
-    AND rev.admitted_spec #>> '{execution_admission,version}' = '4'
-    ${proxy?.driver ? `AND p.installation#>'{plan,driver}'=${selectedRepositoryGitDriver}` : ""}
+    AND rev.admitted_spec #>> '{execution_admission,version}' =
+      CASE WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5' ELSE '4' END
+    AND p.installation#>'{plan,driver}'=${selectedRepositoryGitDriver}
     AND p.installation->'plan'=rev.admitted_spec->'egress_plan'
     AND p.installation#>'{plan,repositoryGit}'=rev.admitted_spec->'repository_credentials'
     AND clock_timestamp() < to_timestamp(s.deadline_wall_ms / 1000.0)
@@ -185,8 +200,8 @@ export interface InstalledGitMaterial {
   readonly route?: RepositoryGitInstallationFence;
 }
 
-/** Stock OpenShell can bound its online allow reply, but cannot carry or enforce this send permit. */
-export function openShellOnlineGitDecision(result: RepositoryGitSendDecision) {
+/** Compatibility with the broker-backed OpenShell trial only. Never use at a protected sender. */
+function openShellOnlineGitDecision(result: RepositoryGitSendDecision) {
   if (result.kind === "denied") {
     return result.reason === "unavailable" ? false : result.reason;
   }
@@ -206,6 +221,9 @@ async function lockLiveSession(
   id: string,
   proxy: Recipient,
 ): Promise<LockedSession | null | undefined> {
+  if (proxy && !proxy.driver) {
+    return undefined; // Missing a protected sender is not a withdrawal of its outstanding custody.
+  }
   const { rows } = await c.query(
     `SELECT s.namespace_id, s.agent_id, s.live_revision_id, s.admission_id
      FROM occ.repository_session_attempts s JOIN occ.namespaces n ON n.id=s.namespace_id
@@ -267,7 +285,19 @@ async function lockLiveSession(
   const current = await c.query(exact, identity);
   return (current.rows[0] as LockedSession | undefined) ?? absent;
 }
-type LockedSession = { session: PreparedRepositorySession; end_ms: string };
+type LockedSession = {
+  session: PreparedRepositorySession;
+  end_ms: string;
+  authorization: "online-request" | null;
+};
+type Authorization = LockedSession["authorization"];
+type GitUse = Pick<
+  RepositoryGitSendPermit,
+  "exchangeId" | "requestDigestSha256" | "preparationAttemptId" | "materialVersion"
+>;
+const sendPermit = (use: GitUse, sendStartBy: string) =>
+  ({ ...use, kind: "permit", sendStartBy }) as const;
+const onlineAllow = (use: GitUse, replyBy: string) => ({ ...use, kind: "allow", replyBy }) as const;
 
 export interface PreparedRepositoryGitSource {
   readonly adoption:
@@ -308,7 +338,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     key: Buffer,
     authority: string,
     policy: Policy,
-    recipient: DriverRegistrationRef | boolean = false,
+    recipient?: DriverRegistrationRef | "unregistered",
     evidence: RepositoryGitRecipientEvidence = registeredGitRecipientEvidence,
   ) {
     const driver = typeof recipient === "object" ? recipient : undefined;
@@ -330,7 +360,16 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       lockIssuance: `SELECT FROM occ.agents WHERE (namespace_id,id) =
         ($1::jsonb #>> '{session,namespaceId}', $1::jsonb #>> '{session,agentId}') FOR SHARE`,
       adoption,
-      ...(driver ? { driver, owns: repositoryGitOwnerPredicate } : {}),
+      owns: driver
+        ? repositoryGitOwnerPredicate
+        : proxy
+          ? "false"
+          : repositoryGitBrokerOwnerPredicate,
+      ...(driver && {
+        driver,
+        retireHistorical: (issuer) =>
+          `f.admission->>'issuerAuthority'=${issuer} AND ${unregisteredGitAdmissionEnded}`,
+      }),
     });
     this.proxy = proxy;
     this.adoption = adoption;
@@ -353,20 +392,13 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       const { rows: retired } = await c.query(
         `WITH stopped AS (
         UPDATE ${families} f SET enabled=false
-        WHERE enabled AND source->>'adoption'=ANY($1::text[]) AND (source->'session' ? 'credentialProxyExecution')=$3
-          AND ${
-            this.proxy?.driver
-              ? `${repositoryGitOwnerPredicate} AND ${repositoryGitAdmissionEnded}`
-              : this.proxy
-                ? repositoryGitAdmissionEnded
-                : `NOT ${live}`
-          }
+        WHERE enabled AND ${this.retiringFamily("$1", "$2", this.proxy ? repositoryGitAdmissionEnded : `NOT ${live}`)}
         RETURNING source_id, source, admission->>'issuerAuthority' IS DISTINCT FROM $2 AS foreign),
         moved AS (UPDATE ${attempts} a SET custody='retire' FROM stopped s
         WHERE a.source_id=s.source_id AND custody='current' RETURNING a.source_id, a.provider_expires_at)
         SELECT s.source->'session' AS session, m.provider_expires_at
         FROM stopped s JOIN moved m USING (source_id) WHERE s.foreign`,
-        [this.adoption, this.authority, Boolean(this.proxy)],
+        [this.adoption, this.authority],
       );
       const { rows } = await c.query(sessions);
       return {
@@ -443,47 +475,52 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     if (!this.proxy?.driver) {
       return;
     }
-    const scope = "github-installation";
+    const delivery = <Allow extends RepositoryGitSendPermit | RepositoryGitOnlineAllow>(
+      mode: Authorization,
+      decide: (receipt: GitUse, deadline: string) => Allow,
+    ): RepositoryGitAuthority<Allow> => {
+      const scope = "github-installation";
+      const lifetime = (signal: AbortSignal) => AbortSignal.any([stopped, signal]);
+      return Object.freeze({
+        ...(installationRecipient(this.proxy) && {
+          githubInstallation: Object.freeze({
+            readMaterial: (route, signal) =>
+              this.readRecipientMaterial(route.revisionId, lifetime(signal), route, scope, mode),
+            authorize: async (request, installed, signal) => {
+              const q = checkRequest(request, scope);
+              const binding = structuredClone(installed);
+              const decision = await this.authorizeProtectedRequest(
+                q,
+                binding,
+                lifetime(signal),
+                mode,
+                decide,
+              );
+              if (decision.kind === "denied") {
+                return decision;
+              }
+              const { revisionId, fence } = binding.route;
+              return { ...decision, scope, operation: q.operation, revisionId, fence };
+            },
+          } satisfies NonNullable<RepositoryGitAuthority<Allow>["githubInstallation"]>),
+        }),
+        readMaterial: (route, signal) =>
+          this.readRecipientMaterial(route.revisionId, lifetime(signal), route, undefined, mode),
+        authorize: (request, installed, signal) =>
+          this.authorizeProtectedRequest(
+            checkRequest(request),
+            structuredClone(installed),
+            lifetime(signal),
+            mode,
+            decide,
+          ),
+      } satisfies RepositoryGitAuthority<Allow>);
+    };
     return Object.freeze({
       recipients: this.recipients,
-      ...(installationRecipient(this.proxy) && {
-        githubInstallation: Object.freeze({
-          readMaterial: (route, signal) =>
-            this.readRecipientMaterial(
-              route.revisionId,
-              AbortSignal.any([stopped, signal]),
-              route,
-              scope,
-            ),
-          authorize: async (
-            request,
-            installed,
-            signal,
-          ): Promise<GitHubInstallationSendDecision> => {
-            const q = checkRequest(request, scope);
-            const binding = structuredClone(installed);
-            const decision = await this.authorizeProtectedRequest(
-              q,
-              binding,
-              AbortSignal.any([stopped, signal]),
-            );
-            if (decision.kind === "denied") {
-              return decision;
-            }
-            const { revisionId, fence } = binding.route;
-            return { ...decision, scope, operation: q.operation, revisionId, fence };
-          },
-        } satisfies NonNullable<ProtectedRepositoryGitAuthority["githubInstallation"]>),
-      }),
-      readMaterial: (route, signal) =>
-        this.readRecipientMaterial(route.revisionId, AbortSignal.any([stopped, signal]), route),
-      authorize: (request, installed, signal) =>
-        this.authorizeProtectedRequest(
-          checkRequest(request),
-          installed,
-          AbortSignal.any([stopped, signal]),
-        ),
-    } satisfies ProtectedRepositoryGitAuthority);
+      ...delivery(null, sendPermit),
+      online: delivery("online-request", onlineAllow),
+    });
   }
 
   private readonly recipients: ProtectedRepositoryGitAuthority["recipients"] = Object.freeze({
@@ -587,18 +624,22 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     revisionId: string,
     signal: AbortSignal,
     install?: RepositoryGitInstallationFence,
+    scope?: undefined,
+    mode?: Authorization,
   ): Promise<ProtectedRepositoryGitMaterial | RepositoryGitMaterialAbsence | undefined>;
   async readRecipientMaterial(
     revisionId: string,
     signal: AbortSignal,
     install: RepositoryGitInstallationFence,
     scope: "github-installation",
+    mode?: Authorization,
   ): Promise<ProtectedGitHubInstallationMaterial | RepositoryGitMaterialAbsence | undefined>;
   async readRecipientMaterial(
     revisionId: string,
     signal: AbortSignal,
     install?: RepositoryGitInstallationFence,
     scope?: "github-installation",
+    mode: Authorization = null,
   ): Promise<
     | ProtectedRepositoryGitMaterial
     | ProtectedGitHubInstallationMaterial
@@ -619,6 +660,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           // The session transaction holds the current route, approval and Agent. Only the
           // conditional installer may receive a token; a changed fence or observation gets none.
           if (
+            current.authorization !== mode ||
             !install ||
             install.revisionId !== revisionId ||
             !(
@@ -694,22 +736,31 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     }
   }
 
-  /** Previously admitted OpenShell online sessions receive only their original decision. */
+  /** Only the protocol-1 broker trial may use a decision that omits the send-start deadline. */
   async authorizeOpenShellRequest(
     q: PreparedGitHubUseRequest,
     installed: InstalledGitMaterial,
     signal: AbortSignal,
   ): Promise<boolean | "draft_already_opened" | "access_withdrawn"> {
-    return openShellOnlineGitDecision(await this.authorizeProtectedRequest(q, installed, signal));
+    if (this.proxy) {
+      return false;
+    }
+    return openShellOnlineGitDecision(
+      await this.authorizeProtectedRequest(q, installed, signal, null, sendPermit),
+    );
   }
 
-  /** Only a confirmed commit can return a send permit. The authenticated recipient already
+  /** Only a confirmed commit can return an allow or send permit. The authenticated recipient already
    * holds this exact material. The durable receipt records possible use, never delivery. */
-  private async authorizeProtectedRequest(
+  private async authorizeProtectedRequest<
+    Allow extends RepositoryGitOnlineAllow | RepositoryGitSendPermit,
+  >(
     q: PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest,
     installed: InstalledGitMaterial,
     signal: AbortSignal,
-  ): Promise<RepositoryGitSendDecision> {
+    mode: Authorization,
+    decide: (receipt: GitUse, deadline: string) => Allow,
+  ): Promise<Allow | Extract<RepositoryGitSendDecision, { kind: "denied" }>> {
     const denied = { kind: "denied", reason: "unavailable" } as const;
     if (!installed?.preparationAttemptId || !installed.materialVersion) {
       return denied;
@@ -719,7 +770,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     try {
       const result = await this.transaction(async (c) => {
         try {
-          return await this.recordUse(c, q, signal, installed);
+          return await this.recordUse(c, q, signal, installed, mode);
         } catch (error) {
           reason =
             error instanceof DraftAlreadyOpened
@@ -730,24 +781,17 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           throw error;
         }
       });
-      if ("kind" in result || signal.aborted || !(Date.now() < Date.parse(result.sendStartBy))) {
+      if ("kind" in result || signal.aborted || !(Date.now() < Date.parse(result.decisionBy))) {
         return denied;
       }
-      const {
-        exchangeId,
-        requestDigestSha256,
-        preparationAttemptId,
-        materialVersion,
-        sendStartBy,
-      } = result;
-      return Object.freeze({
-        kind: "permit",
-        exchangeId,
-        requestDigestSha256,
-        preparationAttemptId,
-        materialVersion,
-        sendStartBy,
-      });
+      const { exchangeId, requestDigestSha256, preparationAttemptId, materialVersion, decisionBy } =
+        result;
+      return Object.freeze(
+        decide(
+          { exchangeId, requestDigestSha256, preparationAttemptId, materialVersion },
+          decisionBy,
+        ),
+      );
     } catch {
       // A lost commit acknowledgment may leave a receipt. Never retry or turn it into an allow.
       return { kind: "denied", reason };
@@ -767,7 +811,13 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         if ("kind" in decision) {
           return decision;
         }
-        const { open, exchangeId, preparationAttemptId, materialVersion, sendStartBy } = decision;
+        const {
+          open,
+          exchangeId,
+          preparationAttemptId,
+          materialVersion,
+          decisionBy: sendStartBy,
+        } = decision;
         const receipt = { exchangeId, preparationAttemptId, materialVersion, sendStartBy };
         if (!open || signal.aborted || Date.now() >= Date.parse(receipt.sendStartBy)) {
           throw new Error("PREPARED_REPOSITORY_GIT_UNAVAILABLE");
@@ -796,6 +846,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     q: PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest,
     signal: AbortSignal,
     installed?: InstalledGitMaterial,
+    mode: Authorization = null,
   ) {
     const deadline = Date.parse(q.deadlineAt);
     const valid = (until: number) => !signal.aborted && Date.now() < until;
@@ -814,7 +865,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       // The session ended or the registry no longer admits it. Missing recipient evidence just denies.
       throw new SessionClosed();
     }
-    if (!source || !current) {
+    if (!source || !current || current.authorization !== mode) {
       return fail();
     }
     const { grant } = source;
@@ -927,13 +978,14 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     if (!valid(until)) {
       return fail();
     }
-    const sendStartBy = new Date(until).toISOString();
+    const decisionBy = new Date(until).toISOString();
+    const deadlineColumn = mode === "online-request" ? "authorization_reply_by" : "send_start_by";
     const { exchangeId, requestDigestSha256 } = q;
     if (scope && !unlimited) {
       // A possibly spent allowance outlives this session, including an unknown commit or send.
       const claim = await c.query(
         `INSERT INTO ${pulls}
-         (grant_id,operation_id,receipt_id,admission_id,attempt_id,material_version,request_digest_sha256,scope,send_start_by)
+         (grant_id,operation_id,receipt_id,admission_id,attempt_id,material_version,request_digest_sha256,scope,${deadlineColumn})
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9) ON CONFLICT (grant_id) DO NOTHING RETURNING receipt_id`,
         [
           q.grantId,
@@ -944,7 +996,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           materialVersion,
           requestDigestSha256,
           scope,
-          sendStartBy,
+          decisionBy,
         ],
       );
       if (!claim.rowCount) {
@@ -953,7 +1005,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     }
     await c.query(
       `INSERT INTO occ.prepared_repository_git_uses
-    (exchange_id,admission_id,attempt_id,material_version,operation,request_digest_sha256,send_start_by,recipient_fence)
+    (exchange_id,admission_id,attempt_id,material_version,operation,request_digest_sha256,${deadlineColumn},recipient_fence)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
       [
         exchangeId,
@@ -962,7 +1014,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
         materialVersion,
         q.operation,
         requestDigestSha256,
-        sendStartBy,
+        decisionBy,
         installation ? installed!.route!.fence : null,
       ],
     );
@@ -970,7 +1022,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       return fail();
     }
     return {
-      sendStartBy,
+      decisionBy,
       exchangeId,
       requestDigestSha256,
       preparationAttemptId,

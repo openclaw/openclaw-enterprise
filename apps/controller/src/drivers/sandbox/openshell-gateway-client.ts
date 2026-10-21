@@ -141,7 +141,21 @@ export interface OpenShellProviderProfileEndpoint {
   readonly host: string;
   readonly port: number;
   readonly protocol: string;
-  readonly path: string;
+  readonly path?: string;
+  readonly access?: "NETWORK_ACCESS_PRESET_FULL" | "NETWORK_ACCESS_PRESET_READ_WRITE";
+  readonly rules?: readonly {
+    readonly allow: { readonly method: string; readonly path: string };
+  }[];
+}
+
+/** Exact stock endpoint sent at import and compared when the provider is observed. */
+export function openShellProfileEndpoint(endpoint: OpenShellProviderProfileEndpoint) {
+  const { rules, access = "NETWORK_ACCESS_PRESET_READ_WRITE", ...target } = endpoint;
+  return {
+    ...target,
+    enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
+    ...(rules ? { rules } : { access }),
+  };
 }
 
 export type OpenShellRefreshStrategy =
@@ -835,14 +849,7 @@ function profileMessage(profile: OpenShellProviderProfile): RecordValue {
       content: file.content,
       env_var: file.environmentVariable,
     })),
-    endpoints: profile.endpoints.map((endpoint) => ({
-      host: endpoint.host,
-      port: endpoint.port,
-      protocol: endpoint.protocol,
-      path: endpoint.path,
-      enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-      access: "NETWORK_ACCESS_PRESET_READ_WRITE",
-    })),
+    endpoints: profile.endpoints.map(openShellProfileEndpoint),
     binaries: profile.binaries.map((path) => ({ path })),
     inference_capable: profile.inferenceCapable,
     annotations: { ...profile.annotations },

@@ -62,6 +62,8 @@ type FamilyOwner = Readonly<{
   adoption: readonly string[];
   /** Predicates over family f, and the installation-selected owner bound to each transaction. */
   owns?: string;
+  /** Additional ended custody this owner can retire, never inspect, prepare or use. */
+  retireHistorical?: (issuer: string) => string;
   /** Lock the authority that can move to a different family before checking active to record an intent. */
   lockIssuance?: string;
   driver?: import("@openclaw-enterprise/contracts").DriverRegistrationRef;
@@ -476,6 +478,14 @@ export class PreparedGitHubPostgres {
     };
   }
 
+  /** The same custody boundary when scheduling, claiming and recording a retirement. */
+  protected retiringFamily(adoption: string, issuer: string, ended?: string) {
+    const owns = this.owner.owns ?? "true";
+    const selected = `f.source->>'adoption'=ANY(${adoption}::text[]) AND ${owns}${ended ? " AND " + ended : ""}`;
+    const historical = this.owner.retireHistorical?.(issuer);
+    return historical ? `((${selected}) OR (${historical}))` : selected;
+  }
+
   // Commit possible revocation before contacting GitHub. A missing response leaves 'revoking'
   // or 'unknown' and encrypted cleanup custody, never an automatic replay or a claim of revocation.
   async takeRetirement(key: string | null) {
@@ -489,8 +499,7 @@ export class PreparedGitHubPostgres {
              (x.expires <= statement_timestamp()) IS TRUE AS expired
            FROM ${attempts} a JOIN ${families} f USING (source_id),
              LATERAL (SELECT ${standingGitExpiry} AS expires) x
-           WHERE custody='retire' AND (source_id=$1 OR $1 IS NULL) AND f.source->>'adoption'=ANY($3::text[])
-             AND ${this.owner.owns ?? "true"}
+           WHERE custody='retire' AND (source_id=$1 OR $1 IS NULL) AND ${this.retiringFamily("$3", "$2")}
              AND (x.expires IS NULL OR x.expires > statement_timestamp()
                OR x.expires <= statement_timestamp() - $4 * interval '1 millisecond')
            ORDER BY authorized DESC LIMIT 1 FOR UPDATE OF a, f SKIP LOCKED
@@ -532,7 +541,7 @@ export class PreparedGitHubPostgres {
         `UPDATE ${attempts} a SET custody=CASE WHEN $2 THEN 'revoked' ELSE 'unknown' END,
         sealed=CASE WHEN $2 THEN NULL ELSE sealed END FROM ${families} f
         WHERE a.id=$1 AND a.custody='revoking' AND f.source_id=a.source_id
-          AND a.admission->>'issuerAuthority'=$3 AND f.source->>'adoption'=ANY($4::text[]) AND ${this.owner.owns ?? "true"}`,
+          AND a.admission->>'issuerAuthority'=$3 AND ${this.retiringFamily("$4", "$3")}`,
         [id, revoked, this.issuerAuthority, this.owner.adoption],
       );
     });

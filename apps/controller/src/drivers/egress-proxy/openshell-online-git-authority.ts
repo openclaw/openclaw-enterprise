@@ -2,7 +2,9 @@ import type { InstalledGitMaterial } from "../repo/github/credentials/prepared-r
 import { createHash, randomUUID } from "node:crypto";
 import type { Server } from "@grpc/grpc-js";
 import type {
+  RepositoryGitOnlineDecision,
   PreparedGitHubPullScope,
+  PreparedGitHubInstallationUseRequest,
   PreparedGitHubUseRequest,
 } from "@openclaw-enterprise/contracts";
 import type { RequestHead } from "../repo/credentials/backend-contracts.ts";
@@ -26,7 +28,7 @@ export interface OpenShellOnlineGitIdentity {
   readonly workspace: string;
 }
 
-export interface OpenShellOnlineGitBinding {
+type GitBindingIdentity = {
   readonly sandboxId: string;
   readonly bindingId: string;
   readonly workspace: string;
@@ -34,20 +36,34 @@ export interface OpenShellOnlineGitBinding {
   readonly executionId: string;
   readonly sessionId: string;
   readonly providerInstanceId: string;
-  readonly repositoryId: string;
   readonly grantId: string;
+  readonly installed: InstalledGitMaterial;
+};
+
+type RepositoryBinding = GitBindingIdentity & {
+  readonly scope?: never;
+  readonly repositoryId: string;
   readonly repository: string;
   readonly pushRef: string;
   readonly pullRequestBase?: string;
   readonly gitOrigin?: string;
   readonly apiOrigin?: string;
-  readonly installed: InstalledGitMaterial;
-}
+};
 
-export interface OpenShellOnlineGitAuthorityOptions extends Omit<
+export type OpenShellOnlineGitBinding =
+  | RepositoryBinding
+  | (GitBindingIdentity & {
+      readonly scope: "github-installation";
+      readonly installationId: string;
+      readonly apiOrigin: string;
+    });
+
+type Use = PreparedGitHubUseRequest | PreparedGitHubInstallationUseRequest;
+
+export type OpenShellOnlineGitAuthorityOptions = Omit<
   OpenShellOnlineHttpAuthorityOptions,
   "authorize"
-> {
+> & {
   /** Resolve exactly one live admitted workspace/execution from the authenticated sandbox and
    * binding. Require a never-reused sandbox identity dedicated to that execution. Recheck
    * replacement fencing, mandatory final middleware, TLS-only routing and the
@@ -56,20 +72,28 @@ export interface OpenShellOnlineGitAuthorityOptions extends Omit<
     identity: OpenShellOnlineGitIdentity,
     signal: AbortSignal,
   ) => Promise<OpenShellOnlineGitBinding | OpenShellOnlineGitRefusal | undefined>;
-  /** Check live session/grant/material in one transaction. For draft creates, durably consume
-   * ONE submission per grant before returning true, including uncertain/expired permits, and
-   * answer "draft_already_opened" once it is spent (unless the registry opts the grant out of
-   * the limit). Answer "access_withdrawn" when the session is no longer live. Never retry on
-   * a lost acknowledgement. This records possible use, not a provider outcome. */
-  readonly approve: (
-    request: PreparedGitHubUseRequest,
-    expectedInstalled: OpenShellOnlineGitBinding["installed"],
-    signal: AbortSignal,
-  ) => Promise<boolean | "draft_already_opened" | "access_withdrawn">;
   /** Told once per request the authority itself refuses, with the reason class (finding 2133).
    * A request with no live binding is the lookup's to report. Never the request's content. */
   readonly onDeny?: (denial: OpenShellOnlineGitDenial) => void;
-}
+} & (
+    | {
+        readonly approve?: never;
+        readonly authorizeOnlineRequest: (
+          request: Use,
+          installed: InstalledGitMaterial,
+          signal: AbortSignal,
+        ) => Promise<RepositoryGitOnlineDecision>;
+      }
+    | {
+        readonly authorizeOnlineRequest?: never;
+        /** Compatibility with the separately selected broker-backed trial and its refusal reasons. */
+        readonly approve: (
+          request: PreparedGitHubUseRequest,
+          installed: InstalledGitMaterial,
+          signal: AbortSignal,
+        ) => Promise<boolean | "draft_already_opened" | "access_withdrawn">;
+      }
+  );
 
 /**
  * The reason the Agent's tool is shown for a refusal (finding 2149): OpenShell returns it as
@@ -148,7 +172,7 @@ export interface OpenShellOnlineGitDenial {
   readonly sandboxId: string;
   readonly requestId: string;
   readonly revisionId: string;
-  readonly operation?: PreparedGitHubUseRequest["operation"];
+  readonly operation?: Use["operation"];
 }
 
 function matchesOrigin(origin: string, request: OpenShellOnlineHttpRequest): boolean {
@@ -173,19 +197,25 @@ function validBinding(
       binding.executionId,
       binding.sessionId,
       binding.providerInstanceId,
-      binding.repositoryId,
+      binding.scope ? binding.installationId : binding.repositoryId,
       binding.grantId,
       binding.installed?.preparationAttemptId,
       binding.installed?.materialVersion,
     ].every((id) => typeof id === "string" && /^[\x21-\x7e]{1,256}$/.test(id)) &&
-    /^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(binding.repository) &&
-    !/\/(?:\.|\.\.)$/.test(binding.repository) &&
-    typeof binding.pushRef === "string" &&
-    decodePushedBranchRef(Buffer.from(binding.pushRef)) === binding.pushRef &&
-    (binding.pullRequestBase === undefined ||
-      (decodePushedBranchRef(Buffer.from("refs/heads/" + binding.pullRequestBase)) ===
-        "refs/heads/" + binding.pullRequestBase &&
-        "refs/heads/" + binding.pullRequestBase !== binding.pushRef))
+    (binding.scope === "github-installation"
+      ? /^[1-9][0-9]{0,15}$/.test(binding.installationId) &&
+        binding.apiOrigin === "https://api.github.com" &&
+        binding.installed.route?.revisionId === binding.executionId &&
+        Number.isSafeInteger(binding.installed.route.fence) &&
+        binding.installed.route.fence > 0
+      : /^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(binding.repository) &&
+        !/\/(?:\.|\.\.)$/.test(binding.repository) &&
+        typeof binding.pushRef === "string" &&
+        decodePushedBranchRef(Buffer.from(binding.pushRef)) === binding.pushRef &&
+        (binding.pullRequestBase === undefined ||
+          (decodePushedBranchRef(Buffer.from("refs/heads/" + binding.pullRequestBase)) ===
+            "refs/heads/" + binding.pullRequestBase &&
+            "refs/heads/" + binding.pullRequestBase !== binding.pushRef)))
   );
 }
 
@@ -230,7 +260,7 @@ function requestHead(request: OpenShellOnlineHttpRequest): RequestHead | undefin
 
 function draftScope(
   request: OpenShellOnlineHttpRequest,
-  binding: OpenShellOnlineGitBinding,
+  binding: RepositoryBinding,
   head: RequestHead,
 ): PreparedGitHubPullScope | undefined {
   const apiOrigin = binding.apiOrigin ?? "https://api.github.com";
@@ -285,8 +315,81 @@ function draftScope(
     : undefined;
 }
 
+/**
+ * For an explicit installation grant, GitHub interprets the API operation and permissions.
+ * Accept canonical repository and common discovery routes, not the App, token or owner API.
+ * The supplier presents a normalized, complete request; hidden headers and original spelling
+ * cannot establish credential placement or TLS. Those are prerequisites of release.
+ */
+function installationApiOperation(request: OpenShellOnlineHttpRequest, head: RequestHead) {
+  const { path, query, method } = request.target;
+  const { headers } = head;
+  const graph = path === "/graphql";
+  const read = method === "GET" || method === "HEAD";
+  if (
+    head.contentEncoding !== "identity" ||
+    headers["git-protocol"] !== undefined ||
+    (graph
+      ? method !== "POST" || query !== ""
+      : !/^\/(?:repos\/[\w-]+\/[\w.-]+(?:\/[\w.-]+)*|orgs\/[\w-]+(?:\/[\w.-]+)*|users\/[\w-]+(?:\/[\w.-]+)*|user(?:\/repos)?|installation\/repositories|search\/[\w-]+|rate_limit)$/.test(
+          path,
+        )) ||
+    path.split("/").some((s) => s === "." || s === "..") ||
+    (query !== "" && (!read || !validApiQuery(query))) ||
+    (headers["x-github-api-version"] !== undefined &&
+      !/^\d{4}-\d\d-\d\d$/.test(headers["x-github-api-version"])) ||
+    request.body.byteLength > 64 * 1024
+  ) {
+    return;
+  }
+  if (!request.body.byteLength) {
+    return graph ? undefined : "github-rest";
+  }
+  if (
+    read ||
+    !/^application\/(?:json|vnd\.github\+json)(?:;\s*charset=utf-8)?$/i.test(
+      headers["content-type"] ?? "",
+    )
+  ) {
+    return;
+  }
+  try {
+    const body = parseUnambiguousJson(
+      new TextDecoder("utf-8", { fatal: true }).decode(request.body),
+    );
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return;
+    }
+    if (!graph) {
+      return "github-rest";
+    }
+    return "query" in body && typeof body.query === "string" && body.query.trim()
+      ? "github-graphql"
+      : undefined;
+  } catch {
+    return;
+  }
+}
+
+function validApiQuery(query: string) {
+  const keys = new Set<string>();
+  return query.split("&").every((part) => {
+    const key = /^([\w-]{1,64})=(?:[\w.,:+/-]|%[a-fA-F\d]{2}){0,1024}$/.exec(part)?.[1];
+    if (!key || keys.has(key)) {
+      return false;
+    }
+    keys.add(key);
+    return keys.size <= 32;
+  });
+}
+
 type Selection =
-  | { readonly selected: Pick<PreparedGitHubUseRequest, "operation" | "pull"> }
+  | {
+      readonly selected: {
+        readonly operation: Use["operation"];
+        readonly pull?: PreparedGitHubPullScope;
+      };
+    }
   | { readonly denied: OpenShellOnlineGitDenialReason };
 
 function operation(
@@ -294,6 +397,21 @@ function operation(
   binding: OpenShellOnlineGitBinding,
   head: RequestHead,
 ): Selection {
+  if (binding.scope === "github-installation") {
+    if (matchesOrigin("https://api.github.com", request)) {
+      const api = installationApiOperation(request, head);
+      return api ? { selected: { operation: api } } : { denied: "route_unsupported" };
+    }
+    if (!matchesOrigin("https://github.com", request)) {
+      return { denied: "origin_mismatch" };
+    }
+    // The operator granted the installation, not one named repository. Still require exactly a
+    // smart HTTP request; GitHub owns repository membership, ref protection and token permissions.
+    const repo = /^\/([a-zA-Z0-9_-]{1,100}\/[a-zA-Z0-9_.-]{1,100})(?:\.git)?\//.exec(
+      request.target.path,
+    )?.[1];
+    return repo ? gitOperation(request, head, repo) : { denied: "route_unsupported" };
+  }
   if (request.target.path.startsWith("/repos/")) {
     if (head.contentEncoding !== "identity") {
       return { denied: "encoding_unsupported" };
@@ -315,8 +433,17 @@ function operation(
   ) {
     return { denied: "origin_mismatch" };
   }
+  return gitOperation(request, head, binding.repository, binding.pushRef);
+}
+
+function gitOperation(
+  request: OpenShellOnlineHttpRequest,
+  head: RequestHead,
+  repository: string,
+  pushRef?: string,
+): Selection {
   const route = classifyRoute(head, {
-    repository: binding.repository,
+    repository,
     profile: "git-ref-write",
     targetBytes: 8192,
     graphql: "deny",
@@ -349,7 +476,9 @@ function operation(
       ? { selected: { operation: "upload-pack" } }
       : { denied: "body_too_large" };
   }
-  return allowsReceivePackInput([binding.pushRef])(request.body) === true
+  // The complete body is bounded at 4 MiB in httpRequestView, before this classification.
+  // Installation access deliberately has no OCE ref filter. GitHub validates the pack and refs.
+  return pushRef === undefined || allowsReceivePackInput([pushRef])(request.body) === true
     ? { selected: { operation: "receive-pack" } }
     : { denied: "ref_not_allowed" };
 }
@@ -359,7 +488,10 @@ function operation(
 export function createOpenShellOnlineGitAuthority(
   options: OpenShellOnlineGitAuthorityOptions,
 ): Server {
-  if (typeof options.lookupBinding !== "function" || typeof options.approve !== "function") {
+  if (
+    typeof options.lookupBinding !== "function" ||
+    typeof (options.authorizeOnlineRequest ?? options.approve) !== "function"
+  ) {
     throw new Error("OpenShell Git requires live binding and durable approval owners.");
   }
   return createOpenShellOnlineHttpAuthority({
@@ -379,7 +511,7 @@ export function createOpenShellOnlineGitAuthority(
       }
       const deny = (
         reason: OpenShellOnlineGitDenialReason,
-        selected?: PreparedGitHubUseRequest["operation"],
+        selected?: Use["operation"],
       ): OpenShellOnlineDecision => {
         const reasonCode = reasonCodes[reason];
         options.onDeny?.({
@@ -410,8 +542,7 @@ export function createOpenShellOnlineGitAuthority(
       if (signal.aborted) {
         return deny("aborted", selected.operation);
       }
-      const { sessionId, providerInstanceId, repositoryId, grantId, pushRef, executionId } =
-        binding;
+      const { sessionId, providerInstanceId, grantId, executionId } = binding;
       // Bind the authenticated mapping and the full inspected view. Do not accept a caller's
       // digest or confuse this normalized-view digest with an exact original-wire commitment.
       const requestDigestSha256 = createHash("sha256")
@@ -425,9 +556,9 @@ export function createOpenShellOnlineGitAuthority(
             executionId,
             sessionId,
             providerInstanceId,
-            repositoryId,
+            binding.scope ? [binding.scope, binding.installationId] : binding.repositoryId,
             grantId,
-            pushRef,
+            binding.scope ? binding.installed.route!.fence : binding.pushRef,
             request.target,
             request.headers,
           ]),
@@ -435,25 +566,65 @@ export function createOpenShellOnlineGitAuthority(
         .update(Buffer.from([0]))
         .update(request.body)
         .digest("hex");
-      let allowed: Awaited<ReturnType<OpenShellOnlineGitAuthorityOptions["approve"]>>;
+      const use = {
+        sessionId,
+        providerInstanceId,
+        grantId,
+        exchangeId: randomUUID(),
+        requestDigestSha256,
+        deadlineAt: request.deadlineAt,
+      };
+      let q: Use;
+      if (binding.scope === "github-installation") {
+        if (selected.operation === "create-draft-pull" || !options.authorizeOnlineRequest) {
+          return deny("binding_mismatch");
+        }
+        q = {
+          ...use,
+          scope: binding.scope,
+          installationId: binding.installationId,
+          operation: selected.operation,
+        };
+      } else {
+        const { operation, pull } = selected;
+        if (operation === "github-rest" || operation === "github-graphql") {
+          return deny("binding_mismatch");
+        }
+        q = {
+          ...use,
+          repositoryId: binding.repositoryId,
+          pushRef: binding.pushRef,
+          operation,
+          ...(pull && { pull }),
+        };
+      }
+      const { installed } = binding;
+      let allowed: boolean | "draft_already_opened" | "access_withdrawn";
       try {
-        allowed = await options.approve(
-          {
-            sessionId,
-            providerInstanceId,
-            repositoryId,
-            grantId,
-            pushRef,
-            ...selected,
-            exchangeId: randomUUID(),
-            requestDigestSha256,
-            deadlineAt: request.deadlineAt,
-          },
-          binding.installed,
-          signal,
-        );
+        if (options.authorizeOnlineRequest) {
+          const result = await options.authorizeOnlineRequest(q, installed, signal);
+          if (result.kind === "denied") {
+            allowed = result.reason !== "unavailable" && result.reason;
+          } else if (
+            result.kind === "allow" &&
+            !signal.aborted &&
+            result.exchangeId === q.exchangeId &&
+            result.requestDigestSha256 === requestDigestSha256 &&
+            result.materialVersion === installed.materialVersion &&
+            result.preparationAttemptId === installed.preparationAttemptId &&
+            Date.parse(result.replyBy) <= Date.parse(request.deadlineAt)
+          ) {
+            // The RPC owner checks this exact authority deadline at its final allow callback.
+            // A supervisor that has received the allow may finish the request after withdrawal.
+            return { kind: "allow", replyBy: result.replyBy };
+          } else {
+            allowed = false;
+          }
+        } else {
+          allowed = !("scope" in q) && (await options.approve(q, installed, signal));
+        }
       } catch {
-        // The owner did not answer; nothing was recorded as possible use, so deny.
+        // The owner did not answer. Possible use may have committed; deny without retry.
         return deny("approval_failed", selected.operation);
       }
       if (allowed === "draft_already_opened" || allowed === "access_withdrawn") {

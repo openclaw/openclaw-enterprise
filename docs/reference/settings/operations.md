@@ -51,11 +51,8 @@ Classify a database without applying migrations:
 pnpm db:migrate --check
 ```
 
-An exit-0 `migration.checked` record reports one reviewed history shape:
-`empty`, `prePresetsMain`, `main`, `repositoryCredentials`,
-`repositoryRetention`, `workspaceSetup`, `agentProvisioning`,
-`backendCompleted`, `providerCompleted`, `backendTerminology`, a `pre*` shape
-listed below, or `completed`.
+Exit 0 and `migration.checked` identify the recognized history: `empty`, a stage
+below, or `completed`.
 `prePresetsMain` means
 the exact canonical history through `0023_runtime_failure_timestamp_validation`;
 `main` also includes `0024_agent_presets`. `repositoryCredentials` adds
@@ -85,11 +82,11 @@ has 46 through `0046_model_probe_failure_cause`;
 `0048_administrator_credential_source_grants`; `preAgentCredentialSources` has 49
 through `0049_codex_pat_sources`; `preCredentialWithdrawalRequester` has 50
 through `0050_agent_credential_sources`; later `pre*` shapes add one each, through
-`preStaticEgress` (59). `preOpenShellExpiredGit` has the catalog through
-`0060_credential_proxy`; `completed` includes `0061_openshell_expired_git`.
-Public preview databases keep their original receipts; see the [upgrade paths](../../guides/deploy/protected-egress-development.md#upgrade-an-existing-development-installation).
-The source manifest is
-[`migrations/meta/_canonical-history.json`](../../../migrations/meta/_canonical-history.json).
+`preStaticEgress` (59). `preOpenShellExpiredGit` ends at `0060_credential_proxy`;
+`preRepositoryGitOnlineAuthorization` means public `0068`.
+[Upgrade](../../guides/deploy/protected-egress-development.md#upgrade-an-existing-development-installation)
+appends `0069_repository_git_online_authorization`: 69 public receipts, 78 on the
+[recognized preview path](../../../migrations/meta/_canonical-history.json).
 Empty schemas may be absent or have only their owner's ordinary `CREATE` and
 `USAGE` privileges, with no objects or unexpected default privileges. An empty
 stock Drizzle ledger left by a rolled-back first migration is also supported.

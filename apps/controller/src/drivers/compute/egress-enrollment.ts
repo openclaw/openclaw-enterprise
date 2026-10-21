@@ -17,6 +17,7 @@ export interface HarnessEgressEnrollment {
   readonly inference: boolean | "credential_source";
   readonly plan: EgressRef;
   readonly execution: EgressExecution;
+  readonly repositoryGitAuthorization?: "online-request";
 }
 
 export function harnessEgressEnrollment(plan: ProxyPlan): HarnessEgressEnrollment {
@@ -24,6 +25,9 @@ export function harnessEgressEnrollment(plan: ProxyPlan): HarnessEgressEnrollmen
   const { installationId, namespaceId, agentId, servicePrincipalId, revisionId, executionId } =
     plan.execution;
   return {
+    ...(plan.repositoryGitAuthorization && {
+      repositoryGitAuthorization: plan.repositoryGitAuthorization,
+    }),
     routeCount: plan.routes.length + (plan.repositoryGit ? 1 : 0),
     inference: plan.harnessCredentialSource
       ? "credential_source"
@@ -57,7 +61,9 @@ export function signComputeExecutionRelease(
     sandboxId,
     instanceId: enforcement.instanceId,
     configurationId: enforcement.configurationId,
-    peerKeyId: enforcement.peerKeyId,
+    ...(plan.repositoryGitAuthorization !== "online-request" && {
+      peerKeyId: enforcement.peerKeyId,
+    }),
   };
   if (
     !Object.values(installation).every((value) => typeof value === "string" && value.length > 0)
@@ -69,6 +75,7 @@ export function signComputeExecutionRelease(
     !validRepositoryGitRecipient(
       enforcement.repositoryGitRecipient,
       repositoryGitDeliveryProfile(plan.repositoryGit),
+      plan.repositoryGitAuthorization,
     )
   ) {
     throw new Error("Repository Git release requires the verified recipient of this installation.");

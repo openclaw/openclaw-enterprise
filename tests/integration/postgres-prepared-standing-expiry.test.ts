@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
+import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
+import { PreparedRepositoryGitStore } from "../../apps/controller/src/drivers/repo/github/credentials/prepared-repository-git.ts";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -152,7 +154,13 @@ for (const draftPullLimit of [undefined, "none"] as const) {
   );
 }
 
-function protectedSuccessor(draftPullLimit: "none" | undefined) {
+test(
+  "an unregistered protected v4 sender keeps its possible use and custody until actual withdrawal",
+  requiresPostgres,
+  protectedSuccessor(undefined, true),
+);
+
+function protectedSuccessor(draftPullLimit: "none" | undefined, unregistered = false) {
   return async (t: TestContext) => {
     // Start at the real historical authority, including its possibly-spent, never-settled draft.
     // The installation below is controlled evidence: the standing transfer test exercises release.
@@ -187,11 +195,35 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
       "outcome_unknown",
     );
     const { namespaceId, agentId, servicePrincipalId, repositoryCredentials } = f.revision;
-    const owner = await f.startOwner({ controlSocket: undefined });
+    if (unregistered) {
+      const brokerRequest =
+        f.request() as import("../../packages/contracts/src/index.ts").PreparedGitHubUseRequest;
+      assert.equal(
+        await f.owner.authorizeOpenShellRequest(brokerRequest, used, t.signal),
+        true,
+        "the explicitly selected protocol-1 broker trial retains its original decision",
+      );
+    }
+    const driver = {
+      id: "controlled",
+      implementation: "openshell",
+      configurationId: "d".repeat(64),
+    };
+    const start = (overrides = {}) =>
+      f.startOwner({
+        controlSocket: undefined,
+        protectedGitDriver: driver,
+        protectedGitEvidence: openShellGitRecipientEvidence,
+        ...overrides,
+      });
+    const owner = await start();
     const signal = t.signal;
     assert.deepEqual(
-      await owner.readOpenShellMaterial(f.revision.id, signal),
-      { absent: "withdrawn" },
+      await owner.protectedGit!.readMaterial(
+        { revisionId: f.revision.id, fence: 1, observed: {} },
+        signal,
+      ),
+      { absent: "unprepared" },
       "a live protocol-1 broker receipt does not authorize protected Git",
     );
     assert.equal(f.gh.issuesOfTokens.length, 1);
@@ -202,7 +234,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     const plan = {
       id: "migration-proof",
       generation: 1,
-      driver: { id: "controlled", implementation: "openshell", configurationId: "d".repeat(64) },
+      driver,
       execution: {
         namespaceId,
         agentId,
@@ -304,7 +336,8 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
         JSON.stringify(observed),
       ],
     );
-    const read = () => owner.readOpenShellMaterial(revisionId, signal, route);
+    const exact = owner.protectedGit!;
+    const read = () => exact.readMaterial(route, signal);
     await owner.maintain();
     assert.equal(f.gh.issuesOfTokens.length, 1, "a live broker predecessor prevents new issuance");
     await f.withdraw();
@@ -341,10 +374,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
       const other = { ...observed, processInstanceId: "route-supervisor-B" };
       await recordObserved(other);
       await owner.maintain();
-      const denied = await owner.readOpenShellMaterial(revisionId, signal, {
-        ...route,
-        observed: other,
-      });
+      const denied = await exact.readMaterial({ ...route, observed: other }, signal);
       assert.ok(denied && "absent" in denied, "another recipient must receive no material");
       assert.equal(f.gh.issuesOfTokens.length, 1, "must not prepare for an unassociated recipient");
       await recordObserved(observed);
@@ -362,9 +392,10 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
       f.request({
         sessionId,
       }) as import("../../packages/contracts/src/index.ts").PreparedGitHubUseRequest;
-    assert.equal(
-      await owner.authorizeOpenShellRequest(request(), installed, signal),
-      false,
+    const unavailable = { kind: "denied", reason: "unavailable" };
+    assert.deepEqual(
+      await exact.authorize(request(), installed, signal),
+      unavailable,
       "not installed yet",
     );
     await f.pool.query(
@@ -372,7 +403,126 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     preparation_attempt_id=$3,material_version=$4 where revision_id=$1`,
       [revisionId, material.expiresAt, installed.preparationAttemptId, installed.materialVersion],
     );
-    assert.equal(await owner.authorizeOpenShellRequest(request(), installed, signal), true);
+    const first = request();
+    const permit = await exact.authorize(first, installed, signal);
+    assert.equal(permit.kind, "permit", "v4 requires the exact send-start deadline");
+    assert.deepEqual(await exact.online.authorize(request(), installed, signal), unavailable);
+    if (unregistered) {
+      // Model the family's historical shape around real committed custody and a possible use.
+      // That receipt cannot establish whether the old sender observed its send-start deadline.
+      const familyId = "repository-git:" + admissionId;
+      const historical = await f.pool.query(
+        `UPDATE occ.prepared_github_families
+         SET source=jsonb_set(source #- '{session,credentialProxyExecution,driver}',
+           '{adoption}', '"prepared_repository_git"')
+         WHERE source_id=$1 AND source #> '{session,credentialProxyExecution,driver}'=$2::jsonb`,
+        [familyId, JSON.stringify(driver)],
+      );
+      assert.equal(historical.rowCount, 1);
+      const legacy = await f.startOwner({ controlSocket: undefined });
+      const custody = async () =>
+        (
+          await f.pool.query(
+            "SELECT custody FROM occ.prepared_github_attempts WHERE source_id=$1 AND id=$2",
+            [familyId, installed.preparationAttemptId],
+          )
+        ).rows[0].custody;
+      const receipts = async () =>
+        (
+          await f.pool.query(
+            `SELECT u.exchange_id, u.material_version, p.receipt_id, p.outcome, p.settled_at
+         FROM occ.prepared_repository_git_uses u JOIN occ.prepared_repository_draft_pulls p
+         ON p.receipt_id=$2 WHERE u.admission_id=$1`,
+            [admissionId, used.exchangeId],
+          )
+        ).rows;
+      const retained = [
+        {
+          exchange_id: first.exchangeId,
+          material_version: installed.materialVersion,
+          receipt_id: used.exchangeId,
+          outcome: "outcome_unknown",
+          settled_at: null,
+        },
+      ];
+      assert.equal(legacy.protectedGit, undefined);
+      await legacy.maintain();
+      assert.equal(await custody(), "current", "missing owner does not retire live custody");
+      const denied = await legacy.readOpenShellMaterial(revisionId, signal, route);
+      assert.equal(denied && "absent" in denied ? denied.absent : undefined, "unprepared");
+      assert.equal(await legacy.authorizeOpenShellRequest(request(), installed, signal), false);
+      assert.equal(await legacy.authorizeOpenShellRequest(first, installed, signal), false);
+      // Observe the actual stores that these two worker configurations use. We will stop at the
+      // committed queue and claim boundaries below; discovery and both custody writes are real.
+      const discover = t.mock.method(PreparedRepositoryGitStore.prototype, "discover");
+      await f.owner.maintain();
+      const broker = discover.mock.calls.at(-1)!.this as PreparedRepositoryGitStore;
+      await owner.maintain();
+      const selected = discover.mock.calls.at(-1)!.this as PreparedRepositoryGitStore;
+      discover.mock.restore();
+      assert.equal(await custody(), "current");
+      assert.deepEqual(await read(), { absent: "unprepared" });
+      assert.deepEqual(await exact.authorize(first, installed, signal), unavailable);
+      assert.deepEqual(
+        await exact.authorize(request(), installed, signal),
+        unavailable,
+        "no adoption by a new owner",
+      );
+      assert.deepEqual(await receipts(), retained);
+      await f.state.transact((u) =>
+        u.repositorySessions.advanceAttempt({
+          admissionId,
+          expectedPhase: "open",
+          phase: "closing",
+          updatedAt: new Date().toISOString(),
+        }),
+      );
+      const revocations = () => f.gh.trace.filter((call) => call.method === "DELETE").length;
+      const before = revocations();
+      assert.equal(before, 1, "the broker retired its own token after disposal");
+      const otherDriver = await start({
+        protectedGitDriver: { ...driver, configurationId: "a".repeat(64) },
+      });
+      const otherIssuer = await start({ apiOrigin: f.gh.origin.replace("127.0.0.1", "localhost") });
+      for (const other of [legacy, f.owner, otherDriver, otherIssuer]) {
+        await other.maintain();
+        assert.equal(await custody(), "current", "leave custody with the original owner");
+        assert.equal(revocations(), before);
+      }
+
+      // Stop after the protected owner queues retirement, then run the supported
+      // protocol-1 broker worker with the very same issuer and custody key.
+      await selected.discover();
+      assert.equal(await custody(), "retire");
+      await f.owner.maintain();
+      assert.equal(await custody(), "retire", "the broker must not take protected retirement");
+      assert.equal(revocations(), before);
+
+      // Try the broker's settlement with the real attempt ID after the provider response,
+      // while the selected owner's claim is committed but its settlement has not yet run.
+      const finish = selected.finishRetirement.bind(selected);
+      t.mock.method(selected, "finishRetirement", async (id: string, revoked: boolean) => {
+        assert.equal(id, installed.preparationAttemptId);
+        await broker.finishRetirement(id, revoked);
+        assert.equal(
+          await custody(),
+          "revoking",
+          "the broker must not settle protected retirement",
+        );
+        await finish(id, revoked);
+      });
+      await owner.maintain();
+      assert.equal(await custody(), "revoked", "the selected worker retires old custody");
+      await owner.maintain();
+      assert.equal(revocations(), before + 1, "one confirmed revocation");
+      assert.deepEqual(
+        await receipts(),
+        retained,
+        "neither possible use nor spent draft was resolved or replayed",
+      );
+      assert.equal(f.gh.issuesOfTokens.length, 2, "no replacement credential issued");
+      return;
+    }
     await assert.rejects(
       owner.use(request()),
       { message: "Prepared GitHub custody transaction did not complete (guard)." },
@@ -388,7 +538,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     if (draftPullLimit === "none") {
       for (let i = 0; i < 2; i++) {
         const q = draft();
-        assert.equal(await owner.authorizeOpenShellRequest(q, installed, signal), true);
+        assert.equal((await exact.authorize(q, installed, signal)).kind, "permit");
         assert.deepEqual(
           (
             await f.pool.query(
@@ -408,17 +558,17 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
           ],
           "the possible-use receipt committed before allow",
         );
-        assert.equal(
-          await owner.authorizeOpenShellRequest(q, installed, signal),
-          false,
+        assert.deepEqual(
+          await exact.authorize(q, installed, signal),
+          unavailable,
           "an existing possible use is not permission to repeat an exchange",
         );
       }
     } else {
-      assert.equal(
-        await owner.authorizeOpenShellRequest(draft(), installed, signal),
-        "draft_already_opened",
-      );
+      assert.deepEqual(await exact.authorize(draft(), installed, signal), {
+        kind: "denied",
+        reason: "draft_already_opened",
+      });
     }
     assert.deepEqual(
       (
@@ -431,20 +581,20 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
     );
     // A cold owner can recover the committed version for the released recipient. A substituted
     // recipient at the same policy and fence cannot fetch that version, authorize it, or leave a use.
-    const cold = await f.startOwner({ controlSocket: undefined });
-    const recovered = await cold.readOpenShellMaterial(revisionId, signal, route);
+    const cold = (await start()).protectedGit!;
+    const recovered = await cold.readMaterial(route, signal);
     assert.ok(recovered && "materialVersion" in recovered);
     assert.equal(recovered.materialVersion, installed.materialVersion);
     for (const key of ["processInstanceId", "networkInstanceId", "attachmentEpoch"] as const) {
       const other = { ...observed, [key]: "replacement" };
       const replaced = { ...route, observed: other };
       await recordObserved(other);
-      const denied = await cold.readOpenShellMaterial(revisionId, signal, replaced);
+      const denied = await cold.readMaterial(replaced, signal);
       assert.ok(denied && "absent" in denied, `changed ${key} must not receive committed material`);
       const q = request();
-      assert.equal(
-        await cold.authorizeOpenShellRequest(q, { ...installed, route: replaced }, signal),
-        "access_withdrawn",
+      assert.deepEqual(
+        await cold.authorize(q, { ...installed, route: replaced }, signal),
+        unavailable,
       );
       assert.equal(
         (
@@ -479,10 +629,7 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
         "update occ.repository_session_attempts set phase='closing' where admission_id=$1",
         [admissionId],
       );
-      const both = Promise.all([
-        read(),
-        owner.authorizeOpenShellRequest(racing, installed, signal),
-      ]);
+      const both = Promise.all([read(), exact.authorize(racing, installed, signal)]);
       const limit = performance.now() + 900;
       for (;;) {
         const waiters = (
@@ -500,7 +647,10 @@ function protectedSuccessor(draftPullLimit: "none" | undefined) {
         );
       }
       await withdraw.query("COMMIT");
-      assert.deepEqual(await both, [{ absent: "withdrawn" }, "access_withdrawn"]);
+      assert.deepEqual(await both, [
+        { absent: "withdrawn" },
+        { kind: "denied", reason: "access_withdrawn" },
+      ]);
       assert.equal(
         (
           await f.pool.query("select from occ.prepared_repository_git_uses where exchange_id=$1", [

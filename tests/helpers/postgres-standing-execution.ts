@@ -24,6 +24,7 @@ export async function standingExecutionFixture(
     credentialGateway?: import("../../packages/contracts/src/index.ts").CredentialGatewayDriver;
     modelConfig?: { base_url: string };
     activePredecessor?: boolean;
+    requestedBinding?: { repositoryRef: string; profile: "github-installation" };
   }>,
 ) {
   const f = await standingExecutionPlatform(t, testUrl);
@@ -97,13 +98,16 @@ export async function standingExecutionFixture(
       await f.stop();
     }
   }
+  const bindings = [
+    external?.requestedBinding ?? { repositoryRef: "source", profile: "git-write" },
+  ];
   const [selected] = driver.resolve({
     namespaceId: f.namespace.id,
-    bindings: [{ repositoryRef: "source", profile: "git-write" }],
+    bindings,
   }).bindings;
   const binding = selected!;
   await f.observerPool.query("UPDATE occ.agents SET repository_bindings=$1 WHERE id=$2", [
-    JSON.stringify([{ repositoryRef: "source", profile: "git-write" }]),
+    JSON.stringify(bindings),
     owner.id,
   ]);
   const scope = driver.standingApprovalScope({ namespaceId: f.namespace.id, binding })!;

@@ -16,9 +16,11 @@ import { TokenService } from "../../apps/controller/src/backends/token-service/s
 import { createTokenPreparation } from "../../apps/controller/src/backends/token-service/preparation.ts";
 import type {
   TokenAdmission,
+  TokenAttempt,
   TokenFamily,
   TokenPreparationStore,
 } from "../../apps/controller/src/backends/token-service/custody.ts";
+import { retireToken } from "../../apps/controller/src/backends/token-service/retirement.ts";
 import { createWarmTokenReader } from "../../apps/controller/src/backends/token-service/warm-reader.ts";
 import { bindRuntimeSource } from "../helpers/postgres-protected-scenarios.mjs";
 import { postgresApp } from "../helpers/postgres-egress-app.mjs";
@@ -82,18 +84,26 @@ test(
   requiresPostgres,
   async (t) => {
     let service!: TokenService;
-    let pool!: Awaited<ReturnType<typeof postgresApp>>["pool"];
+    type App = Awaited<ReturnType<typeof postgresApp>>;
+    let app!: App;
+    let pool!: App["pool"];
     let admitted!: PreparedTokenSource;
     let family!: TokenAdmission;
     // Only this fixture's synthetic bytes live in the temporary table. Both maintenance and the
     // send proof lock this very row. The production GitHub tests exercise its encrypted custody.
-    type Family = TokenFamily<TokenAdmission>;
-    const store: TokenPreparationStore<TokenAdmission> = {
-      async readCurrent(id, select) {
+    type Attempt = TokenAttempt<TokenAdmission> & {
+      retirement?: "retiring" | "retired" | "unknown";
+    };
+    type Family = Omit<TokenFamily<TokenAdmission>, "attempts"> & { attempts: Attempt[] };
+    const store = {
+      async readCurrent<T>(id: string, select: (row: Family | undefined) => T) {
         const { rows } = await pool.query("SELECT ledger FROM artifact_custody WHERE id=$1", [id]);
         return select(rows[0] && (deserialize(rows[0].ledger) as Family));
       },
-      async transact(id, update) {
+      async transact<T>(
+        id: string,
+        update: (row: Family, allocateMaterialVersion: () => string) => T,
+      ) {
         const c = await pool.connect();
         try {
           await c.query("BEGIN");
@@ -102,10 +112,17 @@ test(
             [id],
           );
           const row = deserialize(rows[0].ledger) as Family;
+          const previous = row.committed;
           const result = update(row, randomUUID);
+          const material = row.committed;
+          // Keep cleanup custody on the issuing attempt, even after another lease replaces it.
+          if (material && material !== previous) {
+            const attempt = row.attempts.find((a) => a.id === material.attemptId)!;
+            attempt.candidate = material.bytes;
+          }
           await c.query("UPDATE artifact_custody SET ledger=$1,version=$2 WHERE id=$3", [
             serialize(row),
-            row.committed?.materialVersion ?? null,
+            material?.materialVersion ?? null,
             id,
           ]);
           await c.query("COMMIT");
@@ -117,7 +134,7 @@ test(
           c.release();
         }
       },
-    };
+    } satisfies TokenPreparationStore<TokenAdmission>;
     let proofTx: string | undefined;
     const issuerAuthority = "fixture-artifact-issuer";
     const issuer: PreparedTokenIssuer = {
@@ -203,8 +220,12 @@ test(
       async ready() {
         return (await createWarmTokenReader(store, Date.now).readWarm(family)).kind === "warm";
       },
-      async withdraw() {
-        await pool.query("DELETE FROM artifact_custody");
+      async withdraw(source) {
+        assert.deepEqual(source, admitted);
+        await store.transact(source.key.source.id, (row) => {
+          row.enabled = false;
+          delete row.committed;
+        });
       },
     };
     const options = {
@@ -232,7 +253,7 @@ test(
         return provider;
       },
       async appFactory(t: TestContext, opts: Record<string, unknown>) {
-        const app = await postgresApp(t, { ...opts, poolOptions: { max: 1 } }, undefined);
+        app = await postgresApp(t, { ...opts, poolOptions: { max: 1 } }, undefined);
         pool = app.pool;
         return app;
       },
@@ -285,7 +306,8 @@ test(
         authorize: () => f.authorize(f.permitRequest(captured, ready)),
       };
     };
-    assert.equal(f.revision!.credentialSources[0].credentialProxyId, f.egress!.id);
+    const revision = f.revision!;
+    assert.equal(revision.credentialSources[0].credentialProxyId, f.egress!.id);
     assert.equal(
       (await select({ target: { path: "/channels/private" } })).refused.code,
       f.refusalCode!("DENIED"),
@@ -297,10 +319,52 @@ test(
     );
 
     let issues = 0;
-    let loseIssue = false;
+    const familyId = family.familyId;
+    const retirements: string[] = [];
+    const retirementReplyLost = new Error("fixture issuer retirement reply lost");
     const worker = service.ownFamilies({
-      retire: async () => undefined,
+      async discover(signal) {
+        const withdrawn = await app.state.read(({ credentialSources }) =>
+          credentialSources.findCredentialWithdrawal(revision.namespaceId, revision.id, familyId),
+        );
+        if (withdrawn) {
+          await issuer.withdraw(admitted, signal);
+        }
+      },
+      retire: () =>
+        retireToken(
+          {
+            takeRetirement: () =>
+              store.transact(familyId, (row) => {
+                const due = row.attempts.find((a) => !row.enabled && a.candidate && !a.retirement);
+                if (due?.candidate) {
+                  due.retirement = "retiring";
+                  return { id: due.id, admission: due.admission, bytes: due.candidate.slice() };
+                }
+              }),
+            finishRetirement: (id, revoked) =>
+              store.transact(familyId, (row) => {
+                const attempt = row.attempts.find((a) => a.id === id)!;
+                assert.equal(attempt.retirement, "retiring");
+                attempt.retirement = revoked ? "retired" : "unknown";
+                if (revoked) {
+                  delete attempt.candidate;
+                }
+              }),
+          },
+          familyId,
+          async ({ bytes }) => {
+            retirements.push(Buffer.from(bytes).toString());
+            if (retirements.length === 2) {
+              throw retirementReplyLost;
+            }
+            return true;
+          },
+        ),
       async prepare(_signal, run) {
+        if (!(await store.readCurrent(familyId, (row) => row?.enabled))) {
+          return;
+        }
         return run(
           createTokenPreparation({
             admission: family,
@@ -310,8 +374,7 @@ test(
             minimumValidityMs: 1_000,
             async issue({ assertIssuing, capture }) {
               await assertIssuing();
-              ++issues;
-              if (loseIssue) {
+              if (++issues === 3) {
                 throw new Error("fixture issuer reply lost");
               }
               capture(Buffer.from("fixture-only-" + issues));
@@ -324,18 +387,28 @@ test(
       failed: () => assert.fail("fixture maintenance failed"),
     });
     t.after(() => worker.close());
-    const prepare = async () => {
-      assert.equal(await worker.maintain(), "committed");
-    };
-    await prepare();
+    assert.equal(await worker.maintain(), "committed");
     const before = await select();
     assert(before.ready);
-    await prepare();
-    assert.equal(
-      (await before.authorize()).refused?.code,
-      f.refusalCode!("DENIED"),
-      "displaced selection got permission",
-    );
+    assert.equal(await worker.maintain(), "committed");
+    const assertDenied = async (
+      selection: typeof before,
+      reason: "stale_configuration" | "withdrawn",
+    ) => {
+      assert.equal((await selection.authorize()).refused?.code, f.refusalCode!("DENIED"));
+      const { rows } = await pool.query(
+        "SELECT authorized_dispatch AS dispatch, outcome FROM occ.egress_send_receipts WHERE use_id=$1",
+        [selection.captured.request.context.request_id],
+      );
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].dispatch, null, "denied use recorded a possible dispatch");
+      assert.deepEqual(rows[0].outcome, {
+        kind: "refused",
+        dispatched: false,
+        error: { kind: "denied", code: reason },
+      });
+    };
+    await assertDenied(before, "stale_configuration");
     const next = await select();
     assert((await next.authorize()).allowed);
     const {
@@ -348,17 +421,39 @@ test(
       proofTx && receipt?.tx === proofTx,
       "current material lock must be in the transaction that committed permission",
     );
-    const held = await select();
-    await f.revoke!();
-    assert.equal(
-      (await held.authorize()).refused?.code,
-      f.refusalCode!("DENIED"),
-      "withdrawal must win with still valid bytes",
-    );
     assert.equal(issues, 2, "only preparation may contact this issuer");
-    loseIssue = true;
     assert.equal(await worker.maintain(), "quarantined");
     assert.equal(await worker.maintain(), "blocked");
     assert.equal(issues, 3, "an ambiguous issuance must not be replayed");
+
+    const held = await select();
+    assert(held.ready);
+    const withdrawal = await app.controller.withdrawAgentCredentialSource(app.principal.id, {
+      namespaceId: revision.namespaceId,
+      agentId: revision.agentId,
+      credentialSourceId: familyId,
+    });
+    assert.equal(withdrawal.revisionId, revision.id);
+    assert.equal(withdrawal.state, "pending");
+    await assertDenied(held, "withdrawn");
+    assert.equal(retirements.length, 0, "new use is denied before provider retirement");
+
+    assert.equal(await worker.maintain(), "retired");
+    await assert.rejects(worker.maintain(), (error: unknown) => error === retirementReplyLost);
+    assert.equal(await worker.maintain(), "idle", "never replay either retirement");
+    assert.deepEqual(retirements, ["fixture-only-1", "fixture-only-2"]);
+    const custody = await store.readCurrent(familyId, (row) => {
+      assert(row && !row.enabled && !row.committed);
+      return row.attempts.map(({ state, retirement, candidate }) => [
+        retirement ?? state,
+        candidate && Buffer.from(candidate).toString(),
+      ]);
+    });
+    assert.deepEqual(custody, [
+      ["retired", undefined],
+      ["unknown", "fixture-only-2"],
+      ["quarantined", undefined],
+    ]);
+    assert.equal(issues, 3, "withdrawal must not replace a lease or replay the lost issuance");
   },
 );

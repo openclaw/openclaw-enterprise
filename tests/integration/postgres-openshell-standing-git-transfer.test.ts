@@ -6,9 +6,11 @@ import test from "node:test";
 import { Pool } from "pg";
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentRevision, ComputeRevisionContext } from "../../packages/contracts/src/index.ts";
+import { exerciseInstallationRequests } from "../helpers/openshell-installation-github-requests.ts";
 import { protectedRepositoryGitRelease } from "../helpers/protected-repository-git-release.ts";
 import {
   OpenShellGitRuntime,
+  protectedOpenShellGitOwner,
   openShellRepositoryAccess,
 } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { PostgresOpenShellGitRouteStore } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-route-store.ts";
@@ -54,7 +56,7 @@ if (conversationRequired) {
   );
 }
 test(
-  "standing OpenShell candidate crosses three claims before material, fetches past both expiries and loses only Git",
+  "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub",
   { ...requiresPostgres, timeout: 385_000 },
   async (t) => {
     let peer!: Awaited<ReturnType<typeof preparedStandingGitPeer>>;
@@ -81,7 +83,14 @@ test(
     const codex = process.env.OCC_TEST_STANDING_GIT_CODEX;
     const conversation = codex && (await standingGitConversation(t, codex));
     const modelConfig = conversation ? { base_url: conversation.baseUrl } : undefined;
-    const protectedGit = protectedRepositoryGitRelease(() => standing());
+    let onlineOwner!: ReturnType<typeof protectedOpenShellGitOwner>;
+    const protectedGit = protectedRepositoryGitRelease(
+      () => standing(),
+      async (authority) => {
+        onlineOwner = protectedOpenShellGitOwner(authority);
+        return { close: async () => {} };
+      },
+    );
     const gatewayId = CREDENTIAL_GATEWAY_FIXTURE_ID;
     const gateway = new OpenShellCredentialGatewayDriver(
       { binaries: ["/usr/bin/codex"] },
@@ -96,19 +105,26 @@ test(
     );
     const { f, key, driver, revision, predecessor, registry, owner, approval, credentials } =
       await standingExecutionFixture(t, import.meta.url, async (pool, ns) => ({
-        ...(peer = await preparedStandingGitPeer(t, pool, ns, { beforeIssue })),
+        ...(peer = await preparedStandingGitPeer(t, pool, ns, {
+          beforeIssue,
+          driver: protectedGit.owner.ref,
+          installationAccess: true,
+        })),
+        requestedBinding: { repositoryRef: "team-installation", profile: "github-installation" },
         activePredecessor: true,
         protectedDriver: protectedGit.owner,
         credentialGateway: gateway,
         ...(modelConfig && { modelConfig }),
       }));
     const { prepared, registrationName, gh, send, input } = peer;
+    const authority = prepared.protectedGit!;
+    await protectedGit.owner.requireRepositoryGitTransport()(authority);
     assert.ok(predecessor);
     const preparationClaims: string[] = [];
     let oid = peer.oid;
     const workspace = kubernetesNamespaceName(revision.namespaceId);
     const sandbox = "standing-sandbox";
-    const sandboxId = "original-sandbox-id";
+    const sandboxId = crypto.randomUUID();
     const auth = revision.egressPlan!.harnessCredentialSource!;
     assert.deepEqual(auth, revision.harnessAuth);
     const model = openShellProviderName(auth.sourceId);
@@ -147,7 +163,7 @@ test(
         registry,
       );
       r["routes"] = routes;
-      r["owner"] = prepared;
+      r["owner"] = onlineOwner;
       return r;
     };
     let runtime = newRuntime();
@@ -260,6 +276,18 @@ test(
               throw e;
             });
           bindingId = p.middlewares["oce-prepared-git"].config.fields.binding_id.stringValue;
+          const environment = Object.fromEntries(
+            p.environment.map(({ name, value }) => [name, value]),
+          );
+          assert.equal(environment.GIT_CONFIG_KEY_1, "credential.https://github.com.helper");
+          assert.equal(environment.GIT_CONFIG_KEY_2, "http.followRedirects");
+          assert.equal(environment.GIT_CONFIG_VALUE_2, "false");
+          assert.equal(
+            environment.GITHUB_TOKEN,
+            undefined,
+            "the sender supplies only its workload alias",
+          );
+          assert.equal(environment.OCE_OPENSHELL_GIT_PUSH_REF, undefined);
           if (!world.id) {
             creates++;
             world.id = sandboxId;
@@ -388,21 +416,18 @@ test(
       budgetMs: 4000,
       lookupBinding: (id: Parameters<typeof runtime.lookup>[0], signal: AbortSignal) =>
         runtime.lookup(id, signal),
-      approve: prepared.authorizeOpenShellRequest,
+      authorizeOnlineRequest: onlineOwner.authorizeOnlineRequest,
     });
-    const evaluate = (upload: boolean) =>
-      invoke(
-        wire,
-        "EvaluateHttpRequest",
-        input(bindingId, sandboxId, upload, workspace),
-        token(keys, "supervisor", sandboxId),
-      );
+    const inspected = (upload: boolean) => input(bindingId, sandboxId, upload, workspace);
+    const evaluateRequest = (request: object) =>
+      invoke(wire, "EvaluateHttpRequest", request, token(keys, "supervisor", sandboxId));
+    const evaluate = (upload: boolean) => evaluateRequest(inspected(upload));
     const known = () => f.state.read((v) => v.repositorySessions.findStandingExecution(key));
     const attempts = () => f.state.read((v) => v.repositorySessions.listRevisionAttempts(key));
     const uses = async () =>
       (
         await f.observerPool.query(
-          "select operation,material_version,attempt_id from occ.prepared_repository_git_uses order by exchange_id",
+          "select operation,material_version,attempt_id,send_start_by,authorization_reply_by from occ.prepared_repository_git_uses order by exchange_id",
         )
       ).rows;
     const absent = () => {
@@ -490,11 +515,36 @@ test(
       );
       const route = (await routes.standing(revision))!.route;
       assert.deepEqual(
-        await prepared.readOpenShellMaterial(revision.id, t.signal, {
-          revisionId: revision.id,
-          fence: route.fence + 1,
-          observed: route.observed,
-        }),
+        await authority.readMaterial(
+          { revisionId: revision.id, fence: route.fence, observed: route.observed },
+          t.signal,
+        ),
+        { absent: "unprepared" },
+        "exact-dispatch port cannot release online material",
+      );
+      const installation = {
+        revisionId: revision.id,
+        fence: route.fence,
+        observed: route.observed,
+      };
+      for (const other of [authority.online, authority.githubInstallation!]) {
+        assert.deepEqual(
+          await other.readMaterial(installation, t.signal),
+          { absent: "unprepared" },
+          "neither a narrow online reader nor an exact-dispatch installation reader receives this material",
+        );
+      }
+      assert.deepEqual(
+        await onlineOwner.readOpenShellMaterial(
+          revision.id,
+          t.signal,
+          {
+            revisionId: revision.id,
+            fence: route.fence + 1,
+            observed: route.observed,
+          },
+          "github-installation",
+        ),
         { absent: "unprepared" },
         "a stale installer receives no committed material",
       );
@@ -502,6 +552,7 @@ test(
       assert.notEqual(oid, firstOid);
       absent();
       const issue1 = gh.issuesOfTokens[0]!;
+      assert.equal(issue1.repositoryIds, "installation");
       assert.equal(gh.issuesOfTokens.length, 1);
       assert.ok(world.gitExpiresAt <= Math.min(deadline, issue1.expires));
       const oldFence = (await routes.standing(revision))!;
@@ -597,14 +648,42 @@ test(
       assert.equal(git(["index-pack", "--stdin", "--strict"], pack.subarray(8)).status, 0);
       assert.equal(git(["cat-file", "-t", oid]).stdout.toString().trim(), "commit");
       assert.equal(git(["checkout", "-q", "--detach", oid]).status, 0);
+      assert.equal(issue2.repositoryIds, "installation");
+      const more = await exerciseInstallationRequests(t, peer, {
+        inspected: () => inspected(false),
+        evaluateRequest,
+        value: installed!,
+        cwd,
+        oid,
+      });
       const durable = await uses();
-      assert.equal(durable.length, 4);
+      assert.deepEqual(
+        durable.map((x) => x.operation).sort(),
+        [
+          ...Array(2).fill(["advertise-upload-pack", "upload-pack"]).flat(),
+          "advertise-receive-pack",
+          "receive-pack",
+          "github-rest",
+          "github-rest", // Bodyless workflow rerun was authorized, not sent.
+          "github-graphql",
+        ].sort(),
+      );
       await peer.noBroker();
       assert.equal(new Set(durable.map((x) => x.material_version)).size, 2);
-      assert.equal(gh.tokenState()[1]!.uses, 2, "both Git requests used the successor token");
+      assert.equal(gh.tokenState()[1]!.uses, 6);
       // Cleanup is still paused. The still-installed token and fresh signed request must be denied by
       // the prepared owner, not hidden by an expired credential, retired session or absent peer.
-      const before = peer.originCalls();
+      const before = more.originCalls();
+      // Hold the positive reply across withdrawal. This exact request may still finish.
+      const authorized = await evaluate(false);
+      assert.equal(authorized.decision, 1);
+      const withAllow = await uses();
+      assert.equal(withAllow.length, durable.length + 1);
+      assert.ok(
+        withAllow.every(
+          (r) => r.send_start_by === null && r.authorization_reply_by instanceof Date,
+        ),
+      );
       await f.controller.removeAgentStandingApproval(f.actor.id, {
         ...key,
         approvalId: approval.id,
@@ -615,11 +694,14 @@ test(
         reason_code: "access_withdrawn",
       });
       assert.ok(Date.now() < Math.min(issue2.expires, second!.deadlineWallMs, world.gitExpiresAt));
-      assert.equal(peer.originCalls(), before);
-      assert.deepEqual(await uses(), durable);
+      assert.equal(more.originCalls(), before);
+      assert.deepEqual(await uses(), withAllow);
+      // Only now finish the authorized request. This also proves the still-installed token works.
+      assert.equal((await send(installed!, false)).status, 200);
+      assert.equal(more.originCalls(), before + 1);
       const live = gh.tokenState()[1]!;
       assert.equal(live.revoked, false);
-      assert.equal(live.uses, 2);
+      assert.equal(live.uses, 7);
       gh.setRevokeStatus(204);
       await prepared.maintain();
       assert.deepEqual(await custody(), [

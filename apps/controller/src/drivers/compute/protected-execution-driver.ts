@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import {
   repositoryGitDeliveryProfile,
-  repositoryGitProfileAvailable,
+  repositoryGitAuthorization,
   validRepositoryGitRecipient,
 } from "@openclaw-enterprise/contracts";
 import type {
@@ -56,11 +56,12 @@ export class ProtectedExecutionDriver {
     }
     const profile = repositoryGitDeliveryProfile(context.plan.repositoryGit);
     if (
-      profile === "github_installation" &&
-      !(await repositoryGitProfileAvailable(this.proxy.sourceControl, context.signal, profile))
+      profile &&
+      (await repositoryGitAuthorization(this.proxy.sourceControl, context.signal, profile)) !==
+        (context.plan.repositoryGitAuthorization ?? "exact-dispatch")
     ) {
       throw new DependencyUnavailableError(
-        "The protected Driver no longer supports GitHub installation access.",
+        "The protected Driver no longer supports GitHub installation access or its admitted sender guarantee.",
       );
     }
     const prepared = await this.proxy.configureRevision(context);
@@ -143,11 +144,14 @@ export class ProtectedExecutionDriver {
       !!enforcement.instanceId &&
       !!enforcement.configurationId &&
       !!enforcement.policyHash &&
-      !!enforcement.peerKeyId &&
+      (context.plan.repositoryGitAuthorization === "online-request"
+        ? enforcement.peerKeyId === undefined
+        : !!enforcement.peerKeyId) &&
       (!installed.plan.repositoryGit ||
         validRepositoryGitRecipient(
           enforcement.repositoryGitRecipient,
           repositoryGitDeliveryProfile(context.plan.repositoryGit),
+          context.plan.repositoryGitAuthorization,
         )) &&
       (await this.proxy.verifyInstallation(context, installed))
     );

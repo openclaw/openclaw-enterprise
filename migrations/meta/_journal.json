@@ -477,6 +477,13 @@
       "when": 1787000000077,
       "tag": "0068_credential_proxy_github_installation",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787000000078,
+      "tag": "0069_repository_git_online_authorization",
+      "breakpoints": true
     }
   ]
 }

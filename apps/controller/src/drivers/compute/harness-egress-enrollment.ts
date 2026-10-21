@@ -9,10 +9,11 @@ function waitForHarnessEgressEnrollment(enrollment) {
   const { createServer } = require("node:http");
   const verifier = process.env.APP_TOKEN_SHA;
   const port = Number(process.env.APP_SERVER_PORT);
+  const online = enrollment?.repositoryGitAuthorization === "online-request";
   const executionKeys = ["installationId", "namespaceId", "agentId", "servicePrincipalId", "revisionId", "executionId"];
   if (typeof verifier !== "string" || !/^[a-f0-9]{64}$/.test(verifier) ||
       !Number.isSafeInteger(port) || port < 1 || port > 65535 ||
-      !isPlainObject(enrollment) || Object.keys(enrollment).length !== 4 ||
+      !isPlainObject(enrollment) || Object.keys(enrollment).length !== (online ? 5 : 4) ||
       (typeof enrollment.inference !== "boolean" && enrollment.inference !== "credential_source") ||
       !Number.isSafeInteger(enrollment.routeCount) || enrollment.routeCount < 0 ||
       !isPlainObject(enrollment.plan) || Object.keys(enrollment.plan).length !== 2 ||
@@ -97,7 +98,9 @@ function waitForHarnessEgressEnrollment(enrollment) {
         const now = Date.now();
         if (settled || released || performance.now() >= deadline ||
             !isDeepStrictEqual(release.challenge, challenge) || !isPlainObject(installation) ||
-            !["sandboxId", "instanceId", "configurationId", "peerKeyId"].every((k) =>
+            (online && (installation.repositoryGitRecipient?.authorization !== "online-request" ||
+              Object.hasOwn(installation, "peerKeyId"))) ||
+            !["sandboxId", "instanceId", "configurationId", ...(online ? [] : ["peerKeyId"])].every((k) =>
               typeof installation[k] === "string" && installation[k].length > 0) ||
             !Number.isSafeInteger(expiresAt) || expiresAt < now || expiresAt > now + 60000 ||
             typeof signature !== "string" || !/^[A-Za-z0-9_-]{86}$/.test(signature) ||

@@ -1,3 +1,4 @@
+import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { immutableCopy } from "@openclaw-enterprise/utils";
@@ -314,7 +315,8 @@ export function memoryRepositorySessions(
       );
       if (
         !ownerAcceptsAdmission(input) ||
-        (revision?.executionAdmission.version === 4) !== (input.brokerProtocol === 2) ||
+        protectedRepositoryGitAdmission(revision?.executionAdmission) !==
+          (input.brokerProtocol === 2) ||
         admitted === undefined ||
         (input.predecessorAdmissionId === undefined &&
           admitted.deadlineWallMs !== input.deadlineWallMs) ||

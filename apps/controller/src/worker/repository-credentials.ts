@@ -1,3 +1,4 @@
+import { protectedRepositoryGitAdmission } from "@openclaw-enterprise/contracts";
 import { isDeepStrictEqual } from "node:util";
 import { randomUUID } from "node:crypto";
 import type {
@@ -148,7 +149,7 @@ export class RepositoryCredentialLifecycle {
     if (snapshot === undefined) {
       return undefined;
     }
-    const protectedGit = revision.executionAdmission.version === 4;
+    const protectedGit = protectedRepositoryGitAdmission(revision.executionAdmission);
     if (
       (!protectedGit &&
         snapshot.bindings.some((binding) => isInstallationRepositoryProfile(binding.profile))) ||
@@ -319,7 +320,7 @@ export class RepositoryCredentialLifecycle {
     binding: RepositoryCredentialMaterialRef & { readonly deadlineWallMs: number },
   ): Promise<void> {
     await this.authorizedTransaction(claim, revision, async ({ repositorySessions }) => {
-      if (revision.executionAdmission.version === 4) {
+      if (protectedRepositoryGitAdmission(revision.executionAdmission)) {
         const { sessionId, repositoryRef, deadlineWallMs } = binding;
         const [attempt] = (await repositorySessions.listRevisionAttempts(owner(revision))).filter(
           (a) =>
@@ -636,7 +637,7 @@ export class RepositoryCredentialLifecycle {
     binding: AdmittedRepositoryBinding,
   ): Promise<RepositoryCredentialRuntimeBinding> {
     const driver = this.driver(revision);
-    const proxy = revision.executionAdmission.version === 4;
+    const proxy = protectedRepositoryGitAdmission(revision.executionAdmission);
     if (!proxy && driver.checkAdmissionReady !== undefined) {
       await this.dependencies.effect(claim, (signal) =>
         driver.checkAdmissionReady!(AbortSignal.any([signal, AbortSignal.timeout(2000)])),

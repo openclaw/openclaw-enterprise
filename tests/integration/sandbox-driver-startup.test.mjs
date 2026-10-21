@@ -5570,7 +5570,7 @@ test(
         }),
       ],
     };
-    // Exercise production composition through the actual v4 Sandbox spec. Only the selected
+    // Exercise production composition through the admitted v5 online Sandbox spec. Only the selected
     // model source survives Git; the runtime-files provider cannot stand in for that source.
     await t.test(
       "protected Sandbox accepts only the separately admitted model alongside Git",
@@ -5594,6 +5594,7 @@ test(
           driver: owner.ref,
           harnessCredentialSource: auth,
           repositoryGit: revision.repositoryCredentials,
+          repositoryGitAuthorization: "online-request",
           sandboxDriverId: sandbox.id,
           egressDriverId: proxy.id,
         };
@@ -5602,7 +5603,7 @@ test(
           id: revisionId,
           harnessAuth: auth,
           egressPlan: plan,
-          executionAdmission: { version: 4, mode: "protected" },
+          executionAdmission: { version: 5, mode: "protected" },
         };
         const ctx = { ...context, plan, revision: rev };
         protectedGit.computeDriver.validateExecutionAdmission(rev, owner);
@@ -5643,11 +5644,25 @@ test(
           await git.start(
             {
               readOpenShellMaterial: async () => undefined,
-              authorizeOpenShellRequest: async () => false,
+              authorizeOnlineRequest: async () => ({ kind: "denied", reason: "unavailable" }),
             },
             undefined,
             routeStore(),
           );
+          // v4 promised a send cutoff. The online sender must refuse that revision before creation.
+          const exactRevision = structuredClone(rev);
+          exactRevision.executionAdmission.version = 4;
+          delete exactRevision.egressPlan.repositoryGitAuthorization;
+          const exact = { ...context, plan: exactRevision.egressPlan, revision: exactRevision };
+          const exactWiring = await proxy.configureRevision(exact);
+          await assert.rejects(
+            sandbox.provisionHarness({
+              ...exact,
+              requirements: { ...required, proxyWiring: exactWiring },
+            }),
+            /requires one explicitly admitted GitHub binding and its dedicated Codex execution/,
+          );
+          assert.equal(created, undefined, "the online sender cannot take over a v4 execution");
           const result = await sandbox.provisionHarness({ ...ctx, requirements: required });
           const cold = sandbox.standingGitExecution(ctx);
           assert.equal(cold.continuity.model, inferenceProvider);

@@ -1,3 +1,5 @@
+import type { DriverRegistrationRef } from "../../packages/contracts/src/index.ts";
+import { openShellGitRecipientEvidence } from "../../apps/controller/src/drivers/repo/credentials/protected-repository-git-installation.ts";
 import assert from "node:assert/strict";
 import type { TestContext } from "node:test";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -24,12 +26,13 @@ export async function standingGitOrigin(
   namespaceId: string,
   tokenLifetimeMs = 135_000,
   beforeIssue?: () => Promise<void>,
+  installationAccess = false,
 ) {
   const clock = createSystemClock();
   // Keep the prepared owner's real 60 s clock margin and 60 s minimum validity.
   const github: (t: TestContext, options: object) => ReturnType<typeof startGitHubFixture> =
     startGitHubFixture;
-  const gh = await github(t, { clock, tokenLifetimeMs, beforeIssue });
+  const gh = await github(t, { clock, tokenLifetimeMs, beforeIssue, installationAccess });
   const tls = gh.tls;
   const pushRef = "refs/heads/review";
   const backendId = "prepared-standing";
@@ -42,6 +45,12 @@ export async function standingGitOrigin(
     githubInstallationId: fixtureInstallationId,
     maximumDurationSeconds: 180,
     allowStandingApprovals: true,
+    ...(installationAccess && {
+      installationAccess: {
+        repositoryRef: "team-installation",
+        namespaces: [{ namespaceId, accessMode: "installation", allowStandingApproval: true }],
+      },
+    }),
     repositories: [
       {
         repositoryRef: "source",
@@ -95,7 +104,11 @@ export async function preparedStandingGitPeer(
   t: TestContext,
   pool: Pool,
   namespaceId: string,
-  options: { beforeIssue?: () => Promise<void> } = {},
+  options: {
+    beforeIssue?: () => Promise<void>;
+    driver?: DriverRegistrationRef;
+    installationAccess?: boolean;
+  } = {},
 ) {
   const {
     registry,
@@ -108,7 +121,13 @@ export async function preparedStandingGitPeer(
     registrationName,
     directory,
     controlSocket,
-  } = await standingGitOrigin(t, namespaceId, undefined, options.beforeIssue);
+  } = await standingGitOrigin(
+    t,
+    namespaceId,
+    undefined,
+    options.beforeIssue,
+    options.installationAccess,
+  );
   // Public OpenShell requires the GitHub.com authority, not an arbitrary API origin.
   // Replace only the issuer's network destination, before DNS; keep fixture TLS verification,
   // the actual issuance and retirement requests, and the production admission and scope checks.
@@ -134,6 +153,10 @@ export async function preparedStandingGitPeer(
     custodyKeyPath,
     ca: tls.ca,
     startWorker: false,
+    ...(options.driver && {
+      protectedGitDriver: options.driver,
+      protectedGitEvidence: openShellGitRecipientEvidence,
+    }),
   });
   // The directory is private to this case. No receipt service, broker, session bearer, or
   // prepared-use socket exists before, during, or after either Git transfer.
@@ -204,6 +227,13 @@ export async function preparedStandingGitPeer(
     registry,
     prepared,
     originCalls: () => origin.traffic().requests,
+    installationTransport: {
+      httpsRequest: request,
+      apiOrigin: gh.origin,
+      tls,
+      authorize: gh.authorize,
+    },
+
     gh,
     controlSocket,
     oid,

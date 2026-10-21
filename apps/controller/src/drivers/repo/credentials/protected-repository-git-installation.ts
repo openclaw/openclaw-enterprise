@@ -5,14 +5,45 @@ import { repositoryGitRecipientFields } from "@openclaw-enterprise/contracts";
  * Bind the recipient that enforcement actually identified, not similarly named IDs from
  * different protocols. Provider resource, credential and control-session versions may rotate.
  */
+const admittedAuthorization = "p.installation #>> '{plan,repositoryGitAuthorization}'";
+const recipientAuthorization =
+  "p.installation #>> '{enforcement,repositoryGitRecipient,authorization}'";
+const peerKey = "p.installation #>> '{enforcement,peerKeyId}'";
+// v4 requires its original peer-bound recipient. v5 requires an explicit online recipient,
+// without inventing a peer key that the sender neither possessed nor proved.
+const matchingAuthorization = `(CASE WHEN p.installation->'plan' ? 'repositoryGitAuthorization'
+  THEN ${admittedAuthorization} = 'online-request'
+    AND ${recipientAuthorization} = 'online-request' AND ${peerKey} IS NULL
+  ELSE ${recipientAuthorization} IS NULL AND nullif(btrim(${peerKey}), '') IS NOT NULL END)`;
+// Repository execution releases contain exactly one binding. Both the signed release and the
+// independently observed recipient must explicitly name installation delivery; absence means narrow.
+const recipient = "p.installation#>'{enforcement,repositoryGitRecipient}'";
+export const releasedGitProfile = `CASE
+  WHEN ${recipient}->>'deliveryProfile' = 'github_installation' THEN 'github-installation'
+  WHEN NOT (${recipient} ? 'deliveryProfile') THEN 'git-write'
+  END`;
+export const registeredGitSelection = `p.installation#>>'{plan,repositoryGit,bindings,0,profile}' = ${releasedGitProfile}
+  AND jsonb_array_length(p.installation#>'{plan,repositoryGit,bindings}')=1 AND ${matchingAuthorization}`;
+
+// The route stores the observed provider name, id, resource and profile versions. Its owner
+// verifies the complete profile, not just this name. Keep the installed observation schema and
+// existing narrow names; an installation recipient must agree with this distinct profile family.
+export const openShellInstallationGitProviderPrefix = "oce-github-installation-";
+const observedInstallationProfile =
+  "r.observed->>'provider' ~ '^" + openShellInstallationGitProviderPrefix + "[0-9a-f]{32}$'";
+
 export const protectedRepositoryGitInstallationSql = `
   (p.namespace_id,p.agent_id,p.revision_id)=(r.namespace_id,r.agent_id,r.revision_id)
+  AND ${registeredGitSelection}
+  AND CASE WHEN ${recipient} ? 'deliveryProfile'
+    THEN ${observedInstallationProfile} AND ${admittedAuthorization} = 'online-request'
+    ELSE NOT (${observedInstallationProfile}) END
   AND p.sandbox_id = r.observed->>'sandboxId'
   AND r.binding_id = p.installation#>>'{plan,execution,executionId}'
   AND r.observed->>'executionId' = r.revision_id AND r.observed->>'providerId' = r.provider_id
   AND nullif(r.observed->>'policyHash', '') = p.installation#>>'{enforcement,policyHash}'
   AND p.installation#>>'{enforcement,authorityScope}' = 'execution'
-  AND ${["instanceId", "configurationId", "peerKeyId"]
+  AND ${["instanceId", "configurationId"]
     .map((key) => `nullif(p.installation#>>'{enforcement,${key}}', '') IS NOT NULL`)
     .join(" AND ")}
   AND ${repositoryGitRecipientFields
@@ -26,15 +57,26 @@ export const protectedRepositoryGitInstallationSql = `
 export const selectedRepositoryGitDriver = "current_setting('occ.repository_git_driver')::jsonb";
 export const repositoryGitOwnerPredicate = `f.source #> '{session,credentialProxyExecution,driver}' = ${selectedRepositoryGitDriver}`;
 
+export const legacyAdoption = "prepared_repository_git";
 export const protectedGitAdoption = "credential_proxy_repository_git";
 export const installationGitAdoption = "credential_proxy_github_installation";
 export const repositoryGitRecipients = "occ.protected_repository_git_recipients";
 
+// Protocol 1 and early protected senders share the legacy adoption label. The broker owns
+// only its recorded admission, session and generation; the receipt remains after disposal.
+export const repositoryGitBrokerOwnerPredicate = `EXISTS (
+  SELECT FROM occ.repository_session_attempts s JOIN occ.repository_broker_receipts b USING (admission_id)
+  WHERE s.broker_protocol=1 AND s.session_id=b.session_id
+    AND (s.admission_id,s.revision_id,b.session_id,b.generation::text) =
+      (f.source#>>'{session,admissionId}',f.source#>>'{session,revisionId}',
+       f.source#>>'{session,sessionId}',f.source#>>'{session,brokerGeneration}')
+)`;
+
 /** Absence of a sender's evidence denies use. Only OCC's positive end of this admission retires it. */
-export const repositoryGitAdmissionEnded = `EXISTS (
+const admissionEnded = (identity = "") => `EXISTS (
   SELECT FROM occ.repository_session_attempts s
   WHERE (s.admission_id,s.revision_id,s.session_id) =
-    (f.source#>>'{session,admissionId}',f.source#>>'{session,revisionId}',f.source#>>'{session,sessionId}')
+    (f.source#>>'{session,admissionId}',f.source#>>'{session,revisionId}',f.source#>>'{session,sessionId}') ${identity}
     AND (s.phase IN ('closing','disposed','invalidated') OR s.live_revision_id IS NULL
       OR to_timestamp(s.deadline_wall_ms / 1000.0) <= clock_timestamp()
       OR EXISTS (SELECT FROM occ.repository_standing_executions e
@@ -45,12 +87,24 @@ export const repositoryGitAdmissionEnded = `EXISTS (
         AND (g.active_revision_id IS DISTINCT FROM s.revision_id OR g.desired_runtime_state <> 'running')))
   )`;
 
-/** The committed release must bind a peer, policy and every stable recipient identity. */
+export const repositoryGitAdmissionEnded = admissionEnded();
+
+// Early protected v4 families recorded the execution but omitted its Driver. Recover that
+// identity from the admitted revision, even after the route is gone. This is retirement only.
+const historicalExecution = "f.source #> '{session,credentialProxyExecution}'";
+export const unregisteredGitAdmissionEnded = `f.source->>'adoption' = '${legacyAdoption}'
+  AND jsonb_typeof(${historicalExecution}) = 'object' AND NOT ((${historicalExecution}) ? 'driver')
+  AND ${admissionEnded(`AND s.broker_protocol=2 AND EXISTS (
+    SELECT FROM occ.agent_revisions rev
+    WHERE (rev.namespace_id,rev.agent_id,rev.id) = (s.namespace_id,s.agent_id,s.revision_id)
+      AND rev.admitted_spec->'execution_admission' @> '{"version":4,"mode":"protected"}'::jsonb
+      AND rev.admitted_spec #> '{egress_plan,driver}' = ${selectedRepositoryGitDriver})`)}`;
+
+/** Alongside matchingAuthorization, require the policy and every stable recipient identity. */
 export const validRecipient = [
   "instanceId",
   "configurationId",
   "policyHash",
-  "peerKeyId",
   ...repositoryGitRecipientFields.map((field) => "repositoryGitRecipient," + field),
 ]
   .map((path) => `nullif(btrim(p.installation#>>'{enforcement,${path}}'), '') IS NOT NULL`)
@@ -81,16 +135,6 @@ export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Obj
   installed: `${openShellObserved} AND observed->>'credentialState'='active' AND write_pending IS NULL
     AND preparation_attempt_id=$4 AND material_version=$5`,
 });
-
-// A version-four release contains exactly one binding. Both the signed release and the
-// independently observed recipient must explicitly name installation delivery; absence means narrow.
-const recipient = "p.installation#>'{enforcement,repositoryGitRecipient}'";
-export const registeredGitProfile = `CASE
-  WHEN ${recipient}->>'deliveryProfile' = 'github_installation' THEN 'github-installation'
-  WHEN NOT (${recipient} ? 'deliveryProfile') THEN 'git-write'
-  END`;
-export const registeredGitSelection = `p.installation#>>'{plan,repositoryGit,bindings,0,profile}' = ${registeredGitProfile}
-  AND jsonb_array_length(p.installation#>'{plan,repositoryGit,bindings}')=1`;
 
 const registeredObservation = `SELECT FROM ${repositoryGitRecipients} WHERE revision_id=$1 AND fence=$2
     AND installation=$3::jsonb AND state <> 'installing'`;

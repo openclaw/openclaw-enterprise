@@ -21,10 +21,16 @@ export interface OpenShellOnlineReasonedDenial {
   readonly reasonCode: string;
 }
 
-export type OpenShellOnlineDecision = "allow" | "deny" | OpenShellOnlineReasonedDenial;
+export type OpenShellOnlineDecision =
+  | "allow"
+  | "deny"
+  | OpenShellOnlineReasonedDenial
+  | { readonly kind: "allow"; readonly replyBy: string };
 
 function denial(result: OpenShellOnlineDecision): Wire {
-  return typeof result === "object" && /^[a-z][a-z0-9_]{0,63}$/.test(result.reasonCode)
+  return typeof result === "object" &&
+    "reasonCode" in result &&
+    /^[a-z][a-z0-9_]{0,63}$/.test(result.reasonCode)
     ? { decision: 2, reason_code: result.reasonCode }
     : deny;
 }
@@ -82,7 +88,7 @@ export interface OpenShellOnlineHttpRequest {
     readonly reportedScheme: "https";
     readonly host: string;
     readonly port: number;
-    readonly method: "GET" | "POST";
+    readonly method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
     readonly path: string;
     readonly query: string;
   };
@@ -99,6 +105,12 @@ export interface OpenShellOnlineHttpAuthorityOptions extends Omit<
     request: OpenShellOnlineHttpRequest,
     signal: AbortSignal,
   ) => Promise<OpenShellOnlineDecision>;
+}
+
+function httpMethod(value: unknown): value is OpenShellOnlineHttpRequest["target"]["method"] {
+  return (
+    typeof value === "string" && ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(value)
+  );
 }
 
 function httpRequestView(
@@ -130,7 +142,7 @@ function httpRequestView(
       target.host,
     ) ||
     isIP(target.host) !== 0 ||
-    (target.method !== "GET" && target.method !== "POST") ||
+    !httpMethod(target.method) ||
     typeof target.path !== "string" ||
     !/^\/[\x21-\x7e]{0,4095}$/.test(target.path) ||
     /[?#]/.test(target.path) ||
@@ -359,7 +371,11 @@ function createAuthority<T>(
             null,
             controller.signal.aborted || expired()
               ? deny
-              : result === "allow"
+              : result === "allow" ||
+                  (typeof result === "object" &&
+                    "kind" in result &&
+                    result.kind === "allow" &&
+                    Date.now() < Date.parse(result.replyBy))
                 ? { decision: 1 }
                 : denial(result),
           ),

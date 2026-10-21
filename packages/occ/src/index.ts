@@ -12,7 +12,7 @@ import {
   credentialFreeMetadataGrant,
   isInstallationRepositoryProfile,
   repositoryGitDeliveryProfile,
-  repositoryGitProfileAvailable,
+  repositoryGitAuthorization,
   credentialFreeMetadataType,
   credentialSourceMatchesSnapshot,
   revisionCredentialSourceSnapshot,
@@ -5252,7 +5252,8 @@ export class OpenClawController {
             deadlineAt: use.request.deadlineAt,
           }))
         ) {
-          return deny("withdrawn");
+          // Withdrawal was checked under the source lock. This selection could not be proved current.
+          return deny("stale_configuration");
         }
       }
       return admitted;
@@ -5519,13 +5520,12 @@ export class OpenClawController {
     if (installationAccess) {
       owner.requireRepositoryGitTransport();
     }
-    if (
-      !(await repositoryGitProfileAvailable(
-        driver.sourceControl,
-        AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
-        repositoryGitDeliveryProfile(repositoryGit),
-      ))
-    ) {
+    const gitAuthorization = await repositoryGitAuthorization(
+      driver.sourceControl,
+      AbortSignal.timeout(CREDENTIAL_GATEWAY_TIMEOUT_MS),
+      repositoryGitDeliveryProfile(repositoryGit),
+    );
+    if (gitAuthorization === "unavailable") {
       throw new DependencyUnavailableError(
         "The selected Credential Proxy did not confirm installation-wide repository access.",
       );
@@ -5575,6 +5575,8 @@ export class OpenClawController {
       egressDriverId: driver.id,
       driver: owner.ref,
       ...(repositoryGit && { repositoryGit }),
+      ...(repositoryGit &&
+        gitAuthorization === "online-request" && { repositoryGitAuthorization: gitAuthorization }),
       ...(harnessCredentialSource && { harnessCredentialSource }),
       routes,
     });
@@ -9141,7 +9143,10 @@ export class OpenClawController {
       const executionAdmission =
         egressPlan === undefined
           ? ({ version: 2, mode: "unprotected" } as const)
-          : ({ version: egressPlan.repositoryGit ? 4 : 3, mode: "protected" } as const);
+          : ({
+              version: egressPlan.repositoryGitAuthorization ? 5 : egressPlan.repositoryGit ? 4 : 3,
+              mode: "protected",
+            } as const);
       const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };
       assertExecutionAdmission(execution);
       try {

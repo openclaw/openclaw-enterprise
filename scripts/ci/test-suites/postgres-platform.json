@@ -299,7 +299,10 @@
         "prepared standing Git retirement preserves the response lost boundary",
         "prepared standing Git retirement preserves the other issuer boundary",
         "prepared standing Git retirement preserves the finite boundary",
-        "a lost standing Git issuance remains unresolved without a verified expiry"
+        "a lost standing Git issuance remains unresolved without a verified expiry",
+        "a protected successor binds the released Git recipient and preserves draft custody, limit one per grant",
+        "a protected successor binds the released Git recipient and preserves draft custody, limit none",
+        "an unregistered protected v4 sender keeps its possible use and custody until actual withdrawal"
       ]
     },
     {
@@ -345,13 +348,14 @@
       "path": "tests/integration/postgres-external-protected-git.test.ts",
       "expectedTests": [
         "an installed external Driver fetches private Git across rotation and receives the next fetch after withdrawal",
-        "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal"
+        "an installed external Driver uses an explicit GitHub installation for private Git fetch, push, REST and GraphQL until withdrawal",
+        "an online sender uses the admitted GitHub installation for real Git and API requests until withdrawal"
       ]
     },
     {
       "path": "tests/integration/postgres-openshell-standing-git-transfer.test.ts",
       "expectedTests": [
-        "standing OpenShell candidate crosses three claims before material, fetches past both expiries and loses only Git"
+        "standing OpenShell installation grant crosses both expiries, serves two Git repositories and the API, then loses only GitHub"
       ]
     },
     {

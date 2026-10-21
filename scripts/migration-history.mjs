@@ -288,6 +288,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 64) {
     return "preCredentialProxyRepositorySession";
   }
+  if (count === 68) {
+    return "preRepositoryGitOnlineAuthorization";
+  }
   if (count === 67) {
     return "preCredentialProxyGitHubInstallation";
   }

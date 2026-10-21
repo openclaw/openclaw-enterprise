@@ -6,25 +6,30 @@ import {
   DependencyUnavailableError,
   SandboxGatewayUnavailableError,
 } from "@openclaw-enterprise/occ";
+import { openShellInstallationGitProviderPrefix } from "../repo/credentials/protected-repository-git-installation.ts";
 import { isGitHubWireCredential } from "../repo/github/credentials/wire-credential.ts";
-import type {
-  OpenShellGatewayClient,
-  OpenShellProviderProfile,
-  OpenShellProviderResponse,
+import {
+  openShellProfileEndpoint,
+  type OpenShellGatewayClient,
+  type OpenShellProviderProfile,
+  type OpenShellProviderResponse,
 } from "../sandbox/openshell-gateway-client.ts";
 
 /** Operator-owned scope; never populate this from a workload request. */
-export interface OpenShellPreparedGitScope {
+export type OpenShellPreparedGitDelivery =
+  | { readonly repository: string; readonly installationId?: never }
+  | { readonly repository?: never; readonly installationId: string };
+
+export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
   readonly workspace: string;
   readonly workspaceId: string;
   readonly sandbox: string;
   readonly executionId: string;
-  readonly repository: string;
   /** Exact HTTPS origins, including controlled origins used for qualification. */
   readonly gitOrigin: string;
   readonly apiOrigin: string;
   readonly binaries: readonly string[];
-}
+};
 
 /** Only the credential worker supplies this value; no App signing key or OAuth material. */
 export interface OpenShellPreparedGitToken {
@@ -157,8 +162,13 @@ export class OpenShellPreparedGitProvider {
       !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(scope.sandbox) ||
       !scope.workspaceId ||
       !scope.executionId ||
-      !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
-      scope.repository.split("/").some((part) => part === "." || part === "..") ||
+      (scope.installationId !== undefined
+        ? !/^[1-9][0-9]*$/.test(scope.installationId) ||
+          scope.repository !== undefined ||
+          scope.apiOrigin !== "https://api.github.com" ||
+          scope.gitOrigin !== "https://github.com"
+        : !/^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/.test(scope.repository) ||
+          scope.repository.split("/").some((part) => part === "." || part === "..")) ||
       scope.binaries.length === 0 ||
       scope.binaries.some(
         (path) => !/^\/[A-Za-z0-9_./-]+$/.test(path) || path.split("/").includes(".."),
@@ -177,7 +187,7 @@ export class OpenShellPreparedGitProvider {
           scope.workspaceId,
           scope.sandbox,
           scope.executionId,
-          scope.repository,
+          scope.installationId ? ["github-installation", scope.installationId] : scope.repository,
           git.origin,
           api.origin,
           scope.binaries,
@@ -185,7 +195,8 @@ export class OpenShellPreparedGitProvider {
       )
       .digest("hex")
       .slice(0, 48);
-    this.provider = `oce-git-${this.fingerprint.slice(0, 32)}`;
+    const prefix = scope.installationId ? openShellInstallationGitProviderPrefix : "oce-git-";
+    this.provider = prefix + this.fingerprint.slice(0, 32);
     this.profile = {
       id: this.provider,
       displayName: "Prepared Git installation token",
@@ -200,20 +211,48 @@ export class OpenShellPreparedGitProvider {
           stablePlaceholder: true,
         },
       ],
-      endpoints: [
-        [git, `/${scope.repository}.git/**`],
-        [api, `/repos/${scope.repository}/pulls`],
-      ].map(([target, path]) => {
-        const url = target as URL;
-        return {
-          host: url.hostname,
-          port: Number(url.port || 443),
-          protocol: "rest",
-          path: path as string,
-          // v0.1.4 rejects its deprecated explicit TLS mode. Omission selects auto-detection,
-          // not a TLS-only guarantee; admission must independently enforce the latter.
-        };
-      }),
+      // This profile bounds transport, not credential placement or GitHub permissions. Release
+      // must independently verify the mandatory request phase, verified TLS and sole recipient.
+      endpoints: scope.installationId
+        ? [
+            {
+              host: git.hostname,
+              port: 443,
+              protocol: "rest",
+              rules: [
+                { allow: { method: "GET", path: "/**/info/refs" } },
+                { allow: { method: "POST", path: "/**/git-upload-pack" } },
+                { allow: { method: "POST", path: "/**/git-receive-pack" } },
+              ],
+            },
+            {
+              host: api.hostname,
+              port: 443,
+              protocol: "rest",
+              access: "NETWORK_ACCESS_PRESET_FULL",
+            },
+            {
+              host: api.hostname,
+              port: 443,
+              protocol: "graphql",
+              path: "/graphql",
+              access: "NETWORK_ACCESS_PRESET_FULL",
+            },
+          ]
+        : [
+            {
+              host: git.hostname,
+              port: Number(git.port || 443),
+              protocol: "rest",
+              path: "/" + scope.repository + ".git/**",
+            },
+            {
+              host: api.hostname,
+              port: Number(api.port || 443),
+              protocol: "rest",
+              path: "/repos/" + scope.repository + "/pulls",
+            },
+          ],
       binaries: this.scope.binaries,
       inferenceCapable: false,
       annotations: { [OWNER]: this.fingerprint },
@@ -277,14 +316,7 @@ export class OpenShellPreparedGitProvider {
         definition.binaries,
         this.scope.binaries.map((path) => ({ path })),
       ) ||
-      !isDeepStrictEqual(
-        endpoints,
-        this.profile.endpoints.map((endpoint) => ({
-          ...endpoint,
-          enforcement: "NETWORK_ENFORCEMENT_MODE_ENFORCE",
-          access: "NETWORK_ACCESS_PRESET_READ_WRITE",
-        })),
-      )
+      !isDeepStrictEqual(endpoints, this.profile.endpoints.map(openShellProfileEndpoint))
     ) {
       refuse();
     }

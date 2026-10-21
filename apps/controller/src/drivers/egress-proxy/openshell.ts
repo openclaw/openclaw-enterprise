@@ -219,7 +219,7 @@ export function openShellEgressConfiguration(
         "This Credential Proxy cannot install the admitted repository plan.",
       );
     }
-    // The prepared provider supplies the exact repository endpoints. No generic exchange
+    // The prepared provider supplies the endpoints for the admitted GitHub scope. No generic exchange
     // authority, broad Git network rule or second credential-bearing sender accompanies it.
     return immutableCopy({
       network_policies: {},
@@ -338,11 +338,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         ...(selection.preparedProviders ?? []),
       ],
       assertAvailable: async (signal: AbortSignal, profile?: RepositoryGitDeliveryProfile) => {
-        if (profile === "github_installation") {
-          throw new DependencyUnavailableError(
-            "This OpenShell Driver is not qualified for GitHub installation access.",
-          );
-        }
+        this.assertRepositoryGitProfileAvailable(profile);
         const client = this.backend.client.clientForNamespace("");
         if (!client.getGatewayInfo) {
           throw new DependencyUnavailableError(
@@ -351,7 +347,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         }
         const info = await client.getGatewayInfo(signal);
         const extensions = info.extensions;
-        const git = profile === "repository_git";
+        const git = profile === "repository_git" || profile === "github_installation";
         const registration = git ? options.repositoryMiddlewareName : options.middlewareName;
         if (
           !registration ||
@@ -372,8 +368,25 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             "The selected OpenShell counterpart has no negotiated protected egress authority.",
           );
         }
+        // Name the sender's actual contract. This does not qualify the release: the positive
+        // enforcement needed for enrollment and material remains unavailable below.
+        if (git) {
+          return { profile, authorization: "online-request" as const };
+        }
       },
     });
+  }
+
+  /** Stock cannot offer installation-wide GitHub. Keep admission closed independently of
+   * repositoryGitEnforcement, which must also verify the exact recipient at release. */
+  protected assertRepositoryGitProfileAvailable(
+    profile: RepositoryGitDeliveryProfile | undefined,
+  ): void {
+    if (profile === "github_installation") {
+      throw new DependencyUnavailableError(
+        "This OpenShell Driver is not qualified for GitHub installation access.",
+      );
+    }
   }
 
   async configureRevision(context: ProxyRevisionContext): Promise<ProxyWiring> {
@@ -525,7 +538,8 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   /**
    * Release gate for the public online profile. Registration, a loaded policy and provider
    * readiness do not prove that this sender cannot skip the request hook or reuse an execution
-   * identity. No released stock composition is qualified here yet. In particular, never use
+   * identity. Stock v0.1.5 can omit the request phase; no published release is qualified here.
+   * Require verified TLS, credential placement and no bypass on a supported release. Never use
    * the private installation-exchange capability or the reported URL scheme as that proof.
    */
   protected repositoryGitEnforcement(

@@ -588,7 +588,10 @@ export function createWorkerRevisionFixtures(
           Object.assign(candidate, {
             configuration,
             egressPlan,
-            executionAdmission: { version: 4, mode: "protected" },
+            executionAdmission: {
+              version: egressPlan.repositoryGitAuthorization === "online-request" ? 5 : 4,
+              mode: "protected",
+            },
             sandboxDriverId: sandbox.id,
           });
         });

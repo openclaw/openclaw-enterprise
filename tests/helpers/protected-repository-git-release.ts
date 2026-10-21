@@ -4,10 +4,12 @@ import { generateKeyPairSync, randomUUID, verify } from "node:crypto";
 import type {
   AgentRevision,
   ComputeRevisionContext,
+  CredentialProxyDriver,
   EgressInstallation,
   Namespace,
   ProxyRevisionContext,
   RepositoryGitRecipient,
+  RepositoryGitDeliveryProfile,
   SandboxDriver,
   SandboxRepositoryAccess,
 } from "../../packages/contracts/src/index.ts";
@@ -22,7 +24,10 @@ import {
 
 /** Real registered release, policy comparisons and signed enrollment. The one positive
  * installation observation is controlled, never a claim of a qualifying stock OpenShell. */
-export function protectedRepositoryGitRelease(repository: () => SandboxRepositoryAccess) {
+export function protectedRepositoryGitRelease(
+  repository: () => SandboxRepositoryAccess,
+  bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>,
+) {
   const id = "test-installed-git-sender";
   const registration = "oce-prepared-git";
   const instanceId = randomUUID();
@@ -71,6 +76,8 @@ export function protectedRepositoryGitRelease(repository: () => SandboxRepositor
       const { challenge, installation, expiresAt, signature } = await release(randomUUID());
       assert.equal(challenge.routeCount, 1);
       assert.equal(challenge.inference, "credential_source");
+      assert.equal(challenge.repositoryGitAuthorization, "online-request");
+      assert.ok(!("peerKeyId" in installation), "online sender has no request-bound peer key");
       assert.equal(installation.sandboxId, sandboxId);
       assert.ok("repositoryGitRecipient" in installation);
       assert.deepEqual(installation.repositoryGitRecipient, recipient);
@@ -94,6 +101,17 @@ export function protectedRepositoryGitRelease(repository: () => SandboxRepositor
   };
   Object.assign(sandbox, { repositoryAccess: access });
   class ObservedOnlineSender extends OpenShellCredentialProxyDriver {
+    protected override assertRepositoryGitProfileAvailable(profile?: RepositoryGitDeliveryProfile) {
+      if (profile !== "github_installation") {
+        return super.assertRepositoryGitProfileAvailable(profile);
+      }
+      // Only this fixture supplies both the profile and the enforcement observation. Keep an
+      // executable check that ordinary production capability negotiation refuses the profile.
+      assert.throws(
+        () => super.assertRepositoryGitProfileAvailable(profile),
+        /not qualified for GitHub installation/,
+      );
+    }
     protected override repositoryGitEnforcement(
       ctx: ProxyRevisionContext,
       status: Readonly<Record<string, unknown>>,
@@ -110,12 +128,12 @@ export function protectedRepositoryGitRelease(repository: () => SandboxRepositor
         instanceId,
         configurationId: ctx.plan.id,
         policyHash: "original-policy",
-        peerKeyId: "controlled-online-sender",
         ...(recipient && { repositoryGitRecipient: recipient }),
       };
     }
   }
   const proxy = new ObservedOnlineSender(opts, {
+    ...(bindRepositoryGit && { bindRepositoryGit }),
     id,
     sandbox,
     backend: {
@@ -151,6 +169,8 @@ export function protectedRepositoryGitRelease(repository: () => SandboxRepositor
       gitRecipient: RepositoryGitRecipient,
     ) {
       const plan = revision.egressPlan!;
+      assert.equal(revision.executionAdmission.version, 5);
+      assert.equal(plan.repositoryGitAuthorization, "online-request");
       assert.equal(release.admits(revision, "stored"), true);
       context = {
         revision,
@@ -176,6 +196,20 @@ export function protectedRepositoryGitRelease(repository: () => SandboxRepositor
         "enforcement without its Git recipient cannot be released",
       );
       recipient = gitRecipient;
+      assert.equal(
+        await release.observe(context, wiring),
+        undefined,
+        "v5 cannot adopt a recipient that did not verify online authorization",
+      );
+      recipient = { ...gitRecipient, authorization: "online-request" };
+      if (plan.repositoryGit?.bindings[0]?.profile === "github-installation") {
+        assert.equal(
+          await release.observe(context, wiring),
+          undefined,
+          "installation admission cannot release a narrow online recipient",
+        );
+        recipient = { ...recipient, deliveryProfile: "github_installation" };
+      }
       assert.equal(
         await release.enroll(
           context,

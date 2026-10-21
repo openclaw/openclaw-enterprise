@@ -266,7 +266,7 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
          JOIN occ.agent_revisions v ON v.id = r.revision_id AND v.agent_id = r.agent_id AND v.namespace_id = r.namespace_id
          WHERE (r.revision_id, r.namespace_id, r.agent_id) = ($1, $2, $3)
            AND v.admitted_spec->'repository_credentials' = $4::jsonb
-           AND (v.admitted_spec #>> '{execution_admission,version}' <> '4' OR EXISTS (
+           AND (v.admitted_spec #>> '{execution_admission,version}' NOT IN ('4','5') OR EXISTS (
                 SELECT FROM occ.egress_installations p WHERE ${protectedRepositoryGitInstallationSql}
                 AND p.installation->'plan'=v.admitted_spec->'egress_plan'
                 AND p.installation#>'{plan,repositoryGit}'=$4::jsonb))

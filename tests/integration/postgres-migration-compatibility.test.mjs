@@ -1798,6 +1798,10 @@ async function assertUpgradedRevisionReadable(db) {
   for (const rewrite of [
     "admitted_spec - 'execution_admission'",
     `admitted_spec || '{"execution_admission":{"version":2,"mode":"protected"}}'::jsonb`,
+    // Protected v2 has neither a Git sender nor an authorization mode.
+    `admitted_spec || '{"execution_admission":{"version":2,"mode":"protected"},
+      "harness_auth":{"protectedExecutionVersion":2},
+      "egress_plan":{"repositoryGitAuthorization":"online-request"}}'::jsonb`,
   ]) {
     await assert.rejects(
       db.app.query(
@@ -1972,6 +1976,7 @@ test(
       [65, "prePreparedRepositoryDraftUses"],
       [66, "preProtectedRepositoryGitRecipients"],
       [67, "preCredentialProxyGitHubInstallation"],
+      [68, "preRepositoryGitOnlineAuthorization"],
     ]) {
       void context.test(`populated canonical ${history}`, async (child) => {
         const db = await historyDatabase(child, fixture, "main", { prefix });
@@ -2392,6 +2397,7 @@ test(
       [65, "prePreparedRepositoryDraftUses"],
       [66, "preProtectedRepositoryGitRecipients"],
       [67, "preCredentialProxyGitHubInstallation"],
+      [68, "preRepositoryGitOnlineAuthorization"],
     ]) {
       void context.test(history, async (child) => {
         const db = await historyDatabase(child, fixture, "providercontinuation");
@@ -2488,6 +2494,7 @@ test(
       [65, "prePreparedRepositoryDraftUses"],
       [66, "preProtectedRepositoryGitRecipients"],
       [67, "preCredentialProxyGitHubInstallation"],
+      [68, "preRepositoryGitOnlineAuthorization"],
     ]) {
       void context.test(`prefix ${prefix} transaction`, async (child) => {
         const db = await historyDatabase(child, fixture, "rollback", { prefix });

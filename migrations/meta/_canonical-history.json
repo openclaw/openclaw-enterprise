@@ -545,6 +545,14 @@
       "tag": "0068_credential_proxy_github_installation",
       "breakpoints": true,
       "sha256": "02580431e99d6e8c9d5d9b6db5ecf16d154aea81e959cf1105addc5a4267a010"
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1787000000078,
+      "tag": "0069_repository_git_online_authorization",
+      "breakpoints": true,
+      "sha256": "cc70b98383fa749212ec15f630730781461c92364049cf4a7a199acc61de03bc"
     }
   ],
   "initialSchemaStates": {
@@ -573,7 +581,7 @@
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
     "preOpenShellExpiredGit": "c3d7198df23e214c890f1556b933d00d1306e9dc87014275d3fb256366038219",
-    "completed": "e5cae0385ebe224f2246a0accf4e0c7404530b4788b901633c50310a201baaad",
+    "completed": "2827e9348b133afd96c1c130275af333fb743696eacd72caebd6782a3c33141c",
     "prePreparedRepositoryDraftUses": "d34b71856f3105853950b8bb145ee45f109e90add7b86a15346ea708ff36c4c8",
     "preProtectedDriverRegistration": "cc231e4e9c7569e1bc3ba45c37b5c62c5515246e1ba51ec35b6b43fce05c98da",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",
@@ -612,7 +620,8 @@
     "prePreparedStandingGitExpiry": "75bc5f056ccc413ef76b478a136a133d9357859a3ca4fd7922644c5620b796d7",
     "preCredentialProxyRepositorySession": "c59728a69651f4312f0c4ffbf9abb8aeb7a6e6cbba877f29765cc987dd68b3dd",
     "preProtectedRepositoryGitRecipients": "c2670f27d3bdeab66d86fda080f82d98561dec192bd68d1350640e516cb60852",
-    "preCredentialProxyGitHubInstallation": "219ac774a61fdb0e5c155c34e1556fd97ea09d3ebda30f188f06e0a3248a9f83"
+    "preCredentialProxyGitHubInstallation": "219ac774a61fdb0e5c155c34e1556fd97ea09d3ebda30f188f06e0a3248a9f83",
+    "preRepositoryGitOnlineAuthorization": "e5cae0385ebe224f2246a0accf4e0c7404530b4788b901633c50310a201baaad"
   },
   "ledgerCatalogs": {
     "initialized": "62946da6b1fc2b06df09e97dda4cf1831f170a2f3d5ff35a9f107af206c425dc",

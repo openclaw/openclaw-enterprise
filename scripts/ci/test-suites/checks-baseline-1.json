@@ -472,7 +472,8 @@
       "path": "tests/integration/egress-stock-online-git-authority.test.mjs",
       "expectedTests": [
         "signed stock Git RPC admits discovery, fetch and push, then honors live denial",
-        "stock Git admits gzip only on the upload-pack negotiation, which it never inspects"
+        "stock Git admits gzip only on the upload-pack negotiation, which it never inspects",
+        "protected Git replies to this online decision before its authority deadline"
       ]
     },
     {

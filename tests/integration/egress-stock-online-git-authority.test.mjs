@@ -507,6 +507,38 @@ test("Git authority cannot be constructed without both trusted owner callbacks",
   );
 });
 
+test("protected Git replies to this online decision before its authority deadline", async (t) => {
+  let answer = "current";
+  const { client, keys } = await openShellOnlineGitWire(t, {
+    lookupBinding: async () => binding,
+    authorizeOnlineRequest: async (q, installed) => {
+      const { deadlineAt, exchangeId, requestDigestSha256 } = q;
+      if (answer === "permit") {
+        return { kind: "permit", sendStartBy: deadlineAt };
+      }
+      return {
+        kind: "allow",
+        exchangeId: answer === "another request" ? randomUUID() : exchangeId,
+        requestDigestSha256,
+        preparationAttemptId: installed.preparationAttemptId,
+        materialVersion: installed.materialVersion,
+        replyBy: answer === "expired" ? new Date(0).toISOString() : deadlineAt,
+      };
+    },
+  });
+  const auth = token(keys, "supervisor", binding.sandboxId);
+  for (const [decision, expected] of [
+    ["current", 1],
+    ["expired", 2],
+    ["permit", 2],
+    ["another request", 2],
+  ]) {
+    answer = decision;
+    const result = await invoke(client, "EvaluateHttpRequest", pushRequest(), auth);
+    assert.equal(result.decision, expected, decision);
+  }
+});
+
 test("expired binding lookup cannot begin durable Git approval", { timeout: 10000 }, async (t) => {
   let approvals = 0;
   const lookupAborted = Promise.withResolvers();

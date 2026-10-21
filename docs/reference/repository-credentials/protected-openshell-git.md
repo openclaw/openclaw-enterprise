@@ -1,40 +1,44 @@
 # Protected repository access with OpenShell
 
-For a **new protected revision**, select the same installed OpenShell Driver's Sandbox and
-`credential_proxy` capabilities, the GitHub Repo Driver, and its prepared Git and OpenShell
-authority configuration. The Repo configuration needs the session duration and registry, not a
-broker control socket or broker CA. The worker verifies the installed policy, prepares short-lived
-GitHub tokens, and authorizes each Git request against the exact installed version. The Agent
-receives neither a session bearer nor a GitHub token. An explicitly approved standing grant can
-outlive each finite session. A finite grant keeps its original deadline.
-
 **Release remains blocked.** A registered middleware and loaded policy do not establish that
 the supervisor must invoke authorization before sending or that an execution identity cannot be
 reused. Qualify the public online profile on released OpenShell, including the actual TLS path.
-The stronger installation-exchange profile cannot qualify this path. An older controller cannot
-read the new admission. Upgrade controllers and workers together, settle previous custody before
-issuing, and preserve any spent or possibly spent draft allowance. Nothing migrates an existing
-team's grant or changes its running Agent.
+Stock OpenShell 0.1.5 is not qualified. The proposed way to require that binding is still a draft;
+see the [online authorization release requirements](../../../specs/rfcs/0023-egress-proxy-credential-lifecycle/online-authorization.md).
 
-## Install without the repository broker
+For ordinary unprotected development, finish the
+[database and control-plane upgrade](../../guides/deploy/protected-egress-development.md#upgrade-an-existing-development-installation)
+and stop there. Leave your Installation and Helm configuration as they are, and keep new protected
+Git admissions closed. Migration does not change a running Agent or its grant.
 
-In the Installation, select Sandbox and Credential Proxy from the same Driver. For the
-bundled OpenShell Driver, use the [middleware and prepared GitHub settings](../../../deploy/examples/repository-credentials/openshell.fragment.yaml).
-Set the GitHub Backend's registry path to `/etc/openclaw/repository-registry/registry.json`;
-omit `controlSocket` and `publicCaPath` from `drivers.repo.configuration`.
-OCE still needs a qualified sender before it can admit protected Git.
+## Configuration for a qualified release
 
-In Helm, select `openshellGit.enabled: true`, `openshellGit.mode: protected`,
+A new protected revision would use the same installed OpenShell Driver’s Sandbox and
+`credential_proxy` capabilities, the GitHub Repo Driver, and its prepared Git and OpenShell
+authority configuration. The Repo configuration needs the session duration and registry, not a
+broker control socket or broker CA. The worker verifies the installed policy, prepares short-lived
+GitHub tokens, and requires the sender to obtain current authorization before each new Git request. The Agent
+receives neither a session bearer nor a GitHub token. An explicitly approved standing grant can
+outlive each finite session. A finite grant keeps its original deadline.
+
+### Install without the repository broker
+
+The Installation would select Sandbox and Credential Proxy from the same Driver, as in the
+[OpenShell configuration example](../../../deploy/examples/repository-credentials/openshell.fragment.yaml).
+The GitHub Backend would use `/etc/openclaw/repository-registry/registry.json` and omit
+`controlSocket` and `publicCaPath` from `drivers.repo.configuration`.
+
+The corresponding Helm values would be `openshellGit.enabled: true`, `openshellGit.mode: protected`,
 `repositoryCredentials.enabled: false` and `repositoryCredentials.authority: prepared-git`.
-Under `repositoryCredentials`, supply the registry ConfigMap, App key Secret, existing
-custody Secret and approved issuer CIDRs. Only the worker mounts the signing and custody
-keys. Configure the [middleware certificate, public issuer key and trusted callers](openshell-git.md#maintain-the-earlier-git-trial)
-for TCP 8445. This installation has no broker listener, control socket or broker CA.
+The `repositoryCredentials` settings identify the registry ConfigMap, App key Secret, existing
+custody Secret and approved issuer CIDRs. Only the worker mounts the signing and custody keys.
+The [middleware certificate, public issuer key and trusted callers](openshell-git.md#maintain-the-earlier-git-trial)
+are for TCP 8445. This configuration has no broker listener, control socket or broker CA.
 
-## Grant access to a GitHub App installation
+### Grant access to a GitHub App installation
 
-Use this scope only with a Driver qualified for `github_installation`. The bundled OpenShell
-Driver does not offer it. GitHub sets the ceiling: the Agent can act on the repositories
+Keep this scope closed until the installed Driver is qualified for `github_installation`.
+GitHub sets the ceiling: the Agent can act on the repositories
 (including private ones) and with the permissions available to that App installation. If GitHub
 limits the installation to selected repositories, that limit still applies. OCE neither changes
 installation membership nor adds permissions. Keep repository-scoped Git when that is sufficient.
@@ -58,13 +62,14 @@ the original owner settle credentials even for Namespaces whose policy is unchan
 
 ## Move from the earlier trial
 
-Keep `openshellGit.mode: broker-trial` and the broker enabled while its original owner
-drains sessions and settles issued, retiring or uncertain credentials. An upgrade with
-the old trial values and no explicit mode stops at render time. Helm cannot settle
-custody, migrate a grant or determine when it is safe to remove the broker. Preserve
-the database, registry, custody key and any issuer access still needed for retirement.
+Keep the trial’s current configuration, broker and original owner through the database upgrade.
+If you also upgrade the control plane, the chart refuses the old trial values without an explicit
+mode. Set `openshellGit.mode: broker-trial` in that case to preserve the existing trial. Keep the
+database, registry, custody key and issuer access the owner needs to drain sessions and settle
+issued, retiring or uncertain credentials. Helm cannot settle custody or migrate a grant.
 
-Once the old owner is fenced and custody is settled, change the Installation and Helm
-values together. Expect a worker restart and removal of the broker Service and access
-policy. Admit a new protected revision, without reusing an old receipt or resetting
-a draft allowance. [Native Git](prepared-native-git.md) remains a separate explicit choice.
+Only after the replacement sender and release are qualified, fence the old owner against new work
+and let that owner finish settling custody. Then change the Installation and Helm values together.
+That change restarts the worker and removes the broker Service and access policy. A new revision
+must not reuse an old receipt or reset a possibly spent draft allowance.
+[Native Git](prepared-native-git.md) remains a separate explicit choice.

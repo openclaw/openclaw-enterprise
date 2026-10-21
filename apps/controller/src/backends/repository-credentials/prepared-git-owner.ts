@@ -230,7 +230,8 @@ export async function startPreparedGitHubGitOwner(options: Options) {
         ...(base && policy?.draftPullLimit === "none" ? { draftPullLimit: "none" as const } : {}),
       };
     },
-    options.protectedGitDriver ?? options.controlSocket === undefined,
+    options.protectedGitDriver ??
+      (options.controlSocket === undefined ? "unregistered" : undefined),
     options.protectedGitEvidence,
   );
   const stop = new AbortController();

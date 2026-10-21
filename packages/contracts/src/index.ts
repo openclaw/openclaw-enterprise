@@ -50,7 +50,9 @@ export {
   repositoryGitRecipientFields,
   validRepositoryGitRecipient,
   repositoryGitDeliveryProfile,
+  repositoryGitAuthorization,
   repositoryGitProfileAvailable,
+  protectedRepositoryGitAdmission,
 } from "./credential-proxy.ts";
 export type { SandboxPolicyDecision } from "./sandbox-policy.ts";
 export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandbox-policy.ts";
@@ -2428,5 +2430,8 @@ export type {
   RepositoryGitInstallationFence,
   RepositoryGitMaterialVersion,
   RepositoryGitSendDecision,
+  RepositoryGitAuthority,
+  RepositoryGitOnlineAllow,
+  RepositoryGitOnlineDecision,
   RepositoryGitSendPermit,
 } from "./protected-repository-git.ts";

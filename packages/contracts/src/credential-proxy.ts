@@ -124,16 +124,18 @@ export interface ProxyPlan {
   readonly egressDriverId: string;
   /** Present on every v3 admission; v2 retains the exact capability IDs recorded at admission. */
   readonly driver?: DriverRegistrationRef;
-  /** v4 only: authorize this exact repository grant through the installed online sender. */
+  /** v4 and v5: the repository or installation grant, independent of sender and grant duration. */
   readonly repositoryGit?: RepositoryRevisionState;
-  /** v4 only: the Harness model attachment independently admitted by the Credential Gateway. */
+  /** v5 requires online authorization. v4 remains exact dispatch and cannot acquire this field. */
+  readonly repositoryGitAuthorization?: "online-request";
+  /** v4 and v5: the Harness model attachment independently admitted by the Credential Gateway. */
   readonly harnessCredentialSource?: Extract<HarnessAuthSnapshot, { method: "credential_source" }>;
   readonly routes: readonly EgressRoute[];
 }
 
 /**
  * Stable recipient observed by the installed Driver, in the same enforcement evidence as its
- * execution instance and peer key. Provider token versions and supervisor connections may rotate.
+ * execution instance and sender guarantee. Provider and supervisor connection versions may rotate.
  */
 export const repositoryGitRecipientFields = Object.freeze([
   "providerId",
@@ -145,6 +147,10 @@ export type RepositoryGitRecipient = Readonly<
   Record<(typeof repositoryGitRecipientFields)[number], string> & {
     /** Absent on the original repository Git wire. Installation scope needs positive evidence. */
     deliveryProfile?: "github_installation";
+    /** A dedicated, never-reused sandbox must obtain an allow for each new request before
+     * credential injection, with verified TLS, no bypass and no later broadening. A request
+     * already allowed may finish. Missing on v4 recipients, which enforce exact send start. */
+    authorization?: "online-request";
   }
 >;
 
@@ -167,10 +173,13 @@ export function repositoryGitDeliveryProfile(
 export function validRepositoryGitRecipient(
   value: RepositoryGitRecipient | undefined,
   profile: RepositoryGitDeliveryProfile | undefined,
+  authorization?: ProxyPlan["repositoryGitAuthorization"],
 ): boolean {
   return (
     !!value &&
     profile !== undefined &&
+    (authorization === undefined || authorization === "online-request") &&
+    value.authorization === authorization &&
     value.deliveryProfile === (profile === "github_installation" ? profile : undefined) &&
     repositoryGitRecipientFields.every(
       (key) => typeof value[key] === "string" && value[key].trim().length > 0,
@@ -305,19 +314,44 @@ export interface CredentialSourceControl {
   assertAvailable(
     signal: AbortSignal,
     profile?: RepositoryGitDeliveryProfile,
-  ): Promise<void | "github_installation">;
+  ): Promise<
+    | void
+    | "github_installation"
+    | {
+        readonly profile: RepositoryGitDeliveryProfile;
+        readonly authorization: "online-request";
+      }
+  >;
 }
 
 /** An older Driver may silently ignore a new profile argument. Only an explicit confirmation
  * qualifies it to attempt installation-wide Git (Basic) and GitHub API (Bearer) delivery,
- * with online authorization and the original per-request send cutoff at the trusted sender. */
+ * and a v4 sender must enforce the original send cutoff. Online authorization requires a
+ * distinct positive response; discovery is not proof of the installed enforcement. */
+export async function repositoryGitAuthorization(
+  control: CredentialSourceControl,
+  signal: AbortSignal,
+  profile?: RepositoryGitDeliveryProfile,
+): Promise<"exact-dispatch" | "online-request" | "unavailable"> {
+  const confirmed = await control.assertAvailable(signal, profile);
+  if (profile && typeof confirmed === "object" && confirmed !== null) {
+    return confirmed.profile === profile && confirmed.authorization === "online-request"
+      ? "online-request"
+      : "unavailable";
+  }
+  return (confirmed === undefined && profile !== "github_installation") ||
+    (profile === "github_installation" && confirmed === profile)
+    ? "exact-dispatch"
+    : "unavailable";
+}
+
+/** Compatibility query for a sender that implements the v4 exact-dispatch contract. */
 export async function repositoryGitProfileAvailable(
   control: CredentialSourceControl,
   signal: AbortSignal,
   profile?: RepositoryGitDeliveryProfile,
 ): Promise<boolean> {
-  const confirmed = await control.assertAvailable(signal, profile);
-  return profile !== "github_installation" || confirmed === profile;
+  return (await repositoryGitAuthorization(control, signal, profile)) === "exact-dispatch";
 }
 
 export interface ProxyWiring {
@@ -359,7 +393,13 @@ export interface CredentialProxyDriver extends Driver {
 /** Durable admission semantics, independent of credential bindings and route count. */
 export type ExecutionAdmission =
   | { readonly version: 2; readonly mode: "protected" | "unprotected" }
-  | { readonly version: 3 | 4; readonly mode: "protected" };
+  | { readonly version: 3 | 4 | 5; readonly mode: "protected" };
+
+export function protectedRepositoryGitAdmission(
+  admission: ExecutionAdmission | undefined,
+): boolean {
+  return admission?.version === 4 || admission?.version === 5;
+}
 
 /** Recognition only. A valid protected schema is not proof of deployability. */
 export function assertExecutionAdmission(
@@ -369,7 +409,10 @@ export function assertExecutionAdmission(
   if (
     !admission ||
     (admission.version !== 2 &&
-      !((admission.version === 3 || admission.version === 4) && admission.mode === "protected")) ||
+      !(
+        (admission.version === 3 || protectedRepositoryGitAdmission(admission)) &&
+        admission.mode === "protected"
+      )) ||
     (admission.mode !== "protected" && admission.mode !== "unprotected") ||
     Object.keys(admission).some((key) => key !== "version" && key !== "mode")
   ) {
@@ -383,14 +426,19 @@ export function assertExecutionAdmission(
   }
   const repository = revision.egressPlan?.repositoryGit;
   if (
-    admission.version === 4 ? !repositoryGitDeliveryProfile(repository) : repository !== undefined
+    (protectedRepositoryGitAdmission(admission)
+      ? !repositoryGitDeliveryProfile(repository)
+      : repository !== undefined) ||
+    (admission.version === 5
+      ? revision.egressPlan?.repositoryGitAuthorization !== "online-request"
+      : revision.egressPlan?.repositoryGitAuthorization !== undefined)
   ) {
     throw new Error("Repository Credential Proxy requires its own protected execution admission.");
   }
   const source = revision.egressPlan?.harnessCredentialSource;
   if (
     source !== undefined &&
-    (admission.version !== 4 ||
+    (!protectedRepositoryGitAdmission(admission) ||
       source.method !== "credential_source" ||
       !source.sourceId ||
       !source.credentialGatewayId ||
@@ -403,7 +451,7 @@ export function assertExecutionAdmission(
   }
   const owner = revision.egressPlan?.driver;
   if (
-    admission.version === 3 || admission.version === 4
+    admission.version === 3 || protectedRepositoryGitAdmission(admission)
       ? !owner ||
         typeof owner.id !== "string" ||
         !owner.id.trim() ||

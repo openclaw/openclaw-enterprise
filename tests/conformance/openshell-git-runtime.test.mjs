@@ -200,7 +200,7 @@ function fixture({ store, world } = {}) {
     client,
     provider,
     bindingId: "binding_0123456789abcdefghijklmn",
-    repository: registry.repositories[0].repository,
+    delivery: { repository: registry.repositories[0].repository },
     otherProviders: ["openai"],
     binding: {
       workspace: sandbox.workspace,
@@ -1574,7 +1574,11 @@ test("the periodic Git reader crossing the admitted deadline does not report gra
   assert.equal(await f.lookup(), undefined, "Git closes at its admitted deadline");
   assert.equal(f.entry.blocked, undefined, "the expiry owner still has its original installation");
   assert.equal(f.calls.rotate, 1, "no credential installation after expiry");
-  await assert.rejects(f.prepare(), /live git-write/, "ordinary prepare cannot restore Git");
+  await assert.rejects(
+    f.prepare(),
+    /live admitted GitHub binding/,
+    "ordinary prepare cannot restore Git",
+  );
 });
 
 test("Git expiry observes the original model in the reduced stock installation, including response loss", async (t) => {

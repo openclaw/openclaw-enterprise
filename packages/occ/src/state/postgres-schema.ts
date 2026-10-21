@@ -705,14 +705,17 @@ export const agentRevisions = occSchema.table(
             AND ${table.admittedSpec} #> '{harness_auth,protectedExecutionVersion}'
               = ${table.admittedSpec} #> '{execution_admission,version}'
             AND CASE ${table.admittedSpec} #>> '{execution_admission,version}'
-              WHEN '2' THEN NOT ((${table.admittedSpec}->'egress_plan') ?| ARRAY['driver','repositoryGit'])
+              WHEN '2' THEN NOT ((${table.admittedSpec}->'egress_plan') ?| ARRAY['driver','repositoryGit','repositoryGitAuthorization'])
               ELSE
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4')
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') = '4')
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5')
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
                     AND ${table.admittedSpec} #> '{egress_plan,repositoryGit}' = ${table.admittedSpec}->'repository_credentials'))
+                AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '5'
+                    THEN ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'online-request'
+                    ELSE NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGitAuthorization') END
                 AND
                 jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'
                 AND length(${table.admittedSpec} #>> '{egress_plan,driver,id}') > 0
@@ -2023,9 +2026,14 @@ export const preparedRepositoryGitUses = occSchema.table(
     operation: text("operation").notNull(),
     recipientFence: bigint("recipient_fence", { mode: "number" }),
     requestDigestSha256: text("request_digest_sha256").notNull(),
-    sendStartBy: timestamp("send_start_by", { withTimezone: true }).notNull(),
+    sendStartBy: timestamp("send_start_by", { withTimezone: true }),
+    authorizationReplyBy: timestamp("authorization_reply_by", { withTimezone: true }),
   },
   (t) => [
+    check(
+      "prepared_repository_git_uses_decision_deadline",
+      sql`num_nonnulls(${t.sendStartBy}, ${t.authorizationReplyBy}) = 1`,
+    ),
     check(
       "prepared_repository_git_uses_operation_check",
       sql`(${t.operation} IN ('advertise-upload-pack','upload-pack','advertise-receive-pack','receive-pack')
@@ -2058,12 +2066,17 @@ export const preparedRepositoryDraftPulls = occSchema.table(
     admittedAt: timestamp("admitted_at", { withTimezone: true })
       .notNull()
       .default(sql`clock_timestamp()`),
-    sendStartBy: timestamp("send_start_by", { withTimezone: true }).notNull(),
+    sendStartBy: timestamp("send_start_by", { withTimezone: true }),
+    authorizationReplyBy: timestamp("authorization_reply_by", { withTimezone: true }),
     settledAt: timestamp("settled_at", { withTimezone: true }),
     outcome: text("outcome").notNull().default("outcome_unknown"),
     projection: jsonb("projection"),
   },
   (t) => [
+    check(
+      "prepared_repository_draft_pulls_decision_deadline",
+      sql`num_nonnulls(${t.sendStartBy}, ${t.authorizationReplyBy}) = 1`,
+    ),
     check(
       "prepared_repository_draft_pulls_request_digest_sha256_check",
       sql`${t.requestDigestSha256} ~ '^[a-f0-9]{64}$'`,
