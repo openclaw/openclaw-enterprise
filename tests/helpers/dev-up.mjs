@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { after } from "node:test";
 
 import { commandPath, composeConfigurationProvider } from "./compose.mjs";
-import { commandShim, startCommandServer } from "./fixture-command-server.mjs";
+import { bashString, commandShim, startCommandServer } from "./fixture-command-server.mjs";
 
 const repository = fileURLToPath(new URL("../..", import.meta.url));
 const serviceKey = "sk-test-secret-value";
@@ -96,11 +96,6 @@ class FakeExit {
   constructor(code) {
     this.code = code;
   }
-}
-
-// A bash word holding exactly this text.
-function shellQuote(text) {
-  return `'${String(text).replaceAll("'", `'\\''`)}'`;
 }
 
 // Returned by a fake that never answers: its process waits until it is killed.
@@ -199,22 +194,22 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
       composeArgs.push("--format", "json");
     }
     const assignments = [
-      `PATH=${env.DEV_UP_REAL_PATH ? shellQuote(env.DEV_UP_REAL_PATH) : '"$PATH"'}`,
+      `PATH=${env.DEV_UP_REAL_PATH ? bashString(env.DEV_UP_REAL_PATH) : '"$PATH"'}`,
       "OPENAI_API_KEY=",
       ...["OCC_DOCKER_RUNTIME_IMAGE", "OCC_DOCKER_GATEWAY_IMAGE", "OCC_DOCKER_AGENT_IMAGE"].map(
         (name) => `${name}="\${${name}:-}"`,
       ),
     ].join(" ");
-    const compose = [command, ...prefix, ...composeArgs].map(shellQuote).join(" ");
+    const compose = [command, ...prefix, ...composeArgs].map(bashString).join(" ");
     const enter = env.DEV_UP_REPOSITORY
-      ? `cd -- ${shellQuote(env.DEV_UP_REPOSITORY)} || exit 1; `
+      ? `cd -- ${bashString(env.DEV_UP_REPOSITORY)} || exit 1; `
       : "";
     if (format === "json") {
       return `${enter}${assignments} exec ${compose}`;
     }
     return (
       `${enter}__config=$(${assignments} ${compose}) || exit $?; ` +
-      `printf '%s\\n' "$__config" | ${shellQuote(env.DEV_UP_REAL_YQ)} -o=json; exit $?`
+      `printf '%s\\n' "$__config" | ${bashString(env.DEV_UP_REAL_YQ)} -o=json; exit $?`
     );
   };
   if (args[0] === "--version") {
@@ -388,7 +383,7 @@ function engineCommand(fake, { args, env, cwd }, { stdout, exit }) {
 // Installation API read dev-up makes after startup.
 function projectOccCommand(fake, { args, env }, { stdout, stderr, exit }) {
   if (args[0] === "dev") {
-    return `exec ${shellQuote(fake.cli)} "$@"`;
+    return `exec ${bashString(fake.cli)} "$@"`;
   }
   const log = env.DEV_UP_OCC_LOG;
   if (log) {

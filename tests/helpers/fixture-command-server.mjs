@@ -17,10 +17,11 @@ import { createServer } from "node:net";
 // shim evaluates nothing from a listener that does not answer with the server token.
 // Whatever a handler writes is the server's doing, never the client's.
 
-// An ANSI-C quoted bash word holding exactly these bytes. Bash strings end at a NUL,
-// so a fake's output may not contain one (none does).
-function bashString(text) {
-  assert.ok(!text.includes("\0"), "a fake command's output must not contain NUL");
+// An ANSI-C quoted bash word holding exactly these bytes, always on one line. Bash
+// strings end at a NUL, so the text may not contain one (no fake's output or argument
+// does).
+export function bashString(text) {
+  assert.ok(!text.includes("\0"), "a fake command's bash text must not contain NUL");
   let word = "$'";
   for (const byte of Buffer.from(text)) {
     const plain = byte >= 0x20 && byte < 0x7f && byte !== 0x27 && byte !== 0x5c;
@@ -54,6 +55,8 @@ export function commandShim({
   }
   const env = forwardedEnv.map((name) => `"\${${name}+=}\${${name}-}"`).join(" ");
   return `#!${bash}
+__lc_all_set=\${LC_ALL+1}
+__lc_all=\${LC_ALL-}
 LC_ALL=C
 trap '' PIPE
 __sleep=${bashString(sleep)}
@@ -138,10 +141,13 @@ function serveCommand(socket, { tokens, forwardedEnv, handle }) {
       timers.add(timer);
     },
     // The command closes its connection and runs this bash line (one line, no newline)
-    // in place of the rest of the protocol. The line must end in exit or exec.
+    // in place of the rest of the protocol. The line must end in exit or exec. It runs
+    // with the caller's LC_ALL and default SIGPIPE handling, as the command started.
     script: (line) => {
       assert.ok(!line.includes("\n"), "a fake command's script is one line");
-      send(`exec 3>&-; ${line}`);
+      send(
+        `exec 3>&-; trap - PIPE; if [[ -n $__lc_all_set ]]; then LC_ALL=$__lc_all; else unset LC_ALL; fi; ${line}`,
+      );
       ended = true;
       socket.end();
     },
