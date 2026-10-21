@@ -108,6 +108,65 @@ const sessions = `SELECT jsonb_build_object(
   AND rev.admitted_spec #> '{repository_credentials,bindings}' @> jsonb_build_array(s.cleanup_context->'binding')`;
 const live = `EXISTS (SELECT FROM (${sessions}) l WHERE l.session = f.source->'session')`;
 
+/**
+ * Match standing removal's lock order. The session ID or revision locates the Namespace;
+ * it is not authority. Keep the Namespace, Agent and exact approval locked while taking
+ * the session and receipt locks, then read the decision at a fresh READ COMMITTED snapshot.
+ * In particular, never put the approval-locking predicate in the query that locks the Agent:
+ * PostgreSQL can evaluate that predicate before locking the outer row.
+ */
+async function lockLiveSession(
+  c: PostgresClient,
+  by: "session_id" | "live_revision_id",
+  id: string,
+): Promise<LockedSession | null | undefined> {
+  const { rows } = await c.query(
+    `SELECT s.namespace_id, s.agent_id, s.live_revision_id, s.admission_id
+     FROM occ.repository_session_attempts s JOIN occ.namespaces n ON n.id=s.namespace_id
+     WHERE s.${by}=$1 AND s.phase='open' AND n.status='ready' AND n.deleted_at IS NULL
+     FOR SHARE OF n`,
+    [id],
+  );
+  // No live session means withdrawn; multiple candidates have no single installation target.
+  if (rows.length !== 1) {
+    return rows.length === 0 ? null : undefined;
+  }
+  const { namespace_id, agent_id, live_revision_id, admission_id } = rows[0] as {
+    namespace_id: string;
+    agent_id: string;
+    live_revision_id: string;
+    admission_id: string;
+  };
+  const target = [namespace_id, agent_id, live_revision_id];
+  const agent = await c.query(
+    `SELECT FROM occ.agents WHERE (namespace_id,id,active_revision_id)=($1,$2,$3)
+     AND status='active' AND desired_runtime_state='running' AND execution_mode='dedicated' FOR SHARE`,
+    target,
+  );
+  if (!agent.rowCount) {
+    return null;
+  }
+
+  // The Agent lock also serializes closure or replacement of its standing execution.
+  const exact = `${sessions} AND (s.namespace_id,s.agent_id,s.live_revision_id,s.admission_id)=($1,$2,$3,$4)
+    AND s.${by}=$5`;
+  const identity = [...target, admission_id, id];
+  if (!(await c.query(exact, identity)).rowCount) {
+    return null;
+  }
+  const locked = await c.query(
+    `SELECT FROM occ.repository_session_attempts s JOIN occ.repository_broker_receipts b USING (admission_id)
+     WHERE s.admission_id=$1 FOR SHARE OF s,b`,
+    [admission_id],
+  );
+  if (!locked.rowCount) {
+    return null;
+  }
+  const current = await c.query(exact, identity);
+  return (current.rows[0] as LockedSession | undefined) ?? null;
+}
+type LockedSession = { session: PreparedRepositorySession; end_ms: string };
+
 export interface PreparedRepositoryGitSource {
   readonly adoption: typeof adoption;
   readonly key: { source: { id: string } };
@@ -258,21 +317,10 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     try {
       signal.throwIfAborted();
       const result = await this.transaction(async (c) => {
-        const { rows } = await c.query(
-          `SELECT session,end_ms FROM
-          (${sessions} AND s.live_revision_id=$1 FOR SHARE OF s,b,g) l`,
-          [revisionId],
-        );
-        if (rows.length === 0) {
-          // No live session: the binding was removed, or the version is not (or no longer) active.
-          return withdrawn;
+        const current = await lockLiveSession(c, "live_revision_id", revisionId);
+        if (!current) {
+          return current === null ? withdrawn : undefined;
         }
-        // A revision with multiple eligible repository sessions has no single installation
-        // target. Do not select whichever row the database happens to return first.
-        if (rows.length !== 1) {
-          return undefined;
-        }
-        const current = rows[0] as { session: PreparedRepositorySession; end_ms: string };
         const source = this.policy(current.session);
         if (!source) {
           // The registry no longer admits this binding.
@@ -418,14 +466,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     if (!valid(deadline) || deadline > Date.now() + 30_000) {
       return fail();
     }
-    // Locks on the mutable session, receipt and Agent serialize withdrawal with this decision.
-    // The admitted revision is immutable; the Agent row owns its current selection. The caller can never substitute its own Agent or repository policy.
-    const { rows } = await c.query(
-      `SELECT session,end_ms FROM
-      (${sessions} AND b.session_id=$1 FOR SHARE OF s,b,g) l`,
-      [q.sessionId],
-    );
-    const current = rows[0] as { session: PreparedRepositorySession; end_ms: string } | undefined;
+    const current = await lockLiveSession(c, "session_id", q.sessionId);
     const source = current && this.policy(current.session);
     if (installed && (!current || !source)) {
       // OpenShell route only: the session ended or the registry no longer admits it.

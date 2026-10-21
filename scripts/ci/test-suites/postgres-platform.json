@@ -34,6 +34,7 @@
     "tests/integration/postgres-static-egress.test.mjs",
     "tests/integration/postgres-prepared-github-lifecycle.test.mjs",
     "tests/integration/postgres-prepared-repository-git-broker.test.mjs",
+    "tests/integration/postgres-prepared-standing-removal.test.ts",
     "tests/integration/postgres-prepared-github-git-use.test.mjs",
     "tests/integration/postgres-openshell-online-git-journey.test.mjs",
     "tests/integration/postgres-openshell-git-routes.test.mjs",
@@ -277,6 +278,13 @@
     },
     {
       "path": "tests/integration/postgres-prepared-repository-git-broker.test.mjs"
+    },
+    {
+      "path": "tests/integration/postgres-prepared-standing-removal.test.ts",
+      "expectedTests": [
+        "standing removal orders prepared material and request authorization (removal first)",
+        "standing removal orders prepared material and request authorization (use first)"
+      ]
     },
     {
       "path": "tests/integration/postgres-prepared-github-git-use.test.mjs",

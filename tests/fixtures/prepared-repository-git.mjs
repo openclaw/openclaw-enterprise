@@ -4,11 +4,15 @@ import { writeFile } from "node:fs/promises";
 import { get } from "node:https";
 import { join } from "node:path";
 import pg from "pg";
-import { PostgresPlatformState } from "../../packages/occ/src/index.ts";
+import {
+  PostgresPlatformState,
+  repositoryApprovalFingerprint,
+} from "../../packages/occ/src/index.ts";
 import { startPreparedGitHubGitOwner } from "../../apps/controller/src/backends/repository-credentials/prepared-git-owner.ts";
 import {
   validateGitHubRepositoryRegistry,
   resolveGitHubRepositoryBinding,
+  resolveGitHubStandingApprovalScope,
 } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
 import {
@@ -37,6 +41,7 @@ export async function fixture(
     draftResponse,
     dnsIssuer = false,
     sessionLifetimeMs = 3_600_000,
+    standingApproval = false,
   } = {},
 ) {
   const directory = await socketDirectory(t, "prepared-git-");
@@ -70,6 +75,7 @@ export async function fixture(
     appId: fixtureAppId,
     githubInstallationId: fixtureInstallationId,
     maximumDurationSeconds: 3600,
+    ...(standingApproval && { allowStandingApprovals: true }),
     repositories: [
       {
         repositoryRef,
@@ -79,6 +85,7 @@ export async function fixture(
           {
             namespaceId,
             profiles: ["git-write"],
+            ...(standingApproval && { allowStandingApproval: true }),
             ...(draftPull
               ? { transport: "git-and-draft-pr", pullRequestBase: "main" }
               : { transport: "git-only" }),
@@ -108,7 +115,7 @@ export async function fixture(
       await pool.end();
     }
   });
-  const { agent, revision } = await seedSessionRevision(
+  const { agent, revision: first } = await seedSessionRevision(
     state,
     {
       driver,
@@ -117,6 +124,43 @@ export async function fixture(
     },
     { namespaceId, createdAt: new Date().toISOString(), executionMode: "dedicated" },
   );
+  // Standing is admitted on a new revision; never rewrite the first, finite admission.
+  let revision = first;
+  let approval;
+  if (standingApproval) {
+    const agentId = agent.id;
+    const scope = resolveGitHubStandingApprovalScope(registry, { namespaceId, binding });
+    const scopeFingerprint = repositoryApprovalFingerprint({
+      namespaceId,
+      agentId,
+      binding,
+      scope,
+    });
+    approval = await state.transact((u) =>
+      u.repositorySessions.approveStanding({
+        id: randomUUID(),
+        namespaceId,
+        agentId,
+        binding,
+        scope,
+        scopeFingerprint,
+        approvedBy: "prepared-git-test-operator",
+        createdAt: first.createdAt,
+      }),
+    );
+    revision = {
+      ...first,
+      id: `rev_${randomUUID()}`,
+      revision: first.revision + 1,
+      repositoryCredentials: {
+        ...first.repositoryCredentials,
+        standingApprovalId: approval.id,
+        standingApprovalGeneration: approval.generation,
+        standingApprovalScopeFingerprint: scopeFingerprint,
+      },
+    };
+    await state.transact((u) => u.revisions.createRevision(revision));
+  }
   const attempt = sessionAttempt(revision, {
     repositoryRef,
     durationSeconds: 3600,
@@ -212,6 +256,7 @@ export async function fixture(
     owner,
     binding,
     admissionId: attempt.admissionId,
+    approval,
     familyId: `repository-git:${attempt.admissionId}`,
     request(overrides = {}) {
       return {
