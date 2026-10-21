@@ -48,20 +48,20 @@ IAM, and Docker Compute without Installation YAML and does not select a
 SecretDriver. An operator can select installed IAM, Compute, Configuration, or
 Sandbox packages in trusted YAML in either mode.
 
-| Capability           | Shared contract                                                      | Selection boundary                                                                                              |
-| -------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `configuration`      | [ConfigurationDriver](configuration.md)                              | Required in Installation YAML; bundled Kubernetes or installed package.                                         |
-| `channel`            | [ChannelDriver](channel.md)                                          | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                              |
-| `iam`                | [IAMDriver](iam.md)                                                  | Required in Installation YAML; bundled native IAM or installed package.                                         |
-| `compute`            | [ComputeDriver](compute.md)                                          | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                           |
-| `secret`             | [SecretDriver](secret.md)                                            | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                  |
-| `sandbox`            | [SandboxDriver](sandbox.md)                                          | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.            |
-| `credential_proxy`   | [Protected credential flow](../../flows/credential-source-egress.md) | Optional; the selected Sandbox and Credential Proxy must come from one installed Driver.                        |
-| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                     | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.          |
-| `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                     | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                 |
-| `service_account`    | [ServiceAccountDriver](service-account.md)                           | Optional bundled ChatGPT Backend member; no installed-package selector.                                         |
-| `plugin`             | [PluginDriver](plugin.md)                                            | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                                 |
-| `repo`               | [RepoDriver](../repository-credentials.md#repo-driver-contract)      | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below. |
+| Capability           | Shared contract                                                             | Selection boundary                                                                                              |
+| -------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `configuration`      | [ConfigurationDriver](configuration.md)                                     | Required in Installation YAML; bundled Kubernetes or installed package.                                         |
+| `channel`            | [ChannelDriver](channel.md)                                                 | Controller-selected bundled Slack directory Driver; no Installation YAML selector.                              |
+| `iam`                | [IAMDriver](iam.md)                                                         | Required in Installation YAML; bundled native IAM or installed package.                                         |
+| `compute`            | [ComputeDriver](compute.md)                                                 | Required in Installation YAML; bundled Kubernetes, bundled SSH, or installed package.                           |
+| `secret`             | [SecretDriver](secret.md)                                                   | Required in trusted Installation YAML, including SSH; bundled Kubernetes only.                                  |
+| `sandbox`            | [SandboxDriver](sandbox.md)                                                 | Optional; bundled OpenShell or installed package, and currently requires bundled Kubernetes Compute.            |
+| `credential_proxy`   | [Protected credential flow](../../flows/credential-source-egress.md)        | Optional; the selected Sandbox and Credential Proxy must come from one installed Driver.                        |
+| `credential_gateway` | [CredentialGatewayDriver](credential-gateway.md)                            | Required with the bundled OpenShell Sandbox, otherwise omitted; bundled OpenShell Backend member only.          |
+| `credential_refresh` | [CredentialRefreshDriver](credential-refresh.md)                            | Optional; bundled OpenShell only, on the selected Credential Gateway's Backend.                                 |
+| `service_account`    | [ServiceAccountDriver](service-account.md)                                  | Optional bundled ChatGPT Backend member; no installed-package selector.                                         |
+| `plugin`             | [PluginDriver](plugin.md)                                                   | Optional bundled `occ-plugin` or `codex-plugin`; no installed-package selector.                                 |
+| `repo`               | [RepositoryPolicyDriver](../repository-credentials.md#repo-driver-contract) | Optional bundled GitHub Backend member; Kubernetes supports native Git or the protected sender described below. |
 
 Installed packages run unsandboxed with control-plane authority and
 access to controller credentials, database state, and Kubernetes identity.
@@ -84,9 +84,11 @@ same Driver ID and its `configuration` to `{}`. Configure the package once,
 under `drivers.sandbox.configuration`. The API and worker each load one
 registration and compare its identity with the admitted revision.
 
-For protected repository Git, also select the GitHub Repo Driver and
-`drivers.repo.preparedGitHub`. Omit `drivers.repo.openShell`, `controlSocket`,
-and `publicCaPath` for a separately installed sender. The Driver must implement
+For protected repository Git, set `repository.id`,
+`repository.configuration.sessionDurationSeconds`, and `repository.preparedGitHub`.
+The ID must match the GitHub Backend's `drivers.repo` policy member. Omit the
+Installation's `drivers.repo` and `repository.nativeSender`. A separately installed
+sender also omits `repository.openShell`. No native control socket or broker CA is needed. The Driver must implement
 both Sandbox repository access and the Credential Proxy's `bindRepositoryGit`.
 At release, Compute checks the installed recipient. For each Git request, the
 sender obtains one permit bound to the exchange, request digest, preparation

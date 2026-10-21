@@ -1,3 +1,4 @@
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomUUID, createHash } from "node:crypto";
@@ -10,7 +11,7 @@ import { requiresPostgres, databaseUrl } from "../helpers/postgres-database.mjs"
 import { waitFor } from "../helpers/wait-for.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
 import { createSystemClock } from "../../apps/controller/src/drivers/repo/credentials/clock.ts";
@@ -101,17 +102,15 @@ for (const [action, name] of Object.entries(cases)) {
           p.allowStandingApproval = true;
         }
       }
-      const driver = new GitHubRepoDriver(
-        {
-          id: credentials.backendId,
-          client: new UnixRepositoryCredentialControlClient({
-            controlSocket: credentials.config.gateway.controlSocket,
-          }),
-          drivers: { repo: "repository-credentials" },
-        },
-        registry,
-        { sessionDurationSeconds: 90, publicCa: credentials.tls.ca },
-      );
+      const backend = {
+        id: credentials.backendId,
+        client: new UnixRepositoryCredentialControlClient({
+          controlSocket: credentials.config.gateway.controlSocket,
+        }),
+        drivers: { repo: "repository-credentials" },
+      };
+      const driver = new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds: 90 });
+      const sender = new GitHubNativeRepositorySender(backend, { publicCa: credentials.tls.ca });
       const receipt = await startRepositoryReceiptServer({
         state: f.state,
         controlSocket: credentials.config.gateway.controlSocket,
@@ -260,7 +259,7 @@ for (const [action, name] of Object.entries(cases)) {
           },
           transformDrivers: (d: { installation: { drivers: object } }) => {
             if (action !== "missing") {
-              return { ...d, repoDriver: driver };
+              return { ...d, repositoryPolicy: driver, nativeRepositorySender: sender };
             }
             const gateway = observationGateway();
             const sandbox = {
@@ -272,7 +271,8 @@ for (const [action, name] of Object.entries(cases)) {
             };
             return {
               ...d,
-              repoDriver: driver,
+              repositoryPolicy: driver,
+              nativeRepositorySender: sender,
               credentialGatewayDriver: gateway,
               sandboxDriver: sandbox,
               installation: {
@@ -558,7 +558,7 @@ for (const [action, name] of Object.entries(cases)) {
             ? true
             : undefined,
         // The real driver checks a CLOSED receipt again at its normal cleanup interval.
-        driver.maintenanceIntervalMs + 15_000,
+        sender.maintenanceIntervalMs + 15_000,
       );
       const failedWork = await f.observerPool.query(
         "SELECT reason_code FROM occ.controller_work WHERE revision_id=$1 AND state='failed_permanent'",
@@ -588,7 +588,7 @@ for (const [action, name] of Object.entries(cases)) {
       const scheduled = await queue.findWork(key);
       assert.equal(scheduled?.state, "queued");
       assert.ok(
-        scheduled!.availableAt.getTime() <= Date.now() + driver.maintenanceIntervalMs + 1000,
+        scheduled!.availableAt.getTime() <= Date.now() + sender.maintenanceIntervalMs + 1000,
         "switching from renewal to ordinary maintenance did not postpone the next observation",
       );
       const beforeRestart = withdrawalReads;

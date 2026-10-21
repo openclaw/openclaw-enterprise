@@ -283,8 +283,8 @@ export async function composePostgresDevelopment(
       controller.registerDriver(drivers.pluginDriver);
       controller.selectDriver("plugin", drivers.pluginDriver.id);
     }
-    if (drivers?.repoDriver !== undefined) {
-      const driver = drivers.repoDriver;
+    if (drivers?.repositoryPolicy !== undefined) {
+      const driver = drivers.repositoryPolicy;
       controller.registerDriver(driver);
       controller.selectDriver("repo", driver.id);
     }

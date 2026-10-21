@@ -25,7 +25,8 @@ import type {
   PluginDeploymentWarning,
   PluginDriver,
   ComputeReadiness,
-  RepoDriver,
+  RepositoryPolicyDriver,
+  NativeRepositorySender,
   RepositoryCredentialMaterialRef,
   ComputeRevisionContext,
   ConfigurationDriver,
@@ -1062,7 +1063,8 @@ export class ControllerWorker {
   private harnessExposureListingFailures = 0;
   private claimedLastPass = false;
   private claimedPassesSinceSweep = 0;
-  private readonly repoDriver: RepoDriver | undefined;
+  private readonly nativeRepositorySender: NativeRepositorySender | undefined;
+  private readonly repositoryPolicy: RepositoryPolicyDriver | undefined;
   private readonly repositoryCleanupRetryMs: number;
   private readonly pluginDriver: PluginDriver | undefined;
   private readonly repositoryCredentials: RepositoryCredentialLifecycle;
@@ -1224,30 +1226,35 @@ export class ControllerWorker {
       });
     this.onHealthy = options.onHealthy;
     this.onProgress = options.onProgress;
-    this.repoDriver = drivers?.repoDriver;
+    this.repositoryPolicy = drivers?.repositoryPolicy;
+    this.nativeRepositorySender = drivers?.nativeRepositorySender;
     this.repositoryCleanupRetryMs = positiveInteger(
-      this.repoDriver?.maintenanceIntervalMs ?? 30_000,
+      this.nativeRepositorySender?.maintenanceIntervalMs ?? 30_000,
       "Repository cleanup retry interval",
     );
     this.pluginDriver = drivers?.pluginDriver;
-    if (this.repoDriver !== undefined) {
-      const driver = this.repoDriver;
-      if (
-        driver.capability !== "repo" ||
-        typeof driver.resolve !== "function" ||
-        typeof driver.open !== "function" ||
-        typeof driver.status !== "function" ||
-        typeof driver.close !== "function" ||
-        (driver.durableBrokerReceipts === true && typeof driver.checkAdmissionReady !== "function")
-      ) {
+    if (this.repositoryPolicy !== undefined) {
+      const driver = this.repositoryPolicy;
+      if (driver.capability !== "repo" || typeof driver.resolve !== "function") {
         throw new Error("The selected repository credential Driver is unavailable.");
       }
-      positiveInteger(driver.maintenanceIntervalMs, "Repository credential maintenance interval");
+    }
+    if (this.nativeRepositorySender !== undefined) {
+      const sender = this.nativeRepositorySender;
+      if (
+        typeof sender.open !== "function" ||
+        typeof sender.status !== "function" ||
+        typeof sender.close !== "function" ||
+        (sender.durableBrokerReceipts === true && typeof sender.checkAdmissionReady !== "function")
+      ) {
+        throw new Error("The selected native repository sender is unavailable.");
+      }
     }
     this.repositoryCredentials = new RepositoryCredentialLifecycle({
       state: this.state,
       queueOptions: this.queueOptions,
-      driver: this.repoDriver,
+      driver: this.repositoryPolicy,
+      nativeSender: this.nativeRepositorySender,
       verifyExecution: (claim, revision) =>
         this.withClaimHeartbeat(
           claim,
@@ -1294,7 +1301,7 @@ export class ControllerWorker {
       this.credentialGateway,
       this.iam,
       this.secretDriver,
-      this.repoDriver,
+      this.repositoryPolicy,
       this.pluginDriver,
       this.compute,
     ] as const) {
@@ -1489,7 +1496,7 @@ export class ControllerWorker {
     this.lastHealthAt = now;
     this.pendingHealth = (async () => {
       const pending = await this.queue.pending();
-      await this.repoDriver?.checkAdmissionReady?.(AbortSignal.timeout(2000));
+      await this.nativeRepositorySender?.checkAdmissionReady?.(AbortSignal.timeout(2000));
       await this.onHealthy?.();
       this.emit({ event: "worker.health", status: "ready", pending });
     })()
@@ -1657,7 +1664,7 @@ export class ControllerWorker {
     const repositoryInterval =
       revision.repositoryCredentials === undefined
         ? undefined
-        : this.repoDriver?.maintenanceIntervalMs;
+        : (this.nativeRepositorySender?.maintenanceIntervalMs ?? 30_000);
     const standingInterval = revision.repositoryCredentials?.standingApprovalId
       ? Math.max(100, Math.min(10_000, (this.repositoryCredentials.validate(revision) ?? 1) * 100))
       : undefined;

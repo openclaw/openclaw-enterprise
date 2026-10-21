@@ -155,7 +155,8 @@ backend:
     providerCidr: ""
 
 repositoryCredentials:
-  # Deploy the native repository broker. Leave false for protected Git.
+  # Deploy the native repository sender. Select repository.nativeSender in Installation YAML.
+  # Leave false for protected Git, which selects repository and the installed protected Driver.
   enabled: false
   # Select credential-proxy to supply the prepared Git issuer, registry and custody to an
   # independently installed sender. Empty leaves selection to enabled or openshellGit.enabled.
@@ -348,7 +349,8 @@ egressAuthority:
 
 # Optional request-phase Git middleware listener in the worker.
 # Requires repositoryCredentials.authority: prepared-git and matching Installation
-# drivers.repo.openShell configuration. Only the Gateway issuer's public key is mounted.
+# repository.openShell configuration for protected delivery (drivers.repo.openShell for the retained trial).
+# Only the Gateway issuer's public key is mounted.
 openshellGit:
   enabled: false
   # protected requires repositoryCredentials.enabled: false and a qualified sender.

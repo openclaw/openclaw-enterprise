@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
@@ -282,7 +282,7 @@ function repositoryPolicyDriver(
     },
     backend.id,
   );
-  return new GitHubRepoDriver(
+  return new GitHubRepositoryPolicy(
     {
       id: backend.id,
       client: new UnixRepositoryCredentialControlClient({ controlSocket }),

@@ -5,7 +5,7 @@ import type { AgentRevision } from "../../packages/contracts/src/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import type { Pool } from "pg";
 import { repositoryApprovalFingerprint } from "../../packages/occ/src/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
 import { ensurePostgresAgentBootstrap } from "../helpers/postgres-agent-app.mjs";
 import { databaseUrl } from "../helpers/postgres-database.mjs";
@@ -56,7 +56,7 @@ export async function standingExecutionFixture(
         },
       ],
     } as const);
-  const driver = new GitHubRepoDriver(
+  const driver = new GitHubRepositoryPolicy(
     {
       id: registry.backendId,
       client: external?.protectedDriver

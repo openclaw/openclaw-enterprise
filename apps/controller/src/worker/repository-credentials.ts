@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import type {
   AdmittedRepositoryBinding,
   AgentRevision,
-  RepoDriver,
+  RepositoryPolicyDriver,
+  NativeRepositorySender,
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryCredentialSessionStatus,
@@ -47,7 +48,8 @@ export class StandingRepositorySessionDisposingError extends Error {}
 interface Dependencies {
   readonly state: PostgresPlatformState;
   readonly queueOptions: PostgresWorkQueueOptions;
-  readonly driver: RepoDriver | undefined;
+  readonly driver: RepositoryPolicyDriver | undefined;
+  readonly nativeSender?: NativeRepositorySender | undefined;
   readonly verifyExecution?: (
     claim: ClaimedWork,
     revision: Revision,
@@ -266,7 +268,10 @@ export class RepositoryCredentialLifecycle {
                 deadlineWallMs: existing.deadlineWallMs,
               }
             : await this.dependencies.effect(claim, (signal) =>
-                this.driver(revision).status(existing.sessionId!, signal),
+                this.driverFor(revision.repositoryCredentials?.driver).status(
+                  existing.sessionId!,
+                  signal,
+                ),
               );
         if (status === undefined) {
           await this.advance(claim, existing, "invalidated");
@@ -499,16 +504,25 @@ export class RepositoryCredentialLifecycle {
     return outcome;
   }
 
-  private driver(revision: Revision): RepoDriver {
-    return this.driverFor(revision.repositoryCredentials?.driver);
+  private driver(revision: Revision): RepositoryPolicyDriver {
+    const driver = this.dependencies.driver;
+    const selected = revision.repositoryCredentials?.driver;
+    if (
+      !driver ||
+      !selected ||
+      driver.id !== selected.id ||
+      driver.implementation !== selected.implementation
+    ) {
+      throw new RepositoryCredentialAuthorityError("REPOSITORY_DRIVER_MISMATCH");
+    }
+    return driver;
   }
 
-  private driverFor(selected: CleanupContext["driver"] | undefined): RepoDriver {
-    const driver = this.dependencies.driver;
+  private driverFor(selected: CleanupContext["driver"] | undefined): NativeRepositorySender {
+    const driver = this.dependencies.nativeSender;
     if (
       driver === undefined ||
       selected === undefined ||
-      driver.capability !== "repo" ||
       driver.id !== selected.id ||
       driver.implementation !== selected.implementation
     ) {
@@ -638,9 +652,9 @@ export class RepositoryCredentialLifecycle {
     revision: Revision,
     binding: AdmittedRepositoryBinding,
   ): Promise<RepositoryCredentialRuntimeBinding> {
-    const driver = this.driver(revision);
     const proxy = protectedRepositoryGitAdmission(revision.executionAdmission);
-    if (!proxy && driver.checkAdmissionReady !== undefined) {
+    const driver = proxy ? undefined : this.driverFor(revision.repositoryCredentials?.driver);
+    if (driver && driver.checkAdmissionReady !== undefined) {
       await this.dependencies.effect(claim, (signal) =>
         driver.checkAdmissionReady!(AbortSignal.any([signal, AbortSignal.timeout(2000)])),
       );
@@ -682,7 +696,7 @@ export class RepositoryCredentialLifecycle {
         createdAt: new Date(openedAt).toISOString(),
         ...(proxy
           ? { brokerProtocol: 2 as const }
-          : driver.durableBrokerReceipts === true
+          : driver?.durableBrokerReceipts === true
             ? { brokerProtocol: 1 as const }
             : {}),
       });
@@ -701,7 +715,10 @@ export class RepositoryCredentialLifecycle {
     }
     await this.authorize(claim, revision);
     const opened = await this.dependencies.effect(claim, (signal) =>
-      this.driver(revision).open(this.input(attempt, binding), signal),
+      this.driverFor(revision.repositoryCredentials?.driver).open(
+        this.input(attempt, binding),
+        signal,
+      ),
     );
     if (opened.kind === "missing") {
       await this.advance(claim, attempt, "invalidated");

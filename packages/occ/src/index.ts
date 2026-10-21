@@ -157,7 +157,7 @@ import type {
   RepositoryBindingSelection,
   RepositoryOption,
   RepositoryOptions,
-  RepoDriver,
+  RepositoryPolicyDriver,
   RepositoryCredentialResolution,
   RepositoryRevisionState,
   RevisionHarnessDescriptor,
@@ -2409,7 +2409,7 @@ export class OpenClawController {
           : "The selected Compute Driver cannot support repository options with this composition.",
       );
     }
-    let driver: RepoDriver;
+    let driver: RepositoryPolicyDriver;
     try {
       driver = this.selectedDriver("repo");
     } catch {
@@ -12997,7 +12997,7 @@ export class OpenClawController {
     bindings: readonly RepositoryBindingRequest[] | undefined,
   ):
     | {
-        readonly driver: RepoDriver;
+        readonly driver: RepositoryPolicyDriver;
         readonly resolution: RepositoryCredentialResolution;
       }
     | undefined {
@@ -13012,7 +13012,7 @@ export class OpenClawController {
     if (bindings.length === 0) {
       return undefined;
     }
-    let driver: RepoDriver;
+    let driver: RepositoryPolicyDriver;
     try {
       driver = this.selectedDriver("repo");
     } catch {

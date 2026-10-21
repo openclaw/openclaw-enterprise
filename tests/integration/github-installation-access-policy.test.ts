@@ -7,7 +7,7 @@ import {
   type CredentialSourceControl,
   type RepositoryGitRecipient,
 } from "../../packages/contracts/src/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { signComputeExecutionRelease } from "../../apps/controller/src/drivers/compute/egress-enrollment.ts";
 import { validateGitHubAppRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry-factory.ts";
 import { validateGitHubRepositoryRegistry as registry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
@@ -48,7 +48,7 @@ function config(namespacePolicy: unknown, options = {}) {
   };
 }
 function driver(options: unknown) {
-  return new GitHubRepoDriver(
+  return new GitHubRepositoryPolicy(
     { id: registration.backendId, drivers: { repo: "repo" }, client: undefined },
     registry(options),
     { sessionDurationSeconds: 600 },
@@ -154,20 +154,7 @@ test("only explicit Namespace and Agent selections allow GitHub installation sco
     () => validateGitHubAppRepositoryRegistry(config(policy, { repositories: [] })),
     /invalid-configuration/,
   );
-  await assert.rejects(
-    () =>
-      repo.open(
-        {
-          namespaceId,
-          admissionId: "test-native",
-          binding,
-          durationSeconds: 60,
-          deadlineWallMs: Date.now() + 60_000,
-        },
-        new AbortController().signal,
-      ),
-    /requires the protected Credential Proxy/,
-  );
+  assert.equal("open" in repo, false);
 });
 
 test("installation access needs positive sender capability and a profile-bound signed recipient", async () => {

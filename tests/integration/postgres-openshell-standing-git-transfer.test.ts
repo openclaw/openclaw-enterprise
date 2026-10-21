@@ -407,7 +407,7 @@ test(
             ...d.installation,
             drivers: { ...d.installation.drivers, credential_gateway: { id: gatewayId } },
           },
-          repoDriver: driver,
+          repositoryPolicy: driver,
           protectedDriver: protectedGit.owner,
         }),
       });
@@ -505,7 +505,7 @@ test(
       const firstOid = oid;
       await peer.noBroker();
       assert.equal(first.brokerProtocol, 2);
-      assert.equal(driver.checkAdmissionReady, undefined, "no broker health dependency");
+      assert.equal("checkAdmissionReady" in driver, false, "no broker health dependency");
       await assert.rejects(
         f.observerPool.query(
           "insert into occ.repository_broker_receipts(admission_id,state,generation) values ($1,'reserved',$2)",

@@ -6,7 +6,7 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { createConsoleAppFixture, backendFixtures } from "../helpers/console-app.mjs";
 import { startRegistryCredentialServiceFixture } from "../fixtures/repository-credentials/registry.mjs";
@@ -953,7 +953,7 @@ test("Repository descriptions arrive without interrupting a selection", async (t
       { repositoryRef: "tools", repository: "example/tools", repositoryId: "794" },
     ],
   });
-  const driver = new GitHubRepoDriver(
+  const driver = new GitHubRepositoryPolicy(
     {
       id: repositoryBackendFixture.id,
       client: new UnixRepositoryCredentialControlClient({

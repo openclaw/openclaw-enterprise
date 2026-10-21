@@ -89,7 +89,7 @@ export async function composeProduction(config: ProductionConfig) {
     protectedDriver,
     preparedGitHub,
     pluginDriver,
-    repoDriver,
+    repositoryPolicy,
     createIAMDriver,
   } = config.drivers;
   if (
@@ -309,9 +309,9 @@ export async function composeProduction(config: ProductionConfig) {
       controller.registerDriver(pluginDriver);
       controller.selectDriver("plugin", pluginDriver.id);
     }
-    if (repoDriver !== undefined) {
-      controller.registerDriver(repoDriver);
-      controller.selectDriver("repo", repoDriver.id);
+    if (repositoryPolicy !== undefined) {
+      controller.registerDriver(repositoryPolicy);
+      controller.selectDriver("repo", repositoryPolicy.id);
     }
     await controller.validateBackendConfiguration();
     if (config.logger !== undefined) {

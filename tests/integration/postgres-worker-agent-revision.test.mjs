@@ -1,3 +1,4 @@
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { request as httpsRequest } from "node:https";
@@ -69,11 +70,11 @@ revisionTest(
   "worker revalidates admitted repository selections through the concrete GitHub Driver and Unix control",
   async (fixture, context) => {
     const [
-      { GitHubRepoDriver },
+      { GitHubRepositoryPolicy },
       { UnixRepositoryCredentialControlClient },
       { startRegistryCredentialServiceFixture },
     ] = await Promise.all([
-      import("../../apps/controller/src/drivers/repo/github/driver.ts"),
+      import("../../apps/controller/src/drivers/repo/github/policy.ts"),
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
     ]);
@@ -87,17 +88,19 @@ revisionTest(
       clock: { ...clock, wallNow: () => Date.now() + clock.wallNow() - startedWall },
       gateway: { listen: "127.0.0.1:0" },
     });
-    const driver = new GitHubRepoDriver(
-      {
-        id: credentials.backendId,
-        client: new UnixRepositoryCredentialControlClient({
-          controlSocket: credentials.config.gateway.controlSocket,
-        }),
-        drivers: { repo: "repository-credentials" },
-      },
-      credentials.registry,
-      { sessionDurationSeconds: 60, publicCa: credentials.tls.ca },
-    );
+    const repositoryBackend = {
+      id: credentials.backendId,
+      client: new UnixRepositoryCredentialControlClient({
+        controlSocket: credentials.config.gateway.controlSocket,
+      }),
+      drivers: { repo: "repository-credentials" },
+    };
+    const sender = new GitHubNativeRepositorySender(repositoryBackend, {
+      publicCa: credentials.tls.ca,
+    });
+    const driver = new GitHubRepositoryPolicy(repositoryBackend, credentials.registry, {
+      sessionDurationSeconds: 60,
+    });
     // The real resolver admits selection fields and returns the richer frozen
     // binding. Worker revalidation must project that snapshot back to selections;
     // the strict registry parser rejects backendId/grant as caller input.
@@ -167,7 +170,11 @@ revisionTest(
       {
         emit: (event) => events.push(event),
         pool: fixture.workerPool,
-        transformDrivers: (drivers) => ({ ...drivers, repoDriver: driver }),
+        transformDrivers: (drivers) => ({
+          ...drivers,
+          repositoryPolicy: driver,
+          nativeRepositorySender: sender,
+        }),
       },
     );
     const terminal = await waitFor(

@@ -1,10 +1,12 @@
+import { GitHubRepositoryPolicy } from "../../drivers/repo/github/policy.ts";
 import { loadPublicCa } from "./public-ca.ts";
 import type {
   GitHubRepositoryCredentialBackendDefinition,
   Backend,
-  RepoDriver,
+  RepositoryPolicyDriver,
+  NativeRepositorySender,
 } from "@openclaw-enterprise/contracts";
-import { GitHubRepoDriver } from "../../drivers/repo/github/driver.ts";
+import { GitHubNativeRepositorySender } from "../../drivers/repo/github/driver.ts";
 import {
   UnixRepositoryCredentialControlClient,
   type RepositoryCredentialControlClient,
@@ -13,13 +15,14 @@ import type { GitHubRepositoryRegistry } from "../../drivers/repo/github/credent
 import { loadGitHubRepositoryRegistry } from "./registry.ts";
 import type { SelectedDriverConfiguration } from "../installation-config.ts";
 
-export async function composeRepoDriver(input: {
+export async function composeRepositoryAccess(input: {
   readonly backend: GitHubRepositoryCredentialBackendDefinition;
   readonly selection: SelectedDriverConfiguration;
-  readonly protectedGit?: boolean;
+  readonly protectedGit: boolean;
 }): Promise<
   Readonly<{
-    repoDriver: RepoDriver;
+    repositoryPolicy: RepositoryPolicyDriver;
+    nativeRepositorySender?: NativeRepositorySender;
     repositoryRegistry: GitHubRepositoryRegistry;
     repositoryOwner: Readonly<{
       controlSocket?: string;
@@ -33,7 +36,10 @@ export async function composeRepoDriver(input: {
   if (selection.implementation !== "github" || selection.id !== definition.drivers.repo) {
     throw new Error("The repository credential Driver must match its owning Backend.");
   }
-  GitHubRepoDriver.validateConfiguration(selection.configuration);
+  (input.protectedGit
+    ? GitHubRepositoryPolicy
+    : GitHubNativeRepositorySender
+  ).validateConfiguration(selection.configuration);
   const configuration = selection.configuration as Readonly<{
     controlSocket?: string;
     sessionDurationSeconds: number;
@@ -59,6 +65,9 @@ export async function composeRepoDriver(input: {
     drivers: Object.freeze({ repo: selection.id }),
     client,
   });
+  const repositoryPolicy = new GitHubRepositoryPolicy(backend, registry, {
+    sessionDurationSeconds: configuration.sessionDurationSeconds,
+  });
   return Object.freeze({
     repositoryRegistry: registry,
     repositoryOwner: Object.freeze({
@@ -67,9 +76,11 @@ export async function composeRepoDriver(input: {
       implementation: selection.implementation,
       backendId: definition.id,
     }),
-    repoDriver: new GitHubRepoDriver(backend, registry, {
-      sessionDurationSeconds: configuration.sessionDurationSeconds,
-      ...(publicCa && { publicCa }),
+    repositoryPolicy,
+    ...(!input.protectedGit && {
+      nativeRepositorySender: new GitHubNativeRepositorySender(backend, {
+        ...(publicCa && { publicCa }),
+      }),
     }),
   });
 }

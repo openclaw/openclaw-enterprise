@@ -61,6 +61,184 @@ test(
   externalGitJourney("online-installation"),
 );
 
+function repositoryConfiguration(input: {
+  backendId: string;
+  registryPath: string;
+  privateKeyPath: string;
+  custodyKeyPath: string;
+  id: string;
+  sandbox: Record<string, unknown>;
+  issuerCaPath: string;
+  apiOrigin: string;
+}) {
+  const base = createInstallationDriverConfiguration();
+  return {
+    ...base,
+    presets: { includeDefaults: false },
+    backend: [
+      {
+        id: input.backendId,
+        type: "github",
+        configuration: { registryPath: input.registryPath },
+        drivers: { repo: input.backendId },
+      },
+    ],
+    repository: {
+      id: input.backendId,
+      configuration: { sessionDurationSeconds: 180 },
+      preparedGitHub: {
+        privateKeyPath: input.privateKeyPath,
+        custodyKeyPath: input.custodyKeyPath,
+        issuerCaPath: input.issuerCaPath,
+        apiOrigin: input.apiOrigin,
+      },
+    },
+    drivers: {
+      ...base.drivers,
+      sandbox: { id: input.id, package: input.id, configuration: input.sandbox },
+      credential_proxy: { id: input.id, configuration: {} },
+    },
+  };
+}
+
+test("production composition separates repository policy from protected and explicitly selected native senders", async (t) => {
+  const namespaceId = "composition-policy";
+  const origin = await standingGitOrigin(t, namespaceId, 300_000);
+  const id = "cedar-composition-fixture";
+  const { directory } = await protectedDriverPackage(t, id, "repository-git");
+  const registryPath = join(directory, "registry.json");
+  const registry = {
+    ...origin.registry,
+    repositories: origin.registry.repositories.map((repository) => ({
+      ...repository,
+      namespaces: repository.namespaces.map((policy) => ({
+        ...policy,
+        transport: "git-and-draft-pr",
+        pullRequestBase: "main",
+        draftPullLimit: "one-per-grant",
+      })),
+    })),
+  };
+  await writeFile(registryPath, JSON.stringify(registry));
+  const path = join(directory, "installation.json");
+  const configuration = repositoryConfiguration({
+    ...origin,
+    id,
+    registryPath,
+    issuerCaPath: origin.tls.certFile,
+    apiOrigin: origin.gh.origin,
+    sandbox: {
+      origin: origin.origin.origin,
+      peerOrigin: "https://127.0.0.1:1",
+      capabilityOrigin: "https://127.0.0.1:2",
+      certFile: origin.tls.certFile,
+      releaseKey: "unused-before-release",
+    },
+  });
+  const load = async (value: unknown) => {
+    await writeFile(path, JSON.stringify(value));
+    return (await loadInstallationConfiguration({
+      mode: "production",
+      packageRoot: directory,
+      environment: { OCC_CONFIG_PATH: path },
+    }))!;
+  };
+  const protectedGit = await load(configuration);
+  const policy = protectedGit.repositoryPolicy!;
+  assert.equal((await policy.listOptions({ namespaceId })).options.length, 1);
+  const binding = policy.resolve({
+    namespaceId,
+    bindings: [{ repositoryRef: "source", profile: "git-write" }],
+  }).bindings[0]!;
+  const scope = policy.standingApprovalScope!({ namespaceId, binding })!;
+  assert.deepEqual(scope.pushRefAllowlist, ["refs/heads/review"]);
+  assert.equal(scope.pullRequestBase, "main");
+  assert.equal(scope.draftPullLimit, "one-per-grant");
+  await assert.rejects(
+    load({
+      ...configuration,
+      repository: {
+        ...configuration.repository,
+        configuration: { sessionDurationSeconds: 180, controlSocket: "/unselected/control.sock" },
+      },
+    }),
+    /repository.configuration.*controlSocket/,
+  );
+  await assert.rejects(
+    load({
+      ...configuration,
+      repository: {
+        ...configuration.repository,
+        nativeSender: {
+          controlSocket: "/unselected/control.sock",
+          publicCaPath: origin.tls.certFile,
+        },
+      },
+    }),
+    /cannot fall back/,
+  );
+  const { sandbox: _sandbox, credential_proxy: _proxy, ...nativeDrivers } = configuration.drivers;
+  await assert.rejects(
+    load({ ...configuration, drivers: nativeDrivers }),
+    /explicitly selected protected/,
+  );
+  const native = await load({
+    ...configuration,
+    repository: {
+      ...configuration.repository,
+      nativeSender: {
+        controlSocket: "/unselected/control.sock",
+        publicCaPath: origin.tls.certFile,
+      },
+    },
+    drivers: {
+      ...nativeDrivers,
+      compute: {
+        ...nativeDrivers.compute,
+        configuration: {
+          ...nativeDrivers.compute.configuration,
+          network: {
+            ...nativeDrivers.compute.configuration.network,
+            repositoryCredentials: {
+              namespace: "occ-system",
+              podLabels: { app: "repository" },
+              port: 8443,
+            },
+          },
+        },
+      },
+    },
+  });
+  assert.ok(native.nativeRepositorySender);
+  assert.equal(native.repositoryGitDriver, undefined);
+  assert.equal(native.installation.drivers.repo, undefined);
+  assert.deepEqual(
+    native.repositoryPolicy!.resolve({
+      namespaceId,
+      bindings: [{ repositoryRef: "source", profile: "git-write" }],
+    }).bindings,
+    [binding],
+  );
+  assert.deepEqual(
+    native.repositoryPolicy!.standingApprovalScope!({ namespaceId, binding }),
+    scope,
+  );
+  // Installation-wide authority is never available through a native session, even with a prepared provider.
+  await assert.rejects(
+    native.nativeRepositorySender.open(
+      {
+        namespaceId,
+        admissionId: "composition-only",
+        binding: { ...binding, profile: "github-installation" },
+        durationSeconds: 180,
+        deadlineWallMs: Date.now() + 180_000,
+      },
+      t.signal,
+    ),
+    /requires the protected Credential Proxy/,
+  );
+});
+
 // Public discovery has its own listener. It receives no sender, installation or protected authority.
 function createCapabilityPeer(
   tls: ServerOptions,
@@ -101,7 +279,6 @@ function externalGitJourney(scope: "repository" | "installation" | "online-insta
     const cedar = (await import(
       join(entry, "repository-git.mjs")
     )) as typeof import("../fixtures/driver-packages/protected-execution-driver/repository-git.ts");
-    const base = createInstallationDriverConfiguration();
     const registryPath = join(directory, "registry.json");
     await writeFile(registryPath, JSON.stringify(registry));
     const path = join(directory, "installation.json");
@@ -117,44 +294,25 @@ function externalGitJourney(scope: "repository" | "installation" | "online-insta
     const releaseKey = publicKey.export({ format: "pem", type: "spki" }).toString();
     await writeFile(
       path,
-      JSON.stringify({
-        ...base,
-        presets: { includeDefaults: false },
-        backend: [
-          {
-            id: backendId,
-            type: "github",
-            configuration: { registryPath },
-            drivers: { repo: backendId },
-          },
-        ],
-        drivers: {
-          ...base.drivers,
+      JSON.stringify(
+        repositoryConfiguration({
+          backendId,
+          registryPath,
+          privateKeyPath,
+          custodyKeyPath,
+          id,
           sandbox: {
-            id,
-            package: id,
-            configuration: {
-              origin: origin.origin,
-              peerOrigin,
-              capabilityOrigin,
-              certFile,
-              releaseKey,
-              installationApiOrigin,
-            },
+            origin: origin.origin,
+            peerOrigin,
+            capabilityOrigin,
+            certFile,
+            releaseKey,
+            installationApiOrigin,
           },
-          credential_proxy: { id, configuration: {} },
-          repo: {
-            id: backendId,
-            configuration: { sessionDurationSeconds: 180 },
-            preparedGitHub: {
-              privateKeyPath,
-              custodyKeyPath,
-              issuerCaPath: certFile,
-              apiOrigin: gh.origin,
-            },
-          },
-        },
-      }),
+          issuerCaPath: certFile,
+          apiOrigin: gh.origin,
+        }),
+      ),
     );
     // Production loads this package independently in the API and worker processes. Use separate
     // installed copies here, with the same durable identity and discovery origin; only the worker binds protected authority.
@@ -170,6 +328,9 @@ function externalGitJourney(scope: "repository" | "installation" | "online-insta
     const { repositoryOwner, repositoryRegistry, repositoryGitDriver: owner } = drivers;
     assert.ok(owner && repositoryOwner && repositoryRegistry && drivers.preparedRepositoryGit);
     assert.equal(repositoryOwner.controlSocket, undefined);
+    assert.equal(drivers.installation.drivers.repo, undefined);
+    assert.equal(drivers.nativeRepositorySender, undefined);
+    assert.equal("open" in drivers.repositoryPolicy!, false);
     assert.equal(drivers.openShellGit, undefined);
     const apiOwner = apiDrivers.repositoryGitDriver!;
     assert.notEqual(apiOwner, owner);
@@ -271,7 +432,7 @@ function externalGitJourney(scope: "repository" | "installation" | "online-insta
     const controller = createBackendController(f, { backends });
     const { id: who } = actor;
     controller.installDriver(apiOwner, ["sandbox", "credential_proxy"]);
-    for (const d of [apiDrivers.repoDriver!, compute]) {
+    for (const d of [apiDrivers.repositoryPolicy!, compute]) {
       controller.registerDriver(d);
       controller.selectDriver(d.capability, d.id);
     }

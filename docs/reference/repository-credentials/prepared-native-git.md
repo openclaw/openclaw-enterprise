@@ -56,7 +56,11 @@ do not treat that receipt as per-person task authorization.
 ## Install and check
 
 Select `repositoryCredentials.authority: prepared-git` in the chart and
-`drivers.repo.preparedGitHub` in the Installation. Mount the signing and custody
+`repository.preparedGitHub` in the Installation. Select the policy ID and session duration
+under `repository.id` and `repository.configuration.sessionDurationSeconds`. Select
+`repository.nativeSender.controlSocket` and `repository.nativeSender.publicCaPath`
+explicitly. Keep the Backend’s `drivers.repo` policy ID equal to `repository.id`.
+Omit the Installation’s `drivers.repo`, Sandbox and Credential Proxy selections. Mount the signing and custody
 keys in the worker; do not copy them to the Agent or broker. OCE must be able to
 bind this repository session to the admitted revision and restrict broker ingress.
 If it cannot, do not fall back to an ambient token or grant broader broker access.

@@ -12,7 +12,7 @@ import type {
 import { createPostgresControllerAuth } from "../../apps/controller/src/auth/index.ts";
 import { createFastifyApp } from "../../apps/controller/src/index.ts";
 import { resolveApprovedHarness } from "../../apps/controller/src/composition/production-harness.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { validateGitHubRepositoryRegistry } from "../../apps/controller/src/drivers/repo/github/credentials/registry.ts";
 import { NativeIAMDriver } from "../../packages/iam/src/index.ts";
 import {
@@ -110,7 +110,7 @@ test(
           },
         ],
       });
-      const driver = new GitHubRepoDriver(
+      const driver = new GitHubRepositoryPolicy(
         {
           id: backendId,
           drivers: { repo: "standing-repo-driver" },

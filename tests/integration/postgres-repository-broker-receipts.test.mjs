@@ -1,3 +1,4 @@
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -12,7 +13,7 @@ import {
   DependencyUnavailableError,
 } from "../../packages/occ/src/index.ts";
 import { startRepositoryReceiptServer } from "../../apps/controller/src/backends/repository-credentials/receipt-server.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import {
   seedSessionRevision,
@@ -164,16 +165,12 @@ test(
     const client = new UnixRepositoryCredentialControlClient({
       controlSocket: fixture.config.gateway.controlSocket,
     });
-    const driver = new GitHubRepoDriver(
-      {
-        id: fixture.backendId,
-        client,
-        drivers: { repo: "repository-credentials" },
-      },
-      fixture.registry,
-      { sessionDurationSeconds: 3600, publicCa: fixture.tls.ca },
-    );
-    const binding = driver.resolve({
+    const backend = { id: fixture.backendId, client, drivers: { repo: "repository-credentials" } };
+    const driver = new GitHubNativeRepositorySender(backend, { publicCa: fixture.tls.ca });
+    const policy = new GitHubRepositoryPolicy(backend, fixture.registry, {
+      sessionDurationSeconds: 3600,
+    });
+    const binding = policy.resolve({
       namespaceId,
       bindings: [{ repositoryRef: "repo-a", profile: "git-full" }],
     }).bindings[0];

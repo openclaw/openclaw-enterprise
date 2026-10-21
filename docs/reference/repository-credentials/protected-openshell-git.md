@@ -14,8 +14,8 @@ Git admissions closed. Migration does not change a running Agent or its grant.
 ## Configuration for a qualified release
 
 A new protected revision would use the same installed OpenShell Driver’s Sandbox and
-`credential_proxy` capabilities, the GitHub Repo Driver, and its prepared Git and OpenShell
-authority configuration. The Repo configuration needs the session duration and registry, not a
+`credential_proxy` capabilities, GitHub repository policy, and its prepared Git and OpenShell
+authority configuration. The policy configuration needs the session duration and registry, not a
 broker control socket or broker CA. The worker verifies the installed policy, prepares short-lived
 GitHub tokens, and requires the sender to obtain current authorization before each new Git request. The Agent
 receives neither a session bearer nor a GitHub token. An explicitly approved standing grant can
@@ -25,8 +25,10 @@ outlive each finite session. A finite grant keeps its original deadline.
 
 The Installation would select Sandbox and Credential Proxy from the same Driver, as in the
 [OpenShell configuration example](../../../deploy/examples/repository-credentials/openshell.fragment.yaml).
-The GitHub Backend would use `/etc/openclaw/repository-registry/registry.json` and omit
-`controlSocket` and `publicCaPath` from `drivers.repo.configuration`.
+Move the example’s `drivers.repo` block to the top-level `repository` block. Keep
+`repository.preparedGitHub`, `repository.openShell` and the session duration; omit
+`controlSocket` and `publicCaPath`. The GitHub Backend uses
+`/etc/openclaw/repository-registry/registry.json`. Do not select `repository.nativeSender`.
 
 The corresponding Helm values would be `openshellGit.enabled: true`, `openshellGit.mode: protected`,
 `repositoryCredentials.enabled: false` and `repositoryCredentials.authority: prepared-git`.

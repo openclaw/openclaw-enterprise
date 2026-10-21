@@ -17,7 +17,7 @@ import {
   CodexPluginDriver,
   OCCPluginDriver,
 } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { ConfigurationConflictError } from "../../apps/controller/src/drivers/configuration/kubernetes/index.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import { currentComputeAbortSignal } from "../../apps/controller/src/drivers/compute/operation-context.ts";
@@ -384,7 +384,7 @@ function installationDrivers({
     secretDriver,
     ...(sandboxDriver === undefined ? {} : { sandboxDriver }),
     ...(credentialGatewayDriver === undefined ? {} : { credentialGatewayDriver }),
-    ...(repoDriver === undefined ? {} : { repoDriver }),
+    ...(repoDriver === undefined ? {} : { repositoryPolicy: repoDriver }),
     ...(pluginDriver === undefined ? {} : { pluginDriver }),
     createIAMDriver: (state) =>
       new NativeIAMDriver(state, { id: "native-iam", implementation: "native" }),
@@ -903,7 +903,7 @@ test(
       defaultProfile: "git-read",
       repositories: [{ repositoryRef: "project" }],
     };
-    const repoDriver = new GitHubRepoDriver(
+    const repoDriver = new GitHubRepositoryPolicy(
       {
         id: "provisioning-repositories",
         client: new UnixRepositoryCredentialControlClient({
@@ -1090,7 +1090,7 @@ test(
   async (context) => {
     const initial = await createFixture(context);
     const namespace = await initial.bootstrapNamespace();
-    const repoDriver = new GitHubRepoDriver(
+    const repoDriver = new GitHubRepositoryPolicy(
       {
         id: "provisioning-repositories",
         client: new UnixRepositoryCredentialControlClient({

@@ -137,6 +137,7 @@ export async function startupConfiguration(
       "backend",
       "logging",
       "presets",
+      "repository",
       "observability",
       "runtime",
       "sandboxNetworkPolicyCeiling",

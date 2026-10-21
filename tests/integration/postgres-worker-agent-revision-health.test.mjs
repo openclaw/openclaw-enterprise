@@ -1,3 +1,4 @@
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -511,7 +512,7 @@ test(
       },
     });
     const [
-      { GitHubRepoDriver },
+      { GitHubRepositoryPolicy },
       { UnixRepositoryCredentialControlClient },
       { startRegistryCredentialServiceFixture },
       { startRepositoryReceiptServer },
@@ -519,7 +520,7 @@ test(
       { createResourceScope },
       { dirname },
     ] = await Promise.all([
-      import("../../apps/controller/src/drivers/repo/github/driver.ts"),
+      import("../../apps/controller/src/drivers/repo/github/policy.ts"),
       import("../../apps/controller/src/backends/repository-credentials/control-client.ts"),
       import("../fixtures/repository-credentials/registry.mjs"),
       import("../../apps/controller/src/backends/repository-credentials/receipt-server.ts"),
@@ -541,15 +542,17 @@ test(
     });
     // Simulate the old broker's 404 while all other traffic still reaches the real service.
     relay.setCapabilitiesHidden(true);
-    const driver = new GitHubRepoDriver(
-      {
-        id: credentials.backendId,
-        client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
-        drivers: { repo: "repository-credentials" },
-      },
-      credentials.registry,
-      { sessionDurationSeconds: 60, publicCa: credentials.tls.ca },
-    );
+    const repositoryBackend = {
+      id: credentials.backendId,
+      client: new UnixRepositoryCredentialControlClient({ controlSocket: relay.socketPath }),
+      drivers: { repo: "repository-credentials" },
+    };
+    const sender = new GitHubNativeRepositorySender(repositoryBackend, {
+      publicCa: credentials.tls.ca,
+    });
+    const driver = new GitHubRepositoryPolicy(repositoryBackend, credentials.registry, {
+      sessionDurationSeconds: 60,
+    });
     const receiptServer = await startRepositoryReceiptServer({
       state: fixture.state,
       controlSocket: credentials.config.gateway.controlSocket,
@@ -576,7 +579,11 @@ test(
       },
       {
         pool: fixture.workerPool,
-        transformDrivers: (drivers) => ({ ...drivers, repoDriver: driver }),
+        transformDrivers: (drivers) => ({
+          ...drivers,
+          repositoryPolicy: driver,
+          nativeRepositorySender: sender,
+        }),
       },
     );
     // Four jittered retry delays can total nearly 15 seconds before the fifth claim.

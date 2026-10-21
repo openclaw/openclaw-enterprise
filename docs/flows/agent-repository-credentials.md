@@ -1,16 +1,15 @@
 ---
 created: "2026-09-18"
 updated: "2026-10-21"
-last_updated_session: authoring-run/5f4d0dab-1a03-4fa9-a469-a8778c8ad3d4
+last_updated_session: authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f
 ---
 
 # Agent repository credential flow
 
 ## Overview
 
-The Console lists approved repositories; admission saves selections and deployment
-freezes grants. Sessions reach embedded OpenClaw or dedicated Codex with compatible
-Harness authentication and no Sandbox Driver. The opt-in
+The Console lists approved repositories; deployment freezes grants. Native sessions reach
+embedded OpenClaw or dedicated Codex without a Sandbox Driver. The opt-in
 [OpenShell path](../reference/repository-credentials/openshell-git.md) gives the sandbox a
 placeholder: the worker delivers prepared material to the provider and checks each signed
 request against the live grant without returning a token.
@@ -47,7 +46,9 @@ graph TD
   API --> Version["<b>Deploy version</b><br/>Freeze grants and deadline"]
   Version --> Worker["<b>Claimed worker</b><br/>Recheck actor and policy"]
   Worker -->|Denied or expired| Close["<b>Cleanup ownership</b><br/>Close exact attempts"]
-  Worker --> Capability["<b>Check capability</b><br/>Fresh admissions only"]
+  Worker -->|Selected native sender| Capability["<b>Check capability</b><br/>Fresh admissions only"]
+  Worker -->|Selected protected Driver| Protected["<b>OCC finite session</b><br/>Prepare and install through selected Driver"]
+  Protected --> Compute
   Worker -->|Active standing Git evidence missing| Observe["<b>Observe existing Harness</b><br/>No preparation or issuance"]
   Observe -->|Durable next check within five seconds| Worker
   Capability -->|Available| Attempt["<b>Persist opening</b><br/>Before control request"]
@@ -98,12 +99,12 @@ graph TD
 
 `OpenClawController.listRepositoryOptions` authorizes Namespace Agent creation
 or exact-Agent update, checks Compute-owned availability, then projects opaque references,
-names and profiles through `GitHubRepoDriver.listOptions`. Exact Harness validation
+names and profiles through `GitHubRepositoryPolicy.listOptions`. Exact Harness validation
 remains at deployment. No approvals yields `[]`; closed Namespaces conflict.
 Classified optional discovery failures map to `503 REPOSITORY_OPTIONS_UNAVAILABLE`.
 
 `createRepositoryFields` searches up to 1,000 choices with 16 attachments;
-`repositorySettings` resolves inheritance intent through RepoDriver and the
+`repositorySettings` resolves inheritance intent through RepositoryPolicyDriver and the
 database checks concrete bindings. Only fresh, empty drafts permit the classified
 outage. For up to 20 visible refs,
 `apps/controller/src/drivers/repo/github/credentials/descriptions.ts:createGitHubRepositoryDescriptions`
@@ -121,7 +122,7 @@ Unknown outcomes require stored Agent and Configuration reads.
 `packages/occ/src/index.ts:OpenClawController.repositoryBindingSelections`
 uses `resolveRepositoryBindings` after existing authorization. Inputs contain distinct opaque references and optional profiles, never provider tokens
 or caller-selected grant identities; selections keep request order. The concrete
-`apps/controller/src/drivers/repo/github/driver.ts:GitHubRepoDriver.resolve`
+`apps/controller/src/drivers/repo/github/driver.ts:GitHubRepositoryPolicy.resolve`
 uses local registry policy, defaults omitted legacy profiles to `git-write`, and
 makes no control-socket or GitHub calls.
 
@@ -139,23 +140,26 @@ preserves them and an empty array clears them.
 
 `packages/occ/src/index.ts:OpenClawController.admitRepositoryCredentials`
 re-resolves the draft, validates Compute topology and freezes Driver identity,
-grants and an absolute deadline unaffected by renewal or recovery. Duration
-`86400` allows 24 hours. `apps/controller/src/http/agents.ts:clientRevision` returns
-only Driver identity, references, profiles and deadline.
+grants and an absolute deadline unaffected by renewal or recovery.
 
-`apps/controller/src/composition/repository-credentials/platform.ts:composeRepoDriver`
-constructs `GitHubRepoDriver` for capability `repo` from a Backend-owned Unix
-client, validated registry and public CA. Installation and Backend membership
-must select the same Driver ID. The API and worker never load the token engine or
-App key. The [production startup flow](production-startup.md) owns composition and
-sidecar launch; the service validates protected inputs before listening.
+`apps/controller/src/composition/repository-credentials/platform.ts:composeRepositoryAccess`
+constructs `GitHubRepositoryPolicy`, with its ID pinned by the GitHub Backend's `repo`
+member. Protected installations select `repository.preparedGitHub` and the installed
+Sandbox/Credential Proxy Driver. OCC creates finite sessions without a native sender,
+control socket, broker CA or session files.
+
+Explicit `repository.nativeSender` selects `GitHubNativeRepositorySender` and requires
+prepared GitHub custody. It owns session operations and files, receives no App key, and
+cannot coexist with protected delivery. Retained `drivers.repo` uses this native owner.
+Cleanup matches recorded owner identity without resolving policy or restoring authority.
+The worker's prepared provider owns issuance and custody.
 
 ### 3. Record ownership before opening a session
 
 `apps/controller/src/worker/repository-credentials.ts:RepositoryCredentialLifecycle.prepare`
 rechecks actor, Namespace, Agent, version, Driver, grant and deadline. Before a
-fresh attempt, `GitHubRepoDriver.checkAdmissionReady` checks the broker capability
-with a two-second timeout signal. The worker also checks it before refreshing readiness.
+fresh native attempt, `GitHubNativeRepositorySender.checkAdmissionReady` checks broker capability
+with a two-second timeout signal. Worker readiness also checks it.
 An unavailable capability blocks fresh admission, but not recovery or cleanup.
 Under the live claim and Namespace/Agent locks, State records the attempt and
 immutable cleanup context before the Driver call. It rejects stopped or deleting
@@ -294,7 +298,7 @@ fresh installation tokens under the same grant until the version deadline.
 ### 6. Maintain, recover and retire ownership
 
 The worker commits activation and its next maintenance together, preserving the actor.
-Repository maintenance runs at the Driver interval (30 seconds) or a shorter Compute interval.
+Repository maintenance runs every 30 seconds, at the selected native sender interval, or at a shorter Compute interval.
 A missing known session is invalidated, never reminted after restart. A user may deploy another
 version while cleanup continues.
 
@@ -307,7 +311,7 @@ Cleanup records the exact owner, attempts and actor. Concurrent obligations pres
 claim; later obligations can requeue completed work. Session cleanup retries without spending
 the foreground retry budget or reopening access.
 
-`ControllerWorker.processRepositoryCleanup` consumes validated owner-bound Work
+`apps/controller/src/worker.ts:ControllerWorker.processRepositoryCleanup` consumes validated owner-bound Work
 without policy resolution, admission or material delivery, even after the actor
 loses ordinary permissions. Terminal-runtime Work fences attempts, closes sessions
 and calls Compute's `stopRevision` for that version. Compute mismatch or stop
@@ -366,6 +370,8 @@ Ready Pods and commands do not prove live writes.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-21 22:49: Separate repository policy, protected composition and explicit native session ownership. (authoring-run/fb0df3aa-3a65-40ec-9da0-20de1db91b2f - 41137910011b9c4fc1a713b234a92c87a6717e3f)
 
 - 2026-10-21 22:10: Document standing Git supervision with the accompanying uncommitted worker change. (authoring-run/5f4d0dab-1a03-4fa9-a469-a8778c8ad3d4 - 390a3627b97535f4d21107001efda8af6152355d)
 

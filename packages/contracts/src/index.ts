@@ -108,7 +108,7 @@ import type {
   RepositoryCredentialMaterialRef,
   RepositoryCredentialRuntimeBinding,
   RepositoryRevisionState,
-  RepoDriver,
+  RepositoryPolicyDriver,
 } from "./repo.ts";
 
 export type {
@@ -148,13 +148,14 @@ export type {
   RepositoryExecutionIdentity,
   RepositoryAccess,
   AdmittedRepositoryBinding,
+  NativeRepositorySender,
   OpenRepositorySessionInput,
   OpenRepositorySessionResult,
   RepositoryBindingRequest,
   RepositoryBindingSelection,
   RepositoryOption,
   RepositoryOptions,
-  RepoDriver,
+  RepositoryPolicyDriver,
   RepositoryApprovalScope,
   RepositoryApprovalValue,
   RepositoryCredentialGrantIdentity,
@@ -1220,7 +1221,7 @@ export type DriverByCapability = {
   compute: ComputeDriver;
   plugin: PluginDriver;
   channel: ChannelDriver;
-  repo: RepoDriver;
+  repo: RepositoryPolicyDriver;
   credential_gateway: CredentialGatewayDriver;
   credential_refresh: CredentialRefreshDriver;
   credential_proxy: CredentialProxyDriver;

@@ -1,3 +1,4 @@
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { startReceiptState } from "../fixtures/repository-credentials/receipt-state.mjs";
 import { createControlledClock } from "../fixtures/repository-credentials/clock.mjs";
 import { run } from "../fixtures/repository-credentials/process.mjs";
@@ -11,7 +12,7 @@ import { createServer } from "node:http";
 import { request } from "node:https";
 import { dirname, join } from "node:path";
 import { DependencyUnavailableError, ScopeViolationError } from "../../packages/occ/src/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubNativeRepositorySender } from "../../apps/controller/src/drivers/repo/github/driver.ts";
 import { UnixRepositoryCredentialControlClient } from "../../apps/controller/src/backends/repository-credentials/control-client.ts";
 import {
   defaultRegistryRepositories,
@@ -19,15 +20,17 @@ import {
 } from "../fixtures/repository-credentials/registry.mjs";
 
 function driverFor(registry, socket, sessionDurationSeconds = 3600, publicCa) {
-  return new GitHubRepoDriver(
-    {
-      id: registry.backendId,
-      client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
-      drivers: { repo: "repository-credentials" },
-    },
-    registry,
-    { sessionDurationSeconds, ...(publicCa === undefined ? {} : { publicCa }) },
-  );
+  const backend = {
+    id: registry.backendId,
+    client: new UnixRepositoryCredentialControlClient({ controlSocket: socket }),
+    drivers: { repo: "repository-credentials" },
+  };
+  return {
+    policy: new GitHubRepositoryPolicy(backend, registry, { sessionDurationSeconds }),
+    sender: new GitHubNativeRepositorySender(backend, {
+      ...(publicCa === undefined ? {} : { publicCa }),
+    }),
+  };
 }
 
 function assertPublicStatus(status, binding) {
@@ -87,7 +90,7 @@ test(
     });
     const signal = new AbortController().signal;
     const local = driverFor(fixture.registry, "/nonexistent/repository-control.sock");
-    const resolution = local.resolve({
+    const resolution = local.policy.resolve({
       namespaceId: fixture.namespaceId,
       bindings: [
         { repositoryRef: "repo-a", profile: "git-read" },
@@ -97,7 +100,7 @@ test(
     assert.equal(resolution.sessionDurationSeconds, 3600);
     assert.throws(
       () =>
-        local.resolve({
+        local.policy.resolve({
           namespaceId: fixture.namespaceId,
           bindings: [{ repositoryRef: "repo-a" }, { repositoryRef: "repo-a" }],
         }),
@@ -113,8 +116,8 @@ test(
       controlSocket: fixture.config.gateway.controlSocket,
     });
     await client.health(signal);
-    await driver.checkAdmissionReady(signal);
-    const contributor = driver.resolve({
+    await driver.sender.checkAdmissionReady(signal);
+    const contributor = driver.policy.resolve({
       namespaceId: fixture.namespaceId,
       bindings: [{ repositoryRef: "repo-a" }],
     }).bindings[0];
@@ -128,7 +131,7 @@ test(
     const legacyGrant = "sha256:94c2dc4513de2fa4a6f885c7fd2f857110510100111cb4f4424db6ddf8d37ae5";
     assert.notEqual(contributor.grant.grantId, legacyGrant);
     await assert.rejects(
-      driver.open(
+      driver.sender.open(
         {
           namespaceId: fixture.namespaceId,
           admissionId: staleId,
@@ -156,7 +159,7 @@ test(
     for (const input of inputs) {
       await receipts.prepare(input.admissionId, input.binding.repositoryRef, input.durationSeconds);
     }
-    const opened = await Promise.all(inputs.map((input) => driver.open(input, signal)));
+    const opened = await Promise.all(inputs.map((input) => driver.sender.open(input, signal)));
     for (let index = 0; index < opened.length; index++) {
       await receipts.advance(
         inputs[index].admissionId,
@@ -194,14 +197,14 @@ test(
         (await gateway(fixture, result, fixture.repositories[1 - index].repository)).status,
         400,
       );
-      const recovered = await driver.open({ ...inputs[index], recoverOnly: true }, signal);
+      const recovered = await driver.sender.open({ ...inputs[index], recoverOnly: true }, signal);
       assert.equal(recovered.kind, "recovered");
       assert.equal(recovered.status.sessionId, result.session.sessionId);
       assertPublicStatus(recovered.status, inputs[index].binding.grant);
       assert.notEqual(recovered.status, result.session);
       assert.notEqual(recovered.status.binding, result.session.binding);
       assert.equal(recovered.bearer, undefined);
-      const status = await driver.status(result.session.sessionId, signal);
+      const status = await driver.sender.status(result.session.sessionId, signal);
       assertPublicStatus(status, inputs[index].binding.grant);
       assert.equal(status.state, "OPEN");
     }
@@ -227,7 +230,7 @@ test(
       statuses: "read",
     });
     await assert.rejects(
-      driver.open({ ...inputs[0], durationSeconds: 3599 }, signal),
+      driver.sender.open({ ...inputs[0], durationSeconds: 3599 }, signal),
       ScopeViolationError,
     );
     await receipts.advance(inputs[0].admissionId, "open", "closing");
@@ -237,10 +240,10 @@ test(
       fenced.binding.repositoryRef,
       fenced.durationSeconds,
     );
-    assert.deepEqual(await driver.open({ ...fenced, recoverOnly: true }, signal), {
+    assert.deepEqual(await driver.sender.open({ ...fenced, recoverOnly: true }, signal), {
       kind: "missing",
     });
-    assert.deepEqual(await driver.open(fenced, signal), { kind: "missing" });
+    assert.deepEqual(await driver.sender.open(fenced, signal), { kind: "missing" });
 
     // A changed local Backend registry must not obstruct restrictive cleanup of the old admission.
     const changedProvider = driverFor(
@@ -248,14 +251,14 @@ test(
       fixture.config.gateway.controlSocket,
     );
     assert.equal(
-      (await changedProvider.open({ ...inputs[0], recoverOnly: true }, signal)).kind,
+      (await changedProvider.sender.open({ ...inputs[0], recoverOnly: true }, signal)).kind,
       "recovered",
     );
-    await assert.rejects(changedProvider.open(inputs[0], signal), ScopeViolationError);
+    await assert.rejects(changedProvider.sender.open(inputs[0], signal), ScopeViolationError);
 
     await receipts.advance(inputs[1].admissionId, "open", "closing");
     for (let index = 0; index < opened.length; index++) {
-      const closed = await driver.close(opened[index].session.sessionId, signal);
+      const closed = await driver.sender.close(opened[index].session.sessionId, signal);
       assertPublicStatus(closed, inputs[index].binding.grant);
       assert.notEqual(closed.state, "OPEN");
     }
@@ -263,7 +266,7 @@ test(
     for (const result of opened) {
       let status;
       for (let index = 0; index < 100; index++) {
-        status = await driver.status(result.session.sessionId, signal);
+        status = await driver.sender.status(result.session.sessionId, signal);
         if (status?.state === "DISPOSED") {
           break;
         }
@@ -272,13 +275,16 @@ test(
       assert.equal(status?.state, "DISPOSED");
     }
     await fixture.restart();
-    assert.equal((await driver.status(opened[0].session.sessionId, signal)).state, "DISPOSED");
     assert.equal(
-      (await driver.open({ ...inputs[0], recoverOnly: true }, signal)).kind,
+      (await driver.sender.status(opened[0].session.sessionId, signal)).state,
+      "DISPOSED",
+    );
+    assert.equal(
+      (await driver.sender.open({ ...inputs[0], recoverOnly: true }, signal)).kind,
       "recovered",
     );
     await assert.rejects(
-      local.status(opened[0].session.sessionId, signal),
+      local.sender.status(opened[0].session.sessionId, signal),
       DependencyUnavailableError,
     );
   },
@@ -308,7 +314,7 @@ test("Unix control rejects malformed status and preserves authoritative absence 
     socket,
     1,
   );
-  const admitted = driver.resolve({
+  const admitted = driver.policy.resolve({
     namespaceId: "namespace",
     bindings: [{ repositoryRef: "project", profile: "git-read" }],
   }).bindings[0];
@@ -419,19 +425,19 @@ test("Unix control rejects malformed status and preserves authoritative absence 
           status: 201,
           body: { session: status, bearer: "b".repeat(43), client: configuration },
         };
-        await assert.rejects(driver.open(openInput, signal), DependencyUnavailableError);
+        await assert.rejects(driver.sender.open(openInput, signal), DependencyUnavailableError);
         reply = { status: 200, body: status };
         await assert.rejects(
-          driver.open({ ...openInput, recoverOnly: true }, signal),
+          driver.sender.open({ ...openInput, recoverOnly: true }, signal),
           DependencyUnavailableError,
         );
-        await assert.rejects(driver.status(id, signal), DependencyUnavailableError);
+        await assert.rejects(driver.sender.status(id, signal), DependencyUnavailableError);
         // Use CLOSED for otherwise OPEN observations so rejection must inspect the malformed field.
         reply = {
           status: 200,
           body: { ...status, ...(status.state === "OPEN" ? { state: "CLOSED" } : {}) },
         };
-        await assert.rejects(driver.close(id, signal), DependencyUnavailableError);
+        await assert.rejects(driver.sender.close(id, signal), DependencyUnavailableError);
       }
     },
   );
@@ -455,9 +461,9 @@ test("Unix control rejects malformed status and preserves authoritative absence 
       assert.deepEqual(await client.status(id, signal), disposed);
       assert.deepEqual(await client.close(id, signal), disposed);
       for (const status of [
-        await driver.status(id, signal),
-        await driver.close(id, signal),
-        (await driver.open({ ...openInput, recoverOnly: true }, signal)).status,
+        await driver.sender.status(id, signal),
+        await driver.sender.close(id, signal),
+        (await driver.sender.open({ ...openInput, recoverOnly: true }, signal)).status,
       ]) {
         assertPublicStatus(status, disposed.binding);
         assert.equal(status.state, "DISPOSED");
@@ -473,10 +479,10 @@ test("Unix control rejects malformed status and preserves authoritative absence 
         reply = { status: 200, body: outstanding };
         await assert.rejects(client.status(id, signal), (error) => error.retryable === true);
         await assert.rejects(client.close(id, signal), (error) => error.retryable === true);
-        await assert.rejects(driver.status(id, signal), DependencyUnavailableError);
-        await assert.rejects(driver.close(id, signal), DependencyUnavailableError);
+        await assert.rejects(driver.sender.status(id, signal), DependencyUnavailableError);
+        await assert.rejects(driver.sender.close(id, signal), DependencyUnavailableError);
         await assert.rejects(
-          driver.open({ ...openInput, recoverOnly: true }, signal),
+          driver.sender.open({ ...openInput, recoverOnly: true }, signal),
           DependencyUnavailableError,
         );
       }
@@ -498,10 +504,10 @@ test("Unix control rejects malformed status and preserves authoritative absence 
           status: 201,
           body: { session: status, bearer: "b".repeat(43), client: configuration },
         };
-        await assert.rejects(driver.open(openInput, signal), DependencyUnavailableError);
+        await assert.rejects(driver.sender.open(openInput, signal), DependencyUnavailableError);
         reply = { status: 200, body: status };
         await assert.rejects(
-          driver.open({ ...openInput, recoverOnly: true }, signal),
+          driver.sender.open({ ...openInput, recoverOnly: true }, signal),
           DependencyUnavailableError,
         );
       }
@@ -510,7 +516,7 @@ test("Unix control rejects malformed status and preserves authoritative absence 
         body: { session: open, bearer: "b".repeat(43), client: configuration },
       };
       await assert.rejects(
-        driver.open({ ...openInput, recoverOnly: true }, signal),
+        driver.sender.open({ ...openInput, recoverOnly: true }, signal),
         DependencyUnavailableError,
       );
     },
@@ -630,7 +636,7 @@ test("repository descriptions remain scoped and reject stale identity without bl
     socket,
     1,
   );
-  const initial = await driver.listOptions({ namespaceId: "namespace" });
+  const initial = await driver.policy.listOptions({ namespaceId: "namespace" });
   assert.equal(requests.length, 0);
   assert.equal(initial.descriptionsPending, false);
   assert.deepEqual(
@@ -650,7 +656,7 @@ test("repository descriptions remain scoped and reject stale identity without bl
     ],
   };
   const input = { namespaceId: "namespace", descriptionRefs: ["project", "helper", "foreign"] };
-  let result = await driver.listOptions(input);
+  let result = await driver.policy.listOptions(input);
   assert.deepEqual(requests[0], {
     namespaceId: "namespace",
     repositoryRefs: ["project", "helper"],
@@ -677,7 +683,7 @@ test("repository descriptions remain scoped and reject stale identity without bl
       { repositoryRef: "helper", repositoryId: "74", description: "Current helper" },
     ],
   };
-  result = await driver.listOptions(input);
+  result = await driver.policy.listOptions(input);
   assert.equal(
     result.options.find((option) => option.repositoryRef === "project").description,
     undefined,
@@ -695,7 +701,7 @@ test("repository descriptions remain scoped and reject stale identity without bl
     { githubInstallationId: "invalid" },
   ]) {
     reply = { ...matchingReply, ...changedIdentity };
-    result = await driver.listOptions(input);
+    result = await driver.policy.listOptions(input);
     assert.ok(result.options.every((option) => option.description === undefined));
     assert.equal(result.options.length, 2);
   }

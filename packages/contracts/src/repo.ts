@@ -110,13 +110,8 @@ export type RepositoryApprovalValue =
   | { readonly [key: string]: RepositoryApprovalValue };
 export type RepositoryApprovalScope = Readonly<Record<string, RepositoryApprovalValue>>;
 
-export interface RepoDriver extends Driver {
+export interface RepositoryPolicyDriver extends Driver {
   readonly capability: "repo";
-  readonly maintenanceIntervalMs: number;
-  /** This Driver fences admission and retains confirmed terminal evidence durably. */
-  readonly durableBrokerReceipts?: true;
-  /** Check whether fresh credential admission is currently supported. */
-  checkAdmissionReady?(signal: AbortSignal): Promise<void>;
   listOptions(input: {
     readonly namespaceId: string;
     readonly descriptionRefs?: readonly string[];
@@ -134,6 +129,17 @@ export interface RepoDriver extends Driver {
     readonly namespaceId: string;
     readonly bindings: readonly RepositoryBindingRequest[];
   }): RepositoryCredentialResolution;
+}
+
+/** Explicit native sender and retained-session cleanup owner; never a protected fallback. */
+export interface NativeRepositorySender {
+  readonly id: string;
+  readonly implementation: string;
+  readonly maintenanceIntervalMs: number;
+  /** This sender fences admission and retains confirmed terminal evidence durably. */
+  readonly durableBrokerReceipts?: true;
+  /** Check whether fresh credential admission is currently supported. */
+  checkAdmissionReady?(signal: AbortSignal): Promise<void>;
   open(
     input: OpenRepositorySessionInput,
     signal: AbortSignal,

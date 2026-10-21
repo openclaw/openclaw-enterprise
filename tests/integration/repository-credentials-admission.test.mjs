@@ -8,7 +8,7 @@ import { resolveApprovedHarness } from "../../apps/controller/src/composition/pr
 import { KubernetesComputeDriver } from "../../apps/controller/src/drivers/compute/kubernetes/index.ts";
 import { SshComputeDriver } from "../../apps/controller/src/drivers/compute/ssh/index.ts";
 import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
-import { GitHubRepoDriver } from "../../apps/controller/src/drivers/repo/github/driver.ts";
+import { GitHubRepositoryPolicy } from "../../apps/controller/src/drivers/repo/github/policy.ts";
 import { OpenShellGateway } from "../../apps/controller/src/backends/openshell.ts";
 import { OpenShellGitRuntime } from "../../apps/controller/src/drivers/egress-proxy/openshell-git-runtime.ts";
 import { OpenShellSandboxDriver } from "../../apps/controller/src/drivers/sandbox/openshell.ts";
@@ -122,7 +122,7 @@ function registryFor(namespaceId) {
   };
 }
 
-function repositoryDriver(registry, Driver = GitHubRepoDriver) {
+function repositoryDriver(registry, Driver = GitHubRepositoryPolicy) {
   return new Driver(
     {
       id: backendId,
@@ -401,7 +401,7 @@ test("Denied Agent discovery cannot start repository metadata lookups", async (t
   });
   t.after(() => new Promise((resolve) => server.close(resolve)));
 
-  class ObservedRepositoryDriver extends GitHubRepoDriver {
+  class ObservedRepositoryDriver extends GitHubRepositoryPolicy {
     constructor(backend, registry, options) {
       super(
         {
@@ -466,7 +466,7 @@ test("Repository options preserve an empty successful discovery", async (t) => {
 test("Repository options refuse Driver display text with C0 controls or DEL", async (t) => {
   // The utils conformance suite pins every code unit of the shared helper; this pins its use here.
   let override = {};
-  class CraftedRepositoryDriver extends GitHubRepoDriver {
+  class CraftedRepositoryDriver extends GitHubRepositoryPolicy {
     async listOptions(input) {
       const result = await super.listOptions(input);
       return { ...result, options: result.options.map((option) => ({ ...option, ...override })) };
@@ -793,7 +793,7 @@ test("Agent updates apply repository access and validate plugin policy together"
 
 test("Agent repository access preserves request order when the Driver returns bindings in another order", async (t) => {
   // Driver resolutions are keyed by reference; their order is not part of the contract.
-  class ReorderedRepositoryDriver extends GitHubRepoDriver {
+  class ReorderedRepositoryDriver extends GitHubRepositoryPolicy {
     resolve(input) {
       const resolution = super.resolve(input);
       return { ...resolution, bindings: [...resolution.bindings].reverse() };

@@ -147,14 +147,7 @@ export function driverHasCapabilityContract(driver: Driver): boolean {
     );
   }
   if (driver.capability === "repo") {
-    return (
-      ["listOptions", "resolve", "open", "status", "close"].every(
-        (operation) => typeof candidate[operation] === "function",
-      ) &&
-      typeof candidate.maintenanceIntervalMs === "number" &&
-      Number.isFinite(candidate.maintenanceIntervalMs) &&
-      candidate.maintenanceIntervalMs > 0
-    );
+    return ["listOptions", "resolve"].every((method) => typeof candidate[method] === "function");
   }
   return (
     typeof candidate.ensureNamespace === "function" &&

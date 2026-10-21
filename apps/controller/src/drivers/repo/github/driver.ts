@@ -3,12 +3,8 @@ import type {
   OpenRepositorySessionInput,
   OpenRepositorySessionResult,
   Backend,
-  RepositoryBindingRequest,
-  RepoDriver,
-  RepositoryCredentialResolution,
+  NativeRepositorySender,
   RepositoryCredentialSessionStatus,
-  RepositoryOption,
-  RepositoryOptions,
 } from "@openclaw-enterprise/contracts";
 import { DependencyUnavailableError, ScopeViolationError } from "@openclaw-enterprise/occ";
 import { isAbsolute, resolve } from "node:path";
@@ -16,13 +12,7 @@ import {
   RepositoryCredentialControlError,
   type RepositoryCredentialControlClient,
 } from "../../../backends/repository-credentials/control-client.ts";
-import {
-  githubInstallationProfile,
-  resolveGitHubRepositoryBinding,
-  resolveGitHubStandingApprovalScope,
-  validateGitHubRepositoryRegistry,
-  type GitHubRepositoryRegistry,
-} from "./credentials/registry.ts";
+import { githubInstallationProfile } from "./credentials/registry.ts";
 import { encodeRepositoryCredentialSessionFiles } from "./credentials/client/config.ts";
 import type { SessionStatus } from "../credentials/service-contracts.ts";
 import { sameBinding } from "../credentials/sessions.ts";
@@ -41,11 +31,11 @@ function publicStatus(status: SessionStatus): RepositoryCredentialSessionStatus 
   });
 }
 
-export class GitHubRepoDriver implements RepoDriver {
+export class GitHubNativeRepositorySender implements NativeRepositorySender {
   static readonly configurationSchema: JSONSchema = Object.freeze({
     type: "object",
     additionalProperties: false,
-    required: ["sessionDurationSeconds"],
+    required: ["sessionDurationSeconds", "controlSocket", "publicCaPath"],
     properties: {
       controlSocket: { type: "string", minLength: 1, maxLength: 103 },
       sessionDurationSeconds: {
@@ -77,11 +67,6 @@ export class GitHubRepoDriver implements RepoDriver {
     ) {
       throw new Error("Repository credential Driver configuration is invalid.");
     }
-    // The protected selection needs only the finite session duration. Composition below
-    // still requires both native broker inputs together when that sender was selected.
-    if (value.controlSocket === undefined && value.publicCaPath === undefined) {
-      return;
-    }
     for (const field of ["controlSocket", "publicCaPath"] as const) {
       const path = value[field];
       if (
@@ -96,49 +81,31 @@ export class GitHubRepoDriver implements RepoDriver {
     }
   }
 
-  readonly capability = "repo" as const;
+  readonly id: string;
   readonly implementation = "github";
   readonly maintenanceIntervalMs = 30_000;
-  readonly durableBrokerReceipts?: true;
-  readonly checkAdmissionReady?: (signal: AbortSignal) => Promise<void>;
-  readonly id: string;
+  readonly durableBrokerReceipts = true;
+  readonly checkAdmissionReady: (signal: AbortSignal) => Promise<void>;
   readonly #backendId: string;
-  readonly #registry: GitHubRepositoryRegistry;
-  readonly #client: RepositoryCredentialControlClient | undefined;
-  readonly #duration: number;
+  readonly #client: RepositoryCredentialControlClient;
   readonly #publicCa: Uint8Array | undefined;
 
   constructor(
     backend: Backend<RepositoryCredentialControlClient | undefined>,
-    registry: GitHubRepositoryRegistry,
-    options: { readonly sessionDurationSeconds: number; readonly publicCa?: Uint8Array },
+    options: { readonly publicCa?: Uint8Array },
   ) {
     const id = backend.drivers.repo;
-    if (
-      typeof id !== "string" ||
-      Buffer.byteLength(id) < 1 ||
-      Buffer.byteLength(id) > 512 ||
-      hasControlCharacter(id)
-    ) {
-      throw new Error("The GitHub Backend must declare its repository credential Driver.");
-    }
-    this.#registry = validateGitHubRepositoryRegistry(registry, backend.id);
-    if (
-      !Number.isSafeInteger(options.sessionDurationSeconds) ||
-      options.sessionDurationSeconds < 1 ||
-      options.sessionDurationSeconds > registry.maximumDurationSeconds
-    ) {
-      throw new Error("Repository credential session duration exceeds the registry policy.");
+    if (typeof id !== "string" || !id || Buffer.byteLength(id) > 512 || hasControlCharacter(id)) {
+      throw new Error("Native repository sender requires its exact policy owner identity.");
     }
     this.id = id;
+    if (!backend.client) {
+      throw new Error("Native repository sender requires a broker client.");
+    }
     this.#backendId = backend.id;
     const client = backend.client;
     this.#client = client;
-    if (client) {
-      this.durableBrokerReceipts = true;
-      this.checkAdmissionReady = (signal) => this.control(() => client.checkAdmissionReady(signal));
-    }
-    this.#duration = options.sessionDurationSeconds;
+    this.checkAdmissionReady = (signal) => this.control(() => client.checkAdmissionReady(signal));
     if (options.publicCa !== undefined) {
       if (options.publicCa.byteLength === 0 || options.publicCa.byteLength > 64 * 1024) {
         throw new Error("Repository credential public CA is invalid.");
@@ -146,134 +113,6 @@ export class GitHubRepoDriver implements RepoDriver {
       new TextDecoder("utf-8", { fatal: true }).decode(options.publicCa);
     }
     this.#publicCa = options.publicCa === undefined ? undefined : Uint8Array.from(options.publicCa);
-  }
-
-  async listOptions(input: {
-    readonly namespaceId: string;
-    readonly descriptionRefs?: readonly string[];
-  }): Promise<RepositoryOptions> {
-    const options: RepositoryOption[] = [];
-    const approved = new Map<string, string>();
-    this.#registry.repositories.forEach((repository) => {
-      const policy = repository.namespaces.find(
-        (candidate) => candidate.namespaceId === input.namespaceId,
-      );
-      if (policy === undefined) {
-        return;
-      }
-      options.push(
-        Object.freeze({
-          repositoryRef: repository.repositoryRef,
-          displayName: repository.repository,
-          allowedProfiles: Object.freeze([...policy.profiles]),
-        }),
-      );
-      approved.set(repository.repositoryRef, repository.repositoryId);
-    });
-    const installation = this.#registry.installationAccess;
-    if (installation?.namespaces.some((policy) => policy.namespaceId === input.namespaceId)) {
-      options.push(
-        Object.freeze({
-          repositoryRef: installation.repositoryRef,
-          displayName: "All repositories and permissions available to this GitHub App installation",
-          allowedProfiles: Object.freeze([githubInstallationProfile]),
-        }),
-      );
-    }
-    const descriptionRefs = (input.descriptionRefs ?? []).filter((ref) => approved.has(ref));
-    if (descriptionRefs.length === 0 || !this.#client) {
-      return Object.freeze({ options: Object.freeze(options), descriptionsPending: false });
-    }
-    try {
-      // Descriptions are optional: the approved registry remains usable if metadata is unavailable.
-      const metadata = await this.#client.descriptions(
-        input.namespaceId,
-        descriptionRefs,
-        AbortSignal.timeout(2_000),
-      );
-      if (
-        metadata.providerInstanceId !== this.#registry.providerInstanceId ||
-        metadata.appId !== this.#registry.appId ||
-        metadata.githubInstallationId !== this.#registry.githubInstallationId
-      ) {
-        throw new Error("unexpected-repository-provider");
-      }
-      const requested = new Set(descriptionRefs);
-      const descriptions = new Map(
-        metadata.descriptions
-          .filter(
-            (entry) =>
-              requested.has(entry.repositoryRef) &&
-              approved.get(entry.repositoryRef) === entry.repositoryId,
-          )
-          .map((entry) => [entry.repositoryRef, entry.description]),
-      );
-      return Object.freeze({
-        options: Object.freeze(
-          options.map((option) => {
-            const description = descriptions.get(option.repositoryRef);
-            return Object.freeze({
-              ...option,
-              ...(description === undefined ? {} : { description }),
-            });
-          }),
-        ),
-        descriptionsPending: metadata.pending,
-      });
-    } catch {
-      return Object.freeze({ options: Object.freeze(options), descriptionsPending: false });
-    }
-  }
-
-  standingApprovalScope(input: {
-    namespaceId: string;
-    binding: import("@openclaw-enterprise/contracts").AdmittedRepositoryBinding;
-  }): import("@openclaw-enterprise/contracts").RepositoryApprovalScope | undefined {
-    return resolveGitHubStandingApprovalScope(this.#registry, input);
-  }
-
-  allowsStandingApproval(input: {
-    namespaceId: string;
-    binding: import("@openclaw-enterprise/contracts").AdmittedRepositoryBinding;
-  }): boolean {
-    return this.standingApprovalScope(input) !== undefined;
-  }
-
-  resolve(input: {
-    readonly namespaceId: string;
-    readonly bindings: readonly RepositoryBindingRequest[];
-  }): RepositoryCredentialResolution {
-    try {
-      if (
-        !Array.isArray(input.bindings) ||
-        input.bindings.length > 16 ||
-        new Set(input.bindings.map((entry) => entry.repositoryRef)).size !== input.bindings.length
-      ) {
-        throw new Error("invalid-bindings");
-      }
-      return Object.freeze({
-        bindings: Object.freeze(
-          input.bindings.map((entry) =>
-            resolveGitHubRepositoryBinding(this.#registry, {
-              ...entry,
-              namespaceId: input.namespaceId,
-            }),
-          ),
-        ),
-        sessionDurationSeconds: this.#duration,
-      });
-    } catch {
-      throw new ScopeViolationError(
-        "The requested repository bindings are not permitted for this Namespace.",
-      );
-    }
-  }
-
-  private broker(): RepositoryCredentialControlClient {
-    if (!this.#client) {
-      throw new Error("This repository Driver has no native broker authority.");
-    }
-    return this.#client;
   }
 
   async open(
@@ -292,7 +131,7 @@ export class GitHubRepoDriver implements RepoDriver {
     }
     // Replay and cleanup must still reach retained correlation after local policy changes.
     const result = await this.control(() =>
-      this.broker().open(
+      this.#client.open(
         {
           namespaceId: input.namespaceId,
           repositoryRef: input.binding.repositoryRef,
@@ -338,7 +177,7 @@ export class GitHubRepoDriver implements RepoDriver {
     sessionId: string,
     signal: AbortSignal,
   ): Promise<RepositoryCredentialSessionStatus | undefined> {
-    const status = await this.control(() => this.broker().status(sessionId, signal));
+    const status = await this.control(() => this.#client.status(sessionId, signal));
     return status === undefined ? undefined : publicStatus(status);
   }
 
@@ -346,7 +185,7 @@ export class GitHubRepoDriver implements RepoDriver {
     sessionId: string,
     signal: AbortSignal,
   ): Promise<RepositoryCredentialSessionStatus | undefined> {
-    const status = await this.control(() => this.broker().close(sessionId, signal));
+    const status = await this.control(() => this.#client.close(sessionId, signal));
     return status === undefined ? undefined : publicStatus(status);
   }
 

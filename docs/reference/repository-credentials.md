@@ -1,13 +1,10 @@
 # Repository credentials
 
-Repository bindings restrict Git HTTPS and GitHub API access by repository and operation. OCC saves
-grants in each version; the worker prepares material. The credential service
-retains App keys, JWTs and installation tokens. Agents receive gateway bearers,
-client configuration and CA trust. Start with the
-[operator guide](../guides/repository-credentials.md). For a dedicated Agent
-using one repository and an exact review branch, see
-[native Git with a prepared credential](repository-credentials/prepared-native-git.md).
-In that profile the worker, not the repository service, holds the App signing key.
+Repository bindings restrict Git HTTPS and GitHub API access by repository and operation.
+OCC saves grants; the worker prepares material. Credential owners retain App keys and
+GitHub tokens. Protected Agents receive neither; native Agents receive session files.
+See the [operator guide](../guides/repository-credentials.md) and
+[native prepared Git](repository-credentials/prepared-native-git.md).
 
 Kubernetes supports embedded OpenClaw (`api_key`) or dedicated Codex (API key or
 ChatGPT service account), without a Sandbox Driver. Unsupported Sandbox
@@ -29,14 +26,19 @@ exclude signing and service modules.
 
 ## Repo Driver contract
 
-The optional `repo` capability uses `RepoDriver extends Driver` and bundled
-`GitHubRepoDriver`. Installation `drivers.repo` and GitHub Backend
-`drivers.repo` select the same Driver ID. The
-[shared contract](../../packages/contracts/src/repo.ts) exposes:
+The `repo` capability uses `RepositoryPolicyDriver` and `GitHubRepositoryPolicy`.
+The GitHub Backend's `drivers.repo` member pins its ID. Protected composition selects
+`repository` and the installed Sandbox/Credential Proxy Driver.
+`repository.nativeSender` selects native sessions with prepared custody, without
+protected fallback. Retained `drivers.repo` uses the same native adapter.
+The [shared policy contract](../../packages/contracts/src/repo.ts) exposes:
 
 - `listOptions` returns Namespace-approved opaque references, names, profiles
   and optional descriptions.
 - `resolve` checks Namespace policy and returns admitted bindings and duration.
+
+The separate native sender owns:
+
 - `checkAdmissionReady` (optional) verifies fresh admissions can be
   attempted; unavailable dependencies block new attempts and worker readiness.
 - `open` returns `created` with private runtime files, `recovered` with status

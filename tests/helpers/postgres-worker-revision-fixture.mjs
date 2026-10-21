@@ -689,7 +689,9 @@ export function createWorkerRevisionFixtures(
       const drivers = transformDrivers({
         ...configuredDrivers,
         secretDriver,
-        ...(repoDriver === undefined ? {} : { repoDriver }),
+        ...(repoDriver === undefined
+          ? {}
+          : { repositoryPolicy: repoDriver, nativeRepositorySender: repoDriver }),
       });
       worker = createControllerWorker({
         metrics,

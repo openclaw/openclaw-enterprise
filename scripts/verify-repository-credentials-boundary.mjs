@@ -169,11 +169,14 @@ const reviewedImports = {
   },
   // Standalone grants hash only nonsecret configuration/profile policy, never key material.
   "drivers/repo/github/credentials/grants.ts": { "node:crypto": ["createHash"] },
+  "drivers/repo/github/policy.ts": {
+    "@openclaw-enterprise/occ": ["ScopeViolationError"],
+  },
   "drivers/repo/github/driver.ts": {
     "@openclaw-enterprise/occ": ["DependencyUnavailableError", "ScopeViolationError"],
   },
   // The isolated image probe reports only a synthetic binding and failure kind.
-  "drivers/repo/github/credentials/admission-probe.mjs": {
+  "drivers/repo/github/credentials/admission-probe.ts": {
     "@openclaw-enterprise/occ": ["DependencyUnavailableError"],
   },
   // The broker journal client writes only nonsecret receipts over a local Unix socket.
@@ -250,9 +253,7 @@ const capabilityConsumers = {
   "backends/repository-credentials/control-client.ts": {
     "composition/repository-credentials/platform.ts": ["UnixRepositoryCredentialControlClient"],
     "drivers/repo/github/driver.ts": ["RepositoryCredentialControlError"],
-    "drivers/repo/github/credentials/admission-probe.mjs": [
-      "UnixRepositoryCredentialControlClient",
-    ],
+    "drivers/repo/github/credentials/admission-probe.ts": ["UnixRepositoryCredentialControlClient"],
   },
 };
 const rawGlobals = new Set([
@@ -311,7 +312,7 @@ const reviewedProcessMembers = {
   ],
   "drivers/repo/github/credentials/client/router.ts": ["argv", "env", "exitCode", "stderr"],
   "drivers/repo/github/credentials/client/operator.ts": ["argv", "exitCode", "stderr", "stdout"],
-  "drivers/repo/github/credentials/admission-probe.mjs": ["argv", "exitCode", "stderr", "stdout"],
+  "drivers/repo/github/credentials/admission-probe.ts": ["argv", "exitCode", "stderr", "stdout"],
   "drivers/repo/github/credentials/client/private-files.ts": ["getuid"],
   "composition/repository-credentials/protected-file.ts": ["getuid"],
   "composition/repository-credentials/service.ts": ["exit", "once", "stderr", "stdout"],
