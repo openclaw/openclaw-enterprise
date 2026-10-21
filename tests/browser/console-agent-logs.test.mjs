@@ -24,8 +24,9 @@ import {
 // The console runs against the production controller app, IAM, cursor signing and
 // sanitizer. The Compute Driver serves in-memory Pod state in place of a cluster.
 // The tests share one app (fileConsoleApp) and its Compute Driver: each test gets its own
-// Namespace, Agent and revision, and starts with the Driver's Pod state, calls and properties as
-// they were when it was made.
+// Namespace, Agent and revision, and starts and ends with the Driver's Pod state, calls and
+// properties as they were when it was made. The Driver's methods hold its `state` and `calls`, so
+// tests change those in place and never replace them.
 const computeDriver = createRuntimeLogComputeDriver();
 const initialDriver = { ...computeDriver, state: structuredClone(computeDriver.state) };
 const logsApp = fileConsoleApp({
@@ -51,6 +52,7 @@ function resetComputeDriver() {
 async function logsFixture(t) {
   const fixture = await logsApp(t);
   resetComputeDriver();
+  t.after(resetComputeDriver);
   logsNamespaces += 1;
   const namespace = await fixture.createNamespace(`Runtime logs ${logsNamespaces}`, {
     ready: true,

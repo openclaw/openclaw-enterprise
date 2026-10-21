@@ -178,16 +178,19 @@ export async function startHttpsIngress({
 // One app for every test in a file, for tests that need no fresh database (CI runs each file in
 // its own process). Call it at the top level of a test file: it returns `fileApp(t)`, which
 // creates and bootstraps the app on first use and closes it after the file's last test. Building
-// the app, its administrator account and its two password hashes, and the bootstrap, is about
-// 0.3 CPU-s a test (lane cc4-browser, 10-21).
+// the app, creating its administrator account (a password hash), signing in (a password check)
+// and the bootstrap cost about 0.3 CPU-s a test.
 //
 // Tests that share the app share its database, so each test must make its own Namespace (under a
-// name no other test in the file uses) and read only what it made. A test that checks first-run
-// or empty state, the Namespace list or the default Namespace selection, signs the
-// administrator out, or needs fixture options of its own keeps createConsoleAppFixture. The
-// administrator's policy (fixture.policy) is restored after each test, so grants, Roles and
-// restrictions a test adds do not reach later tests. Browser pages for the file app close when
-// their test ends (newPage), and login() signs them in with one session shared by the file.
+// name no other test in the file uses) and read only what it made. A test keeps
+// createConsoleAppFixture when it checks first-run or empty state, the Namespace list or the
+// default Namespace selection; signs the administrator out or expires or deletes sessions
+// (fixture.memoryDatabase); registers or selects controller Drivers; changes fixture.iamDriver;
+// reads the audit sink; uses the bootstrap result; or needs fixture options of its own. The
+// fixture's IAM policy (fixture.policy: identities, Roles, bindings, restrictions) is restored
+// after each test, so what a test adds there does not reach later tests. Browser pages for the
+// file app close when their test ends (newPage), and login() signs them in with one session
+// shared by the file.
 export function fileConsoleApp(options = {}) {
   const cleanups = [];
   let created;
@@ -218,7 +221,7 @@ export function fileConsoleApp(options = {}) {
     const fixture = await created;
     const saved = structuredClone(fixture.policy);
     t.after(() => {
-      for (const [key, value] of Object.entries(structuredClone(saved))) {
+      for (const [key, value] of Object.entries(saved)) {
         fixture.policy[key].splice(0, Infinity, ...value);
       }
     });

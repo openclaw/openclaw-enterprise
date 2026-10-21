@@ -192,6 +192,13 @@ export async function login(
   }
   if (fixture.sharedByFile && credentials === fixture.credentials) {
     await page.context().addCookies(await fileSessionCookies(fixture));
+    // An earlier test that ended this session would otherwise leave every later test on the
+    // sign-in page, which waitForURL below cannot tell apart from the console.
+    const session = await page.request.get(new URL("/api/auth/session", origin).href);
+    assert.ok(
+      (await session.json().catch(() => null))?.data?.authenticated === true,
+      "the file's shared session has ended; a test that ends sessions needs its own app",
+    );
   } else {
     const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
       data: { email: credentials.email, password: credentials.password },
@@ -205,7 +212,7 @@ export async function login(
 
 // The administrator's session cookies for a file app (fileConsoleApp): one password sign-in for
 // the whole file, which each test's fresh tab then loads like a saved sign-in state. The tests
-// that share it must not sign out (see fileConsoleApp).
+// that share it must not end the session (see fileConsoleApp); login() checks it is still live.
 const fileSessions = new WeakMap();
 
 function fileSessionCookies(fixture) {
@@ -225,7 +232,11 @@ function fileSessionCookies(fixture) {
         await context.dispose();
       }
     })();
-    cookies.catch(() => fileSessions.delete(fixture));
+    cookies.catch(() => {
+      if (fileSessions.get(fixture) === cookies) {
+        fileSessions.delete(fixture);
+      }
+    });
     fileSessions.set(fixture, cookies);
   }
   return cookies;

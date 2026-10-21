@@ -53,7 +53,8 @@ import {
 
 // Tests that need no app of their own share one (fileConsoleApp); each makes its own Namespace.
 // Tests that open an Agent link without a Namespace (which reads every Namespace), expire every
-// session, or register a Driver keep an app of their own.
+// session, register a Driver, use the bootstrap result, or pass fixture options keep an app of
+// their own.
 const detailApp = fileConsoleApp();
 
 test("Agent delete confirmation can be canceled without sending a write request", async (t) => {
