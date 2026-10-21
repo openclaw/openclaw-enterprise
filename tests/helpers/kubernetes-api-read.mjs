@@ -2,30 +2,49 @@
 // k3d tests read the cluster hundreds of times per file, most often in loops
 // that wait for a Pod, a Deployment or an endpoint; each read used to start a
 // kubectl process (about 0.1 CPU-s). Here a read is one request on a kept-alive
-// HTTPS connection. The answer is the JSON kubectl prints: the object itself,
-// or a `List` whose items carry their apiVersion and kind. A failure reads like
-// kubectl's (`Error from server (NotFound): ...` on stderr; transport failures
-// as "Unable to connect to the server"), so callers that match kubectl's errors
-// or retry its transient failures behave the same.
+// HTTPS connection, and the answer is the text kubectl prints: the object, or a
+// `List` whose items carry their apiVersion and kind, without managedFields,
+// with sorted keys and Go's escaping. A read retries what kubectl's client
+// retries (a dropped connection, 429 and 5xx answers with Retry-After), and a
+// failure reads like kubectl's (`Error from server (NotFound): ...` on stderr;
+// transport failures as "Unable to connect to the server"), so callers that
+// match kubectl's errors or retry its transient failures behave the same.
 //
 // Only plain reads are served: one resource kind, an optional name, and the
 // namespace, label selector, field selector, all-namespaces and request-timeout
-// flags. Anything
-// else, and a kubeconfig whose credentials are not a client certificate or a
-// bearer token, returns undefined, and the caller runs kubectl.
+// flags. Anything else, a kind discovery does not list, and a kubeconfig whose
+// credentials are not embedded client certificates or a bearer token, returns
+// undefined, and the caller runs kubectl.
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { Agent, request } from "node:https";
+import { setTimeout as delay } from "node:timers/promises";
 import { promisify } from "node:util";
 
 const execute = promisify(execFile);
+// A request that sends nothing for this long is dropped, and so is discovery.
 const requestTimeoutMs = 60_000;
+// The API server closes idle connections after about 90 s; close ours first.
+const idleConnectionMs = 30_000;
+// kubectl's client retries a read this many times.
+const maxRetries = 10;
+// A kind discovery did not list is looked up again at most this often.
+const rediscoveryMs = 30_000;
 
-// One reader per kubeconfig and context.
+// One reader per kubeconfig content and context, so a rewritten kubeconfig
+// gets new credentials.
 const readers = new Map();
 
-function readerFor({ kubeconfigPath, kubernetesContext }) {
-  const key = `${kubeconfigPath}\0${kubernetesContext}`;
+async function readerFor({ kubeconfigPath, kubernetesContext }) {
+  // Embedded credentials only, as k3d writes them. Anything else (a kubeconfig
+  // that names certificate files, or none at all, as for a stand-in kubectl) is
+  // kubectl's, without spending a kubectl run to find out.
+  const text =
+    kubeconfigPath === undefined ? "" : await readFile(kubeconfigPath, "utf8").catch(() => "");
+  if (!text.includes("certificate-authority-data")) {
+    return undefined;
+  }
+  const key = `${kubeconfigPath}\0${kubernetesContext}\0${text}`;
   if (!readers.has(key)) {
     readers.set(key, createReader(kubeconfigPath, kubernetesContext));
   }
@@ -55,6 +74,9 @@ export function plainGet(args) {
       options.output = argument.slice(3);
     } else if (flag === "-n" || flag === "--namespace") {
       options.namespace = value();
+      if (options.namespace === "") {
+        return undefined;
+      }
     } else if (flag === "-l" || flag === "--selector") {
       query.set("labelSelector", value());
     } else if (flag === "--field-selector") {
@@ -100,35 +122,34 @@ export async function kubectlGetJson(selection, args, { signal, timeoutMs } = {}
   if (get === undefined) {
     return undefined;
   }
-  const reader = await readerFor(selection);
+  const reader = await raceSignal(readerFor(selection), signal);
   if (reader === undefined) {
     return undefined;
   }
+  const { namespace: defaultNamespace, read, resolve } = reader;
   // A kind discovery does not know, or discovery that failed, is kubectl's to answer.
-  const resource = await reader.resolve(get.kind, signal).catch((error) => {
-    if (error?.name === "AbortError") {
-      throw error;
-    }
-    return undefined;
-  });
+  const resource = await raceSignal(
+    resolve(get.kind).catch(() => undefined),
+    signal,
+  );
   if (resource === undefined) {
     return undefined;
   }
   const namespace =
-    resource.namespaced && !get.allNamespaces ? (get.namespace ?? reader.namespace) : undefined;
+    resource.namespaced && !get.allNamespaces ? (get.namespace ?? defaultNamespace) : undefined;
   const path =
     `${resource.prefix}/${namespace === undefined ? "" : `namespaces/${encodeURIComponent(namespace)}/`}` +
     `${resource.plural}${get.name === undefined ? "" : `/${encodeURIComponent(get.name)}`}` +
     `${get.query.size > 0 ? `?${get.query}` : ""}`;
   const limits = [timeoutMs, get.timeoutMs].filter((limit) => limit !== undefined);
-  const body = await reader.read(path, args, {
+  const body = await read(path, args, {
     signal,
     timeoutMs: limits.length > 0 ? Math.min(...limits) : undefined,
   });
   if (get.name !== undefined) {
-    return `${JSON.stringify(body, null, 4)}\n`;
+    return printed(body);
   }
-  const list = {
+  return printed({
     apiVersion: "v1",
     items: (body.items ?? []).map((item) => ({
       apiVersion: resource.groupVersion,
@@ -137,8 +158,49 @@ export async function kubectlGetJson(selection, args, { signal, timeoutMs } = {}
     })),
     kind: "List",
     metadata: { resourceVersion: "" },
+  });
+}
+
+// Waits for `promise`, or rejects with the signal's AbortError first.
+function raceSignal(promise, signal) {
+  if (signal === undefined) {
+    return promise;
+  }
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener("abort", aborted, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", aborted));
+  });
+}
+
+// The text `kubectl get -o json` prints for an object: Go's json.MarshalIndent
+// of it with four spaces (keys sorted; <, >, & and the line separators
+// escaped), without metadata.managedFields, and a newline.
+function printed(object) {
+  const sorted = (value, parentKey) => {
+    if (Array.isArray(value)) {
+      return value.map((entry) => sorted(entry));
+    }
+    if (value === null || typeof value !== "object") {
+      return value;
+    }
+    const result = {};
+    for (const key of Object.keys(value).sort()) {
+      if (!(parentKey === "metadata" && key === "managedFields")) {
+        result[key] = sorted(value[key], key);
+      }
+    }
+    return result;
   };
-  return `${JSON.stringify(list, null, 4)}\n`;
+  const escapes = {
+    "<": "\\u003c",
+    ">": "\\u003e",
+    "&": "\\u0026",
+    "\u2028": "\\u2028",
+    "\u2029": "\\u2029",
+  };
+  return `${JSON.stringify(sorted(object), null, 4).replace(/[<>&\u2028\u2029]/g, (character) => escapes[character])}\n`;
 }
 
 // A kubectl-shaped failure: execFile's error for a command that exited 1.
@@ -150,14 +212,46 @@ function kubectlError(args, stderr) {
   });
 }
 
+// What kubectl prints for an answer that is not a Kubernetes Status, as its
+// client turns the HTTP code into one.
+function unstructuredStatus(statusCode, text) {
+  const known = {
+    400: ["BadRequest", "the server rejected our request for an unknown reason"],
+    401: ["Unauthorized", "the server has asked for the client to provide credentials"],
+    403: ["Forbidden", "the server does not allow access to the requested resource"],
+    404: ["NotFound", "the server could not find the requested resource"],
+    405: ["MethodNotAllowed", "the server does not allow this method on the requested resource"],
+    409: ["Conflict", "the server reported a conflict"],
+    410: ["Expired", "the server reported the request has expired"],
+    413: ["RequestEntityTooLarge", "the server has rejected the request because it is too large"],
+    415: ["UnsupportedMediaType", "the server responded with the status code 415"],
+    422: ["Invalid", "the server rejected our request due to an error in our request"],
+    429: [
+      "TooManyRequests",
+      "the server has received too many requests and has asked us to try again later",
+    ],
+    500: [
+      "InternalError",
+      `an error on the server (${JSON.stringify(text.trim().slice(0, 1024))}) has prevented the request from succeeding`,
+    ],
+    503: ["ServiceUnavailable", "the server is currently unable to handle the request"],
+    504: [
+      "Timeout",
+      "the server was unable to return a response in the time allotted, but may still be processing the request",
+    ],
+  };
+  const [reason, message] =
+    known[statusCode] ??
+    (statusCode >= 500
+      ? known[500]
+      : [
+          "Unknown",
+          `the server responded with the status code ${statusCode} but did not return more information`,
+        ]);
+  return { reason, message };
+}
+
 async function createReader(kubeconfigPath, kubernetesContext) {
-  // Embedded credentials only, as k3d writes them. Anything else (a kubeconfig
-  // that names certificate files, or none at all, as for a stand-in kubectl) is
-  // kubectl's, without spending a kubectl run to find out.
-  const text = await readFile(kubeconfigPath ?? "", "utf8").catch(() => "");
-  if (!text.includes("certificate-authority-data")) {
-    return undefined;
-  }
   let configuration;
   try {
     const { stdout } = await execute(
@@ -174,23 +268,26 @@ async function createReader(kubeconfigPath, kubernetesContext) {
         "-o",
         "json",
       ],
-      { maxBuffer: 4 * 1024 * 1024 },
+      { maxBuffer: 4 * 1024 * 1024, timeout: 30_000 },
     );
     configuration = JSON.parse(stdout);
   } catch {
     return undefined;
   }
-  const cluster = configuration.clusters?.[0]?.cluster;
+  const cluster = configuration.clusters?.[0]?.cluster ?? {};
   const user = configuration.users?.[0]?.user ?? {};
   const context = configuration.contexts?.[0]?.context ?? {};
   const decode = (value) => (value === undefined ? undefined : Buffer.from(value, "base64"));
-  const server = cluster?.server === undefined ? undefined : new URL(cluster.server);
+  const server = cluster.server === undefined ? undefined : new URL(cluster.server);
   const certificate = decode(user["client-certificate-data"]);
   const key = decode(user["client-key-data"]);
   const token = user.token;
   if (
     server?.protocol !== "https:" ||
     cluster["certificate-authority-data"] === undefined ||
+    Object.keys(cluster).some(
+      (name) => !["server", "certificate-authority-data", "tls-server-name"].includes(name),
+    ) ||
     ((certificate === undefined || key === undefined) && token === undefined) ||
     Object.keys(user).some(
       (name) => !["client-certificate-data", "client-key-data", "token"].includes(name),
@@ -200,6 +297,7 @@ async function createReader(kubeconfigPath, kubernetesContext) {
   }
   const agent = new Agent({
     keepAlive: true,
+    timeout: idleConnectionMs,
     ca: decode(cluster["certificate-authority-data"]),
     cert: certificate,
     key,
@@ -207,16 +305,9 @@ async function createReader(kubeconfigPath, kubernetesContext) {
   });
   const base = server.pathname.replace(/\/$/, "");
 
-  const read = (path, args, { signal, timeoutMs } = {}) =>
+  // One GET: { statusCode, headers, text }, or a rejection for the transport.
+  const exchange = (path, { signal, deadlineAt }) =>
     new Promise((resolve, reject) => {
-      signal?.throwIfAborted();
-      const unreachable = (error) =>
-        reject(
-          kubectlError(
-            args,
-            `Unable to connect to the server: ${error.code ?? ""} ${error.message}\n`,
-          ),
-        );
       const call = request(
         {
           agent,
@@ -235,54 +326,106 @@ async function createReader(kubeconfigPath, kubernetesContext) {
         (response) => {
           const chunks = [];
           response.on("data", (chunk) => chunks.push(chunk));
-          response.on("error", unreachable);
-          response.on("end", () => {
-            const text = Buffer.concat(chunks).toString("utf8");
-            let body;
-            try {
-              body = JSON.parse(text);
-            } catch {
-              body = undefined;
-            }
-            if (response.statusCode >= 200 && response.statusCode < 300 && body !== undefined) {
-              resolve(body);
-              return;
-            }
-            // kubectl prints the API's Status as "Error from server (Reason): message".
-            const reason = body?.reason ?? `HTTP ${response.statusCode}`;
-            const message = body?.message ?? text.trim();
-            reject(kubectlError(args, `Error from server (${reason}): ${message}\n`));
-          });
+          response.on("error", (error) =>
+            reject(Object.assign(error, { reused: call.reusedSocket })),
+          );
+          response.on("end", () =>
+            resolve({
+              statusCode: response.statusCode,
+              headers: response.headers,
+              text: Buffer.concat(chunks).toString("utf8"),
+            }),
+          );
         },
       );
       call.on("timeout", () =>
         call.destroy(Object.assign(new Error("i/o timeout"), { code: "ETIMEDOUT" })),
       );
       const deadline =
-        timeoutMs === undefined
+        deadlineAt === undefined
           ? undefined
           : setTimeout(
               () =>
                 call.destroy(
-                  Object.assign(
-                    new Error(`context deadline exceeded (Client.Timeout ${timeoutMs} ms)`),
-                    { code: "ETIMEDOUT" },
-                  ),
+                  Object.assign(new Error("context deadline exceeded (Client.Timeout exceeded)"), {
+                    code: "ETIMEDOUT",
+                  }),
                 ),
-              timeoutMs,
+              Math.max(0, deadlineAt - Date.now()),
             );
       call.on("close", () => clearTimeout(deadline));
-      call.on("error", (error) =>
-        error.name === "AbortError" ? reject(error) : unreachable(error),
-      );
+      call.on("error", (error) => reject(Object.assign(error, { reused: call.reusedSocket })));
       call.end();
     });
 
-  // Discovery, read once per reader: core resources first, then each API group's
+  // A GET as kubectl's client makes it: retried on a dropped connection and on
+  // a 429 or 5xx with Retry-After, within the read's timeout.
+  const read = async (path, args, { signal, timeoutMs } = {}) => {
+    signal?.throwIfAborted();
+    const deadlineAt = timeoutMs === undefined ? undefined : Date.now() + timeoutMs;
+    for (let attempt = 0; ; attempt += 1) {
+      let answer;
+      try {
+        answer = await exchange(path, { signal, deadlineAt });
+      } catch (error) {
+        if (error?.name === "AbortError") {
+          throw error;
+        }
+        const dropped =
+          ["ECONNRESET", "EPIPE"].includes(error.code) || /socket hang up/.test(error.message);
+        if (
+          dropped &&
+          attempt < maxRetries &&
+          (deadlineAt === undefined || Date.now() < deadlineAt)
+        ) {
+          // A kept-alive connection the server closed is retried at once.
+          if (!error.reused) {
+            await delay(1_000, undefined, { signal });
+          }
+          continue;
+        }
+        throw kubectlError(
+          args,
+          `Unable to connect to the server: ${error.code ?? ""} ${error.message}\n`,
+        );
+      }
+      const { statusCode, headers, text } = answer;
+      let body;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = undefined;
+      }
+      if (statusCode >= 200 && statusCode < 300 && body !== undefined) {
+        return body;
+      }
+      const retryAfter = Number(headers["retry-after"]);
+      if (
+        (statusCode === 429 || statusCode >= 500) &&
+        Number.isInteger(retryAfter) &&
+        attempt < maxRetries &&
+        (deadlineAt === undefined || Date.now() + retryAfter * 1000 < deadlineAt)
+      ) {
+        await delay(Math.min(retryAfter, 10) * 1000, undefined, { signal });
+        continue;
+      }
+      // kubectl prints an API Status as "Error from server (Reason): message".
+      const status = body?.kind === "Status" ? body : unstructuredStatus(statusCode, text);
+      throw kubectlError(
+        args,
+        status.reason
+          ? `Error from server (${status.reason}): ${status.message}\n`
+          : `Error from server: ${status.message}\n`,
+      );
+    }
+  };
+
+  // Discovery, shared by every caller of this reader and bounded by its own
+  // deadline, not a caller's: core resources first, then each API group's
   // preferred version, the order kubectl resolves a resource name in.
-  let discovered;
-  const discover = async (signal) => {
+  const discover = async () => {
     const discovery = ["discovery"];
+    const options = { timeoutMs: requestTimeoutMs };
     const resources = [];
     const add = (prefix, groupVersion, group, list) => {
       for (const entry of list.resources ?? []) {
@@ -291,20 +434,15 @@ async function createReader(kubeconfigPath, kubernetesContext) {
         }
       }
     };
-    add("/api/v1", "v1", "", await read("/api/v1", discovery, { signal }));
-    const groups = await read("/apis", discovery, { signal });
+    add("/api/v1", "v1", "", await read("/api/v1", discovery, options));
+    const groups = await read("/apis", discovery, options);
     // An unavailable aggregated API leaves out its group, as kubectl does.
     const lists = await Promise.all(
       (groups.groups ?? []).map(async ({ name, preferredVersion }) => ({
         name,
         groupVersion: preferredVersion.groupVersion,
-        list: await read(`/apis/${preferredVersion.groupVersion}`, discovery, { signal }).catch(
-          (error) => {
-            if (error?.name === "AbortError") {
-              throw error;
-            }
-            return {};
-          },
+        list: await read(`/apis/${preferredVersion.groupVersion}`, discovery, options).catch(
+          () => ({}),
         ),
       })),
     );
@@ -313,12 +451,16 @@ async function createReader(kubeconfigPath, kubernetesContext) {
     }
     return resources;
   };
-  const resolve = async (kind, signal) => {
-    discovered ??= discover(signal).catch((error) => {
-      discovered = undefined;
-      throw error;
-    });
-    const resources = await discovered;
+  let discovered;
+  let discoveredAt = 0;
+  const rediscover = () => {
+    discoveredAt = Date.now();
+    discovered = discover();
+    // A failed discovery is tried again by the next read.
+    discovered.catch(() => (discoveredAt = 0));
+    return discovered;
+  };
+  const find = (resources, kind) => {
     const lower = kind.toLowerCase();
     const dot = lower.indexOf(".");
     const name = dot === -1 ? lower : lower.slice(0, dot);
@@ -331,6 +473,17 @@ async function createReader(kubeconfigPath, kubernetesContext) {
           entry.kind.toLowerCase() === name ||
           entry.shortNames?.includes(name)),
     );
+  };
+  const resolve = async (kind) => {
+    if (discovered === undefined || discoveredAt === 0) {
+      rediscover();
+    }
+    const found = find(await discovered, kind);
+    // A kind registered since (a CRD a test installed) is looked up again, now and then.
+    if (found === undefined && Date.now() - discoveredAt >= rediscoveryMs) {
+      return find(await rediscover(), kind);
+    }
+    return found;
   };
   return { namespace: context.namespace ?? "default", read, resolve };
 }

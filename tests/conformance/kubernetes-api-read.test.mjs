@@ -92,10 +92,17 @@ const routes = {
       { metadata: { name: "dns-1", namespace: "kube-system" } },
     ],
   },
+  // The API server's key order, managedFields and HTML characters, as kubectl gets them.
   "/apis/apps/v1/namespaces/team/deployments/web": {
     kind: "Deployment",
     apiVersion: "apps/v1",
-    metadata: { name: "web", namespace: "team" },
+    metadata: {
+      name: "web",
+      namespace: "team",
+      managedFields: [{ manager: "kubectl", operation: "Apply" }],
+      annotations: { note: "a<b & c>d" },
+    },
+    spec: { replicas: 1 },
   },
   "/api/v1/namespaces/team": {
     kind: "Namespace",
@@ -119,6 +126,7 @@ async function cluster(t) {
   const server = selfSignedCertificate(directory, "api-server", "IP:127.0.0.1");
   const client = selfSignedCertificate(directory, "operator", "DNS:operator");
   const requests = [];
+  const seen = {};
   let connections = 0;
   const listener = createServer({
     key: server.key,
@@ -134,8 +142,33 @@ async function cluster(t) {
     if (request.url === "/api/v1/namespaces/slow/pods") {
       return;
     }
-    if (request.url === "/api/v1/namespaces/dropped/pods") {
+    // Drops every connection, or only the first request on a kept-alive one.
+    if (
+      request.url === "/api/v1/namespaces/dropped/pods" ||
+      (request.url === "/api/v1/namespaces/flaky/pods" && (seen[request.url] ?? 0) === 0)
+    ) {
+      seen[request.url] = (seen[request.url] ?? 0) + 1;
       request.socket.destroy();
+      return;
+    }
+    // Asks for a retry once, as an overloaded API server does.
+    if (request.url === "/api/v1/namespaces/busy/pods" && (seen[request.url] ?? 0) === 0) {
+      seen[request.url] = 1;
+      response.statusCode = 429;
+      response.setHeader("retry-after", "1");
+      response.setHeader("content-type", "text/plain");
+      response.end("Too many requests, please try again later.\n");
+      return;
+    }
+    if (["/api/v1/namespaces/flaky/pods", "/api/v1/namespaces/busy/pods"].includes(request.url)) {
+      response.end(JSON.stringify({ kind: "PodList", apiVersion: "v1", items: [] }));
+      return;
+    }
+    // An aggregated API that is down answers in plain text.
+    if (request.url === "/api/v1/namespaces/unavailable/pods") {
+      response.statusCode = 503;
+      response.setHeader("content-type", "text/plain");
+      response.end("service unavailable\n");
       return;
     }
     if (request.url === "/api/v1/namespaces/team/pods/missing") {
@@ -205,25 +238,80 @@ async function cluster(t) {
   };
 }
 
-// What kubectl prints for a list: a List whose items carry their apiVersion and kind.
-const printedList = (apiVersion, kind, items) =>
-  `${JSON.stringify(
-    {
-      apiVersion: "v1",
-      items: items.map((item) => ({ apiVersion, kind, ...item })),
-      kind: "List",
-      metadata: { resourceVersion: "" },
+// What kubectl 1.3x prints for these reads, verbatim: a List whose items carry
+// their apiVersion and kind, keys sorted, managedFields left out, and <, > and &
+// escaped as Go does.
+const printed = {
+  labelled: `{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "web-1",
+                "namespace": "team"
+            },
+            "status": {
+                "phase": "Running"
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}
+`,
+  running: `{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "web-1",
+                "namespace": "team"
+            }
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": {
+                "name": "dns-1",
+                "namespace": "kube-system"
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}
+`,
+  deployment: `{
+    "apiVersion": "apps/v1",
+    "kind": "Deployment",
+    "metadata": {
+        "annotations": {
+            "note": "a\\u003cb \\u0026 c\\u003ed"
+        },
+        "name": "web",
+        "namespace": "team"
     },
-    null,
-    4,
-  )}\n`;
+    "spec": {
+        "replicas": 1
+    }
+}
+`,
+};
 
 test("a plain get is read from the API server and printed as kubectl prints it", async (t) => {
   const { selection, requests, connections, kubectlRuns } = await cluster(t);
 
   assert.equal(
     await kubectlGetJson(selection, ["get", "pods", "-l", "app=web", "-o", "json"]),
-    printedList("v1", "Pod", routes["/api/v1/namespaces/team/pods?labelSelector=app%3Dweb"].items),
+    printed.labelled,
   );
   assert.equal(
     await kubectlGetJson(selection, [
@@ -233,12 +321,12 @@ test("a plain get is read from the API server and printed as kubectl prints it",
       "--field-selector=status.phase=Running",
       "--output=json",
     ]),
-    printedList("v1", "Pod", routes["/api/v1/pods?fieldSelector=status.phase%3DRunning"].items),
+    printed.running,
   );
   for (const kind of ["deploy", "deployment.apps", "Deployment"]) {
     assert.equal(
       await kubectlGetJson(selection, ["get", kind, "web", "--namespace", "team", "-o", "json"]),
-      `${JSON.stringify(routes["/apis/apps/v1/namespaces/team/deployments/web"], null, 4)}\n`,
+      printed.deployment,
       kind,
     );
   }
@@ -258,6 +346,32 @@ test("a plain get is read from the API server and printed as kubectl prints it",
   ]);
 });
 
+test("a read retries what kubectl's client retries", async (t) => {
+  const { selection, requests } = await cluster(t);
+  const empty = `{
+    "apiVersion": "v1",
+    "items": [],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}
+`;
+  // A kept-alive connection the server dropped: tried again at once.
+  await kubectlGetJson(selection, ["get", "pods", "-o", "json"]).catch(() => {});
+  assert.equal(
+    await kubectlGetJson(selection, ["get", "pods", "-n", "flaky", "-o", "json"]),
+    empty,
+  );
+  assert.equal(requests.filter((url) => url === "/api/v1/namespaces/flaky/pods").length, 2);
+
+  // A 429 with Retry-After: tried again after it.
+  const startedAt = Date.now();
+  assert.equal(await kubectlGetJson(selection, ["get", "pods", "-n", "busy", "-o", "json"]), empty);
+  assert.ok(Date.now() - startedAt >= 900, "waited out Retry-After");
+  assert.equal(requests.filter((url) => url === "/api/v1/namespaces/busy/pods").length, 2);
+});
+
 test("a failed read fails as kubectl fails, transient only when kubectl's would be", async (t) => {
   const { selection, kubeconfig, user } = await cluster(t);
   const failure = (promise) =>
@@ -274,9 +388,20 @@ test("a failed read fails as kubectl fails, transient only when kubectl's would 
   assert.match(notFound.message, /^Command failed: kubectl get pod missing -n team -o json\n/);
   assert.equal(isTransientKubectlFailure(notFound), false);
 
-  // A connection the API server drops reads as kubectl's transport failure.
+  // A plain-text 503 reads as kubectl's ServiceUnavailable, which callers retry.
+  const unavailable = await failure(
+    kubectlGetJson(selection, ["get", "pods", "-n", "unavailable", "-o", "json"]),
+  );
+  assert.equal(
+    unavailable.stderr,
+    "Error from server (ServiceUnavailable): the server is currently unable to handle the request\n",
+  );
+  assert.equal(isTransientKubectlFailure(unavailable), true);
+
+  // A server that drops every connection: retried until the read's timeout, then
+  // kubectl's transport failure.
   const dropped = await failure(
-    kubectlGetJson(selection, ["get", "pods", "-n", "dropped", "-o", "json"]),
+    kubectlGetJson(selection, ["get", "pods", "-n", "dropped", "-o", "json"], { timeoutMs: 2_500 }),
   );
   assert.match(dropped.stderr, /^Unable to connect to the server: /);
   assert.equal(isTransientKubectlFailure(dropped), true);
