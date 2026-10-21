@@ -96,4 +96,7 @@ without a Sandbox can still select native Git, where the broker authorizes and s
    loss, stop and explicit resume, replacement, stale renewal and finite grants expiring on schedule.
    At controlled transaction boundaries, race withdrawal with installation and authorization. Lose
    an issuance, installation or send reply and verify no second attempt. Qualify a released,
-   unmodified OpenShell against the [online release requirements](online-authorization.md) before offering this route.
+   unmodified OpenShell against the [online release requirements](online-authorization.md) before offering
+   mandatory online authorization. The
+   [operator-controlled preview](online-authorization.md#preview-the-configured-request-hook)
+   is a separate admission, not evidence that this release requirement passed.

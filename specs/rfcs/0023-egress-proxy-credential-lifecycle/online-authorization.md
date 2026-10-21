@@ -36,7 +36,7 @@ provider credential is still valid. We cannot recall a request that already pass
    contact, delivery or successful completion. Start with explicitly supported, inspected
    HTTPS operations; do not imply Git transport, WebSockets or generic proxy coverage.
 
-## Release blockers are not accepted gaps
+## Release requirements for mandatory online authorization
 
 **OpenShell v0.1.4 is NOT QUALIFIED.** A fail-closed policy for an unavailable request service
 does not prove that the request service is mandatory and invoked. Require the exact request
@@ -54,6 +54,30 @@ OCE must also enforce one never-reused sandbox identity per execution. Disable r
 strictly verify that policy when adopting a sandbox, and prevent stop/start or replacement
 under the prior execution's grant. If these lifecycle controls cannot be established, refuse
 release.
+
+## Preview the configured request hook
+
+An isolated team installation may explicitly offer _request hook observed_ before its
+OpenShell release can make that hook mandatory. Admit this as a distinct choice, off by
+default; never substitute it for mandatory online authorization or exact dispatch. Keep
+verified TLS, no direct route, a never-reused sandbox and an exclusive credential recipient.
+The team accepts the entire repository and permission scope of its GitHub App installation;
+standing approval is a separate decision.
+
+Only the operator may change the gateway, supervisor, authorizer, policy or provider. If
+the operator replaces the authorizer with a response-only service, OpenShell can send the
+request and credential without asking OCE. Before a planned change, close new admissions,
+stop the old sender, and have the credential owner retire its token or preserve an unknown
+outcome. Closing OCE admission alone cannot recall a credential already installed.
+
+Qualify the stock release at a controlled origin: an allowed request arrives, and a fresh
+request denied by OCE sends no HTTP bytes. At each new execution, with only harmless
+bootstrap material installed, correlate a fresh challenge denial at OCE and at the actual
+sender. Bind that observation to the release, execution, effective policy and recipient.
+When replacing bootstrap material reloads policy, verify the resulting recipient and policy
+before releasing user work. If that check fails, keep work closed and retire material that
+may already be installed. Neither observation can force the next request to consult OCE.
+Qualify the mandatory profile separately; never relabel a preview receipt as stronger evidence.
 
 ## Known gaps and what would close them
 
