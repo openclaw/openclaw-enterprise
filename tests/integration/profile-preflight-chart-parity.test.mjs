@@ -131,9 +131,16 @@ async function each(cases, check) {
   }
 }
 
+// Runs one `helm template`. Each run exits within a fraction of a second, so Go's garbage
+// collector only adds CPU: GOGC=off cuts about a quarter of helm's CPU time for under 10 MB
+// more peak memory per child.
 function run(command, args) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd: repository, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command, args, {
+      cwd: repository,
+      env: { ...process.env, GOGC: "off" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
