@@ -80,6 +80,23 @@ issuance. Old receipts cannot grant access. Preserve spent or possibly spent dra
 grant across migration and renewal; if uncertain, deny another create. Dedicated Kubernetes Codex
 without a Sandbox can still select native Git, where the broker authorizes and sends. Never fall back to it.
 
+### Keep supervising a running Agent when Git cannot be verified
+
+For an active Agent execution admitted under standing approval, with no retirement intent, OCC continues
+normal Harness and model-authority supervision when Git evidence is pending or missing. Deny Git
+until current authority and eligible material are established. Missing evidence alone does not
+establish withdrawal, stop or replacement, or end independently authorized chat.
+
+Compute may offer an optional, read-only `observeRevision` for the exact revision and execution,
+reusing `Sandbox.observeHarness` where available. It reports observations; it cannot create, adopt,
+attach, repair or release work, prepare material, grant credentials or reauthorize anything. A Driver
+without it gains no new assurance. Pod readiness does not prove identity or authority.
+
+OCC durably schedules a bounded next check when evidence is inconclusive, including after restart.
+Apply confirmed replacement, explicit stop and withdrawal of Git or model authority under their
+rules. Verify repeated missing Git evidence while normal Harness and model supervision continues;
+distinguish observation from authorization.
+
 ### Prove the same Agent can still fetch after the old deadline
 
 1. Install without the repository broker. Grant standing access once. Use a controlled private
