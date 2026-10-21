@@ -209,15 +209,25 @@ export function fileConsoleApp(options = {}) {
     }
   });
   return async function fileApp(t) {
-    created ??= (async () => {
-      const fixture = await createConsoleAppFixture(
-        { after: (cleanup) => cleanups.push(cleanup) },
-        options,
-      );
-      await fixture.bootstrap();
-      fixture.sharedByFile = true;
-      return fixture;
-    })();
+    if (created === undefined) {
+      const creating = (async () => {
+        const fixture = await createConsoleAppFixture(
+          { after: (cleanup) => cleanups.push(cleanup) },
+          options,
+        );
+        await fixture.bootstrap();
+        fixture.sharedByFile = true;
+        return fixture;
+      })();
+      // A failed start fails only the test that asked for it; the next test starts a new app,
+      // as each test did with an app of its own. The partial app's cleanups still run after.
+      creating.catch(() => {
+        if (created === creating) {
+          created = undefined;
+        }
+      });
+      created = creating;
+    }
     const fixture = await created;
     const saved = structuredClone(fixture.policy);
     t.after(() => {
