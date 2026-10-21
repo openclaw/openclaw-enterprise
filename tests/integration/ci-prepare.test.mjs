@@ -1358,15 +1358,24 @@ await template.cleanup();
     const exited = spawnSync(process.execPath, ["-e", ""]);
     assert.equal(exited.status, 0);
     await writeFile(lockPath, `${exited.pid} abandoned\n`, { mode: 0o600 });
-    // The exited process's place in the queue, older than any live waiter's.
-    await writeFile(
-      join(root, `.state.json.lock.${"1".padStart(20, "0")}.${exited.pid}.${randomUUID()}.ticket`),
-      `${exited.pid} queued\n`,
-      { mode: 0o600 },
-    );
+    // Places in the queue older than any live waiter's: the exited process's, and one past
+    // its deadline whose pid reads as alive (reused, here this process's).
+    const ticket = (clock, expiry, pid) =>
+      writeFile(
+        join(
+          root,
+          `.state.json.lock.${clock.padStart(20, "0")}.${expiry.padStart(20, "0")}.${pid}.${randomUUID()}.ticket`,
+        ),
+        `${pid} queued\n`,
+        { mode: 0o600 },
+      );
+    await ticket("1", String(process.hrtime.bigint() + 10n ** 12n), exited.pid);
+    await ticket("2", "3", process.pid);
     // A nested call in the same async context reuses the held lock.
     assert.equal(
-      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran")),
+      await withStateLock(statePath, () => withStateLock(statePath, async () => "ran"), {
+        timeoutMs: 10_000,
+      }),
       "ran",
     );
     assert.deepEqual(await readdir(root), []);

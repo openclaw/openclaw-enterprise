@@ -14,12 +14,14 @@
 // migration included), so a waiter's wait counts against its own test timeout.
 //
 // Waiters are served first come, first served, across processes and within one. Each
-// call writes a ticket next to the lock, named by a system-wide monotonic clock, and
-// only the waiter with the oldest live ticket tries the lock, at a fixed short interval.
-// A ticket whose process has exited is removed like an abandoned lock. Before tickets,
-// waiters raced on the lock: long waiters backed off to 100 ms polls while new arrivals
-// polled at 5-40 ms and the holder's process re-took the lock at once, so a test's copy
-// waited 30-80 s under load and a first test timed out on the lock (finding 2179).
+// call writes a ticket next to the lock, named by a system-wide monotonic clock and its
+// deadline, and only the waiter with the oldest live ticket tries the lock, at a fixed
+// short interval. A ticket whose process has exited, or which outlived its deadline (a
+// reused pid), is removed. Each waiter scans the lock's directory, which in CI holds a
+// few files. Before tickets, waiters raced on the lock: long waiters backed off to 100 ms
+// polls while new arrivals polled at 5-40 ms and the holder's process re-took the lock
+// at once, so waits reached 30-110 s under load and tests timed out on the lock
+// (finding 2179).
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { link, mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
@@ -31,6 +33,9 @@ const defaultTimeoutMs = 10 * 60_000;
 // first; they become first when it takes the lock, which it then holds for an operation.
 const firstPollMs = 5;
 const queuePollMs = 20;
+// A waiter removes its own ticket at its deadline; one still there this much later belongs
+// to a process that died with it, whose pid now reads as alive.
+const ticketGraceMs = 10_000;
 const held = new AsyncLocalStorage();
 
 function processExists(pid) {
@@ -102,30 +107,37 @@ async function removeAbandonedLock(path, content) {
   }
 }
 
-function ticketPattern(path) {
-  const name = basename(path).replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^\\.${name}\\.\\d{20}\\.(\\d+)\\.[0-9a-f-]{36}\\.ticket$`);
+function ignoreMissing(error) {
+  if (error.code !== "ENOENT") {
+    throw error;
+  }
 }
 
-// Counts the live tickets older than `ticket` and removes those whose process has
-// exited. The names sort by the clock reading they start with.
+function clockDigits(nanoseconds) {
+  return String(nanoseconds).padStart(20, "0");
+}
+
+function ticketPattern(path) {
+  const name = basename(path).replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\.${name}\\.\\d{20}\\.(\\d{20})\\.(\\d+)\\.[0-9a-f-]{36}\\.ticket$`);
+}
+
+// Counts the live tickets older than `ticket` and removes the others. The names sort by
+// the clock reading they start with.
 async function ticketsAhead(path, ticket) {
   const pattern = ticketPattern(path);
+  const now = clockDigits(process.hrtime.bigint());
   let ahead = 0;
   for (const name of await readdir(dirname(path))) {
     const match = pattern.exec(name);
     if (!match || name >= ticket) {
       continue;
     }
-    if (processExists(Number(match[1]))) {
+    if (match[1] > now && processExists(Number(match[2]))) {
       ahead += 1;
       continue;
     }
-    await unlink(join(dirname(path), name)).catch((error) => {
-      if (error.code !== "ENOENT") {
-        throw error;
-      }
-    });
+    await unlink(join(dirname(path), name)).catch(ignoreMissing);
   }
   return ahead;
 }
@@ -133,12 +145,14 @@ async function ticketsAhead(path, ticket) {
 async function acquireFileLock(path, timeoutMs) {
   const id = randomUUID();
   const token = `${process.pid} ${id}\n`;
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   // process.hrtime reads CLOCK_MONOTONIC (Linux) or its equivalent, which every process
   // on the host shares, so the names order waiters by arrival.
-  const clock = String(process.hrtime.bigint()).padStart(20, "0");
-  const ticket = `.${basename(path)}.${clock}.${process.pid}.${id}.ticket`;
+  const clock = process.hrtime.bigint();
+  const expiry =
+    clock + BigInt(Math.ceil(Math.min(timeoutMs, 2 ** 40)) + ticketGraceMs) * 1_000_000n;
+  const ticket = `.${basename(path)}.${clockDigits(clock)}.${clockDigits(expiry)}.${process.pid}.${id}.ticket`;
   const ticketPath = join(dirname(path), ticket);
-  await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   // The ticket becomes the lock by link(2), so the lock appears complete or not at all
   // and a waiter never sees an empty owner.
   await writeFile(ticketPath, token, { mode: 0o600, flag: "wx" });
@@ -168,7 +182,7 @@ async function acquireFileLock(path, timeoutMs) {
       await delay(ahead === 0 ? firstPollMs : queuePollMs);
     }
   } finally {
-    await unlink(ticketPath);
+    await unlink(ticketPath).catch(ignoreMissing);
   }
 }
 
