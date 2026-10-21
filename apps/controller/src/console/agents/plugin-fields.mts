@@ -116,6 +116,10 @@ function isEditableSelection(item: unknown): item is EditableSelection {
   );
 }
 
+export function isPluginSelections(value: unknown): value is Selections {
+  return isObject(value) && Object.values(value).every(isEditableSelection);
+}
+
 function pluginIdentity(entry: CatalogEntry, heading = false) {
   const logo = element(
     "span",
@@ -371,10 +375,7 @@ export function createPluginFields({
     try {
       const value: unknown = JSON.parse(input.value);
       // Keep the original object, including Driver-specific and unrecognized fields.
-      if (isObject(value) && Object.values(value).every(isEditableSelection)) {
-        return value as Selections;
-      }
-      return null;
+      return isPluginSelections(value) ? value : null;
     } catch {
       return null;
     }

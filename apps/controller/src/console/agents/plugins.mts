@@ -4,9 +4,11 @@ import type {
   Configuration,
   PluginApprovers,
   PluginDeploymentWarning,
+  PluginDesiredState,
   PluginDriver,
 } from "@openclaw-enterprise/contracts";
 import { requestFailure, responseFields } from "../api-client.mjs";
+import { sameValue } from "../carry.mjs";
 import type { createDraftStore } from "../drafts.mjs";
 import {
   button,
@@ -17,6 +19,7 @@ import {
   validateFields,
 } from "../dom.mjs";
 import { type PluginDiscoveryContext, createPluginDiscovery } from "./plugin-discovery.mjs";
+import { isPluginSelections } from "./plugin-fields.mjs";
 import { createSlackApproverField } from "./slack-approvers.mjs";
 import {
   AGENT_UPDATE_DENIED,
@@ -31,8 +34,6 @@ type PluginAgent = Pick<
   Agent,
   "id" | "configurationId" | "harnessAuth" | "plugins" | "pluginApprovers"
 >;
-type PluginAgentResponse = Record<string, unknown> &
-  Pick<Agent, "id" | "namespaceId" | "configurationId">;
 type PluginCapabilities = PluginDriver["policyCapabilities"] & {
   discoveryCredential: NonNullable<PluginDriver["discoveryCredential"]>;
 };
@@ -65,7 +66,10 @@ interface PluginEditorOptions {
   onState(
     state: Pick<PluginDraft, "dirty" | "outcomeUnknown" | "reloadRequired"> & { saving: boolean },
   ): void;
-  onSaved(agent: PluginAgentResponse): void;
+  onSaved(settings: {
+    plugins: PluginDesiredState;
+    pluginApprovers: PluginApprovers | undefined;
+  }): void;
   onReload(): void;
   savedNotice?: string;
   updateAllowed?: Promise<boolean | undefined> | null;
@@ -361,7 +365,7 @@ export function renderAgentPlugins(
     feedback.textContent = "Checking saved plugin selections…";
     updateState();
     // The route identifies the Agent; a Configuration and its plugin policy can be shared.
-    const matchesAgent = (response: Record<string, unknown>): response is PluginAgentResponse =>
+    const matchesAgent = (response: Record<string, unknown>) =>
       response.id === context.agentId &&
       response.namespaceId === context.namespaceId &&
       response.configurationId === baseline.configurationId;
@@ -375,12 +379,13 @@ export function renderAgentPlugins(
       assertReadableConfiguration(freshAgent);
       if (
         !matchesAgent(freshAgent) ||
-        JSON.stringify(freshAgent.plugins ?? {}) !== JSON.stringify(baseline.plugins) ||
-        JSON.stringify(freshAgent.pluginApprovers) !== JSON.stringify(baseline.pluginApprovers)
+        !sameValue(freshAgent.plugins ?? {}, baseline.plugins) ||
+        !sameValue(freshAgent.pluginApprovers, baseline.pluginApprovers)
       ) {
         reloadRequired = true;
         return;
       }
+      const submittedApprovers = pluginApprovers;
       mutationStarted = true;
       const savedAgent = responseFields(
         await context.request(path, {
@@ -388,16 +393,24 @@ export function renderAgentPlugins(
           body: {
             configurationId: baseline.configurationId,
             plugins,
-            ...(pluginApprovers === undefined
+            ...(submittedApprovers === undefined
               ? initialApprovers === undefined
                 ? {}
                 : { pluginApprovers: null }
-              : { pluginApprovers }),
+              : { pluginApprovers: submittedApprovers }),
           },
         }),
       );
-      // The write may have succeeded even when the response cannot confirm it for this Agent.
-      if (!matchesAgent(savedAgent) || savedAgent.configurationReadError !== undefined) {
+      // PATCH returns the saved map (including {}). Clearing approvers omits that field; []
+      // is an explicit empty list. JSON object key order can change in PostgreSQL.
+      const savedPlugins = savedAgent.plugins;
+      if (
+        !matchesAgent(savedAgent) ||
+        savedAgent.configurationReadError !== undefined ||
+        !isPluginSelections(savedPlugins) ||
+        !sameValue(savedPlugins, plugins) ||
+        !sameValue(savedAgent.pluginApprovers, submittedApprovers)
+      ) {
         outcomeUnknown = true;
         return;
       }
@@ -406,7 +419,7 @@ export function renderAgentPlugins(
         // The controls stay disabled until the owner rebuilds this tab from the saved Agent.
         feedback.textContent = "Plugin selections saved.";
         context.drafts.forget("plugins");
-        void onSaved(savedAgent);
+        void onSaved({ plugins: savedPlugins, pluginApprovers: submittedApprovers });
       }
     } catch (cause) {
       if (!context.isCurrent()) {

@@ -701,18 +701,37 @@ test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed succ
   for (const field of ["namespaceId", "configurationId", "plugins", "pluginApprovers"]) {
     assert.deepEqual(other.data[field], saved.data[field]);
   }
-  const edits = { [pluginId]: { enabled: true } };
+  const policy = { toolDefaults: { approval: "all_actions" }, enabled: true };
+  const edits = { [pluginId]: policy };
   const editor = page.getByLabel("Plugin selections JSON", { exact: true });
   const requests = apiRequests(page, fixture.origin);
-  for (const method of ["GET", "PATCH"]) {
-    const expected = method === "GET" ? {} : edits;
-    const otherAgent =
-      method === "GET"
-        ? other.data
-        : await fixture.updateAgent(namespace.id, other.data.id, {
-            configurationId: agent.configurationId,
-            plugins: edits,
-          });
+  for (const [method, replyData] of [
+    ["GET", () => other.data],
+    [
+      "PATCH",
+      async (data) => {
+        const otherAgent = await fixture.updateAgent(namespace.id, other.data.id, {
+          configurationId: agent.configurationId,
+          plugins: edits,
+        });
+        assert.deepEqual(data.plugins, otherAgent.plugins);
+        return otherAgent;
+      },
+    ],
+    ["PATCH", ({ id, namespaceId, configurationId }) => ({ id, namespaceId, configurationId })],
+    ["PATCH", (data) => ({ ...data, plugins: {} })],
+    ["PATCH", (data) => ({ ...data, pluginApprovers: [] })],
+    // The last reply confirms the exact settings with a different object key order. The plugin
+    // editor must not replace the rest of the Agent (represented here by its name) from that reply.
+    ["PATCH", null],
+  ]) {
+    const beforeWrite = method === "GET";
+    const expected = beforeWrite ? {} : edits;
+    const confirmed = replyData === null;
+    requests.length = 0;
+    if (!(await editor.isVisible())) {
+      await page.getByText("Plugin selections JSON", { exact: true }).click();
+    }
     await page.route(agentUrl, async (route) => {
       if (route.request().method() !== method) {
         await route.continue();
@@ -723,21 +742,33 @@ test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed succ
       const body = await response.json();
       assert.equal(body.data.id, agent.id);
       assert.deepEqual(body.data.plugins ?? {}, expected);
-      assert.deepEqual(body.data.plugins, otherAgent.plugins);
-      await route.fulfill({ response, json: { ...body, data: otherAgent } });
+      const data = confirmed
+        ? {
+            ...body.data,
+            name: "Unrelated acknowledgement field",
+            plugins: { [pluginId]: { enabled: true, toolDefaults: policy.toolDefaults } },
+          }
+        : await replyData(body.data);
+      await route.fulfill({ response, json: { ...body, data } });
     });
     await editor.fill(JSON.stringify(edits));
+    const previous = await editor.elementHandle();
     await save.click();
-    const message =
-      method === "GET"
-        ? "Plugin selections changed. Reload this Agent before saving again."
-        : "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.";
+    if (confirmed) {
+      // Wait for the rebuilt editor, not the first confirmation on the editor being replaced.
+      await page.waitForFunction((node) => !node.isConnected, previous);
+    }
+    const message = beforeWrite
+      ? "Plugin selections changed. Reload this Agent before saving again."
+      : "Outcome unknown. Plugin selections may have been saved. Reload this Agent before trying again.";
     const outcome = page
       .getByText(message, { exact: true })
       .or(page.getByText("Plugin selections saved.", { exact: true }));
     await outcome.waitFor();
-    assert.equal(await outcome.textContent(), message, `${method} returned the other Agent`);
-    assert.equal(await editor.inputValue(), JSON.stringify(edits));
+    assert.equal(await outcome.textContent(), confirmed ? "Plugin selections saved." : message);
+    if (!confirmed) {
+      assert.equal(await editor.inputValue(), JSON.stringify(edits));
+    }
     assert.equal(await save.isDisabled(), true);
     assert.equal(
       await page.getByRole("heading", { name: agent.name, exact: true }).isVisible(),
@@ -745,19 +776,17 @@ test("Plugin save distinguishes a refusal, a stale read, and an unconfirmed succ
     );
     await page.unroute(agentUrl);
 
-    // Explicit reload reconciles the real result: zero PATCHes for the crossed read, exactly
-    // one successful PATCH for the crossed acknowledgement. Neither path retries the change.
-    await page.getByRole("button", { name: "Reload plugin selections", exact: true }).click();
-    await page.getByText("Plugin selections reloaded.", { exact: true }).waitFor();
+    // Reconcile an unconfirmed result by reading, never by repeating the PATCH.
+    if (!confirmed) {
+      await page.getByRole("button", { name: "Reload plugin selections", exact: true }).click();
+      await page.getByText("Plugin selections reloaded.", { exact: true }).waitFor();
+    }
     assert.deepEqual(JSON.parse(await editor.inputValue()), expected);
     assert.deepEqual((await fixture.request("GET", agentPath)).data.plugins ?? {}, expected);
     assert.deepEqual(
       pathRequests(requests, "PATCH", agentPath).map(({ body }) => body.plugins),
-      method === "GET" ? [] : [edits],
+      beforeWrite ? [] : [edits],
     );
-    if (method === "GET") {
-      await page.getByText("Plugin selections JSON", { exact: true }).click();
-    }
   }
 });
 

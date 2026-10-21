@@ -4164,8 +4164,11 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
         savedNotice,
         updateAllowed: agentUpdateAllowed,
         // Saves and reloads rebuild the tab in place (finding 1445's rest).
-        onSaved: (savedAgent) =>
-          refreshDraftInPlace({ agent: savedAgent, saved: "Plugin selections saved." }),
+        onSaved: (settings) =>
+          refreshDraftInPlace({
+            agent: { ...agent, ...settings },
+            saved: "Plugin selections saved.",
+          }),
         onReload: () => {
           context.drafts.forget("plugins");
           return reloadDraftInPlace(context, { saved: "Plugin selections reloaded." });
