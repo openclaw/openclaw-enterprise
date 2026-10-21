@@ -39,7 +39,7 @@ const CONSOLE_ASSETS = new Map([
       "driver-configurations.mts",
       "view-lifetime.mts",
       "navigation.mts",
-      "shell.mjs",
+      "shell.mts",
       "namespaces.mts",
       "secrets.mts",
       "runtime-images.mts",

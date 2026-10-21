@@ -1,19 +1,54 @@
+import type { BackendSummary, Namespace } from "@openclaw-enterprise/contracts";
 import { displayDate } from "./agents/list.mjs";
-import { element, button } from "./dom.mjs";
+import { button, element, type statusBlock } from "./dom.mjs";
+import type { createNavigation, pages } from "./navigation.mjs";
 
-export function brandContents(size) {
+interface Account {
+  name: string;
+  email: string;
+}
+
+export interface ShellState {
+  session: { user: Account } | null;
+  namespaces: readonly Namespace[];
+  namespaceId: string | null;
+  observabilityUrl: string | null;
+  namespaceAdmissionPending?: boolean;
+  recovery?: boolean;
+  page?: { agentId: string; creating?: never } | { creating: true; agentId?: never } | null;
+}
+
+type Navigation = ReturnType<typeof createNavigation>;
+type ShellOptions = Pick<Navigation, "route" | "pageUrl" | "navigate"> & {
+  app: HTMLElement;
+  pages: typeof pages;
+  loadPage(options?: { fromRefresh: true }): void;
+  logout(): void;
+};
+
+type LeaveGuard = (options?: { pendingOnly: true } | { refresh: true }) => boolean;
+
+export function brandContents(size: number) {
   const displayName =
-    document.querySelector('meta[name="occ-console-display-name"]')?.content ??
+    document.querySelector<HTMLMetaElement>('meta[name="occ-console-display-name"]')?.content ??
     "OpenClaw Enterprise";
   const src =
-    document.querySelector('meta[name="occ-console-logo"]')?.content ?? "/console/oce-mascot.png";
+    document.querySelector<HTMLMetaElement>('meta[name="occ-console-logo"]')?.content ??
+    "/console/oce-mascot.png";
   return [
     element("img", { src, alt: "", width: String(size), height: String(size) }),
     element("span", { className: "brand-name", title: displayName }, displayName),
   ];
 }
 
-export function panel(target, title, description, actionLabel, action, requestId) {
+export function panel(
+  target: HTMLElement,
+  title: string,
+  description: string,
+  actionLabel?: string,
+  action?: () => void,
+  requestId?: string | null,
+) {
   target.replaceChildren(
     element(
       "section",
@@ -26,20 +61,20 @@ export function panel(target, title, description, actionLabel, action, requestId
   );
 }
 
-function menuItems(menu) {
-  return [...menu.querySelectorAll('[role="menuitem"], [role="menuitemradio"]')].filter(
-    (item) => item.closest('[role="menu"]') === menu && !item.closest("[hidden]"),
-  );
+function menuItems(menu: HTMLElement) {
+  return [
+    ...menu.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemradio"]'),
+  ].filter((item) => item.closest('[role="menu"]') === menu && !item.closest("[hidden]"));
 }
 
-function enableMenuKeys(menu, close) {
+function enableMenuKeys(menu: HTMLElement, close: () => void) {
   menu.addEventListener("keydown", (event) => {
-    if (event.target.closest('[role="menu"]') !== menu) {
+    if (!(event.target instanceof Element) || event.target.closest('[role="menu"]') !== menu) {
       return;
     }
     const items = menuItems(menu);
-    const index = items.indexOf(document.activeElement);
-    let next;
+    const index = items.findIndex((item) => item === document.activeElement);
+    let next: number | undefined;
     if (event.key === "ArrowDown") {
       next = (index + 1) % items.length;
     }
@@ -54,7 +89,7 @@ function enableMenuKeys(menu, close) {
     }
     if (next !== undefined && items.length) {
       event.preventDefault();
-      items[next].focus();
+      items[next]?.focus();
     }
     if (event.key === "Escape" || event.key === "ArrowLeft") {
       event.preventDefault();
@@ -69,7 +104,7 @@ function enableMenuKeys(menu, close) {
   });
 }
 
-export function sorted(items) {
+export function sorted<T extends { id: string; name?: string }>(items: readonly T[]) {
   return [...items].sort(
     (a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id) || a.id.localeCompare(b.id),
   );
@@ -81,28 +116,46 @@ const namespaceStatuses = {
   provisioning: { label: "Provisioning", tone: "warning" },
   deleting: { label: "Deleting", tone: "warning" },
   failed: { label: "Failed", tone: "danger" },
-};
-const backendTypes = { chatgpt: "ChatGPT", github: "GitHub", openshell: "OpenShell" };
+} satisfies Record<Namespace["status"], { label: string; tone: Parameters<typeof statusBlock>[0] }>;
+const backendTypes = {
+  chatgpt: "ChatGPT",
+  github: "GitHub",
+  openshell: "OpenShell",
+} satisfies Record<BackendSummary["type"], string>;
 
 // Initials for the account avatar: the first letters of the first and last words of the
 // name, or of the email when the account has no name.
-export function initials(user) {
+export function initials(user: Partial<Account> | null | undefined) {
   const words = (user?.name ?? "").trim().split(/\s+/).filter(Boolean);
-  const letters = (words.length > 1 ? [words[0], words.at(-1)] : words).map((word) => [...word][0]);
+  const letters = words
+    .filter((_, index) => index === 0 || index === words.length - 1)
+    .map((word) => [...word][0]);
   return (letters.join("") || [...(user?.email ?? "")][0] || "?").toUpperCase();
 }
 
-export function createShell({ app, pages, route, pageUrl, navigate, loadPage, logout }) {
-  let session = null;
-  let namespaces = [];
-  let namespaceId = null;
-  let observabilityUrl = null;
-  let menuControls = null;
-  let drawerControls = null;
-  let namespaceSelect = null;
+export function createShell({
+  app,
+  pages,
+  route,
+  pageUrl,
+  navigate,
+  loadPage,
+  logout,
+}: ShellOptions) {
+  let session: ShellState["session"] = null;
+  let namespaces: readonly Namespace[] = [];
+  let namespaceId: string | null = null;
+  let observabilityUrl: string | null = null;
+  let menuControls: ReturnType<typeof createAccountMenus> | null = null;
+  let drawerControls: {
+    shell: HTMLElement;
+    sidebar: HTMLElement;
+    close(focus?: boolean): void;
+  } | null = null;
+  let namespaceSelect: HTMLSelectElement | null = null;
   let namespaceAdmissionPending = true;
   // Whether the shown page refuses to be left yet; it then says why (finding 1902).
-  let refuseLeave = () => false;
+  let refuseLeave: LeaveGuard = () => false;
   const mobileLayout = window.matchMedia("(max-width: 760px)");
 
   mobileLayout.addEventListener("change", (event) => {
@@ -133,7 +186,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   // A 20 px line icon for the icon-only buttons of the phone top bar and drawer.
-  function lineIcon(d) {
+  function lineIcon(d: string) {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", "line-icon");
     svg.setAttribute("viewBox", "0 0 24 24");
@@ -148,7 +201,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     return svg;
   }
 
-  function publicPanel(title, description, actionLabel, action) {
+  function publicPanel(
+    title: string,
+    description: string,
+    actionLabel?: string,
+    action?: () => void,
+  ) {
     menuControls = null;
     drawerControls = null;
     app.replaceChildren(
@@ -163,7 +221,17 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
-  function accountControl({ id, rootClass, toggle, menuFirst }) {
+  function accountControl({
+    id,
+    rootClass,
+    toggle,
+    menuFirst,
+  }: {
+    id: string;
+    rootClass: string;
+    toggle: HTMLButtonElement;
+    menuFirst: boolean;
+  }) {
     const account = element("div", { className: rootClass });
     const menu = element("div", {
       className: "menu",
@@ -203,22 +271,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
     account.append(...(menuFirst ? [menu, toggle] : [toggle, menu]));
     account.addEventListener("focusout", (event) => {
-      if (event.relatedTarget && !account.contains(event.relatedTarget)) {
+      if (event.relatedTarget instanceof Node && !account.contains(event.relatedTarget)) {
         closeAccount(false);
       }
     });
     return { account, close: () => closeAccount(false) };
   }
 
-  function accountMenus() {
-    // A page load can render the shell twice (a Loading or retained preview, then the
-    // fresh view). Keep the same menus so one opened in between stays open and clickable.
-    // reset(), publicPanel() and a session-less render drop them, so each navigation
-    // starts with closed menus.
-    if (menuControls) {
-      return menuControls;
-    }
-    const user = session.user;
+  function createAccountMenus(user: Account) {
     const name = user?.name || user?.email || "Account";
     // The sidebar's account row: avatar, name and email. At phone width the sidebar is the
     // navigation drawer, so the top bar's avatar opens its own copy of the menu.
@@ -256,22 +316,21 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       toggle: avatar,
       menuFirst: false,
     });
-    menuControls = {
+    return {
       side,
       top,
-      contains: (node) => side.account.contains(node) || top.account.contains(node),
+      contains: (node: Node | null) => side.account.contains(node) || top.account.contains(node),
       close: () => {
         side.close();
         top.close();
       },
     };
-    return menuControls;
   }
 
-  function updateNamespaceSelector() {
+  function updateNamespaceSelector(select: HTMLSelectElement) {
     const readable = namespaceAdmissionPending ? [] : namespaces;
-    namespaceSelect.disabled = namespaceAdmissionPending || !session || readable.length === 0;
-    namespaceSelect.replaceChildren();
+    select.disabled = namespaceAdmissionPending || !session || readable.length === 0;
+    select.replaceChildren();
     if (!readable.some((item) => item.id === namespaceId)) {
       // Once this session knows the Namespace list, admission names the selection instead of
       // flashing "Checking access…"; the choices stay hidden until access is confirmed.
@@ -281,12 +340,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       if (session && !namespaceAdmissionPending) {
         placeholder = namespaceId === null ? "No readable Namespaces" : "Namespace unavailable";
       }
-      namespaceSelect.append(
-        element("option", { value: "", disabled: true, selected: true }, placeholder),
-      );
+      select.append(element("option", { value: "", disabled: true, selected: true }, placeholder));
     }
     for (const item of readable) {
-      namespaceSelect.append(
+      select.append(
         element("option", { value: item.id, selected: item.id === namespaceId }, item.name),
       );
     }
@@ -295,22 +352,23 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   // The page header's selector is compact (UX spec 3.2): one 32 px control whose label sits
   // inside it as a muted prefix. The Namespace recovery panel keeps the full-size field.
   function namespaceSelector(label = "Namespace", { compact = false } = {}) {
-    namespaceSelect = element("select", { id: "namespace-selector" });
-    updateNamespaceSelector();
-    namespaceSelect.addEventListener("change", (event) => {
+    const select = element("select", { id: "namespace-selector" });
+    namespaceSelect = select;
+    updateNamespaceSelector(select);
+    select.addEventListener("change", () => {
       if (
         namespaceAdmissionPending ||
-        event.currentTarget !== namespaceSelect ||
-        !namespaces.some((item) => item.id === event.target.value)
+        select !== namespaceSelect ||
+        !namespaces.some((item) => item.id === select.value)
       ) {
         return;
       }
       // A page that cannot be left yet keeps its Namespace and says why (finding 1902).
       if (refuseLeave()) {
-        event.target.value = namespaceId;
+        select.value = namespaceId ?? "";
         return;
       }
-      navigate(route().feature, event.target.value);
+      navigate(route().feature, select.value);
     });
     return element(
       "div",
@@ -320,7 +378,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           : "namespace-selector",
       },
       element("label", { for: "namespace-selector" }, label),
-      namespaceSelect,
+      select,
     );
   }
 
@@ -346,10 +404,10 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
 
   // The Agent's ID under its name, with a copy button. Copying falls back to selecting the ID
   // where the clipboard is unavailable (an http origin, say), so it can be copied by hand.
-  function agentIdentity(agentId) {
+  function agentIdentity(agentId: string) {
     const id = element("span", { className: "resource-id", title: "Agent ID" }, agentId);
     const copied = element("span", { className: "page-meta-copied", role: "status" });
-    let clearCopied = null;
+    let clearCopied: number | undefined;
     const copy = button(
       "",
       () => {
@@ -366,7 +424,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           document.getSelection()?.removeAllRanges();
           document.getSelection()?.addRange(range);
         };
-        if (navigator.clipboard?.writeText) {
+        if (typeof navigator.clipboard?.writeText === "function") {
           navigator.clipboard.writeText(agentId).then(done, select);
         } else {
           select();
@@ -405,7 +463,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     return back;
   }
 
-  function updateNamespaces(readable, { preservePageScope = false } = {}) {
+  function updateNamespaces(readable: readonly Namespace[], { preservePageScope = false } = {}) {
     if (!namespaceSelect?.isConnected) {
       return;
     }
@@ -413,14 +471,14 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       !namespaceAdmissionPending &&
       readable.length === namespaces.length &&
       readable.every(
-        (item, index) => item.id === namespaces[index].id && item.name === namespaces[index].name,
+        (item, index) => item.id === namespaces[index]?.id && item.name === namespaces[index].name,
       )
     ) {
       return;
     }
     namespaces = readable;
     namespaceAdmissionPending = false;
-    updateNamespaceSelector();
+    updateNamespaceSelector(namespaceSelect);
     if (preservePageScope) {
       return;
     }
@@ -430,7 +488,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     }
   }
 
-  function renderShell(feature, state) {
+  function renderShell(feature: keyof typeof pages, state: ShellState) {
     ({
       session,
       namespaces,
@@ -445,9 +503,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     const recovery = state.recovery ?? true;
     namespaceSelect = null;
     // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
-    const menuFocus = menuControls?.contains(document.activeElement)
-      ? document.activeElement
-      : null;
+    const focused = document.activeElement;
+    const menuFocus =
+      focused instanceof HTMLElement && menuControls?.contains(focused) ? focused : null;
     // Like the menu, a mobile drawer opened between a page load's two renders stays open.
     // After reset() or publicPanel(), or in a render without a session, it starts closed.
     const drawerOpen =
@@ -455,22 +513,18 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       mobileLayout.matches &&
       Boolean(drawerControls?.shell.classList.contains("drawer-open"));
     const drawerFocus =
-      drawerOpen && !menuFocus && drawerControls.sidebar.contains(document.activeElement)
-        ? document.activeElement
-        : null;
+      drawerOpen && !menuFocus && drawerControls?.sidebar.contains(focused) ? focused : null;
     // Focus the person moved to a sidebar control during a load stays on it through the load's
     // later renders (loading, then the page). reset() runs as each load starts, so the first
     // render keeps none.
     const sidebarFocus =
-      !drawerOpen && !menuFocus && drawerControls?.sidebar.contains(document.activeElement)
-        ? document.activeElement
-        : null;
-    if (!session) {
-      menuControls = null;
-    }
+      !drawerOpen && !menuFocus && drawerControls?.sidebar.contains(focused) ? focused : null;
+    // A load renders a preview, then the page. Reuse its menus so one opened in between stays
+    // usable. Navigation, publicPanel() and a render without a session start with closed menus.
+    menuControls = session ? (menuControls ?? createAccountMenus(session.user)) : null;
     const nav = element("nav", { className: "nav", "aria-label": "Main navigation" });
     const icons = { agents: "◇", secrets: "⚿", namespaces: "▤" };
-    for (const name of ["agents", "secrets", "namespaces"]) {
+    for (const name of ["agents", "secrets", "namespaces"] as const) {
       const link = element(
         "a",
         {
@@ -519,8 +573,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         ),
       );
     }
-    const revision = document.querySelector('meta[name="occ-build-revision"]')?.content;
-    const knownRevision = /^[a-f0-9]{40}$/.test(revision ?? "");
+    const revision =
+      document.querySelector<HTMLMetaElement>('meta[name="occ-build-revision"]')?.content ?? "";
+    const knownRevision = /^[a-f0-9]{40}$/.test(revision);
     const debug = route().url.searchParams.get("debug") === "true";
     const diagnostics =
       debug && session
@@ -555,7 +610,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       ),
       nav,
       diagnostics,
-      session ? accountMenus().side.account : null,
+      menuControls?.side.account,
     );
     const main = element("main", { className: "content", id: "main" });
     const selected = namespaces.find((item) => item.id === namespaceId);
@@ -658,7 +713,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       { className: "topbar" },
       mobileToggle,
       element("p", { className: "brand brand--bar" }, ...brandContents(20)),
-      session ? accountMenus().top.account : null,
+      menuControls?.top.account,
     );
     const wrapper = element("div", {}, topbar, main);
     const shell = element("div", { className: "shell" }, sidebar, wrapper);
@@ -676,7 +731,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       main.inert = true;
       mobileToggle.setAttribute("aria-expanded", "true");
       if (focus) {
-        nav.querySelector("a").focus();
+        nav.querySelector("a")?.focus();
       }
     }
     sidebar.prepend(
@@ -691,7 +746,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         tabindex: "-1",
       }),
     );
-    drawerControls = { shell, sidebar, close: closeDrawer, open: openDrawer };
+    drawerControls = { shell, sidebar, close: closeDrawer };
     app.replaceChildren(shell);
     if (drawerOpen) {
       // Focus moves to the same control in the new drawer; close if it has none.
@@ -717,12 +772,12 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     return { view, refresh, diagnostics, scopeSelector, actions };
   }
 
-  function sameControl(node, root) {
+  function sameControl(node: Element, root: HTMLElement) {
     // Match a nav link by its feature: its href gains ?namespace= once the Namespaces load.
     // Other links (Observability) keep the href comparison.
     const nav = node.getAttribute("data-nav");
     return (
-      [...root.querySelectorAll(node.localName)].find(
+      [...root.querySelectorAll<HTMLElement>(node.localName)].find(
         (candidate) =>
           candidate.className === node.className &&
           (nav
@@ -733,7 +788,11 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
-  function renderRows(view, feature, items) {
+  function renderRows(
+    view: HTMLElement,
+    ...[feature, items]:
+      ["namespaces", readonly Namespace[]] | ["backends", readonly BackendSummary[]]
+  ) {
     if (!items.length) {
       panel(
         view,
@@ -761,12 +820,9 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
           element(
             "div",
             {},
-            element("p", { className: "resource-name" }, element("span", {}, item.name ?? item.id)),
-            feature === "backends" ? null : element("span", { className: "resource-id" }, item.id),
+            element("p", { className: "resource-name" }, element("span", {}, item.id)),
           ),
-          feature === "agents"
-            ? null
-            : element("span", { className: "badge" }, backendTypes[item.type] ?? item.type),
+          element("span", { className: "badge" }, backendTypes[item.type] ?? item.type),
         ),
       );
     }
@@ -777,7 +833,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   // The rows stay a list, so each row is one item to a screen reader, and the column names
   // above them are visual only: each cell carries its own name. A row opens that Namespace's
   // Agents (finding 1897).
-  function renderNamespaceRows(view, items) {
+  function renderNamespaceRows(view: HTMLElement, items: readonly Namespace[]) {
     const list = element("ul", {
       className: "collection",
       "aria-label": pages.namespaces,
@@ -832,7 +888,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
   }
 
-  function namespaceLink(name, id) {
+  function namespaceLink(name: string, id: string) {
     const node = element("a", { href: pageUrl("agents", id) }, name);
     // A revalidation that remounts the list returns focus to the same row.
     node.dataset.returnFocusHref = node.href;
@@ -852,7 +908,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
 
   document.addEventListener("pointerdown", (event) => {
     for (const control of [menuControls?.side, menuControls?.top]) {
-      if (control && !control.account.contains(event.target)) {
+      if (control && event.target instanceof Node && !control.account.contains(event.target)) {
         control.close();
       }
     }
@@ -866,7 +922,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       drawerControls.close();
     }
     if (event.key === "Tab") {
-      const items = [...drawerControls.sidebar.querySelectorAll("a,button")].filter(
+      const items = [...drawerControls.sidebar.querySelectorAll<HTMLElement>("a,button")].filter(
         (node) => !node.closest("[hidden]") && node.getClientRects().length,
       );
       if (event.shiftKey && document.activeElement === items[0]) {
@@ -891,8 +947,8 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     // account row, or the top bar's avatar). At
     // phone width its navigation drawer starts closed too, so every control from the open drawer
     // gives way to the drawer's toggle (finding 1680).
-    matchingControl(node) {
-      const shell = app.querySelector(":scope > .shell");
+    matchingControl(node: Element) {
+      const shell = app.querySelector<HTMLElement>(":scope > .shell");
       if (!shell) {
         return null;
       }
@@ -901,22 +957,24 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
         node.closest(".sidebar") &&
         !shell.classList.contains("drawer-open")
       ) {
-        return shell.querySelector(".mobile-toggle");
+        return shell.querySelector<HTMLButtonElement>(".mobile-toggle");
       }
       if (node.closest(".account")) {
-        return shell.querySelector(".account-toggle");
+        return shell.querySelector<HTMLButtonElement>(".account-toggle");
       }
       if (node.closest(".topbar-account")) {
-        return shell.querySelector(".topbar-avatar");
+        return shell.querySelector<HTMLButtonElement>(".topbar-avatar");
       }
       // The sidebar, toggle and header precede the page view, so their match is found first.
       return sameControl(node, shell);
     },
-    setLeaveGuard(guard) {
+    setLeaveGuard(guard: LeaveGuard) {
       refuseLeave = guard;
     },
     reset() {
-      document.querySelectorAll("dialog[open]").forEach((dialog) => dialog.close());
+      document
+        .querySelectorAll<HTMLDialogElement>("dialog[open]")
+        .forEach((dialog) => dialog.close());
       menuControls = null;
       drawerControls = null;
       namespaceSelect = null;

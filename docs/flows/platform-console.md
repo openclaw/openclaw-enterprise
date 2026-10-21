@@ -104,7 +104,7 @@ graph TD
 `apps/controller/src/api-startup.mjs:startApi` loads an optional
 [theme bundle](../reference/console/theming.md) once. Invalid bundles stop startup;
 ConfigMap links must resolve inside the bundle. `renderConsoleThemeShell` escapes
-branding and links the generated stylesheet. `console/shell.mjs:brandContents`
+branding and links the generated stylesheet. `console/shell.mts:brandContents`
 renders the name as text. `/console/theme/` serves only referenced images and
 generated CSS, returns a plain 404 for missing assets, and uses `no-store` so an
 API restart can replace the theme.
@@ -125,7 +125,7 @@ paths return the shell with `404`; API routes retain JSON errors.
 encodings. The shell, which also answers sign-in, stays identity.
 
 `scripts/build-console-metadata.mjs` bakes the publisher's checked
-`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mjs:renderShell` displays
+`OCC_BUILD_REVISION` into HTML. With `debug=true`, `shell.mts:renderShell` displays
 the full commit; invalid or absent metadata remains unknown.
 
 `runtime-images.mts:renderRuntimeImages` issues at most three concurrent reads for
@@ -183,9 +183,9 @@ After authentication, `loadPage` reads `GET /namespaces`, preserving URL
 selection or choosing the first ready/readable Namespace. Unreadable IDs stay
 unavailable; selection never becomes an API query selector.
 
-`shell.mjs:namespaceSelector` disables and hides choices through session and
+`shell.mts:namespaceSelector` disables and hides choices through session and
 Namespace checks, naming a known selection; retained-view reads do not extend this.
-`shell.mjs:createShell` listens for the 760px mobile breakpoint; widening closes
+`shell.mts:createShell` listens for the 760px mobile breakpoint; widening closes
 the drawer without focusing its hidden toggle and releases `main.inert`.
 Empty lists show access guidance. `navigation.mts:navigate` returns Agent detail/creation
 to Agents; global pages remain open; recovered warnings disappear.

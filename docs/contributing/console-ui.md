@@ -12,7 +12,7 @@ JavaScript at that URL. Run `pnpm typecheck` to check the browser code.
 
 ## Compose a page
 
-- **Structure.** Let the [shell](../../apps/controller/src/console/shell.mjs)
+- **Structure.** Let the [shell](../../apps/controller/src/console/shell.mts)
   supply the page title, Namespace, and navigation. Use a `.section` with an
   `h2` to group related content. Add a `.card` when the group needs its own surface.
 - **Collections.** Agents and Secrets put search and the primary action in a
