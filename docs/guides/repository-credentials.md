@@ -38,6 +38,34 @@ docker build -f deploy/runtime/Dockerfile \
 The image includes Git, the client helper and pinned `gh` 2.100.0. Publish or
 import it, select its digest and configure model authentication.
 
+## Keep Git access on the same running Agent
+
+An Agent administrator can approve one repository binding until they remove that approval.
+The worker can then open another short session for the same running Agent without an hourly
+approval or a replacement Agent. Git can pause between sessions. The approval does not extend a
+token, change its repository or permissions, or grant access to a model.
+
+Enable `allowStandingApprovals` in the Installation's repository registry and
+`allowStandingApproval` for that repository in the Agent's Namespace. Upgrade the API, worker,
+receipt owner and credential service together before enabling this policy. A deployment admitted
+with a finite grant keeps its original deadline.
+
+1. Read `GET …/agents/{agentId}/repository-approval-scopes`. Review the resolved repository,
+   permissions and allowed operations, and retain its `scopeFingerprint`.
+2. Update the Agent with its current `configurationId` and a `repositoryStandingApproval`
+   containing `repositoryRef`, a new `approvalId`, `approved: true`, `duration: "until-removed"`,
+   and `expectedScopeFingerprint`. If the scope changed, review it again. Deploy the Agent once.
+3. To withdraw, read `GET …/agents/{agentId}/repository-approvals`, then send the approval's
+   `expectedGeneration` to `POST …/agents/{agentId}/repository-approvals/{approvalId}/remove`.
+   New Git requests are denied even while cleanup is pending. On OpenShell, the worker removes
+   Git and continues supervising the same execution if its independent permissions still allow it.
+   Stopping the Agent ends that execution. Neither action recalls a request already authorized.
+
+The worker must recognize the same execution and account for its previous session and credential.
+If it returns after a known provider expiry, it waits out the clock allowance and records
+`expired` separately from confirmed revocation. An uncertain issuance, installation or retirement
+still requires recovery. Do not repeat an operation whose outcome is unknown.
+
 ## Create and deploy an Agent
 
 In **Agents** > **Create Agent**, add up to 16 repositories. They inherit

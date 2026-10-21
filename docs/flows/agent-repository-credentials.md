@@ -26,23 +26,7 @@ See [service forwarding and retirement](repository-credentials.md) and
 - `apps/controller/src/worker.ts:ControllerWorker.prepareRevision` prepares
   repository sessions before invoking Compute.
 
-The Installation selects a repository Driver and Backend. API, worker and service
-share an immutable registry; the Namespace is ready. Unbound Agents bypass this.
-
-An administrator can explicitly approve one Agent repository binding until removed,
-if the installation and that repository's Namespace policy both allow it. Review
-the resolved scope, then submit its fingerprint; a change before approval requires
-a new review. Only administrators of this Agent can inspect the scope and approval
-receipt, which identifies the approving principal and generation. Deploy pins it
-alongside the finite session deadline. Removing the approval checks the generation
-without requiring a working Configuration, Secret or provider. It fences new
-session publication and new Git authorization. The broker checks again before issuing a
-token and before using a cached token. Removal cannot recall an authorized request or
-establish that the provider has retired a token. To continue, the worker verifies
-the same running execution and current approval, disposes
-the old session, and opens a distinct bounded session. Git may pause during that handoff.
-Stopping the Agent closes that execution even if its standing approval remains. A finite
-admission cannot become standing, and loss of execution identity requires a new admission.
+For access across session expiry, see [standing repository approval](../guides/repository-credentials.md#keep-git-access-on-the-same-running-agent).
 
 ## Flow
 
