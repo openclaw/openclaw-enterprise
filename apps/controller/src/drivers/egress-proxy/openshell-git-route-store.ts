@@ -74,7 +74,12 @@ export interface OpenShellGitRouteStore {
    * fail from here. A blocked route is answered as it is and never re-fenced; no route
    * answers undefined.
    */
-  adopt(revisionId: string, workerInstance: string): Promise<OpenShellGitRouteRecord | undefined>;
+  adopt(
+    revisionId: string,
+    workerInstance: string,
+    /** A replacement cannot inherit an observed hook. Take the fence and close it in one commit. */
+    disposition?: "close-preview",
+  ): Promise<OpenShellGitRouteRecord | undefined>;
   /** Read a known standing installation under current authority; never take its fence or open it. */
   standing(
     revision: Readonly<AgentRevision>,
@@ -90,6 +95,13 @@ export interface OpenShellGitRouteStore {
   owns(revisionId: string, fence: number): Promise<boolean>;
   /** Closes the route for good (the first reason stays). False when the fence is stale. */
   block(revisionId: string, fence: number, reason: OpenShellGitRouteBlockReason): Promise<boolean>;
+  /** Confirm this exact preview closure, or observe that another owner or terminal reason won. */
+  confirmPreviewBlocked(
+    revisionId: string,
+    workerInstance: string,
+    fence: number,
+    reason: OpenShellGitRouteBlockReason,
+  ): Promise<"confirmed" | "superseded">;
   /** Tombstones every open route of a withdrawn revision or Namespace, whoever holds it. */
   withdraw(selector: OpenShellGitRouteWithdrawal): Promise<void>;
   /** Irrevocably fences the witnessed Git installation at finite expiry or recorded standing withdrawal. */
@@ -230,14 +242,17 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
   async adopt(
     revisionId: string,
     workerInstance: string,
+    disposition?: "close-preview",
   ): Promise<OpenShellGitRouteRecord | undefined> {
     return this.query(async (c) => {
       const adopted = await c.query(
         `UPDATE ${table}
-        SET fence = fence + 1, worker_instance = $2, adopted_at = clock_timestamp(), updated_at = clock_timestamp()
+        SET fence = fence + 1, worker_instance = $2, adopted_at = clock_timestamp(), updated_at = clock_timestamp(),
+            blocked = CASE WHEN $3 THEN 'worker_replaced' ELSE blocked END,
+            write_pending = CASE WHEN $3 THEN NULL ELSE write_pending END
         WHERE revision_id = $1 AND blocked IS NULL
         RETURNING ${columns}`,
-        [revisionId, workerInstance],
+        [revisionId, workerInstance, disposition === "close-preview"],
       );
       const row =
         (adopted.rows[0] as Row | undefined) ??
@@ -377,6 +392,39 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
           )
         ).rowCount === 1,
     );
+  }
+
+  async confirmPreviewBlocked(
+    revisionId: string,
+    workerInstance: string,
+    fence: number,
+    reason: OpenShellGitRouteBlockReason,
+  ): Promise<"confirmed" | "superseded"> {
+    return this.query(async (c) => {
+      // Read first, including after a lost COMMIT reply. Holding the row lock through the update
+      // means neither another worker nor a withdrawal can change this disposition between them.
+      const { rows } = await c.query(
+        `SELECT worker_instance, fence, blocked FROM ${table} WHERE revision_id = $1 FOR UPDATE`,
+        [revisionId],
+      );
+      const route = rows[0] as
+        (Pick<Row, "fence" | "blocked"> & { worker_instance: string }) | undefined;
+      if (!route) {
+        throw new Error("Missing the OpenShell preview route to close.");
+      }
+      if (route.worker_instance !== workerInstance || Number(route.fence) !== fence) {
+        return "superseded";
+      }
+      if (route.blocked !== null) {
+        return route.blocked === reason ? "confirmed" : "superseded";
+      }
+      await c.query(
+        `UPDATE ${table} SET blocked = $2, write_pending = NULL, updated_at = clock_timestamp()
+         WHERE revision_id = $1`,
+        [revisionId, reason],
+      );
+      return "confirmed";
+    });
   }
 
   /** Old as well as new holders check blocked IS NULL on use, adoption and every write.

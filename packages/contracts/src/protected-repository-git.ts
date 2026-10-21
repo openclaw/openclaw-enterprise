@@ -103,6 +103,8 @@ interface GitHubInstallationAuthority<
 export interface ProtectedRepositoryGitAuthority extends RepositoryGitAuthority<RepositoryGitSendPermit> {
   /** Only for recipients admitted and verified for authorization of every new request. */
   readonly online: RepositoryGitAuthority<RepositoryGitOnlineAllow>;
+  /** Separately selected, only for a v6 admission on the bundled observed route. */
+  readonly observedHook?: GitHubInstallationAuthority<RepositoryGitOnlineAllow>;
   readonly recipients: {
     /** Re-observe this exact released recipient. An unresolved installation is not adopted. */
     observe(installation: EgressInstallation): Promise<Route | undefined>;

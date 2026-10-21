@@ -64,9 +64,11 @@ export type OpenShellOnlineGitAuthorityOptions = Omit<
   OpenShellOnlineHttpAuthorityOptions,
   "authorize"
 > & {
+  /** This branch can only refuse the reserved pre-material challenge, never authorize Git. */
+  readonly previewDenial?: (request: OpenShellOnlineHttpRequest) => string | undefined;
   /** Resolve exactly one live admitted workspace/execution from the authenticated sandbox and
    * binding. Require a never-reused sandbox identity dedicated to that execution. Recheck
-   * replacement fencing, mandatory final middleware, TLS-only routing and the
+   * replacement fencing, the revision’s admitted middleware assurance, TLS-only routing and the
    * installed provider generation. Neither RPC config nor workspace metadata is this proof. */
   readonly lookupBinding: (
     identity: OpenShellOnlineGitIdentity,
@@ -498,6 +500,9 @@ export function createOpenShellOnlineGitAuthority(
     ...options,
     async authorize(request, signal) {
       const { sandboxId, bindingId, requestId, workspace } = request;
+      if (options.previewDenial && request.target.path.startsWith("/oce-observe-request/")) {
+        return { reasonCode: options.previewDenial(request) ?? "preview_challenge_refused" };
+      }
       const binding = await options.lookupBinding(
         { sandboxId, bindingId, requestId, workspace },
         signal,

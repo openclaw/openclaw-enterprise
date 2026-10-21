@@ -3244,6 +3244,56 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     }
   }
 
+  async observeHeldRepositoryGitPreview(
+    context: SandboxHarnessStatusContext,
+  ): Promise<"held" | "installed" | undefined> {
+    const revision = context.revision;
+    const plan = revision.egressPlan;
+    const git = this.openShellGit;
+    if (
+      !git ||
+      revision.executionAdmission.version !== 6 ||
+      plan?.repositoryGitAuthorization !== "request-hook-observed" ||
+      workspaceName(context.namespace) !== git.configuration.observedHookPreviewWorkspace
+    ) {
+      return;
+    }
+    const { client, service } = await this.exactHarnessService(
+      context,
+      "observe the held Git preview",
+    );
+    const path = HARNESS_EGRESS_ENROLLMENT_PATH;
+    const token = context.transportToken;
+    const signal = context.signal;
+    const doc = await client.getServiceDocument(service.url, path, token, signal);
+    if (doc.status !== 200) {
+      // The startup endpoint is gone once the launcher accepts its release. Neither an
+      // unanswered request nor a service refusal can stand in for its authenticated ACK.
+      return doc.status === 404 && git.previewReleased(revision.id) ? "installed" : undefined;
+    }
+    const { profile, startupId, ...identity } = asRecord(doc.json) ?? {};
+    if (
+      profile !== COMPUTE_RELEASE_PROFILE ||
+      typeof startupId !== "string" ||
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(startupId) ||
+      !isDeepStrictEqual(identity, harnessEgressEnrollment(plan))
+    ) {
+      return;
+    }
+    return git.observeHeldPreview(revision.id, startupId, signal, async (probePath) => {
+      const result = await client.postServiceDocument(
+        service.url,
+        path,
+        token,
+        { startupId, probePath },
+        signal,
+      );
+      if (result.status === 200) {
+        return result.json;
+      }
+    });
+  }
+
   async enrollHarness(
     context: SandboxHarnessStatusContext,
     installation: EgressInstallation,
@@ -3280,7 +3330,16 @@ export class OpenShellSandboxDriver implements SandboxDriver {
     );
     // A service may still be starting, or may already serve Codex/a held failure.
     // Normal Harness observation decides readiness; none of these answers releases startup.
+    const preview = installation.plan.repositoryGitAuthorization === "request-hook-observed";
     if (document.status !== 200) {
+      if (
+        preview &&
+        !(document.status === 404 && this.openShellGit?.previewReleased(context.revision.id))
+      ) {
+        throw new OpenShellSandboxConfigurationFailure(
+          "Cannot verify the observed-hook launcher's release.",
+        );
+      }
       return;
     }
     const challenge = asRecord(document.json);
@@ -3296,23 +3355,31 @@ export class OpenShellSandboxDriver implements SandboxDriver {
         "Harness enrollment challenge does not match the admitted execution.",
       );
     }
-    const released = await client.postServiceDocument(
-      service.url,
-      HARNESS_EGRESS_ENROLLMENT_PATH,
-      context.transportToken,
-      await release(startupId),
-      context.signal,
-    );
-    // A restarted Harness refuses the old challenge. The next reconcile observes
-    // fresh installation evidence and obtains its new challenge before trying again.
-    if (released.status === 409 || released.status === 410) {
-      return;
-    }
-    if (
-      released.status !== 200 ||
-      !isDeepStrictEqual(released.json, { enrolled: true, startupId })
-    ) {
-      throw new OpenShellSandboxConfigurationFailure("Harness enrollment was not acknowledged.");
+    const deliver = async (): Promise<boolean> => {
+      const released = await client.postServiceDocument(
+        service.url,
+        HARNESS_EGRESS_ENROLLMENT_PATH,
+        context.transportToken,
+        await release(startupId),
+        context.signal,
+      );
+      // A restarted Harness refuses the old challenge. The next reconcile observes
+      // fresh evidence; the observed preview instead ends this route and does not replay.
+      if (released.status === 409 || released.status === 410) {
+        return false;
+      }
+      if (
+        released.status !== 200 ||
+        !isDeepStrictEqual(released.json, { enrolled: true, startupId })
+      ) {
+        throw new OpenShellSandboxConfigurationFailure("Harness enrollment was not acknowledged.");
+      }
+      return true;
+    };
+    if (preview) {
+      await this.openShellGit!.releasePreview(context.revision.id, startupId, deliver);
+    } else {
+      await deliver();
     }
   }
 

@@ -30,6 +30,7 @@ import {
   releasedGitProfile,
   registeredGitSelection,
   openShellGitRecipientEvidence,
+  openShellPreviewEnded,
   registeredGitRecipientEvidence,
   type RepositoryGitRecipientEvidence,
   repositoryGitAdmissionEnded,
@@ -153,7 +154,8 @@ function sessionQuery(proxy: Recipient): string {
     proxy
       ? `s.broker_protocol=2 AND s.session_id IS NOT NULL
     AND rev.admitted_spec #>> '{execution_admission,version}' =
-      CASE WHEN p.installation #>> '{plan,repositoryGitAuthorization}' = 'online-request' THEN '5' ELSE '4' END
+      CASE p.installation #>> '{plan,repositoryGitAuthorization}' WHEN 'online-request' THEN '5'
+        WHEN 'request-hook-observed' THEN '6' ELSE '4' END
     AND p.installation#>'{plan,driver}'=${selectedRepositoryGitDriver}
     AND p.installation->'plan'=rev.admitted_spec->'egress_plan'
     AND p.installation#>'{plan,repositoryGit}'=rev.admitted_spec->'repository_credentials'
@@ -288,7 +290,7 @@ async function lockLiveSession(
 type LockedSession = {
   session: PreparedRepositorySession;
   end_ms: string;
-  authorization: "online-request" | null;
+  authorization: "online-request" | "request-hook-observed" | null;
 };
 type Authorization = LockedSession["authorization"];
 type GitUse = Pick<
@@ -385,6 +387,11 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
   ): Promise<PreparedRepositoryGitSource[]> {
     const sessions = sessionQuery(this.proxy);
     const live = active(sessions);
+    const ended = !this.proxy
+      ? `NOT ${live}`
+      : this.proxy.evidence === openShellGitRecipientEvidence
+        ? `(${repositoryGitAdmissionEnded} OR ${openShellPreviewEnded})`
+        : repositoryGitAdmissionEnded;
     const { sources, foreign } = await this.transaction(async (c) => {
       // Denial doesn't depend on this cleanup. Keep attempts, including unknown issuance, for recovery.
       // Only the recipient owner can act on positive evidence that OCC ended its admission.
@@ -392,7 +399,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       const { rows: retired } = await c.query(
         `WITH stopped AS (
         UPDATE ${families} f SET enabled=false
-        WHERE enabled AND ${this.retiringFamily("$1", "$2", this.proxy ? repositoryGitAdmissionEnded : `NOT ${live}`)}
+        WHERE enabled AND ${this.retiringFamily("$1", "$2", ended)}
         RETURNING source_id, source, admission->>'issuerAuthority' IS DISTINCT FROM $2 AS foreign),
         moved AS (UPDATE ${attempts} a SET custody='retire' FROM stopped s
         WHERE a.source_id=s.source_id AND custody='current' RETURNING a.source_id, a.provider_expires_at)
@@ -520,6 +527,9 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       recipients: this.recipients,
       ...delivery(null, sendPermit),
       online: delivery("online-request", onlineAllow),
+      ...(this.proxy.evidence === openShellGitRecipientEvidence && {
+        observedHook: delivery("request-hook-observed", onlineAllow).githubInstallation!,
+      }),
     });
   }
 
@@ -979,7 +989,7 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       return fail();
     }
     const decisionBy = new Date(until).toISOString();
-    const deadlineColumn = mode === "online-request" ? "authorization_reply_by" : "send_start_by";
+    const deadlineColumn = mode === null ? "send_start_by" : "authorization_reply_by";
     const { exchangeId, requestDigestSha256 } = q;
     if (scope && !unlimited) {
       // A possibly spent allowance outlives this session, including an unknown commit or send.

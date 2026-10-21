@@ -5576,7 +5576,9 @@ export class OpenClawController {
       driver: owner.ref,
       ...(repositoryGit && { repositoryGit }),
       ...(repositoryGit &&
-        gitAuthorization === "online-request" && { repositoryGitAuthorization: gitAuthorization }),
+        (gitAuthorization === "online-request" || gitAuthorization === "request-hook-observed") && {
+          repositoryGitAuthorization: gitAuthorization,
+        }),
       ...(harnessCredentialSource && { harnessCredentialSource }),
       routes,
     });
@@ -9144,7 +9146,14 @@ export class OpenClawController {
         egressPlan === undefined
           ? ({ version: 2, mode: "unprotected" } as const)
           : ({
-              version: egressPlan.repositoryGitAuthorization ? 5 : egressPlan.repositoryGit ? 4 : 3,
+              version:
+                egressPlan.repositoryGitAuthorization === "request-hook-observed"
+                  ? 6
+                  : egressPlan.repositoryGitAuthorization
+                    ? 5
+                    : egressPlan.repositoryGit
+                      ? 4
+                      : 3,
               mode: "protected",
             } as const);
       const execution = { executionAdmission, ...(egressPlan === undefined ? {} : { egressPlan }) };

@@ -39,6 +39,10 @@ service OpenShell {
   rpc DeleteSandbox(DeleteSandboxRequest) returns (DeleteSandboxResponse);
   // Read-only. Upstream authorization: bearer, scope sandbox:read, workspace role user.
   rpc GetSandboxLogs(GetSandboxLogsRequest) returns (GetSandboxLogsResponse);
+  rpc GetSandboxConfig(GetSandboxConfigRequest) returns (GetSandboxConfigResponse);
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+  rpc ListWorkspaceMembers(ListWorkspaceMembersRequest) returns (ListWorkspaceMembersResponse);
+  // A receipt-less request records an observation; reading a pending receipt may complete it.
   rpc GetSandboxProviderStatus(GetSandboxProviderStatusRequest)
       returns (GetSandboxProviderStatusResponse);
   rpc CreateProvider(CreateProviderRequest) returns (ProviderResponse);
@@ -526,6 +530,74 @@ message NetworkBinary {
   reserved "harness";
 }
 
+
+// OpenShell 0.1.5. These queries return desired configuration, membership and sandbox
+// identity, never provider credentials. List both without filters or a truncated second page.
+message GetSandboxConfigRequest {
+  string name = 1;
+  WorkspaceSelector workspace_scope = 3;
+}
+message GetSandboxConfigResponse {
+  SandboxPolicy policy = 1;
+  uint32 version = 2;
+  string policy_hash = 3;
+  uint64 config_revision = 5;
+  int32 policy_source = 6;
+  uint32 global_policy_version = 7;
+  uint64 provider_env_revision = 8;
+  repeated SupervisorMiddlewareService supervisor_middleware_services = 9;
+  string workspace = 10;
+  string policy_validation_failure_mode = 11;
+  bool extension_authentication_enabled = 12;
+  bool configuration_admitted = 13;
+  string provider_attachment_epoch = 14;
+  string configuration_instance_id = 15;
+  string configuration_error = 16;
+}
+message SupervisorMiddlewareService {
+  string name = 1;
+  string grpc_endpoint = 2;
+  uint64 max_payload_bytes = 3;
+  google.protobuf.Duration request_timeout = 104;
+  bytes tls_ca_cert_pem = 5;
+  string audience = 6;
+  bool allow_insecure_transport = 7;
+}
+message ListSandboxesRequest {
+  int32 page_size = 1;
+  WorkspaceSelector workspace_scope = 4;
+}
+message ListSandboxesResponse {
+  repeated Sandbox sandboxes = 1;
+  string next_page_token = 2;
+}
+message ListWorkspaceMembersRequest {
+  WorkspaceSelector workspace_scope = 1;
+  int32 page_size = 2;
+}
+message ListWorkspaceMembersResponse {
+  repeated WorkspaceMemberPresent members = 1;
+  string next_page_token = 2;
+}
+// Presence alone is relevant: an isolated preview workspace may have no members.
+message WorkspaceMemberPresent {}
+message SandboxConfigurationAdmission {
+  string instance_id = 1;
+  int32 state = 2;
+  uint32 policy_version = 3;
+  string policy_hash = 4;
+  uint64 config_revision = 5;
+  uint64 provider_env_revision = 6;
+  string error = 7;
+}
+message ConfigUpdateOperation {
+  string operation_id = 1;
+  string sandbox_id = 2;
+  int32 state = 5;
+  int32 outcome = 6;
+  google.protobuf.Timestamp completed_time = 110;
+}
+
 message SandboxStatus {
   string agent_pod = 2;
   string agent_fd = 3;
@@ -535,7 +607,10 @@ message SandboxStatus {
   uint32 current_policy_version = 7;
   string main_process_instance_id = 8;
   optional int32 exit_code = 9;
+  SandboxConfigurationAdmission configuration_admission = 11;
+  optional bool configuration_activated = 12;
   uint32 restart_count = 14;
+  google.protobuf.Timestamp main_process_started_time = 16;
 }
 
 message SandboxCondition {
@@ -667,6 +742,8 @@ message CreateProviderRequest {
 
 message ProviderResponse {
   Provider provider = 1;
+  repeated ProviderMutationReceipt target_receipts = 2;
+  string mutation_id = 3;
 }
 
 // Non-empty config or credential values merge into the existing provider; type and profile are fixed.
@@ -976,6 +1053,7 @@ message GetSandboxProviderStatusResponse {
 }
 
 message ProviderReadinessStatus {
+  ConfigUpdateOperation operation = 8;
   ProviderMutationReceipt receipt = 1;
   ProviderReadinessState state = 2;
   ProviderReadinessReason reason = 3;

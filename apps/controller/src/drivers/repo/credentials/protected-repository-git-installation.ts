@@ -32,11 +32,22 @@ export const openShellInstallationGitProviderPrefix = "oce-github-installation-"
 const observedInstallationProfile =
   "r.observed->>'provider' ~ '^" + openShellInstallationGitProviderPrefix + "[0-9a-f]{32}$'";
 
+// The preview correlates a denial at the held launcher with the authenticated callback.
+// It cannot prove an operator will retain that hook. Strict senders never accept this branch.
+const observedHookSelection = `(${admittedAuthorization} = 'request-hook-observed'
+  AND ${recipientAuthorization} = 'request-hook-observed' AND ${peerKey} IS NULL
+  AND (${recipient}->>'deliveryProfile') = 'github_installation'
+  AND p.installation#>>'{plan,repositoryGit,bindings,0,profile}' = 'github-installation'
+  AND jsonb_array_length(p.installation#>'{plan,repositoryGit,bindings}')=1
+  AND (r.observed#>>'{observedHook,startupId}') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  AND (r.observed#>>'{observedHook,observationId}') ~ '^[a-f0-9]{64}$'
+  AND r.observed->'observedHook' = ${recipient}->'observedHook')`;
+
 export const protectedRepositoryGitInstallationSql = `
   (p.namespace_id,p.agent_id,p.revision_id)=(r.namespace_id,r.agent_id,r.revision_id)
-  AND ${registeredGitSelection}
+  AND ((${registeredGitSelection} AND NOT (r.observed ? 'observedHook')) OR ${observedHookSelection})
   AND CASE WHEN ${recipient} ? 'deliveryProfile'
-    THEN ${observedInstallationProfile} AND ${admittedAuthorization} = 'online-request'
+    THEN ${observedInstallationProfile} AND ${admittedAuthorization} IN ('online-request','request-hook-observed')
     ELSE NOT (${observedInstallationProfile}) END
   AND p.sandbox_id = r.observed->>'sandboxId'
   AND r.binding_id = p.installation#>>'{plan,execution,executionId}'
@@ -126,6 +137,18 @@ export interface RepositoryGitRecipientEvidence {
 const openShellRoute = "occ.openshell_git_routes";
 const openShellObserved = `SELECT FROM ${openShellRoute} WHERE revision_id=$1 AND fence=$2
   AND observed=$3::jsonb AND blocked IS NULL AND detach_request_id IS NULL`;
+
+/** Only a terminal tombstone for this same observed preview retires its possibly installed
+ * material. Lost evidence stays unknown; neither strict mode nor another recipient matches. */
+export const openShellPreviewEnded = `EXISTS (
+  SELECT FROM ${openShellRoute} r JOIN occ.egress_installations p ON ${protectedRepositoryGitInstallationSql}
+  WHERE r.blocked IS NOT NULL AND ${admittedAuthorization}='request-hook-observed'
+    AND f.source->>'adoption'='${installationGitAdoption}'
+    AND (r.namespace_id,r.agent_id,r.revision_id,r.binding_id,p.sandbox_id)=
+      (f.source#>>'{session,namespaceId}', f.source#>>'{session,agentId}', f.source#>>'{session,revisionId}',
+       f.source#>>'{session,credentialProxyExecution,executionId}', f.source#>>'{session,credentialProxyExecution,sandboxId}')
+    AND p.installation->'enforcement'=f.source#>'{session,credentialProxyExecution,enforcement}'
+    AND p.installation#>'{plan,driver}'=f.source#>'{session,credentialProxyExecution,driver}')`;
 
 /** Read the bundled observer's existing fenced route; no duplicate registration or adoption. */
 export const openShellGitRecipientEvidence: RepositoryGitRecipientEvidence = Object.freeze({

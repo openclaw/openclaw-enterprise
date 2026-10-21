@@ -707,14 +707,18 @@ export const agentRevisions = occSchema.table(
             AND CASE ${table.admittedSpec} #>> '{execution_admission,version}'
               WHEN '2' THEN NOT ((${table.admittedSpec}->'egress_plan') ?| ARRAY['driver','repositoryGit','repositoryGitAuthorization'])
               ELSE
-                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5')
-                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5'))
+                ${table.admittedSpec} #>> '{execution_admission,version}' IN ('3','4','5','6')
+                AND ((${table.admittedSpec} #>> '{execution_admission,version}') IN ('4','5','6'))
                   = ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                 AND (NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGit')
                   OR (jsonb_typeof(${table.admittedSpec}->'repository_credentials')='object'
                     AND ${table.admittedSpec} #> '{egress_plan,repositoryGit}' = ${table.admittedSpec}->'repository_credentials'))
                 AND CASE WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '5'
                     THEN ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'online-request'
+                    WHEN ${table.admittedSpec} #>> '{execution_admission,version}' = '6' THEN
+                      ${table.admittedSpec} #>> '{egress_plan,repositoryGitAuthorization}' = 'request-hook-observed'
+                      AND ${table.admittedSpec} #>> '{egress_plan,repositoryGit,bindings,0,profile}' = 'github-installation'
+                      AND jsonb_array_length(${table.admittedSpec} #> '{egress_plan,repositoryGit,bindings}') = 1
                     ELSE NOT ((${table.admittedSpec}->'egress_plan') ? 'repositoryGitAuthorization') END
                 AND
                 jsonb_typeof(${table.admittedSpec} #> '{egress_plan,driver}') = 'object'
@@ -2191,7 +2195,15 @@ export const openShellGitRoutes = occSchema.table(
       "openshell_git_routes_observed_check",
       sql`${t.observed} IS NULL OR (jsonb_typeof(${t.observed}) = 'object'
     AND ${t.observed} ?& ${openShellGitObservedKeys}
-    AND (${t.observed} - ${openShellGitObservedKeys}) = '{}'::jsonb)`,
+    AND ((${t.observed} - 'observedHook') - ${openShellGitObservedKeys}) = '{}'::jsonb
+    AND (NOT (${t.observed} ? 'observedHook') OR (
+      jsonb_typeof(${t.observed}->'observedHook') = 'object'
+      AND (${t.observed}->'observedHook') ?& ARRAY['startupId','observationId']
+      AND ((${t.observed}->'observedHook') - ARRAY['startupId','observationId']) = '{}'::jsonb
+      AND jsonb_typeof(${t.observed}#>'{observedHook,startupId}') = 'string'
+      AND (${t.observed}#>>'{observedHook,startupId}') ~ '^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      AND jsonb_typeof(${t.observed}#>'{observedHook,observationId}') = 'string'
+      AND (${t.observed}#>>'{observedHook,observationId}') ~ '^[0-9a-f]{64}$')))`,
     ),
   ],
 );

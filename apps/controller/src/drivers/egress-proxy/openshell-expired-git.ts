@@ -211,6 +211,7 @@ export async function witnessOpenShellGitLaunch(
   box: OpenShellSandboxResponse,
   git: Git,
   signal: AbortSignal,
+  completedPreviewReceipt?: string,
 ): Promise<string | undefined> {
   const id = await modelProvider(client, git, owner.model, signal);
   const status = await client.getSandboxProviderStatus(
@@ -218,8 +219,24 @@ export async function witnessOpenShellGitLaunch(
     git.sandbox,
     owner.model,
     signal,
+    completedPreviewReceipt,
   );
-  const model = evidence(status, git, git.attachmentEpoch, owner.model, id);
+  if (
+    completedPreviewReceipt !== undefined &&
+    status.completedOperationId !== completedPreviewReceipt
+  ) {
+    return;
+  }
+  const model = evidence(
+    status,
+    git,
+    git.attachmentEpoch,
+    owner.model,
+    id,
+    completedPreviewReceipt === undefined
+      ? undefined
+      : { receiptId: completedPreviewReceipt, observe: true },
+  );
   if (!model || !isDeepStrictEqual(generation(model), generation(git))) {
     return;
   }

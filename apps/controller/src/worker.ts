@@ -4771,7 +4771,18 @@ export class ControllerWorker {
       const resultData = pluginWarningsResultData(
         computePluginWarnings(observation.warnings, revision) ?? Object.freeze([]),
       );
-      if (!observation.ready) {
+      // v6 needs its current active pointer to select credential material. Commit that pointer
+      // only for the observed, still-held launcher; the ordinary active pass must later see
+      // the real Harness serving before it completes activation. No v4/v5 admission uses this.
+      const held =
+        revision.executionAdmission.version === 6 &&
+        revision.egressPlan?.repositoryGitAuthorization === "request-hook-observed" &&
+        this.compute.activationOrder !== "beforeCommit" &&
+        !observation.ready &&
+        observation.heldForRepositoryGitMaterial === true &&
+        observation.pendingReason === "REPOSITORY_GIT_ROUTE_PENDING" &&
+        observation.runtimeFailure === undefined;
+      if (!observation.ready && !held) {
         const runtimeFailure = runtimeFailureFromObservation(observation);
         return {
           outcome: "pending",
@@ -4804,7 +4815,7 @@ export class ControllerWorker {
       }
       return {
         outcome: "success",
-        code: "REVISION_ACTIVATED",
+        code: held ? "REPOSITORY_GIT_ROUTE_PENDING" : "REVISION_ACTIVATED",
         revision,
         ...(resultData === undefined ? {} : { resultData }),
         context,
@@ -5562,6 +5573,15 @@ export class ControllerWorker {
           await this.stopYieldingDrain(claim, activated);
           await this.retireEarlierRevisions(claim, activated);
           await this.completeStoppedRevisionWork(claim, activated, "REVISION_STOPPED");
+          return;
+        }
+        if (
+          activated.executionAdmission.version === 6 &&
+          resolved.code === "REPOSITORY_GIT_ROUTE_PENDING"
+        ) {
+          // Re-enter normal preparation after custody can install material. Do not mark this
+          // deployment ready, retire a predecessor, or release traffic at the held boundary.
+          await this.finalizeRevision(claim, { outcome: "pending", code: resolved.code });
           return;
         }
         if (this.shouldActivateAfterCommit(compute)) {

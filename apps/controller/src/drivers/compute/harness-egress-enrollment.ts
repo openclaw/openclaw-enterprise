@@ -9,7 +9,8 @@ function waitForHarnessEgressEnrollment(enrollment) {
   const { createServer } = require("node:http");
   const verifier = process.env.APP_TOKEN_SHA;
   const port = Number(process.env.APP_SERVER_PORT);
-  const online = enrollment?.repositoryGitAuthorization === "online-request";
+  const preview = enrollment?.repositoryGitAuthorization === "request-hook-observed";
+  const online = preview || enrollment?.repositoryGitAuthorization === "online-request";
   const executionKeys = ["installationId", "namespaceId", "agentId", "servicePrincipalId", "revisionId", "executionId"];
   if (typeof verifier !== "string" || !/^[a-f0-9]{64}$/.test(verifier) ||
       !Number.isSafeInteger(port) || port < 1 || port > 65535 ||
@@ -39,6 +40,7 @@ function waitForHarnessEgressEnrollment(enrollment) {
   return new Promise((resolve, reject) => {
     let settled = false;
     let released = false;
+    let probeSent = false, observed = false;
     const finish = (enrolled) => {
       if (settled) {
         return;
@@ -94,12 +96,42 @@ function waitForHarnessEgressEnrollment(enrollment) {
           chunks.push(chunk);
         }
         const release = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        if (preview && Object.hasOwn(release, "probePath")) {
+          const {probePath, startupId} = release;
+          if (probeSent || startupId !== challenge.startupId ||
+              !/^\/oce-observe-request\/[0-9a-f]{32}\.git\/info\/refs$/.test(probePath)) {
+            answer(409, {error: "stale_probe"});
+            return;
+          }
+          // One ordinary verified HTTPS request from this held process. No credential, redirect,
+          // URL supplied by a caller, or allow path. The refusal secret is known only to OCE.
+          probeSent = true;
+          const env = Object.fromEntries(Object.entries(process.env).filter(([k]) =>
+            ["https_proxy","http_proxy","all_proxy","no_proxy","ssl_cert_file","ssl_cert_dir",
+              "curl_ca_bundle"].includes(k.toLowerCase())));
+          const {stdout} = await require("node:util").promisify(require("node:child_process").execFile)(
+            "/usr/bin/curl", ["--disable", "--silent", "--proto", "=https", "--max-time", "10",
+              "--max-filesize", "4096", "--write-out", "\n%{http_code}", "--url",
+              "https://github.com" + probePath + "?service=git-upload-pack"],
+            {env, timeout: 12000, maxBuffer: 8192, encoding: "utf8"});
+          const split = stdout.lastIndexOf("\n");
+          const {error, middleware, reason_code:reasonCode} = JSON.parse(stdout.slice(0,split));
+          if (stdout.slice(split+1) !== "403" || error !== "middleware_denied" ||
+              middleware !== "oce-prepared-git" || !/^oce_hook_[a-f0-9]{36}$/.test(reasonCode)) {
+            answer(409, {error: "preview_not_observed"});
+            return;
+          }
+          observed = true;
+          answer(200, {startupId, probePath, reasonCode});
+          return;
+        }
         const { installation, expiresAt, signature } = release ?? {};
         const now = Date.now();
         if (settled || released || performance.now() >= deadline ||
             !isDeepStrictEqual(release.challenge, challenge) || !isPlainObject(installation) ||
-            (online && (installation.repositoryGitRecipient?.authorization !== "online-request" ||
+            (online && (installation.repositoryGitRecipient?.authorization !== enrollment.repositoryGitAuthorization ||
               Object.hasOwn(installation, "peerKeyId"))) ||
+            (preview && (!observed || installation.repositoryGitRecipient?.observedHook?.startupId !== challenge.startupId)) ||
             !["sandboxId", "instanceId", "configurationId", ...(online ? [] : ["peerKeyId"])].every((k) =>
               typeof installation[k] === "string" && installation[k].length > 0) ||
             !Number.isSafeInteger(expiresAt) || expiresAt < now || expiresAt > now + 60000 ||

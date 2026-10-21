@@ -105,6 +105,7 @@
     "tests/integration/egress-stock-online-git-authority.test.mjs",
     "tests/conformance/openshell-prepared-git-provider.test.mjs",
     "tests/conformance/openshell-git-runtime.test.mjs",
+    "tests/integration/openshell-observed-request-hook.test.ts",
     "tests/integration/credential-free-online-grant.test.mjs",
     "tests/integration/egress-enrollment.test.mjs",
     "tests/integration/protected-driver-registration.test.ts",
@@ -490,6 +491,13 @@
         "prepared Git static token and rotation use released fields without returning credentials or readiness",
         "prepared Git bootstraps without privilege and distinguishes accepted rotation from exact installed state",
         "prepared Git refuses stale, partial, mismatched and unavailable installation observations"
+      ]
+    },
+    {
+      "path": "tests/integration/openshell-observed-request-hook.test.ts",
+      "expectedTests": [
+        "a per-start denial joins the authenticated request to the refusal actually returned; neither side can substitute",
+        "observed-hook preview has its own durable admission and cannot reinterpret v4, v5, or narrow Git"
       ]
     },
     {

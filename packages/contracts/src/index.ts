@@ -1808,6 +1808,10 @@ export interface SandboxDriver extends Driver {
   ): OpenClawConfigurationDocument;
   ensureNamespace?(context: SandboxNamespaceContext): Promise<void>;
   provisionHarness?(context: SandboxHarnessContext): Promise<SandboxResourceRef>;
+  /** The v6 launcher stays held. A denial observed here can select material, never release work. */
+  observeHeldRepositoryGitPreview?(
+    context: SandboxHarnessStatusContext,
+  ): Promise<"held" | "installed" | undefined>;
   /**
    * Release the exact protected Harness startup only after Compute has committed
    * this current installation. Authenticate the transport peer and bind its fresh
@@ -2037,6 +2041,8 @@ export interface ComputeReadiness extends Scope {
   readonly agentId: string;
   readonly revisionId: string;
   readonly ready: boolean;
+  /** Only v6: select this execution for material while its launcher and user work remain held. */
+  readonly heldForRepositoryGitMaterial?: true;
   readonly warnings?: readonly PluginDeploymentWarning[];
   readonly runtimeFailure?: RuntimeFailureEvidence;
   /** Only on an unready observation; the worker ignores unknown values. */

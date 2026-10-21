@@ -589,7 +589,12 @@ export function createWorkerRevisionFixtures(
             configuration,
             egressPlan,
             executionAdmission: {
-              version: egressPlan.repositoryGitAuthorization === "online-request" ? 5 : 4,
+              version:
+                egressPlan.repositoryGitAuthorization === "request-hook-observed"
+                  ? 6
+                  : egressPlan.repositoryGitAuthorization === "online-request"
+                    ? 5
+                    : 4,
               mode: "protected",
             },
             sandboxDriverId: sandbox.id,

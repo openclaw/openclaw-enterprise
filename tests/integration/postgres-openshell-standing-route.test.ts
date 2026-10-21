@@ -411,3 +411,126 @@ test(
     assert.deepEqual(rows, [{ blocked: "write_unknown", material_version: null }]);
   },
 );
+
+for (const fault of ["before write", "after commit", "during worker replacement"] as const) {
+  test(
+    `uncertain preview release preserves fenced retirement with a fault ${fault}`,
+    { ...requiresPostgres, timeout: 45_000 },
+    async (t) => {
+      const { f, registry, revision } = await standingExecutionFixture(t, import.meta.url);
+      const terminal = "preview_release_unconfirmed";
+      let writes = 0;
+      // Exercise the real transaction. Either refuse its first update before PostgreSQL sees it,
+      // or commit it and lose just the reply. The next transaction can distinguish these outcomes.
+      const routes = new PostgresOpenShellGitRouteStore({
+        end: () => f.observerPool.end(),
+        async connect() {
+          const client = await f.observerPool.connect();
+          let closing = false;
+          return {
+            async query(sql: string, values?: readonly unknown[]) {
+              if (values?.includes(terminal)) {
+                closing = true;
+                writes++;
+                if (writes === 1 && fault !== "after commit") {
+                  throw new Error("terminal write refused before execution");
+                }
+              }
+              const result = await client.query(sql, values && [...values]);
+              if (sql === "COMMIT" && closing && writes === 1 && fault === "after commit") {
+                throw new Error("terminal write committed but reply lost");
+              }
+              return result;
+            },
+            release: (discard) => client.release(discard),
+          };
+        },
+      });
+
+      // Start at the installed preview's release boundary. This test needs no token or sender:
+      // it tests immediate local closure and what a separate database reader can act on.
+      let sawPending!: () => void;
+      const pending = new Promise<void>((resolve) => {
+        sawPending = resolve;
+      });
+      const statuses: unknown[] = [];
+      const runtime = new OpenShellGitRuntime(
+        { registrationName: "preview", authority: {} as EgressAuthorityConfiguration },
+        registry,
+      );
+      runtime["routes"] = routes;
+      runtime["emit"] = (event: Readonly<Record<string, unknown>>) => {
+        if (event.event === "worker.openshell-preview-closure") {
+          statuses.push(event.status);
+          if (event.status === "pending") {
+            sawPending();
+          }
+        }
+      };
+      t.after(() => runtime.close());
+      const { id, namespaceId, agentId } = revision;
+      const worker = runtime["instance"];
+      await routes.open(
+        {
+          revisionId: id,
+          namespaceId,
+          agentId,
+          workspace: "team",
+          sandbox: "one",
+          bindingId: randomBytes(24).toString("base64url"),
+        },
+        worker,
+      );
+      // Neither an old fence nor a different worker who knows the fence can close this open row.
+      assert.equal(await routes.confirmPreviewBlocked(id, worker, 2, "unknown"), "superseded");
+      assert.equal(
+        await routes.confirmPreviewBlocked(id, randomUUID(), 1, "unknown"),
+        "superseded",
+      );
+      const hook = { startupId: randomUUID(), observationId: "b".repeat(64) };
+      const entry = {
+        revision,
+        fence: 1,
+        preview: { hook },
+        installed: { observedHook: hook },
+      } as Parameters<OpenShellGitRuntime["reconcile"]>[0];
+      runtime["states"].set(id, { entry });
+      let deliveries = 0;
+      const release = () =>
+        runtime.releasePreview(id, hook.startupId, async () => {
+          deliveries++;
+          throw new Error("lost release acknowledgement");
+        });
+      await assert.rejects(release(), /lost release acknowledgement/);
+      await pending;
+      assert.deepEqual(runtime.route(id), { state: "blocked", reason: terminal });
+      await assert.rejects(release(), /Cannot release/);
+      assert.equal(deliveries, 1);
+
+      const blocked = async () =>
+        (
+          await f.observerPool.query(
+            "SELECT blocked FROM occ.openshell_git_routes WHERE revision_id = $1",
+            [id],
+          )
+        ).rows[0]!.blocked;
+      assert.equal(await blocked(), fault === "after commit" ? terminal : null);
+      const replaced = fault === "during worker replacement";
+      if (replaced) {
+        // A restarted preview closes instead of inheriting the old launcher's observation.
+        const next = await routes.adopt(id, randomUUID(), "close-preview");
+        assert.equal(next?.blocked, "worker_replaced");
+        assert.equal(next?.fence, 2);
+      }
+
+      // The ordinary maintenance path must recover. A lost commit reply needs only a read;
+      // a successor's terminal record takes precedence; no later pass writes or delivers again.
+      await runtime["reconcile"](entry);
+      await runtime["reconcile"](entry);
+      assert.deepEqual(statuses, ["pending", replaced ? "superseded" : "confirmed"]);
+      assert.equal(await blocked(), replaced ? "worker_replaced" : terminal);
+      assert.equal(writes, fault === "before write" ? 2 : 1);
+      assert.equal(deliveries, 1);
+    },
+  );
+}

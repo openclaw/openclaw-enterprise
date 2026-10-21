@@ -23,6 +23,8 @@ export type OpenShellPreparedGitDelivery =
 export type OpenShellPreparedGitScope = OpenShellPreparedGitDelivery & {
   readonly workspace: string;
   readonly workspaceId: string;
+  /** Only the v6 operator-isolated preview requires a known, completed stock receipt. */
+  readonly observedHookPreview?: true;
   readonly sandbox: string;
   readonly executionId: string;
   /** Exact HTTPS origins, including controlled origins used for qualification. */
@@ -153,6 +155,8 @@ export class OpenShellPreparedGitProvider {
   private readonly client: OpenShellGatewayClient;
   private readonly scope: OpenShellPreparedGitScope;
   private readonly fingerprint: string;
+  private receipt?: { version: string; id?: string; complete?: true };
+
   private readonly profile: OpenShellProviderProfile;
   private readonly provider: string;
 
@@ -481,6 +485,66 @@ export class OpenShellPreparedGitProvider {
     );
   }
 
+  /** The 0.1.5 gateway may create or complete an operation here. Only the route reconciler
+   * calls this; its response is not verification. observe() subsequently reads a receipt that
+   * is already terminal, which stock does not update, and requires the live supervisor report. */
+  async settlePreviewReceipt(
+    binding: OpenShellPreparedGitBinding,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    if (!this.scope.observedHookPreview) {
+      return true;
+    }
+    if (!this.receipt && binding.credentialState === "bootstrap") {
+      this.receipt = { version: binding.resourceVersion };
+    }
+    const receipt = this.receipt;
+    if (!receipt || receipt.version !== binding.resourceVersion) {
+      return false;
+    }
+    if (receipt.complete) {
+      return true;
+    }
+    const status = await this.client.getSandboxProviderStatus(
+      binding.workspace,
+      binding.sandbox,
+      binding.provider,
+      signal,
+      receipt.id,
+    );
+    const id = status.receipt?.receiptId;
+    if (
+      !id ||
+      (receipt.id && receipt.id !== id) ||
+      status.receipt?.kind !==
+        (binding.credentialState === "bootstrap"
+          ? "PROVIDER_MUTATION_KIND_OBSERVE"
+          : "PROVIDER_MUTATION_KIND_UPDATE") ||
+      status.receipt.desired?.providerResourceVersion !== receipt.version
+    ) {
+      return false;
+    }
+    receipt.id = id;
+    if (status.completedOperationId !== id) {
+      return false;
+    }
+    receipt.complete = true;
+    return true;
+  }
+
+  /** The provider profile's exact credential-bearing rule, as composed by the stock 0.1.5 gateway. */
+  previewNetworkRule() {
+    const name = "_provider_" + this.provider.replaceAll("-", "_");
+    return {
+      name,
+      binaries: this.scope.binaries.map((path) => ({ path })),
+      endpoints: this.profile.endpoints.map((endpoint) => ({
+        ...openShellProfileEndpoint(endpoint),
+        provider_credentialed: true,
+      })),
+    };
+  }
+
   /**
    * Read current state, never a historical receipt. A stale or partial response grants nothing.
    *
@@ -517,11 +581,20 @@ export class OpenShellPreparedGitProvider {
       }
       this.binding(current, binding.profileVersion, binding.expiresAt, binding.credentialState);
       const requestedAt = Date.now();
+      const preview = this.scope.observedHookPreview;
+      const receipt = this.receipt;
+      if (
+        preview &&
+        (!receipt?.complete || !receipt.id || receipt.version !== binding.resourceVersion)
+      ) {
+        return;
+      }
       const status = await this.client.getSandboxProviderStatus(
         this.scope.workspace,
         this.scope.sandbox,
         this.provider,
         signal,
+        preview ? receipt!.id : undefined,
       );
       const desired = status.receipt?.desired;
       const observed = status.observed;
@@ -558,6 +631,13 @@ export class OpenShellPreparedGitProvider {
         evaluatedAt > Date.now() + 30_000 ||
         !Number.isFinite(observedAt) ||
         observedAt > evaluatedAt ||
+        (preview &&
+          (evaluatedAt - observedAt >= 15_000 ||
+            evaluatedAt < requestedAt - 5_000 ||
+            evaluatedAt > Date.now() + 5_000 ||
+            receipt!.id !== status.completedOperationId ||
+            status.receipt?.receiptId !== receipt!.id ||
+            observed.providerEnvRevision !== desired.providerEnvRevision)) ||
         (binding.credentialState === "active" && !(Date.parse(binding.expiresAt) > Date.now()))
       ) {
         return undefined;
@@ -702,6 +782,31 @@ export class OpenShellPreparedGitProvider {
         updated.resourceVersion === previous.resourceVersion
       ) {
         refuse();
+      }
+      if (this.scope.observedHookPreview) {
+        // This is a post-write consistency check, not an atomic recipient condition. The
+        // dedicated gateway's writers are qualified separately; an unexpected set is unknown
+        // custody and must not be replayed. Read the *same* operation after policy reload.
+        const receipts = updated.targetReceipts;
+        const [target] = receipts ?? [];
+        const desired = target?.desired as Record<string, unknown> | undefined;
+        const id = target?.receipt_id;
+        if (
+          receipts?.length !== 1 ||
+          typeof id !== "string" ||
+          !id ||
+          !updated.mutationId ||
+          target?.mutation_id !== updated.mutationId ||
+          target.kind !== "PROVIDER_MUTATION_KIND_UPDATE" ||
+          target.workspace !== previous.workspace ||
+          target.provider !== previous.provider ||
+          desired?.sandbox !== previous.sandbox ||
+          desired.provider_id !== previous.providerId ||
+          desired.provider_resource_version !== updated.resourceVersion
+        ) {
+          throw new Error("OpenShell did not confirm the preview's single expected update target.");
+        }
+        this.receipt = { version: updated.resourceVersion, id };
       }
       return this.binding(updated, previous.profileVersion, token.expiresAt);
     } catch (error) {

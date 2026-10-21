@@ -553,6 +553,14 @@
       "tag": "0069_repository_git_online_authorization",
       "breakpoints": true,
       "sha256": "cc70b98383fa749212ec15f630730781461c92364049cf4a7a199acc61de03bc"
+    },
+    {
+      "idx": 70,
+      "version": "7",
+      "when": 1787000000079,
+      "tag": "0070_repository_git_observed_hook",
+      "breakpoints": true,
+      "sha256": "c1cd85c059b0164edfb3138f32fee67bf522bedf10b81998b05fdfef54ba8019"
     }
   ],
   "initialSchemaStates": {
@@ -581,7 +589,8 @@
     "repositoryCredentials": "5f9359057412199ea7a5659bdedbef664fb6da7bcd99d7a552f01a5782b904ea",
     "workspaceSetup": "3d7801c345eea875fb79adba4e04a4e2b24bad49ffe6ada62cc58117c5cce134",
     "preOpenShellExpiredGit": "c3d7198df23e214c890f1556b933d00d1306e9dc87014275d3fb256366038219",
-    "completed": "2827e9348b133afd96c1c130275af333fb743696eacd72caebd6782a3c33141c",
+    "completed": "9c36bc3a770d921c5194425a8685c3b5d694e712f1e0b335b1e7f411b63f0ac3",
+    "preRepositoryGitObservedHook": "2827e9348b133afd96c1c130275af333fb743696eacd72caebd6782a3c33141c",
     "prePreparedRepositoryDraftUses": "d34b71856f3105853950b8bb145ee45f109e90add7b86a15346ea708ff36c4c8",
     "preProtectedDriverRegistration": "cc231e4e9c7569e1bc3ba45c37b5c62c5515246e1ba51ec35b6b43fce05c98da",
     "repositoryRetention": "a66448129d9ae2adf076f1d7887d3c7151cdc68f635c6fac7984d4254604d074",

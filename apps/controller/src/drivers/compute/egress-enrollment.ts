@@ -17,7 +17,7 @@ export interface HarnessEgressEnrollment {
   readonly inference: boolean | "credential_source";
   readonly plan: EgressRef;
   readonly execution: EgressExecution;
-  readonly repositoryGitAuthorization?: "online-request";
+  readonly repositoryGitAuthorization?: ProxyPlan["repositoryGitAuthorization"];
 }
 
 export function harnessEgressEnrollment(plan: ProxyPlan): HarnessEgressEnrollment {
@@ -61,7 +61,7 @@ export function signComputeExecutionRelease(
     sandboxId,
     instanceId: enforcement.instanceId,
     configurationId: enforcement.configurationId,
-    ...(plan.repositoryGitAuthorization !== "online-request" && {
+    ...(plan.repositoryGitAuthorization === undefined && {
       peerKeyId: enforcement.peerKeyId,
     }),
   };
@@ -79,6 +79,12 @@ export function signComputeExecutionRelease(
     )
   ) {
     throw new Error("Repository Git release requires the verified recipient of this installation.");
+  }
+  if (
+    plan.repositoryGitAuthorization === "request-hook-observed" &&
+    enforcement.repositoryGitRecipient?.observedHook?.startupId !== startupId
+  ) {
+    throw new Error("The observed request hook belongs to another Harness startup.");
   }
   const released = plan.repositoryGit
     ? { ...installation, repositoryGitRecipient: enforcement.repositoryGitRecipient }

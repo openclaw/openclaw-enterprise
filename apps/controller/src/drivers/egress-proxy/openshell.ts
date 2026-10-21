@@ -1,6 +1,7 @@
+import { wirePolicy } from "./openshell-wire-policy.ts";
 import type { EgressAuthorityConfiguration } from "../../composition/egress-authority.ts";
 import { bindOpenShellExchange } from "./openshell-exchange-binding.ts";
-import { openShellGitMiddleware } from "./openshell-git-runtime.ts";
+import { openShellGitMiddleware, type OpenShellGitRuntime } from "./openshell-git-runtime.ts";
 import { repositoryGitDeliveryProfile } from "@openclaw-enterprise/contracts";
 import type {
   CredentialProviderDefinition,
@@ -35,45 +36,9 @@ import { openAiStaticProvider } from "./openai-provider.ts";
 export interface OpenShellProxyOptions {
   readonly middlewareName: string;
   readonly repositoryMiddlewareName?: string;
+  /** Installation operator promises a dedicated, operator-controlled stock 0.1.5 gateway. */
+  readonly observedHookPreviewWorkspace?: string;
   readonly authorityScope: "execution";
-}
-
-// Proto3 omits default fields; compare their semantics while retaining every nondefault.
-function wirePolicy(value: unknown, preserveDefaults = false, mapEntries = false): unknown {
-  if (value instanceof Uint8Array) {
-    return Buffer.from(value).toString("base64");
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => wirePolicy(item, preserveDefaults));
-  }
-  const record = asRecord(value);
-  return record
-    ? Object.fromEntries(
-        Object.entries(record)
-          .sort(([left], [right]) => left.localeCompare(right, "en"))
-          .map(([key, item]) => [
-            key,
-            wirePolicy(
-              item,
-              preserveDefaults || key === "config",
-              ["network_policies", "network_middlewares", "graphql_persisted_queries"].includes(
-                key,
-              ),
-            ),
-          ])
-          .filter(
-            ([, item]) =>
-              preserveDefaults ||
-              mapEntries ||
-              (item !== false &&
-                item !== 0 &&
-                item !== "" &&
-                item !== undefined &&
-                !(Array.isArray(item) && item.length === 0) &&
-                !(asRecord(item) && Object.keys(item as object).length === 0)),
-          ),
-      )
-    : value;
 }
 
 // Retain uint64 revisions as decimal strings: Number would lose generation precision.
@@ -271,6 +236,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
   readonly sourceControl: CredentialSourceControl;
   readonly bindExchange?: NonNullable<CredentialProxyDriver["bindExchange"]>;
   readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
+  private readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
   private readonly backend: Backend<OpenShellGateway>;
   private readonly sandbox: SandboxDriver;
   private readonly options: OpenShellProxyOptions;
@@ -282,6 +248,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     properties: {
       middlewareName: { type: "string", minLength: 1 },
       repositoryMiddlewareName: { type: "string", minLength: 1 },
+      observedHookPreviewWorkspace: { type: "string", maxLength: 19, minLength: 1 },
       authorityScope: { type: "string", const: "execution" },
     },
   };
@@ -291,10 +258,19 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (
       !value ||
       Object.keys(value).some(
-        (key) => !["middlewareName", "authorityScope", "repositoryMiddlewareName"].includes(key),
+        (key) =>
+          ![
+            "middlewareName",
+            "authorityScope",
+            "repositoryMiddlewareName",
+            "observedHookPreviewWorkspace",
+          ].includes(key),
       ) ||
       typeof value.middlewareName !== "string" ||
       !value.middlewareName.trim() ||
+      (value.observedHookPreviewWorkspace !== undefined &&
+        (typeof value.observedHookPreviewWorkspace !== "string" ||
+          !/^[a-z0-9](?:[a-z0-9-]{0,17}[a-z0-9])?$/.test(value.observedHookPreviewWorkspace))) ||
       value.authorityScope !== "execution"
     ) {
       throw new Error("Invalid protected OpenShell egress configuration.");
@@ -309,6 +285,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       readonly sandbox: SandboxDriver;
       readonly exchangeAuthority?: EgressAuthorityConfiguration;
       readonly bindRepositoryGit?: NonNullable<CredentialProxyDriver["bindRepositoryGit"]>;
+      readonly previewEnforcement?: OpenShellGitRuntime["previewEnforcement"];
       readonly preparedProviders?: readonly CredentialProviderDefinition[];
     },
   ) {
@@ -323,6 +300,9 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     if (exchange) {
       this.bindExchange = (createProxy) =>
         bindOpenShellExchange(exchange, this.sourceControl.sender, createProxy);
+    }
+    if (options.observedHookPreviewWorkspace && selection.previewEnforcement) {
+      this.previewEnforcement = selection.previewEnforcement;
     }
     this.id = selection.id;
     this.backend = selection.backend;
@@ -368,21 +348,37 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
             "The selected OpenShell counterpart has no negotiated protected egress authority.",
           );
         }
-        // Name the sender's actual contract. This does not qualify the release: the positive
-        // enforcement needed for enrollment and material remains unavailable below.
+        // Advertise the explicitly selected assurance. The held launcher, actual policy and
+        // recipient must still be verified before any usable Git credential is selected.
+        if (
+          profile === "github_installation" &&
+          this.options.observedHookPreviewWorkspace &&
+          this.previewEnforcement &&
+          info.gateway_version === "0.1.5"
+        ) {
+          return { profile, authorization: "request-hook-observed" as const };
+        }
         if (git) {
+          if (this.options.observedHookPreviewWorkspace && profile === "github_installation") {
+            throw new DependencyUnavailableError(
+              "The observed-hook preview requires the qualified stock 0.1.5 gateway.",
+            );
+          }
           return { profile, authorization: "online-request" as const };
         }
       },
     });
   }
 
-  /** Stock cannot offer installation-wide GitHub. Keep admission closed independently of
-   * repositoryGitEnforcement, which must also verify the exact recipient at release. */
+  /** Stock may offer the observed-hook preview only by explicit Installation opt-in. Its
+   * strict online-request profile remains unavailable independently at the release boundary. */
   protected assertRepositoryGitProfileAvailable(
     profile: RepositoryGitDeliveryProfile | undefined,
   ): void {
-    if (profile === "github_installation") {
+    if (
+      profile === "github_installation" &&
+      !(this.options.observedHookPreviewWorkspace && this.previewEnforcement)
+    ) {
       throw new DependencyUnavailableError(
         "This OpenShell Driver is not qualified for GitHub installation access.",
       );
@@ -464,7 +460,7 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
         "The installed egress source policy differs from its admitted policy.",
       );
     }
-    const enforcement = observed.enforcement();
+    const enforcement = await observed.enforcement();
     return enforcement === undefined
       ? undefined
       : immutableCopy({
@@ -490,10 +486,10 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
     ) {
       return false;
     }
-    // The supplier revalidates registration, effective config and installed registry under
-    // its sandbox mutation lock. Exact equality also refuses replacements of our saved fence.
+    // Compare the same live registration, effective configuration and recipient. In the
+    // observed preview this is a fresh observation, not a stock lock against operator changes.
     const observed = await this.loadedPolicy(context, installation.sandboxId);
-    return isDeepStrictEqual(observed?.enforcement(), installation.enforcement);
+    return isDeepStrictEqual(await observed?.enforcement(), installation.enforcement);
   }
 
   private async loadedPolicy(context: ProxyRevisionContext, expectedSandboxId?: string) {
@@ -524,7 +520,11 @@ export class OpenShellCredentialProxyDriver implements CredentialProxyDriver {
       sandboxId,
       enforcement: () =>
         context.plan.repositoryGit
-          ? this.repositoryGitEnforcement(context, status, sandboxId)
+          ? context.plan.repositoryGitAuthorization === "request-hook-observed" &&
+            context.revision.executionAdmission.version === 6 &&
+            workspace === this.options.observedHookPreviewWorkspace
+            ? this.previewEnforcement?.(context, sandboxId)
+            : this.repositoryGitEnforcement(context, status, sandboxId)
           : enforcementEvidence(
               status,
               sandboxId,

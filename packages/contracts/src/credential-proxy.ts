@@ -124,11 +124,11 @@ export interface ProxyPlan {
   readonly egressDriverId: string;
   /** Present on every v3 admission; v2 retains the exact capability IDs recorded at admission. */
   readonly driver?: DriverRegistrationRef;
-  /** v4 and v5: the repository or installation grant, independent of sender and grant duration. */
+  /** v4–v6: the repository or installation grant, independent of sender and grant duration. */
   readonly repositoryGit?: RepositoryRevisionState;
-  /** v5 requires online authorization. v4 remains exact dispatch and cannot acquire this field. */
-  readonly repositoryGitAuthorization?: "online-request";
-  /** v4 and v5: the Harness model attachment independently admitted by the Credential Gateway. */
+  /** v4 is exact dispatch; v5 requires online authorization; v6 records an observed request hook. */
+  readonly repositoryGitAuthorization?: "online-request" | "request-hook-observed";
+  /** v4–v6: the Harness model attachment independently admitted by the Credential Gateway. */
   readonly harnessCredentialSource?: Extract<HarnessAuthSnapshot, { method: "credential_source" }>;
   readonly routes: readonly EgressRoute[];
 }
@@ -147,10 +147,13 @@ export type RepositoryGitRecipient = Readonly<
   Record<(typeof repositoryGitRecipientFields)[number], string> & {
     /** Absent on the original repository Git wire. Installation scope needs positive evidence. */
     deliveryProfile?: "github_installation";
-    /** A dedicated, never-reused sandbox must obtain an allow for each new request before
-     * credential injection, with verified TLS, no bypass and no later broadening. A request
-     * already allowed may finish. Missing on v4 recipients, which enforce exact send start. */
-    authorization?: "online-request";
+    /** v5 requires online authorization before injection for every new request. In v6 we
+     * observed that hook at startup; a trusted operator could subsequently make stock skip it.
+     * Both require verified TLS, a dedicated fresh recipient, and no bypass in the admitted
+     * configuration. An already authorized request may finish. v4 enforces exact send start. */
+    authorization?: "online-request" | "request-hook-observed";
+    /** Per-start denial, present only in the explicitly admitted preview. */
+    observedHook?: Readonly<{ startupId: string; observationId: string }>;
   }
 >;
 
@@ -178,8 +181,16 @@ export function validRepositoryGitRecipient(
   return (
     !!value &&
     profile !== undefined &&
-    (authorization === undefined || authorization === "online-request") &&
+    (authorization === undefined ||
+      authorization === "online-request" ||
+      (authorization === "request-hook-observed" &&
+        profile === "github_installation" &&
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+          value.observedHook?.startupId ?? "",
+        ) &&
+        /^[0-9a-f]{64}$/.test(value.observedHook?.observationId ?? ""))) &&
     value.authorization === authorization &&
+    (authorization === "request-hook-observed" || value.observedHook === undefined) &&
     value.deliveryProfile === (profile === "github_installation" ? profile : undefined) &&
     repositoryGitRecipientFields.every(
       (key) => typeof value[key] === "string" && value[key].trim().length > 0,
@@ -319,7 +330,7 @@ export interface CredentialSourceControl {
     | "github_installation"
     | {
         readonly profile: RepositoryGitDeliveryProfile;
-        readonly authorization: "online-request";
+        readonly authorization: "online-request" | "request-hook-observed";
       }
   >;
 }
@@ -332,9 +343,16 @@ export async function repositoryGitAuthorization(
   control: CredentialSourceControl,
   signal: AbortSignal,
   profile?: RepositoryGitDeliveryProfile,
-): Promise<"exact-dispatch" | "online-request" | "unavailable"> {
+): Promise<"exact-dispatch" | "online-request" | "request-hook-observed" | "unavailable"> {
   const confirmed = await control.assertAvailable(signal, profile);
   if (profile && typeof confirmed === "object" && confirmed !== null) {
+    if (
+      profile === "github_installation" &&
+      confirmed.profile === profile &&
+      confirmed.authorization === "request-hook-observed"
+    ) {
+      return "request-hook-observed";
+    }
     return confirmed.profile === profile && confirmed.authorization === "online-request"
       ? "online-request"
       : "unavailable";
@@ -393,12 +411,12 @@ export interface CredentialProxyDriver extends Driver {
 /** Durable admission semantics, independent of credential bindings and route count. */
 export type ExecutionAdmission =
   | { readonly version: 2; readonly mode: "protected" | "unprotected" }
-  | { readonly version: 3 | 4 | 5; readonly mode: "protected" };
+  | { readonly version: 3 | 4 | 5 | 6; readonly mode: "protected" };
 
 export function protectedRepositoryGitAdmission(
   admission: ExecutionAdmission | undefined,
 ): boolean {
-  return admission?.version === 4 || admission?.version === 5;
+  return admission?.version === 4 || admission?.version === 5 || admission?.version === 6;
 }
 
 /** Recognition only. A valid protected schema is not proof of deployability. */
@@ -429,9 +447,12 @@ export function assertExecutionAdmission(
     (protectedRepositoryGitAdmission(admission)
       ? !repositoryGitDeliveryProfile(repository)
       : repository !== undefined) ||
-    (admission.version === 5
-      ? revision.egressPlan?.repositoryGitAuthorization !== "online-request"
-      : revision.egressPlan?.repositoryGitAuthorization !== undefined)
+    (admission.version === 6
+      ? revision.egressPlan?.repositoryGitAuthorization !== "request-hook-observed" ||
+        repositoryGitDeliveryProfile(repository) !== "github_installation"
+      : admission.version === 5
+        ? revision.egressPlan?.repositoryGitAuthorization !== "online-request"
+        : revision.egressPlan?.repositoryGitAuthorization !== undefined)
   ) {
     throw new Error("Repository Credential Proxy requires its own protected execution admission.");
   }

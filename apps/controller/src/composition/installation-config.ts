@@ -688,7 +688,17 @@ export async function loadInstallationConfiguration(options: {
       if (!sandboxSelection || selection.id !== sandboxSelection.id) {
         throw new Error("Repository Credential Proxy must select the installed Sandbox Driver.");
       }
-      closed(egress, [], "drivers.credential_proxy.configuration");
+      closed(egress, ["observedHookPreviewWorkspace"], "drivers.credential_proxy.configuration");
+      const preview =
+        egress.observedHookPreviewWorkspace === undefined
+          ? {}
+          : {
+              observedHookPreviewWorkspace: nonempty(
+                egress.observedHookPreviewWorkspace,
+                "observedHookPreviewWorkspace",
+              ),
+            };
+      openShellGitConfiguration = { ...openShellGitConfiguration, ...preview };
       const name = openShellGitConfiguration.registrationName;
       proxySelection = selected(
         {
@@ -697,6 +707,7 @@ export async function loadInstallationConfiguration(options: {
             middlewareName: name,
             authorityScope: "execution",
             repositoryMiddlewareName: name,
+            ...preview,
           },
         },
         "credential_proxy",
@@ -1029,7 +1040,9 @@ export async function loadInstallationConfiguration(options: {
       sandboxPackage ||
       !kubernetesCompute ||
       openShellBackend?.configuration.endpoint?.startsWith("https://") !== true ||
-      !["bearerTokenFile", "mtls"].includes(openShellBackend.configuration.auth?.mode ?? ""))
+      (openShellGitConfiguration.observedHookPreviewWorkspace
+        ? openShellBackend.configuration.auth?.mode !== "mtls"
+        : !["bearerTokenFile", "mtls"].includes(openShellBackend.configuration.auth?.mode ?? "")))
   ) {
     throw new Error(
       "OpenShell Git requires prepared GitHub custody, the bundled Kubernetes/OpenShell pair and an authenticated HTTPS gateway.",
@@ -1124,6 +1137,7 @@ export async function loadInstallationConfiguration(options: {
           ...(egressAuthority && { exchangeAuthority: egressAuthority }),
           ...(openShellGit && {
             bindRepositoryGit: openShellGit.bindRepositoryGit.bind(openShellGit),
+            previewEnforcement: openShellGit.previewEnforcement.bind(openShellGit),
           }),
         },
       );

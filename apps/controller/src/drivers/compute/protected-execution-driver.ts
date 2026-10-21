@@ -95,7 +95,13 @@ export class ProtectedExecutionDriver {
     ready: () => Promise<boolean>,
     harness: () => Promise<SandboxHarnessStatusContext>,
     sign: (startupId: string, installed: EgressInstallation) => Readonly<Record<string, unknown>>,
-  ): Promise<boolean> {
+  ): Promise<boolean | "held"> {
+    const preview = context.plan.repositoryGitAuthorization === "request-hook-observed";
+    const launch = preview ? await harness() : undefined;
+    const stage = launch && (await this.sandbox.observeHeldRepositoryGitPreview?.(launch));
+    if (preview && !stage) {
+      return false;
+    }
     const installed = await this.observe(context, wiring);
     if (!installed || !(await ready())) {
       return false;
@@ -104,7 +110,12 @@ export class ProtectedExecutionDriver {
     if (!(await this.verify(context, installed))) {
       return false;
     }
-    await this.sandbox.enrollHarness!(await harness(), installed, async (startupId) =>
+    // In v6 the active pointer selects material. No Compute signature or work is released
+    // until a later pass verifies the policy and same recipient after installation.
+    if (stage === "held") {
+      return "held";
+    }
+    await this.sandbox.enrollHarness!(launch ?? (await harness()), installed, async (startupId) =>
       sign(startupId, await this.current(context, custody, ready, installed)),
     );
     return true;
@@ -144,7 +155,7 @@ export class ProtectedExecutionDriver {
       !!enforcement.instanceId &&
       !!enforcement.configurationId &&
       !!enforcement.policyHash &&
-      (context.plan.repositoryGitAuthorization === "online-request"
+      (context.plan.repositoryGitAuthorization !== undefined
         ? enforcement.peerKeyId === undefined
         : !!enforcement.peerKeyId) &&
       (!installed.plan.repositoryGit ||

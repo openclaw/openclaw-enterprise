@@ -6599,6 +6599,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           return { ...result, runtimeFailure };
         }
         this.verifySandboxResourceRef(sandbox, revision, namespace);
+        let heldForRepositoryGitMaterial = false;
         if (egressContext !== undefined) {
           const enrolled = await this.prepareRevisionStage("sandbox_provision", () =>
             this.protectedExecution!.enroll(
@@ -6623,6 +6624,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
           if (!enrolled) {
             return incomplete();
           }
+          heldForRepositoryGitMaterial = enrolled === "held";
         }
         if (this.options.runtime !== undefined) {
           // The Sandbox, and with it the supervisor's exact peer labels, exists only
@@ -6655,6 +6657,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         if (!(await this.providerHarnessReady(revision, namespace, requirements.labels))) {
           return incomplete();
+        }
+        if (heldForRepositoryGitMaterial) {
+          // Preparation of a v6 recipient, not a serving Harness or a released workload.
+          return {
+            ...result,
+            ready: false,
+            heldForRepositoryGitMaterial: true,
+            pendingReason: "REPOSITORY_GIT_ROUTE_PENDING",
+          };
         }
         // The provider-owned Harness's own view of its startup, read through the
         // provider with the Agent transport token. `failed` carries a held startup

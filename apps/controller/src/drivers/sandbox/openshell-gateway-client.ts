@@ -117,6 +117,10 @@ export interface OpenShellSandboxResponse {
   readonly exitCode?: number;
   /** The gateway's restart number in the current crash loop; absent before any restart. */
   readonly restartCount?: number;
+  /** Authenticated 0.1.5 supervisor configuration report, not evidence a request used it. */
+  readonly configurationAdmission?: Readonly<Record<string, unknown>>;
+  readonly mainProcessInstanceId?: string;
+  readonly mainProcessStartedAt?: string;
   readonly serviceUrls: Readonly<Record<string, string>>;
 }
 
@@ -221,6 +225,9 @@ export interface OpenShellProviderCreateRequest {
 }
 
 export interface OpenShellProviderResponse {
+  /** Update selection, not an exclusive-recipient precondition. */
+  readonly targetReceipts?: readonly Record<string, unknown>[];
+  readonly mutationId?: string;
   readonly id?: string;
   readonly workspace?: string;
   readonly profileWorkspace?: string;
@@ -278,6 +285,8 @@ export interface OpenShellProviderReadinessObservation {
 }
 
 export interface OpenShellSandboxProviderStatus {
+  /** An already terminal receipt can be queried without creating or completing an operation. */
+  readonly completedOperationId?: string;
   readonly state: string;
   readonly reason?: string;
   readonly receipt?: {
@@ -399,6 +408,13 @@ export interface OpenShellGatewayClient
   }>;
   health(signal: AbortSignal): Promise<void>;
   getGatewayInfo?(signal: AbortSignal): Promise<RecordValue>;
+  /** Stock preview reads. The operator independently controls gateway access and every writer. */
+  readExclusivePreviewWorkspace?(
+    workspace: string,
+    sandboxId: string,
+    signal: AbortSignal,
+  ): Promise<boolean>;
+  getSandboxConfig?(workspace: string, sandbox: string, signal: AbortSignal): Promise<RecordValue>;
   getSandboxPolicyStatus?(
     workspace: string,
     sandbox: string,
@@ -574,6 +590,9 @@ export interface OpenShellGatewayClient
 }
 
 type OpenShellMethod =
+  | "GetSandboxConfig"
+  | "ListSandboxes"
+  | "ListWorkspaceMembers"
   | "GetSandboxPolicyStatus"
   | "UpdateConfig"
   | "GetDraftPolicy"
@@ -1063,6 +1082,15 @@ function sandboxResponse(
     labels: stringMap(metadata?.labels, "Sandbox labels"),
     annotations: stringMap(metadata?.annotations, "Sandbox annotations"),
     ...(spec === undefined ? {} : { spec: Object.freeze({ ...spec }) }),
+    ...(status?.configuration_activated === true &&
+      asRecord(status.configuration_admission) && {
+        configurationAdmission: asRecord(status.configuration_admission)!,
+        mainProcessInstanceId:
+          typeof status.main_process_instance_id === "string"
+            ? status.main_process_instance_id
+            : "",
+        mainProcessStartedAt: timestampText(status.main_process_started_time) ?? "",
+      }),
     serviceUrls: Object.freeze(
       Object.fromEntries(
         Object.entries(serviceUrls ?? {}).map(([service, value]) => [
@@ -1495,6 +1523,45 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
 
   async getGatewayInfo(signal: AbortSignal): Promise<RecordValue> {
     return this.unary("GetGatewayInfo", {}, signal);
+  }
+
+  /** A snapshot, never a lock against a later operator attachment. */
+  async readExclusivePreviewWorkspace(workspace: string, sandboxId: string, signal: AbortSignal) {
+    const workspace_scope = { workspace: nonempty(workspace, "preview workspace") };
+    const members = await this.unary(
+      "ListWorkspaceMembers",
+      { workspace_scope, page_size: 1 },
+      signal,
+    );
+    if (
+      members.next_page_token ||
+      !Array.isArray(members.members ?? []) ||
+      (members.members as unknown[] | undefined)?.length
+    ) {
+      return false;
+    }
+    const { sandboxes, next_page_token } = await this.unary(
+      "ListSandboxes",
+      { workspace_scope, page_size: 2 },
+      signal,
+    );
+    const only = Array.isArray(sandboxes) && sandboxes.length === 1 && asRecord(sandboxes[0]);
+    const meta = only && asRecord(only.metadata);
+    return (
+      !!sandboxId &&
+      !!meta &&
+      !next_page_token &&
+      meta.id === sandboxId &&
+      meta.workspace === workspace
+    );
+  }
+
+  async getSandboxConfig(workspace: string, sandbox: string, signal: AbortSignal) {
+    return this.unary(
+      "GetSandboxConfig",
+      { name: sandbox, workspace_scope: { workspace } },
+      signal,
+    );
   }
 
   async getSandboxPolicyStatus(
@@ -2134,7 +2201,14 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
       },
       signal,
     );
-    return providerResponse(response.provider, "UpdateProvider");
+    return {
+      ...providerResponse(response.provider, "UpdateProvider"),
+      ...(Array.isArray(response.target_receipts) &&
+        typeof response.mutation_id === "string" && {
+          targetReceipts: response.target_receipts,
+          mutationId: response.mutation_id,
+        }),
+    };
   }
 
   async updateProviderConfig(
@@ -2272,12 +2346,20 @@ export class GrpcOpenShellGatewayClient implements OpenShellGatewayClient {
     if (typeof status?.state !== "string") {
       throw new OpenShellGatewayFailure("OpenShell GetSandboxProviderStatus returned no state.");
     }
+    const operation = asRecord(status.operation);
     const receipt = asRecord(status.receipt);
     const desired = asRecord(receipt?.desired);
     const observed = asRecord(status.observed);
     const text = (value: unknown): string => (typeof value === "string" ? value : "");
     return Object.freeze({
       state: status.state,
+      ...(operation?.state === 2 &&
+      operation.outcome === 1 &&
+      operation.completed_time &&
+      typeof operation.operation_id === "string" &&
+      operation.operation_id === receipt?.receipt_id
+        ? { completedOperationId: operation.operation_id }
+        : {}),
       ...(typeof status.reason === "string" ? { reason: status.reason } : {}),
       ...(receipt
         ? {
