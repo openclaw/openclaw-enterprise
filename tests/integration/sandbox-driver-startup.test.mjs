@@ -5516,7 +5516,7 @@ test(
       name: inferenceProvider,
       id: "inference-provider-id",
       type: "inference-profile",
-      profileWorkspace: "inference-workspace",
+      profileWorkspace: openShellWorkspaceName(context.namespace),
       config: {},
       labels: {},
       resourceVersion: "1",
