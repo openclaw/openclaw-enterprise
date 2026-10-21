@@ -12,6 +12,7 @@ import { draftOperationId, validateDraftProjection } from "./prepared-draft-pull
 import { isDeepStrictEqual } from "node:util";
 import { PreparedGitHubPostgres } from "./prepared-postgres.ts";
 import type { GitHubPreparationAdmission } from "./prepared-contracts.ts";
+import { protectedRepositoryGitInstallationSql } from "../../../egress-proxy/protected-repository-git-installation.ts";
 
 const pulls = "occ.prepared_repository_draft_pulls";
 type PullRow = {
@@ -71,13 +72,18 @@ export interface PreparedRepositorySession {
   readonly binding: RepositoryRevisionState["bindings"][number];
 }
 
-/** The session snapshot also binds Agent, installation and the broker's particular generation.
+/** The session snapshot binds the Agent and the exact installation used for Compute release or the broker generation.
  * The deadline is checked live instead of extending or treating the snapshot as a lease. */
 function sessionQuery(proxy: boolean): string {
   return `SELECT jsonb_build_object(
   'namespaceId',s.namespace_id, 'agentId',s.agent_id, 'revisionId',s.live_revision_id,
   'installationId',i.id, 'admissionId',s.admission_id, 'sessionId',s.session_id,
-  ${proxy ? "'credentialProxyExecution', r.binding_id" : "'brokerGeneration',b.generation"}, 'driver',s.cleanup_context->'driver', 'binding',s.cleanup_context->'binding',
+  ${
+    proxy
+      ? `'credentialProxyExecution', jsonb_build_object('executionId',r.binding_id,'sandboxId',p.sandbox_id,
+        'sender',p.installation->'sender','enforcement',p.installation->'enforcement')`
+      : "'brokerGeneration',b.generation"
+  }, 'driver',s.cleanup_context->'driver', 'binding',s.cleanup_context->'binding',
   'grant',s.cleanup_context #> '{binding,grant}') ||
     CASE WHEN rev.admitted_spec->'repository_credentials' ? 'standingApprovalId' THEN jsonb_build_object(
       'standingApprovalId',rev.admitted_spec #> '{repository_credentials,standingApprovalId}',
@@ -89,11 +95,8 @@ function sessionQuery(proxy: boolean): string {
   ${
     proxy
       ? `JOIN occ.openshell_git_routes r USING(revision_id, namespace_id, agent_id)
-    JOIN occ.egress_installations p ON (p.revision_id,p.namespace_id,p.agent_id)=(s.revision_id,s.namespace_id,s.agent_id)
-      AND p.sandbox_id=r.observed->>'sandboxId' AND r.blocked IS NULL AND r.detach_request_id IS NULL
-      AND r.binding_id=p.installation#>>'{plan,execution,executionId}'
-      AND r.observed->>'executionId'=r.revision_id AND r.observed->>'providerId'=r.provider_id
-      AND r.observed->>'policyHash'=p.installation#>>'{enforcement,policyHash}'`
+    JOIN occ.egress_installations p ON ${protectedRepositoryGitInstallationSql}
+      AND r.blocked IS NULL AND r.detach_request_id IS NULL`
       : "JOIN occ.repository_broker_receipts b USING(admission_id)"
   }
   JOIN occ.agents g ON g.namespace_id=s.namespace_id AND g.id=s.agent_id AND g.active_revision_id=s.live_revision_id
@@ -203,10 +206,11 @@ async function lockLiveSession(
     `SELECT FROM occ.repository_session_attempts s
      ${
        proxy
-         ? "JOIN occ.openshell_git_routes r USING(namespace_id,agent_id,revision_id)"
+         ? `JOIN occ.openshell_git_routes r USING(namespace_id,agent_id,revision_id)
+            JOIN occ.egress_installations p USING(namespace_id,agent_id,revision_id)`
          : "JOIN occ.repository_broker_receipts b USING (admission_id)"
      }
-     WHERE s.admission_id=$1 FOR SHARE OF s,${proxy ? "r" : "b"}`,
+     WHERE s.admission_id=$1 FOR SHARE OF s,${proxy ? "r,p" : "b"}`,
     [admission_id],
   );
   if (!locked.rowCount) {
@@ -570,10 +574,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
     }
     // Authority and live-session locks above apply equally to reads of an existing receipt.
     const grant = source.grant;
-    // The operator's opt-out (finding 2147): on the OpenShell route every authorized draft create
-    // is allowed. The grant's row keeps the first create's receipt (the application role may not
-    // rewrite it, and a broker receipt sharing the grant stays intact); OpenShell's own log records
-    // each later request. The broker route keeps its one replayable receipt per grant.
+    // The grant controls how many drafts may be opened. Every new authorized exchange
+    // records possible use, independently of whether it also consumes that one-draft allowance.
     const unlimited = installed !== undefined && source.draftPullLimit === "none";
     let scope: PullRow["scope"] | undefined;
     if (q.operation === "create-draft-pull") {
@@ -634,11 +636,8 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
       return fail();
     }
     const sendStartBy = new Date(until).toISOString();
-    if (scope) {
-      // The primary key keeps ONE receipt for this repository/ref/base grant, across
-      // process or session replacement, so by default it admits one create. Unknown/expired
-      // permits are never reissued. Opted out, a create after the first is allowed without a
-      // receipt of its own; the row keeps the first receipt.
+    if (scope && !unlimited) {
+      // A possibly spent allowance outlives this session, including an unknown commit or send.
       const claim = await c.query(
         `INSERT INTO ${pulls}
          (grant_id,operation_id,receipt_id,admission_id,attempt_id,material_version,request_digest_sha256,scope,send_start_by)
@@ -655,25 +654,24 @@ export class PreparedRepositoryGitStore extends PreparedGitHubPostgres {
           sendStartBy,
         ],
       );
-      if (!claim.rowCount && !unlimited) {
+      if (!claim.rowCount) {
         return fail();
       }
-    } else {
-      await c.query(
-        `INSERT INTO occ.prepared_repository_git_uses
-      (exchange_id,admission_id,attempt_id,material_version,operation,request_digest_sha256,send_start_by)
-      VALUES($1,$2,$3,$4,$5,$6,$7)`,
-        [
-          q.exchangeId,
-          current.session.admissionId,
-          preparationAttemptId,
-          materialVersion,
-          q.operation,
-          q.requestDigestSha256,
-          sendStartBy,
-        ],
-      );
     }
+    await c.query(
+      `INSERT INTO occ.prepared_repository_git_uses
+    (exchange_id,admission_id,attempt_id,material_version,operation,request_digest_sha256,send_start_by)
+    VALUES($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        q.exchangeId,
+        current.session.admissionId,
+        preparationAttemptId,
+        materialVersion,
+        q.operation,
+        q.requestDigestSha256,
+        sendStartBy,
+      ],
+    );
     if (!valid(until)) {
       return fail();
     }

@@ -288,6 +288,9 @@ function catalogAtMigrationCount(count, completedCount) {
   if (count === 64) {
     return "preCredentialProxyRepositorySession";
   }
+  if (count === 65) {
+    return "prePreparedRepositoryDraftUses";
+  }
   refuse("an incomplete or unsupported development history is installed");
 }
 

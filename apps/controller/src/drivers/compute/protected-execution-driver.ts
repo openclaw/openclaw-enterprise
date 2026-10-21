@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { validRepositoryGitRecipient } from "@openclaw-enterprise/contracts";
 import type {
   AgentRevision,
   ComputeRevisionContext,
@@ -130,6 +131,8 @@ export class ProtectedExecutionDriver {
       !!enforcement.configurationId &&
       !!enforcement.policyHash &&
       !!enforcement.peerKeyId &&
+      (!installed.plan.repositoryGit ||
+        validRepositoryGitRecipient(enforcement.repositoryGitRecipient)) &&
       (await this.proxy.verifyInstallation(context, installed))
     );
   }

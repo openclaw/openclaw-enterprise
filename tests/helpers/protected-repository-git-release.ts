@@ -7,6 +7,7 @@ import type {
   EgressInstallation,
   Namespace,
   ProxyRevisionContext,
+  RepositoryGitRecipient,
   SandboxDriver,
 } from "../../packages/contracts/src/index.ts";
 import { InstalledDriver } from "../../packages/occ/src/index.ts";
@@ -26,6 +27,7 @@ export function protectedRepositoryGitRelease() {
   let configuration: object;
   let sandboxId: string;
   let qualified = false;
+  let recipient: RepositoryGitRecipient | undefined;
   const opts = {
     middlewareName: "unused-stronger-exchange",
     repositoryMiddlewareName: registration,
@@ -65,6 +67,9 @@ export function protectedRepositoryGitRelease() {
       const { challenge, installation, expiresAt, signature } = await release(randomUUID());
       assert.equal(challenge.routeCount, 1);
       assert.equal(installation.sandboxId, sandboxId);
+      assert.ok("repositoryGitRecipient" in installation);
+      assert.deepEqual(installation.repositoryGitRecipient, recipient);
+      assert.notEqual(installation.instanceId, recipient!.processInstanceId);
       assert.ok(
         verify(
           null,
@@ -93,6 +98,7 @@ export function protectedRepositoryGitRelease() {
         configurationId: ctx.plan.id,
         policyHash: "original-policy",
         peerKeyId: "controlled-online-sender",
+        ...(recipient && { repositoryGitRecipient: recipient }),
       };
     }
   }
@@ -119,6 +125,7 @@ export function protectedRepositoryGitRelease() {
       custody: ComputeRevisionContext,
       git: object,
       box: string,
+      gitRecipient: RepositoryGitRecipient,
     ) {
       const plan = revision.egressPlan!;
       assert.equal(release.admits(revision, "stored"), true);
@@ -139,6 +146,13 @@ export function protectedRepositoryGitRelease() {
         "stock loaded policy and registration are insufficient for release",
       );
       qualified = true;
+      recipient = undefined;
+      assert.equal(
+        await release.observe(context, wiring),
+        undefined,
+        "enforcement without its Git recipient cannot be released",
+      );
+      recipient = gitRecipient;
       assert.equal(
         await release.enroll(
           context,

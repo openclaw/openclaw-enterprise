@@ -120,6 +120,29 @@ export interface ProxyPlan {
   readonly routes: readonly EgressRoute[];
 }
 
+/**
+ * Stable recipient observed by the installed Driver, in the same enforcement evidence as its
+ * execution instance and peer key. Provider token versions and supervisor connections may rotate.
+ */
+export const repositoryGitRecipientFields = Object.freeze([
+  "providerId",
+  "attachmentEpoch",
+  "processInstanceId",
+  "networkInstanceId",
+] as const);
+export type RepositoryGitRecipient = Readonly<
+  Record<(typeof repositoryGitRecipientFields)[number], string>
+>;
+
+export function validRepositoryGitRecipient(value: RepositoryGitRecipient | undefined): boolean {
+  return (
+    !!value &&
+    repositoryGitRecipientFields.every(
+      (key) => typeof value[key] === "string" && value[key].trim().length > 0,
+    )
+  );
+}
+
 /** Recorded only from authenticated adapter observation of the exact installed policy. */
 export interface EgressInstallation {
   readonly plan: ProxyPlan;
@@ -134,6 +157,8 @@ export interface EgressInstallation {
     readonly authorityScope: "execution";
     /** Public key bound by the adapter to this installation, never selected by a request. */
     readonly peerKeyId?: string;
+    /** Required for protected repository Git. Never infer this association from a matching policy. */
+    readonly repositoryGitRecipient?: RepositoryGitRecipient;
   };
 }
 

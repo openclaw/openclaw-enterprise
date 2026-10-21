@@ -85,7 +85,16 @@ export async function gitExpiryGateway(
     oneofs: true,
   });
   const { OpenShell } = grpc.loadPackageDefinition(definition).openshell.v1;
+  // One controlled installation supplies both the release evidence and the Git readiness wire.
+  // Its enforcement instance, process, network instance and reconnectable session are distinct.
+  const repositoryGitRecipient = Object.freeze({
+    providerId: "git-id",
+    attachmentEpoch: "original",
+    processInstanceId: "same-process",
+    networkInstanceId: "same-network",
+  });
   const world = {
+    repositoryGitRecipient,
     writes: 0,
     detaches: [],
     reports: [],
@@ -146,7 +155,7 @@ export async function gitExpiryGateway(
     const absent = git && removed;
     const profileChanged = retainedProfile.resource_version === "2";
     const snapshot = {
-      attachment_epoch: removed ? "reduced" : "original",
+      attachment_epoch: removed ? "reduced" : repositoryGitRecipient.attachmentEpoch,
       config_revision: "3",
       provider_env_revision: profileChanged ? "9" : removed ? "8" : "6",
       policy_hash: profileChanged
@@ -186,12 +195,12 @@ export async function gitExpiryGateway(
           ...snapshot,
           sequence: "81",
           session_id: "same-supervisor",
-          process_instance_id: "same-process",
+          process_instance_id: repositoryGitRecipient.processInstanceId,
           credentials_installed: !expired,
           launch_environment_installed: !expired,
           policy_active: true,
         },
-        network_instance_id: "same-network",
+        network_instance_id: repositoryGitRecipient.networkInstanceId,
         observed_time: now,
         evaluated_time: now,
       },
@@ -223,7 +232,9 @@ export async function gitExpiryGateway(
             providers: world.detaches.length
               ? world.retainedProviders
               : [...world.retainedProviders, gitName],
-            provider_attachment_epoch: world.detaches.length ? "reduced" : "original",
+            provider_attachment_epoch: world.detaches.length
+              ? "reduced"
+              : repositoryGitRecipient.attachmentEpoch,
           },
           status: { phase: "SANDBOX_PHASE_READY" },
         },
@@ -253,7 +264,12 @@ export async function gitExpiryGateway(
     CreateProvider: ({ provider: { metadata, type, profile_workspace } }) => {
       gitName = metadata.name;
       const provider = {
-        metadata: { ...metadata, workspace, id: "git-id", resource_version: "1" },
+        metadata: {
+          ...metadata,
+          workspace,
+          id: repositoryGitRecipient.providerId,
+          resource_version: "1",
+        },
         type,
         profile_workspace,
       };

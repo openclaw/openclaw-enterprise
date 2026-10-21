@@ -1,3 +1,4 @@
+import type { RepositoryGitRecipient } from "@openclaw-enterprise/contracts";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { observeOpenShellGitPredecessor } from "./openshell-expired-git.ts";
@@ -60,23 +61,19 @@ export type OpenShellPreparedGitGeneration = Pick<
 >;
 
 /** Exact current installation identity; timestamps and sequence are not identity fields. */
-export interface OpenShellPreparedGitInstalled {
+export interface OpenShellPreparedGitInstalled extends RepositoryGitRecipient {
   readonly workspace: string;
   readonly sandbox: string;
   readonly sandboxId: string;
   readonly executionId: string;
   readonly provider: string;
-  readonly providerId: string;
   readonly providerResourceVersion: string;
   readonly profileVersion: string;
   readonly credentialState: "bootstrap" | "active";
-  readonly attachmentEpoch: string;
   readonly providerEnvRevision: string;
   readonly configRevision: string;
   readonly policyHash: string;
   readonly supervisorSessionId: string;
-  readonly processInstanceId: string;
-  readonly networkInstanceId: string;
 }
 
 /** The class of a failed gateway read behind a refusal: a fixed token, never the gateway's

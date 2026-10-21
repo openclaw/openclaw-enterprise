@@ -37,7 +37,7 @@ export async function fixture(
   {
     openBroker,
     draftPull = false,
-    draftPullLimit,
+    draftPullLimit = /** @type {"none" | undefined} */ (undefined),
     draftResponse,
     dnsIssuer = false,
     sessionLifetimeMs = 3_600_000,

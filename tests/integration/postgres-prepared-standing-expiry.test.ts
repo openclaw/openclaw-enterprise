@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { fixture, prepare } from "../fixtures/prepared-repository-git.mjs";
 import { fixtureInstallationId } from "../fixtures/repository-credentials/github.mjs";
 import { requiresPostgres } from "../helpers/postgres-database.mjs";
@@ -143,13 +143,20 @@ test(
   },
 );
 
-test(
-  "a protected finite successor cannot adopt a broker receipt, unsettled token or spent draft",
-  requiresPostgres,
-  async (t) => {
+for (const draftPullLimit of [undefined, "none"] as const) {
+  test(
+    "a protected successor binds the released Git recipient and preserves draft custody, limit " +
+      (draftPullLimit ?? "one per grant"),
+    requiresPostgres,
+    protectedSuccessor(draftPullLimit),
+  );
+}
+
+function protectedSuccessor(draftPullLimit: "none" | undefined) {
+  return async (t: TestContext) => {
     // Start at the real historical authority, including its possibly-spent, never-settled draft.
     // The installation below is controlled evidence: the standing transfer test exercises release.
-    const f = await fixture(t, { draftPull: true });
+    const f = await fixture(t, { draftPull: true, draftPullLimit });
     await prepare(f);
     const operation = {
       operation: "create-draft-pull" as const,
@@ -242,7 +249,7 @@ test(
     });
     const providerId = "controlled-provider";
     const policyHash = "controlled-policy";
-    const sandboxId = "controlled-box";
+    const sandboxId = "controlled-box-" + crypto.randomUUID();
     const observed = {
       workspace: "w",
       sandbox: "s",
@@ -270,7 +277,13 @@ test(
         installedAt: attempt.createdAt,
         enforcement: {
           policyHash,
-          instanceId: "p",
+          instanceId: "released-supervisor-A",
+          repositoryGitRecipient: {
+            providerId,
+            attachmentEpoch: observed.attachmentEpoch,
+            processInstanceId: observed.processInstanceId,
+            networkInstanceId: observed.networkInstanceId,
+          },
           configurationId: "c",
           authorityScope: "execution",
           peerKeyId: "fixture",
@@ -318,6 +331,24 @@ test(
       "closing the broker without settling its token cannot authorize new issuance",
     );
     await f.owner.maintain(); // the previous issuer owns its retirement
+    const recordObserved = (value: typeof observed) =>
+      f.pool.query("update occ.openshell_git_routes set observed=$2 where revision_id=$1", [
+        revisionId,
+        JSON.stringify(value),
+      ]);
+    if (!draftPullLimit) {
+      // Plan, Sandbox and policy still match, but this recipient was not bound to the release.
+      const other = { ...observed, processInstanceId: "route-supervisor-B" };
+      await recordObserved(other);
+      await owner.maintain();
+      const denied = await owner.readOpenShellMaterial(revisionId, signal, {
+        ...route,
+        observed: other,
+      });
+      assert.ok(denied && "absent" in denied, "another recipient must receive no material");
+      assert.equal(f.gh.issuesOfTokens.length, 1, "must not prepare for an unassociated recipient");
+      await recordObserved(observed);
+    }
     await owner.maintain();
     const material = await read();
     assert.ok(material && "value" in material);
@@ -347,11 +378,84 @@ test(
       { message: "Prepared GitHub custody transaction did not complete (guard)." },
       "no conversion to token-returning native authority",
     );
-    assert.equal(
-      await owner.authorizeOpenShellRequest({ ...request(), ...operation }, installed, signal),
-      "draft_already_opened",
-      "the predecessor's outcome_unknown consumed the grant, not just its session",
+    // The historical possibly-spent draft is immutable. A limited grant cannot spend it again.
+    // An unlimited grant records a distinct possible use for each new exchange, never a send.
+    const draft = () => ({
+      ...request(),
+      ...operation,
+      pull: { ...operation.pull, operationId: crypto.randomUUID() },
+    });
+    if (draftPullLimit === "none") {
+      for (let i = 0; i < 2; i++) {
+        const q = draft();
+        assert.equal(await owner.authorizeOpenShellRequest(q, installed, signal), true);
+        assert.deepEqual(
+          (
+            await f.pool.query(
+              `select admission_id,attempt_id,material_version,operation,request_digest_sha256
+           from occ.prepared_repository_git_uses where exchange_id=$1`,
+              [q.exchangeId],
+            )
+          ).rows,
+          [
+            {
+              admission_id: admissionId,
+              attempt_id: installed.preparationAttemptId,
+              material_version: installed.materialVersion,
+              operation: operation.operation,
+              request_digest_sha256: q.requestDigestSha256,
+            },
+          ],
+          "the possible-use receipt committed before allow",
+        );
+        assert.equal(
+          await owner.authorizeOpenShellRequest(q, installed, signal),
+          false,
+          "an existing possible use is not permission to repeat an exchange",
+        );
+      }
+    } else {
+      assert.equal(
+        await owner.authorizeOpenShellRequest(draft(), installed, signal),
+        "draft_already_opened",
+      );
+    }
+    assert.deepEqual(
+      (
+        await f.pool.query(
+          "select receipt_id,outcome,settled_at from occ.prepared_repository_draft_pulls where grant_id=$1",
+          [f.binding.grant.grantId],
+        )
+      ).rows,
+      [{ receipt_id: used.exchangeId, outcome: "outcome_unknown", settled_at: null }],
     );
+    // A cold owner can recover the committed version for the released recipient. A substituted
+    // recipient at the same policy and fence cannot fetch that version, authorize it, or leave a use.
+    const cold = await f.startOwner({ controlSocket: undefined });
+    const recovered = await cold.readOpenShellMaterial(revisionId, signal, route);
+    assert.ok(recovered && "materialVersion" in recovered);
+    assert.equal(recovered.materialVersion, installed.materialVersion);
+    for (const key of ["processInstanceId", "networkInstanceId", "attachmentEpoch"] as const) {
+      const other = { ...observed, [key]: "replacement" };
+      const replaced = { ...route, observed: other };
+      await recordObserved(other);
+      const denied = await cold.readOpenShellMaterial(revisionId, signal, replaced);
+      assert.ok(denied && "absent" in denied, `changed ${key} must not receive committed material`);
+      const q = request();
+      assert.equal(
+        await cold.authorizeOpenShellRequest(q, { ...installed, route: replaced }, signal),
+        "access_withdrawn",
+      );
+      assert.equal(
+        (
+          await f.pool.query("select from occ.prepared_repository_git_uses where exchange_id=$1", [
+            q.exchangeId,
+          ])
+        ).rowCount,
+        0,
+      );
+    }
+    await recordObserved(observed);
     await assert.rejects(
       f.state.transact((u) =>
         u.repositorySessions.createAttempt({
@@ -409,5 +513,5 @@ test(
       await withdraw.query("ROLLBACK");
       withdraw.release();
     }
-  },
-);
+  };
+}

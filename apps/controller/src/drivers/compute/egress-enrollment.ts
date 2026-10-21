@@ -1,4 +1,5 @@
 import { createPublicKey, sign, type KeyObject } from "node:crypto";
+import { validRepositoryGitRecipient } from "@openclaw-enterprise/contracts";
 import type {
   EgressExecution,
   EgressInstallation,
@@ -58,16 +59,22 @@ export function signComputeExecutionRelease(
   ) {
     throw new Error("Protected execution release requires the exact enrolled installation.");
   }
+  if (plan.repositoryGit && !validRepositoryGitRecipient(enforcement.repositoryGitRecipient)) {
+    throw new Error("Repository Git release requires the verified recipient of this installation.");
+  }
+  const released = plan.repositoryGit
+    ? { ...installation, repositoryGitRecipient: enforcement.repositoryGitRecipient }
+    : installation;
   const challenge = {
     profile: COMPUTE_RELEASE_PROFILE,
     ...harnessEgressEnrollment(plan),
     startupId,
   };
   const expiresAt = Date.now() + 30_000;
-  const transcript = JSON.stringify([challenge, installation, expiresAt]);
+  const transcript = JSON.stringify([challenge, released, expiresAt]);
   return {
     challenge,
-    installation,
+    installation: released,
     expiresAt,
     signature: sign(null, Buffer.from(transcript), privateKey).toString("base64url"),
   };

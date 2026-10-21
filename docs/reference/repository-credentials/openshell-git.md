@@ -188,11 +188,12 @@ binding already opened its draft. OCE never sees GitHub's reply here, so it reco
 no pull request number. For another draft, enroll and bind a new review branch; a
 redeploy or rebind does not reset it.
 
-Known limit, with an opt-out: to trust the Agent, set `draftPullLimit: "none"`
-beside `pullRequestBase` in the registry's namespace policy and redeploy (it changes
-the grant). Creates are then unlimited but still draft-only, review branch to base.
-OCE keeps the first create's receipt; the supervisor's OpenShell HTTP log records
-later ones. The broker route keeps one per grant.
+To allow multiple drafts, set `draftPullLimit: "none"` beside `pullRequestBase` in
+the registry's namespace policy and redeploy. This changes the grant. Each draft must
+still target the approved base from the review branch. OCE records every exchange it
+authorizes as a possible use and consumes a draft allowance only when the grant limits
+drafts to one. A use receipt cannot tell you whether OpenShell sent the request or GitHub
+created a draft. The broker route still allows one draft per grant.
 
 During the accepted trial, use an authorized test repository to verify clone,
 pull of an independently known commit, push to the allowed branch, and draft

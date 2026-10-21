@@ -116,10 +116,12 @@ test(
         );
         // Drive each background owner at its normal boundary, outside any request.
         await readiness(r);
-        await protectedGit.enroll(r, custody, p.middlewares, sandboxId).catch((e: Error) => {
-          t.diagnostic("release: " + e.message);
-          throw e;
-        });
+        await protectedGit
+          .enroll(r, custody, p.middlewares, sandboxId, world.repositoryGitRecipient)
+          .catch((e: Error) => {
+            t.diagnostic("release: " + e.message);
+            throw e;
+          });
         await prepared.maintain();
         await readiness(r);
         return f.compute.prepareRevision(r);

@@ -2006,7 +2006,7 @@ export const preparedRepositoryGitUses = occSchema.table(
   (t) => [
     check(
       "prepared_repository_git_uses_operation_check",
-      sql`${t.operation} IN ('advertise-upload-pack','upload-pack','advertise-receive-pack','receive-pack')`,
+      sql`${t.operation} IN ('advertise-upload-pack','upload-pack','advertise-receive-pack','receive-pack','create-draft-pull')`,
     ),
     check(
       "prepared_repository_git_uses_request_digest_sha256_check",

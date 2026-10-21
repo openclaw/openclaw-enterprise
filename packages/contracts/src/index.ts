@@ -22,6 +22,7 @@ export type {
   EgressBinding,
   EgressRoute,
   ProxyPlan,
+  RepositoryGitRecipient,
   EgressInstallation,
   EgressRequest,
   InferenceOperation,
@@ -40,7 +41,12 @@ export type {
 } from "./credential-proxy.ts";
 export * from "./prepared-github-egress.ts";
 export * from "./credential-free-metadata.ts";
-export { assertExecutionAdmission, assertExecutionReleaseAllowed } from "./credential-proxy.ts";
+export {
+  assertExecutionAdmission,
+  assertExecutionReleaseAllowed,
+  repositoryGitRecipientFields,
+  validRepositoryGitRecipient,
+} from "./credential-proxy.ts";
 export type { SandboxPolicyDecision } from "./sandbox-policy.ts";
 export { SandboxPolicyDecisionSchema, validSandboxPolicyDecision } from "./sandbox-policy.ts";
 import type {

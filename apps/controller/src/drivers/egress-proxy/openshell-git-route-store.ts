@@ -1,3 +1,4 @@
+import { protectedRepositoryGitInstallationSql } from "./protected-repository-git-installation.ts";
 import type { AgentRevision } from "@openclaw-enterprise/contracts";
 import {
   repositoryWithdrawalStateSql,
@@ -265,6 +266,10 @@ export class PostgresOpenShellGitRouteStore implements OpenShellGitRouteStore {
          JOIN occ.agent_revisions v ON v.id = r.revision_id AND v.agent_id = r.agent_id AND v.namespace_id = r.namespace_id
          WHERE (r.revision_id, r.namespace_id, r.agent_id) = ($1, $2, $3)
            AND v.admitted_spec->'repository_credentials' = $4::jsonb
+           AND (v.admitted_spec #>> '{execution_admission,version}' <> '4' OR EXISTS (
+                SELECT FROM occ.egress_installations p WHERE ${protectedRepositoryGitInstallationSql}
+                AND p.installation->'plan'=v.admitted_spec->'egress_plan'
+                AND p.installation#>'{plan,repositoryGit}'=$4::jsonb))
            AND e.execution_id = r.revision_id
            AND r.blocked IS NULL AND r.write_pending IS NULL AND r.detach_request_id IS NULL
            AND r.credential_state = 'active' AND r.material_version IS NOT NULL AND r.preparation_attempt_id IS NOT NULL
