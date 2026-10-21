@@ -66,9 +66,9 @@ function run(root, args, env = {}, { timeout } = {}) {
 
 // run() without blocking this process, for the waiting tests below, which run side by side.
 // The result has spawnSync's shape, including its ETIMEDOUT error when `timeout` ends the runner.
-function runAsync(root, args, env = {}, { timeout } = {}) {
+function runAsync(root, args, env = {}, { timeout, execArgv = [] } = {}) {
   return new Promise((resolvePromise) => {
-    const child = spawn(process.execPath, [runnerPath, ...args], {
+    const child = spawn(process.execPath, [...execArgv, runnerPath, ...args], {
       cwd: repositoryRoot,
       env: runnerEnv(env),
       stdio: ["ignore", "pipe", "pipe"],
@@ -101,14 +101,28 @@ function runAsync(root, args, env = {}, { timeout } = {}) {
 
 // These tests wait out a real runner timeout, lane deadline or cleanup allowance: seconds
 // each, at almost no CPU. Each duration stays as it is, long enough for a loaded host to
-// reach the state the test needs before it elapses. Instead they run side by side, after
-// the rest of the file (see the describe at its end), so the file waits about as long as
-// the longest of them rather than their sum. Each has its own fixture root, state and lock
-// files, and starts the runner with runAsync.
+// reach the state the test needs before it elapses, or the runner's clock waits for that
+// state (heldClock below). Instead they run side by side, after the rest of the file (see
+// the describe at its end), so the file waits about as long as the longest of them rather
+// than their sum. Each has its own fixture root, state and lock files, and starts the
+// runner with runAsync.
 const waitingTests = [];
 
 function waitingTest(...args) {
   waitingTests.push(args);
+}
+
+// Node arguments that give the runner a clock that stands still at holdAt (Unix epoch
+// milliseconds) until every gate path exists (tests/helpers/ci-runner-held-clock.mjs). A test
+// that needs its fixture in some state before the lane deadline creates a gate there, so a
+// busy host delays the deadline instead of reaching it first (finding 2164).
+function heldClock(holdAt, gates) {
+  const preload = new URL("../helpers/ci-runner-held-clock.mjs", import.meta.url);
+  preload.searchParams.set("hold", String(holdAt));
+  for (const gate of gates) {
+    preload.searchParams.append("gate", gate);
+  }
+  return ["--import", preload.href];
 }
 
 function currentSha() {
@@ -2721,14 +2735,19 @@ waitingTest(
     const statePath = join(root, "state/deadline.json");
     const resultsPath = join(root, "results/deadline.json");
     const marker = join(root, "state/later-started");
+    const hung = join(root, "state/teardown-hung");
     await writeFile(
       join(root, "tests/integration/teardown.test.mjs"),
       [
+        'import { writeFileSync } from "node:fs";',
         'import test from "node:test";',
         'test("passes first", () => {});',
         'test("hangs in its teardown", async (t) => {',
         "  // Like a worker stop that never returns; the interval keeps the file alive.",
-        "  t.after(() => new Promise(() => setInterval(() => {}, 1_000)));",
+        "  t.after(() => {",
+        `    writeFileSync(${JSON.stringify(hung)}, "");`,
+        "    return new Promise(() => setInterval(() => {}, 1_000));",
+        "  });",
         "});",
         "",
       ].join("\n"),
@@ -2755,6 +2774,8 @@ waitingTest(
       groups: { ci: ["deadline"] },
     });
 
+    // The runner's clock stops a second in until the file hangs in its teardown, so the deadline
+    // comes at least two seconds after that, however long the host takes to get there.
     const started = Date.now();
     const result = await runAsync(
       root,
@@ -2773,11 +2794,11 @@ waitingTest(
       // No per-file timeout: the default (60 minutes) is far past the deadline.
       {
         CI_RUNNER_TEST_TIMEOUT_MS: "",
-        CI_RUNNER_DEADLINE_MS: String(started + 4_000),
+        CI_RUNNER_DEADLINE_MS: String(started + 3_000),
         CI_RUNNER_MARKER: marker,
       },
       // Without the deadline the runner would wait out the 60-minute default.
-      { timeout: 60_000 },
+      { timeout: 60_000, execArgv: heldClock(started + 1_000, [hung]) },
     );
 
     assert.equal(result.error, undefined, "the deadline stopped the lane");
@@ -2797,8 +2818,8 @@ waitingTest(
     const [record] = JSON.parse(await readFile(`${statePath}.diagnostics.json`, "utf8")).failures;
     assert.equal(record.reason, "timeout");
     assert.equal(record.laneDeadline, true);
-    assert(record.timeoutMs > 0 && record.timeoutMs <= 4_000, String(record.timeoutMs));
-    assert.deepEqual(record.interruptedTests, [{ name: "hangs in its teardown", line: 3 }]);
+    assert(record.timeoutMs >= 2_000 && record.timeoutMs <= 3_000, String(record.timeoutMs));
+    assert.deepEqual(record.interruptedTests, [{ name: "hangs in its teardown", line: 4 }]);
     // The serial file behind it never started.
     assert.equal(later.status, "failed");
     assert.equal(later.counts.total, 0);
@@ -3144,10 +3165,19 @@ waitingTest(
       join(root, "scripts/ci/prepare.mjs"),
       `export async function prepareFile() {\n  return { cleanup: () => ${hangForever} };\n}\n`,
     );
-    for (const file of files) {
+    const hung = files.map((file) => join(root, `state/${file.split("/").at(-1)}-hung`));
+    for (const [index, file] of files.entries()) {
       await writeFile(
         join(root, file),
-        `import test from "node:test";\ntest("hangs", () => ${hangForever});\n`,
+        [
+          'import { writeFileSync } from "node:fs";',
+          'import test from "node:test";',
+          'test("hangs", () => {',
+          `  writeFileSync(${JSON.stringify(hung[index])}, "");`,
+          `  return ${hangForever};`,
+          "});",
+          "",
+        ].join("\n"),
       );
     }
     await writeJson(join(root, "manifest.json"), {
@@ -3162,20 +3192,20 @@ waitingTest(
       groups: { ci: ["together"] },
     });
 
+    // The runner's clock stops a second in until all four files hang, so the deadline stops
+    // them together however long the host takes to start them.
     const allowanceMs = 5_000;
     const started = Date.now();
-    const deadline = started + 5_000;
     const result = await runAsync(
       root,
       laneArgs(root, "together", statePath, resultsPath),
       {
-        CI_RUNNER_DEADLINE_MS: String(deadline),
+        CI_RUNNER_DEADLINE_MS: String(started + 3_000),
         CI_RUNNER_CLEANUP_TIMEOUT_MS: String(allowanceMs),
         CI_RUNNER_FILE_CONCURRENCY: "4",
       },
-      { timeout: 60_000 },
+      { timeout: 60_000, execArgv: heldClock(started + 1_000, hung) },
     );
-    const ended = Date.now();
 
     assert.equal(result.error, undefined, "the runner gave up on the cleanups");
     assert.equal(result.status, 1, result.stderr);
@@ -3185,18 +3215,18 @@ waitingTest(
       files.map((file) => [file, "timeout"]),
     );
     // Cleanups run one at a time. One allowance each would end 20 s past the deadline; the window
-    // they share closes one allowance past it, so the queued ones never start.
+    // they share closes one allowance past it. The first to start gets what is left of the window
+    // and is still running when it closes, so the queued ones never start. (On a busy host the
+    // window can close before the first one starts too.)
     const timeouts = summary.issues.filter((entry) => entry.code === "cleanup-timeout");
     assert.equal(timeouts.length, files.length);
-    assert(
-      timeouts.some((entry) => /window after the lane deadline closed/.test(entry.message)),
-      JSON.stringify(timeouts),
+    const ran = timeouts.filter(
+      (entry) => !/window after the lane deadline closed/.test(entry.message),
     );
-    // The test processes get 5 s to report after the deadline's SIGTERM; then the window closes.
-    assert(
-      ended - deadline < allowanceMs + 8_000,
-      `ended ${ended - deadline} ms past the deadline`,
-    );
+    assert(ran.length <= 1, JSON.stringify(timeouts));
+    for (const entry of ran) {
+      assert(entry.timeoutMs <= allowanceMs, JSON.stringify(entry));
+    }
   },
 );
 
