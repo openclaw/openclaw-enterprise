@@ -4,7 +4,7 @@ import { randomUUID, createHash, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { createServer as createHttpsServer } from "node:https";
 import { request as httpRequest } from "node:http";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -22,6 +22,7 @@ import { createTestConfigurationDriver } from "./configuration-driver.mjs";
 import { createTestSecretDriver } from "./secret-driver.mjs";
 import { createTestKubernetesComputeDriver } from "./kubernetes-compute.mjs";
 import { reservePort } from "./available-port.mjs";
+import { sharedRsaPrivateKeyPem } from "../fixtures/repository-credentials/shared-keys.mjs";
 
 export const backendFixtures = Object.freeze([
   Object.freeze({
@@ -116,18 +117,16 @@ export async function startHttpsIngress({
     try {
       const keyPath = join(directory, "tls.key");
       const certPath = join(directory, "tls.crt");
+      await writeFile(keyPath, sharedRsaPrivateKeyPem("console-ingress"), { mode: 0o600 });
       const generated = spawnSync(
         "openssl",
         [
           "req",
           "-x509",
-          "-newkey",
-          "rsa:2048",
-          "-nodes",
+          "-key",
+          keyPath,
           "-days",
           "1",
-          "-keyout",
-          keyPath,
           "-out",
           certPath,
           "-subj",

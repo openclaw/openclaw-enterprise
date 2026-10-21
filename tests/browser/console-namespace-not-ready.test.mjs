@@ -139,7 +139,9 @@ test("Create Agent names a provisioning Namespace's status before any start", as
       { exact: true },
     )
     .waitFor();
-  assert.equal(await create.isDisabled(), false);
+  // The status line follows the harness at once; Create Agent also waits for the form's
+  // repository discovery, which can still be loading.
+  await create.and(page.locator(":enabled")).waitFor();
   assert.equal(await create.getAttribute("aria-describedby"), null);
 });
 
@@ -576,7 +578,8 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
       release();
       await page.evaluate(() => globalThis.dispatchEvent(new globalThis.Event("focus")));
       await view.getByText(READY_PLAN, { exact: true }).waitFor();
-      assert.equal(await create.isDisabled(), false);
+      // Create Agent also waits for the form's repository discovery.
+      await create.and(page.locator(":enabled")).waitFor();
       assert.equal(await create.getAttribute("aria-describedby"), null);
       assert.equal(await view.getByText(WAITS).count(), 0);
       assert.equal(await view.getByText(NOT_READY).count(), 0);
@@ -603,7 +606,7 @@ test("Create Agent waiting on a provisioning Namespace", async (t) => {
       release();
       await poll();
       await view.getByText(READY_PLAN, { exact: true }).waitFor();
-      assert.equal(await create.isDisabled(), false);
+      await create.and(page.locator(":enabled")).waitFor();
       assert.equal(await view.getByText(NOT_READY).count(), 0);
       await assertDraftIntact(name);
     },

@@ -68,6 +68,7 @@ COPY --chown=node:node scripts/migrate-production.mjs scripts/migrate-production
 COPY --chown=node:node scripts/migration-history.mjs scripts/migration-history.mjs
 COPY --chown=node:node scripts/migration-catalog.mjs scripts/migration-catalog.mjs
 COPY --chown=node:node scripts/bootstrap-installation.mjs scripts/bootstrap-installation.mjs
+COPY --chown=node:node scripts/lib/bootstrap-configuration.mjs scripts/lib/bootstrap-configuration.mjs
 COPY --chown=node:node scripts/auth-maintain.mjs scripts/auth-maintain.mjs
 COPY --chown=node:node scripts/lib/auth-maintain-arguments.mjs scripts/lib/auth-maintain-arguments.mjs
 COPY --chown=node:node deploy/presets deploy/presets

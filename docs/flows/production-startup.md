@@ -150,7 +150,7 @@ connection. It accepts fresh databases, canonical history through 0023, or compl
 history through 0025; unsupported or mixed development histories fail before
 migration DDL and bootstrap. See [migration history and recovery](../reference/settings/operations.md#migration-history).
 
-`scripts/bootstrap-installation.mjs:authBaseURL` checks HTTP(S) origin before
+`scripts/lib/bootstrap-configuration.mjs:authBaseURL` checks HTTP(S) origin before
 database access. Production requires HTTPS except HTTP loopback verification
 (`127.0.0.1`, `localhost`, `[::1]`).
 
@@ -166,7 +166,7 @@ the Job. Helm failure does not imply database-hook rollback.
 
 ### 4. Start private API and worker Deployments
 
-`apps/controller/src/server.mjs:138`, `apps/controller/src/worker.ts:312`
+`apps/controller/src/api-startup.mjs:configuration`, `apps/controller/src/worker.ts:312`
 
 `apps/controller/src/drivers/compute/kubernetes/index.ts:KubernetesComputeDriver.preflight`
 

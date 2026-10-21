@@ -22,7 +22,7 @@ requests and the worker begins polling durable work.
 
 - Trigger: Start the API with `node apps/controller/src/server.mjs`; start the
   worker separately with `node apps/controller/src/worker.mjs`.
-- Source: `apps/controller/src/server.mjs:start`,
+- Source: `apps/controller/src/api-startup.mjs:startApi`,
   `apps/controller/src/worker.mjs:configuration`, and
   `apps/controller/src/composition/installation-config.ts:loadInstallationConfiguration`.
 - Assumptions: PostgreSQL-backed startup requires the same migrated application
@@ -46,7 +46,7 @@ graph TD
   end
 
   subgraph API["OCC API process"]
-    A["server.mjs validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
+    A["startApi validates API settings"] --> B["Load shared Drivers and optional API-only ServiceAccount Driver"]
     B --> C["Compose authorized OCC and Fastify"]
     C --> E["Listen for requests and enqueue durable work"]
   end
@@ -78,7 +78,7 @@ graph TD
 
 ### 1. Launch independent API and worker processes
 
-`apps/controller/src/server.mjs:start`
+`apps/controller/src/api-startup.mjs:startApi`
 
 Before launch, the operator runs the supported migration command using the
 separate migrator role. Its
@@ -131,7 +131,7 @@ comes from server-owned singleton state, never startup YAML.
 
 API and worker use matching logical Driver identities but separate instances.
 Each IAM Driver loads current persisted policy for every identity lookup and
-authorization decision. Only `server.mjs` reads the mounted ChatGPT admin key,
+authorization decision. Only `api-startup.mjs` reads the mounted ChatGPT admin key,
 constructs `Backend<ChatGPTClient>`, and injects it into the optional
 ServiceAccount Driver factory. The worker consumes only nonsecret Backend
 metadata and never receives the client or admin credential. Startup validates

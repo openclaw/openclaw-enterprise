@@ -146,7 +146,7 @@ update the setup record.
 
 ### 4. Composition configures private access
 
-`apps/controller/src/server.mjs:start` validates the optional absolute
+`apps/controller/src/api-startup.mjs:startApi` validates the optional absolute
 `OCC_GATEWAY_API_KEY_PATH` before opening the database. Production and
 PostgreSQL development composition bind the selected Compute Driver to
 `createWorkspaceFilesAccess`. The worker uses the same mounted service key
@@ -257,15 +257,17 @@ The chart supplies worker credentials/public trust and Compute installs node
 access to Envoy. Memory uses node duplex with existing native file workers;
 index and embedding configuration stay on Gateway. Skills uses remote discovery,
 reads and policy-checked dependency installation. Each host initializes its own
-image assets; Gateway-provided Skills stay local. See the
+image assets. Gateway-provided Skill sources stay local; native worker turns can
+receive temporary resource copies. See the
 [ownership table](../../specs/plans/30-storage-split-integration.md#where-data-lives).
 Remote channel menus remain deferred to [#241](https://github.com/openclaw/openclaw-enterprise/issues/241).
 
-Only Harness mounts dedicated workspace, generated-image and Codex rollout
-storage. The rollouts let the Gateway resume its bound Codex thread after
-stop/start or Pod replacement; the rest of `CODEX_HOME` stays Pod-local. External OAuth authentication
-uses an ephemeral placeholder and metadata, with refresh owned by the token service. Codex's remote-media reader transfers reply
-artifacts before cleanup. Embedded storage is unchanged.
+Only Harness mounts the dedicated workspace, generated images and Codex rollouts.
+Rollouts retain execution history, not a guarantee of restart recovery; see
+[restart limits](../reference/harness-execution.md#isolation-and-activation).
+The rest of `CODEX_HOME` stays Pod-local. External OAuth uses ephemeral placeholders
+and metadata; the token service owns refresh. Codex's remote-media reader retrieves
+reply artifacts before cleanup. Embedded storage is unchanged.
 `KubernetesComputeDriver.verifyPersistentVolumeClaim` rejects RWX claims without
 mutating them. The worker stops predecessors and suppresses their maintenance
 before dedicated preparation. The [storage contract](../reference/drivers/kubernetes-compute/storage-and-credentials.md#harness-storage)
