@@ -917,12 +917,13 @@ async function historyAdministrator(container, hostname, port) {
   const url = new URL("postgresql://localhost/postgres");
   url.hostname = hostname;
   url.port = String(port);
-  url.username = environment.get("POSTGRES_USER") ?? "postgres";
+  // The fixtures name the `postgres` role (owners, grantors), as `psql -U postgres` did.
+  assert.equal(environment.get("POSTGRES_USER") ?? "postgres", "postgres");
+  url.username = "postgres";
   url.password = password;
   const pool = new pg.Pool({ connectionString: url.toString(), max: 4 });
   // An idle client's error (server restart) must fail its next query, not the process.
   pool.on("error", () => {});
-  after(() => pool.end());
   assert.deepEqual(
     (await pool.query("SELECT rolsuper FROM pg_roles WHERE rolname=current_user")).rows,
     [{ rolsuper: true }],
@@ -931,6 +932,15 @@ async function historyAdministrator(container, hostname, port) {
 }
 
 let historyFixture;
+// File-level: `after` called inside the first test that resolves the fixture would end the
+// pool when that test finishes.
+after(async () => {
+  // A fixture that failed to resolve already failed its tests and owns no pool.
+  await historyFixture?.then(
+    (fixture) => fixture.admin.end(),
+    () => {},
+  );
+});
 function migrationHistoryFixture() {
   historyFixture ??= resolveMigrationHistoryFixture();
   return historyFixture;
@@ -939,8 +949,7 @@ function migrationHistoryFixture() {
 async function resolveMigrationHistoryFixture() {
   if (historySelectors.every((value) => value === undefined)) {
     const fixture = await ownedPostgres();
-    // Resolve the Compose service's container once: `docker exec` skips the Compose
-    // project load that each of the several hundred administrator psql calls would repeat.
+    // Resolve the Compose service's container to read its administrator credential.
     const container = (
       await runCommand(fixture, "docker", [...fixture.composeProjectArgs, "ps", "-q", "postgres"])
     ).trim();
