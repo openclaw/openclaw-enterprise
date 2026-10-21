@@ -2,7 +2,8 @@
 
 Browse production Console pages, components, and Agent workflows against an
 in-memory fixture. Previews contact no services and run no workloads. Use dummy
-credentials.
+credentials. To build or change a page, start with
+[Console components and styles](console-ui.md).
 
 ## Run locally
 

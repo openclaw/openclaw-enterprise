@@ -1009,6 +1009,18 @@ p {
   display: grid;
   gap: var(--space-3);
 }
+/* Search first in reading and tab order; the action wraps when both no longer fit. */
+.collection-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-block: var(--space-5);
+}
+.collection-toolbar > input[type="search"] {
+  max-width: 360px;
+}
 /* Section, card and badge patterns (UX plan C4). A section is a heading, an optional description
    and its content; it is not a card. Cards live inside sections. */
 .section {
@@ -1426,20 +1438,6 @@ select:not([multiple])[size="1"] {
     appearance: auto;
     background-image: none;
   }
-}
-.agent-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: var(--space-4);
-  margin: var(--space-5) 0;
-  flex-wrap: wrap;
-}
-.agent-toolbar input {
-  width: min(360px, 100%);
-  padding: var(--space-3);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius);
 }
 .agent-toolbar-actions {
   display: flex;
@@ -2131,6 +2129,7 @@ select:not([multiple])[size="1"] {
 .form-field input,
 .form-field select,
 .form-field textarea,
+.collection-toolbar > input[type="search"],
 .repository-discovery input[type="search"],
 .plugin-control select,
 .plugin-json textarea,
@@ -2635,17 +2634,6 @@ select:not([multiple])[size="1"] {
 }
 /* The Secret dialog's grid gap spaces its fields; their page margins would add to it. */
 .credential-secret-dialog .form-field {
-  margin: 0;
-}
-.secrets-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-3);
-  margin-block: var(--space-5);
-}
-.secrets-toolbar .field {
-  flex: 1 1 16rem;
   margin: 0;
 }
 .secret-row {

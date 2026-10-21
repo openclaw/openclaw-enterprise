@@ -430,6 +430,13 @@ export const scenarios = {
     mobile: true,
     description: "The Secret list and dialogs at phone width. Simulated UI proof.",
   },
+  secretsSearch: {
+    group: "Pages/Secrets",
+    name: "No search matches",
+    path: "/console/secrets",
+    actions: [{ selector: '[aria-label="Search Secrets"]', value: "no-such-secret" }],
+    description: "Clear the search to see the Secrets in this Namespace again.",
+  },
   secretsEmpty: {
     group: "Pages/Secrets",
     name: "Empty",

@@ -440,6 +440,8 @@ On a devbox without an X server, run Playwright with `headless: true`.
 
 ## Console Storybook
 
+Use [console-ui](.agents/skills/console-ui/SKILL.md) to build on the shared
+[Console components and styles](docs/contributing/console-ui.md).
 UI changes require reviewable visual evidence, not just passing checks.
 When adding or changing console pages, shared components, or Agent lifecycle
 controls:

@@ -36,12 +36,7 @@ export function renderSecrets(context) {
           ),
         ]
       : []),
-    element(
-      "div",
-      { className: "secrets-toolbar" },
-      element("div", { className: "field" }, search),
-      create,
-    ),
+    element("div", { className: "collection-toolbar" }, search, create),
     list,
   );
   search.addEventListener("input", renderList);

@@ -1,0 +1,52 @@
+# Console components and styles
+
+Start with the closest page in [Console Storybook](console-storybook.md). The
+controller serves [native HTML, CSS, and browser modules](../../apps/controller/src/console/index.html).
+Use the [shared DOM helpers](../../apps/controller/src/console/dom.mjs) for behavior
+and [`console.css`](../../apps/controller/src/console/console.css) for appearance.
+Keep resource names, permissions, requests, and recovery in the page that owns them.
+
+## Compose a page
+
+- **Structure.** Let the [shell](../../apps/controller/src/console/shell.mjs)
+  supply the page title, Namespace, and navigation. Use a `.section` with an
+  `h2` to group related content. Add a `.card` when the group needs its own surface.
+- **Collections.** Agents and Secrets put search and the primary action in a
+  `.collection-toolbar`. Give the search input an accessible name. It comes
+  first in markup and in tab order, even when the action wraps below it.
+  Use `.resource-id` for an identifier people may need to read or copy.
+- **Actions.** Use `button(label, action, { tone: "primary" })` for the main
+  action, a plain button for a secondary action, and a link for a destination.
+- **Forms and dialogs.** `field({ label, control, help })` connects a label
+  and help to the input. In a native modal `dialog`, use `.dialog` and put
+  dismissal first in `.dialog-actions`. The `button()` helper defaults to
+  `type="button"`. To submit, use a `type="submit"` button associated with the
+  form and handle the form’s `submit` event so Enter and clicking take the same path.
+- **Feedback.** `statusBlock(tone, label, body)` uses `info`, `success`, `warning`,
+  or `danger`. Say what happened and what the person can do next. When the
+  outcome is unknown, offer a way to check it before anyone repeats the action.
+
+## Extend the shared styles
+
+Use the named roles in `:root`: `--color-link` for links, `--color-accent` for
+the primary action, and `--focus-ring` for keyboard focus. Inherit the body
+font, pair type sizes with their line heights (for example, `--text-md` with
+`--text-md--line-height`), and use the spacing and radius scales.
+The [token checks](../../tests/conformance/console-design-tokens.test.mjs)
+cover these scales and the supported breakpoints.
+
+Keep a one-page layout with that page. When another page needs the same
+pattern, move the shared rule next to the component it extends and use it in
+both places. If a change needs a new asset, register it in the
+[controller's asset list](../../apps/controller/src/console-assets.ts):
+[Storybook copies the source directory](../../scripts/console-storybook/prepare-assets.mjs),
+so a working preview alone doesn't prove the controller serves that file.
+
+## Review the result
+
+Rebuild the [affected stories](console-storybook.md#appearance-review), then try
+the task at desktop, tablet, and phone widths. Follow the keyboard through the
+action and back to its result. Include the state where the next action changes,
+such as a refused save or a search with no matches. Use the
+[Console browser tests](../../tests/browser/) for controller behavior and the
+[visual review instructions](../../AGENTS.md#console-storybook) for screenshots and video.

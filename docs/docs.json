@@ -861,6 +861,10 @@
                     "label": "Environment"
                   },
                   {
+                    "page": "contributing/console-ui",
+                    "label": "Console UI"
+                  },
+                  {
                     "page": "contributing/console-storybook",
                     "label": "Console Storybook"
                   },
