@@ -16,6 +16,7 @@ import {
   repositoryCheckbox,
   selectSecret,
   settlePageRequests,
+  waitForCondition,
   waitForInputValue,
 } from "./console-agents-browser-helpers.mjs";
 import {
@@ -552,7 +553,11 @@ for (const pending of [
     }
     // The note goes with the hold.
     await reason.waitFor({ state: "detached" });
-    assert.equal(await asksBeforeUnload(page), false);
+    // The save's reread may still be settling the form; then a reload asks no more.
+    await waitForCondition(
+      async () => !(await asksBeforeUnload(page)),
+      "a reload still asks after the write",
+    );
   });
 }
 

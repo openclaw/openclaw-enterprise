@@ -431,7 +431,7 @@ export async function waitForIdleFetches(page) {
 export async function waitForCondition(predicate, message, timeoutMs = 5_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (predicate()) {
+    if (await predicate()) {
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 50));

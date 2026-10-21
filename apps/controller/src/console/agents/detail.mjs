@@ -1363,8 +1363,9 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
     return true;
   };
   context.setLeaveGuard?.(refuseLeave);
-  // The writes that hold Back and the sidebar make a reload or tab close ask first too.
-  context.setWriteInFlight?.(() => sharingWrite || Boolean(draftWriteInFlight()));
+  // The writes that hold Back and the sidebar make a reload or tab close ask first too. A draft
+  // reread does not: a reload would lose nothing (finding 1938).
+  context.setWriteInFlight?.(() => sharingWrite || Boolean(draftWriteInFlight({ rereads: false })));
   const currentVersionValue = element("strong", { className: "stat-value" });
   const currentVersionNote = element("p", { className: "stat-help" });
   // The summary's loading text follows the 250 ms rule: a read that settles sooner never shows
@@ -1691,11 +1692,12 @@ export async function renderAgentDetail(context, { agent: preloadedAgent = null 
   }
   // A write in flight, whose answer only this page can handle: the sidebar and Back wait for it
   // too (finding 1937). An uncertain or stale editor is kept as a draft, so they may leave it.
-  function draftWriteInFlight() {
+  // `rereads` counts the draft's reread after a save as one.
+  function draftWriteInFlight({ rereads = true } = {}) {
     return (
       selected === "draft" &&
       (deployInFlight ||
-        refreshingDraft ||
+        (rereads && refreshingDraft) ||
         authenticationSaveState === "saving" ||
         activeCredentials?.isSaving() ||
         (["configuration", "plugins", "repositories", "channels"].includes(selectedTab) &&
