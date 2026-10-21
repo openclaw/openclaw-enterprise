@@ -14,6 +14,7 @@ import {
   hasFocus,
   holdRequests,
   login,
+  loginThroughForm,
   nativeValues,
   newPage,
   pathRequests,
@@ -94,7 +95,11 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   const { page } = await newPage(t, fixture, {
     context: { viewport: { width: 1440, height: 600 } },
   });
-  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  // Through the sign-in form: a cold deep link to a draft's tab keeps its Namespace, revision
+  // and tab across password sign-in.
+  const url = detailUrl(fixture, namespace.id, agent.id, "draft", "policy");
+  await loginThroughForm(page, fixture, url);
+  await page.waitForURL(url.href);
   const requests = apiRequests(page, fixture.origin);
   await page.getByRole("button", { name: "Add proposed rule", exact: true }).click();
   await page.getByRole("button", { name: "Remove proposed rule 1", exact: true }).click();

@@ -159,7 +159,43 @@ export async function newPage(t, fixture, options = {}) {
   return { page, artifacts };
 }
 
+const signedInPath = /\/console\/(agents|backends|namespaces|settings)/;
+
+// Signs the page in and opens `path`. A fresh tab (still on about:blank) signs in with the same
+// Better Auth password request the form sends, made in the page's own browser context so the
+// browser stores the session cookie the API set, and then loads `path` already signed in: one
+// page load instead of a sign-in page plus the destination, and no form to fill. A tab that has
+// already loaded a page signs in through the form, so a test that signs in again on the same tab
+// keeps that tab's session storage and history across the sign-in. So does a fixture served
+// over TLS or under another host name, whose cookies are what such a test checks. Tests about
+// the sign-in page itself use the form directly or loginThroughForm.
 export async function login(
+  page,
+  fixture,
+  path = "/console/agents",
+  credentials = fixture.credentials,
+) {
+  const origin = new URL(fixture.origin);
+  if (
+    page.url() !== "about:blank" ||
+    origin.protocol !== "http:" ||
+    origin.hostname !== "127.0.0.1"
+  ) {
+    await loginThroughForm(page, fixture, path, credentials);
+    return;
+  }
+  const response = await page.request.post(new URL("/api/auth/sign-in/email", origin).href, {
+    data: { email: credentials.email, password: credentials.password },
+    headers: { origin: origin.origin },
+  });
+  assert.equal(response.status(), 200, `password sign-in failed: ${await response.text()}`);
+  await page.goto(new URL(path, fixture.origin).href);
+  await page.waitForURL(signedInPath);
+}
+
+// Signs in through the console's sign-in form, the way a person does: open `path`, which shows
+// the sign-in page, and submit the email and password.
+export async function loginThroughForm(
   page,
   fixture,
   path = "/console/agents",
@@ -169,7 +205,7 @@ export async function login(
   await page.getByLabel("Email", { exact: true }).fill(credentials.email);
   await page.getByLabel("Password").fill(credentials.password);
   await page.getByRole("button", { name: "Sign in" }).click();
-  await page.waitForURL(/\/console\/(agents|backends|namespaces|settings)/);
+  await page.waitForURL(signedInPath);
 }
 
 // Browser storage the console wrote, except the tab-scoped Installation-access probe answer
