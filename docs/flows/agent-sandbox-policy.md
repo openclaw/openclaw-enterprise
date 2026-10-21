@@ -1,7 +1,7 @@
 ---
 created: 2026-10-15
-updated: 2026-10-19
-last_updated_session: authoring-run/a9906404-d12d-4f05-ba24-16be225b527c
+updated: "2026-10-20"
+last_updated_session: "authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6"
 ---
 
 # Agent sandbox policy flow
@@ -25,7 +25,12 @@ This trace describes the implemented source; runtime proof has separate limits.
 
 ```mermaid
 graph TD
-  U["User reviews<br/>denial or suggestion"] --> A["OCC admission<br/>IAM and ceiling"]
+  U["User opens Agent settings"] --> Cfg["Discover authorized<br/>owner-bound schemas"]
+  Cfg --> Draft["Edit local additions"]
+  Draft --> Preview["Preview draft<br/>without writes"]
+  Preview -->|errors| Draft
+  Preview -->|valid| U2["Review proposal"]
+  U2 --> A["OCC save admission<br/>IAM, schema and ceiling"]
   A --> P["PostgreSQL<br/>desired policy version"]
   P --> D["Explicit deployment<br/>immutable snapshot"]
   P --> W["Live application work<br/>exact running revision"]
@@ -41,10 +46,28 @@ The solid arrows trace source paths, not a claim that all providers are verified
 
 ### 1. Admit and persist desired additions
 
+`OpenClawController.discoverConfigurations` filters registry contributions by the
+server-selected Driver, scope, and resource-owner read authority. Installation
+inspection exposes startup schemas without values. Agent discovery and policy GET
+use the same descriptor with owner-generated facet action URLs and current
+availability. The registry never selects a Driver from submitted additions.
+
+`validateAgentSandboxPolicy` authorizes the exact Agent and policy, checks the
+current editing flag, expected version, and pending application, then runs shared
+schema/semantic validation and current ceiling/provider admission. It returns a
+configuration result without entering a mutation transaction. Schema and semantic
+refusals carry safe `error.details`; stale or unauthorized requests retain their
+resource errors. Every later mutation repeats these checks. Ceiling refusal keeps
+its Installation-delegation cause; unsupported wildcard/range refusal names the
+Driver capability limit. Both retain field details.
+`internal/occclient/transport.go:APIError.Error` prints up to 32 public detail
+records as escaped JSON and omits records with Unicode control characters, so
+CLI callers retain the same field and cause without terminal controls.
+
 `packages/occ/src/index.ts:updateAgentSandboxPolicy` independently authorizes
 Agent `manage_policy` and SandboxPolicy `update`, locks the Namespace and Agent,
 and checks editing, expected version, pending work, complete ceiling coverage,
-and Driver admission. `apps/controller/src/http/sandbox-policy.ts` records the
+and registry-resolved Driver admission. The saved additions come from the admitted snapshot. `apps/controller/src/http/sandbox-policy.ts` records the
 nonsecret approved additions with their version in the same transaction.
 The required facet argument currently admits `networking` only. Other facets
 fail before network policy access. The temporary
@@ -75,7 +98,8 @@ transaction. Neither saving nor enqueueing establishes enforcement.
 
 `apps/controller/src/worker/sandbox-policy.ts:reconcileSandboxPolicy` locks the
 same lifecycle owners and rechecks current authority, ceiling, Driver identity,
-and Compute placement. One pass records the provider CAS version; a later pass
+and Compute placement. Shared definition and provider admission are rerun before
+provider effects. One pass records the provider CAS version; a later pass
 can mutate with that fixed version and operation ID. Provider reads and effects
 are bounded by the claim lease. Database and audit failures roll back the pass.
 
@@ -102,8 +126,15 @@ Driver projects representable native chunks into untrusted suggestions. The
 console editor submits canonical additions through the same mutation path;
 native draft approval cannot bypass OCC admission.
 
+`console/driver-configurations.mjs:renderAgentDriverConfigurations` discovers
+sections and selects resource-owner controls. `console/configuration-fields.mjs`
+renders schema fields and JSON fallback, with safe field/root diagnostics.
 `console/agents/sandbox-policy.mjs:renderPolicy` keeps proposed rules local until
-review and save. The combined save-and-apply action waits for a successful save,
+preview, review, and save. Superseded preview/read responses cannot overwrite a
+newer draft. Policy reads use a separate request sequence: an earlier response
+cannot invalidate a newer request. A pending application re-arms polling after
+the latest read, including a response discarded after a draft edit.
+Failed previews retain the draft and do not mark it saved. The combined save-and-apply action waits for a successful save,
 then sends that returned policy version and the exact selected running revision
 to the apply route. Save alone leaves running enforcement unchanged. Applying a
 previously saved policy is disabled while local edits are unsaved. If application
@@ -115,6 +146,11 @@ alerts and scrolls the reason into view after rendering. Ceiling rejection
 preserves the attempted additions for correction without changing saved state.
 `console/navigation.mjs:createNavigation` admits the `policy` tab in login
 destinations, preserving an Agent's Policy denials link after sign-in.
+
+The console reads the policy owner even when discovery returns no descriptor. This
+read establishes an unsupported capability or a permission refusal before log and
+suggestion reads continue under their own permissions. It cannot leave those reads
+waiting for a policy request that never starts.
 
 ## Debugging and Verification
 
@@ -136,6 +172,12 @@ destinations, preserving an Agent's Policy denials link after sign-in.
 ## Manual Notes
 
 ## Changelog
+
+- 2026-10-20 03:48: Complete policy capability reads without discovery metadata and omit terminal controls from CLI diagnostics. (authoring-run/ee617f7c-b2e1-4dbb-ace9-7908ebc5cfd6 - df244b6bd678acad513a02b5eb5d69e13f2d68dc)
+
+- 2026-10-20 01:48: Trace rejection causes, CLI details, and refresh sequencing. (authoring-run/9d1ff825-b9f4-492a-9420-1e316d820e28 - e7e5f3321cb0a8471d74964eba56ddd069a4e4c5)
+
+- 2026-10-19 20:34: Trace shared definitions, contextual discovery, and preview admission in the accompanying implementation. (authoring-run/9b1f7ddf-52fe-46c8-9fa9-fa7a1acfa64a - 7fa0a561df615296a612126d430a4bbfa1124d9c)
 
 - 2026-10-19 14:18: Align Agent creation and reload defaults for policy editing in both state adapters. (authoring-run/a9906404-d12d-4f05-ba24-16be225b527c - 7e677523ba1ad953707b14f6b6c2f041e5ccd6b7)
 

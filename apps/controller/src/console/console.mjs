@@ -1,3 +1,4 @@
+import { renderInstallationConfigurations } from "./driver-configurations.mjs";
 import { element, button, statusBlock, trackVisualViewport } from "./dom.mjs";
 import {
   clearResolvedSecretNames,
@@ -1763,6 +1764,15 @@ async function loadPage({
     }
     if (current.feature === "settings") {
       shell.view.append(settingsView());
+      if (installationAdmin) {
+        shell.view.append(
+          renderInstallationConfigurations({
+            request,
+            isCurrent: () => lifetime.isCurrent(viewState.active),
+          }),
+        );
+      }
+
       markMountedRoute(current);
       return;
     }

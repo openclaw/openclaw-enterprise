@@ -294,8 +294,10 @@ those spellings.
 **How to tell.** Preflight, the chart and the tools report `... repository path
 must be lowercase`, the field's image reference message, or the URL field's
 absolute-URL message. API startup logs
-`AUTH_BASE_URL_INVALID`; API and worker startup log `RUNTIME_IMAGE_INVALID` for
-any refused Gateway or Agent image, or `OBSERVABILITY_URL_INVALID`.
+`AUTH_BASE_URL_INVALID` or `OBSERVABILITY_URL_INVALID`. Current API and worker
+startup report `DRIVER_CONFIGURATION_INVALID` with `/images/gateway` or
+`/images/agent` details for a refused runtime image; see the
+[production startup flow](../../flows/production-startup.md).
 
 **Steps.** Fix the image reference (lowercase its repository path, drop what
 Kubernetes cannot parse), or delete the `@`, then render or restart again.

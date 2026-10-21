@@ -1,3 +1,4 @@
+import type { ErrorDetail } from "@openclaw-enterprise/contracts";
 import type {
   JSONSchema,
   OpenRepositorySessionInput,
@@ -55,28 +56,11 @@ export class GitHubRepoDriver implements RepoDriver {
     },
   });
 
-  static validateConfiguration(configuration: unknown): void {
-    if (
-      configuration === null ||
-      typeof configuration !== "object" ||
-      Array.isArray(configuration)
-    ) {
-      throw new Error("Repository credential Driver configuration is required.");
-    }
-    const value = configuration as Record<string, unknown>;
-    if (
-      Object.keys(value).some(
-        (key) => !["controlSocket", "sessionDurationSeconds", "publicCaPath"].includes(key),
-      ) ||
-      typeof value.sessionDurationSeconds !== "number" ||
-      !Number.isSafeInteger(value.sessionDurationSeconds) ||
-      value.sessionDurationSeconds < 1 ||
-      value.sessionDurationSeconds > Math.floor(Number.MAX_SAFE_INTEGER / 1000)
-    ) {
-      throw new Error("Repository credential Driver configuration is invalid.");
-    }
+  static validateConfiguration(
+    configuration: Readonly<Record<string, unknown>>,
+  ): readonly ErrorDetail[] {
     for (const field of ["controlSocket", "publicCaPath"] as const) {
-      const path = value[field];
+      const path = configuration[field];
       if (
         typeof path !== "string" ||
         !isAbsolute(path) ||
@@ -84,9 +68,16 @@ export class GitHubRepoDriver implements RepoDriver {
         hasControlCharacter(path) ||
         (field === "controlSocket" && Buffer.byteLength(path) > 103)
       ) {
-        throw new Error("Repository credential Driver paths must be absolute.");
+        return [
+          {
+            path: "",
+            code: "INVALID_VALUE",
+            message: "Configuration violates the Driver's constraints.",
+          },
+        ];
       }
     }
+    return [];
   }
 
   readonly capability = "repo" as const;

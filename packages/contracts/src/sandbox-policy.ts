@@ -1,12 +1,23 @@
 import { Type } from "typebox";
 import { Check } from "typebox/value";
+import { ConfigurationValidationError, requireConfiguration } from "./configuration-definition.ts";
+import type { ErrorDetail } from "./api/common.ts";
 import type { OpenClawConfigurationDocument } from "./index.ts";
 
 export const SandboxNetworkGrantSchema = Type.Object(
   {
-    id: Type.String({ pattern: "^[a-z][a-z0-9-]{0,47}$" }),
-    binary: Type.String({ minLength: 2, maxLength: 512, pattern: "^/[^\\s\\x00-\\x1f]+$" }),
+    id: Type.String({ title: "Rule ID", pattern: "^[a-z][a-z0-9-]{0,47}$" }),
+    binary: Type.String({
+      title: "Executable path",
+      description: "Absolute path of the executable receiving access.",
+      minLength: 2,
+      maxLength: 512,
+      pattern: "^/[^\\s\\x00-\\x1f]+$",
+    }),
     host: Type.String({
+      title: "Destination hostname",
+      description:
+        "DNS hostname or permitted single-label wildcard. Grants allow access; omitted destinations stay denied.",
       minLength: 1,
       maxLength: 253,
       pattern: "^(\\*\\.)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?$",
@@ -14,18 +25,21 @@ export const SandboxNetworkGrantSchema = Type.Object(
     ports: Type.Array(
       Type.Object(
         {
-          from: Type.Integer({ minimum: 1, maximum: 65535 }),
-          to: Type.Integer({ minimum: 1, maximum: 65535 }),
+          from: Type.Integer({ title: "Start port", minimum: 1, maximum: 65535 }),
+          to: Type.Integer({ title: "End port", minimum: 1, maximum: 65535 }),
         },
         { additionalProperties: false },
       ),
-      { minItems: 1, maxItems: 16 },
+      { title: "Port ranges", minItems: 1, maxItems: 16 },
     ),
   },
   { additionalProperties: false },
 );
 
-export const SandboxNetworkGrantsSchema = Type.Array(SandboxNetworkGrantSchema, { maxItems: 32 });
+export const SandboxNetworkGrantsSchema = Type.Array(SandboxNetworkGrantSchema, {
+  title: "Network rules",
+  maxItems: 32,
+});
 export type SandboxNetworkGrant = Type.Static<typeof SandboxNetworkGrantSchema>;
 
 /** The defaults are an opaque, nonsecret Driver snapshot. OCC never interprets provider syntax. */
@@ -91,30 +105,85 @@ export interface SandboxPolicyRecommendations {
 /** Validate all destinations in each grant; sampling a wildcard or range cannot prove containment. */
 export function validateSandboxNetworkGrants(
   value: unknown,
+  inputPath = "/additions",
 ): asserts value is readonly SandboxNetworkGrant[] {
-  if (!Check(SandboxNetworkGrantsSchema, value)) {
-    throw new Error("Invalid sandbox network grants.");
-  }
-  const grants = value as readonly SandboxNetworkGrant[];
-  if (
-    new Set(grants.map(({ id }) => id)).size !== grants.length ||
-    grants.some(
-      (grant) =>
-        grant.binary
-          .split("/")
-          .some((part, i) => i > 0 && (part === "" || part === "." || part === "..")) ||
-        grant.host
-          .replace(/^\*\./, "")
-          .split(".")
-          .some((part) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part)) ||
-        grant.ports.some(({ from, to }) => from > to),
-    )
-  ) {
-    throw new Error(
-      "Network grants require unique IDs, normalized paths, DNS hosts, and ordered port ranges.",
+  try {
+    requireConfiguration(SandboxNetworkPolicyConfiguration, { additions: value });
+  } catch (error) {
+    if (!(error instanceof ConfigurationValidationError) || inputPath === "/additions") {
+      throw error;
+    }
+    // The owning caller supplies its grant-array pointer; the shared Agent definition
+    // still validates additions, but its wrapper is not part of that caller's input.
+    throw new ConfigurationValidationError(
+      error.error.details.map((detail) => ({
+        ...detail,
+        path: `${inputPath}${detail.path.slice("/additions".length)}`,
+      })) as [ErrorDetail, ...ErrorDetail[]],
     );
   }
 }
+
+const NetworkPolicyConfigurationSchema = Type.Object(
+  { additions: SandboxNetworkGrantsSchema },
+  { additionalProperties: false },
+);
+
+export const SandboxNetworkPolicyConfiguration = Object.freeze({
+  scope: "agent" as const,
+  key: "sandbox-network-policy",
+  configurationSchema: { ...NetworkPolicyConfigurationSchema },
+  validateConfiguration({
+    additions,
+  }: Readonly<Type.Static<typeof NetworkPolicyConfigurationSchema>>): readonly ErrorDetail[] {
+    const details: ErrorDetail[] = [];
+    const ids = new Set<string>();
+    additions.forEach((grant, index) => {
+      const path = `/additions/${index}`;
+      if (ids.has(grant.id)) {
+        details.push({
+          path: `${path}/id`,
+          code: "INVALID_VALUE",
+          message: "Grant IDs must be unique.",
+        });
+      }
+      ids.add(grant.id);
+      if (
+        grant.binary
+          .split("/")
+          .some((part, i) => i > 0 && (part === "" || part === "." || part === ".."))
+      ) {
+        details.push({
+          path: `${path}/binary`,
+          code: "INVALID_VALUE",
+          message: "Use a normalized absolute executable path.",
+        });
+      }
+      if (
+        grant.host
+          .replace(/^\*\./, "")
+          .split(".")
+          .some((part) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(part))
+      ) {
+        details.push({
+          path: `${path}/host`,
+          code: "INVALID_VALUE",
+          message: "Use a valid DNS host or single-label wildcard.",
+        });
+      }
+      grant.ports.forEach(({ from, to }, port) => {
+        if (from > to) {
+          details.push({
+            path: `${path}/ports/${port}/to`,
+            code: "INVALID_RANGE",
+            message: "The end port must be at least the start port.",
+          });
+        }
+      });
+    });
+    return details;
+  },
+});
 
 function hostCovered(host: string, ceiling: string): boolean {
   if (host === ceiling) {

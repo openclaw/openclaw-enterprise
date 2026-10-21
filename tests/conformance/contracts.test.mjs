@@ -26,6 +26,8 @@ import {
 import { deploymentDiagnostics } from "../../packages/occ/src/deployment-diagnostics.ts";
 import { validateFailureData } from "../../packages/occ/src/state/controller-work.ts";
 import {
+  validateConfiguration,
+  requireConfiguration,
   CONFIGURATION_KINDS,
   DRIVER_CAPABILITIES,
   LOGGING_LEVELS,
@@ -42,6 +44,7 @@ import {
   isSandboxFacet,
   normalizeHarnessAuthBinding,
   normalizeLoggingLevel,
+  ConfigurationValidationError,
   sandboxNetworkGrantsWithinCeiling,
   validateSandboxNetworkGrants,
 } from "../../packages/contracts/src/index.ts";
@@ -83,16 +86,35 @@ test("network delegation covers every requested host label and port without broa
     false,
   );
   assert.equal(sandboxNetworkGrantsWithinCeiling([grant], []), false);
-  for (const invalid of [
-    [{ ...grant, binary: "/usr/bin/../python3.11" }],
-    [{ ...grant, host: "api..example.org" }],
-    [{ ...grant, ports: [{ from: 445, to: 443 }] }],
-    [grant, grant],
+  for (const [invalid, path, code, message] of [
+    [
+      [{ ...grant, binary: "/usr/bin/../python3.11" }],
+      "/additions/0/binary",
+      "INVALID_VALUE",
+      "Use a normalized absolute executable path.",
+    ],
+    [
+      [{ ...grant, host: "api..example.org" }],
+      "/additions/0/host",
+      "INVALID_VALUE",
+      "Use a valid DNS host or single-label wildcard.",
+    ],
+    [
+      [{ ...grant, ports: [{ from: 445, to: 443 }] }],
+      "/additions/0/ports/0/to",
+      "INVALID_RANGE",
+      "The end port must be at least the start port.",
+    ],
+    [[grant, grant], "/additions/1/id", "INVALID_VALUE", "Grant IDs must be unique."],
   ]) {
-    assert.throws(() => validateSandboxNetworkGrants(invalid), {
-      message:
-        "Network grants require unique IDs, normalized paths, DNS hosts, and ordered port ranges.",
-    });
+    assert.throws(
+      () => validateSandboxNetworkGrants(invalid),
+      (error) => {
+        assert.ok(error instanceof ConfigurationValidationError);
+        assert.deepEqual(error.error.details, [{ path, code, message }]);
+        return true;
+      },
+    );
   }
 });
 
@@ -829,5 +851,80 @@ test("runtime diagnostics outside that vocabulary are returned as UNRECOGNIZED",
       { component: "agent", check: "runtime-status", state: "unknown", checkedAt: null },
       known,
     ],
+  );
+});
+
+// A duplicate false-subschema error must not hide useful field diagnostics, and
+// removing that duplicate must not admit independently forbidden values.
+test("configuration diagnostics collapse extra-field noise without accepting false schemas", () => {
+  assert.deepEqual(
+    validateConfiguration({ type: "object", additionalProperties: false }, { extra: 1 }),
+    {
+      success: false,
+      error: {
+        details: [
+          {
+            path: "",
+            code: "UNKNOWN_FIELD",
+            message: "Configuration does not satisfy additionalProperties.",
+          },
+        ],
+      },
+    },
+  );
+  for (const [schema, input] of [
+    [false, 1],
+    [{ type: "array", items: false }, [1]],
+    [{ type: "object", properties: { additionalProperties: false } }, { additionalProperties: 1 }],
+  ]) {
+    const result = validateConfiguration(schema, input);
+    assert.equal(result.success, false);
+    assert.equal(result.error.details[0].message, "Configuration does not satisfy boolean.");
+  }
+});
+
+test("configuration admission retains original values while isolating semantic callback references", () => {
+  const input = { endpoint: { port: 443 } };
+  let retained;
+  const definition = {
+    configurationSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        endpoint: {
+          type: "object",
+          additionalProperties: false,
+          properties: { port: { type: "integer" } },
+        },
+      },
+    },
+    validateConfiguration(value) {
+      retained = value;
+      return [];
+    },
+  };
+  assert.equal(requireConfiguration(definition, input), input);
+  // A Driver retaining its argument cannot change data already admitted for another caller.
+  assert.throws(() => {
+    retained.endpoint.port = 80;
+  }, TypeError);
+  assert.deepEqual(input, { endpoint: { port: 443 } });
+  const accessor = {
+    get endpoint() {
+      throw new Error("input getter must not run");
+    },
+  };
+  assert.throws(
+    () => requireConfiguration(definition, accessor),
+    (error) => {
+      assert.deepEqual(error.error.details, [
+        {
+          path: "",
+          code: "INVALID_TYPE",
+          message: "Configuration must contain only plain JSON values.",
+        },
+      ]);
+      return true;
+    },
   );
 });

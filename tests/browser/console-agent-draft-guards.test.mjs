@@ -71,6 +71,14 @@ async function createPolicyConsole(t, ceiling = []) {
   const fixture = await createConsoleAppFixture(t, {
     sandboxDriver,
     sandboxNetworkPolicyCeiling: ceiling,
+    driverConfigurations: [
+      {
+        capability: "sandbox",
+        driverId: sandboxDriver.id,
+        implementation: sandboxDriver.implementation,
+        definition: OpenShellSandboxDriver,
+      },
+    ],
   });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Policy rejection", { ready: true });
@@ -90,7 +98,7 @@ async function createPolicyConsole(t, ceiling = []) {
 
 test("Agent policy ceiling rejection is announced in view and preserves unsaved additions", async (t) => {
   const { fixture, namespace, agent, base } = await createPolicyConsole(t);
-  // No operator ceiling delegates access. The actual OCC admission path must reject the save;
+  // No operator ceiling delegates access. The actual OCC admission path must reject the preview;
   // no response interception or provider behavior is substituted for that decision.
   const { page } = await newPage(t, fixture, {
     context: { viewport: { width: 1440, height: 600 } },
@@ -101,35 +109,32 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   await loginThroughForm(page, fixture, url);
   await page.waitForURL(url.href);
   const requests = apiRequests(page, fixture.origin);
-  await page.getByRole("button", { name: "Add proposed rule", exact: true }).click();
-  await page.getByRole("button", { name: "Remove proposed rule 1", exact: true }).click();
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
+  await page.getByRole("button", { name: "Remove Network rules 1", exact: true }).click();
   assert.equal(
-    await page.getByRole("textbox", { name: "Executable path 1", exact: true }).count(),
+    await page.getByRole("textbox", { name: "Executable path", exact: true }).count(),
     0,
   );
-  await page.getByRole("button", { name: "Add proposed rule", exact: true }).click();
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
   await page
-    .getByRole("textbox", { name: "Executable path 1", exact: true })
+    .getByRole("textbox", { name: "Executable path", exact: true })
     .fill("/usr/bin/python3.11");
   await page
-    .getByRole("textbox", { name: "Destination hostname 1", exact: true })
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
     .fill("outside.example.org");
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill("outside");
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
+  const rejected = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" && response.url().endsWith(`${base}/validate`),
+  );
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   assert.equal(pathRequests(requests, "PUT", base).length, 0, "proposing rules does not save");
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 0);
-  assert.equal(
-    await page
-      .getByRole("button", { name: "Save and apply to current revision", exact: true })
-      .isDisabled(),
-    true,
-    "a draft has no current running revision to apply to",
-  );
-  const rejected = page.waitForResponse(
-    (response) => response.request().method() === "PUT" && response.url().endsWith(base),
-  );
-  await page.getByRole("button", { name: "Save", exact: true }).click();
-  assert.equal((await rejected).status(), 409);
-  const message = "The requested network grant exceeds the Installation delegation ceiling.";
+  assert.equal((await rejected).status(), 200);
+  const message = "Review the configuration errors. Your proposal has not been saved or applied.";
   const alert = page.getByText(message, { exact: true });
   await alert.waitFor();
   const displayed = await alert.evaluate((node) => {
@@ -143,12 +148,12 @@ test("Agent policy ceiling rejection is announced in view and preserves unsaved 
   assert.equal(
     displayed.inView,
     true,
-    "a rejected save must show its reason without manual scrolling",
+    "a rejected preview must show its reason without manual scrolling",
   );
   assert.equal(displayed.role, "alert");
   assert.equal(displayed.focused, true);
   assert.equal(
-    await page.getByRole("textbox", { name: "Destination hostname 1", exact: true }).inputValue(),
+    await page.getByRole("textbox", { name: "Destination hostname", exact: true }).inputValue(),
     "outside.example.org",
   );
   const unchanged = await fixture.request("GET", base);
@@ -229,6 +234,7 @@ test("A refused policy read offers no Retry", async (t) => {
   });
   const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
   const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
   await login(
     page,
     fixture,
@@ -243,6 +249,11 @@ test("A refused policy read offers no Retry", async (t) => {
   await tab.getByText("You do not have permission to read policy suggestions.").waitFor();
   assert.equal(await tab.getByRole("button", { name: "Retry policy read" }).count(), 0);
   assert.equal(await tab.getByRole("button", { name: "Refresh suggestions" }).count(), 0);
+  // No policy descriptor is visible, but the independent log read must not wait forever.
+  await waitForCondition(
+    () => requests.some(({ path }) => path.includes("/runtime/logs")),
+    "Independent log reads must continue without a policy descriptor.",
+  );
   // Only the refusals stand in for the omitted controls.
   assert.equal(await tab.getByText("null", { exact: true }).count(), 0);
 });
@@ -262,25 +273,49 @@ test("Agent policy proposals save separately or save then apply the newly saved 
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
-  await page.getByRole("button", { name: "Add proposed rule", exact: true }).click();
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
   await page
-    .getByRole("textbox", { name: "Executable path 1", exact: true })
+    .getByRole("textbox", { name: "Executable path", exact: true })
     .fill(delegatedPolicyGrant.binary);
   await page
-    .getByRole("textbox", { name: "Destination hostname 1", exact: true })
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
     .fill(delegatedPolicyGrant.host);
-  await page.getByRole("textbox", { name: "Rule ID 1", exact: true }).fill(delegatedPolicyGrant.id);
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(delegatedPolicyGrant.id);
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
   assert.equal(
     await page
       .getByRole("button", { name: "Apply saved policy to current revision", exact: true })
       .isDisabled(),
     true,
   );
+  // Delay a real successful preview while the user edits; the old response must not replace the draft.
+  const preview = await holdRequests(t, page, `${fixture.origin}${base}/validate`, {
+    once: true,
+    method: "POST",
+    afterServer: true,
+  });
+  await page.getByRole("button", { name: "Review changes", exact: true }).click();
+  await preview.requested;
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill("newer-draft");
+  const previewResponse = page.waitForResponse((response) =>
+    response.url().endsWith(`${base}/validate`),
+  );
+  preview.release();
+  await previewResponse;
+  await page.getByText("Draft changed. Review again before saving.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Save", exact: true }).count(), 0);
+  assert.equal(
+    await page.getByRole("textbox", { name: "Rule ID", exact: true }).inputValue(),
+    "newer-draft",
+  );
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(delegatedPolicyGrant.id);
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   // Returning from review must retain the proposal and permit further edits.
   await page.getByRole("button", { name: "Back to editing", exact: true }).click();
   assert.equal(
-    await page.getByRole("textbox", { name: "Destination hostname 1", exact: true }).inputValue(),
+    await page.getByRole("textbox", { name: "Destination hostname", exact: true }).inputValue(),
     delegatedPolicyGrant.host,
   );
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
@@ -298,7 +333,7 @@ test("Agent policy proposals save separately or save then apply the newly saved 
 
   // The combined action must submit the accepted version, rather than applying the
   // old saved version while silently leaving a local proposal behind.
-  await page.getByRole("textbox", { name: "Rule ID 1", exact: true }).fill("python-reviewed");
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill("python-reviewed");
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   await page
     .getByRole("button", { name: "Save and apply to current revision", exact: true })
@@ -324,20 +359,22 @@ test("Agent policy combined save distinguishes ceiling rejection from a saved po
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
-  await page.getByRole("button", { name: "Add proposed rule", exact: true }).click();
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
   await page
-    .getByRole("textbox", { name: "Executable path 1", exact: true })
+    .getByRole("textbox", { name: "Executable path", exact: true })
     .fill(delegatedPolicyGrant.binary);
   await page
-    .getByRole("textbox", { name: "Destination hostname 1", exact: true })
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
     .fill("outside.example.org");
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(delegatedPolicyGrant.id);
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   await page
-    .getByRole("button", { name: "Save and apply to current revision", exact: true })
-    .click();
-  await page
     .getByRole("alert")
-    .filter({ hasText: "exceeds the Installation delegation ceiling" })
+    .filter({ hasText: "The grant exceeds the Installation delegation ceiling" })
+    .first()
     .waitFor();
   assert.equal(
     pathRequests(requests, "POST", `${base}/apply`).length,
@@ -347,7 +384,7 @@ test("Agent policy combined save distinguishes ceiling rejection from a saved po
   assert.equal((await fixture.request("GET", base)).data.policy.version, 1);
 
   await page
-    .getByRole("textbox", { name: "Destination hostname 1", exact: true })
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
     .fill(delegatedPolicyGrant.host);
   await page.getByRole("button", { name: "Review changes", exact: true }).click();
   // Another operator stops the Agent after review. Saving remains valid, while the
@@ -371,6 +408,96 @@ test("Agent policy combined save distinguishes ceiling rejection from a saved po
   assert.equal(persisted.additions[0].host, delegatedPolicyGrant.host);
   assert.equal(persisted.application, undefined);
   assert.equal(pathRequests(requests, "POST", `${base}/apply`).length, 1);
+});
+
+test("Agent policy conflict reload retains the draft and revalidates the new version", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const { page } = await newPage(t, fixture);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, "draft", "policy"));
+  await page.getByRole("button", { name: "Add Network rules", exact: true }).click();
+  await page.getByRole("textbox", { name: "Rule ID", exact: true }).fill(delegatedPolicyGrant.id);
+  await page
+    .getByRole("textbox", { name: "Executable path", exact: true })
+    .fill(delegatedPolicyGrant.binary);
+  await page
+    .getByRole("textbox", { name: "Destination hostname", exact: true })
+    .fill(delegatedPolicyGrant.host);
+  await page.getByRole("button", { name: "Add Port ranges", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "Start port", exact: true }).fill("443");
+  await page.getByRole("spinbutton", { name: "End port", exact: true }).fill("443");
+  await page.getByRole("button", { name: "Review changes", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).waitFor();
+  // A separate supported API save advances the version after this browser's successful preview.
+  assert.equal(
+    (await fixture.request("PUT", base, { body: { expectedVersion: 1, additions: [] } })).status,
+    200,
+  );
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "The policy changed" }).waitFor();
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await page.getByText(/Policy v2 reloaded. Your draft is retained/).waitFor();
+  assert.equal(
+    await page.getByRole("textbox", { name: "Rule ID", exact: true }).inputValue(),
+    delegatedPolicyGrant.id,
+  );
+  await page.getByRole("button", { name: "Review changes", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByText(/Policy v3 saved/).waitFor();
+  assert.deepEqual((await fixture.request("GET", base)).data.policy.additions, [
+    delegatedPolicyGrant,
+  ]);
+});
+
+test("overlapping policy refreshes retain the newest read and continue pending polling", async (t) => {
+  const { fixture, namespace, agent, base } = await createPolicyConsole(t, [delegatedPolicyGrant]);
+  const { revision } = await fixture.seedActiveAgentRevision(namespace.id, agent.id);
+  const { page } = await newPage(t, fixture);
+  const requests = apiRequests(page, fixture.origin);
+  await login(page, fixture, detailUrl(fixture, namespace.id, agent.id, revision.id, "policy"));
+  await page.getByText("Matches saved policy v1.", { exact: false }).waitFor();
+  const url = `${fixture.origin}${base}`;
+  const first = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await first.requested;
+  // Another operator saves between the two reads. The older successful response arrives
+  // first and must not invalidate the later read or overwrite its version.
+  assert.equal(
+    (
+      await fixture.request("PUT", base, {
+        body: { expectedVersion: 1, additions: [delegatedPolicyGrant] },
+      })
+    ).status,
+    200,
+  );
+  const second = await holdRequests(t, page, url, { once: true, method: "GET", afterServer: true });
+  await page.getByRole("button", { name: "Refresh policy", exact: true }).click();
+  await second.requested;
+  const firstResponse = page.waitForResponse((response) => response.url() === url);
+  first.release();
+  await (await firstResponse).finished();
+  await page.evaluate(() => new Promise(globalThis.requestAnimationFrame));
+  const secondResponse = page.waitForResponse((response) => response.url() === url);
+  second.release();
+  await secondResponse;
+  await page.getByText("Matches saved policy v2.", { exact: false }).waitFor();
+  assert.equal(
+    await page.getByRole("textbox", { name: "Rule ID", exact: true }).inputValue(),
+    delegatedPolicyGrant.id,
+  );
+
+  await page
+    .getByRole("button", { name: "Apply saved policy to current revision", exact: true })
+    .click();
+  await page.getByText(/Application to the current revision is pending/).waitFor();
+  const reads = pathRequests(requests, "GET", base).length;
+  // This fixture has no worker: real admission stays pending, so observing multiple polls
+  // proves refresh continues rather than claiming provider enforcement or confirmation.
+  await waitForCondition(
+    () => pathRequests(requests, "GET", base).length >= reads + 2,
+    "pending policy stopped polling",
+    10_000,
+  );
+  assert.equal((await fixture.request("GET", base)).data.policy.application.state, "pending");
 });
 
 test("Agent deployment requires a reload after repository access changes", async (t) => {

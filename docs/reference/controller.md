@@ -174,12 +174,12 @@ Bootstrap and migration scripts use the same level and write machine-protocol
 success records to stdout. Their structured failure diagnostics go to stderr.
 Startup failures write `startup-error`, `worker.startup-error`,
 `installation.bootstrap-failed`, or `migration.failed` and exit before serving
-or processing work. Log sanitization keeps only reviewed scalar fields and drops
-credentials, provider payloads, request objects, and error values that fail its filters. The
-worker does not expose an HTTP health endpoint. A startup Installation with an
-invalid Gateway StorageClass name emits `GATEWAY_STORAGE_CLASS_INVALID`; a
-Compute gateway or Agent image without a required digest, or with an uppercase
-repository path, emits `RUNTIME_IMAGE_INVALID`.
+or processing work. Log sanitization keeps only reviewed fields and up to 32 configuration diagnostics, and drops
+credentials, provider payloads, request objects, and unbounded error values. The
+worker does not expose an HTTP health endpoint. Driver startup schema or semantic
+refusals emit `DRIVER_CONFIGURATION_INVALID` with `details`: schema-owned
+JSON Pointer paths, codes, and safe messages. This includes invalid StorageClass
+names and runtime image settings. Submitted values and exception text are omitted.
 
 ## Failures and diagnostics
 

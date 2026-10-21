@@ -200,6 +200,20 @@ test("QA selection keeps prerequisite credentials and reports omitted coverage",
   const openclaw = selectQaMatrix({ OCC_TEST_QA_PRESET: "OpenClaw" });
   assert.deepEqual(openclaw.cells[0].scenarios, ["model-ui", "git-full"]);
   assert.ok(!openclaw.requiredEnv.some((name) => /CODEX|SLACK|CALENDAR/.test(name)));
+  const sandbox = selectQaMatrix({
+    OCC_TEST_QA_SCENARIOS: "sandbox-policy",
+    OCC_TEST_QA_PRESET: "Codex",
+    OCC_TEST_QA_INSTALLATION: "kubernetes",
+  });
+  assert.equal(sandbox.sandboxPolicy, true);
+  assert.deepEqual(sandbox.requiredEnv, [
+    "OCC_TEST_QA_CODEX_TOKEN_FILE",
+    "OCC_TEST_QA_SANDBOX_ENV",
+  ]);
+  assert.ok(
+    sandbox.cells.every((cell) => cell.scenarios.length === 0),
+    "OpenShell uses its prepared enforcement lane, not Sandbox-free installations",
+  );
   const full = selectQaMatrix({});
   assert.equal(full.scope, "full");
   assert.ok(full.repository);

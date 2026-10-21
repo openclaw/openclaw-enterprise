@@ -1,13 +1,14 @@
 # Kubernetes Compute Driver
 
-The Kubernetes Compute Driver runs OpenClaw Agents on Kubernetes. It provisions
-or adopts one namespace per tenant in a single cluster and creates an OpenClaw
-gateway for each deployed Agent. Dedicated Gateways and Harnesses use separate
-Pods, identities and volumes within that namespace; embedded OpenClaw combines
-them in one Pod.
+The Kubernetes Compute Driver provisions or adopts one namespace per tenant,
+creating each Agent’s gateway. Dedicated Gateways and Harnesses use separate
+Pods, identities and volumes; embedded OpenClaw combines them in one Pod.
 The experimental `executionCluster` configuration selects a second Kubernetes
 API for dedicated Harness resources. See the [two-cluster validation profile](../../testing/kubernetes.md#two-cluster-validation)
 before using it; cloud deployment and complete runtime acceptance remain pending.
+Optional `executionCluster.caBundle` accepts at most 65,536 characters of X.509 PEM
+certificates and whitespace. Diagnostics identify `/executionCluster/...`
+fields, including `/executionCluster/caBundle`.
 
 New managed namespaces use `oce-` plus the first 15 hexadecimal
 characters of the Namespace ID's SHA-256 digest: stable, DNS-safe, and short

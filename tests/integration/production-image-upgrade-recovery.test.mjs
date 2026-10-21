@@ -1787,6 +1787,44 @@ test("an Installation the selected controller image cannot load stops before any
   ]);
 });
 
+test("a Driver refusal preserves field diagnostics before upgrade quiescence", async (t) => {
+  if (!realHelm) {
+    t.skip("helm is unavailable to render the real chart");
+    return;
+  }
+  const f = await fixture(t, {
+    controllerOnly: true,
+    chart: {
+      installation: (installation) => {
+        installation.drivers.compute.configuration.runtime.gatewayStorageClassName = "Bad_Class";
+        return installation;
+      },
+    },
+  });
+  await assert.rejects(f.run(), (error) => {
+    assert.match(
+      error.stderr,
+      /cannot start the api with the candidate Installation: .*DRIVER_CONFIGURATION_INVALID.*No OCC writer was stopped/s,
+    );
+    assert.doesNotMatch(error.stderr, /Bad_Class/);
+    return true;
+  });
+  await assertStoppedBeforeWriters(f);
+  for (const component of ["api", "worker"]) {
+    const log = await readFile(join(f.evidence, `preflight-${component}.log`), "utf8");
+    const line = log.split("\n").find((line) => line.startsWith("DRIVER_CONFIGURATION_INVALID: "));
+    assert.ok(line, log);
+    assert.deepEqual(JSON.parse(line.slice("DRIVER_CONFIGURATION_INVALID: ".length)), [
+      {
+        path: "/runtime/gatewayStorageClassName",
+        code: "INVALID_FORMAT",
+        message:
+          "SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name.",
+      },
+    ]);
+  }
+});
+
 // The API and worker read the stored Installation name from the database and refuse
 // one that breaks the Name rule (INSTALLATION_NAME_INVALID). The preflight Pods check
 // the name OCC returns with the selected image's rule, so the refusal comes before any

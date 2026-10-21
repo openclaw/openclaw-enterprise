@@ -1,3 +1,5 @@
+import { configurationLogDetails } from "./logging.ts";
+import { ConfigurationValidationError } from "@openclaw-enterprise/contracts";
 import { PostgresCertificateRejectedError } from "@openclaw-enterprise/occ";
 import { KubernetesApiUnavailableError } from "./drivers/kubernetes/client.ts";
 
@@ -22,31 +24,17 @@ export function startupDependencyFailure(
   return undefined;
 }
 
-const RESERVED_NETWORK_POLICY_NAME =
-  "OpenShell network policy name workspace-node-enrollment is reserved.";
-const NETWORK_POLICY_NAME_PREFIX = "OpenShell network policy name ";
-const DUPLICATE_NETWORK_POLICY_SUFFIX = " must be unique.";
+/** Shared configuration failures contain only bounded, schema-owned diagnostics. */
+export function startupConfigurationFailure(error: unknown) {
+  return error instanceof ConfigurationValidationError
+    ? { code: "DRIVER_CONFIGURATION_INVALID", details: error.error.details }
+    : undefined;
+}
 
-/**
- * Startup log for a rejected OpenShell policy name. The code and the
- * rename-or-merge action are fixed; the operator's policy name stays out of the log.
- */
-export function startupPolicyNameFailure(error: unknown):
-  | {
-      readonly code: "OPENSHELL_NETWORK_POLICY_NAME_REJECTED";
-      readonly reason: "rename-or-merge";
-    }
-  | undefined {
-  const message = error instanceof Error ? error.message : "";
-  const duplicate =
-    message.startsWith(NETWORK_POLICY_NAME_PREFIX) &&
-    message.endsWith(DUPLICATE_NETWORK_POLICY_SUFFIX) &&
-    message.length <= 1024;
-  if (message !== RESERVED_NETWORK_POLICY_NAME && !duplicate) {
-    return undefined;
-  }
-  return {
-    code: "OPENSHELL_NETWORK_POLICY_NAME_REJECTED",
-    reason: "rename-or-merge",
-  };
+/** One-line operator diagnostics, with the same safe fields as API and worker logs. */
+export function formatStartupConfigurationFailure(error: unknown): string | undefined {
+  const failure = startupConfigurationFailure(error);
+  return failure === undefined
+    ? undefined
+    : `${failure.code}: ${JSON.stringify(configurationLogDetails(failure.details))}`;
 }

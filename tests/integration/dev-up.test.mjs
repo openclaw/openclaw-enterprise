@@ -1,3 +1,4 @@
+import { requireConfiguration } from "../../packages/contracts/src/index.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
@@ -123,7 +124,7 @@ test("Kubernetes dev-up authenticates the Installation and cleanup uses its save
   assert.equal(installation.presets.includeDefaults, true);
   assert.equal(installation.drivers.plugin.id, "codex-plugin");
   const compute = installation.drivers.compute.configuration;
-  KubernetesComputeDriver.validateConfiguration(compute);
+  requireConfiguration(KubernetesComputeDriver, compute);
   assert.deepEqual(compute.network.gatewayTrustedProxyCidrs, ["127.0.0.1/32"]);
   // The API server's Pod proxy source, so Compute can read private status and a
   // dedicated Codex Gateway starts once on a first deploy.
